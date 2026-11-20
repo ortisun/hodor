@@ -8,7 +8,7 @@ These are the rules everyone working on Hodor follows, people and coding agents 
 
 - **Before changing code, change the document.** A new feature, a changed behavior, a new rule or a reversed decision starts as an edit to the page that specifies it. The implementation is then written to match.
 - **If the code and the document disagree, one of them is a bug.** Decide which, fix the document first if it is the one that is wrong, then fix the code.
-- **A decision that constrains the design gets an ADR** in [`docs/adr/`](../adr/README.md). Changing your mind means a new ADR that supersedes the old one.
+- **A decision that constrains the design gets a decision record** in [`docs/decisions/`](../decisions/README.md). Changing your mind means a new decision record that supersedes the old one.
 - **Everything lives in `docs/`**: specifications, architecture, diagrams, protocols, operations, conventions and progress. Pull request descriptions and commit messages explain a change; they are not where knowledge is kept.
 
 In practice a piece of work is two steps, in this order:
@@ -28,22 +28,59 @@ The documentation is written for a person who is new to the project and has no o
 - English throughout.
 - No status that goes stale silently: progress is recorded in [one place](../product/progress.md) and updated with every merge.
 
-## 3. How the documentation is organized
+## 3. Words, not abbreviations
+
+Documentation and code comments are written in whole words. A reader should never have to look up what a letter or a short code stands for.
+
+- **No letter codes.** Write `Rule`, `Test`, `Requirement`, `Threat`, `Issue`, `Epic`, `Milestone`. Never `R`, `T`, or a prefix made of initials.
+- **No abbreviations of ordinary terms.** Write "identity provider", "relying party", "row-level security", "multi-factor authentication", "single sign-on", "role-based access control", "policy decision point", "user interface", "identifier", "continuous integration". Write them every time, not only on first use.
+- **Identifiers are made of words.** They read the same in a table, a commit message and a test name.
+
+| Kind | Form | Example |
+|---|---|---|
+| Requirement | `Requirement-<Area>-<number>` | `Requirement-Tenancy-01`, `Requirement-Security-03` |
+| Threat | `Threat-<Area>-<number>` | `Threat-OAuth-02`, `Threat-Tenancy-01` |
+| Issue | `Issue-<number>` | `Issue-07` |
+| Epic | `Epic <number>` | `Epic 9` |
+| Decision record | `Decision <number>` | `Decision 0005` |
+| Priority | A word | `Blocker`, `Expected`, `Optional` |
+
+- **Diagrams follow the same rule.** Participants and nodes are named with words (`Browser`, `Authentication`, `PolicyAgent`), in what the reader sees and in the diagram source.
+- **Comments in code follow the same rule.** The names of types, functions and variables follow normal Rust naming, which already prefers whole words.
+
+### Names that stay as they are
+
+Some names are the actual name of a standard, protocol, format or product. Nobody calls them by their expansion, and the expansion would hide what is meant. These are kept:
+
+| Group | Names |
+|---|---|
+| Protocols and standards | OAuth, SAML, SCIM, LDAP, HTTP, HTTPS, TLS, DNS, SMTP, SMS, OTLP, PKCE, DPoP, TOTP, HOTP, WebAuthn, XACML, FAPI |
+| Formats and data | JSON, NDJSON, XML, HTML, CSS, SQL, URL, URI, UUID, JWT, JWK, JWKS, JWS, JOSE, COSE, UTC, UTF-8 |
+| Cryptography | RSA, SHA, HMAC, AES, GCM, ECDSA, EdDSA, PKCS, FIPS, and algorithm identifiers such as ES256 |
+| Attack classes | CSRF, SSRF, XSS, XXE |
+| Products, projects and organizations | PostgreSQL, Redis, OpenTelemetry, VictoriaMetrics, Kubernetes, Helm, OWASP, STRIDE, C4, RFC numbers |
+| Everyday technical words | API, CPU, IP address, README |
+| Published titles | The title of a specification is quoted as published, for example "OpenID Connect RP-Initiated Logout" |
+| Language tags | `en`, `pt-BR` |
+
+Anything outside this table is written out. When in doubt, write it out. If a new name deserves to be kept, add it to the table in the same change.
+
+## 4. How the documentation is organized
 
 | Folder | What belongs there |
 |---|---|
-| [`product/`](../product/prd.md) | Why Hodor exists and what it must do: PRD, requirements, roadmap, epics, progress |
+| [`product/`](../product/product-requirements.md) | Why Hodor exists and what it must do: Product requirements, requirements, roadmap, epics, progress |
 | [`architecture/`](../architecture/overview.md) | How it is built: structure, domain model, crates, data, tenancy, authorization, plugins, testing, and the critical review |
 | [`protocols/`](../protocols/sequences.md) | How it behaves on the wire: sequences and lifecycles |
 | [`api/`](../api/api-spec.md) | The HTTP surfaces and their conventions |
 | [`security/`](../security/threat-model.md) | Threat models and security analysis |
 | [`operations/`](../operations/deployment.md) | Running it: deployment, configuration, observability, backup |
 | [`development/`](local-setup.md) | Working on it: these conventions and the local setup |
-| [`adr/`](../adr/README.md) | Decisions and their reasons |
+| [`decisions/`](../decisions/README.md) | Decisions and their reasons |
 
 [`docs/README.md`](../README.md) is the index. A page that is not linked from it does not exist as far as a reader is concerned, so a new page is added to the index in the same change.
 
-## 4. Git
+## 5. Git
 
 ### Commits
 
@@ -54,7 +91,7 @@ Commit messages follow [Conventional Commits](https://www.conventionalcommits.or
 
 <body: what changed and why, wrapped at 72 columns>
 
-Refs: <issue id>
+Refs: Issue-<number>
 ```
 
 | Type | Use for |
@@ -90,9 +127,9 @@ Branching follows Gitflow.
 - One issue per pull request, small enough to review in one sitting.
 - The title is the Conventional Commits subject, because pull requests are squash-merged and the title becomes the commit on `develop`.
 - The description says what changed, what a reviewer should look at, and how it was verified. It states plainly anything that was not verified.
-- A pull request is merged only when CI is green.
+- A pull request is merged only when continuous integration is green.
 
-## 5. Definition of done
+## 6. Definition of done
 
 A change is done when:
 

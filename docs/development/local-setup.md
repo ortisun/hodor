@@ -16,7 +16,7 @@ cargo install cargo-deny cargo-machete
 
 ## The checks
 
-These are the commands CI runs. Run them before opening a pull request.
+These are the commands continuous integration runs. Run them before opening a pull request.
 
 ```bash
 cargo fmt --all --check

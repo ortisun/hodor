@@ -1,6 +1,6 @@
 //! Randomness as a port.
 //!
-//! Production implementations must draw from the operating system's CSPRNG;
+//! Production implementations must draw from the operating system's cryptographically secure random number generator;
 //! they live in the crypto adapter.
 
 /// Source of cryptographically secure random bytes.

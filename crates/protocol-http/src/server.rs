@@ -64,7 +64,7 @@ pub fn public_router(
             limits.request_timeout,
         ))
         // Outermost, so that every response, including those produced by
-        // the layers above, carries the request id and security headers.
+        // the layers above, carries the request identifier and security headers.
         .layer(middleware::from_fn(request_context))
 }
 

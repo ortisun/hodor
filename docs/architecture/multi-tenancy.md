@@ -2,31 +2,31 @@
 
 ## Model
 
-The specification uses *tenant* and *organization* in overlapping ways and also asks for "global users with memberships in multiple organizations". This design fixes the meaning ([ADR-0005](../adr/0005-tenant-and-organization.md)):
+The specification uses *tenant* and *organization* in overlapping ways and also asks for "global users with memberships in multiple organizations". This design fixes the meaning ([Decision 0005](../decisions/0005-tenant-and-organization.md)):
 
-- A **tenant** is the hard isolation boundary: its own issuer, signing keys, users, clients, IdPs, policies, sessions and audit trail. A user belongs to exactly one tenant.
+- A **tenant** is the hard isolation boundary: its own issuer, signing keys, users, clients, identity providers, policies, sessions and audit trail. A user belongs to exactly one tenant.
 - An **organization** lives inside a tenant and models a B2B customer. A user of the tenant may be a member of many organizations. This is what "global users with multiple memberships" maps to: global *within the tenant*.
-- **Cross-tenant access** is federation: tenant A registers tenant B as an OIDC identity provider. No row is ever shared across tenants.
+- **Cross-tenant access** is federation: tenant A registers tenant B as an OpenID Connect identity provider. No row is ever shared across tenants.
 - The **`system` tenant** holds platform administrators. Platform operations (create tenant, suspend tenant, platform health) are a separate API with separate permissions; a platform administrator has no standing access to a tenant's data and gains it only through an audited, time-boxed support grant issued by that tenant or by break-glass.
 
 ```mermaid
 flowchart TB
     subgraph platform["Hodor installation"]
-        sys["system tenant<br/>platform admins"]
-        subgraph t1["Tenant acme"]
-            u1["Users"]
-            o1["Organization: Contoso"]
-            o2["Organization: Fabrikam"]
-            c1["Clients, IdPs, policies, keys"]
+        systemTenant["system tenant<br/>platform admins"]
+        subgraph tenantAcme["Tenant acme"]
+            acmeUsers["Users"]
+            contoso["Organization: Contoso"]
+            fabrikam["Organization: Fabrikam"]
+            acmeConfiguration["Clients, identity providers, policies, keys"]
         end
-        subgraph t2["Tenant globex"]
-            u2["Users"]
-            c2["Clients, IdPs, policies, keys"]
+        subgraph tenantGlobex["Tenant globex"]
+            globexUsers["Users"]
+            globexConfiguration["Clients, identity providers, policies, keys"]
         end
     end
-    u1 --- o1
-    u1 --- o2
-    t2 -. "federation: globex trusts acme as IdP" .-> t1
+    acmeUsers --- contoso
+    acmeUsers --- fabrikam
+    tenantGlobex -. "federation: globex trusts acme as identity provider" .-> tenantAcme
 ```
 
 ## Tenant resolution
@@ -36,7 +36,7 @@ A request's tenant is resolved once, in the first middleware, from the URL and n
 1. A verified custom domain (`login.acme.com`) → tenant.
 2. Otherwise the path prefix `/t/{slug}`.
 
-The resolved `TenantContext` (tenant ID, status, settings snapshot) is placed in the request extensions. Every credential presented later in the request (session cookie, access token, client credentials, API key) is looked up *within that tenant* and rejected if it belongs to another. A tenant identifier in a body, header or query parameter is never trusted.
+The resolved `TenantContext` (tenant identifier, status, settings snapshot) is placed in the request extensions. Every credential presented later in the request (session cookie, access token, client credentials, API key) is looked up *within that tenant* and rejected if it belongs to another. A tenant identifier in a body, header or query parameter is never trusted.
 
 ### Shared host caveat
 
@@ -54,28 +54,28 @@ Tenants addressed by path on one host share a browser origin. Cookie `Path` and 
 | **Sessions and cookies** | Session lookup is `(tenant_id, hash)`. On the shared host, cookies are scoped by `Path=/t/{slug}`; on custom domains, by host |
 | **Tokens** | `iss` is the tenant issuer; validation rejects a token whose `iss` is not the request's tenant. Signing keys are per tenant |
 | **Keys and secrets** | One data-encryption key per tenant, wrapped by the `KeyProvider`. Deleting the tenant's key makes its secrets unrecoverable (crypto-shredding) |
-| **Policies** | Native policies are rows under RLS. OPA: per-tenant bundles; tenant-authored Rego only in a dedicated OPA ([authorization.md](authorization.md#tenant-isolation-in-opa)) |
+| **Policies** | Native policies are rows under row-level security. Open Policy Agent: per-tenant bundles; tenant-authored Rego only in a dedicated Open Policy Agent ([authorization.md](authorization.md#tenant-isolation-in-open-policy-agent)) |
 | **Events and jobs** | Every outbox row and job carries `tenant_id`; the worker rebuilds a `TenantContext` before running a handler. Webhook endpoints belong to a tenant and only receive its events |
 | **Audit** | Per-tenant hash chain; queries are tenant-scoped; platform-level events go to the `system` tenant |
 | **Rate limits and quotas** | Counters keyed by tenant first, so one tenant cannot exhaust another's budget; global limits protect the platform |
 | **Observability** | `tenant_id` is a span and log attribute, not a metric label by default (cardinality); per-tenant metrics are opt-in for a bounded set |
-| **Frontends** | Branding assets are served per tenant; user-supplied HTML is not allowed in themes; CSP is per tenant origin |
+| **Frontends** | Branding assets are served per tenant; user-supplied HTML is not allowed in themes; Content Security Policy is per tenant origin |
 
-RLS is defence in depth, not the primary control: queries always filter by `tenant_id` explicitly. The combination means a missing `WHERE` clause returns nothing instead of another tenant's data.
+Row-level security is defence in depth, not the primary control: queries always filter by `tenant_id` explicitly. The combination means a missing `WHERE` clause returns nothing instead of another tenant's data.
 
 ### Cross-tenant operations
 
-A few operations legitimately span tenants: tenant resolution by slug or domain, platform listing of tenants, the outbox dispatcher, cleanup jobs and migrations. They use a separate database role (`hodor_platform`) and separate repository types whose names say so (`PlatformTenantDirectory`). Only the composition roots can construct them, and a CI test fails if a context crate references them.
+A few operations legitimately span tenants: tenant resolution by slug or domain, platform listing of tenants, the outbox dispatcher, cleanup jobs and migrations. They use a separate database role (`hodor_platform`) and separate repository types whose names say so (`PlatformTenantDirectory`). Only the composition roots can construct them, and a continuous integration test fails if a context crate references them.
 
-## Why shared schema with RLS
+## Why shared schema with row-level security
 
 | Option | Isolation | Operations at 10k tenants | Decision |
 |---|---|---|---|
-| Shared schema + `tenant_id` + RLS | Strong with discipline, enforced by the database | One migration, one pool | **Chosen** |
+| Shared schema + `tenant_id` + row-level security | Strong with discipline, enforced by the database | One migration, one pool | **Chosen** |
 | Schema per tenant | Stronger by default | Migrations × tenants; catalog bloat; pool per search path | Rejected |
 | Database per tenant | Strongest | Not viable as a default at this scale | Possible later as a dedicated-deployment tier |
 
-Large or regulated customers who need physical isolation get a dedicated Hodor deployment, which the single-binary design makes cheap. See [ADR-0006](../adr/0006-tenant-isolation.md).
+Large or regulated customers who need physical isolation get a dedicated Hodor deployment, which the single-binary design makes cheap. See [Decision 0006](../decisions/0006-tenant-isolation.md).
 
 ## Tenant lifecycle
 
@@ -99,7 +99,7 @@ A suspended tenant keeps its data but refuses authentication, token issuance and
 Tenant isolation is part of the definition of done, so it is tested mechanically:
 
 - **Generic repository test**: for every repository, create a row under tenant A and assert that every read and write under tenant B fails as not found.
-- **RLS test**: connect as the application role without setting `app.tenant_id` and assert every tenant table returns zero rows and rejects inserts.
-- **Schema lint**: a test inspects the catalog and fails if a table lacks `tenant_id`, RLS or a composite foreign key, unless it is on the short platform allow-list.
+- **Row-level security test**: connect as the application role without setting `app.tenant_id` and assert every tenant table returns zero rows and rejects inserts.
+- **Schema lint**: a test inspects the catalog and fails if a table lacks `tenant_id`, row-level security or a composite foreign key, unless it is on the short platform allow-list.
 - **API fuzz**: replay each authenticated request of tenant A against tenant B's URL prefix and assert rejection.
 - **Token cross-use**: tokens, codes, sessions and refresh tokens issued by A are rejected at B.

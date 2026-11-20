@@ -1,4 +1,4 @@
-# ADR-0001: Modular monolith with clean architecture per bounded context
+# Decision 0001: Modular monolith with clean architecture per bounded context
 
 Status: Proposed
 

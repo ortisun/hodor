@@ -9,7 +9,7 @@
 //! where they accept OTLP. For VictoriaMetrics the metrics endpoint is
 //! `http://<host>:8428/opentelemetry/v1/metrics`.
 //!
-//! See `docs/adr/0015-observability-stack.md`.
+//! See `docs/decisions/0015-observability-stack.md`.
 
 use opentelemetry::KeyValue;
 use opentelemetry::trace::TracerProvider as _;

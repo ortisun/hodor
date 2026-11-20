@@ -1,6 +1,6 @@
 -- Transactional outbox. Events are inserted in the same transaction as the
 -- state change that produced them and delivered to handlers by the worker.
--- See docs/adr/0003-context-communication.md.
+-- See docs/decisions/0003-context-communication.md.
 
 CREATE TABLE platform.outbox (
     tenant_id       uuid        NOT NULL,

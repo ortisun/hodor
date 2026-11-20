@@ -29,7 +29,7 @@ $$;
 -- Puts a table under tenant isolation. Every migration that creates a
 -- tenant table calls this, so all tables carry the same policies.
 --
---   * RLS is enabled and forced, so it also applies to the table owner.
+--   * Row-level security is enabled and forced, so it also applies to the table owner.
 --   * Any role sees and writes only rows of the current tenant.
 --   * hodor_platform, used by cross-tenant jobs, sees all rows.
 CREATE FUNCTION platform.enable_tenant_rls(target regclass) RETURNS void

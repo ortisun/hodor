@@ -8,12 +8,12 @@
 | Property-based | Invariants over generated inputs | `proptest` | Every commit |
 | Architecture | Crate dependency rules, schema rules | Custom tests over `cargo metadata` and the Postgres catalog | Every commit |
 | Contract | Each adapter against its port's shared test suite | Generic test functions in the context crate, instantiated per adapter | Every commit |
-| Integration | Use cases against real PostgreSQL, Redis and OPA | `testcontainers` | Every pull request |
-| API / end-to-end | HTTP flows against a running server | `reqwest` harness; Playwright for the UIs | Every pull request |
+| Integration | Use cases against real PostgreSQL, Redis and Open Policy Agent | `testcontainers` | Every pull request |
+| API / end-to-end | HTTP flows against a running server | `reqwest` harness; Playwright for the user interfaces | Every pull request |
 | Protocol conformance | Standards suites | OpenID Conformance Suite, SAML test peers | Nightly and before release |
-| Interoperability | Third-party SDKs and IdPs | Containers of real clients and IdPs | Nightly |
+| Interoperability | Third-party software development kits and identity providers | Containers of real clients and identity providers | Nightly |
 | Security | Abuse cases from the threat model | Dedicated suite in `tests/security`, OWASP ZAP baseline | Every pull request (suite), nightly (ZAP) |
-| Fuzz | Parsers and decoders | `cargo fuzz` | Continuous, time-boxed in CI |
+| Fuzz | Parsers and decoders | `cargo fuzz` | Continuous, time-boxed in continuous integration |
 | Concurrency | Races on single-use artifacts | Parallel integration tests; `loom` for in-process primitives | Every pull request |
 | Load | Latency and throughput targets | `k6` | Weekly and before release |
 | Chaos | Dependency failure | Toxiproxy, pod kills in a test cluster | Before release |
@@ -36,61 +36,61 @@ Every repository and gateway port ships a function such as `run_user_repository_
 | Flow engine | Any valid flow definition terminates; a transaction cannot complete without satisfying every required step |
 | Key rotation | At every instant exactly one active signing key per algorithm; every unexpired token verifies against the published JWKS |
 | Session timeouts | No sequence of touches extends a session past its absolute expiry |
-| ABAC conditions | Evaluation is deterministic and bounded for any well-typed input |
+| Attribute-based access control conditions | Evaluation is deterministic and bounded for any well-typed input |
 
 ## Fuzz targets
 
-JWT and JWS parsing, JWK parsing, authorization request parsing, redirect URI comparison, SCIM filter parser, SAML XML parsing and signature reference resolution, claim-mapping expressions, CEL conditions, WebAuthn attestation and assertion decoding, flow definition validation, DPoP proofs.
+JWT and JWS parsing, JWK parsing, authorization request parsing, redirect URI comparison, SCIM filter parser, SAML XML parsing and signature reference resolution, claim-mapping expressions, Common Expression Language conditions, WebAuthn attestation and assertion decoding, flow definition validation, DPoP proofs.
 
 ## Scenarios the specification calls out
 
 | Scenario | Test |
 |---|---|
 | Authorization Code + PKCE | Happy path; missing, wrong and `plain` verifier; code replay revokes the grant; redirect URI near-misses; `iss` present in the response |
-| OIDC Discovery | Metadata matches behavior (every advertised endpoint, algorithm and grant works; nothing unadvertised does); conformance suite Config OP profile |
+| OpenID Connect Discovery | Metadata matches behavior (every advertised endpoint, algorithm and grant works; nothing unadvertised does); conformance suite Config OpenID Provider profile |
 | JWT validation | `none`, algorithm confusion, wrong `kid`, header-injected keys, expired, future `nbf`, wrong `iss` and `aud` |
 | Token rotation | Sequential rotation; concurrent refresh with the same token; retry-window behavior |
 | Refresh token reuse | Reuse revokes the family and emits `RefreshTokenReuseDetected` |
-| Social login | Against a mock OIDC provider and a mock OAuth2 provider: happy path, bad `state`, bad `nonce`, wrong `aud`, expired ID token, rotated JWKS |
+| Social login | Against a mock OpenID Connect provider and a mock OAuth2 provider: happy path, bad `state`, bad `nonce`, wrong `aud`, expired ID token, rotated JWKS |
 | Account linking | Collision does not auto-link; link needs both proofs; linked-elsewhere is rejected; the pre-hijacking case from the threat model |
-| OIDC provider integration | Nightly against real client libraries in several languages and, as RP, against Keycloak and Dex containers |
-| SAML interoperability | Against reference IdP and SP implementations; signature wrapping corpus; XXE corpus |
-| OPA decision evaluation | Real OPA container: allow, deny, undefined result, timeout, OPA down, stale revision; each failure policy |
+| OpenID Connect provider integration | Nightly against real client libraries in several languages and, as relying party, against Keycloak and Dex containers |
+| SAML interoperability | Against reference identity provider and service provider implementations; signature wrapping corpus; XXE corpus |
+| Open Policy Agent decision evaluation | Real Open Policy Agent container: allow, deny, undefined result, timeout, Open Policy Agent down, stale revision; each failure policy |
 | Rego policy versioning | Publish, activation confirmed by status, rollback, bundle signature failure |
 | Authorization bypass | Every Admin API route called with no token, wrong scope, wrong role and another tenant's token; cases generated from the OpenAPI document so new routes are covered automatically |
-| Cross-tenant access | Generic repository test, RLS test, schema lint, request replay across tenants, token cross-use ([multi-tenancy.md](multi-tenancy.md#validation)) |
+| Cross-tenant access | Generic repository test, row-level security test, schema lint, request replay across tenants, token cross-use ([multi-tenancy.md](multi-tenancy.md#validation)) |
 | Key rotation | Tokens signed before rotation verify during overlap and fail after retirement; a revoked key leaves the JWKS at once |
 
 ## Security tests
 
-Each threat in the [threat model](../security/threat-model.md) with a control in code has a test named after the threat ID (`o_02_code_replay_revokes_grant`). A CI check lists threat IDs that have no test.
+Each threat in the [threat model](../security/threat-model.md) with a control in code has a test named after the threat identifier (`threat_oauth_02_code_replay_revokes_grant`). A continuous integration check lists threat identifiers that have no test.
 
 Additional checks: a log-scan test runs the main flows with canary secrets and fails if a canary appears in logs, traces or audit records; timing tests compare the unknown-user and wrong-password paths statistically; security headers are asserted on every HTML route.
 
 ## Concurrency tests
 
-Single-use artifacts are redeemed from many tasks at once and exactly one must win: authorization codes, refresh tokens, PAR request URIs, verification tokens, recovery codes, invitations, federation state. Also covered: key rotation attempted by two workers, outbox dispatch by several workers, and optimistic-lock conflicts on aggregates.
+Single-use artifacts are redeemed from many tasks at once and exactly one must win: authorization codes, refresh tokens, pushed authorization requests request URIs, verification tokens, recovery codes, invitations, federation state. Also covered: key rotation attempted by two workers, outbox dispatch by several workers, and optimistic-lock conflicts on aggregates.
 
 ## Load and chaos
 
 | Load scenario | Target |
 |---|---|
-| `client_credentials` | NFR-PRF-01 |
-| Password login mix (80% success) | NFR-PRF-02 without runtime starvation |
+| `client_credentials` | Requirement-Performance-01 |
+| Password login mix (80% success) | Requirement-Performance-02 without runtime starvation |
 | Authorization code flow end to end | p99 under 150 ms excluding login |
-| Authorization evaluation, native and OPA | NFR-PRF-04, NFR-PRF-05 |
+| Authorization evaluation, native and Open Policy Agent | Requirement-Performance-04, Requirement-Performance-05 |
 | 10,000 tenants, skewed traffic | One tenant at its limit does not move another tenant's latency |
 
 | Chaos experiment | Expected behavior |
 |---|---|
 | PostgreSQL failover | Errors during failover, automatic recovery, no lost committed writes |
 | Redis down | Service continues with in-memory and Postgres fallbacks |
-| OPA down or slow | Breaker opens; fail-closed bindings return `Indeterminate`; admin API unaffected |
-| External IdP down | Local login unaffected; clear error for that provider |
+| Open Policy Agent down or slow | Breaker opens; fail-closed bindings return `Indeterminate`; admin API unaffected |
+| External identity provider down | Local login unaffected; clear error for that provider |
 | Node killed mid-flow | The user retries the step on another node; no stuck state |
 | Worker killed mid-job | Job runs again; handlers are idempotent |
 
-## CI pipeline
+## Continuous integration pipeline
 
 | Stage | Contents |
 |---|---|
@@ -98,7 +98,7 @@ Single-use artifacts are redeemed from many tasks at once and exactly one must w
 | Build | Workspace build with the SQLx offline cache; frontend builds |
 | Test | Unit, property, architecture, contract |
 | Integration | Testcontainers suites; API and security suites; Playwright |
-| Artifacts | Container images, SBOM, signatures (on main and tags) |
+| Artifacts | Container images, software bill of materials, signatures (on main and tags) |
 | Nightly | Conformance, interoperability, ZAP, extended fuzzing |
 | Pre-release | Load, chaos, and an upgrade test from the previous release with old and new binaries running together |
 

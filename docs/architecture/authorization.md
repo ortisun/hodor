@@ -1,4 +1,4 @@
-# Authorization engine and OPA
+# Authorization engine and Open Policy Agent
 
 `authorization` is an independent bounded context. It owns the authorization model, the engine contract, the policy lifecycle and the decision log. Engines are adapters: `authorization-native` and `authorization-opa` now, OpenFGA or others later.
 
@@ -6,24 +6,24 @@
 
 | Role | Who |
 |---|---|
-| PEP (enforcement) | The calling application, or Hodor's own admin API middleware |
-| PDP (decision) | `authorization` use cases + the selected engine |
-| PAP (administration) | Policy lifecycle use cases and the admin console |
-| PIP (information) | `SubjectAttributeSource` and `ResourceAttributeSource` ports |
+| Policy enforcement point (enforcement) | The calling application, or Hodor's own admin API middleware |
+| Policy decision point (decision) | `authorization` use cases + the selected engine |
+| Policy administration point (administration) | Policy lifecycle use cases and the admin console |
+| Policy information point (information) | `SubjectAttributeSource` and `ResourceAttributeSource` ports |
 
 ## Engine contract
 
 The trait in the specification is conceptual. The consolidated contract changes four things:
 
 1. **The tenant comes from the caller's credential**, never from the request body. `tenant_id` inside `subject` in the example payload would let a caller evaluate against another tenant.
-2. **Caller-asserted attributes are marked as asserted.** Roles and attributes sent by the PEP are kept apart from those Hodor resolves itself, and a policy can choose to trust only resolved ones.
+2. **Caller-asserted attributes are marked as asserted.** Roles and attributes sent by the policy enforcement point are kept apart from those Hodor resolves itself, and a policy can choose to trust only resolved ones.
 3. **Simulation and explanation are a separate capability**, because not every engine supports them.
 4. **Batch returns one result per request**, so a single failing item does not fail the batch.
 
 ```rust
 pub struct AuthorizationRequest {
     pub subject: Subject,            // id + kind; attributes resolved by the PDP
-    pub asserted: AssertedAttributes, // what the PEP claims; untrusted by default
+    pub asserted: AssertedAttributes, // what the caller claims; untrusted by default
     pub resource: Resource,          // type, id, attributes
     pub action: Action,
     pub context: EvaluationContext,  // environment, time, ip, request id
@@ -69,129 +69,129 @@ pub trait PolicySimulator: Send + Sync {
 }
 ```
 
-`async_trait` is used because engines are selected at run time behind `Arc<dyn AuthorizationEngine>`; native `async fn` in traits is not dyn-compatible. The default `evaluate_batch` runs `evaluate` concurrently with a bound; the OPA adapter overrides it to send one request.
+`async_trait` is used because engines are selected at run time behind `Arc<dyn AuthorizationEngine>`; native `async fn` in traits is not dyn-compatible. The default `evaluate_batch` runs `evaluate` concurrently with a bound; the Open Policy Agent adapter overrides it to send one request.
 
-`Effect::Indeterminate` means the engine could not decide (error, missing data, no applicable policy when the binding requires one). **A PEP must treat it as deny.** It exists so that logs and metrics distinguish "denied by policy" from "could not evaluate".
+`Effect::Indeterminate` means the engine could not decide (error, missing data, no applicable policy when the binding requires one). **A policy enforcement point must treat it as deny.** It exists so that logs and metrics distinguish "denied by policy" from "could not evaluate".
 
 ## Engine selection
 
 An `EngineBinding` maps a *namespace* (a resource server) in a tenant to one engine and its failure policy. One request is answered by exactly one engine. v1 does not combine decisions across engines: combining algorithms add a class of bugs and nobody has asked for them yet.
 
-Hodor's own administrative authorization (`hodor:admin` namespace) is always bound to the native engine. An OPA outage must never lock administrators out of the system that fixes OPA.
+Hodor's own administrative authorization (`hodor:admin` namespace) is always bound to the native engine. An Open Policy Agent outage must never lock administrators out of the system that fixes Open Policy Agent.
 
 ## Native engine
 
 Evaluation order, first decisive step wins:
 
-1. **Explicit deny** in an ACL entry or ABAC policy → `Deny`.
-2. **ACL**: an entry for this resource, subject (or one of its groups) and action → `Allow`.
-3. **RBAC**: expand the subject's role assignments (direct, through groups, through role hierarchy and composite roles) within the request scope (tenant, organization, application); a role holding the permission `resource_type:action` → candidate allow.
-4. **ABAC conditions** attached to the matching permission or to policies targeting this resource type; all must hold.
-5. **ReBAC**: if the resource type has a relation model, check `resource#relation@subject` by bounded graph traversal.
+1. **Explicit deny** in an access control list entry or attribute-based access control policy → `Deny`.
+2. **Access control list**: an entry for this resource, subject (or one of its groups) and action → `Allow`.
+3. **Role-based access control**: expand the subject's role assignments (direct, through groups, through role hierarchy and composite roles) within the request scope (tenant, organization, application); a role holding the permission `resource_type:action` → candidate allow.
+4. **Attribute-based access control conditions** attached to the matching permission or to policies targeting this resource type; all must hold.
+5. **Relationship-based access control**: if the resource type has a relation model, check `resource#relation@subject` by bounded graph traversal.
 6. No rule matched → `Deny` with reason `no_matching_policy`.
 
 | Model | Implementation notes |
 |---|---|
-| RBAC | The role closure per (tenant, principal, scope) is cached and invalidated by `RoleAssigned`/`RoleRevoked`/group events |
-| ACL | Indexed by `(tenant, resource_type, resource_id)` |
-| ABAC | Conditions in CEL, compiled at publish time; no I/O, bounded cost. The interpreter crate is chosen by spike in Phase 5 |
-| ReBAC | Zanzibar-style tuples; depth and fan-out limits; no consistency tokens in v1 |
+| Role-based access control | The role closure per (tenant, principal, scope) is cached and invalidated by `RoleAssigned`/`RoleRevoked`/group events |
+| Access control list | Indexed by `(tenant, resource_type, resource_id)` |
+| Attribute-based access control | Conditions in Common Expression Language, compiled at publish time; no I/O, bounded cost. The interpreter crate is chosen by spike in Phase 5 |
+| Relationship-based access control | Zanzibar-style tuples; depth and fan-out limits; no consistency tokens in v1 |
 
-Native ReBAC is P2. A full Zanzibar implementation is a product on its own; if the need outgrows bounded checks, the path is `OpenFgaAuthorizationAdapter`, not a larger native engine.
+Native relationship-based access control is optional. A full Zanzibar implementation is a product on its own; if the need outgrows bounded checks, the path is `OpenFgaAuthorizationAdapter`, not a larger native engine.
 
 ## Evaluation sequence
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant PEP as Application (PEP)
-    participant H as hodor-server
-    participant AZ as authorization
-    participant PIP as SubjectAttributeSource
-    participant ENG as Engine (native or OPA adapter)
-    participant OPA as OPA
-    participant DB as PostgreSQL
+    participant Application as Application (policy enforcement point)
+    participant Server as hodor-server
+    participant Authorization as authorization
+    participant AttributeSource as SubjectAttributeSource
+    participant Engine as Engine (native or Open Policy Agent adapter)
+    participant PolicyAgent as Open Policy Agent
+    participant Database as PostgreSQL
 
-    PEP->>H: POST /t/acme/api/v1/authorization/evaluate + access token
-    H->>H: authenticate caller, require scope authz:evaluate, derive TenantContext
-    H->>AZ: Evaluate(tenant, request)
-    AZ->>AZ: validate request, resolve EngineBinding for the namespace
-    AZ->>PIP: resolve subject roles, groups, attributes (cached)
+    Application->>Server: POST /t/acme/api/v1/authorization/evaluate + access token
+    Server->>Server: authenticate caller, require scope authz:evaluate, derive TenantContext
+    Server->>Authorization: Evaluate(tenant, request)
+    Authorization->>Authorization: validate request, resolve EngineBinding for the namespace
+    Authorization->>AttributeSource: resolve subject roles, groups, attributes (cached)
     alt native engine
-        AZ->>ENG: evaluate
-        ENG->>DB: role closure, ACL, tuples (cached)
-    else OPA engine
-        AZ->>ENG: evaluate
-        ENG->>ENG: circuit breaker closed?
-        ENG->>OPA: POST /v1/data/{tenant package}/decision {input}, timeout 200 ms
-        OPA-->>ENG: {result, decision_id}
-        ENG->>ENG: check bundle revision matches the published one
+        Authorization->>Engine: evaluate
+        Engine->>Database: role closure, access control list, tuples (cached)
+    else Open Policy Agent engine
+        Authorization->>Engine: evaluate
+        Engine->>Engine: circuit breaker closed?
+        Engine->>PolicyAgent: POST /v1/data/{tenant package}/decision {input}, timeout 200 ms
+        PolicyAgent-->>Engine: {result, decision_id}
+        Engine->>Engine: check bundle revision matches the published one
     end
     alt engine error, timeout or open circuit
-        ENG-->>AZ: error
-        AZ->>AZ: apply failure policy: fail-closed gives Indeterminate
+        Engine-->>Authorization: error
+        Authorization->>Authorization: apply failure policy: fail-closed gives Indeterminate
     end
-    AZ->>AZ: build decision, filter explanation by caller privilege
-    AZ->>DB: outbox DecisionRecorded (sampled or full, per tenant)
-    H-->>PEP: 200 {decision, decision_id, engine, policy_version, reason}
+    Authorization->>Authorization: build decision, filter explanation by caller privilege
+    Authorization->>Database: outbox DecisionRecorded (sampled or full, per tenant)
+    Server-->>Application: 200 {decision, decision_id, engine, policy_version, reason}
 ```
 
-## OPA integration
+## Open Policy Agent integration
 
 ### Mechanisms used
 
-Only OPA's official integration surfaces are used. Hodor does not embed or reimplement Rego.
+Only Open Policy Agent's official integration surfaces are used. Hodor does not embed or reimplement Rego.
 
 | Purpose | Direction | Mechanism |
 |---|---|---|
-| Decision | Hodor → OPA | Data API: `POST /v1/data/<path>` with `input` |
-| Policy and data distribution | OPA → Hodor | Bundle service: OPA polls `GET /opa/bundles/{name}` with `If-None-Match`; Hodor serves a signed `.tar.gz` |
-| Decision logs | OPA → Hodor | Decision log service: OPA uploads gzip JSON batches to `POST /opa/logs` |
-| Status | OPA → Hodor | Status service: OPA reports the active bundle revision and errors to `POST /opa/status` |
-| Health | Hodor → OPA | `GET /health?bundles` |
-| Validation and tests | Worker | `opa check`, `opa test` and `opa build` run in a sandboxed job, or a compile request to a staging OPA; chosen by spike |
+| Decision | Hodor → Open Policy Agent | Data API: `POST /v1/data/<path>` with `input` |
+| Policy and data distribution | Open Policy Agent → Hodor | Bundle service: Open Policy Agent polls `GET /opa/bundles/{name}` with `If-None-Match`; Hodor serves a signed `.tar.gz` |
+| Decision logs | Open Policy Agent → Hodor | Decision log service: Open Policy Agent uploads gzip JSON batches to `POST /opa/logs` |
+| Status | Open Policy Agent → Hodor | Status service: Open Policy Agent reports the active bundle revision and errors to `POST /opa/status` |
+| Health | Hodor → Open Policy Agent | `GET /health?bundles` |
+| Validation and tests | Worker | `opa check`, `opa test` and `opa build` run in a sandboxed job, or a compile request to a staging Open Policy Agent; chosen by spike |
 
 ```mermaid
 flowchart LR
     subgraph hodor["Hodor"]
-        pap["Policy lifecycle<br/>authorization"]
+        policyLifecycle["Policy lifecycle<br/>authorization"]
         builder["Bundle builder<br/>hodor-worker"]
-        bsvc["OPA service API<br/>bundles, logs, status"]
+        serviceApi["Open Policy Agent service API<br/>bundles, logs, status"]
         adapter["OpaAuthorizationAdapter<br/>timeout, retry, breaker"]
         store[("policy_version, policy_bundle,<br/>decision_log, opa_instance_status")]
     end
-    opa["OPA instance"]
+    policyAgent["Open Policy Agent instance"]
 
-    pap --> store
+    policyLifecycle --> store
     store --> builder
     builder -->|"signed bundle + revision"| store
-    opa -->|"poll bundle (ETag)"| bsvc
-    opa -->|"decision logs"| bsvc
-    opa -->|"status"| bsvc
-    bsvc --> store
-    adapter -->|"POST /v1/data"| opa
+    policyAgent -->|"poll bundle (ETag)"| serviceApi
+    policyAgent -->|"decision logs"| serviceApi
+    policyAgent -->|"status"| serviceApi
+    serviceApi --> store
+    adapter -->|"POST /v1/data"| policyAgent
 ```
 
 ### Deployment modes
 
 | Mode | Topology | When |
 |---|---|---|
-| Sidecar | One OPA per `hodor-server` pod, localhost | Default; lowest latency; platform-authored policy |
-| Remote | OPA as its own service, mTLS | OPA shared with other systems, or scaled apart |
-| Cluster | Several OPA instances behind a service; all pull the same bundle | High volume; Hodor tracks the revision each instance reports |
+| Sidecar | One Open Policy Agent per `hodor-server` pod, localhost | Default; lowest latency; platform-authored policy |
+| Remote | Open Policy Agent as its own service, mTLS | Open Policy Agent shared with other systems, or scaled apart |
+| Cluster | Several Open Policy Agent instances behind a service; all pull the same bundle | High volume; Hodor tracks the revision each instance reports |
 
-The mode is set per installation; a tenant can override it by pointing its `EngineBinding` at a registered OPA endpoint.
+The mode is set per installation; a tenant can override it by pointing its `EngineBinding` at a registered Open Policy Agent endpoint.
 
-### Tenant isolation in OPA
+### Tenant isolation in Open Policy Agent
 
-Rego can read any document under `data`. Namespacing packages by tenant is therefore *not* isolation when tenants write their own Rego: a policy in one tenant's package could read another tenant's data in the same OPA. The rules:
+Rego can read any document under `data`. Namespacing packages by tenant is therefore *not* isolation when tenants write their own Rego: a policy in one tenant's package could read another tenant's data in the same Open Policy Agent. The rules:
 
-- **Platform-authored policy** (written by the operator, parameterized by tenant data) may run in a shared OPA. Bundles are scoped by `roots` to `tenants/<id>`, and the decision path is fixed by Hodor, never taken from the request.
-- **Tenant-authored Rego** runs only in an OPA instance dedicated to that tenant, which pulls only that tenant's bundle with a per-instance credential.
-- OPA is started with a **capabilities file** that removes `http.send`, `net.lookup_ip_addr`, `opa.runtime` and other built-ins with side effects or information leaks. `opa check --capabilities` enforces the same list at validation time.
-- OPA's own API is authenticated (bearer token or mTLS) and reachable only from Hodor.
+- **Platform-authored policy** (written by the operator, parameterized by tenant data) may run in a shared Open Policy Agent. Bundles are scoped by `roots` to `tenants/<id>`, and the decision path is fixed by Hodor, never taken from the request.
+- **Tenant-authored Rego** runs only in an Open Policy Agent instance dedicated to that tenant, which pulls only that tenant's bundle with a per-instance credential.
+- Open Policy Agent is started with a **capabilities file** that removes `http.send`, `net.lookup_ip_addr`, `opa.runtime` and other built-ins with side effects or information leaks. `opa check --capabilities` enforces the same list at validation time.
+- Open Policy Agent's own API is authenticated (bearer token or mTLS) and reachable only from Hodor.
 
-See [ADR-0010](../adr/0010-opa-integration.md).
+See [Decision 0010](../decisions/0010-opa-integration.md).
 
 ### Failure handling
 
@@ -202,10 +202,10 @@ See [ADR-0010](../adr/0010-opa-integration.md).
 | Circuit breaker | Opens after 5 consecutive failures or 50% failures in 10 s; half-open probe after 5 s |
 | Health check | Every 5 s; an unhealthy instance leaves rotation |
 | Revision tracking | A decision carries the bundle revision; a decision from an instance behind the published revision by more than the allowed lag is `Indeterminate` |
-| Decision cache | Off by default. Enabled per binding only when the policy is declared deterministic over its input (no time, no external data); key is a hash of tenant, revision and input; TTL at most 60 s; flushed on publish |
+| Decision cache | Off by default. Enabled per binding only when the policy is declared deterministic over its input (no time, no external data); key is a hash of tenant, revision and input; time to live at most 60 s; flushed on publish |
 | Failure policy | Per binding **and** per action: `fail_closed` (default) or `fail_open`. `fail_open` must be set explicitly, is rejected for namespaces flagged sensitive, and produces `Allow` with reason `fail_open` and an audit event |
 
-A failure in OPA never produces an `Allow` unless an administrator configured `fail_open` for that specific action.
+A failure in Open Policy Agent never produces an `Allow` unless an administrator configured `fail_open` for that specific action.
 
 ## Rego policy lifecycle
 
@@ -232,7 +232,7 @@ stateDiagram-v2
 | 4. Test | Run `*_test.rego` in the sandboxed job | Test report |
 | 5. Simulate | Evaluate a request, or replay recorded decisions, against the draft and diff against the active revision | Simulation result |
 | 6. Publish | Freeze the version (immutable, checksummed), record author and approver | `policy_version` (published) |
-| 7. Distribute | Worker builds the bundle, sets the revision in `.manifest`, signs it; OPA picks it up on the next poll | `policy_bundle` |
+| 7. Distribute | Worker builds the bundle, sets the revision in `.manifest`, signs it; Open Policy Agent picks it up on the next poll | `policy_bundle` |
 | 8. Observe | Status reports confirm activation; decision logs reference the revision | `opa_instance_status`, `decision_log` |
 | 9. Roll back | Publish a previous version as a new revision; history is never rewritten | New `policy_bundle` |
 
@@ -250,4 +250,4 @@ The response contains `decision`, `decision_id`, `evaluated_at`, `engine`, `poli
 
 ## Decision log
 
-Decisions are written to `decision_log` (partitioned by day) from both engines in one format. Per tenant: full, sampled or deny-only logging; input attributes can be masked by path before storage (applied in Hodor for native decisions and through OPA's mask policy for OPA decisions). Retention is per tenant.
+Decisions are written to `decision_log` (partitioned by day) from both engines in one format. Per tenant: full, sampled or deny-only logging; input attributes can be masked by path before storage (applied in Hodor for native decisions and through Open Policy Agent's mask policy for Open Policy Agent decisions). Retention is per tenant.
