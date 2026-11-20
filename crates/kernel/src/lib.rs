@@ -19,7 +19,7 @@ pub use error::{DomainError, ErrorKind};
 pub use event::{Actor, Caller, DomainEvent, EventEnvelope, EventHandler, EventMetadata};
 pub use id::{CorrelationId, EventId, ParseIdError, TenantId, UserId};
 pub use page::{Cursor, Page, PageRequest};
-pub use random::RandomSource;
+pub use random::{Digest, RandomSource};
 pub use secret::Secret;
 pub use tenant::TenantContext;
 pub use uow::{UnitOfWork, UnitOfWorkFactory};

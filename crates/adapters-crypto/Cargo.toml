@@ -13,6 +13,7 @@ async-trait.workspace = true
 getrandom.workspace = true
 hodor-credential.workspace = true
 hodor-kernel.workspace = true
+sha2.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
