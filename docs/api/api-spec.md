@@ -65,6 +65,8 @@ Advertised in metadata and enforced: `response_types_supported: ["code"]`, `code
 
 Used only by the hosted login user interface. It exposes the flow engine as a step machine, so the user interface never encodes flow logic.
 
+The part that is built, signing in with an identifier and a password, is specified in full in [the interaction interface](interaction-api.md). The table below is the outline of everything this interface will cover.
+
 | Method and path | Purpose |
 |---|---|
 | `GET /interaction/{id}` | Current state: step to render, options, branding, locale, client display data |

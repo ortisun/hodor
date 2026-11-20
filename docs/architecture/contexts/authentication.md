@@ -60,7 +60,8 @@ Each execution of a flow is a **transaction**: the server-side record of how far
 
 | Field | Meaning |
 |---|---|
-| Identifier | Refers to the transaction; unguessable, and useless once the transaction ends |
+| Identifier | Refers to the transaction |
+| Binding | The hash of a secret given only to the browser that started the sign-in. Every later operation must present the secret; without it the transaction is treated as if it did not exist |
 | Flow name and version | What is being executed |
 | Current step | The next step to be satisfied |
 | Candidate | Who is trying to sign in, once the identifier step has run. Empty when the identifier belongs to nobody, which the person signing in must not be able to tell |
@@ -90,6 +91,7 @@ Rules:
 - A transaction expires ten minutes after it starts, whatever its progress.
 - A transaction completes exactly once. Completion is what starts the session; if two requests try to complete the same transaction, one wins and the other is refused.
 - A completed, failed or expired transaction accepts nothing.
+- A transaction can be continued only by whoever holds its secret. The secret has 256 bits of randomness, is returned once when the sign-in starts, and is stored only as its SHA-256 hash. How it reaches the browser is described in [the interaction interface](../../api/interaction-api.md#how-a-sign-in-is-tied-to-one-browser).
 
 ## What the person signing in can and cannot learn
 
@@ -145,7 +147,7 @@ Marking the transaction completed and starting the session are two separate writ
 
 | Use case | What it does |
 |---|---|
-| Start sign-in | Creates a transaction for the tenant's flow and returns its identifier and the first step |
+| Start sign-in | Creates a transaction for the tenant's flow and returns its identifier, its secret and the first step |
 | Submit step | Runs the current step's authenticator with what was submitted. Returns the next step, a rejection, or completion with a session token |
 | Describe sign-in | Returns the current step of a transaction, so that a page can be shown again after a reload |
 | Cancel sign-in | Ends a transaction |
@@ -177,6 +179,7 @@ This context calls the `identity`, `credential`, `session` and `tenant` contexts
 | `status` | `text` | `in_progress`, `completed`, `failed`, `cancelled` |
 | `started_at`, `expires_at` | `timestamptz` | |
 | `client_address`, `client_description` | `text` | |
+| `binding` | `bytea` | SHA-256 of the secret held by the browser |
 | `version` | `integer` | A stale update is rejected, which is what makes completion happen once |
 
 ### `authentication.attempt_counter`
@@ -197,7 +200,7 @@ Primary key: `tenant_id`, `subject_kind`, `subject_key`. Both are tenant tables 
 
 | Item | Planned in |
 |---|---|
-| The pages and the HTTP interface of a sign-in | Issue-24 |
+| The pages of a sign-in | Issue-31 |
 | Registration, email verification, password recovery | Issue-25 |
 | Signing out | Issue-26 |
 | Editing flows; alternative, conditional and optional steps; simulation | Phase 4 |

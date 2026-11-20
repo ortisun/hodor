@@ -70,7 +70,8 @@ Specified in [the credential context](../architecture/contexts/credential.md).
 | Issue-21 Authentication flow engine | Done | `hodor-authentication` crate: flows as data with the built-in flow, validation of a flow, the transaction that records a sign-in in progress, the `Authenticator` extension point and the engine. No real authenticators or storage yet. Specified in [the authentication context](../architecture/contexts/authentication.md) |
 | Issue-22 Authenticators and lockout | Done | The identifier and password authenticators over the identity, credential and tenant contexts; the attempt guard with growing lockouts on identifiers and addresses; `authentication.attempt_counter` under row-level security |
 | Issue-23 Completing a sign-in | Done | `AuthenticationService`: start, submit a step, describe, cancel; a completed sign-in starts a session exactly once; `authentication.transaction` under row-level security. A test signs a person in with nothing faked: PostgreSQL, Argon2id, SHA-256 and the operating system's random source |
-| Issue-24 to Issue-26 | Not started | — |
+| Issue-24 Interaction interface | In progress | Specified in [the interaction interface](../api/interaction-api.md) |
+| Issue-25, Issue-26 | Not started | — |
 
 ### Known gaps in what is done
 
@@ -101,6 +102,14 @@ Specified in [the design system](../design/design-system.md) and [the control pl
 | Fonts | Not done | IBM Plex is not vendored yet; the showcase loads it from Google Fonts, which the shipped frontends must not do |
 | React components and action catalog | Not started | Epic 12 |
 | Contrast checks in a token build | Not started | Planned with the React components; today contrast was checked by eye in both themes, not measured |
+
+## Defects found after merging
+
+Defects that reached `develop` and were fixed later, kept here so that the record of what went wrong is not lost.
+
+| Defect | Introduced | Found by | Fixed |
+|---|---|---|---|
+| Locking an attempt counter could fail with an internal error when a successful sign-in cleared the same counter at the same moment. The store created the row and then locked it in two statements, and the clear could delete it in between | Issue-22 | A full-suite run, in which the test that submits one sign-in eight times at once failed intermittently | Issue-24: one statement now creates, locks and returns the row; a test runs both operations against each other |
 
 ## Where the implementation departs from the design
 

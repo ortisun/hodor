@@ -37,36 +37,31 @@ impl AttemptStore for PgAttemptStore {
     ) -> Result<AttemptCounter, DomainError> {
         let tenant = uow.tenant().tenant_id();
         let connection = connection(uow)?;
-        // Make sure the row exists, then lock it. A second transaction
-        // asking for the same subject waits here until this one ends.
-        sqlx::query(
-            "INSERT INTO authentication.attempt_counter
-                 (tenant_id, subject_kind, subject_key, failures, window_started_at, lockouts)
-             VALUES ($1, $2, $3, 0, $4, 0)
-             ON CONFLICT (tenant_id, subject_kind, subject_key) DO NOTHING",
-        )
-        .bind(tenant.as_uuid())
-        .bind(subject.kind())
-        .bind(subject.key().as_slice())
-        .bind(now)
-        .execute(&mut *connection)
-        .await
-        .map_err(|e| database_error(&e))?;
-
+        // One statement creates the row if it is missing, locks it, and
+        // returns it. The update that changes nothing is what takes the
+        // lock when the row already exists; a second transaction asking
+        // for the same subject waits here until this one ends.
+        //
+        // Doing this in two statements, an insert and then a locking
+        // select, leaves a gap: a concurrent clear can delete the row in
+        // between, and the select then finds nothing.
         let (failures, window_started_at, lockouts, locked_until): (
             i32,
             Timestamp,
             i32,
             Option<Timestamp>,
         ) = sqlx::query_as(
-            "SELECT failures, window_started_at, lockouts, locked_until
-                 FROM authentication.attempt_counter
-                 WHERE tenant_id = $1 AND subject_kind = $2 AND subject_key = $3
-                 FOR UPDATE",
+            "INSERT INTO authentication.attempt_counter AS counter
+                     (tenant_id, subject_kind, subject_key, failures, window_started_at, lockouts)
+                 VALUES ($1, $2, $3, 0, $4, 0)
+                 ON CONFLICT (tenant_id, subject_kind, subject_key)
+                 DO UPDATE SET failures = counter.failures
+                 RETURNING failures, window_started_at, lockouts, locked_until",
         )
         .bind(tenant.as_uuid())
         .bind(subject.kind())
         .bind(subject.key().as_slice())
+        .bind(now)
         .fetch_one(&mut *connection)
         .await
         .map_err(|e| database_error(&e))?;
@@ -144,6 +139,7 @@ type TransactionRow = (
     Timestamp,
     Option<String>,
     Option<String>,
+    Vec<u8>,
     i32,
 );
 
@@ -167,8 +163,11 @@ fn to_transaction(row: TransactionRow) -> Result<AuthTransaction, DomainError> {
         expires_at,
         address,
         description,
+        binding,
         version,
     ) = row;
+    let binding =
+        <[u8; 32]>::try_from(binding).map_err(|_| corrupted("binding is not 32 bytes"))?;
     let identifier_key = identifier_key
         .map(|key| {
             <[u8; 32]>::try_from(key).map_err(|_| corrupted("identifier key is not 32 bytes"))
@@ -191,6 +190,7 @@ fn to_transaction(row: TransactionRow) -> Result<AuthTransaction, DomainError> {
             address,
             description,
         },
+        binding,
         version: unsigned(version, "negative version")?,
     }))
 }
@@ -208,8 +208,8 @@ impl TransactionStore for PgTransactionStore {
             "INSERT INTO authentication.transaction
                  (tenant_id, id, flow_name, flow_version, current_step, identified, candidate_user_id,
                   identifier_key, satisfied_methods, rejections, status, started_at, expires_at,
-                  client_address, client_description, version)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
+                  client_address, client_description, binding, version)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)",
         )
         .bind(tenant.as_uuid())
         .bind(state.id.as_uuid())
@@ -226,6 +226,7 @@ impl TransactionStore for PgTransactionStore {
         .bind(state.expires_at)
         .bind(&state.client.address)
         .bind(&state.client.description)
+        .bind(state.binding.as_slice())
         .bind(stored(state.version)?)
         .execute(connection(uow)?)
         .await
@@ -242,7 +243,7 @@ impl TransactionStore for PgTransactionStore {
         let row: Option<TransactionRow> = sqlx::query_as(
             "SELECT id, flow_name, flow_version, current_step, identified, candidate_user_id,
                     identifier_key, satisfied_methods, rejections, status, started_at, expires_at,
-                    client_address, client_description, version
+                    client_address, client_description, binding, version
              FROM authentication.transaction
              WHERE tenant_id = $1 AND id = $2",
         )

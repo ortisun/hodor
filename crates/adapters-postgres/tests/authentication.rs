@@ -149,3 +149,41 @@ async fn nothing_stored_reveals_the_identifier_or_the_address() {
     .expect("dump");
     assert!(!stored.contains("203.0.113.77"), "{stored}");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn admitting_and_clearing_at_the_same_time_never_fails() {
+    let database = TestDatabase::start().await;
+    let guard = guard(&database);
+    let tenant = TenantContext::assume(TenantId::generate());
+    // Generous rules, so that only the race between the two operations is
+    // under test and no lockout gets in the way.
+    let rules = LockoutRules {
+        max_failures: 100_000,
+        ..RULES
+    };
+
+    // Attempts for one identifier are admitted while successful sign-ins
+    // for the same identifier keep clearing its counter.
+    let tasks: Vec<_> = (0..8)
+        .map(|worker| {
+            let (guard, tenant) = (guard.clone(), tenant.clone());
+            tokio::spawn(async move {
+                for _ in 0..40 {
+                    if worker % 2 == 0 {
+                        guard
+                            .admit(&tenant, &rules, [3; 32], None, Caller::system())
+                            .await?;
+                    } else {
+                        guard.succeeded(&tenant, [3; 32]).await?;
+                    }
+                }
+                Ok::<(), hodor_kernel::DomainError>(())
+            })
+        })
+        .collect();
+    for task in tasks {
+        task.await
+            .expect("task")
+            .expect("neither operation may fail because of the other");
+    }
+}

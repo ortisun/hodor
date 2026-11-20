@@ -289,7 +289,7 @@ pub async fn run_transaction_contract(ports: TransactionPorts<'_>) {
         address: Some("203.0.113.9".to_owned()),
         description: Some("Example Browser 1.0".to_owned()),
     };
-    let transaction = AuthTransaction::start(&flow, client, MOMENT);
+    let transaction = AuthTransaction::start(&flow, client, [9; 32], MOMENT);
 
     // A stored transaction is loaded unchanged, within its tenant only.
     let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
@@ -323,6 +323,7 @@ pub async fn run_transaction_contract(ports: TransactionPorts<'_>) {
     assert_eq!(reloaded.snapshot().identifier_key, Some([5; 32]));
     assert_eq!(reloaded.snapshot().rejections, 1);
     assert!(reloaded.snapshot().identified);
+    assert!(reloaded.is_bound_to(&[9; 32]), "the binding is stored");
 
     // Of two requests working from the same version, the second is
     // refused. This is what makes completion happen once.
