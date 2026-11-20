@@ -16,7 +16,8 @@ pub mod testing;
 pub mod api {
     pub use crate::application::authenticators::{IdentifierAuthenticator, PasswordAuthenticator};
     pub use crate::application::guard::AttemptGuard;
-    pub use crate::application::ports::AttemptStore;
+    pub use crate::application::ports::{AttemptStore, TransactionStore};
+    pub use crate::application::service::{AuthenticationService, SignIn};
     pub use crate::domain::attempt::{AttemptCounter, AttemptSubject, LockoutRules};
     pub use crate::domain::authenticator::{
         Authenticator, AuthenticatorTraits, Factor, StepInput, StepOutcome,

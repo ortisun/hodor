@@ -12,7 +12,7 @@ Last updated: 2026-11-20.
 | B — Tenancy | 3 | 3 |
 | C — Identity | 3 | 3 |
 | D — Password credential | 3 | 3 |
-| E — Authentication and session | 3 | 7 |
+| E — Authentication and session | 4 | 7 |
 | F — Audit, notification, admin | 0 | 4 |
 | G — Hosted user interface and acceptance | 0 | 3 |
 
@@ -69,7 +69,8 @@ Specified in [the credential context](../architecture/contexts/credential.md).
 | Issue-20 Session | Done | `hodor-session` crate: sessions with tokens stored only as hashes, idle and absolute expiry, revocation, token replacement; `session.session` under row-level security; one contract suite passed by the in-memory store and by PostgreSQL. SHA-256 behind a `Digest` port. Specified in [the session context](../architecture/contexts/session.md) |
 | Issue-21 Authentication flow engine | Done | `hodor-authentication` crate: flows as data with the built-in flow, validation of a flow, the transaction that records a sign-in in progress, the `Authenticator` extension point and the engine. No real authenticators or storage yet. Specified in [the authentication context](../architecture/contexts/authentication.md) |
 | Issue-22 Authenticators and lockout | Done | The identifier and password authenticators over the identity, credential and tenant contexts; the attempt guard with growing lockouts on identifiers and addresses; `authentication.attempt_counter` under row-level security |
-| Issue-23 to Issue-26 | Not started | — |
+| Issue-23 Completing a sign-in | Done | `AuthenticationService`: start, submit a step, describe, cancel; a completed sign-in starts a session exactly once; `authentication.transaction` under row-level security. A test signs a person in with nothing faked: PostgreSQL, Argon2id, SHA-256 and the operating system's random source |
+| Issue-24 to Issue-26 | Not started | — |
 
 ### Known gaps in what is done
 
@@ -81,8 +82,8 @@ These are recorded here so they are not forgotten; each is picked up by the issu
 | Tenants have no routes of their own yet: an existing tenant answers `404` with `route.not_found` | Issue-24, the interaction API |
 | The system tenant is not created automatically by the development stack | Issue-30, with the bootstrap administrator |
 | The Argon2id hasher was not checked against a hash produced by another implementation; it relies on the library's own conformance | When a second implementation is at hand, for example password import |
-| The credential use cases run with a real database and with the real hasher, but not yet with both at once | Issue-22, when sign-in wires them together |
 | Rows of expired and revoked sessions are never removed | A cleanup job, later in Phase 1 |
+| Sign-in works through the use cases only: there is no HTTP interface, no cookie and no page, and the binaries do not wire it | Issue-24 |
 | No event handlers are registered | Issue-27 (email), Issue-28 (audit) |
 | Traces are exported but no test receives them | First issue that adds a traced database call |
 | SQL is checked at run time, not at compile time (`sqlx::query!` with the offline cache is not set up). Every query is exercised by an integration test instead | A dedicated issue, not yet scheduled |

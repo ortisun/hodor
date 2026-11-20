@@ -3,3 +3,4 @@
 pub(crate) mod authenticators;
 pub(crate) mod guard;
 pub(crate) mod ports;
+pub(crate) mod service;

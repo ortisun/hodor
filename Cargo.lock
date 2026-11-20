@@ -1098,6 +1098,7 @@ name = "hodor-adapters-postgres"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "hodor-adapters-crypto",
  "hodor-adapters-postgres",
  "hodor-authentication",
  "hodor-credential",
