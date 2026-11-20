@@ -12,7 +12,7 @@ mod outbox;
 pub mod testing;
 mod uow;
 
-pub use database::{Database, TenantTransaction};
+pub use database::{Database, TenantTransaction, connect_pool, ping_pool};
 pub use migrate::migrate;
 pub use outbox::{DispatchReport, OutboxDispatcher};
 pub use sqlx::migrate::MigrateError;

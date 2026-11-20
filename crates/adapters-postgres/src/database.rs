@@ -4,6 +4,33 @@ use hodor_kernel::{Secret, TenantContext, TenantId};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgConnection, PgPool, Postgres, Transaction};
 
+/// Opens a plain connection pool.
+///
+/// For connections that are not tenant-scoped: the platform role of the
+/// worker. Tenant data is reached through [`Database`] instead.
+///
+/// # Errors
+///
+/// Returns an error if the URL is invalid or the database is unreachable.
+pub async fn connect_pool(
+    url: &Secret<String>,
+    max_connections: u32,
+) -> Result<PgPool, sqlx::Error> {
+    PgPoolOptions::new()
+        .max_connections(max_connections)
+        .connect(url.expose())
+        .await
+}
+
+/// Checks that a pool's database answers. For readiness probes.
+///
+/// # Errors
+///
+/// Returns an error if no connection can be acquired or the query fails.
+pub async fn ping_pool(pool: &PgPool) -> Result<(), sqlx::Error> {
+    sqlx::query("SELECT 1").execute(pool).await.map(|_| ())
+}
+
 /// Handle to the database as seen by the application role.
 #[derive(Debug, Clone)]
 pub struct Database {
@@ -17,11 +44,9 @@ impl Database {
     ///
     /// Returns an error if the URL is invalid or the database is unreachable.
     pub async fn connect(url: &Secret<String>, max_connections: u32) -> Result<Self, sqlx::Error> {
-        let pool = PgPoolOptions::new()
-            .max_connections(max_connections)
-            .connect(url.expose())
-            .await?;
-        Ok(Self { pool })
+        Ok(Self {
+            pool: connect_pool(url, max_connections).await?,
+        })
     }
 
     /// Wraps an existing pool.
