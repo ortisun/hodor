@@ -67,7 +67,8 @@ Specified in [the credential context](../architecture/contexts/credential.md).
 | Issue | Status | What exists |
 |---|---|---|
 | Issue-20 Session | Done | `hodor-session` crate: sessions with tokens stored only as hashes, idle and absolute expiry, revocation, token replacement; `session.session` under row-level security; one contract suite passed by the in-memory store and by PostgreSQL. SHA-256 behind a `Digest` port. Specified in [the session context](../architecture/contexts/session.md) |
-| Issue-21 to Issue-26 | Not started | — |
+| Issue-21 Authentication flow engine | In progress | Specified in [the authentication context](../architecture/contexts/authentication.md) |
+| Issue-22 to Issue-26 | Not started | — |
 
 ### Known gaps in what is done
 
