@@ -980,8 +980,11 @@ dependencies = [
 name = "holdor-adapters-postgres"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "holdor-adapters-postgres",
  "holdor-kernel",
+ "serde",
+ "serde_json",
  "sqlx",
  "testcontainers",
  "testcontainers-modules",
@@ -1008,6 +1011,7 @@ dependencies = [
 name = "holdor-kernel"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "serde",
  "serde_json",
  "thiserror",

@@ -11,6 +11,30 @@ use testcontainers_modules::postgres::Postgres;
 const IMAGE_TAG: &str = "17-alpine";
 const APP_LOGIN: &str = "holdor_app_login";
 const APP_PASSWORD: &str = "app";
+const PLATFORM_LOGIN: &str = "holdor_platform_login";
+const PLATFORM_PASSWORD: &str = "platform";
+
+/// Docker struggles when many containers start at the same instant, which is
+/// what a parallel test run does. Starts are limited and retried.
+static STARTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+const START_ATTEMPTS: u32 = 3;
+
+async fn start_container() -> ContainerAsync<Postgres> {
+    let _permit = STARTS.acquire().await.expect("semaphore is never closed");
+    let mut attempt = 1;
+    loop {
+        match Postgres::default().with_tag(IMAGE_TAG).start().await {
+            Ok(container) => return container,
+            Err(error) if attempt < START_ATTEMPTS => {
+                attempt += 1;
+                drop(error);
+            }
+            Err(error) => {
+                panic!("PostgreSQL container should start; is Docker running? {error}")
+            }
+        }
+    }
+}
 
 /// A PostgreSQL container with the schema migrated and two connections: one
 /// as the schema owner and one as the application role.
@@ -20,6 +44,7 @@ const APP_PASSWORD: &str = "app";
 pub struct TestDatabase {
     owner: PgPool,
     app: Database,
+    platform: PgPool,
     _container: ContainerAsync<Postgres>,
 }
 
@@ -31,11 +56,7 @@ impl TestDatabase {
     /// Panics if Docker is unavailable or the database cannot be prepared;
     /// a test cannot continue without it.
     pub async fn start() -> Self {
-        let container = Postgres::default()
-            .with_tag(IMAGE_TAG)
-            .start()
-            .await
-            .expect("PostgreSQL container should start; is Docker running?");
+        let container = start_container().await;
         let host = container.get_host().await.expect("container host");
         let port = container
             .get_host_port_ipv4(5432)
@@ -66,9 +87,24 @@ impl TestDatabase {
             .await
             .expect("application connection");
 
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "CREATE ROLE {PLATFORM_LOGIN} LOGIN PASSWORD '{PLATFORM_PASSWORD}' IN ROLE holdor_platform"
+        )))
+        .execute(&owner)
+        .await
+        .expect("platform login role");
+        let platform = PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&format!(
+                "postgres://{PLATFORM_LOGIN}:{PLATFORM_PASSWORD}@{host}:{port}/postgres"
+            ))
+            .await
+            .expect("platform connection");
+
         Self {
             owner,
             app,
+            platform,
             _container: container,
         }
     }
@@ -77,6 +113,12 @@ impl TestDatabase {
     #[must_use]
     pub const fn owner(&self) -> &PgPool {
         &self.owner
+    }
+
+    /// Connection as the cross-tenant platform role, for worker components.
+    #[must_use]
+    pub const fn platform(&self) -> &PgPool {
+        &self.platform
     }
 
     /// The database as the application sees it.

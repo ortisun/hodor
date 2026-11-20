@@ -12,15 +12,17 @@ pub mod page;
 pub mod random;
 pub mod secret;
 pub mod tenant;
+pub mod uow;
 
 pub use clock::{Clock, SystemClock, Timestamp};
 pub use error::{DomainError, ErrorKind};
-pub use event::{Actor, DomainEvent, EventMetadata};
+pub use event::{Actor, DomainEvent, EventEnvelope, EventHandler, EventMetadata};
 pub use id::{CorrelationId, EventId, ParseIdError, TenantId, UserId};
 pub use page::{Cursor, Page, PageRequest};
 pub use random::RandomSource;
 pub use secret::Secret;
 pub use tenant::TenantContext;
+pub use uow::{UnitOfWork, UnitOfWorkFactory};
 
 /// Re-exports used by this crate's macros. Not part of the public API.
 #[doc(hidden)]
