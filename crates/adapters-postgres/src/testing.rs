@@ -45,6 +45,8 @@ pub struct TestDatabase {
     owner: PgPool,
     app: Database,
     platform: PgPool,
+    app_url: String,
+    platform_url: String,
     _container: ContainerAsync<Postgres>,
 }
 
@@ -80,10 +82,8 @@ impl TestDatabase {
         .await
         .expect("application login role");
 
-        let app_url = Secret::from(format!(
-            "postgres://{APP_LOGIN}:{APP_PASSWORD}@{host}:{port}/postgres"
-        ));
-        let app = Database::connect(&app_url, 5)
+        let app_url = format!("postgres://{APP_LOGIN}:{APP_PASSWORD}@{host}:{port}/postgres");
+        let app = Database::connect(&Secret::from(app_url.clone()), 5)
             .await
             .expect("application connection");
 
@@ -93,11 +93,11 @@ impl TestDatabase {
         .execute(&owner)
         .await
         .expect("platform login role");
+        let platform_url =
+            format!("postgres://{PLATFORM_LOGIN}:{PLATFORM_PASSWORD}@{host}:{port}/postgres");
         let platform = PgPoolOptions::new()
             .max_connections(2)
-            .connect(&format!(
-                "postgres://{PLATFORM_LOGIN}:{PLATFORM_PASSWORD}@{host}:{port}/postgres"
-            ))
+            .connect(&platform_url)
             .await
             .expect("platform connection");
 
@@ -105,6 +105,8 @@ impl TestDatabase {
             owner,
             app,
             platform,
+            app_url,
+            platform_url,
             _container: container,
         }
     }
@@ -119,6 +121,19 @@ impl TestDatabase {
     #[must_use]
     pub const fn platform(&self) -> &PgPool {
         &self.platform
+    }
+
+    /// Connection URL of the application login role, for starting a binary
+    /// against this database.
+    #[must_use]
+    pub fn app_url(&self) -> &str {
+        &self.app_url
+    }
+
+    /// Connection URL of the platform login role.
+    #[must_use]
+    pub fn platform_url(&self) -> &str {
+        &self.platform_url
     }
 
     /// The database as the application sees it.

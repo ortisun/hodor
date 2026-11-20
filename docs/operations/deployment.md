@@ -13,7 +13,7 @@
 
 | Topology | Use | Shape |
 |---|---|---|
-| Single node | Evaluation, development | Docker Compose in `deploy/docker`: server, PostgreSQL, migrations, VictoriaMetrics |
+| Single node | Evaluation, development | Docker Compose in `deploy/docker`: server, worker, PostgreSQL, migrations, VictoriaMetrics |
 | Standard HA | Production | Kubernetes, 3+ server replicas across zones, 2+ workers, managed PostgreSQL with a standby, optional Redis and OPA sidecars |
 | Dedicated | Regulated or very large tenants | A separate standard deployment per customer |
 
@@ -61,6 +61,16 @@ flowchart TB
 | Network policy | Ingress to `:8080` only from the gateway; `:9090` only from monitoring; OPA reachable only on localhost; egress restricted to database, Redis, KMS, collector and an egress proxy for IdPs and webhooks |
 | Pod security | Non-root, no privilege escalation, all capabilities dropped, read-only filesystem, seccomp default |
 | Resources | Memory limit sized for Argon2 concurrency: the hashing semaphore times the memory cost must fit under the limit |
+
+## The worker
+
+`hodor-worker` runs background work. Today that is one job: delivering outbox events to their handlers ([ADR-0003](../adr/0003-context-communication.md)).
+
+- **Loop**: the worker asks for a batch of pending events and handles them. If the batch had work in it, it asks again at once; if it was empty, it pauses for the poll interval. A database error is logged and followed by a pause, never by an exit: the worker waits for the database to come back.
+- **Scaling**: any number of workers can run. Events are locked one at a time with `FOR UPDATE SKIP LOCKED`, so workers never handle the same event together and need no leader.
+- **Stopping**: on SIGTERM the worker finishes the batch it is handling and exits with code 0. An event whose handling is interrupted is rolled back and delivered by another worker later.
+- **Health**: `/livez` and `/readyz` on the operations listener, as for the server. Readiness depends on both database connections.
+- **Metrics**: `hodor.outbox.events` (counter, by `outcome`: `delivered`, `failed`) and `hodor.outbox.passes` (counter, by `outcome`: `ok`, `error`).
 
 ## Configuration and secrets
 

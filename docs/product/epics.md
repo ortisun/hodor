@@ -48,6 +48,8 @@ Each issue is small, has an acceptance test, and depends only on the issues name
 
 ### Slice A — Foundation (E0)
 
+M1-34 was added after planning, when wiring the worker turned out to be a piece of work of its own; it keeps its number out of sequence.
+
 | ID | Issue | Acceptance | Depends on |
 |---|---|---|---|
 | M1-01 | Workspace skeleton: `Cargo.toml` with shared dependencies and lints, `rust-toolchain.toml`, `deny.toml`, empty `kernel`, three app stubs | `cargo build`, `clippy -D warnings`, `cargo deny check` pass | — |
@@ -59,7 +61,8 @@ Each issue is small, has an acceptance test, and depends only on the issues name
 | M1-07 | Outbox: table, write API inside `UnitOfWork`, worker dispatcher with `SKIP LOCKED`, idempotent handler registry | An event is delivered once per handler despite a killed worker; two workers do not double-process | M1-05 |
 | M1-08 | `observability`: tracing, OTLP export, JSON logs, request ID and tenant on spans | A request produces one trace with a database span | M1-01 |
 | M1-09 | `protocol-http` base: Axum app, tenant resolver middleware (path prefix), error mapping to RFC 9457, security headers, body limits, health endpoints, graceful shutdown | Unknown tenant returns a uniform 404; problem documents validate; SIGTERM drains | M1-04, M1-08 |
-| M1-10 | Container image and Compose file: server, worker, PostgreSQL | `docker compose up` gives a healthy server | M1-09 |
+| M1-10 | Container image and Compose file: server, PostgreSQL, migrations, VictoriaMetrics | `docker compose up` gives a healthy server | M1-09 |
+| M1-34 | Run the outbox dispatcher in `hodor-worker`: configuration, telemetry, polling loop, health endpoints, graceful stop; added to the Compose stack | An event written to the outbox is marked delivered by a running worker; SIGTERM stops it after the current batch with exit code 0 | M1-07, M1-09, M1-10 |
 
 ### Slice B — Tenancy (E1)
 

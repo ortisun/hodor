@@ -1080,6 +1080,19 @@ dependencies = [
 [[package]]
 name = "hodor-worker"
 version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "clap",
+ "hodor-adapters-postgres",
+ "hodor-kernel",
+ "hodor-observability",
+ "hodor-protocol-http",
+ "opentelemetry",
+ "serde",
+ "sqlx",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "home"
