@@ -52,6 +52,16 @@ Specified in [the identity context](../architecture/contexts/identity.md).
 | Issue-15 User repository | Done | `identity.user` and `identity.user_identifier` under row-level security; PostgreSQL repository; one contract suite passed by the in-memory fake and by PostgreSQL |
 | Issue-16 Identity use cases | Done | `IdentityService`: create, find by typed login, lifecycle changes, login identifier changes, profile; each change stored with its events in one unit of work |
 
+### Slice D — Password credential
+
+Specified in [the credential context](../architecture/contexts/credential.md).
+
+| Issue | Status | What exists |
+|---|---|---|
+| Issue-17 Credential domain | In progress | — |
+| Issue-18 Argon2id hasher | Not started | — |
+| Issue-19 Credential storage and use cases | Not started | — |
+
 ### Known gaps in what is done
 
 These are recorded here so they are not forgotten; each is picked up by the issue named.

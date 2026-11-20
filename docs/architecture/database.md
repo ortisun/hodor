@@ -83,9 +83,9 @@ Slug lookup goes through `platform.tenant_directory`, a routing table outside ro
 
 | Table | Key columns | Notes |
 |---|---|---|
-| `credential` | `id`, `principal_id`, `type`, `status`, `label`, `last_used_at`, `revoked_at` | One row per credential; type-specific data in the tables below |
-| `password` | `credential_id`, `phc_hash`, `params_version`, `must_change` | — |
-| `password_history` | `principal_id`, `phc_hash`, `created_at` | Trimmed to the policy's depth |
+| `password` | `user_id`, `password_hash`, `must_change`, `changed_at`, `version` | One per user. Built in Milestone 1; specified in [the credential context](contexts/credential.md#storage) |
+| `password_history` | `id`, `user_id`, `password_hash`, `replaced_at` | Trimmed to the policy's depth |
+| `credential` | `id`, `principal_id`, `type`, `status`, `label`, `last_used_at`, `revoked_at` | One row per credential of any kind. Introduced with the second kind of credential, in Phase 4 |
 | `totp` | `credential_id`, `secret_enc`, `algorithm`, `digits`, `period`, `last_step` | — |
 | `webauthn` | `credential_id`, `webauthn_id` (unique per tenant), `public_key`, `sign_count`, `aaguid`, `transports`, `backup_eligible`, `backup_state`, `user_handle` | — |
 | `recovery_code` | `credential_id`, `code_hash`, `used_at` | — |
