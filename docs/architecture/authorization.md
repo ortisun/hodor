@@ -1,0 +1,253 @@
+# Authorization engine and OPA
+
+`authorization` is an independent bounded context. It owns the authorization model, the engine contract, the policy lifecycle and the decision log. Engines are adapters: `authorization-native` and `authorization-opa` now, OpenFGA or others later.
+
+## Roles in XACML terms
+
+| Role | Who |
+|---|---|
+| PEP (enforcement) | The calling application, or Holdor's own admin API middleware |
+| PDP (decision) | `authorization` use cases + the selected engine |
+| PAP (administration) | Policy lifecycle use cases and the admin console |
+| PIP (information) | `SubjectAttributeSource` and `ResourceAttributeSource` ports |
+
+## Engine contract
+
+The trait in the specification is conceptual. The consolidated contract changes four things:
+
+1. **The tenant comes from the caller's credential**, never from the request body. `tenant_id` inside `subject` in the example payload would let a caller evaluate against another tenant.
+2. **Caller-asserted attributes are marked as asserted.** Roles and attributes sent by the PEP are kept apart from those Holdor resolves itself, and a policy can choose to trust only resolved ones.
+3. **Simulation and explanation are a separate capability**, because not every engine supports them.
+4. **Batch returns one result per request**, so a single failing item does not fail the batch.
+
+```rust
+pub struct AuthorizationRequest {
+    pub subject: Subject,            // id + kind; attributes resolved by the PDP
+    pub asserted: AssertedAttributes, // what the PEP claims; untrusted by default
+    pub resource: Resource,          // type, id, attributes
+    pub action: Action,
+    pub context: EvaluationContext,  // environment, time, ip, request id
+}
+
+pub struct AuthorizationDecision {
+    pub decision_id: DecisionId,
+    pub effect: Effect,              // Allow | Deny | Indeterminate
+    pub evaluated_at: Timestamp,
+    pub engine: EngineId,
+    pub policy_version: PolicyRevision,
+    pub reason: ReasonCode,          // stable, safe to expose
+    pub matched_policies: Vec<PolicyRef>, // filtered by caller privilege
+    pub metadata: DecisionMetadata,  // duration, cache hit, obligations
+}
+
+#[async_trait]
+pub trait AuthorizationEngine: Send + Sync {
+    fn id(&self) -> EngineId;
+    fn capabilities(&self) -> EngineCapabilities;
+
+    async fn evaluate(
+        &self,
+        tenant: &TenantContext,
+        request: &AuthorizationRequest,
+    ) -> Result<AuthorizationDecision, AuthorizationError>;
+
+    async fn evaluate_batch(
+        &self,
+        tenant: &TenantContext,
+        requests: &[AuthorizationRequest],
+    ) -> Vec<Result<AuthorizationDecision, AuthorizationError>>;
+}
+
+#[async_trait]
+pub trait PolicySimulator: Send + Sync {
+    async fn simulate(
+        &self,
+        tenant: &TenantContext,
+        request: &AuthorizationRequest,
+        against: PolicySelection,    // draft, a specific version, or published
+    ) -> Result<SimulationResult, AuthorizationError>;
+}
+```
+
+`async_trait` is used because engines are selected at run time behind `Arc<dyn AuthorizationEngine>`; native `async fn` in traits is not dyn-compatible. The default `evaluate_batch` runs `evaluate` concurrently with a bound; the OPA adapter overrides it to send one request.
+
+`Effect::Indeterminate` means the engine could not decide (error, missing data, no applicable policy when the binding requires one). **A PEP must treat it as deny.** It exists so that logs and metrics distinguish "denied by policy" from "could not evaluate".
+
+## Engine selection
+
+An `EngineBinding` maps a *namespace* (a resource server) in a tenant to one engine and its failure policy. One request is answered by exactly one engine. v1 does not combine decisions across engines: combining algorithms add a class of bugs and nobody has asked for them yet.
+
+Holdor's own administrative authorization (`holdor:admin` namespace) is always bound to the native engine. An OPA outage must never lock administrators out of the system that fixes OPA.
+
+## Native engine
+
+Evaluation order, first decisive step wins:
+
+1. **Explicit deny** in an ACL entry or ABAC policy → `Deny`.
+2. **ACL**: an entry for this resource, subject (or one of its groups) and action → `Allow`.
+3. **RBAC**: expand the subject's role assignments (direct, through groups, through role hierarchy and composite roles) within the request scope (tenant, organization, application); a role holding the permission `resource_type:action` → candidate allow.
+4. **ABAC conditions** attached to the matching permission or to policies targeting this resource type; all must hold.
+5. **ReBAC**: if the resource type has a relation model, check `resource#relation@subject` by bounded graph traversal.
+6. No rule matched → `Deny` with reason `no_matching_policy`.
+
+| Model | Implementation notes |
+|---|---|
+| RBAC | The role closure per (tenant, principal, scope) is cached and invalidated by `RoleAssigned`/`RoleRevoked`/group events |
+| ACL | Indexed by `(tenant, resource_type, resource_id)` |
+| ABAC | Conditions in CEL, compiled at publish time; no I/O, bounded cost. The interpreter crate is chosen by spike in Phase 5 |
+| ReBAC | Zanzibar-style tuples; depth and fan-out limits; no consistency tokens in v1 |
+
+Native ReBAC is P2. A full Zanzibar implementation is a product on its own; if the need outgrows bounded checks, the path is `OpenFgaAuthorizationAdapter`, not a larger native engine.
+
+## Evaluation sequence
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant PEP as Application (PEP)
+    participant H as holdor-server
+    participant AZ as authorization
+    participant PIP as SubjectAttributeSource
+    participant ENG as Engine (native or OPA adapter)
+    participant OPA as OPA
+    participant DB as PostgreSQL
+
+    PEP->>H: POST /t/acme/api/v1/authorization/evaluate + access token
+    H->>H: authenticate caller, require scope authz:evaluate, derive TenantContext
+    H->>AZ: Evaluate(tenant, request)
+    AZ->>AZ: validate request, resolve EngineBinding for the namespace
+    AZ->>PIP: resolve subject roles, groups, attributes (cached)
+    alt native engine
+        AZ->>ENG: evaluate
+        ENG->>DB: role closure, ACL, tuples (cached)
+    else OPA engine
+        AZ->>ENG: evaluate
+        ENG->>ENG: circuit breaker closed?
+        ENG->>OPA: POST /v1/data/{tenant package}/decision {input}, timeout 200 ms
+        OPA-->>ENG: {result, decision_id}
+        ENG->>ENG: check bundle revision matches the published one
+    end
+    alt engine error, timeout or open circuit
+        ENG-->>AZ: error
+        AZ->>AZ: apply failure policy: fail-closed gives Indeterminate
+    end
+    AZ->>AZ: build decision, filter explanation by caller privilege
+    AZ->>DB: outbox DecisionRecorded (sampled or full, per tenant)
+    H-->>PEP: 200 {decision, decision_id, engine, policy_version, reason}
+```
+
+## OPA integration
+
+### Mechanisms used
+
+Only OPA's official integration surfaces are used. Holdor does not embed or reimplement Rego.
+
+| Purpose | Direction | Mechanism |
+|---|---|---|
+| Decision | Holdor → OPA | Data API: `POST /v1/data/<path>` with `input` |
+| Policy and data distribution | OPA → Holdor | Bundle service: OPA polls `GET /opa/bundles/{name}` with `If-None-Match`; Holdor serves a signed `.tar.gz` |
+| Decision logs | OPA → Holdor | Decision log service: OPA uploads gzip JSON batches to `POST /opa/logs` |
+| Status | OPA → Holdor | Status service: OPA reports the active bundle revision and errors to `POST /opa/status` |
+| Health | Holdor → OPA | `GET /health?bundles` |
+| Validation and tests | Worker | `opa check`, `opa test` and `opa build` run in a sandboxed job, or a compile request to a staging OPA; chosen by spike |
+
+```mermaid
+flowchart LR
+    subgraph holdor["Holdor"]
+        pap["Policy lifecycle<br/>authorization"]
+        builder["Bundle builder<br/>holdor-worker"]
+        bsvc["OPA service API<br/>bundles, logs, status"]
+        adapter["OpaAuthorizationAdapter<br/>timeout, retry, breaker"]
+        store[("policy_version, policy_bundle,<br/>decision_log, opa_instance_status")]
+    end
+    opa["OPA instance"]
+
+    pap --> store
+    store --> builder
+    builder -->|"signed bundle + revision"| store
+    opa -->|"poll bundle (ETag)"| bsvc
+    opa -->|"decision logs"| bsvc
+    opa -->|"status"| bsvc
+    bsvc --> store
+    adapter -->|"POST /v1/data"| opa
+```
+
+### Deployment modes
+
+| Mode | Topology | When |
+|---|---|---|
+| Sidecar | One OPA per `holdor-server` pod, localhost | Default; lowest latency; platform-authored policy |
+| Remote | OPA as its own service, mTLS | OPA shared with other systems, or scaled apart |
+| Cluster | Several OPA instances behind a service; all pull the same bundle | High volume; Holdor tracks the revision each instance reports |
+
+The mode is set per installation; a tenant can override it by pointing its `EngineBinding` at a registered OPA endpoint.
+
+### Tenant isolation in OPA
+
+Rego can read any document under `data`. Namespacing packages by tenant is therefore *not* isolation when tenants write their own Rego: a policy in one tenant's package could read another tenant's data in the same OPA. The rules:
+
+- **Platform-authored policy** (written by the operator, parameterized by tenant data) may run in a shared OPA. Bundles are scoped by `roots` to `tenants/<id>`, and the decision path is fixed by Holdor, never taken from the request.
+- **Tenant-authored Rego** runs only in an OPA instance dedicated to that tenant, which pulls only that tenant's bundle with a per-instance credential.
+- OPA is started with a **capabilities file** that removes `http.send`, `net.lookup_ip_addr`, `opa.runtime` and other built-ins with side effects or information leaks. `opa check --capabilities` enforces the same list at validation time.
+- OPA's own API is authenticated (bearer token or mTLS) and reachable only from Holdor.
+
+See [ADR-0010](../adr/0010-opa-integration.md).
+
+### Failure handling
+
+| Mechanism | Default |
+|---|---|
+| Timeout | 200 ms per decision (configurable per binding) |
+| Retry | One retry, only on connection errors, never on timeout, with jitter |
+| Circuit breaker | Opens after 5 consecutive failures or 50% failures in 10 s; half-open probe after 5 s |
+| Health check | Every 5 s; an unhealthy instance leaves rotation |
+| Revision tracking | A decision carries the bundle revision; a decision from an instance behind the published revision by more than the allowed lag is `Indeterminate` |
+| Decision cache | Off by default. Enabled per binding only when the policy is declared deterministic over its input (no time, no external data); key is a hash of tenant, revision and input; TTL at most 60 s; flushed on publish |
+| Failure policy | Per binding **and** per action: `fail_closed` (default) or `fail_open`. `fail_open` must be set explicitly, is rejected for namespaces flagged sensitive, and produces `Allow` with reason `fail_open` and an audit event |
+
+A failure in OPA never produces an `Allow` unless an administrator configured `fail_open` for that specific action.
+
+## Rego policy lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> Draft: create or edit
+    Draft --> Draft: edit
+    Draft --> Validated: syntax + capabilities check passes
+    Validated --> Draft: edit
+    Validated --> Tested: rego tests pass
+    Tested --> Draft: edit
+    Tested --> Published: publish (four-eyes optional), bundle built and signed
+    Published --> Active: all instances report the new revision
+    Active --> Superseded: a newer revision becomes active
+    Superseded --> Active: rollback (republishes the old version as a new revision)
+    Published --> Failed: instances report activation errors
+    Failed --> Active: automatic rollback to the previous revision
+```
+
+| Step | What happens | Stored |
+|---|---|---|
+| 1. Create / 2. Edit | A draft `PolicyVersion` with Rego modules and optional data documents | `policy_version` (draft, mutable) |
+| 3. Validate | Parse and compile against the capabilities file; package must be inside the tenant root | Diagnostics |
+| 4. Test | Run `*_test.rego` in the sandboxed job | Test report |
+| 5. Simulate | Evaluate a request, or replay recorded decisions, against the draft and diff against the active revision | Simulation result |
+| 6. Publish | Freeze the version (immutable, checksummed), record author and approver | `policy_version` (published) |
+| 7. Distribute | Worker builds the bundle, sets the revision in `.manifest`, signs it; OPA picks it up on the next poll | `policy_bundle` |
+| 8. Observe | Status reports confirm activation; decision logs reference the revision | `opa_instance_status`, `decision_log` |
+| 9. Roll back | Publish a previous version as a new revision; history is never rewritten | New `policy_bundle` |
+
+Native policies follow the same lifecycle minus distribution: publishing swaps the active revision in the database and invalidates caches.
+
+## Authorization API
+
+| Endpoint | Purpose | Required scope |
+|---|---|---|
+| `POST /api/v1/authorization/evaluate` | One decision | `authz:evaluate` |
+| `POST /api/v1/authorization/batch` | Up to 100 decisions | `authz:evaluate` |
+| `POST /api/v1/authorization/simulate` | Evaluate against a draft or a chosen version; never logged as a real decision | `authz:simulate` |
+
+The response contains `decision`, `decision_id`, `evaluated_at`, `engine`, `policy_version` and `reason`. `matched_policies` and trace detail are returned only to callers holding `authz:explain`; everyone else gets the stable reason code. Sensitive attributes are never echoed back.
+
+## Decision log
+
+Decisions are written to `decision_log` (partitioned by day) from both engines in one format. Per tenant: full, sampled or deny-only logging; input attributes can be masked by path before storage (applied in Holdor for native decisions and through OPA's mask policy for OPA decisions). Retention is per tenant.
