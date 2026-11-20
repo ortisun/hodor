@@ -7,5 +7,10 @@ rust-version.workspace = true
 publish.workspace = true
 repository.workspace = true
 
+[dependencies]
+clap.workspace = true
+hodor-adapters-postgres.workspace = true
+tokio.workspace = true
+
 [lints]
 workspace = true

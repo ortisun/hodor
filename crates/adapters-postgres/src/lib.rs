@@ -1,0 +1,16 @@
+//! PostgreSQL adapter.
+//!
+//! Tenant data is reached only through a [`TenantTransaction`], which binds
+//! the transaction to one tenant so that the row-level security policies
+//! created by `platform.enable_tenant_rls` apply. Queries still filter by
+//! `tenant_id` explicitly; row-level security is the second line of defence.
+
+mod database;
+mod migrate;
+#[cfg(feature = "testing")]
+pub mod testing;
+
+pub use database::{Database, TenantTransaction};
+pub use migrate::migrate;
+pub use sqlx::migrate::MigrateError;
+pub use sqlx::{Error, PgPool};

@@ -1,0 +1,25 @@
+[package]
+name = "hodor-adapters-postgres"
+description = "PostgreSQL adapter: connection pool, tenant-scoped transactions and migrations."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[features]
+# Disposable PostgreSQL in a container, for integration tests.
+testing = ["dep:testcontainers", "dep:testcontainers-modules"]
+
+[dependencies]
+hodor-kernel.workspace = true
+sqlx.workspace = true
+testcontainers = { workspace = true, optional = true }
+testcontainers-modules = { workspace = true, optional = true }
+
+[dev-dependencies]
+hodor-adapters-postgres = { path = ".", features = ["testing"] }
+tokio.workspace = true
+
+[lints]
+workspace = true
