@@ -85,3 +85,94 @@ impl TestDatabase {
         &self.app
     }
 }
+
+/// Tables that are deliberately not tenant tables.
+///
+/// Keep this list short: every entry is a table without tenant isolation.
+const PLATFORM_TABLES: &[&str] = &["public._sqlx_migrations"];
+
+/// Checks every table in the database against the tenant isolation rules of
+/// `docs/architecture/multi-tenancy.md` and returns one message per
+/// violation. A table passes when it:
+///
+/// * has a `tenant_id uuid NOT NULL` column;
+/// * has row-level security enabled and forced;
+/// * carries the `tenant_isolation` policy, as created by
+///   `platform.enable_tenant_rls`;
+/// * has a primary key that starts with `tenant_id`;
+/// * includes `tenant_id` in every foreign key.
+///
+/// # Panics
+///
+/// Panics if the catalog cannot be read.
+pub async fn schema_violations(owner: &PgPool) -> Vec<String> {
+    type Row = (String, bool, bool, bool, bool, bool);
+
+    let tables: Vec<Row> = sqlx::query_as(
+        r"
+        SELECT
+            n.nspname || '.' || c.relname,
+            EXISTS (
+                SELECT FROM pg_attribute a
+                WHERE a.attrelid = c.oid AND a.attname = 'tenant_id'
+                  AND a.atttypid = 'uuid'::regtype AND a.attnotnull AND NOT a.attisdropped
+            ),
+            c.relrowsecurity AND c.relforcerowsecurity,
+            EXISTS (
+                SELECT FROM pg_policy p
+                WHERE p.polrelid = c.oid AND p.polname = 'tenant_isolation'
+            ),
+            COALESCE((
+                SELECT a.attname = 'tenant_id'
+                FROM pg_index i
+                JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = i.indkey[0]
+                WHERE i.indrelid = c.oid AND i.indisprimary
+            ), false),
+            NOT EXISTS (
+                SELECT FROM pg_constraint k
+                WHERE k.conrelid = c.oid AND k.contype = 'f'
+                  AND NOT EXISTS (
+                      SELECT FROM pg_attribute a
+                      WHERE a.attrelid = c.oid AND a.attname = 'tenant_id'
+                        AND a.attnum = ANY (k.conkey)
+                  )
+            )
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE c.relkind IN ('r', 'p')
+          AND NOT c.relispartition
+          AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+          AND n.nspname NOT LIKE 'pg\_%'
+        ORDER BY 1
+        ",
+    )
+    .fetch_all(owner)
+    .await
+    .expect("catalog query");
+
+    let mut found = Vec::new();
+    for (table, has_tenant_id, rls_forced, has_policy, key_leads, foreign_keys_ok) in tables {
+        if PLATFORM_TABLES.contains(&table.as_str()) {
+            continue;
+        }
+        let checks = [
+            (has_tenant_id, "has no `tenant_id uuid NOT NULL` column"),
+            (
+                rls_forced,
+                "does not have row-level security enabled and forced",
+            ),
+            (has_policy, "has no `tenant_isolation` policy"),
+            (key_leads, "has no primary key starting with `tenant_id`"),
+            (
+                foreign_keys_ok,
+                "has a foreign key that does not include `tenant_id`",
+            ),
+        ];
+        for (passes, problem) in checks {
+            if !passes {
+                found.push(format!("{table} {problem}"));
+            }
+        }
+    }
+    found
+}
