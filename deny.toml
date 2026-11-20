@@ -6,6 +6,12 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
+ignore = [
+    # astral-tokio-tar is unmaintained. It is pulled in only by testcontainers,
+    # which is used by the `testing` feature for integration tests and never
+    # ships in a release binary. Remove once testcontainers drops it.
+    { id = "RUSTSEC-2026-0440", reason = "test-only dependency of testcontainers" },
+]
 
 [licenses]
 version = 2
