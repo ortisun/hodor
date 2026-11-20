@@ -1,0 +1,11 @@
+[package]
+name = "holdor-kernel"
+description = "Shared kernel: identifiers, tenant context, events and errors used by every bounded context."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
