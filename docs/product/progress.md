@@ -103,6 +103,14 @@ Specified in [the design system](../design/design-system.md) and [the control pl
 | React components and action catalog | Not started | Epic 12 |
 | Contrast checks in a token build | Not started | Planned with the React components; today contrast was checked by eye in both themes, not measured |
 
+## Defects found after merging
+
+Defects that reached `develop` and were fixed later, kept here so that the record of what went wrong is not lost.
+
+| Defect | Introduced | Found by | Fixed |
+|---|---|---|---|
+| Locking an attempt counter could fail with an internal error when a successful sign-in cleared the same counter at the same moment. The store created the row and then locked it in two statements, and the clear could delete it in between | Issue-22 | A full-suite run, in which the test that submits one sign-in eight times at once failed intermittently | Issue-24: one statement now creates, locks and returns the row; a test runs both operations against each other |
+
 ## Where the implementation departs from the design
 
 Each departure is reflected in the page that specifies the topic. They are collected here for a reader who knows the original design.
