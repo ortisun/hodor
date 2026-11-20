@@ -1,0 +1,21 @@
+//! HTTP layer of Hodor.
+//!
+//! This crate turns HTTP requests into calls on the contexts' use cases and
+//! their results back into responses. It owns what is common to every
+//! route: resolving the tenant from the URL, request identifiers, security
+//! headers, limits, error documents and health endpoints.
+//!
+//! It never depends on an adapter. What it needs from the outside world
+//! comes in through traits ([`TenantResolver`], [`ReadinessCheck`]) that the
+//! composition root implements.
+
+mod health;
+mod problem;
+mod request;
+mod server;
+mod tenant;
+
+pub use health::{Health, ReadinessCheck, ops_router};
+pub use problem::Problem;
+pub use server::{Limits, public_router, serve};
+pub use tenant::{ResolvedTenant, TenantResolver, TenantStatus};

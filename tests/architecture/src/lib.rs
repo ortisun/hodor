@@ -275,10 +275,7 @@ mod tests {
         let workspace = [
             krate("hodor-kernel", &["uuid"]),
             krate("hodor-identity", &["hodor-kernel", "serde"]),
-            krate(
-                "hodor-authentication",
-                &["hodor-kernel", "hodor-identity"],
-            ),
+            krate("hodor-authentication", &["hodor-kernel", "hodor-identity"]),
         ];
         assert_eq!(violations(&workspace), Vec::<String>::new());
     }
@@ -293,10 +290,7 @@ mod tests {
 
     #[test]
     fn an_adapter_may_depend_on_infrastructure() {
-        let workspace = [krate(
-            "hodor-adapters-postgres",
-            &["hodor-kernel", "sqlx"],
-        )];
+        let workspace = [krate("hodor-adapters-postgres", &["hodor-kernel", "sqlx"])];
         assert_eq!(violations(&workspace), Vec::<String>::new());
     }
 
