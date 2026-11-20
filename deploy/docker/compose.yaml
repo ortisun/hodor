@@ -1,0 +1,79 @@
+# Local development stack: PostgreSQL, migrations, the server and
+# VictoriaMetrics. Not for production: credentials are placeholders and
+# nothing is persisted outside named volumes.
+#
+#   docker compose -f deploy/docker/compose.yaml up --build --wait
+#
+# Server:           http://localhost:8080
+# Health:           http://localhost:9090/readyz
+# VictoriaMetrics:  http://localhost:8428/vmui
+#
+# If a port is taken on your machine, override it:
+#
+#   HODOR_HTTP_PORT=18080 HODOR_OPS_PORT=19090 HODOR_VM_PORT=18428 \
+#     docker compose -f deploy/docker/compose.yaml up --build --wait
+
+name: hodor
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: hodor_owner
+      POSTGRES_PASSWORD: dev-owner
+      POSTGRES_DB: hodor
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres-init.sql:/docker-entrypoint-initdb.d/10-roles.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hodor_owner -d hodor"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  migrate:
+    image: hodor:dev
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    entrypoint: ["/usr/local/bin/hodor-cli"]
+    command: ["migrate"]
+    environment:
+      HODOR_DATABASE_OWNER_URL: postgres://hodor_owner:dev-owner@postgres:5432/hodor
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  victoriametrics:
+    image: victoriametrics/victoria-metrics:v1.156.0
+    command: ["-retentionPeriod=7d"]
+    ports:
+      - "127.0.0.1:${HODOR_VM_PORT:-8428}:8428"
+    volumes:
+      - victoriametrics-data:/victoria-metrics-data
+
+  server:
+    image: hodor:dev
+    environment:
+      HODOR_DATABASE_URL: postgres://hodor_server:dev-server@postgres:5432/hodor
+      HODOR_LOG_FORMAT: pretty
+      HODOR_OTLP_METRICS_ENDPOINT: http://victoriametrics:8428/opentelemetry/v1/metrics
+    ports:
+      - "127.0.0.1:${HODOR_HTTP_PORT:-8080}:8080"
+      - "127.0.0.1:${HODOR_OPS_PORT:-9090}:9090"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      victoriametrics:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/hodor-cli", "probe", "--addr", "127.0.0.1:9090", "--path", "/readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
+volumes:
+  postgres-data:
+  victoriametrics-data:
