@@ -10,7 +10,7 @@ Last updated: 2026-11-20.
 |---|---|---|
 | A — Foundation | 11 | 11 |
 | B — Tenancy | 3 | 3 |
-| C — Identity | 0 | 3 |
+| C — Identity | 1 | 3 |
 | D — Password credential | 0 | 3 |
 | E — Authentication and session | 0 | 7 |
 | F — Audit, notification, admin | 0 | 4 |
@@ -41,6 +41,16 @@ Specified in [the tenant context](../architecture/contexts/tenant.md).
 | Issue-11 Tenant domain | Done | `hodor-tenant` crate: slug rules, lifecycle with every transition checked, settings with defaults and bounds, events |
 | Issue-12 Tenant persistence and directory | Done | Use cases and ports in `hodor-tenant`; `tenant.tenant` and `platform.tenant_directory` with their triggers; PostgreSQL repository and directory; one contract suite passed by the in-memory fake and by PostgreSQL |
 | Issue-13 Tenant commands and server resolver | Done | `hodor-cli tenant` commands; `hodor-server` resolves tenants through the directory and answers by status |
+
+### Slice C — Identity
+
+Specified in [the identity context](../architecture/contexts/identity.md).
+
+| Issue | Status | What exists |
+|---|---|---|
+| Issue-14 Identity domain | Done | `hodor-identity` crate: users with their lifecycle, login identifiers with normalization, uniqueness within a user and primary rules, events that carry no personal data |
+| Issue-15 User repository | Not started | — |
+| Issue-16 Identity use cases | Not started | — |
 
 ### Known gaps in what is done
 

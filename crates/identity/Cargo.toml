@@ -1,0 +1,19 @@
+[package]
+name = "hodor-identity"
+description = "The identity context: users and the login identifiers they are found by."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+hodor-kernel.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+hodor-kernel = { workspace = true, features = ["testing"] }
+proptest.workspace = true
+
+[lints]
+workspace = true
