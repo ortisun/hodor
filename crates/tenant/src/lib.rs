@@ -6,10 +6,15 @@
 //! The specification is `docs/architecture/contexts/tenant.md`; this crate
 //! follows it.
 
+mod application;
 mod domain;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 
 /// What other crates may use from this context.
 pub mod api {
+    pub use crate::application::ports::{DirectoryEntry, TenantDirectory, TenantRepository};
+    pub use crate::application::service::{Caller, CreateTenant, TenantService};
     pub use crate::domain::event::TenantEvent;
     pub use crate::domain::settings::{
         LockoutPolicy, PasswordPolicy, RegistrationPolicy, SessionPolicy, TenantSettings,
