@@ -20,3 +20,4 @@ All records below are **Proposed**: they become Accepted when the design review 
 | [0012](0012-extension-strategy.md) | Traits first, webhooks second, WASM plugins last |
 | [0013](0013-auth-flow-as-data.md) | Authentication flows are versioned data interpreted by one engine |
 | [0014](0014-saml-deferred-with-spike.md) | SAML is deferred to Phase 6 and gated by a security spike |
+| [0015](0015-observability-stack.md) | OpenTelemetry for instrumentation, VictoriaMetrics for metrics (Accepted) |
