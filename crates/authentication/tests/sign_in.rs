@@ -21,7 +21,8 @@ use hodor_session::api::{Assurance, ClientInfo, SessionService};
 use hodor_session::testing::{InMemorySessions, SequentialRandom};
 use hodor_tenant::api::{CreateTenant, TenantService};
 use hodor_tenant::testing::InMemoryTenants;
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use time::Duration;
 
 const PASSWORD: &str = "correct horse battery staple";
@@ -62,6 +63,9 @@ struct World {
     units_of_work: InMemoryUnitOfWorkFactory,
     tenant: TenantContext,
     ana: UserId,
+    /// The secret of each sign-in started here, as the browser's cookie
+    /// would hold it.
+    secrets: Mutex<HashMap<TransactionId, String>>,
 }
 
 async fn world_with(lenient_password_step: bool) -> World {
@@ -122,6 +126,8 @@ async fn world_with(lenient_password_step: bool) -> World {
         identity.clone(),
         sessions.clone(),
         tenants.clone(),
+        Arc::new(FakeDigest),
+        Arc::new(SequentialRandom::default()),
         clock.clone(),
     )
     .expect("the built-in flow is valid");
@@ -177,6 +183,7 @@ async fn world_with(lenient_password_step: bool) -> World {
         units_of_work,
         tenant,
         ana,
+        secrets: Mutex::new(HashMap::new()),
     }
 }
 
@@ -190,26 +197,36 @@ impl World {
             address: Some("203.0.113.1".to_owned()),
             description: Some("Example Browser".to_owned()),
         };
-        match self
+        let started = self
             .service
             .start(&self.tenant, client)
             .await
-            .expect("start")
-        {
-            SignIn::Pending {
-                transaction_id,
-                step,
-            } => {
-                assert_eq!(step, "identifier");
-                transaction_id
-            }
-            other => panic!("unexpected start: {other:?}"),
-        }
+            .expect("start");
+        assert_eq!(started.step, "identifier");
+        self.secrets
+            .lock()
+            .expect("secrets")
+            .insert(started.transaction_id, started.secret.expose().clone());
+        started.transaction_id
+    }
+
+    fn secret(&self, id: TransactionId) -> String {
+        self.secrets
+            .lock()
+            .expect("secrets")
+            .get(&id)
+            .cloned()
+            .unwrap_or_else(|| "f".repeat(64))
     }
 
     async fn identifier(&self, id: TransactionId, typed: &str) -> SignIn {
         self.service
-            .submit(&self.tenant, id, StepInput::Identifier(typed.to_owned()))
+            .submit(
+                &self.tenant,
+                id,
+                &self.secret(id),
+                StepInput::Identifier(typed.to_owned()),
+            )
             .await
             .expect("identifier step")
     }
@@ -219,6 +236,7 @@ impl World {
             .submit(
                 &self.tenant,
                 id,
+                &self.secret(id),
                 StepInput::Password(Secret::from(typed.to_owned())),
             )
             .await
@@ -387,7 +405,7 @@ async fn five_rejections_fail_the_sign_in_and_a_new_one_must_be_started() {
     assert_eq!(error.code(), "authentication.transaction_not_active");
     let error = world
         .service
-        .describe(&world.tenant, id)
+        .describe(&world.tenant, id, &world.secret(id))
         .await
         .expect_err("failed");
     assert_eq!(error.code(), "authentication.transaction_not_active");
@@ -419,7 +437,7 @@ async fn a_sign_in_expires_can_be_described_and_can_be_cancelled() {
     // A reload of the page asks where the sign-in stands.
     let described = world
         .service
-        .describe(&world.tenant, id)
+        .describe(&world.tenant, id, &world.secret(id))
         .await
         .expect("describe");
     assert!(matches!(described, SignIn::Pending { ref step, .. } if step == "password"));
@@ -431,12 +449,12 @@ async fn a_sign_in_expires_can_be_described_and_can_be_cancelled() {
     let other = world.start().await;
     world
         .service
-        .cancel(&world.tenant, other)
+        .cancel(&world.tenant, other, &world.secret(other))
         .await
         .expect("cancel");
     world
         .service
-        .cancel(&world.tenant, other)
+        .cancel(&world.tenant, other, &world.secret(other))
         .await
         .expect("cancel again");
     let cancelled = world
@@ -444,6 +462,7 @@ async fn a_sign_in_expires_can_be_described_and_can_be_cancelled() {
         .submit(
             &world.tenant,
             other,
+            &world.secret(other),
             StepInput::Identifier("ana@example.com".to_owned()),
         )
         .await
@@ -460,7 +479,7 @@ async fn a_sign_in_belongs_to_its_tenant() {
     for error in [
         world
             .service
-            .describe(&elsewhere, id)
+            .describe(&elsewhere, id, &world.secret(id))
             .await
             .expect_err("describe"),
         world
@@ -468,18 +487,19 @@ async fn a_sign_in_belongs_to_its_tenant() {
             .submit(
                 &elsewhere,
                 id,
+                &world.secret(id),
                 StepInput::Identifier("ana@example.com".to_owned()),
             )
             .await
             .expect_err("submit"),
         world
             .service
-            .cancel(&elsewhere, id)
+            .cancel(&elsewhere, id, &world.secret(id))
             .await
             .expect_err("cancel"),
         world
             .service
-            .describe(&world.tenant, TransactionId::generate())
+            .describe(&world.tenant, TransactionId::generate(), &world.secret(id))
             .await
             .expect_err("unknown"),
     ] {
@@ -524,5 +544,62 @@ async fn a_user_who_may_no_longer_sign_in_is_stopped_at_completion() {
     assert!(matches!(
         world.password(id, "anything").await.expect("password"),
         SignIn::Failed
+    ));
+}
+
+#[tokio::test]
+async fn a_sign_in_can_be_continued_only_with_its_secret() {
+    let world = world().await;
+    let id = world.start().await;
+    let other = world.start().await;
+    let right = world.secret(id);
+    assert_eq!(right.len(), 64, "a secret of 256 bits, in hexadecimal");
+    assert_ne!(right, world.secret(other), "every sign-in has its own");
+
+    // Knowing the identifier is not enough: a wrong secret, another
+    // sign-in's secret and no secret are all answered as if the sign-in
+    // did not exist, and change nothing.
+    for wrong in [
+        world.secret(other),
+        "0".repeat(64),
+        String::new(),
+        right.to_uppercase(),
+    ] {
+        let submit = world
+            .service
+            .submit(
+                &world.tenant,
+                id,
+                &wrong,
+                StepInput::Identifier("ana@example.com".to_owned()),
+            )
+            .await
+            .expect_err("submit");
+        let describe = world
+            .service
+            .describe(&world.tenant, id, &wrong)
+            .await
+            .expect_err("describe");
+        let cancel = world
+            .service
+            .cancel(&world.tenant, id, &wrong)
+            .await
+            .expect_err("cancel");
+        for error in [submit, describe, cancel] {
+            assert_eq!(error.code(), "authentication.transaction_not_found");
+        }
+    }
+
+    // The rightful holder is unaffected and still at the first step.
+    let described = world
+        .service
+        .describe(&world.tenant, id, &right)
+        .await
+        .expect("describe");
+    assert!(matches!(described, SignIn::Pending { ref step, .. } if step == "identifier"));
+    world.identifier(id, "ana@example.com").await;
+    assert!(matches!(
+        world.password(id, PASSWORD).await.expect("password"),
+        SignIn::Completed { .. }
     ));
 }

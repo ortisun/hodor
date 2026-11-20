@@ -154,7 +154,7 @@ fn world() -> World {
 
 impl World {
     fn begin(&self) -> AuthTransaction {
-        AuthTransaction::start(&self.flow, ClientInfo::default(), START)
+        AuthTransaction::start(&self.flow, ClientInfo::default(), [9; 32], START)
     }
 
     async fn submit(

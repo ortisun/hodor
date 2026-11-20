@@ -8,8 +8,8 @@ use crate::domain::flow::AuthFlow;
 use crate::domain::transaction::{AuthTransaction, TransactionId, TransactionState};
 use hodor_identity::api::IdentityService;
 use hodor_kernel::{
-    Caller, Clock, DomainError, ErrorKind, EventEnvelope, EventMetadata, TenantContext, UnitOfWork,
-    UnitOfWorkFactory, UserId,
+    Caller, Clock, Digest, DomainError, ErrorKind, EventEnvelope, EventMetadata, RandomSource,
+    Secret, TenantContext, UnitOfWork, UnitOfWorkFactory, UserId,
 };
 use hodor_session::api::{
     Assurance, ClientInfo, Session, SessionService, SessionTimeouts, SessionToken, StartSession,
@@ -48,6 +48,19 @@ pub enum SignIn {
     },
 }
 
+/// A sign-in that was just started.
+#[derive(Debug)]
+pub struct StartedSignIn {
+    /// Refers to the sign-in.
+    pub transaction_id: TransactionId,
+    /// The secret that every later operation on this sign-in must present.
+    /// Given to the browser that started it and to nobody else; not
+    /// available again.
+    pub secret: Secret<String>,
+    /// The key of the first step.
+    pub step: String,
+}
+
 /// The use cases of the authentication context.
 #[derive(Clone)]
 pub struct AuthenticationService {
@@ -58,6 +71,8 @@ pub struct AuthenticationService {
     identity: IdentityService,
     sessions: SessionService,
     tenants: TenantService,
+    digest: Arc<dyn Digest>,
+    random: Arc<dyn RandomSource>,
     clock: Arc<dyn Clock>,
 }
 
@@ -92,6 +107,8 @@ impl AuthenticationService {
         identity: IdentityService,
         sessions: SessionService,
         tenants: TenantService,
+        digest: Arc<dyn Digest>,
+        random: Arc<dyn RandomSource>,
         clock: Arc<dyn Clock>,
     ) -> Result<Self, DomainError> {
         engine.validate(&flow)?;
@@ -103,11 +120,14 @@ impl AuthenticationService {
             identity,
             sessions,
             tenants,
+            digest,
+            random,
             clock,
         })
     }
 
-    /// Starts a sign-in and says which step comes first.
+    /// Starts a sign-in. Returns its identifier, the secret that binds it
+    /// to whoever started it, and the first step.
     ///
     /// # Errors
     ///
@@ -116,12 +136,21 @@ impl AuthenticationService {
         &self,
         tenant: &TenantContext,
         client: ClientInfo,
-    ) -> Result<SignIn, DomainError> {
-        let transaction = AuthTransaction::start(&self.flow, client, self.clock.now());
+    ) -> Result<StartedSignIn, DomainError> {
+        let mut bytes = [0_u8; 32];
+        self.random.fill(&mut bytes);
+        let secret: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+        let binding = self.digest.sha256(secret.as_bytes());
+
+        let transaction = AuthTransaction::start(&self.flow, client, binding, self.clock.now());
         let mut uow = self.units_of_work.begin(tenant).await?;
         self.transactions.insert(uow.as_mut(), &transaction).await?;
         uow.commit().await?;
-        self.pending(&transaction)
+        Ok(StartedSignIn {
+            transaction_id: transaction.id(),
+            secret: Secret::from(secret),
+            step: self.pending_step(&transaction)?,
+        })
     }
 
     /// Says which step a sign-in is waiting for, so that its page can be
@@ -135,8 +164,9 @@ impl AuthenticationService {
         &self,
         tenant: &TenantContext,
         id: TransactionId,
+        secret: &str,
     ) -> Result<SignIn, DomainError> {
-        let transaction = self.load(tenant, id).await?;
+        let transaction = self.load(tenant, id, secret).await?;
         transaction.require_in_progress(self.clock.now())?;
         self.pending(&transaction)
     }
@@ -157,9 +187,10 @@ impl AuthenticationService {
         &self,
         tenant: &TenantContext,
         id: TransactionId,
+        secret: &str,
         input: StepInput,
     ) -> Result<SignIn, DomainError> {
-        let mut transaction = self.load(tenant, id).await?;
+        let mut transaction = self.load(tenant, id, secret).await?;
         let now = self.clock.now();
         let step = input.step_key();
         let progress = self
@@ -199,8 +230,9 @@ impl AuthenticationService {
         &self,
         tenant: &TenantContext,
         id: TransactionId,
+        secret: &str,
     ) -> Result<(), DomainError> {
-        let mut transaction = self.load(tenant, id).await?;
+        let mut transaction = self.load(tenant, id, secret).await?;
         if transaction.state_at(self.clock.now()) == TransactionState::InProgress {
             transaction.cancel();
             self.store(tenant, &transaction, None).await?;
@@ -299,15 +331,20 @@ impl AuthenticationService {
         }
     }
 
+    /// Loads a sign-in for whoever presents its secret. A wrong secret is
+    /// answered exactly like a sign-in that does not exist.
     async fn load(
         &self,
         tenant: &TenantContext,
         id: TransactionId,
+        secret: &str,
     ) -> Result<AuthTransaction, DomainError> {
+        let presented = self.digest.sha256(secret.as_bytes());
         let mut uow = self.units_of_work.begin(tenant).await?;
         self.transactions
             .get(uow.as_mut(), id)
             .await?
+            .filter(|transaction| transaction.is_bound_to(&presented))
             .ok_or_else(not_found)
     }
 
@@ -325,20 +362,23 @@ impl AuthenticationService {
         uow.commit().await
     }
 
-    fn pending(&self, transaction: &AuthTransaction) -> Result<SignIn, DomainError> {
-        let step = self
-            .flow
+    fn pending_step(&self, transaction: &AuthTransaction) -> Result<String, DomainError> {
+        self.flow
             .steps
             .get(transaction.snapshot().current_step)
+            .map(|step| step.key.clone())
             .ok_or_else(|| {
                 DomainError::conflict(
                     "authentication.no_step_pending",
                     "every step of this sign-in is already satisfied",
                 )
-            })?;
+            })
+    }
+
+    fn pending(&self, transaction: &AuthTransaction) -> Result<SignIn, DomainError> {
         Ok(SignIn::Pending {
             transaction_id: transaction.id(),
-            step: step.key.clone(),
+            step: self.pending_step(transaction)?,
         })
     }
 

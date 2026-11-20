@@ -19,7 +19,8 @@ use hodor_identity::api::{CreateUser, IdentifierKind, IdentityService, Profile, 
 use hodor_kernel::{Caller, Secret, SystemClock, TenantContext, UserId};
 use hodor_session::api::{ClientInfo, SessionService};
 use hodor_tenant::api::{CreateTenant, TenantService};
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 const PASSWORD: &str = "correct horse battery staple";
 
@@ -28,6 +29,7 @@ struct World {
     sessions: SessionService,
     tenant: TenantContext,
     ana: UserId,
+    secrets: Mutex<HashMap<TransactionId, String>>,
 }
 
 async fn world(database: &TestDatabase) -> World {
@@ -89,6 +91,8 @@ async fn world(database: &TestDatabase) -> World {
         identity.clone(),
         sessions.clone(),
         tenants.clone(),
+        Arc::new(Sha256Digest),
+        Arc::new(OsRandom),
         clock,
     )
     .expect("the built-in flow is valid");
@@ -140,27 +144,35 @@ async fn world(database: &TestDatabase) -> World {
         sessions,
         tenant,
         ana,
+        secrets: Mutex::new(HashMap::new()),
     }
 }
 
 impl World {
+    fn secret(&self, id: TransactionId) -> String {
+        self.secrets.lock().expect("secrets")[&id].clone()
+    }
+
     async fn identified(&self, typed: &str) -> TransactionId {
         let client = ClientInfo {
             address: Some("203.0.113.1".to_owned()),
             description: Some("Example Browser".to_owned()),
         };
-        let SignIn::Pending { transaction_id, .. } = self
+        let started = self
             .service
             .start(&self.tenant, client)
             .await
-            .expect("start")
-        else {
-            panic!("a new sign-in is pending");
-        };
+            .expect("start");
+        let transaction_id = started.transaction_id;
+        self.secrets
+            .lock()
+            .expect("secrets")
+            .insert(transaction_id, started.secret.expose().clone());
         self.service
             .submit(
                 &self.tenant,
                 transaction_id,
+                &self.secret(transaction_id),
                 StepInput::Identifier(typed.to_owned()),
             )
             .await
@@ -177,6 +189,7 @@ impl World {
             .submit(
                 &self.tenant,
                 id,
+                &self.secret(id),
                 StepInput::Password(Secret::from(typed.to_owned())),
             )
             .await
@@ -247,6 +260,10 @@ async fn a_person_signs_in_with_nothing_faked() {
     assert!(
         !everything.contains(PASSWORD),
         "the password is stored nowhere"
+    );
+    assert!(
+        !everything.contains(&world.secret(id)),
+        "the sign-in's secret is stored nowhere"
     );
     assert!(
         everything.contains("$argon2id$v=19$"),

@@ -101,6 +101,9 @@ pub struct TransactionSnapshot {
     pub expires_at: Timestamp,
     /// Where the sign-in comes from; passed on to the session.
     pub client: ClientInfo,
+    /// The SHA-256 hash of the secret held by the browser that started the
+    /// sign-in.
+    pub binding: [u8; 32],
     /// Incremented on every stored change, for optimistic locking.
     pub version: u32,
 }
@@ -125,9 +128,10 @@ impl AuthTransaction {
     /// How many rejected steps a transaction tolerates before it fails.
     pub const MAX_REJECTIONS: u32 = 5;
 
-    /// Starts a transaction for a flow.
+    /// Starts a transaction for a flow, bound to the hash of a secret that
+    /// only the browser starting the sign-in holds.
     #[must_use]
-    pub fn start(flow: &AuthFlow, client: ClientInfo, now: Timestamp) -> Self {
+    pub fn start(flow: &AuthFlow, client: ClientInfo, binding: [u8; 32], now: Timestamp) -> Self {
         Self {
             state: TransactionSnapshot {
                 id: TransactionId::generate(),
@@ -143,6 +147,7 @@ impl AuthTransaction {
                 started_at: now,
                 expires_at: now + Self::LIFETIME,
                 client,
+                binding,
                 version: 0,
             },
         }
@@ -170,6 +175,13 @@ impl AuthTransaction {
     #[must_use]
     pub const fn candidate(&self) -> Option<UserId> {
         self.state.candidate
+    }
+
+    /// Whether the given hash is that of the secret this transaction was
+    /// started with.
+    #[must_use]
+    pub fn is_bound_to(&self, binding: &[u8; 32]) -> bool {
+        &self.state.binding == binding
     }
 
     /// Where the transaction stands at `now`.

@@ -144,6 +144,7 @@ type TransactionRow = (
     Timestamp,
     Option<String>,
     Option<String>,
+    Vec<u8>,
     i32,
 );
 
@@ -167,8 +168,11 @@ fn to_transaction(row: TransactionRow) -> Result<AuthTransaction, DomainError> {
         expires_at,
         address,
         description,
+        binding,
         version,
     ) = row;
+    let binding =
+        <[u8; 32]>::try_from(binding).map_err(|_| corrupted("binding is not 32 bytes"))?;
     let identifier_key = identifier_key
         .map(|key| {
             <[u8; 32]>::try_from(key).map_err(|_| corrupted("identifier key is not 32 bytes"))
@@ -191,6 +195,7 @@ fn to_transaction(row: TransactionRow) -> Result<AuthTransaction, DomainError> {
             address,
             description,
         },
+        binding,
         version: unsigned(version, "negative version")?,
     }))
 }
@@ -208,8 +213,8 @@ impl TransactionStore for PgTransactionStore {
             "INSERT INTO authentication.transaction
                  (tenant_id, id, flow_name, flow_version, current_step, identified, candidate_user_id,
                   identifier_key, satisfied_methods, rejections, status, started_at, expires_at,
-                  client_address, client_description, version)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
+                  client_address, client_description, binding, version)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)",
         )
         .bind(tenant.as_uuid())
         .bind(state.id.as_uuid())
@@ -226,6 +231,7 @@ impl TransactionStore for PgTransactionStore {
         .bind(state.expires_at)
         .bind(&state.client.address)
         .bind(&state.client.description)
+        .bind(state.binding.as_slice())
         .bind(stored(state.version)?)
         .execute(connection(uow)?)
         .await
@@ -242,7 +248,7 @@ impl TransactionStore for PgTransactionStore {
         let row: Option<TransactionRow> = sqlx::query_as(
             "SELECT id, flow_name, flow_version, current_step, identified, candidate_user_id,
                     identifier_key, satisfied_methods, rejections, status, started_at, expires_at,
-                    client_address, client_description, version
+                    client_address, client_description, binding, version
              FROM authentication.transaction
              WHERE tenant_id = $1 AND id = $2",
         )

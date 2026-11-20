@@ -149,7 +149,7 @@ impl World {
             address: Some(address.to_owned()),
             description: None,
         };
-        AuthTransaction::start(&self.flow, client, self.clock.now())
+        AuthTransaction::start(&self.flow, client, [9; 32], self.clock.now())
     }
 
     async fn submit(
