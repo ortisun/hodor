@@ -16,14 +16,17 @@ async-trait.workspace = true
 hodor-credential.workspace = true
 hodor-identity.workspace = true
 hodor-kernel.workspace = true
+hodor-session.workspace = true
 hodor-tenant.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true
+time.workspace = true
 testcontainers = { workspace = true, optional = true }
 testcontainers-modules = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 
 [dev-dependencies]
+hodor-session = { workspace = true, features = ["testing"] }
 hodor-credential = { workspace = true, features = ["testing"] }
 hodor-identity = { workspace = true, features = ["testing"] }
 hodor-tenant = { workspace = true, features = ["testing"] }

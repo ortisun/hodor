@@ -12,7 +12,7 @@ Last updated: 2026-11-20.
 | B — Tenancy | 3 | 3 |
 | C — Identity | 3 | 3 |
 | D — Password credential | 3 | 3 |
-| E — Authentication and session | 0 | 7 |
+| E — Authentication and session | 1 | 7 |
 | F — Audit, notification, admin | 0 | 4 |
 | G — Hosted user interface and acceptance | 0 | 3 |
 
@@ -62,6 +62,13 @@ Specified in [the credential context](../architecture/contexts/credential.md).
 | Issue-18 Argon2id hasher | Done | `hodor-adapters-crypto` crate: Argon2id behind the hasher port with bounded concurrency and a bounded queue, renewal of hashes made with older parameters, a check against nothing of equal cost, and the operating system random source |
 | Issue-19 Credential storage and use cases | Done | `CredentialService`: set, change, verify with silent renewal, remove; `credential.password` and its history under row-level security; one contract suite passed by the in-memory store and by PostgreSQL |
 
+### Slice E — Authentication and session
+
+| Issue | Status | What exists |
+|---|---|---|
+| Issue-20 Session | Done | `hodor-session` crate: sessions with tokens stored only as hashes, idle and absolute expiry, revocation, token replacement; `session.session` under row-level security; one contract suite passed by the in-memory store and by PostgreSQL. SHA-256 behind a `Digest` port. Specified in [the session context](../architecture/contexts/session.md) |
+| Issue-21 to Issue-26 | Not started | — |
+
 ### Known gaps in what is done
 
 These are recorded here so they are not forgotten; each is picked up by the issue named.
@@ -73,6 +80,7 @@ These are recorded here so they are not forgotten; each is picked up by the issu
 | The system tenant is not created automatically by the development stack | Issue-30, with the bootstrap administrator |
 | The Argon2id hasher was not checked against a hash produced by another implementation; it relies on the library's own conformance | When a second implementation is at hand, for example password import |
 | The credential use cases run with a real database and with the real hasher, but not yet with both at once | Issue-22, when sign-in wires them together |
+| Rows of expired and revoked sessions are never removed | A cleanup job, later in Phase 1 |
 | No event handlers are registered | Issue-27 (email), Issue-28 (audit) |
 | Traces are exported but no test receives them | First issue that adds a traced database call |
 | SQL is checked at run time, not at compile time (`sqlx::query!` with the offline cache is not set up). Every query is exercised by an integration test instead | A dedicated issue, not yet scheduled |
