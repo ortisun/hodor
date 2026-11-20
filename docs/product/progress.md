@@ -8,7 +8,7 @@ Last updated: 2026-11-20.
 
 | Slice | Done | Total |
 |---|---|---|
-| A — Foundation | 9 | 10 |
+| A — Foundation | 10 | 11 |
 | B — Tenancy | 0 | 3 |
 | C — Identity | 0 | 3 |
 | D — Password credential | 0 | 3 |
@@ -29,7 +29,8 @@ Last updated: 2026-11-20.
 | M1-07 Outbox | Done | `UnitOfWork` port, `platform.outbox`, dispatcher with `SKIP LOCKED`, rollback and backoff |
 | M1-08 Observability | Done, with a gap | Logs, traces and metrics over OTLP; VictoriaMetrics verified by test. Trace export is not yet verified against a backend |
 | M1-09 HTTP base | Done | Tenant resolution from the path, request ids, security headers, limits, problem documents, health endpoints, graceful shutdown; `hodor-server` wired |
-| M1-10 Container image and Compose | In progress | Specified in [local setup](../development/local-setup.md) |
+| M1-10 Container image and Compose | Done | Distroless image with the three binaries; Compose stack with PostgreSQL, migrations, server and VictoriaMetrics; `hodor-cli probe` |
+| M1-34 Worker runs the outbox dispatcher | In progress | Specified in [local setup](../development/local-setup.md#hodor-worker) and [deployment](../operations/deployment.md#the-worker) |
 
 ### Known gaps in what is done
 
@@ -38,7 +39,7 @@ These are recorded here so they are not forgotten; each is picked up by the issu
 | Gap | Picked up by |
 |---|---|
 | `hodor-server` knows no tenants: its resolver always answers "not found" | M1-12, M1-13 |
-| `hodor-worker` is a stub: the outbox dispatcher exists but nothing runs it | A worker wiring issue, before M1-27 |
+| `hodor-worker` is a stub: the outbox dispatcher exists but nothing runs it | M1-34 |
 | No event handlers are registered | M1-27 (email), M1-28 (audit) |
 | Traces are exported but no test receives them | First issue that adds a traced database call |
 | SQL is checked at run time, not at compile time (`sqlx::query!` with the offline cache is not set up) | M1-12, with the first repository |

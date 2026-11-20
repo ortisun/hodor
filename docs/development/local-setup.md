@@ -53,6 +53,7 @@ docker compose -f deploy/docker/compose.yaml up --build --wait
 | `postgres` | PostgreSQL 17, with the database roles created on first start | internal only |
 | `migrate` | Runs `hodor-cli migrate` once and exits | — |
 | `server` | `hodor-server` | <http://localhost:8080>, health on <http://localhost:9090/readyz> |
+| `worker` | `hodor-worker`, delivering outbox events | internal only |
 | `victoriametrics` | Metrics backend; the server pushes to it over OTLP | <http://localhost:8428/vmui> |
 
 If one of those ports is taken on your machine, choose others:
@@ -90,6 +91,20 @@ Every setting is a command-line flag with an environment variable of the same me
 | `HODOR_OTLP_TRACES_ENDPOINT` | unset | Full URL of the OTLP/HTTP traces endpoint; unset disables export |
 | `HODOR_OTLP_METRICS_ENDPOINT` | unset | Full URL of the OTLP/HTTP metrics endpoint. For VictoriaMetrics: `http://<host>:8428/opentelemetry/v1/metrics` |
 | `HODOR_SHUTDOWN_DRAIN_SECONDS` | `5` | How long to keep serving after a stop signal while readiness fails |
+
+### `hodor-worker`
+
+The worker connects to the database twice, with different roles: as a member of `hodor_platform` to find pending work across tenants, and as a member of `hodor_app` to handle each piece of work inside its tenant.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `HODOR_DATABASE_URL` | — (required) | Connection URL of a login role that is a member of `hodor_app` |
+| `HODOR_PLATFORM_DATABASE_URL` | — (required) | Connection URL of a login role that is a member of `hodor_platform` |
+| `HODOR_DATABASE_MAX_CONNECTIONS` | `5` | Size of each of the two pools |
+| `HODOR_OPS_ADDR` | `127.0.0.1:9091` | Operations listener (health) |
+| `HODOR_OUTBOX_BATCH_SIZE` | `100` | Most events handled per pass |
+| `HODOR_OUTBOX_POLL_INTERVAL_MS` | `500` | Pause between passes when there is nothing to deliver |
+| `HODOR_LOG_FORMAT`, `HODOR_LOG_FILTER`, `HODOR_OTLP_TRACES_ENDPOINT`, `HODOR_OTLP_METRICS_ENDPOINT` | as for the server | Telemetry |
 
 ### `hodor-cli`
 
