@@ -11,7 +11,7 @@ Last updated: 2026-11-20.
 | A — Foundation | 11 | 11 |
 | B — Tenancy | 3 | 3 |
 | C — Identity | 3 | 3 |
-| D — Password credential | 0 | 3 |
+| D — Password credential | 1 | 3 |
 | E — Authentication and session | 0 | 7 |
 | F — Audit, notification, admin | 0 | 4 |
 | G — Hosted user interface and acceptance | 0 | 3 |
@@ -58,7 +58,7 @@ Specified in [the credential context](../architecture/contexts/credential.md).
 
 | Issue | Status | What exists |
 |---|---|---|
-| Issue-17 Credential domain | In progress | — |
+| Issue-17 Credential domain | Done | `hodor-credential` crate: the rules for an acceptable password, the password record with its history, events, and the hasher port |
 | Issue-18 Argon2id hasher | Not started | — |
 | Issue-19 Credential storage and use cases | Not started | — |
 
