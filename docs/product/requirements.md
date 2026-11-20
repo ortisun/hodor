@@ -144,6 +144,25 @@ Priority: **Blocker** blocks the phase, **Expected** is expected in the phase, *
 | Requirement-Notification-01 | Email over SMTP with templates per tenant and locale | 1 | Blocker |
 | Requirement-Notification-02 | SMS through a pluggable provider | 4 | Expected |
 
+### Admin console (`admin-console`)
+
+The reasoning behind these requirements, and how the console shows them, is in [the control plane](../design/control-plane.md#5-how-the-console-protects-itself).
+
+| Identifier | Requirement | Phase | Prio |
+|---|---|---|---|
+| Requirement-Console-01 | Administrator sessions have their own idle and absolute timeouts (defaults 15 minutes and 12 hours, aligned with Authenticator Assurance Level 3 of NIST SP 800-63B), independent of the tenant's end-user session settings | 2 | Blocker |
+| Requirement-Console-02 | Every console state change goes through the public Admin API and is audited with actor, client, IP address and request identifier | 2 | Blocker |
+| Requirement-Console-03 | Sensitive administrative actions require recent authentication (`step_up_required` with `max_age` of 5 minutes); the console completes the step-up inline | 2 | Blocker |
+| Requirement-Console-04 | Every console action has a level on the dangerous action ladder, defined once in the design system's action catalog | 2 | Blocker |
+| Requirement-Console-05 | Administrators are reported on the security posture until they enroll phishing-resistant multi-factor authentication; from Phase 4 a tenant can enforce it | 2 | Expected |
+| Requirement-Console-06 | Break-glass administrator accounts are marked as such; any use raises a high-severity finding and an alert | 2 | Expected |
+| Requirement-Console-07 | A security posture resource: server-computed checks, findings with severity and affected objects, risk acceptance with reason and expiry, and a score | 2 | Expected |
+| Requirement-Console-08 | Platform administrators reach tenant data only through time-boxed, reasoned support grants, visible to the tenant and audited | 2 | Blocker |
+| Requirement-Console-09 | Concurrent edits are detected with `ETag` and `If-Match`; the console shows the conflict instead of overwriting | 2 | Blocker |
+| Requirement-Console-10 | The tenant is part of every console URL; a tab never changes tenant implicitly | 2 | Blocker |
+| Requirement-Console-11 | Alerts on administrative activity: administrator role grants, key revocations, policy publications, posture regressions | 5 | Expected |
+| Requirement-Console-12 | Changes marked for a second approver take effect only after approval by a different administrator | 7 | Expected |
+
 ### Enterprise, keys, plugins, workloads
 
 | Identifier | Requirement | Phase | Prio |

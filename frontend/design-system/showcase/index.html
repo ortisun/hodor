@@ -1,0 +1,518 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hodor Control Plane</title>
+  <meta name="description" content="Showcase of the Hodor admin console: the security posture overview built with the Hodor design system.">
+  <link rel="stylesheet" href="showcase.css">
+  <link rel="stylesheet" href="../tokens.css">
+  <link rel="stylesheet" href="../components.css">
+  <link rel="stylesheet" href="../shell.css">
+  <script src="showcase.js" defer></script>
+</head>
+<body>
+<div class="shell" data-environment="production">
+
+  <!-- ===================== Scope bar ===================== -->
+  <header class="scope-bar" aria-label="Scope">
+    <div class="scope-bar__brand">
+      <svg class="brand-mark" aria-hidden="true"><use href="icons.svg#brand"/></svg>
+      <span class="scope-bar__brand-name">Hodor</span>
+    </div>
+
+    <button class="tenant-switcher" type="button" aria-haspopup="dialog" aria-label="Switch tenant. Current tenant: Acme Payments">
+      <span class="tenant-chip tenant-chip--hue-1" aria-hidden="true">AP</span>
+      <span class="tenant-switcher__name">Acme Payments</span>
+      <span class="tenant-switcher__slug">acme-payments</span>
+      <svg class="icon" aria-hidden="true"><use href="icons.svg#chevron-down"/></svg>
+    </button>
+    <span class="environment environment--production"><span class="status-dot" aria-hidden="true"></span><span class="environment__name">Production</span></span>
+
+    <div class="scope-bar__spacer"></div>
+
+    <button class="palette-trigger" type="button" data-open="palette">
+      <svg class="icon" aria-hidden="true"><use href="icons.svg#search"/></svg>
+      <span class="palette-trigger__text">Search or run a command</span>
+      <span class="keyboard-key">⌘</span><span class="keyboard-key">K</span>
+    </button>
+
+    <div class="scope-bar__divider" aria-hidden="true"></div>
+
+    <div class="scope-bar__group scope-bar__roles">
+      <span class="badge badge--accent" title="Your active roles in this tenant">Security administrator</span>
+    </div>
+    <span class="session-timer" id="session-timer" title="Your administrator session idles out after 15 minutes without activity">
+      <svg class="icon" aria-hidden="true"><use href="icons.svg#clock"/></svg>
+      <span>Session <span class="numeric" data-session-remaining>14:52</span></span>
+    </span>
+    <button class="button button--ghost button--icon" type="button" data-theme-toggle aria-label="Switch to light theme">
+      <svg class="icon" aria-hidden="true"><use href="icons.svg#sun"/></svg>
+    </button>
+    <span class="avatar" title="Rafaela Lima">RL</span>
+  </header>
+
+  <!-- ===================== Navigation ===================== -->
+  <nav class="navigation" aria-label="Main">
+    <div class="navigation__group">
+      <div class="navigation__label overline">Overview</div>
+      <ul class="navigation__list">
+        <li><a class="navigation__link" href="#" aria-current="page"><svg class="icon" aria-hidden="true"><use href="icons.svg#shield"/></svg>Security posture<span class="navigation__count navigation__count--alert">6</span></a></li>
+        <li><a class="navigation__link" href="#"><svg class="icon" aria-hidden="true"><use href="icons.svg#activity"/></svg>Live activity</a></li>
+      </ul>
+    </div>
+    <div class="navigation__group">
+      <div class="navigation__label overline">Directory</div>
+      <ul class="navigation__list">
+        <li><a class="navigation__link" href="#"><svg class="icon" aria-hidden="true"><use href="icons.svg#user"/></svg>Users<span class="navigation__count">48,213</span></a></li>
+        <li><a class="navigation__link" href="#"><svg class="icon" aria-hidden="true"><use href="icons.svg#users"/></svg>Groups</a></li>
+        <li><a class="navigation__link" href="#"><svg class="icon" aria-hidden="true"><use href="icons.svg#building"/></svg>Organizations</a></li>
+        <li><a class="navigation__link" href="#"><svg class="icon" aria-hidden="true"><use href="icons.svg#cpu"/></svg>Service accounts and agents</a></li>
+      </ul>
+    </div>
+    <div class="navigation__group">
+      <div class="navigation__label overline">Access</div>
+      <ul class="navigation__list">
+        <li><a class="navigation__link" href="#"><svg class="icon" aria-hidden="true"><use href="icons.svg#grid"/></svg>Applications<span class="navigation__count">27</span></a></li>
+        <li><a class="navigation__link" href="#"><svg class="icon" aria-hidden="true"><use href="icons.svg#link"/></svg>Identity providers</a></li>
+        <li><a class="navigation__link" href="#"><svg class="icon" aria-hidden="true"><use href="icons.svg#flow"/></svg>Authentication flows</a></li>
+      </ul>
+    </div>
+    <div class="navigation__group">
+      <div class="navigation__label overline">Authorization</div>
+      <ul class="navigation__list">
+        <li><a class="navigation__link" href="#"><svg class="icon" aria-hidden="true"><use href="icons.svg#badge-key"/></svg>Roles and permissions</a></li>
+        <li><a class="navigation__link" href="#"><svg class="icon" aria-hidden="true"><use href="icons.svg#scale"/></svg>Policies</a></li>
+        <li><a class="navigation__link" href="#"><svg class="icon" aria-hidden="true"><use href="icons.svg#play"/></svg>Simulator</a></li>
+        <li><a class="navigation__link" href="#"><svg class="icon" aria-hidden="true"><use href="icons.svg#list"/></svg>Decision logs</a></li>
+      </ul>
+    </div>
+    <div class="navigation__group">
+      <div class="navigation__label overline">Security</div>
+      <ul class="navigation__list">
+        <li><a class="navigation__link" href="#"><svg class="icon" aria-hidden="true"><use href="icons.svg#monitor"/></svg>Sessions</a></li>
+        <li><a class="navigation__link" href="#"><svg class="icon" aria-hidden="true"><use href="icons.svg#lock"/></svg>Signing keys<span class="navigation__count navigation__count--alert">1</span></a></li>
+        <li><a class="navigation__link" href="#"><svg class="icon" aria-hidden="true"><use href="icons.svg#radar"/></svg>Detections and lockouts</a></li>
+      </ul>
+    </div>
+    <div class="navigation__group">
+      <div class="navigation__label overline">Governance</div>
+      <ul class="navigation__list">
+        <li><a class="navigation__link" href="#"><svg class="icon" aria-hidden="true"><use href="icons.svg#shield"/></svg>Administrators</a></li>
+        <li><a class="navigation__link" href="#"><svg class="icon" aria-hidden="true"><use href="icons.svg#clipboard-check"/></svg>Approvals<span class="navigation__count">2</span></a></li>
+      </ul>
+    </div>
+    <div class="navigation__group">
+      <div class="navigation__label overline">Audit</div>
+      <ul class="navigation__list">
+        <li><a class="navigation__link" href="#"><svg class="icon" aria-hidden="true"><use href="icons.svg#file-text"/></svg>Audit records</a></li>
+        <li><a class="navigation__link" href="#"><svg class="icon" aria-hidden="true"><use href="icons.svg#broadcast"/></svg>Streams and webhooks</a></li>
+      </ul>
+    </div>
+    <div class="navigation__group">
+      <div class="navigation__label overline">Configuration</div>
+      <ul class="navigation__list">
+        <li><a class="navigation__link" href="#"><svg class="icon" aria-hidden="true"><use href="icons.svg#settings"/></svg>Tenant settings</a></li>
+        <li><a class="navigation__link" href="components.html"><svg class="icon" aria-hidden="true"><use href="icons.svg#grid"/></svg>Design system</a></li>
+      </ul>
+    </div>
+  </nav>
+
+  <!-- ===================== Page ===================== -->
+  <main class="page" id="main">
+    <div class="page__inner">
+
+      <div class="page__header reveal">
+        <div>
+          <div class="breadcrumbs"><span>acme-payments</span><span aria-hidden="true">/</span><span>Overview</span></div>
+          <h1 class="page__title">Security posture</h1>
+          <p class="provenance">Evaluated by the server 3 minutes ago against 14 checks · Baseline <a href="#">Hodor recommended, version 2026.11</a></p>
+        </div>
+        <div class="page__actions">
+          <button class="button" type="button"><svg class="icon" aria-hidden="true"><use href="icons.svg#download"/></svg>Export report</button>
+          <button class="button button--primary" type="button" data-reevaluate><svg class="icon" aria-hidden="true"><use href="icons.svg#refresh"/></svg>Evaluate now</button>
+        </div>
+      </div>
+
+      <!-- ---------- Score and live signals ---------- -->
+      <section class="overview-top" aria-label="Summary">
+        <div class="card posture reveal reveal--2">
+          <div class="score" role="img" aria-label="Posture score 82 out of 100">
+            <svg viewBox="0 0 120 120" aria-hidden="true">
+              <circle class="score__track" cx="60" cy="60" r="54" stroke-width="8"/>
+              <circle class="score__value" cx="60" cy="60" r="54" stroke-width="8" stroke-dasharray="278.2 339.3"/>
+              <circle class="score__ticks" cx="60" cy="60" r="54" stroke-width="9" stroke-dasharray="1.2 32.73"/>
+            </svg>
+            <div class="score__label" aria-hidden="true">
+              <span class="score__number">82</span>
+              <span class="score__out-of">of 100</span>
+            </div>
+          </div>
+          <div>
+            <div class="overline">Posture score</div>
+            <p class="metric__delta metric__delta--better">Up 6 points in 30 days</p>
+            <p class="muted t-sm">The score summarizes the checks below. Fix the findings, not the number.</p>
+            <div class="posture__counts">
+              <span class="posture__count"><span class="severity severity--high">High</span><strong>1</strong></span>
+              <span class="posture__count"><span class="severity severity--medium">Medium</span><strong>3</strong></span>
+              <span class="posture__count"><span class="severity severity--low">Low</span><strong>1</strong></span>
+              <span class="posture__count"><span class="muted t-xs">Accepted risks</span><strong>1</strong></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="metrics">
+          <div class="metric reveal reveal--2">
+            <div class="row row--between"><span class="overline">Sign-in success</span><span class="subtle t-xs">24 hours</span></div>
+            <span class="metric__value">98.2<span class="t-lg muted">%</span></span>
+            <svg class="metric__spark spark--accent" viewBox="0 0 120 32" preserveAspectRatio="none" aria-hidden="true">
+              <path class="area" d="M0 10 L10 9 L20 11 L30 8 L40 9 L50 7 L60 10 L70 8 L80 9 L90 6 L100 8 L110 7 L120 6 L120 32 L0 32Z"/>
+              <path d="M0 10 L10 9 L20 11 L30 8 L40 9 L50 7 L60 10 L70 8 L80 9 L90 6 L100 8 L110 7 L120 6"/>
+            </svg>
+          </div>
+          <div class="metric reveal reveal--3">
+            <div class="row row--between"><span class="overline">Lockouts</span><span class="subtle t-xs">24 hours</span></div>
+            <span class="metric__value">37</span>
+            <svg class="metric__spark spark--warning" viewBox="0 0 120 32" preserveAspectRatio="none" aria-hidden="true">
+              <path class="area" d="M0 26 L10 27 L20 25 L30 26 L40 24 L50 25 L60 20 L70 14 L80 18 L90 22 L100 24 L110 23 L120 25 L120 32 L0 32Z"/>
+              <path d="M0 26 L10 27 L20 25 L30 26 L40 24 L50 25 L60 20 L70 14 L80 18 L90 22 L100 24 L110 23 L120 25"/>
+            </svg>
+          </div>
+          <div class="metric reveal reveal--3">
+            <div class="row row--between"><span class="overline">Step-ups completed</span><span class="subtle t-xs">24 hours</span></div>
+            <span class="metric__value">214</span>
+            <svg class="metric__spark spark--info" viewBox="0 0 120 32" preserveAspectRatio="none" aria-hidden="true">
+              <path class="area" d="M0 22 L10 20 L20 21 L30 18 L40 19 L50 16 L60 17 L70 15 L80 16 L90 13 L100 14 L110 12 L120 13 L120 32 L0 32Z"/>
+              <path d="M0 22 L10 20 L20 21 L30 18 L40 19 L50 16 L60 17 L70 15 L80 16 L90 13 L100 14 L110 12 L120 13"/>
+            </svg>
+          </div>
+          <div class="metric reveal reveal--4">
+            <div class="row row--between"><span class="overline">Refresh token reuse</span><span class="severity severity--critical">Critical</span></div>
+            <span class="metric__value">2</span>
+            <span class="metric__delta metric__delta--worse">2 token families revoked automatically</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- ---------- Findings and live activity ---------- -->
+      <section class="overview-main">
+        <div class="card reveal reveal--3">
+          <div class="card__header">
+            <h2 class="card__title">Findings</h2>
+            <div class="segmented" role="group" aria-label="Filter findings">
+              <button type="button" aria-pressed="true">Open <span class="numeric">5</span></button>
+              <button type="button" aria-pressed="false">Accepted <span class="numeric">1</span></button>
+              <button type="button" aria-pressed="false">All</button>
+            </div>
+          </div>
+          <ul class="findings">
+            <li class="finding">
+              <span class="severity severity--high">High</span>
+              <div>
+                <div class="finding__title">2 administrators have no phishing-resistant multi-factor authentication</div>
+                <p class="finding__why">Administrators who sign in with a password and a one-time code can be phished. Passkeys are bound to Hodor's origin and cannot be replayed on a look-alike site.</p>
+                <div class="finding__objects"><span class="badge"><svg class="icon" aria-hidden="true"><use href="icons.svg#user"/></svg>joao.silva</span><span class="badge"><svg class="icon" aria-hidden="true"><use href="icons.svg#user"/></svg>marina.costa</span></div>
+              </div>
+              <button class="button button--small" type="button">Review administrators</button>
+            </li>
+            <li class="finding">
+              <span class="severity severity--medium">Medium</span>
+              <div>
+                <div class="finding__title">Signing key set <code class="confirm-code">tenant-signing</code> is 12 days past its rotation date</div>
+                <p class="finding__why">Long-lived signing keys widen the window in which a leaked key can mint valid tokens. The current key was created on 2026-08-08.</p>
+                <div class="finding__objects"><span class="identifier"><span>kid 0193b8e2…4c1a</span><button class="identifier__copy" type="button" data-copy="0193b8e2-77a1-7d0c-9f3e-1b2c9a8e4c1a" aria-label="Copy key identifier"><svg class="icon" aria-hidden="true"><use href="icons.svg#copy"/></svg></button></span></div>
+              </div>
+              <button class="button button--small" type="button" data-open="dialog-rotate">Rotate key</button>
+            </li>
+            <li class="finding">
+              <span class="severity severity--medium">Medium</span>
+              <div>
+                <div class="finding__title">Client <code class="confirm-code">billing-portal</code> issues refresh tokens valid for 90 days</div>
+                <p class="finding__why">The recommended baseline is 30 days with rotation. A weakened setting stays listed here until it is changed back or accepted with a reason and an expiry.</p>
+                <div class="finding__objects"><span class="badge badge--warning"><svg class="icon" aria-hidden="true"><use href="icons.svg#alert"/></svg>Weakened setting</span><span class="badge"><svg class="icon" aria-hidden="true"><use href="icons.svg#grid"/></svg>Billing portal</span></div>
+              </div>
+              <button class="button button--small" type="button">Open setting</button>
+            </li>
+            <li class="finding">
+              <span class="severity severity--medium">Medium</span>
+              <div>
+                <div class="finding__title">3 holders of <code class="confirm-code">tenant-administrator</code> have not used it in 30 days</div>
+                <p class="finding__why">Standing privilege that is not used is risk without benefit. Remove the role, or make it eligible on request when approvals arrive.</p>
+                <div class="finding__objects"><span class="badge">3 role assignments</span></div>
+              </div>
+              <button class="button button--small" type="button">Review assignments</button>
+            </li>
+            <li class="finding">
+              <span class="severity severity--low">Low</span>
+              <div>
+                <div class="finding__title">Client secret of <code class="confirm-code">reporting-batch</code> expires in 9 days</div>
+                <p class="finding__why">When it expires, the nightly export stops. Generate a new secret now; the old one keeps working until its expiry so the change has no downtime.</p>
+                <div class="finding__objects"><span class="identifier"><span>hds_live_r7Q2…</span><button class="identifier__copy" type="button" data-copy="hds_live_r7Q2" aria-label="Copy secret prefix"><svg class="icon" aria-hidden="true"><use href="icons.svg#copy"/></svg></button></span></div>
+              </div>
+              <button class="button button--small" type="button" data-open="dialog-secret">Generate secret</button>
+            </li>
+            <li class="finding finding--accepted">
+              <span class="severity severity--low">Low</span>
+              <div>
+                <div class="finding__title">Session absolute timeout is 24 hours, above the 12-hour baseline</div>
+                <p class="finding__why">Accepted by Rafaela Lima until 2026-12-31: "Field agents work 14-hour shifts; revisit after the passkey rollout."</p>
+              </div>
+              <span class="badge">Accepted</span>
+            </li>
+          </ul>
+        </div>
+
+        <div class="stack">
+          <div class="card reveal reveal--4">
+            <div class="card__header">
+              <h2 class="card__title">Live activity</h2>
+              <span class="live">Streaming</span>
+            </div>
+            <ul class="activity" id="activity" aria-live="polite">
+              <li class="activity__item">
+                <span class="activity__marker activity__marker--danger" aria-hidden="true"></span>
+                <div>
+                  <div class="activity__text">Refresh token reuse detected for <strong>ana.mendes</strong>; token family revoked</div>
+                  <div class="activity__meta">2 minutes ago · 203.0.113.42 · <button class="button button--ghost button--small" type="button" data-open="dialog-revoke">Revoke all her sessions</button></div>
+                </div>
+              </li>
+              <li class="activity__item">
+                <span class="activity__marker activity__marker--warning" aria-hidden="true"></span>
+                <div>
+                  <div class="activity__text">Account <strong>p.rocha</strong> locked after 5 failed sign-ins</div>
+                  <div class="activity__meta">6 minutes ago · 198.51.100.7</div>
+                </div>
+              </li>
+              <li class="activity__item">
+                <span class="activity__marker activity__marker--success" aria-hidden="true"></span>
+                <div>
+                  <div class="activity__text">Policy <strong>orders-access</strong> version 13 published by Rafaela Lima</div>
+                  <div class="activity__meta">41 minutes ago · after step-up with a passkey</div>
+                </div>
+              </li>
+              <li class="activity__item">
+                <span class="activity__marker" aria-hidden="true"></span>
+                <div>
+                  <div class="activity__text">Identity provider <strong>Microsoft Entra ID</strong> test sign-in succeeded</div>
+                  <div class="activity__meta">1 hour ago</div>
+                </div>
+              </li>
+            </ul>
+          </div>
+
+          <div class="card reveal reveal--4">
+            <div class="card__header">
+              <h2 class="card__title">Break-glass accounts</h2>
+              <span class="badge badge--success"><svg class="icon" aria-hidden="true"><use href="icons.svg#check"/></svg>Ready</span>
+            </div>
+            <div class="card__body break-glass">
+              <div class="break-glass__row"><span><svg class="icon" aria-hidden="true"><use href="icons.svg#life-buoy"/></svg> emergency-01</span><span class="muted t-xs">Never used · tested 2026-10-02</span></div>
+              <div class="break-glass__row"><span><svg class="icon" aria-hidden="true"><use href="icons.svg#life-buoy"/></svg> emergency-02</span><span class="muted t-xs">Never used · tested 2026-10-02</span></div>
+              <p class="muted t-xs">Any use raises a high-severity finding and alerts every security administrator.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ---------- Change preview ---------- -->
+      <section class="card reveal reveal--4" aria-labelledby="preview-title">
+        <div class="card__header">
+          <div>
+            <h2 class="card__title" id="preview-title">Pending change: policy <code class="confirm-code">orders-access</code>, draft version 14</h2>
+            <p class="provenance">Drafted by Marina Costa 18 minutes ago · validation passed with 1 warning</p>
+          </div>
+          <div class="row">
+            <span class="badge badge--info">Draft</span>
+            <button class="button" type="button">Discard draft</button>
+            <button class="button button--primary" type="button" data-open="dialog-publish">Review and publish</button>
+          </div>
+        </div>
+        <div class="preview">
+          <div class="preview__diff">
+            <div class="overline">Diff against version 13</div>
+            <pre class="diff" aria-label="Policy diff"><span class="diff__line"><span class="diff__number">12</span><span class="diff__sign"> </span><span><span class="token-keyword">allow</span> <span class="token-keyword">if</span> {</span></span>
+<span class="diff__line"><span class="diff__number">13</span><span class="diff__sign"> </span><span>    input.action == <span class="token-string">"orders:refund"</span></span></span>
+<span class="diff__line diff__line--removed"><span class="diff__number">14</span><span class="diff__sign">−</span><span>    <span class="token-string">"support"</span> <span class="token-keyword">in</span> input.subject.roles</span></span>
+<span class="diff__line diff__line--added"><span class="diff__number">14</span><span class="diff__sign">+</span><span>    <span class="token-string">"refund-approver"</span> <span class="token-keyword">in</span> input.subject.roles</span></span>
+<span class="diff__line diff__line--added"><span class="diff__number">15</span><span class="diff__sign">+</span><span>    input.resource.amount &lt;= 5000  <span class="token-comment"># larger refunds need finance</span></span></span>
+<span class="diff__line"><span class="diff__number">16</span><span class="diff__sign"> </span><span>    input.subject.tenant == input.resource.tenant</span></span>
+<span class="diff__line"><span class="diff__number">17</span><span class="diff__sign"> </span><span>}</span></span></pre>
+          </div>
+          <div class="preview__side">
+            <div class="stack--tight stack">
+              <div class="overline">Blast radius</div>
+              <ul class="blast">
+                <li><span>Applications that call this policy</span><strong>3</strong></li>
+                <li><span>Subjects whose decision changes</span><strong>412</strong></li>
+                <li><span>Decisions last 24 hours that would flip</span><strong>1,887</strong></li>
+              </ul>
+            </div>
+            <div class="stack--tight stack">
+              <div class="overline">Simulation on sample subjects</div>
+              <table class="simulation">
+                <tbody>
+                  <tr><td>support agent, refund 120</td><td><span class="decision decision--allow">ALLOW</span><span class="decision__arrow">→</span><span class="decision decision--deny">DENY</span></td></tr>
+                  <tr><td>refund approver, refund 900</td><td><span class="decision decision--deny">DENY</span><span class="decision__arrow">→</span><span class="decision decision--allow">ALLOW</span></td></tr>
+                  <tr><td>refund approver, refund 8,000</td><td><span class="decision decision--deny">DENY</span><span class="decision__arrow">→</span><span class="decision decision--deny">DENY</span></td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="alert alert--warning">
+              <svg class="icon" aria-hidden="true"><use href="icons.svg#alert"/></svg>
+              <div><div class="alert__title">412 support agents lose refunds</div><div class="t-xs muted">Assign the new role before publishing, or they will be denied.</div></div>
+              <span></span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </div>
+  </main>
+</div>
+
+<!-- ===================== Dialog: rotate key (ladder level 3) ===================== -->
+<dialog class="dialog" id="dialog-rotate" aria-labelledby="rotate-title">
+  <div data-step="confirm">
+    <div class="dialog__header">
+      <span class="dialog__emblem" aria-hidden="true"><svg class="icon icon--large"><use href="icons.svg#lock"/></svg></span>
+      <div>
+        <h2 class="dialog__title" id="rotate-title">Rotate signing key set tenant-signing</h2>
+        <div class="ladder"><span class="ladder__steps" aria-hidden="true"><span class="ladder__step is-on"></span><span class="ladder__step is-on"></span><span class="ladder__step is-on"></span><span class="ladder__step"></span></span>Level 3 · recent authentication required</div>
+      </div>
+    </div>
+    <div class="dialog__body">
+      <ul class="consequences">
+        <li><span>New key becomes active for signing</span><strong>Immediately</strong></li>
+        <li><span>Current key stays in the JWKS for verification</span><strong>7 days</strong></li>
+        <li><span>Applications that cache the JWKS longer than that</span><strong>0</strong></li>
+      </ul>
+      <label class="field">
+        <span class="field__label">Type <span class="confirm-code">tenant-signing</span> to confirm</span>
+        <input class="input input--mono" type="text" autocomplete="off" spellcheck="false" data-confirm-match="tenant-signing" aria-describedby="rotate-hint">
+        <span class="field__hint" id="rotate-hint">You will be asked to confirm with your passkey.</span>
+      </label>
+    </div>
+    <div class="dialog__footer">
+      <button class="button" type="button" data-close>Cancel</button>
+      <button class="button button--danger" type="button" data-confirm-button data-next-step="step-up" disabled>Rotate key</button>
+    </div>
+  </div>
+  <div data-step="step-up" hidden>
+    <div class="dialog__header">
+      <span class="dialog__emblem dialog__emblem--accent" aria-hidden="true"><svg class="icon icon--large"><use href="icons.svg#fingerprint"/></svg></span>
+      <div>
+        <h2 class="dialog__title">Confirm it is you</h2>
+        <p class="muted t-sm">Rotating a signing key needs an authentication from the last 5 minutes.</p>
+      </div>
+    </div>
+    <div class="dialog__body">
+      <div class="passkey">
+        <span class="passkey__ring"><svg class="icon" aria-hidden="true"><use href="icons.svg#fingerprint"/></svg></span>
+        <div>Use your passkey for <strong>rafaela.lima</strong></div>
+        <div class="subtle t-xs">Waiting for your device…</div>
+      </div>
+    </div>
+    <div class="dialog__footer">
+      <button class="button" type="button" data-close>Cancel</button>
+      <button class="button button--primary" type="button" data-complete="Signing key rotated. New key 0193c4a9…e2b0 is active.">Simulate passkey</button>
+    </div>
+  </div>
+</dialog>
+
+<!-- ===================== Dialog: revoke sessions (ladder level 2, hold to confirm) ===================== -->
+<dialog class="dialog" id="dialog-revoke" aria-labelledby="revoke-title">
+  <div class="dialog__header">
+    <span class="dialog__emblem" aria-hidden="true"><svg class="icon icon--large"><use href="icons.svg#monitor"/></svg></span>
+    <div>
+      <h2 class="dialog__title" id="revoke-title">Revoke all sessions of ana.mendes</h2>
+      <div class="ladder"><span class="ladder__steps" aria-hidden="true"><span class="ladder__step is-on"></span><span class="ladder__step is-on"></span><span class="ladder__step"></span><span class="ladder__step"></span></span>Level 2 · type to confirm</div>
+    </div>
+  </div>
+  <div class="dialog__body">
+    <ul class="consequences">
+      <li><span>Single sign-on sessions ended</span><strong>3</strong></li>
+      <li><span>Application sessions ended</span><strong>7</strong></li>
+      <li><span>Refresh tokens revoked</span><strong>11</strong></li>
+    </ul>
+    <p class="muted t-sm">She must sign in again on every device. Access tokens already issued stay valid until they expire, at most 5 minutes.</p>
+    <label class="field">
+      <span class="field__label">Type <span class="confirm-code">ana.mendes</span> to confirm</span>
+      <input class="input input--mono" type="text" autocomplete="off" spellcheck="false" data-confirm-match="ana.mendes">
+    </label>
+  </div>
+  <div class="dialog__footer">
+    <button class="button" type="button" data-close>Cancel</button>
+    <button class="button button--danger button--hold" type="button" data-confirm-button data-hold data-complete="Revoked 3 sessions and 11 refresh tokens of ana.mendes." disabled><span>Hold to revoke sessions</span></button>
+  </div>
+</dialog>
+
+<!-- ===================== Dialog: secret shown once ===================== -->
+<dialog class="dialog" id="dialog-secret" aria-labelledby="secret-title">
+  <div class="dialog__header">
+    <span class="dialog__emblem dialog__emblem--accent" aria-hidden="true"><svg class="icon icon--large"><use href="icons.svg#badge-key"/></svg></span>
+    <div>
+      <h2 class="dialog__title" id="secret-title">New client secret for reporting-batch</h2>
+      <p class="muted t-sm">This is the only time the secret is shown. Hodor stores only a hash of it.</p>
+    </div>
+  </div>
+  <div class="dialog__body">
+    <div class="secret">
+      <div class="secret__value"><code>hds_live_K9vT2mXq7RbW4nLp8sYc3HdF6jZa1Ue5</code><button class="button button--small" type="button" data-copy="hds_live_K9vT2mXq7RbW4nLp8sYc3HdF6jZa1Ue5"><svg class="icon" aria-hidden="true"><use href="icons.svg#copy"/></svg>Copy</button></div>
+      <div class="row row--between t-xs muted"><span>Expires 2027-11-20</span><span>Previous secret valid until 2026-11-29</span></div>
+    </div>
+    <label class="switch"><input type="checkbox" data-ack> <span>I have stored this secret in a secrets manager</span></label>
+  </div>
+  <div class="dialog__footer">
+    <button class="button button--primary" type="button" data-close data-ack-button data-complete="Secret created. Last characters a1Ue5." disabled>Close</button>
+  </div>
+</dialog>
+
+<!-- ===================== Dialog: publish policy (ladder level 3) ===================== -->
+<dialog class="dialog" id="dialog-publish" aria-labelledby="publish-title">
+  <div class="dialog__header">
+    <span class="dialog__emblem dialog__emblem--accent" aria-hidden="true"><svg class="icon icon--large"><use href="icons.svg#scale"/></svg></span>
+    <div>
+      <h2 class="dialog__title" id="publish-title">Publish orders-access version 14 to production</h2>
+      <div class="ladder"><span class="ladder__steps" aria-hidden="true"><span class="ladder__step is-on"></span><span class="ladder__step is-on"></span><span class="ladder__step is-on"></span><span class="ladder__step"></span></span>Level 3 · recent authentication required</div>
+    </div>
+  </div>
+  <div class="dialog__body">
+    <ul class="consequences">
+      <li><span>Subjects whose decision changes</span><strong>412</strong></li>
+      <li><span>Rollback to version 13</span><strong>One action</strong></li>
+    </ul>
+    <div class="alert alert--warning">
+      <svg class="icon" aria-hidden="true"><use href="icons.svg#alert"/></svg>
+      <div><div class="alert__title">Validation warning</div><div class="t-xs muted">412 subjects lose <code>orders:refund</code>.</div></div>
+      <span></span>
+    </div>
+  </div>
+  <div class="dialog__footer">
+    <button class="button" type="button" data-close>Cancel</button>
+    <button class="button button--primary" type="button" data-close data-complete="Version 14 published. Recorded as audit record 0193c4b2…91d7.">Publish after step-up</button>
+  </div>
+</dialog>
+
+<!-- ===================== Command palette ===================== -->
+<dialog class="palette" id="palette" aria-label="Command palette">
+  <div class="palette__search">
+    <svg class="icon icon--large" aria-hidden="true"><use href="icons.svg#search"/></svg>
+    <input type="text" placeholder="Search screens, users, clients, or paste an identifier" aria-controls="palette-list" data-palette-input>
+    <span class="keyboard-key">Esc</span>
+  </div>
+  <ul class="palette__list" id="palette-list" role="listbox">
+    <li class="palette__group overline" role="presentation">Actions</li>
+    <li class="palette__item" role="option" aria-selected="true" data-open="dialog-revoke"><svg class="icon" aria-hidden="true"><use href="icons.svg#monitor"/></svg>Revoke sessions for a user…<span class="badge badge--danger">Level 2</span></li>
+    <li class="palette__item" role="option" data-open="dialog-rotate"><svg class="icon" aria-hidden="true"><use href="icons.svg#lock"/></svg>Rotate signing keys…<span class="badge badge--danger">Level 3</span></li>
+    <li class="palette__item" role="option" data-open="dialog-secret"><svg class="icon" aria-hidden="true"><use href="icons.svg#badge-key"/></svg>Generate a client secret…<span class="badge">Level 1</span></li>
+    <li class="palette__group overline" role="presentation">Go to</li>
+    <li class="palette__item" role="option"><svg class="icon" aria-hidden="true"><use href="icons.svg#user"/></svg>Users<span class="keyboard-key">G U</span></li>
+    <li class="palette__item" role="option"><svg class="icon" aria-hidden="true"><use href="icons.svg#grid"/></svg>Applications<span class="keyboard-key">G A</span></li>
+    <li class="palette__item" role="option"><svg class="icon" aria-hidden="true"><use href="icons.svg#file-text"/></svg>Audit records<span class="keyboard-key">G R</span></li>
+    <li class="palette__item" role="option"><svg class="icon" aria-hidden="true"><use href="icons.svg#scale"/></svg>Policies<span class="keyboard-key">G P</span></li>
+  </ul>
+</dialog>
+
+<div class="toast-region" id="toasts" aria-live="polite"></div>
+</body>
+</html>

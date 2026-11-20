@@ -42,7 +42,7 @@ The consoles trail their APIs by one phase so that the API is settled first.
 | Phase | Admin console | Account console | Hosted auth user interface |
 |---|---|---|---|
 | 1 | — | — | Login, registration, recovery |
-| 2 | Users, applications, clients, keys, audit | — | Consent |
+| 2 | Security posture, users, applications, clients, keys, sessions, audit, support grants | — | Consent |
 | 3 | Identity providers, routing | — | Provider selection, linking |
 | 4 | Authentication policies, flows (form-based) | Profile, password, multi-factor authentication, passkeys, sessions, devices, linked accounts, consents | Multi-factor authentication, passkeys, branding, localization |
 | 5 | Roles, policies, Rego editor, simulation, decision logs | — | — |
