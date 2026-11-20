@@ -35,10 +35,10 @@ flowchart TB
 
     social["Social identity providers<br/>Google, Microsoft, GitHub, Apple"]
     enterprise["Enterprise identity providers<br/>Entra ID, Okta, Active Directory Federation Services, LDAP and Active Directory"]
-    opa["Open Policy Agent"]
-    kms["External key management service<br/>Amazon Web Services, Google Cloud, Azure, Vault"]
+    policyAgent["Open Policy Agent"]
+    keyService["External key management service<br/>Amazon Web Services, Google Cloud, Azure, Vault"]
     notify["Email and SMS"]
-    siem["security event management system and webhooks"]
+    eventSink["security event management system and webhooks"]
     scim["SCIM clients<br/>human resources systems, upstream identity providers"]
 
     user -->|"sign-in, multi-factor authentication, account"| hodor
@@ -50,10 +50,10 @@ flowchart TB
 
     hodor -->|"OpenID Connect, OAuth 2.0"| social
     hodor -->|"OpenID Connect, SAML, LDAPS"| enterprise
-    hodor -->|"decisions, bundles, logs"| opa
-    hodor -->|"sign, wrap keys"| kms
+    hodor -->|"decisions, bundles, logs"| policyAgent
+    hodor -->|"sign, wrap keys"| keyService
     hodor -->|"SMTP, API"| notify
-    hodor -->|"audit events"| siem
+    hodor -->|"audit events"| eventSink
 ```
 
 ## C4 Level 2: Containers
@@ -61,37 +61,37 @@ flowchart TB
 ```mermaid
 flowchart TB
     subgraph browser["Browser"]
-        authui["auth-ui<br/>React, hosted login"]
-        adminui["admin-console<br/>React"]
-        accountui["account-console<br/>React"]
+        authInterface["auth-ui<br/>React, hosted login"]
+        adminConsole["admin-console<br/>React"]
+        accountConsole["account-console<br/>React"]
     end
 
     subgraph hodor["Hodor"]
         server["hodor-server<br/>Axum: protocols, APIs, console backend-for-frontend"]
         worker["hodor-worker<br/>outbox, cleanup, key rotation,<br/>LDAP sync, Open Policy Agent bundles"]
-        cli["hodor-cli<br/>migrations, bootstrap, operations"]
+        commandLineTool["hodor-cli<br/>migrations, bootstrap, operations"]
     end
 
-    pg[("PostgreSQL<br/>state, outbox, audit")]
+    postgres[("PostgreSQL<br/>state, outbox, audit")]
     redis[("Redis, optional<br/>cache, rate limit, replay")]
-    opa["Open Policy Agent<br/>sidecar or remote"]
-    otel["OpenTelemetry collector"]
-    ext["identity providers, key management service, SMTP, security event management system"]
+    policyAgent["Open Policy Agent<br/>sidecar or remote"]
+    telemetryCollector["OpenTelemetry collector"]
+    externalServices["identity providers, key management service, SMTP, security event management system"]
 
-    authui --> server
-    adminui --> server
-    accountui --> server
-    server --> pg
+    authInterface --> server
+    adminConsole --> server
+    accountConsole --> server
+    server --> postgres
     server --> redis
-    server -->|"POST /v1/data"| opa
-    opa -->|"GET bundles, POST logs and status"| server
-    worker --> pg
+    server -->|"POST /v1/data"| policyAgent
+    policyAgent -->|"GET bundles, POST logs and status"| server
+    worker --> postgres
     worker --> redis
-    worker --> ext
-    server --> ext
-    cli --> pg
-    server --> otel
-    worker --> otel
+    worker --> externalServices
+    server --> externalServices
+    commandLineTool --> postgres
+    server --> telemetryCollector
+    worker --> telemetryCollector
 ```
 
 Decisions embedded in the diagram:
@@ -107,19 +107,19 @@ Decisions embedded in the diagram:
 
 ```mermaid
 flowchart TB
-    subgraph http["protocol-http"]
-        mw["Middleware<br/>tenant resolver, request id, rate limit,<br/>CSRF, security headers, auth"]
-        r_oauth["OAuth and OpenID Connect routes"]
-        r_inter["Interaction API<br/>login, multi-factor authentication, consent"]
-        r_admin["Admin API"]
-        r_account["Account API"]
-        r_authz["Authorization API"]
-        r_opa["Open Policy Agent service API<br/>bundles, logs, status"]
-        r_scim["SCIM"]
-        r_saml["SAML"]
+    subgraph protocolHttp["protocol-http"]
+        middleware["Middleware<br/>tenant resolver, request identifier, rate limit,<br/>CSRF, security headers, authentication"]
+        oauthRoutes["OAuth and OpenID Connect routes"]
+        interactionRoutes["Interaction API<br/>login, multi-factor authentication, consent"]
+        adminRoutes["Admin API"]
+        accountRoutes["Account API"]
+        authorizationRoutes["Authorization API"]
+        policyAgentRoutes["Open Policy Agent service API<br/>bundles, logs, status"]
+        scimRoutes["SCIM"]
+        samlRoutes["SAML"]
     end
 
-    subgraph ctx["Contexts (use cases)"]
+    subgraph contexts["Contexts (use cases)"]
         tenant
         identity
         credential
@@ -134,23 +134,23 @@ flowchart TB
     end
 
     subgraph adapters["Adapters"]
-        a_pg["adapters-postgres"]
-        a_redis["adapters-redis"]
-        a_crypto["adapters-crypto"]
-        a_kms["adapters-kms"]
-        a_http["adapters-http"]
-        a_native["authorization-native"]
-        a_opa["authorization-opa"]
+        adaptersPostgres["adapters-postgres"]
+        adaptersRedis["adapters-redis"]
+        adaptersCrypto["adapters-crypto"]
+        adaptersKeyService["adapters-kms"]
+        adaptersHttp["adapters-http"]
+        authorizationNative["authorization-native"]
+        authorizationPolicyAgent["authorization-opa"]
     end
 
-    mw --> r_oauth & r_inter & r_admin & r_account & r_authz & r_opa & r_scim & r_saml
-    r_oauth --> oauth
-    r_inter --> authentication & federation & oauth
-    r_admin --> tenant & identity & oauth & federation & authorization & audit & keys
-    r_account --> identity & credential & session & oauth
-    r_authz --> authorization
-    r_opa --> authorization
-    ctx -. "ports" .-> adapters
+    middleware --> oauthRoutes & interactionRoutes & adminRoutes & accountRoutes & authorizationRoutes & policyAgentRoutes & scimRoutes & samlRoutes
+    oauthRoutes --> oauth
+    interactionRoutes --> authentication & federation & oauth
+    adminRoutes --> tenant & identity & oauth & federation & authorization & audit & keys
+    accountRoutes --> identity & credential & session & oauth
+    authorizationRoutes --> authorization
+    policyAgentRoutes --> authorization
+    contexts -. "ports" .-> adapters
 ```
 
 The composition root (`apps/hodor-server/src/main.rs`) is the only place that knows concrete adapter types. It builds an `AppState` holding one `Arc<dyn Port>` per port and hands it to `protocol-http`.
@@ -160,13 +160,13 @@ The composition root (`apps/hodor-server/src/main.rs`) is the only place that kn
 ```mermaid
 flowchart LR
     start["StartAuthentication"] --> engine["FlowEngine<br/>interprets the flow graph"]
-    engine --> tx["AuthTransaction<br/>flow state, short time to live"]
-    engine --> reg["AuthenticatorRegistry"]
-    reg --> a1["PasswordAuthenticator"]
-    reg --> a2["TotpAuthenticator"]
-    reg --> a3["WebAuthnAuthenticator"]
-    reg --> a4["ExternalIdpAuthenticator<br/>implemented in federation"]
-    reg --> a5["WasmActionAuthenticator<br/>plugin-runtime"]
+    engine --> transaction["AuthTransaction<br/>flow state, short time to live"]
+    engine --> registry["AuthenticatorRegistry"]
+    registry --> passwordAuthenticator["PasswordAuthenticator"]
+    registry --> totpAuthenticator["TotpAuthenticator"]
+    registry --> webauthnAuthenticator["WebAuthnAuthenticator"]
+    registry --> externalProviderAuthenticator["ExternalIdpAuthenticator<br/>implemented in federation"]
+    registry --> pluginAuthenticator["WasmActionAuthenticator<br/>plugin-runtime"]
     engine --> risk["RiskEvaluator"]
     engine --> guard["AttemptGuard<br/>lockout, rate limit"]
     engine --> done["CompleteAuthentication<br/>creates or elevates the session"]
@@ -178,13 +178,13 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    authz["AuthorizeRequest<br/>validates client, redirect, PKCE, pushed authorization requests"] --> login{"Session satisfies<br/>acr, max_age, prompt?"}
-    login -- no --> inter["Interaction: login or step-up"]
+    authorizeRequest["AuthorizeRequest<br/>validates client, redirect, PKCE, pushed authorization requests"] --> login{"Session satisfies<br/>acr, max_age, prompt?"}
+    login -- no --> interaction["Interaction: login or step-up"]
     login -- yes --> consent{"Consent covers<br/>the scopes?"}
-    consent -- no --> cs["Interaction: consent"]
+    consent -- no --> consentScreen["Interaction: consent"]
     consent -- yes --> code["Issue authorization code"]
-    token["TokenRequest"] --> cauth["ClientAuthenticator"]
-    cauth --> grants["GrantHandler per grant_type"]
+    token["TokenRequest"] --> clientAuthenticator["ClientAuthenticator"]
+    clientAuthenticator --> grants["GrantHandler per grant_type"]
     grants --> issuer["TokenIssuer<br/>claims mappers, signing via keys"]
     issuer --> store["Grant, RefreshTokenFamily"]
 ```

@@ -19,39 +19,39 @@ Method: STRIDE per trust boundary, with one focused model for each area the spec
 ```mermaid
 flowchart LR
     subgraph internet["Untrusted"]
-        ua["Browsers"]
+        browsers["Browsers"]
         clients["OAuth clients"]
-        idps["External identity providers"]
+        identityProviders["External identity providers"]
         scim["SCIM clients"]
     end
     subgraph edge["Edge"]
-        lb["Load balancer / TLS"]
+        loadBalancer["Load balancer / TLS"]
     end
     subgraph app["Hodor trust zone"]
         server["hodor-server"]
         worker["hodor-worker"]
-        wasm["WebAssembly plugins<br/>sandboxed, untrusted code"]
+        plugins["WebAssembly plugins<br/>sandboxed, untrusted code"]
     end
     subgraph data["Data zone"]
-        pg[("PostgreSQL")]
+        postgres[("PostgreSQL")]
         redis[("Redis")]
     end
-    subgraph semi["Semi-trusted services"]
-        opa["Open Policy Agent"]
-        kms["key management service"]
-        smtp["SMTP / SMS"]
+    subgraph semiTrusted["Semi-trusted services"]
+        policyAgent["Open Policy Agent"]
+        keyService["key management service"]
+        mail["SMTP / SMS"]
     end
-    ua --> lb
-    clients --> lb
-    scim --> lb
-    lb --> server
-    server <--> idps
-    server --> pg & redis
-    worker --> pg & redis
-    server <--> opa
-    server --> kms
-    worker --> smtp
-    server --- wasm
+    browsers --> loadBalancer
+    clients --> loadBalancer
+    scim --> loadBalancer
+    loadBalancer --> server
+    server <--> identityProviders
+    server --> postgres & redis
+    worker --> postgres & redis
+    server <--> policyAgent
+    server --> keyService
+    worker --> mail
+    server --- plugins
 ```
 
 Boundaries: internet → edge; edge → application; application → data; application → external identity providers (their responses are untrusted input); application → Open Policy Agent (policy content may be tenant-authored); host → WebAssembly guest; tenant ↔ tenant (logical, crossing every zone); administrator → platform.

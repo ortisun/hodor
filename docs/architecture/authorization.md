@@ -154,22 +154,22 @@ Only Open Policy Agent's official integration surfaces are used. Hodor does not 
 ```mermaid
 flowchart LR
     subgraph hodor["Hodor"]
-        pap["Policy lifecycle<br/>authorization"]
+        policyLifecycle["Policy lifecycle<br/>authorization"]
         builder["Bundle builder<br/>hodor-worker"]
-        bsvc["Open Policy Agent service API<br/>bundles, logs, status"]
+        serviceApi["Open Policy Agent service API<br/>bundles, logs, status"]
         adapter["OpaAuthorizationAdapter<br/>timeout, retry, breaker"]
         store[("policy_version, policy_bundle,<br/>decision_log, opa_instance_status")]
     end
-    opa["Open Policy Agent instance"]
+    policyAgent["Open Policy Agent instance"]
 
-    pap --> store
+    policyLifecycle --> store
     store --> builder
     builder -->|"signed bundle + revision"| store
-    opa -->|"poll bundle (ETag)"| bsvc
-    opa -->|"decision logs"| bsvc
-    opa -->|"status"| bsvc
-    bsvc --> store
-    adapter -->|"POST /v1/data"| opa
+    policyAgent -->|"poll bundle (ETag)"| serviceApi
+    policyAgent -->|"decision logs"| serviceApi
+    policyAgent -->|"status"| serviceApi
+    serviceApi --> store
+    adapter -->|"POST /v1/data"| policyAgent
 ```
 
 ### Deployment modes

@@ -23,33 +23,33 @@
 flowchart TB
     internet["Internet"] --> ingress["Ingress / Gateway<br/>TLS, web application firewall, coarse rate limit"]
 
-    subgraph ns["Namespace hodor"]
-        subgraph spod["hodor-server pod (x3+, spread across zones)"]
+    subgraph namespace["Namespace hodor"]
+        subgraph serverPod["hodor-server pod (x3+, spread across zones)"]
             server["hodor-server<br/>:8080 public, :9090 ops"]
-            opa["Open Policy Agent sidecar<br/>localhost only"]
+            policyAgent["Open Policy Agent sidecar<br/>localhost only"]
         end
-        subgraph wpod["hodor-worker pod (x2+)"]
+        subgraph workerPod["hodor-worker pod (x2+)"]
             worker["hodor-worker"]
         end
-        mig["Job: hodor-cli migrate<br/>pre-upgrade hook"]
+        migration["Job: hodor-cli migrate<br/>pre-upgrade hook"]
         redis[("Redis, optional")]
     end
 
-    pg[("PostgreSQL<br/>primary + standby, point-in-time recovery")]
-    kms["key management service / Vault"]
-    otel["OpenTelemetry collector"]
-    ext["identity providers, SMTP, security event management system"]
+    postgres[("PostgreSQL<br/>primary + standby, point-in-time recovery")]
+    keyService["key management service / Vault"]
+    telemetryCollector["OpenTelemetry collector"]
+    externalServices["identity providers, SMTP, security event management system"]
 
     ingress --> server
-    server --> opa
-    opa -->|"bundles, logs, status"| server
-    server --> pg & redis & kms
-    worker --> pg & redis & kms
-    worker --> ext
-    server --> ext
-    mig --> pg
-    server --> otel
-    worker --> otel
+    server --> policyAgent
+    policyAgent -->|"bundles, logs, status"| server
+    server --> postgres & redis & keyService
+    worker --> postgres & redis & keyService
+    worker --> externalServices
+    server --> externalServices
+    migration --> postgres
+    server --> telemetryCollector
+    worker --> telemetryCollector
 ```
 
 | Concern | Setting |

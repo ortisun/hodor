@@ -117,7 +117,7 @@ sequenceDiagram
     Server-->>Browser: 302 redirect_uri?code&state&iss
     RelyingParty->>Server: POST /token
     OAuth->>Identity: GetClaims(user, consented scopes)
-    OAuth->>OAuth: subject = public id or pairwise(sector, user, salt)
+    OAuth->>OAuth: subject = public identifier or pairwise(sector, user, salt)
     OAuth->>Keys: Sign ID Token {iss, sub, aud, exp, iat, auth_time, nonce, acr, amr, sid, at_hash}
     Server-->>RelyingParty: {id_token, access_token, refresh_token}
     RelyingParty->>RelyingParty: validate signature, iss, aud, exp, nonce
@@ -262,7 +262,7 @@ stateDiagram-v2
     Authenticating --> Active: flow completed, session created
     Authenticating --> [*]: transaction expired or failed
     Active --> Active: activity (touch, throttled)
-    Active --> Elevated: step-up, id rotated, acr raised
+    Active --> Elevated: step-up, identifier rotated, acr raised
     Elevated --> Active: elevation window ends
     Active --> Expired: idle timeout or absolute timeout
     Active --> Revoked: user logout, admin revocation, global logout, password change, account disabled

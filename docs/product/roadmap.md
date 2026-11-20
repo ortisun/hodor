@@ -4,18 +4,18 @@ The phases follow section 26 of the specification. Four items move earlier becau
 
 ```mermaid
 flowchart LR
-    p0["0 Foundation"] --> p1["1 Identity core"]
-    p1 --> p2["2 OAuth2 and OpenID Connect"]
-    p2 --> p3["3 Federation"]
-    p2 --> p4["4 Advanced authentication"]
-    p2 --> p5["5 Authorization engine"]
-    p3 --> p6["6 Enterprise federation"]
-    p4 --> p6
-    p5 --> p7["7 Governance"]
-    p5 --> p8["8 Ecosystem"]
-    p6 --> p9["9 Production readiness"]
-    p7 --> p9
-    p8 --> p9
+    phase0["0 Foundation"] --> phase1["1 Identity core"]
+    phase1 --> phase2["2 OAuth2 and OpenID Connect"]
+    phase2 --> phase3["3 Federation"]
+    phase2 --> phase4["4 Advanced authentication"]
+    phase2 --> phase5["5 Authorization engine"]
+    phase3 --> phase6["6 Enterprise federation"]
+    phase4 --> phase6
+    phase5 --> phase7["7 Governance"]
+    phase5 --> phase8["8 Ecosystem"]
+    phase6 --> phase9["9 Production readiness"]
+    phase7 --> phase9
+    phase8 --> phase9
 ```
 
 Phases 3, 4 and 5 depend only on Phase 2 and can run in parallel once there are people for it.

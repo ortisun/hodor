@@ -11,30 +11,30 @@ flowchart TB
     credential["credential"]
     session["session"]
     keys["keys"]
-    authn["authentication"]
-    fed["federation"]
+    authentication["authentication"]
+    federation["federation"]
     oauth["oauth<br/>OAuth 2.x, OpenID Connect, clients, consent"]
     saml["saml"]
-    prov["provisioning<br/>SCIM, LDAP sync"]
-    authz["authorization"]
+    provisioning["provisioning<br/>SCIM, LDAP sync"]
+    authorization["authorization"]
     audit["audit"]
-    notif["notification"]
+    notification["notification"]
 
-    authn -->|"Customer/Supplier"| identity
-    authn -->|"Customer/Supplier"| credential
-    authn -->|"Customer/Supplier"| session
-    authn -->|"Conformist"| tenant
-    authn -->|"Customer/Supplier"| notif
-    fed -->|"implements the Authenticator service provider interface"| authn
-    fed -->|"Customer/Supplier"| identity
+    authentication -->|"Customer/Supplier"| identity
+    authentication -->|"Customer/Supplier"| credential
+    authentication -->|"Customer/Supplier"| session
+    authentication -->|"Conformist"| tenant
+    authentication -->|"Customer/Supplier"| notification
+    federation -->|"implements the Authenticator service provider interface"| authentication
+    federation -->|"Customer/Supplier"| identity
     oauth -->|"Customer/Supplier"| session
     oauth -->|"Customer/Supplier"| identity
     oauth -->|"Customer/Supplier"| keys
     oauth -->|"Conformist"| tenant
     saml --> session & identity & keys
-    prov -->|"Customer/Supplier"| identity
+    provisioning -->|"Customer/Supplier"| identity
     audit -. "consumes events, access control list" .-> kernel
-    authz -. "policy information point: reads roles and groups through a port" .-> identity
+    authorization -. "policy information point: reads roles and groups through a port" .-> identity
 ```
 
 Relevant relationships:

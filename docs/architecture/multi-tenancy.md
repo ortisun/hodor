@@ -12,21 +12,21 @@ The specification uses *tenant* and *organization* in overlapping ways and also 
 ```mermaid
 flowchart TB
     subgraph platform["Hodor installation"]
-        sys["system tenant<br/>platform admins"]
-        subgraph t1["Tenant acme"]
-            u1["Users"]
-            o1["Organization: Contoso"]
-            o2["Organization: Fabrikam"]
-            c1["Clients, identity providers, policies, keys"]
+        systemTenant["system tenant<br/>platform admins"]
+        subgraph tenantAcme["Tenant acme"]
+            acmeUsers["Users"]
+            contoso["Organization: Contoso"]
+            fabrikam["Organization: Fabrikam"]
+            acmeConfiguration["Clients, identity providers, policies, keys"]
         end
-        subgraph t2["Tenant globex"]
-            u2["Users"]
-            c2["Clients, identity providers, policies, keys"]
+        subgraph tenantGlobex["Tenant globex"]
+            globexUsers["Users"]
+            globexConfiguration["Clients, identity providers, policies, keys"]
         end
     end
-    u1 --- o1
-    u1 --- o2
-    t2 -. "federation: globex trusts acme as identity provider" .-> t1
+    acmeUsers --- contoso
+    acmeUsers --- fabrikam
+    tenantGlobex -. "federation: globex trusts acme as identity provider" .-> tenantAcme
 ```
 
 ## Tenant resolution

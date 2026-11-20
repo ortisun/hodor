@@ -79,21 +79,21 @@ flowchart BT
     saml --> identity & session & keys
     provisioning --> identity
 
-    authznative["authorization-native"] --> authorization
-    authzopa["authorization-opa"] --> authorization
+    authorizationNative["authorization-native"] --> authorization
+    authorizationPolicyAgent["authorization-opa"] --> authorization
     plugin["plugin-runtime"] --> authentication & oauth & kernel
 
-    pg["adapters-postgres"] --> tenant & identity & credential & session & keys & authentication & federation & oauth & authorization & audit
+    adaptersPostgres["adapters-postgres"] --> tenant & identity & credential & session & keys & authentication & federation & oauth & authorization & audit
     redis["adapters-redis"] --> session & authentication & oauth & authorization
     crypto["adapters-crypto"] --> credential & keys & oauth
-    kms["adapters-kms"] --> keys
-    ahttp["adapters-http"] --> kernel
+    adaptersKeyService["adapters-kms"] --> keys
+    adaptersHttp["adapters-http"] --> kernel
 
-    http["protocol-http"] --> tenant & identity & credential & session & authentication & federation & oauth & authorization & audit & keys
+    protocolHttp["protocol-http"] --> tenant & identity & credential & session & authentication & federation & oauth & authorization & audit & keys
 
-    server["hodor-server"] --> http & pg & redis & crypto & kms & ahttp & authznative & authzopa & observability
-    worker["hodor-worker"] --> pg & redis & crypto & kms & ahttp & authzopa & observability & notification & audit
-    cli["hodor-cli"] --> pg & crypto
+    server["hodor-server"] --> protocolHttp & adaptersPostgres & redis & crypto & adaptersKeyService & adaptersHttp & authorizationNative & authorizationPolicyAgent & observability
+    worker["hodor-worker"] --> adaptersPostgres & redis & crypto & adaptersKeyService & adaptersHttp & authorizationPolicyAgent & observability & notification & audit
+    commandLineTool["hodor-cli"] --> adaptersPostgres & crypto
 ```
 
 ## Layers and allowed edges
