@@ -13,6 +13,7 @@ testing = ["dep:testcontainers", "dep:testcontainers-modules", "dep:tokio"]
 
 [dependencies]
 async-trait.workspace = true
+hodor-identity.workspace = true
 hodor-kernel.workspace = true
 hodor-tenant.workspace = true
 serde_json.workspace = true
@@ -22,6 +23,7 @@ testcontainers-modules = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 
 [dev-dependencies]
+hodor-identity = { workspace = true, features = ["testing"] }
 hodor-tenant = { workspace = true, features = ["testing"] }
 async-trait.workspace = true
 hodor-adapters-postgres = { path = ".", features = ["testing"] }

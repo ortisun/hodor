@@ -6,8 +6,8 @@ use crate::domain::settings::{RegistrationPolicy, TenantSettings};
 use crate::domain::slug::Slug;
 use crate::domain::tenant::Tenant;
 use hodor_kernel::{
-    Actor, Clock, CorrelationId, DomainError, EventEnvelope, EventMetadata, TenantContext,
-    UnitOfWork, UnitOfWorkFactory,
+    Caller, Clock, DomainError, EventEnvelope, EventMetadata, TenantContext, UnitOfWork,
+    UnitOfWorkFactory,
 };
 use std::sync::Arc;
 use time::Duration;
@@ -38,15 +38,6 @@ impl std::fmt::Debug for TenantService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TenantService").finish_non_exhaustive()
     }
-}
-
-/// Who is acting and on behalf of which request. Carried into the events.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Caller {
-    /// Who causes the change.
-    pub actor: Actor,
-    /// The request or job that causes it.
-    pub correlation_id: CorrelationId,
 }
 
 impl TenantService {

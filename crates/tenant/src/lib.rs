@@ -14,11 +14,12 @@ pub mod testing;
 /// What other crates may use from this context.
 pub mod api {
     pub use crate::application::ports::{DirectoryEntry, TenantDirectory, TenantRepository};
-    pub use crate::application::service::{Caller, CreateTenant, TenantService};
+    pub use crate::application::service::{CreateTenant, TenantService};
     pub use crate::domain::event::TenantEvent;
     pub use crate::domain::settings::{
         LockoutPolicy, PasswordPolicy, RegistrationPolicy, SessionPolicy, TenantSettings,
     };
     pub use crate::domain::slug::Slug;
     pub use crate::domain::tenant::{Tenant, TenantSnapshot, TenantStatus};
+    pub use hodor_kernel::Caller;
 }
