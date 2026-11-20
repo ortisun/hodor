@@ -13,8 +13,10 @@ repository = "https://github.com/ortisun/holdor"
 holdor-adapters-postgres = { path = "crates/adapters-postgres" }
 holdor-kernel = { path = "crates/kernel" }
 holdor-observability = { path = "crates/observability" }
+holdor-protocol-http = { path = "crates/protocol-http" }
 
 async-trait = "0.1"
+axum = "0.8"
 cargo_metadata = "0.23"
 clap = { version = "4", features = ["derive", "env"] }
 opentelemetry = "0.33"
@@ -26,6 +28,7 @@ opentelemetry-otlp = { version = "0.33", default-features = false, features = [
 ] }
 opentelemetry_sdk = "0.33"
 reqwest = { version = "0.13", default-features = false }
+http-body-util = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sqlx = { version = "0.9", default-features = false, features = [
@@ -44,7 +47,9 @@ thiserror = "2"
 tracing = "0.1"
 tracing-opentelemetry = "0.34"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.7", features = ["limit", "timeout"] }
 time = { version = "0.3", features = ["serde", "formatting", "parsing"] }
 uuid = { version = "1", features = ["v7", "serde"] }
 zeroize = "1"

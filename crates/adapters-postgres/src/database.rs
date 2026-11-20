@@ -52,6 +52,18 @@ impl Database {
         })
     }
 
+    /// Checks that the database answers. For readiness probes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no connection can be acquired or the query fails.
+    pub async fn ping(&self) -> Result<(), sqlx::Error> {
+        sqlx::query("SELECT 1")
+            .execute(&self.pool)
+            .await
+            .map(|_| ())
+    }
+
     /// The underlying pool.
     ///
     /// Queries run directly on the pool have no tenant bound and therefore
