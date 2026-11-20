@@ -10,6 +10,12 @@ repository.workspace = true
 [dependencies]
 clap.workspace = true
 hodor-adapters-postgres.workspace = true
+hodor-kernel.workspace = true
+hodor-tenant.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+hodor-adapters-postgres = { workspace = true, features = ["testing"] }
 tokio.workspace = true
 
 [lints]

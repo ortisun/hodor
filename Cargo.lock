@@ -1075,6 +1075,8 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "hodor-adapters-postgres",
+ "hodor-kernel",
+ "hodor-tenant",
  "tokio",
 ]
 
@@ -1135,6 +1137,9 @@ dependencies = [
  "hodor-kernel",
  "hodor-observability",
  "hodor-protocol-http",
+ "hodor-tenant",
+ "reqwest",
+ "serde_json",
  "tokio",
  "tracing",
 ]

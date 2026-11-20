@@ -5,13 +5,14 @@
 //! trait objects and runs the listeners until asked to stop.
 
 use clap::{Parser, ValueEnum};
-use hodor_adapters_postgres::Database;
-use hodor_kernel::{DomainError, Secret};
+use hodor_adapters_postgres::{Database, PgTenantDirectory};
+use hodor_kernel::{DomainError, Secret, TenantContext};
 use hodor_observability::{LogFormat, Telemetry};
 use hodor_protocol_http::{
-    Health, Limits, ReadinessCheck, ResolvedTenant, TenantResolver, ops_router, public_router,
-    serve,
+    Health, Limits, ReadinessCheck, ResolvedTenant, TenantResolver,
+    TenantStatus as HttpTenantStatus, ops_router, public_router, serve,
 };
+use hodor_tenant::api::{TenantDirectory as _, TenantStatus};
 use std::error::Error;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -69,14 +70,29 @@ struct Config {
     shutdown_drain_seconds: u64,
 }
 
-/// Until the tenant context exists (Issue-11 to Issue-13) there are no tenants to
-/// resolve, so every tenant path answers "not found".
-struct NoTenants;
+/// Resolves tenants through the directory, answering by status as
+/// specified in `docs/architecture/contexts/tenant.md`, "Lifecycle".
+struct DirectoryResolver(PgTenantDirectory);
 
 #[async_trait::async_trait]
-impl TenantResolver for NoTenants {
-    async fn resolve(&self, _slug: &str) -> Result<Option<ResolvedTenant>, DomainError> {
-        Ok(None)
+impl TenantResolver for DirectoryResolver {
+    async fn resolve(&self, slug: &str) -> Result<Option<ResolvedTenant>, DomainError> {
+        let Some(entry) = self.0.find_by_slug(slug).await? else {
+            return Ok(None);
+        };
+        let status = match entry.status {
+            TenantStatus::Active => HttpTenantStatus::Active,
+            TenantStatus::Suspended | TenantStatus::PendingDeletion => HttpTenantStatus::Suspended,
+            // Not there yet, or not there any more: indistinguishable from
+            // a tenant that never existed.
+            TenantStatus::Provisioning | TenantStatus::Deleted => return Ok(None),
+        };
+        Ok(Some(ResolvedTenant {
+            // The request path named this tenant and the directory
+            // confirmed it: this is where its context is established.
+            context: TenantContext::assume(entry.tenant_id),
+            status,
+        }))
     }
 }
 
@@ -131,9 +147,13 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
         config.database_max_connections,
     )
     .await?;
-    let health = Health::new(vec![Arc::new(DatabaseCheck(database))]);
+    let health = Health::new(vec![Arc::new(DatabaseCheck(database.clone()))]);
 
-    let public = public_router(Arc::new(NoTenants), axum::Router::new(), Limits::default());
+    let public = public_router(
+        Arc::new(DirectoryResolver(PgTenantDirectory::new(database))),
+        axum::Router::new(),
+        Limits::default(),
+    );
     let ops = ops_router(health.clone());
 
     let public_listener = TcpListener::bind(config.listen_addr).await?;

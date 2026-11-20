@@ -1,10 +1,13 @@
 //! Operations tool: migrations, bootstrap and tenant management.
 
 use clap::{Parser, Subcommand};
-use hodor_adapters_postgres::PgPool;
+use hodor_adapters_postgres::{Database, PgPool, PgTenantDirectory, PgTenantRepository};
+use hodor_kernel::{Actor, CorrelationId, DomainError, Secret, SystemClock, TenantContext};
+use hodor_tenant::api::{Caller, CreateTenant, DirectoryEntry, TenantService};
 use std::error::Error;
 use std::io::{Read as _, Write as _};
 use std::net::{SocketAddr, TcpStream};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Operate a Hodor installation.
@@ -27,6 +30,22 @@ enum Command {
         database_url: String,
     },
 
+    /// Manage tenants.
+    ///
+    /// Connects as a member of `hodor_app`; no cross-tenant role is needed.
+    Tenant {
+        /// Connection URL of the application role.
+        #[arg(
+            long,
+            env = "HODOR_DATABASE_URL",
+            hide_env_values = true,
+            global = true
+        )]
+        database_url: Option<String>,
+        #[command(subcommand)]
+        command: TenantCommand,
+    },
+
     /// Check a health endpoint and exit non-zero unless it answers 200.
     ///
     /// For container health checks: the runtime image has no shell or HTTP
@@ -39,6 +58,140 @@ enum Command {
         #[arg(long, default_value = "/readyz")]
         path: String,
     },
+}
+
+#[derive(Subcommand)]
+enum TenantCommand {
+    /// Create and activate a tenant.
+    Create {
+        /// The name used in addresses: `/t/<slug>`.
+        #[arg(long)]
+        slug: String,
+        /// A human-readable name.
+        #[arg(long)]
+        name: String,
+        /// Let anyone register in the tenant.
+        #[arg(long)]
+        open_registration: bool,
+    },
+    /// Create the system tenant, unless it already exists.
+    CreateSystem,
+    /// List every tenant.
+    List,
+    /// Suspend a tenant.
+    Suspend {
+        /// The tenant's slug.
+        #[arg(long)]
+        slug: String,
+        /// Why the tenant is suspended.
+        #[arg(long)]
+        reason: String,
+    },
+    /// Reactivate a suspended tenant.
+    Reactivate {
+        /// The tenant's slug.
+        #[arg(long)]
+        slug: String,
+    },
+}
+
+/// The command-line tool acts as the system: no authenticated
+/// administrator exists yet at this stage.
+fn caller() -> Caller {
+    Caller {
+        actor: Actor::System,
+        correlation_id: CorrelationId::generate(),
+    }
+}
+
+async fn existing(service: &TenantService, slug: &str) -> Result<DirectoryEntry, DomainError> {
+    service.find_by_slug(slug).await?.ok_or_else(|| {
+        DomainError::not_found(
+            "tenant.not_found",
+            format!("no tenant has the slug `{slug}`"),
+        )
+    })
+}
+
+async fn run_tenant(
+    service: &TenantService,
+    command: TenantCommand,
+) -> Result<String, DomainError> {
+    match command {
+        TenantCommand::Create {
+            slug,
+            name,
+            open_registration,
+        } => {
+            let tenant = service
+                .create(
+                    CreateTenant {
+                        slug,
+                        display_name: name,
+                        open_registration,
+                        system: false,
+                    },
+                    caller(),
+                )
+                .await?;
+            Ok(format!(
+                "created {} {}",
+                tenant.snapshot().slug,
+                tenant.id()
+            ))
+        }
+        TenantCommand::CreateSystem => {
+            if let Some(entry) = service.find_by_slug("system").await? {
+                return Ok(format!("exists {} {}", entry.slug, entry.tenant_id));
+            }
+            let tenant = service
+                .create(
+                    CreateTenant {
+                        slug: String::new(),
+                        display_name: "System".to_owned(),
+                        open_registration: false,
+                        system: true,
+                    },
+                    caller(),
+                )
+                .await?;
+            Ok(format!(
+                "created {} {}",
+                tenant.snapshot().slug,
+                tenant.id()
+            ))
+        }
+        TenantCommand::List => {
+            let lines: Vec<String> = service
+                .list()
+                .await?
+                .into_iter()
+                .map(|entry| {
+                    format!(
+                        "{} {} {}",
+                        entry.slug,
+                        entry.tenant_id,
+                        entry.status.as_str()
+                    )
+                })
+                .collect();
+            Ok(lines.join("\n"))
+        }
+        TenantCommand::Suspend { slug, reason } => {
+            let entry = existing(service, &slug).await?;
+            let tenant = service
+                .suspend(&TenantContext::assume(entry.tenant_id), &reason, caller())
+                .await?;
+            Ok(format!("{} {}", entry.slug, tenant.status().as_str()))
+        }
+        TenantCommand::Reactivate { slug } => {
+            let entry = existing(service, &slug).await?;
+            let tenant = service
+                .reactivate(&TenantContext::assume(entry.tenant_id), caller())
+                .await?;
+            Ok(format!("{} {}", entry.slug, tenant.status().as_str()))
+        }
+    }
 }
 
 /// Performs a minimal HTTP/1.1 GET and reports whether the status is 200.
@@ -63,6 +216,26 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let pool = PgPool::connect(&database_url).await?;
             hodor_adapters_postgres::migrate(&pool).await?;
             writeln!(std::io::stdout(), "migrations applied")?;
+        }
+        Command::Tenant {
+            database_url,
+            command,
+        } => {
+            let url = database_url.ok_or("HODOR_DATABASE_URL or --database-url is required")?;
+            let database = Database::connect(&Secret::from(url), 2).await?;
+            let service = TenantService::new(
+                Arc::new(database.clone()),
+                Arc::new(PgTenantRepository),
+                Arc::new(PgTenantDirectory::new(database)),
+                Arc::new(SystemClock),
+            );
+            match run_tenant(&service, command).await {
+                Ok(output) if output.is_empty() => {}
+                Ok(output) => writeln!(std::io::stdout(), "{output}")?,
+                Err(error) => {
+                    return Err(format!("{}: {}", error.code(), error.message()).into());
+                }
+            }
         }
         Command::Probe { addr, path } => {
             if !probe(addr, &path)? {
