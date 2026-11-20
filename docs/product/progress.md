@@ -12,7 +12,7 @@ Last updated: 2026-11-20.
 | B — Tenancy | 3 | 3 |
 | C — Identity | 3 | 3 |
 | D — Password credential | 3 | 3 |
-| E — Authentication and session | 1 | 7 |
+| E — Authentication and session | 2 | 7 |
 | F — Audit, notification, admin | 0 | 4 |
 | G — Hosted user interface and acceptance | 0 | 3 |
 
@@ -67,7 +67,7 @@ Specified in [the credential context](../architecture/contexts/credential.md).
 | Issue | Status | What exists |
 |---|---|---|
 | Issue-20 Session | Done | `hodor-session` crate: sessions with tokens stored only as hashes, idle and absolute expiry, revocation, token replacement; `session.session` under row-level security; one contract suite passed by the in-memory store and by PostgreSQL. SHA-256 behind a `Digest` port. Specified in [the session context](../architecture/contexts/session.md) |
-| Issue-21 Authentication flow engine | In progress | Specified in [the authentication context](../architecture/contexts/authentication.md) |
+| Issue-21 Authentication flow engine | Done | `hodor-authentication` crate: flows as data with the built-in flow, validation of a flow, the transaction that records a sign-in in progress, the `Authenticator` extension point and the engine. No real authenticators or storage yet. Specified in [the authentication context](../architecture/contexts/authentication.md) |
 | Issue-22 to Issue-26 | Not started | — |
 
 ### Known gaps in what is done

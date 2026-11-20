@@ -1,0 +1,595 @@
+//! The flow engine, driven with stand-in authenticators.
+
+use hodor_authentication::api::{
+    AuthFlow, AuthTransaction, Authenticator, AuthenticatorTraits, Factor, FlowEngine, FlowStep,
+    Progress, Requirement, StepInput, StepOutcome, TransactionState,
+};
+use hodor_kernel::{DomainError, ErrorKind, Secret, TenantContext, TenantId, Timestamp, UserId};
+use hodor_session::api::{Assurance, ClientInfo};
+use proptest::prelude::*;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use time::Duration;
+
+const START: Timestamp = Timestamp::UNIX_EPOCH;
+
+/// Knows one person, "ana".
+struct Directory {
+    ana: UserId,
+}
+
+#[async_trait::async_trait]
+impl Authenticator for Directory {
+    fn kind(&self) -> &'static str {
+        "identifier"
+    }
+
+    fn traits(&self) -> AuthenticatorTraits {
+        AuthenticatorTraits {
+            identifies: true,
+            factor: None,
+            method: None,
+        }
+    }
+
+    async fn perform(
+        &self,
+        _tenant: &TenantContext,
+        _transaction: &AuthTransaction,
+        input: &StepInput,
+    ) -> Result<StepOutcome, DomainError> {
+        let StepInput::Identifier(typed) = input else {
+            return Ok(StepOutcome::Rejected);
+        };
+        Ok(StepOutcome::Identified {
+            candidate: (typed == "ana").then_some(self.ana),
+            identifier_key: [typed.len() as u8; 32],
+        })
+    }
+}
+
+/// Accepts the password "right" for a known candidate. Can be switched to
+/// fail, as a dependency that is down would.
+#[derive(Default)]
+struct Secrets {
+    unavailable: AtomicBool,
+}
+
+#[async_trait::async_trait]
+impl Authenticator for Secrets {
+    fn kind(&self) -> &'static str {
+        "password"
+    }
+
+    fn traits(&self) -> AuthenticatorTraits {
+        AuthenticatorTraits {
+            identifies: false,
+            factor: Some(Factor::Knowledge),
+            method: Some("password"),
+        }
+    }
+
+    async fn perform(
+        &self,
+        _tenant: &TenantContext,
+        transaction: &AuthTransaction,
+        input: &StepInput,
+    ) -> Result<StepOutcome, DomainError> {
+        if self.unavailable.load(Ordering::SeqCst) {
+            return Err(DomainError::new(
+                ErrorKind::Unavailable,
+                "credential.hashing_overloaded",
+                "busy",
+            ));
+        }
+        let right = matches!(input, StepInput::Password(p) if p.expose() == "right");
+        Ok(if right && transaction.candidate().is_some() {
+            StepOutcome::Proven
+        } else {
+            StepOutcome::Rejected
+        })
+    }
+}
+
+/// An authenticator that only exists to be named in flows under test.
+struct Named {
+    kind: &'static str,
+    traits: AuthenticatorTraits,
+}
+
+#[async_trait::async_trait]
+impl Authenticator for Named {
+    fn kind(&self) -> &'static str {
+        self.kind
+    }
+
+    fn traits(&self) -> AuthenticatorTraits {
+        self.traits
+    }
+
+    async fn perform(
+        &self,
+        _tenant: &TenantContext,
+        _transaction: &AuthTransaction,
+        _input: &StepInput,
+    ) -> Result<StepOutcome, DomainError> {
+        Ok(StepOutcome::Rejected)
+    }
+}
+
+struct World {
+    engine: FlowEngine,
+    flow: AuthFlow,
+    tenant: TenantContext,
+    ana: UserId,
+    secrets: Arc<Secrets>,
+}
+
+fn world() -> World {
+    let ana = UserId::generate();
+    let secrets = Arc::new(Secrets::default());
+    let proves = |kind, factor| {
+        Arc::new(Named {
+            kind,
+            traits: AuthenticatorTraits {
+                identifies: false,
+                factor: Some(factor),
+                method: Some(kind),
+            },
+        })
+    };
+    let engine = FlowEngine::new()
+        .with(Arc::new(Directory { ana }))
+        .with(secrets.clone())
+        .with(proves("pin", Factor::Knowledge))
+        .with(proves("security-key", Factor::Possession));
+    World {
+        engine,
+        flow: AuthFlow::built_in(),
+        tenant: TenantContext::assume(TenantId::generate()),
+        ana,
+        secrets,
+    }
+}
+
+impl World {
+    fn begin(&self) -> AuthTransaction {
+        AuthTransaction::start(&self.flow, ClientInfo::default(), START)
+    }
+
+    async fn submit(
+        &self,
+        transaction: &mut AuthTransaction,
+        input: StepInput,
+        now: Timestamp,
+    ) -> Result<Progress, DomainError> {
+        self.engine
+            .submit(&self.tenant, &self.flow, transaction, &input, now)
+            .await
+    }
+}
+
+fn identifier(value: &str) -> StepInput {
+    StepInput::Identifier(value.to_owned())
+}
+
+fn password(value: &str) -> StepInput {
+    StepInput::Password(Secret::from(value.to_owned()))
+}
+
+fn step(key: &str, authenticator: &str) -> FlowStep {
+    FlowStep {
+        key: key.to_owned(),
+        authenticator: authenticator.to_owned(),
+        requirement: Requirement::Required,
+    }
+}
+
+fn flow(steps: Vec<FlowStep>, minimum_assurance: Assurance) -> AuthFlow {
+    AuthFlow {
+        name: "under-test".to_owned(),
+        version: 1,
+        steps,
+        minimum_assurance,
+    }
+}
+
+#[test]
+fn the_built_in_flow_is_valid() {
+    let world = world();
+    world.engine.validate(&world.flow).expect("valid");
+    let keys: Vec<&str> = world.flow.steps.iter().map(|s| s.key.as_str()).collect();
+    assert_eq!(keys, ["identifier", "password"]);
+    assert_eq!(world.flow.minimum_assurance, Assurance::SingleFactor);
+}
+
+#[test]
+fn every_validity_rule_is_enforced() {
+    let world = world();
+    let single = Assurance::SingleFactor;
+    let multi = Assurance::MultiFactor;
+    let cases = [
+        ("no steps", flow(vec![], single), "at least one step"),
+        (
+            "a key twice",
+            flow(
+                vec![
+                    step("identifier", "identifier"),
+                    step("identifier", "password"),
+                ],
+                single,
+            ),
+            "appears twice",
+        ),
+        (
+            "an unknown authenticator",
+            flow(
+                vec![step("identifier", "identifier"), step("magic", "wizardry")],
+                single,
+            ),
+            "unknown authenticator",
+        ),
+        (
+            "proof before identification",
+            flow(
+                vec![
+                    step("password", "password"),
+                    step("identifier", "identifier"),
+                ],
+                single,
+            ),
+            "before any step has established whose",
+        ),
+        (
+            "no step proves anything",
+            flow(vec![step("identifier", "identifier")], single),
+            "minimum assurance",
+        ),
+        (
+            "one factor where two are required",
+            flow(
+                vec![
+                    step("identifier", "identifier"),
+                    step("password", "password"),
+                ],
+                multi,
+            ),
+            "minimum assurance",
+        ),
+        (
+            "two factors of the same kind are still one",
+            flow(
+                vec![
+                    step("identifier", "identifier"),
+                    step("password", "password"),
+                    step("pin", "pin"),
+                ],
+                multi,
+            ),
+            "minimum assurance",
+        ),
+    ];
+    for (name, invalid, expected) in cases {
+        let error = world.engine.validate(&invalid).expect_err(name);
+        assert_eq!(error.code(), "authentication.flow_invalid", "{name}");
+        assert!(
+            error.message().contains(expected),
+            "{name}: {}",
+            error.message()
+        );
+    }
+
+    let two_kinds = flow(
+        vec![
+            step("identifier", "identifier"),
+            step("password", "password"),
+            step("key", "security-key"),
+        ],
+        multi,
+    );
+    world
+        .engine
+        .validate(&two_kinds)
+        .expect("two different kinds reach multi-factor");
+}
+
+#[tokio::test]
+async fn the_right_password_for_a_known_user_completes_the_sign_in() {
+    let world = world();
+    let mut transaction = world.begin();
+
+    let after_identifier = world
+        .submit(&mut transaction, identifier("ana"), START)
+        .await
+        .expect("identifier");
+    assert_eq!(
+        after_identifier,
+        Progress::Next {
+            step: "password".to_owned()
+        }
+    );
+    let after_password = world
+        .submit(&mut transaction, password("right"), START)
+        .await
+        .expect("password");
+    assert_eq!(after_password, Progress::ReadyToComplete);
+
+    assert_eq!(
+        world.engine.assurance(&transaction),
+        Some(Assurance::SingleFactor)
+    );
+    assert_eq!(transaction.snapshot().satisfied_methods, ["password"]);
+    assert_eq!(
+        transaction.complete(&world.flow, START).expect("complete"),
+        world.ana
+    );
+    assert_eq!(transaction.state_at(START), TransactionState::Completed);
+}
+
+#[tokio::test]
+async fn an_unknown_identifier_gets_the_same_answer_and_can_never_complete() {
+    let world = world();
+    let (mut known, mut unknown) = (world.begin(), world.begin());
+
+    let for_known = world
+        .submit(&mut known, identifier("ana"), START)
+        .await
+        .expect("known");
+    let for_unknown = world
+        .submit(&mut unknown, identifier("nobody"), START)
+        .await
+        .expect("unknown");
+    assert_eq!(
+        for_known, for_unknown,
+        "the identifier step never tells them apart"
+    );
+
+    // Even the right password is rejected when there is no one behind it.
+    let answer = world
+        .submit(&mut unknown, password("right"), START)
+        .await
+        .expect("password");
+    assert_eq!(answer, Progress::Rejected { attempts_left: 4 });
+    let error = unknown
+        .complete(&world.flow, START)
+        .expect_err("incomplete");
+    assert_eq!(error.code(), "authentication.transaction_incomplete");
+}
+
+#[tokio::test]
+async fn input_for_another_step_is_refused_and_changes_nothing() {
+    let world = world();
+    let mut transaction = world.begin();
+    let before = transaction.clone();
+
+    let error = world
+        .submit(&mut transaction, password("right"), START)
+        .await
+        .expect_err("out of order");
+
+    assert_eq!(error.code(), "authentication.unexpected_step");
+    assert!(error.message().contains("identifier"));
+    assert_eq!(transaction, before);
+}
+
+#[tokio::test]
+async fn five_rejections_fail_the_transaction_for_good() {
+    let world = world();
+    let mut transaction = world.begin();
+    world
+        .submit(&mut transaction, identifier("ana"), START)
+        .await
+        .expect("identifier");
+
+    for attempts_left in (1..=4).rev() {
+        let answer = world
+            .submit(&mut transaction, password("wrong"), START)
+            .await
+            .expect("password");
+        assert_eq!(answer, Progress::Rejected { attempts_left });
+    }
+    let last = world
+        .submit(&mut transaction, password("wrong"), START)
+        .await
+        .expect("password");
+    assert_eq!(last, Progress::Failed);
+    assert_eq!(transaction.state_at(START), TransactionState::Failed);
+
+    // Not even the right password helps now.
+    let error = world
+        .submit(&mut transaction, password("right"), START)
+        .await
+        .expect_err("failed");
+    assert_eq!(error.code(), "authentication.transaction_not_active");
+    assert!(transaction.complete(&world.flow, START).is_err());
+}
+
+#[tokio::test]
+async fn a_rejection_does_not_advance_and_the_right_password_still_works_after_it() {
+    let world = world();
+    let mut transaction = world.begin();
+    world
+        .submit(&mut transaction, identifier("ana"), START)
+        .await
+        .expect("identifier");
+    world
+        .submit(&mut transaction, password("wrong"), START)
+        .await
+        .expect("password");
+
+    assert_eq!(transaction.snapshot().current_step, 1);
+    let answer = world
+        .submit(&mut transaction, password("right"), START)
+        .await
+        .expect("password");
+    assert_eq!(answer, Progress::ReadyToComplete);
+}
+
+#[tokio::test]
+async fn a_transaction_expires_ten_minutes_after_it_starts() {
+    let world = world();
+    let mut transaction = world.begin();
+    let just_before = START + Duration::minutes(10) - Duration::seconds(1);
+    let at_expiry = START + Duration::minutes(10);
+
+    world
+        .submit(&mut transaction, identifier("ana"), just_before)
+        .await
+        .expect("in time");
+    let error = world
+        .submit(&mut transaction, password("right"), at_expiry)
+        .await
+        .expect_err("too late");
+
+    assert_eq!(error.code(), "authentication.transaction_not_active");
+    assert_eq!(transaction.state_at(at_expiry), TransactionState::Expired);
+    assert!(transaction.complete(&world.flow, at_expiry).is_err());
+}
+
+#[tokio::test]
+async fn a_step_that_could_not_be_performed_is_an_error_and_not_a_rejection() {
+    let world = world();
+    let mut transaction = world.begin();
+    world
+        .submit(&mut transaction, identifier("ana"), START)
+        .await
+        .expect("identifier");
+    let before = transaction.clone();
+    world.secrets.unavailable.store(true, Ordering::SeqCst);
+
+    let error = world
+        .submit(&mut transaction, password("right"), START)
+        .await
+        .expect_err("unavailable");
+
+    assert_eq!(error.kind(), ErrorKind::Unavailable);
+    assert_eq!(transaction, before, "an outage does not use up an attempt");
+
+    world.secrets.unavailable.store(false, Ordering::SeqCst);
+    let answer = world
+        .submit(&mut transaction, password("right"), START)
+        .await
+        .expect("password");
+    assert_eq!(answer, Progress::ReadyToComplete);
+}
+
+#[tokio::test]
+async fn a_transaction_completes_once_and_a_cancelled_one_accepts_nothing() {
+    let world = world();
+    let mut transaction = world.begin();
+    world
+        .submit(&mut transaction, identifier("ana"), START)
+        .await
+        .expect("identifier");
+    world
+        .submit(&mut transaction, password("right"), START)
+        .await
+        .expect("password");
+
+    transaction.complete(&world.flow, START).expect("first");
+    let again = transaction
+        .complete(&world.flow, START)
+        .expect_err("second");
+    assert_eq!(again.code(), "authentication.transaction_not_active");
+    let after = world
+        .submit(&mut transaction, password("right"), START)
+        .await
+        .expect_err("completed");
+    assert_eq!(after.code(), "authentication.transaction_not_active");
+
+    let mut cancelled = world.begin();
+    cancelled.cancel();
+    assert_eq!(cancelled.state_at(START), TransactionState::Cancelled);
+    assert!(
+        world
+            .submit(&mut cancelled, identifier("ana"), START)
+            .await
+            .is_err()
+    );
+    // Cancelling a finished transaction changes nothing.
+    transaction.cancel();
+    assert_eq!(transaction.state_at(START), TransactionState::Completed);
+}
+
+#[derive(Debug, Clone)]
+enum Move {
+    Identifier(bool),
+    Password(bool),
+    Wait(i64),
+    Complete,
+    Cancel,
+}
+
+fn a_move() -> impl Strategy<Value = Move> {
+    prop_oneof![
+        any::<bool>().prop_map(Move::Identifier),
+        any::<bool>().prop_map(Move::Password),
+        (0_i64..400).prop_map(Move::Wait),
+        Just(Move::Complete),
+        Just(Move::Cancel),
+    ]
+}
+
+proptest! {
+    /// Whatever a client sends, in whatever order and however slowly, a
+    /// sign-in completes only for a known person who gave the right
+    /// password, within the time allowed and within the attempts allowed.
+    #[test]
+    fn a_sign_in_completes_only_when_every_step_was_truly_satisfied(
+        moves in proptest::collection::vec(a_move(), 0..40)
+    ) {
+        let runtime = tokio::runtime::Builder::new_current_thread().build().expect("runtime");
+        let world = world();
+        let mut transaction = world.begin();
+        let mut now = START;
+        let (mut known, mut proven, mut rejections) = (false, false, 0_u32);
+
+        for next in moves {
+            let before = transaction.clone();
+            let active = transaction.state_at(now) == TransactionState::InProgress;
+            match next {
+                Move::Wait(seconds) => now += Duration::seconds(seconds),
+                Move::Cancel => transaction.cancel(),
+                Move::Complete => {
+                    let completed = transaction.complete(&world.flow, now);
+                    prop_assert_eq!(completed.is_ok(), active && known && proven);
+                    if let Ok(user) = completed {
+                        prop_assert_eq!(user, world.ana);
+                    }
+                }
+                Move::Identifier(is_ana) => {
+                    let typed = if is_ana { "ana" } else { "nobody" };
+                    let result = runtime.block_on(world.submit(&mut transaction, identifier(typed), now));
+                    let expected_step = before.snapshot().current_step == 0;
+                    prop_assert_eq!(result.is_ok(), active && expected_step);
+                    if result.is_ok() {
+                        known = is_ana;
+                    }
+                }
+                Move::Password(right) => {
+                    let typed = if right { "right" } else { "wrong" };
+                    let result = runtime.block_on(world.submit(&mut transaction, password(typed), now));
+                    let expected_step = before.snapshot().current_step == 1;
+                    prop_assert_eq!(result.is_ok(), active && expected_step);
+                    match result {
+                        Ok(Progress::ReadyToComplete) => {
+                            prop_assert!(right && known);
+                            proven = true;
+                        }
+                        Ok(Progress::Rejected { .. } | Progress::Failed) => {
+                            prop_assert!(!(right && known));
+                            rejections += 1;
+                        }
+                        Ok(Progress::Next { .. }) => prop_assert!(false, "no step follows the password"),
+                        Err(_) => prop_assert_eq!(&transaction, &before, "a refused step changes nothing"),
+                    }
+                }
+            }
+            prop_assert!(rejections <= AuthTransaction::MAX_REJECTIONS);
+            prop_assert_eq!(transaction.snapshot().rejections, rejections);
+            if transaction.state_at(now) == TransactionState::Completed {
+                prop_assert!(known && proven);
+            }
+        }
+    }
+}

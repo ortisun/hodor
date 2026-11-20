@@ -1121,6 +1121,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "hodor-authentication"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "hodor-kernel",
+ "hodor-session",
+ "proptest",
+ "time",
+ "tokio",
+]
+
+[[package]]
 name = "hodor-cli"
 version = "0.1.0"
 dependencies = [
