@@ -9,7 +9,7 @@ Last updated: 2026-11-20.
 | Slice | Done | Total |
 |---|---|---|
 | A — Foundation | 11 | 11 |
-| B — Tenancy | 0 | 3 |
+| B — Tenancy | 1 | 3 |
 | C — Identity | 0 | 3 |
 | D — Password credential | 0 | 3 |
 | E — Authentication and session | 0 | 7 |
@@ -38,7 +38,7 @@ Specified in [the tenant context](../architecture/contexts/tenant.md).
 
 | Issue | Status | What exists |
 |---|---|---|
-| Issue-11 Tenant domain | In progress | — |
+| Issue-11 Tenant domain | Done | `hodor-tenant` crate: slug rules, lifecycle with every transition checked, settings with defaults and bounds, events |
 | Issue-12 Tenant persistence and directory | Not started | — |
 | Issue-13 Tenant commands and server resolver | Not started | — |
 
