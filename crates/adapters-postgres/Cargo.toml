@@ -13,6 +13,7 @@ testing = ["dep:testcontainers", "dep:testcontainers-modules", "dep:tokio"]
 
 [dependencies]
 async-trait.workspace = true
+hodor-authentication.workspace = true
 hodor-credential.workspace = true
 hodor-identity.workspace = true
 hodor-kernel.workspace = true
@@ -26,6 +27,7 @@ testcontainers-modules = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 
 [dev-dependencies]
+hodor-authentication = { workspace = true, features = ["testing"] }
 hodor-session = { workspace = true, features = ["testing"] }
 hodor-credential = { workspace = true, features = ["testing"] }
 hodor-identity = { workspace = true, features = ["testing"] }

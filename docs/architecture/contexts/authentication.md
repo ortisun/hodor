@@ -114,6 +114,8 @@ Failed password attempts are counted, per tenant, against two things: the identi
 - **While locked out, no password is checked.** The attempt is refused with "too many attempts" and the time to wait. Not checking is the point: guesses made during a lockout teach the attacker nothing.
 - **A successful sign-in clears the identifier's count and its lockout history.**
 - **Counting is by a digest of the normalized identifier.** The identifier itself is not stored with the counts.
+- **An attempt is counted when it is admitted, before the password is checked**, and the identifier's count is cleared if the attempt succeeds. Counting first is what makes the limit exact: when many attempts arrive at the same moment, only as many as the limit reach the password check. The price is that an attempt cut short by an outage still counts.
+- **Addresses keep their count after a success.** Signing in to one's own account does not buy an address more guesses.
 
 A lockout can be used to keep a real user out by failing on purpose. That is the cost of this protection; the short, growing durations limit it, and stronger answers such as recognizing the user's own device belong to Phase 4.
 
@@ -196,4 +198,5 @@ Primary key: `tenant_id`, `subject_kind`, `subject_key`. Both are tenant tables 
 | Signing out | Issue-26 |
 | Editing flows; alternative, conditional and optional steps; simulation | Phase 4 |
 | Further authenticators, risk signals, recognizing a user's own device | Phases 3 and 4 |
+| Making a user choose a new password when the current one is marked as temporary. The mark is stored and returned by the credential context, but sign-in does not act on it yet | Issue-25 |
 | Removing old transactions and counters | Later in Phase 1 |
