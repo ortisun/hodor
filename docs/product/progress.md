@@ -10,7 +10,7 @@ Last updated: 2026-11-20.
 |---|---|---|
 | A — Foundation | 11 | 11 |
 | B — Tenancy | 3 | 3 |
-| C — Identity | 0 | 3 |
+| C — Identity | 1 | 3 |
 | D — Password credential | 0 | 3 |
 | E — Authentication and session | 0 | 7 |
 | F — Audit, notification, admin | 0 | 4 |
@@ -48,7 +48,7 @@ Specified in [the identity context](../architecture/contexts/identity.md).
 
 | Issue | Status | What exists |
 |---|---|---|
-| Issue-14 Identity domain | In progress | — |
+| Issue-14 Identity domain | Done | `hodor-identity` crate: users with their lifecycle, login identifiers with normalization, uniqueness within a user and primary rules, events that carry no personal data |
 | Issue-15 User repository | Not started | — |
 | Issue-16 Identity use cases | Not started | — |
 
