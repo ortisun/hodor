@@ -72,7 +72,7 @@ The credentials in the Compose file and in `deploy/docker/postgres-init.sql` are
 
 ### What works today
 
-The server starts, connects to the database and answers its health endpoints. There are no tenants yet, so every path under `/t/{slug}` answers `404` with a problem document. See [progress](../product/progress.md) for what has been built.
+The server starts, connects to the database, answers its health endpoints and resolves tenants: a path under `/t/{slug}` is routed to the tenant with that slug. No tenant has any routes of its own yet, so the answer for an existing tenant is still `404`, with the code `route.not_found` rather than `tenant.not_found`. See [progress](../product/progress.md) for what has been built.
 
 ## Configuration
 
@@ -111,7 +111,18 @@ The worker connects to the database twice, with different roles: as a member of 
 | Command | Variable | Meaning |
 |---|---|---|
 | `migrate` | `HODOR_DATABASE_OWNER_URL` (required) | Applies pending migrations as the role that owns the schema |
+| `tenant create`, `tenant create-system`, `tenant list`, `tenant suspend`, `tenant reactivate` | `HODOR_DATABASE_URL` (required) | Manage tenants as a member of `hodor_app`. See [the tenant context](../architecture/contexts/tenant.md#command-line-tool) |
 | `probe` | — | Requests a health endpoint (`--addr`, `--path`) and exits non-zero unless it answers 200. Used by container health checks, since the image has no shell |
+
+### Creating your first tenant
+
+With the development stack running:
+
+```bash
+docker compose -f deploy/docker/compose.yaml run --rm --entrypoint /usr/local/bin/hodor-cli -e HODOR_DATABASE_URL=postgres://hodor_server:dev-server@postgres:5432/hodor server tenant create --slug acme --name "Acme"
+```
+
+`http://localhost:8080/t/acme/` then answers for the tenant instead of reporting that the tenant does not exist.
 
 ## Database roles
 

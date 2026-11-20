@@ -1,0 +1,121 @@
+//! The tenant commands, run as the real binary against a real database.
+
+use hodor_adapters_postgres::testing::TestDatabase;
+use std::process::{Command, Output};
+
+fn cli(database: &TestDatabase, arguments: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_hodor-cli"))
+        .arg("tenant")
+        .args(arguments)
+        .env("HODOR_DATABASE_URL", database.app_url())
+        .output()
+        .expect("the command-line tool should run")
+}
+
+fn stdout(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stdout).trim().to_owned()
+}
+
+fn stderr(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stderr).trim().to_owned()
+}
+
+#[tokio::test]
+async fn tenants_are_created_listed_suspended_and_reactivated() {
+    let database = TestDatabase::start().await;
+
+    let created = cli(
+        &database,
+        &["create", "--slug", "acme", "--name", "Acme Corporation"],
+    );
+    assert!(created.status.success(), "{}", stderr(&created));
+    assert!(
+        stdout(&created).starts_with("created acme "),
+        "{}",
+        stdout(&created)
+    );
+
+    cli(
+        &database,
+        &[
+            "create",
+            "--slug",
+            "globex",
+            "--name",
+            "Globex",
+            "--open-registration",
+        ],
+    );
+
+    let listed = stdout(&cli(&database, &["list"]));
+    let lines: Vec<&str> = listed.lines().collect();
+    assert_eq!(lines.len(), 2, "{listed}");
+    assert!(
+        lines[0].starts_with("acme ") && lines[0].ends_with(" active"),
+        "{listed}"
+    );
+    assert!(
+        lines[1].starts_with("globex ") && lines[1].ends_with(" active"),
+        "{listed}"
+    );
+
+    let suspended = cli(
+        &database,
+        &["suspend", "--slug", "acme", "--reason", "unpaid invoice"],
+    );
+    assert_eq!(stdout(&suspended), "acme suspended");
+    assert!(stdout(&cli(&database, &["list"])).contains(" suspended"));
+
+    let reactivated = cli(&database, &["reactivate", "--slug", "acme"]);
+    assert_eq!(stdout(&reactivated), "acme active");
+}
+
+#[tokio::test]
+async fn creating_the_system_tenant_is_safe_to_repeat() {
+    let database = TestDatabase::start().await;
+
+    let first = stdout(&cli(&database, &["create-system"]));
+    let second = stdout(&cli(&database, &["create-system"]));
+
+    assert!(first.starts_with("created system "), "{first}");
+    assert_eq!(second, first.replacen("created", "exists", 1));
+    assert_eq!(stdout(&cli(&database, &["list"])).lines().count(), 1);
+}
+
+#[tokio::test]
+async fn failures_exit_non_zero_with_the_error_code() {
+    let database = TestDatabase::start().await;
+    cli(&database, &["create", "--slug", "acme", "--name", "Acme"]);
+
+    for (arguments, code) in [
+        (
+            vec!["create", "--slug", "acme", "--name", "Again"],
+            "tenant.slug_taken",
+        ),
+        (
+            vec!["create", "--slug", "system", "--name", "Sneaky"],
+            "tenant.slug_reserved",
+        ),
+        (
+            vec!["create", "--slug", "Not Valid", "--name", "Bad"],
+            "tenant.slug_invalid",
+        ),
+        (
+            vec!["suspend", "--slug", "nobody", "--reason", "x"],
+            "tenant.not_found",
+        ),
+        (
+            vec!["reactivate", "--slug", "acme"],
+            "tenant.invalid_transition",
+        ),
+    ] {
+        let output = cli(&database, &arguments);
+        assert!(!output.status.success(), "{arguments:?} should fail");
+        assert!(
+            stderr(&output).contains(code),
+            "{arguments:?}: {}",
+            stderr(&output)
+        );
+    }
+    assert_eq!(stdout(&cli(&database, &["list"])).lines().count(), 1);
+}

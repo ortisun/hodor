@@ -15,8 +15,15 @@ hodor-adapters-postgres.workspace = true
 hodor-kernel.workspace = true
 hodor-observability.workspace = true
 hodor-protocol-http.workspace = true
+hodor-tenant.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+hodor-adapters-postgres = { workspace = true, features = ["testing"] }
+hodor-kernel = { workspace = true, features = ["testing"] }
+reqwest = { workspace = true, features = ["json"] }
+serde_json.workspace = true
 
 [lints]
 workspace = true
