@@ -1,7 +1,7 @@
 //! What the credential context needs from the outside.
 
-use crate::domain::password::PasswordHash;
-use hodor_kernel::{DomainError, Secret};
+use crate::domain::password::{PasswordHash, PasswordRecord};
+use hodor_kernel::{DomainError, Secret, UnitOfWork, UserId};
 
 /// The result of checking a password against a stored hash.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,4 +51,53 @@ pub trait PasswordHasher: Send + Sync {
     ///
     /// Returns `Unavailable` when overloaded.
     async fn verify_nothing(&self, password: &Secret<String>) -> Result<(), DomainError>;
+}
+
+/// Stores each user's password record and history. Every method works
+/// inside the tenant the unit of work is bound to.
+#[async_trait::async_trait]
+pub trait PasswordStore: Send + Sync {
+    /// Loads a user's password record, if they have a password.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn get(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        user_id: UserId,
+    ) -> Result<Option<PasswordRecord>, DomainError>;
+
+    /// Stores the record of a user's first password.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Conflict` with code `credential.password_exists` if the
+    /// user already has a password.
+    async fn insert(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        record: &PasswordRecord,
+    ) -> Result<(), DomainError>;
+
+    /// Stores changes to a record loaded earlier, history included.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Conflict` with code `credential.password_modified_concurrently`
+    /// if the stored version differs, and `NotFound` if the user has no
+    /// password in the tenant.
+    async fn update(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        record: &PasswordRecord,
+    ) -> Result<(), DomainError>;
+
+    /// Removes a user's password and its history. Returns whether there
+    /// was one.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn delete(&self, uow: &mut dyn UnitOfWork, user_id: UserId) -> Result<bool, DomainError>;
 }

@@ -11,7 +11,7 @@ Last updated: 2026-11-20.
 | A — Foundation | 11 | 11 |
 | B — Tenancy | 3 | 3 |
 | C — Identity | 3 | 3 |
-| D — Password credential | 2 | 3 |
+| D — Password credential | 3 | 3 |
 | E — Authentication and session | 0 | 7 |
 | F — Audit, notification, admin | 0 | 4 |
 | G — Hosted user interface and acceptance | 0 | 3 |
@@ -60,7 +60,7 @@ Specified in [the credential context](../architecture/contexts/credential.md).
 |---|---|---|
 | Issue-17 Credential domain | Done | `hodor-credential` crate: the rules for an acceptable password, the password record with its history, events, and the hasher port |
 | Issue-18 Argon2id hasher | Done | `hodor-adapters-crypto` crate: Argon2id behind the hasher port with bounded concurrency and a bounded queue, renewal of hashes made with older parameters, a check against nothing of equal cost, and the operating system random source |
-| Issue-19 Credential storage and use cases | Not started | — |
+| Issue-19 Credential storage and use cases | Done | `CredentialService`: set, change, verify with silent renewal, remove; `credential.password` and its history under row-level security; one contract suite passed by the in-memory store and by PostgreSQL |
 
 ### Known gaps in what is done
 
@@ -72,6 +72,7 @@ These are recorded here so they are not forgotten; each is picked up by the issu
 | Tenants have no routes of their own yet: an existing tenant answers `404` with `route.not_found` | Issue-24, the interaction API |
 | The system tenant is not created automatically by the development stack | Issue-30, with the bootstrap administrator |
 | The Argon2id hasher was not checked against a hash produced by another implementation; it relies on the library's own conformance | When a second implementation is at hand, for example password import |
+| The credential use cases run with a real database and with the real hasher, but not yet with both at once | Issue-22, when sign-in wires them together |
 | No event handlers are registered | Issue-27 (email), Issue-28 (audit) |
 | Traces are exported but no test receives them | First issue that adds a traced database call |
 | SQL is checked at run time, not at compile time (`sqlx::query!` with the offline cache is not set up). Every query is exercised by an integration test instead | A dedicated issue, not yet scheduled |

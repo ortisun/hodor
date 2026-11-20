@@ -53,6 +53,7 @@ Hashing is deliberately expensive in processor time and memory. Left unbounded, 
 - At most a fixed number of hashes run at once: by default one per processor core.
 - A bounded number of requests may wait for their turn: by default four times that number. A request arriving when the queue is full is refused at once with an "unavailable, try again" error rather than waiting.
 - The memory the server needs for hashing is therefore known in advance: the number of concurrent hashes times the memory parameter.
+- No database transaction stays open while a hash is computed. Every operation reads what it needs, releases the transaction, hashes, and then writes in a second transaction that is rejected if the record changed in between. Slow hashing therefore never holds database connections.
 
 ### Checking a password without revealing anything
 
@@ -108,6 +109,7 @@ The hasher is a port because the choice of library is an infrastructure decision
 |---|---|---|
 | `tenant_id`, `id` | `uuid` | Primary key |
 | `user_id` | `uuid` | References the password row; removed with it |
+| `position` | `smallint` | 0 for the most recently replaced; unique per user |
 | `password_hash` | `text` | A previous hash |
 | `replaced_at` | `timestamptz` | When it stopped being the current password |
 
