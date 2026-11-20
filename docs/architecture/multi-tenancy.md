@@ -65,7 +65,16 @@ Row-level security is defence in depth, not the primary control: queries always 
 
 ### Cross-tenant operations
 
-A few operations legitimately span tenants: tenant resolution by slug or domain, platform listing of tenants, the outbox dispatcher, cleanup jobs and migrations. They use a separate database role (`hodor_platform`) and separate repository types whose names say so (`PlatformTenantDirectory`). Only the composition roots can construct them, and a continuous integration test fails if a context crate references them.
+A few operations legitimately span tenants. They are kept few and each has its own narrow mechanism:
+
+| Operation | Mechanism |
+|---|---|
+| Resolving a slug to a tenant, listing tenants | `platform.tenant_directory`, a routing table outside row-level security that holds only slug, identifier and status. The application role can read it and nothing else. See [the tenant context](contexts/tenant.md#storage) |
+| Finding pending outbox events | The worker's connection as a member of `hodor_platform`, used only to find work; each event is then handled inside its tenant as the application role |
+| Cleanup jobs | Same as the outbox |
+| Migrations | The schema owner, through `hodor-cli migrate` |
+
+`hodor-server` holds no cross-tenant database role at all.
 
 ## Why shared schema with row-level security
 
@@ -87,12 +96,12 @@ stateDiagram-v2
     Suspended --> Active: reactivate
     Active --> PendingDeletion: delete requested
     Suspended --> PendingDeletion: delete requested
-    PendingDeletion --> Active: cancelled within the grace period
+    PendingDeletion --> Suspended: cancelled within the grace period
     PendingDeletion --> Deleted: grace period over, rows purged, keys destroyed
     Deleted --> [*]
 ```
 
-A suspended tenant keeps its data but refuses authentication, token issuance and API calls with a distinct error. Deletion is a worker job that purges table by table, destroys the tenant's keys and leaves a tombstone audit record in the `system` tenant.
+The exact rules of each transition are in [the tenant context](contexts/tenant.md#lifecycle). A suspended tenant keeps its data but refuses authentication, token issuance and API calls with a distinct error. Deletion is a worker job that purges table by table, destroys the tenant's keys and leaves a tombstone audit record in the `system` tenant.
 
 ## Validation
 

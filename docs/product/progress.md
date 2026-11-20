@@ -8,7 +8,7 @@ Last updated: 2026-11-20.
 
 | Slice | Done | Total |
 |---|---|---|
-| A — Foundation | 10 | 11 |
+| A — Foundation | 11 | 11 |
 | B — Tenancy | 0 | 3 |
 | C — Identity | 0 | 3 |
 | D — Password credential | 0 | 3 |
@@ -30,7 +30,17 @@ Last updated: 2026-11-20.
 | Issue-08 Observability | Done, with a gap | Logs, traces and metrics over OTLP; VictoriaMetrics verified by test. Trace export is not yet verified against a backend |
 | Issue-09 HTTP base | Done | Tenant resolution from the path, request identifiers, security headers, limits, problem documents, health endpoints, graceful shutdown; `hodor-server` wired |
 | Issue-10 Container image and Compose | Done | Distroless image with the three binaries; Compose stack with PostgreSQL, migrations, server and VictoriaMetrics; `hodor-cli probe` |
-| Issue-34 Worker runs the outbox dispatcher | In progress | Specified in [local setup](../development/local-setup.md#hodor-worker) and [deployment](../operations/deployment.md#the-worker) |
+| Issue-34 Worker runs the outbox dispatcher | Done | `hodor-worker` delivers outbox events in a polling loop, with health endpoints, metrics and a clean stop; part of the Compose stack |
+
+### Slice B — Tenancy
+
+Specified in [the tenant context](../architecture/contexts/tenant.md).
+
+| Issue | Status | What exists |
+|---|---|---|
+| Issue-11 Tenant domain | In progress | — |
+| Issue-12 Tenant persistence and directory | Not started | — |
+| Issue-13 Tenant commands and server resolver | Not started | — |
 
 ### Known gaps in what is done
 
@@ -39,7 +49,7 @@ These are recorded here so they are not forgotten; each is picked up by the issu
 | Gap | Picked up by |
 |---|---|
 | `hodor-server` knows no tenants: its resolver always answers "not found" | Issue-12, Issue-13 |
-| `hodor-worker` is a stub: the outbox dispatcher exists but nothing runs it | Issue-34 |
+| The outbox metrics were not confirmed to arrive in VictoriaMetrics from the Compose stack; the export path is covered by a test | Next change to the worker |
 | No event handlers are registered | Issue-27 (email), Issue-28 (audit) |
 | Traces are exported but no test receives them | First issue that adds a traced database call |
 | SQL is checked at run time, not at compile time (`sqlx::query!` with the offline cache is not set up) | Issue-12, with the first repository |

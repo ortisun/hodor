@@ -71,6 +71,7 @@ Anything outside this table is written out. When in doubt, write it out. If a ne
 |---|---|
 | [`product/`](../product/product-requirements.md) | Why Hodor exists and what it must do: Product requirements, requirements, roadmap, epics, progress |
 | [`architecture/`](../architecture/overview.md) | How it is built: structure, domain model, crates, data, tenancy, authorization, plugins, testing, and the critical review |
+| [`architecture/contexts/`](../architecture/contexts/tenant.md) | One page per bounded context: its rules, data and operations, written before the context is built |
 | [`protocols/`](../protocols/sequences.md) | How it behaves on the wire: sequences and lifecycles |
 | [`api/`](../api/api-spec.md) | The HTTP surfaces and their conventions |
 | [`security/`](../security/threat-model.md) | Threat models and security analysis |

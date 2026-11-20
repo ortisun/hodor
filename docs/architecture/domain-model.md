@@ -104,7 +104,9 @@ classDiagram
     Tenant "1" o-- "*" Domain
 ```
 
-Invariants: `slug` is unique and immutable after activation; a verified domain belongs to one tenant; a suspended tenant issues no tokens and creates no sessions.
+Invariants: `slug` is unique and never changes; a verified domain belongs to one tenant; a suspended tenant issues no tokens and creates no sessions.
+
+The full specification of this context, with slug rules, lifecycle, settings and storage, is in [the tenant context](contexts/tenant.md).
 
 ### `identity`
 

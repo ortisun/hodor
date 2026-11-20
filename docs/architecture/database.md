@@ -59,9 +59,10 @@ All tables below have `tenant_id`, `created_at` and, where they are aggregates, 
 
 | Table | Key columns | Notes |
 |---|---|---|
-| `tenant` | `id`, `slug` (unique), `display_name`, `status`, `deletion_scheduled_at` | Platform table: readable through `hodor_platform` for resolution; `tenant_id = id` |
-| `tenant_domain` | `id`, `hostname` (globally unique when verified), `purpose`, `verification_token`, `verified_at` | — |
-| `tenant_settings` | `password_policy`, `session_policy`, `lockout_policy`, `registration_policy`, `mfa_policy`, `branding`, `quotas` (jsonb, validated by typed structs) | One row per tenant |
+| `tenant` | `id`, `slug` (unique), `display_name`, `status`, `status_reason`, `settings jsonb`, `deletion_scheduled_for`, `version` | `tenant_id = id`. Settings live in this row as validated JSON, not in a separate table |
+| `tenant_domain` | `id`, `hostname` (globally unique when verified), `purpose`, `verification_token`, `verified_at` | Phase 3 |
+
+Slug lookup goes through `platform.tenant_directory`, a routing table outside row-level security. Both tables are specified in [the tenant context](contexts/tenant.md#storage).
 
 ### `identity`
 
