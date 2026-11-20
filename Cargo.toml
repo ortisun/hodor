@@ -14,11 +14,13 @@ hodor-adapters-postgres = { path = "crates/adapters-postgres" }
 hodor-kernel = { path = "crates/kernel" }
 hodor-observability = { path = "crates/observability" }
 hodor-protocol-http = { path = "crates/protocol-http" }
+hodor-tenant = { path = "crates/tenant" }
 
 async-trait = "0.1"
 axum = "0.8"
 cargo_metadata = "0.23"
 clap = { version = "4", features = ["derive", "env"] }
+proptest = "1"
 opentelemetry = "0.33"
 opentelemetry-otlp = { version = "0.33", default-features = false, features = [
     "http-proto",

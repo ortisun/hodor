@@ -70,7 +70,7 @@ Issue-34 was added after planning, when wiring the worker turned out to be a pie
 |---|---|---|---|
 | Issue-11 | `tenant` domain: `Tenant`, slug rules, status transitions, typed `TenantSettings` with defaults | Unit and property tests for transitions and slug validation | Issue-04 |
 | Issue-12 | Tenant persistence and platform directory (resolve by slug) | Contract suite on fake and Postgres | Issue-05, Issue-11 |
-| Issue-13 | `hodor-cli tenant create/list/suspend` and bootstrap of the `system` tenant | Suspended tenant refuses requests with a distinct error | Issue-09, Issue-12 |
+| Issue-13 | `hodor-cli tenant` commands (create, create-system, list, suspend, reactivate) and the server's tenant resolver over the directory | A created tenant answers on its path; a suspended tenant refuses requests with a distinct error | Issue-09, Issue-12 |
 
 ### Slice C — Identity (Epic 2)
 
