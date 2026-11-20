@@ -980,8 +980,11 @@ dependencies = [
 name = "hodor-adapters-postgres"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "hodor-adapters-postgres",
  "hodor-kernel",
+ "serde",
+ "serde_json",
  "sqlx",
  "testcontainers",
  "testcontainers-modules",
@@ -1008,6 +1011,7 @@ dependencies = [
 name = "hodor-kernel"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "serde",
  "serde_json",
  "thiserror",

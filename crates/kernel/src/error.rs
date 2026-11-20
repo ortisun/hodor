@@ -35,6 +35,7 @@ pub struct DomainError {
     kind: ErrorKind,
     code: Cow<'static, str>,
     message: Cow<'static, str>,
+    detail: Option<String>,
 }
 
 impl DomainError {
@@ -49,7 +50,16 @@ impl DomainError {
             kind,
             code: code.into(),
             message: message.into(),
+            detail: None,
         }
+    }
+
+    /// Attaches diagnostic detail for operators, such as the text of an
+    /// infrastructure error. It is logged, never returned to callers.
+    #[must_use]
+    pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = Some(detail.into());
+        self
     }
 
     /// Shorthand for [`ErrorKind::NotFound`].
@@ -105,6 +115,12 @@ impl DomainError {
     pub fn message(&self) -> &str {
         &self.message
     }
+
+    /// Diagnostic detail for operators, if any. Not for callers.
+    #[must_use]
+    pub fn detail(&self) -> Option<&str> {
+        self.detail.as_deref()
+    }
 }
 
 #[cfg(test)]
@@ -121,6 +137,14 @@ mod tests {
             error.to_string(),
             "user.identifier_taken: identifier already in use"
         );
+    }
+
+    #[test]
+    fn detail_is_kept_out_of_the_displayed_text() {
+        let error = DomainError::internal("database.error", "the operation could not be completed")
+            .with_detail("connection reset by peer");
+        assert_eq!(error.detail(), Some("connection reset by peer"));
+        assert!(!error.to_string().contains("connection reset"));
     }
 
     #[test]
