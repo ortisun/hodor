@@ -10,6 +10,15 @@ use serde::Serialize;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
 pub enum AuthenticationEvent {
+    /// A sign-in completed and a session started.
+    Succeeded {
+        /// Who signed in.
+        user_id: UserId,
+        /// The session that started, by its identifier.
+        session_id: String,
+        /// The methods that were satisfied.
+        methods: Vec<String>,
+    },
     /// A step of a sign-in was rejected.
     Failed {
         /// The step that was rejected.
@@ -31,6 +40,7 @@ pub enum AuthenticationEvent {
 impl DomainEvent for AuthenticationEvent {
     fn event_type(&self) -> &'static str {
         match self {
+            Self::Succeeded { .. } => "authentication.succeeded",
             Self::Failed { .. } => "authentication.failed",
             Self::LockedOut { .. } => "authentication.locked_out",
         }

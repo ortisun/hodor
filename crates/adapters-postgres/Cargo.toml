@@ -27,6 +27,9 @@ testcontainers-modules = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 
 [dev-dependencies]
+# Dev-only: the full sign-in test runs the real hasher against the real
+# database. Adapters never depend on each other in production code.
+hodor-adapters-crypto.workspace = true
 hodor-authentication = { workspace = true, features = ["testing"] }
 hodor-session = { workspace = true, features = ["testing"] }
 hodor-credential = { workspace = true, features = ["testing"] }

@@ -115,6 +115,7 @@ Failed password attempts are counted, per tenant, against two things: the identi
 - **A successful sign-in clears the identifier's count and its lockout history.**
 - **Counting is by a digest of the normalized identifier.** The identifier itself is not stored with the counts.
 - **An attempt is counted when it is admitted, before the password is checked**, and the identifier's count is cleared if the attempt succeeds. Counting first is what makes the limit exact: when many attempts arrive at the same moment, only as many as the limit reach the password check. The price is that an attempt cut short by an outage still counts.
+- **The same sign-in submitted many times at once** counts once per submission until one of them succeeds. If more arrive together than the limit allows, the surplus is answered with "too many attempts"; one submission completes the sign-in, exactly one session starts, and the success clears the count, so nothing remains locked.
 - **Addresses keep their count after a success.** Signing in to one's own account does not buy an address more guesses.
 
 A lockout can be used to keep a real user out by failing on purpose. That is the cost of this protection; the short, growing durations limit it, and stronger answers such as recognizing the user's own device belong to Phase 4.
@@ -129,6 +130,8 @@ When the last step is satisfied:
 4. `authentication.succeeded` is recorded.
 
 The session token is returned to the caller, which hands it to the browser. Nothing else about the session leaves the server.
+
+Marking the transaction completed and starting the session are two separate writes. If the second fails, the transaction is already spent and the person signs in again; the failure can never leave a session without a completed sign-in behind it.
 
 ### Events
 
@@ -166,6 +169,7 @@ This context calls the `identity`, `credential`, `session` and `tenant` contexts
 | `tenant_id`, `id` | `uuid` | Primary key |
 | `flow_name`, `flow_version` | `text`, `integer` | |
 | `current_step` | `integer` | Position in the flow |
+| `identified` | `boolean` | Whether the identifier step has run |
 | `candidate_user_id` | `uuid` | Null until the identifier step, and when the identifier belongs to nobody |
 | `identifier_key` | `bytea` | SHA-256 of the normalized identifier typed |
 | `satisfied_methods` | `text[]` | |
