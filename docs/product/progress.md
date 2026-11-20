@@ -11,7 +11,7 @@ Last updated: 2026-11-20.
 | A — Foundation | 11 | 11 |
 | B — Tenancy | 3 | 3 |
 | C — Identity | 3 | 3 |
-| D — Password credential | 0 | 3 |
+| D — Password credential | 1 | 3 |
 | E — Authentication and session | 0 | 7 |
 | F — Audit, notification, admin | 0 | 4 |
 | G — Hosted user interface and acceptance | 0 | 3 |
@@ -51,6 +51,16 @@ Specified in [the identity context](../architecture/contexts/identity.md).
 | Issue-14 Identity domain | Done | `hodor-identity` crate: users with their lifecycle, login identifiers with normalization, uniqueness within a user and primary rules, events that carry no personal data |
 | Issue-15 User repository | Done | `identity.user` and `identity.user_identifier` under row-level security; PostgreSQL repository; one contract suite passed by the in-memory fake and by PostgreSQL |
 | Issue-16 Identity use cases | Done | `IdentityService`: create, find by typed login, lifecycle changes, login identifier changes, profile; each change stored with its events in one unit of work |
+
+### Slice D — Password credential
+
+Specified in [the credential context](../architecture/contexts/credential.md).
+
+| Issue | Status | What exists |
+|---|---|---|
+| Issue-17 Credential domain | Done | `hodor-credential` crate: the rules for an acceptable password, the password record with its history, events, and the hasher port |
+| Issue-18 Argon2id hasher | Not started | — |
+| Issue-19 Credential storage and use cases | Not started | — |
 
 ### Known gaps in what is done
 

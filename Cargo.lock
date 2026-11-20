@@ -1082,6 +1082,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "hodor-credential"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "hodor-kernel",
+ "proptest",
+ "serde",
+]
+
+[[package]]
 name = "hodor-identity"
 version = "0.1.0"
 dependencies = [

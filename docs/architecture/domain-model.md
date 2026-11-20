@@ -188,6 +188,8 @@ Users and their login identifiers, the part built in Milestone 1, are specified 
 | `ApiKey` | Prefix, hash, scopes, expiry | `verify`, `revoke` |
 | `Certificate` | SHA-256 fingerprint, subject distinguished name, validity | `matches` |
 
+Passwords, the part built in Milestone 1, are specified in full in [the credential context](contexts/credential.md).
+
 Every credential has a `CredentialId`, an `owner: PrincipalId`, a `status` and created, last-used and revoked timestamps. Client secrets belong to the `oauth` context.
 
 ### `session`
