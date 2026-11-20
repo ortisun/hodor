@@ -1099,6 +1099,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "hodor-adapters-postgres",
+ "hodor-authentication",
  "hodor-credential",
  "hodor-identity",
  "hodor-kernel",
@@ -1125,9 +1126,14 @@ name = "hodor-authentication"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "hodor-authentication",
+ "hodor-credential",
+ "hodor-identity",
  "hodor-kernel",
  "hodor-session",
+ "hodor-tenant",
  "proptest",
+ "serde",
  "time",
  "tokio",
 ]

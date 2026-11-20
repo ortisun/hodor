@@ -36,6 +36,7 @@ pub struct DomainError {
     code: Cow<'static, str>,
     message: Cow<'static, str>,
     detail: Option<String>,
+    retry_after_seconds: Option<u64>,
 }
 
 impl DomainError {
@@ -51,7 +52,16 @@ impl DomainError {
             code: code.into(),
             message: message.into(),
             detail: None,
+            retry_after_seconds: None,
         }
+    }
+
+    /// Says how long the caller should wait before trying again. Used with
+    /// [`ErrorKind::RateLimited`] and [`ErrorKind::Unavailable`].
+    #[must_use]
+    pub const fn with_retry_after(mut self, seconds: u64) -> Self {
+        self.retry_after_seconds = Some(seconds);
+        self
     }
 
     /// Attaches diagnostic detail for operators, such as the text of an
@@ -116,6 +126,13 @@ impl DomainError {
         &self.message
     }
 
+    /// How many seconds the caller should wait before trying again, if the
+    /// error says.
+    #[must_use]
+    pub const fn retry_after_seconds(&self) -> Option<u64> {
+        self.retry_after_seconds
+    }
+
     /// Diagnostic detail for operators, if any. Not for callers.
     #[must_use]
     pub fn detail(&self) -> Option<&str> {
@@ -145,6 +162,17 @@ mod tests {
             .with_detail("connection reset by peer");
         assert_eq!(error.detail(), Some("connection reset by peer"));
         assert!(!error.to_string().contains("connection reset"));
+    }
+
+    #[test]
+    fn an_error_can_say_how_long_to_wait() {
+        let error =
+            DomainError::new(ErrorKind::RateLimited, "x.limited", "slow down").with_retry_after(60);
+        assert_eq!(error.retry_after_seconds(), Some(60));
+        assert_eq!(
+            DomainError::invalid("x.bad", "no").retry_after_seconds(),
+            None
+        );
     }
 
     #[test]
