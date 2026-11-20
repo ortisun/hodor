@@ -12,7 +12,7 @@ Start with the [critical review](architecture/critical-review.md): it lists wher
 | 2 | Functional Requirements | [product/requirements.md](product/requirements.md#functional-requirements) |
 | 3 | Non-functional Requirements | [product/requirements.md](product/requirements.md#non-functional-requirements) |
 | 4 | Domain Model | [architecture/domain-model.md](architecture/domain-model.md) |
-| — | Context specifications | [architecture/contexts/tenant.md](architecture/contexts/tenant.md) (one page per bounded context, written before the context is built) |
+| — | Context specifications, one page per bounded context, written before the context is built | [tenant](architecture/contexts/tenant.md), [identity](architecture/contexts/identity.md) |
 | 5 | Bounded Context Map | [architecture/domain-model.md](architecture/domain-model.md#bounded-context-map) |
 | 6 | C4 Context Diagram | [architecture/overview.md](architecture/overview.md#c4-level-1-context) |
 | 7 | C4 Container Diagram | [architecture/overview.md](architecture/overview.md#c4-level-2-containers) |

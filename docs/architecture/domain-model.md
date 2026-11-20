@@ -173,6 +173,8 @@ classDiagram
 
 Invariants: `(tenant, kind, value)` of an `Identifier` is unique; `(tenant, provider, subject)` of an `ExternalIdentity` is unique; an active `human` user has at least one identifier or one external identity; groups form no cycles.
 
+Users and their login identifiers, the part built in Milestone 1, are specified in full in [the identity context](contexts/identity.md).
+
 "Department" is not an aggregate: it is an `OrganizationUnit` with a type. See the [critical review](critical-review.md).
 
 ### `credential`

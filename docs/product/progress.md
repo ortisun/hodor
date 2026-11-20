@@ -42,6 +42,16 @@ Specified in [the tenant context](../architecture/contexts/tenant.md).
 | Issue-12 Tenant persistence and directory | Done | Use cases and ports in `hodor-tenant`; `tenant.tenant` and `platform.tenant_directory` with their triggers; PostgreSQL repository and directory; one contract suite passed by the in-memory fake and by PostgreSQL |
 | Issue-13 Tenant commands and server resolver | Done | `hodor-cli tenant` commands; `hodor-server` resolves tenants through the directory and answers by status |
 
+### Slice C — Identity
+
+Specified in [the identity context](../architecture/contexts/identity.md).
+
+| Issue | Status | What exists |
+|---|---|---|
+| Issue-14 Identity domain | In progress | — |
+| Issue-15 User repository | Not started | — |
+| Issue-16 Identity use cases | Not started | — |
+
 ### Known gaps in what is done
 
 These are recorded here so they are not forgotten; each is picked up by the issue named.
