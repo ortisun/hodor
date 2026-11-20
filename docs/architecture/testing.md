@@ -22,7 +22,7 @@ Fakes are preferred to mocks: each port has one in-memory implementation behind 
 
 ## Contract tests for ports
 
-Every repository and gateway port ships a function such as `run_user_repository_contract(make: impl Fn() -> impl UserRepository)`. The in-memory fake and the Postgres adapter both run it. The suite always includes the tenant isolation cases: data written under tenant A is invisible and immutable under tenant B.
+Every context ships, behind its `testing` feature, an in-memory implementation of its ports and a contract suite: a set of plain async functions that take the ports as trait objects (`hodor_tenant::testing::run_contract`). The in-memory fake and the PostgreSQL adapter both run it. The first one built is the tenant context's. The suite always includes the tenant isolation cases: data written under tenant A is invisible and immutable under tenant B.
 
 ## Property-based tests
 

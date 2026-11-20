@@ -146,7 +146,13 @@ impl TestDatabase {
 /// Tables that are deliberately not tenant tables.
 ///
 /// Keep this list short: every entry is a table without tenant isolation.
-const PLATFORM_TABLES: &[&str] = &["public._sqlx_migrations"];
+const PLATFORM_TABLES: &[&str] = &[
+    // The migration tool's own bookkeeping.
+    "public._sqlx_migrations",
+    // Routing data only: slug, identifier and status. Justified in
+    // docs/architecture/contexts/tenant.md, "Storage".
+    "platform.tenant_directory",
+];
 
 /// Checks every table in the database against the tenant isolation rules of
 /// `docs/architecture/multi-tenancy.md` and returns one message per

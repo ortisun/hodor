@@ -1053,6 +1053,7 @@ dependencies = [
  "async-trait",
  "hodor-adapters-postgres",
  "hodor-kernel",
+ "hodor-tenant",
  "serde",
  "serde_json",
  "sqlx",
@@ -1142,11 +1143,14 @@ dependencies = [
 name = "hodor-tenant"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "hodor-kernel",
+ "hodor-tenant",
  "proptest",
  "serde",
  "serde_json",
  "time",
+ "tokio",
 ]
 
 [[package]]

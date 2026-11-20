@@ -8,6 +8,7 @@
 mod database;
 mod migrate;
 mod outbox;
+mod tenant;
 #[cfg(feature = "testing")]
 pub mod testing;
 mod uow;
@@ -17,4 +18,5 @@ pub use migrate::migrate;
 pub use outbox::{DispatchReport, OutboxDispatcher};
 pub use sqlx::migrate::MigrateError;
 pub use sqlx::{Error, PgPool};
+pub use tenant::{PgTenantDirectory, PgTenantRepository};
 pub use uow::{PgUnitOfWork, connection};
