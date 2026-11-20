@@ -15,25 +15,62 @@ const PLATFORM_LOGIN: &str = "hodor_platform_login";
 const PLATFORM_PASSWORD: &str = "platform";
 
 /// Docker struggles when many containers start at the same instant, which is
-/// what a parallel test run does. Starts are limited and retried.
+/// what a parallel test run does: a start can fail, and so can asking for the
+/// mapped port or opening the first connection. Starts are limited, and the
+/// whole sequence is retried with a fresh container.
 static STARTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
-const START_ATTEMPTS: u32 = 3;
+const START_ATTEMPTS: u32 = 4;
 
-async fn start_container() -> ContainerAsync<Postgres> {
+struct Started {
+    container: ContainerAsync<Postgres>,
+    host: String,
+    port: u16,
+    owner: PgPool,
+}
+
+async fn try_start() -> Result<Started, String> {
+    let container = Postgres::default()
+        .with_tag(IMAGE_TAG)
+        .start()
+        .await
+        .map_err(|e| format!("start: {e}"))?;
+    let host = container
+        .get_host()
+        .await
+        .map_err(|e| format!("host: {e}"))?
+        .to_string();
+    let port = container
+        .get_host_port_ipv4(5432)
+        .await
+        .map_err(|e| format!("port: {e}"))?;
+    let owner = PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&format!(
+            "postgres://postgres:postgres@{host}:{port}/postgres"
+        ))
+        .await
+        .map_err(|e| format!("connect: {e}"))?;
+    Ok(Started {
+        container,
+        host,
+        port,
+        owner,
+    })
+}
+
+async fn start_container() -> Started {
     let _permit = STARTS.acquire().await.expect("semaphore is never closed");
-    let mut attempt = 1;
-    loop {
-        match Postgres::default().with_tag(IMAGE_TAG).start().await {
-            Ok(container) => return container,
-            Err(error) if attempt < START_ATTEMPTS => {
-                attempt += 1;
-                drop(error);
-            }
-            Err(error) => {
-                panic!("PostgreSQL container should start; is Docker running? {error}")
-            }
+    let mut failures = Vec::new();
+    for _ in 0..START_ATTEMPTS {
+        match try_start().await {
+            Ok(started) => return started,
+            Err(failure) => failures.push(failure),
         }
     }
+    panic!(
+        "PostgreSQL container could not be started; is Docker running? {}",
+        failures.join("; ")
+    );
 }
 
 /// A PostgreSQL container with the schema migrated and two connections: one
@@ -58,19 +95,12 @@ impl TestDatabase {
     /// Panics if Docker is unavailable or the database cannot be prepared;
     /// a test cannot continue without it.
     pub async fn start() -> Self {
-        let container = start_container().await;
-        let host = container.get_host().await.expect("container host");
-        let port = container
-            .get_host_port_ipv4(5432)
-            .await
-            .expect("container port");
-
-        let owner_url = format!("postgres://postgres:postgres@{host}:{port}/postgres");
-        let owner = PgPoolOptions::new()
-            .max_connections(2)
-            .connect(&owner_url)
-            .await
-            .expect("owner connection");
+        let Started {
+            container,
+            host,
+            port,
+            owner,
+        } = start_container().await;
         migrate(&owner).await.expect("migrations should apply");
 
         // A login role that is a member of the application group role, the
