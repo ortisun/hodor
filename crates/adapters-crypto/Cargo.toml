@@ -1,0 +1,22 @@
+[package]
+name = "hodor-adapters-crypto"
+description = "Cryptography adapter: password hashing and the operating system's random source."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+argon2.workspace = true
+async-trait.workspace = true
+getrandom.workspace = true
+hodor-credential.workspace = true
+hodor-kernel.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+hodor-kernel = { workspace = true, features = ["testing"] }
+
+[lints]
+workspace = true
