@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hodor Design System</title>
+  <meta name="description" content="Foundations, components and security interaction patterns of the Hodor design system.">
+  <link rel="stylesheet" href="showcase.css">
+  <link rel="stylesheet" href="../tokens.css">
+  <link rel="stylesheet" href="../components.css">
+  <link rel="stylesheet" href="../shell.css">
+  <script src="showcase.js" defer></script>
+</head>
+<body>
+<div class="shell">
+  <header class="scope-bar" aria-label="Scope">
+    <div class="scope-bar__brand">
+      <svg class="brand-mark" aria-hidden="true"><use href="icons.svg#brand"/></svg>
+      <span class="scope-bar__brand-name">Hodor</span>
+    </div>
+    <span class="badge badge--accent">Design system</span>
+    <div class="scope-bar__spacer"></div>
+    <a class="button button--ghost" href="index.html"><svg class="icon" aria-hidden="true"><use href="icons.svg#shield"/></svg>Control plane example</a>
+    <button class="button button--ghost button--icon" type="button" data-theme-toggle aria-label="Switch to light theme">
+      <svg class="icon" aria-hidden="true"><use href="icons.svg#sun"/></svg>
+    </button>
+  </header>
+
+  <nav class="navigation" aria-label="Sections">
+    <div class="navigation__group">
+      <div class="navigation__label overline">Foundations</div>
+      <ul class="navigation__list">
+        <li><a class="navigation__link" href="#color" aria-current="page">Color</a></li>
+        <li><a class="navigation__link" href="#severity">Status and severity</a></li>
+        <li><a class="navigation__link" href="#type">Typography</a></li>
+      </ul>
+    </div>
+    <div class="navigation__group">
+      <div class="navigation__label overline">Components</div>
+      <ul class="navigation__list">
+        <li><a class="navigation__link" href="#actions">Actions</a></li>
+        <li><a class="navigation__link" href="#inputs">Inputs</a></li>
+        <li><a class="navigation__link" href="#feedback">Feedback</a></li>
+        <li><a class="navigation__link" href="#data">Data</a></li>
+      </ul>
+    </div>
+    <div class="navigation__group">
+      <div class="navigation__label overline">Security patterns</div>
+      <ul class="navigation__list">
+        <li><a class="navigation__link" href="#ladder">Dangerous action ladder</a></li>
+        <li><a class="navigation__link" href="#secrets">Secrets and identifiers</a></li>
+      </ul>
+    </div>
+  </nav>
+
+  <main class="page">
+    <div class="page__inner">
+      <div class="page__header">
+        <div>
+          <div class="breadcrumbs"><span>frontend/design-system</span></div>
+          <h1 class="page__title">Hodor design system</h1>
+          <p class="provenance">Specification: <a href="#">docs/design/design-system.md</a> · Decision 0016</p>
+        </div>
+      </div>
+
+      <section class="gallery-section" id="color">
+        <h2>Color</h2>
+        <p>Semantic tokens over a cool "ink" neutral ramp and the "signal" accent. Signal marks where you are and what you can do; it is never a status. Switch the theme to see every token remapped.</p>
+        <div class="swatches">
+          <div class="swatch swatch--canvas"><div class="swatch__color"></div><div class="swatch__name">--color-canvas</div></div>
+          <div class="swatch swatch--surface"><div class="swatch__color"></div><div class="swatch__name">--color-surface</div></div>
+          <div class="swatch swatch--raised"><div class="swatch__color"></div><div class="swatch__name">--color-surface-raised</div></div>
+          <div class="swatch swatch--sunken"><div class="swatch__color"></div><div class="swatch__name">--color-surface-sunken</div></div>
+          <div class="swatch swatch--border"><div class="swatch__color"></div><div class="swatch__name">--color-border-strong</div></div>
+          <div class="swatch swatch--text"><div class="swatch__color"></div><div class="swatch__name">--color-text</div></div>
+          <div class="swatch swatch--muted"><div class="swatch__color"></div><div class="swatch__name">--color-text-muted</div></div>
+          <div class="swatch swatch--accent"><div class="swatch__color"></div><div class="swatch__name">--color-accent</div></div>
+          <div class="swatch swatch--success"><div class="swatch__color"></div><div class="swatch__name">--color-success-fill</div></div>
+          <div class="swatch swatch--warning"><div class="swatch__color"></div><div class="swatch__name">--color-warning-fill</div></div>
+          <div class="swatch swatch--danger"><div class="swatch__color"></div><div class="swatch__name">--color-danger-fill</div></div>
+          <div class="swatch swatch--info"><div class="swatch__color"></div><div class="swatch__name">--color-info-fill</div></div>
+        </div>
+      </section>
+
+      <section class="gallery-section" id="severity">
+        <h2>Status and severity</h2>
+        <p>Status describes an operation or an object; severity describes a security finding or event. Severity always pairs color with a shape and a word, so it survives color blindness and forced colors.</p>
+        <div class="stack">
+          <div class="row">
+            <span class="badge badge--success"><svg class="icon" aria-hidden="true"><use href="icons.svg#check"/></svg>Verified</span>
+            <span class="badge badge--warning"><svg class="icon" aria-hidden="true"><use href="icons.svg#alert"/></svg>Weakened setting</span>
+            <span class="badge badge--danger"><svg class="icon" aria-hidden="true"><use href="icons.svg#x"/></svg>Locked</span>
+            <span class="badge badge--info"><svg class="icon" aria-hidden="true"><use href="icons.svg#info"/></svg>Draft</span>
+            <span class="badge">Accepted</span>
+            <span class="badge badge--accent">Security administrator</span>
+            <span class="live">Streaming</span>
+          </div>
+          <div class="row">
+            <span class="severity severity--critical">Critical</span>
+            <span class="severity severity--high">High</span>
+            <span class="severity severity--medium">Medium</span>
+            <span class="severity severity--low">Low</span>
+            <span class="severity severity--informational">Informational</span>
+          </div>
+          <div class="swatches">
+            <div class="swatch swatch--critical"><div class="swatch__color"></div><div class="swatch__name">--color-severity-critical</div></div>
+            <div class="swatch swatch--high"><div class="swatch__color"></div><div class="swatch__name">--color-severity-high</div></div>
+            <div class="swatch swatch--medium"><div class="swatch__color"></div><div class="swatch__name">--color-severity-medium</div></div>
+            <div class="swatch swatch--low"><div class="swatch__color"></div><div class="swatch__name">--color-severity-low</div></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="gallery-section" id="type">
+        <h2>Typography</h2>
+        <p>IBM Plex Sans for the interface, Plex Sans Condensed for headings and figures, Plex Mono for identifiers, secrets and policies. Self-hosted in production.</p>
+        <div class="card card__body type-scale">
+          <div class="type-sample"><span class="type-sample__name">--text-3xl</span><span class="t-3xl numeric">98.2% · 48,213</span></div>
+          <div class="type-sample"><span class="type-sample__name">--text-2xl</span><span class="t-2xl">Security posture</span></div>
+          <div class="type-sample"><span class="type-sample__name">--text-xl</span><span class="t-xl">Signing keys</span></div>
+          <div class="type-sample"><span class="type-sample__name">--text-lg</span><span class="t-lg">Confirm it is you before rotating the key.</span></div>
+          <div class="type-sample"><span class="type-sample__name">--text-md</span><span class="t-md">Administrators who sign in with a one-time code can be phished.</span></div>
+          <div class="type-sample"><span class="type-sample__name">--text-sm</span><span class="t-sm">Dense table text, 13 pixels, tabular figures 1,204.</span></div>
+          <div class="type-sample"><span class="type-sample__name">--text-xs</span><span class="t-xs">Last changed by Rafaela Lima 4 minutes ago</span></div>
+          <div class="type-sample"><span class="type-sample__name">overline</span><span class="overline">Refresh token reuse</span></div>
+          <div class="type-sample"><span class="type-sample__name">mono</span><span class="t-mono">0193b8e2-77a1-7d0c-9f3e-1b2c9a8e4c1a  O0 l1I</span></div>
+        </div>
+      </section>
+
+      <section class="gallery-section" id="actions">
+        <h2>Actions</h2>
+        <p>Buttons are verbs that name the result. The danger button is never the default and never pre-focused.</p>
+        <div class="row">
+          <button class="button button--primary" type="button">Create application</button>
+          <button class="button" type="button">Export report</button>
+          <button class="button button--ghost" type="button">Cancel</button>
+          <button class="button button--danger" type="button">Delete user</button>
+          <button class="button" type="button" disabled>Disabled</button>
+          <button class="button button--small" type="button">Small</button>
+          <button class="button button--icon" type="button" aria-label="Refresh"><svg class="icon" aria-hidden="true"><use href="icons.svg#refresh"/></svg></button>
+          <span class="keyboard-key">⌘</span><span class="keyboard-key">K</span>
+        </div>
+      </section>
+
+      <section class="gallery-section" id="inputs">
+        <h2>Inputs</h2>
+        <p>Inputs sit in a sunken well with a strong outline; focus adds the signal ring.</p>
+        <div class="demo-grid">
+          <label class="field"><span class="field__label">Application name</span><input class="input" type="text" placeholder="Billing portal"><span class="field__hint">Shown on the consent screen.</span></label>
+          <label class="field"><span class="field__label">Redirect URI</span><input class="input input--mono" type="text" value="https://billing.acme.example/callback"><span class="field__hint">Matched exactly. Wildcards are not allowed.</span></label>
+          <label class="field"><span class="field__label">Refresh token lifetime</span><input class="input" type="text" value="90 days" aria-invalid="true"><span class="field__hint">Recommended: 30 days with rotation.</span></label>
+          <div class="field">
+            <span class="field__label">Density</span>
+            <div class="segmented" role="group" aria-label="Density"><button type="button" aria-pressed="true">Comfortable</button><button type="button" aria-pressed="false">Compact</button></div>
+          </div>
+          <label class="switch"><input type="checkbox" checked> <span>Require PKCE (cannot be turned off for new clients)</span></label>
+        </div>
+      </section>
+
+      <section class="gallery-section" id="feedback">
+        <h2>Feedback</h2>
+        <p>Alerts name the problem and the way out.</p>
+        <div class="stack">
+          <div class="alert alert--danger"><svg class="icon" aria-hidden="true"><use href="icons.svg#alert"/></svg><div><div class="alert__title">Audit delivery to the security event management system is failing</div><div class="t-sm muted">412 records are queued. Hodor retries with backoff and keeps them in the outbox.</div></div><button class="button button--small" type="button">Open stream</button></div>
+          <div class="alert alert--warning"><svg class="icon" aria-hidden="true"><use href="icons.svg#alert"/></svg><div><div class="alert__title">You are working under a support grant</div><div class="t-sm muted">Granted by Acme Payments for incident 2291, read-only, expires in 47 minutes.</div></div><span></span></div>
+          <div class="alert alert--success"><svg class="icon" aria-hidden="true"><use href="icons.svg#check-circle"/></svg><div><div class="alert__title">Domain acme.example verified</div><div class="t-sm muted">It can now be used for the issuer and for identity provider routing.</div></div><span></span></div>
+        </div>
+      </section>
+
+      <section class="gallery-section" id="data">
+        <h2>Data</h2>
+        <p>Tables put decision-relevant columns first, use tabular figures, and truncate identifiers in the middle.</p>
+        <div class="table-wrap">
+          <table class="table">
+            <thead><tr><th>Actor</th><th>Action</th><th>Target</th><th>Result</th><th>IP address</th><th>Request</th><th class="numeric">Time</th></tr></thead>
+            <tbody>
+              <tr><td>Rafaela Lima</td><td>policy.published</td><td>orders-access v13</td><td><span class="badge badge--success">Success</span></td><td class="numeric">192.0.2.14</td><td><span class="identifier"><span>0193c4…91d7</span><button class="identifier__copy" type="button" data-copy="0193c4b2-1f0e-7a55-b3d2-6e8c0a2f91d7" aria-label="Copy request identifier"><svg class="icon" aria-hidden="true"><use href="icons.svg#copy"/></svg></button></span></td><td class="numeric">14:02:11</td></tr>
+              <tr aria-selected="true"><td>Marina Costa</td><td>role.assigned</td><td>tenant-administrator → j.silva</td><td><span class="badge badge--warning">Pending approval</span></td><td class="numeric">192.0.2.88</td><td><span class="identifier"><span>0193c3…2ab4</span><button class="identifier__copy" type="button" data-copy="0193c3aa-0c11-7e02-8d1f-3b5d77e12ab4" aria-label="Copy request identifier"><svg class="icon" aria-hidden="true"><use href="icons.svg#copy"/></svg></button></span></td><td class="numeric">13:47:56</td></tr>
+              <tr><td>hodor-worker</td><td>key.rotation_due</td><td>tenant-signing</td><td><span class="badge badge--danger">Overdue</span></td><td class="numeric">—</td><td><span class="identifier"><span>0193c1…77c0</span><button class="identifier__copy" type="button" data-copy="0193c1f0-55aa-7c3b-a0e9-9d41b2c677c0" aria-label="Copy request identifier"><svg class="icon" aria-hidden="true"><use href="icons.svg#copy"/></svg></button></span></td><td class="numeric">12:00:00</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="gallery-section" id="ladder">
+        <h2>Dangerous action ladder</h2>
+        <p>Every state-changing action has one level, defined once in the action catalog. The open dialogs in the <a href="index.html">control plane example</a> show levels 2 and 3 working.</p>
+        <div class="table-wrap">
+          <table class="table ladder-table">
+            <thead><tr><th>Level</th><th>Friction</th><th>Examples</th></tr></thead>
+            <tbody>
+              <tr><td><span class="ladder"><span class="ladder__steps"><span class="ladder__step"></span><span class="ladder__step"></span><span class="ladder__step"></span><span class="ladder__step"></span></span>0 · Reversible</span></td><td>Applies at once; Undo for 10 seconds</td><td class="muted">Rename a group, add a member</td></tr>
+              <tr><td><span class="ladder"><span class="ladder__steps"><span class="ladder__step is-on"></span><span class="ladder__step"></span><span class="ladder__step"></span><span class="ladder__step"></span></span>1 · Confirm</span></td><td>Dialog naming the object and the effect</td><td class="muted">Suspend a user, disable an application</td></tr>
+              <tr><td><span class="ladder"><span class="ladder__steps"><span class="ladder__step is-on"></span><span class="ladder__step is-on"></span><span class="ladder__step"></span><span class="ladder__step"></span></span>2 · Type to confirm</span></td><td>Type the object's name</td><td class="muted">Delete an application, revoke all sessions</td></tr>
+              <tr><td><span class="ladder"><span class="ladder__steps"><span class="ladder__step is-on"></span><span class="ladder__step is-on"></span><span class="ladder__step is-on"></span><span class="ladder__step"></span></span>3 · Recent authentication</span></td><td>Inline step-up, passkey preferred</td><td class="muted">Rotate keys, grant an administrator role, publish to production</td></tr>
+              <tr><td><span class="ladder"><span class="ladder__steps"><span class="ladder__step is-on"></span><span class="ladder__step is-on"></span><span class="ladder__step is-on"></span><span class="ladder__step is-on"></span></span>4 · Second approver</span></td><td>A different administrator approves</td><td class="muted">Grant a platform role, disable audit delivery</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="row">
+          <button class="button button--danger button--hold" type="button" data-hold data-complete="Held for 1.5 seconds: confirmed."><span>Hold to confirm</span></button>
+          <span class="muted t-sm">Pointer or Space held for 1.5 seconds. Reserved for the most destructive actions.</span>
+        </div>
+      </section>
+
+      <section class="gallery-section" id="secrets">
+        <h2>Secrets and identifiers</h2>
+        <p>A secret is shown once, then only its prefix. Identifiers are mono, middle-truncated and copyable.</p>
+        <div class="demo-grid">
+          <div class="secret">
+            <div class="overline">Shown once</div>
+            <div class="secret__value"><code>hds_live_K9vT2mXq7RbW4nLp8sYc3HdF6jZa1Ue5</code></div>
+            <div class="t-xs muted">Hodor stores only a hash. Copy it now.</div>
+          </div>
+          <div class="card card__body stack--tight stack">
+            <div class="overline">Stored secret</div>
+            <div class="row"><span class="identifier"><span>hds_live_K9vT…a1Ue5</span><button class="identifier__copy" type="button" data-copy="hds_live_K9vT" aria-label="Copy secret prefix"><svg class="icon" aria-hidden="true"><use href="icons.svg#copy"/></svg></button></span><span class="badge badge--warning">Expires in 9 days</span></div>
+            <div class="t-xs muted">Created 2025-11-20 · last used 3 hours ago</div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+</div>
+<div class="toast-region" id="toasts" aria-live="polite"></div>
+</body>
+</html>
