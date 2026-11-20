@@ -43,13 +43,13 @@ stateDiagram-v2
     Deleted --> [*]
 ```
 
-| Status | Serves requests | Meaning |
-|---|---|---|
-| Provisioning | No | Created, but its initial data is not complete yet |
-| Active | Yes | Normal operation |
-| Suspended | No | Data is kept; every request is refused with a distinct error |
-| Pending deletion | No | Will be purged after the deletion date unless deletion is cancelled |
-| Deleted | No | Data has been purged; only the record that the tenant existed remains |
+| Status | Serves requests | Meaning | What a request to `/t/{slug}` gets |
+|---|---|---|---|
+| Provisioning | No | Created, but its initial data is not complete yet | `404`, as if the tenant did not exist |
+| Active | Yes | Normal operation | The requested resource |
+| Suspended | No | Data is kept; every request is refused with a distinct error | `403` with code `tenant.suspended` |
+| Pending deletion | No | Will be purged after the deletion date unless deletion is cancelled | `403` with code `tenant.suspended` |
+| Deleted | No | Data has been purged; only the record that the tenant existed remains | `404`, as if the tenant did not exist |
 
 Rules:
 
@@ -168,15 +168,21 @@ Resolving a request starts from a slug, before any tenant is known, so it cannot
 
 ## Command-line tool
 
-| Command | What it does |
-|---|---|
-| `hodor-cli tenant create --slug <slug> --name <name> [--open-registration]` | Creates and activates a tenant |
-| `hodor-cli tenant create-system` | Creates the `system` tenant if it does not exist |
-| `hodor-cli tenant list` | Lists slug, identifier and status |
-| `hodor-cli tenant suspend --slug <slug> --reason <text>` | Suspends a tenant |
-| `hodor-cli tenant reactivate --slug <slug>` | Reactivates a suspended tenant |
+| Command | What it does | Prints |
+|---|---|---|
+| `hodor-cli tenant create --slug <slug> --name <name> [--open-registration]` | Creates and activates a tenant | The new tenant's slug and identifier |
+| `hodor-cli tenant create-system` | Creates the `system` tenant. Does nothing if it already exists, so it is safe to run on every deployment | Whether it was created or already existed |
+| `hodor-cli tenant list` | Lists every tenant, ordered by slug | One line per tenant: slug, identifier, status |
+| `hodor-cli tenant suspend --slug <slug> --reason <text>` | Suspends a tenant | The tenant's new status |
+| `hodor-cli tenant reactivate --slug <slug>` | Reactivates a suspended tenant | The tenant's new status |
 
-These commands connect with `HODOR_DATABASE_URL`, as a member of `hodor_app`. They need no cross-tenant role for the same reason the server does not.
+These commands connect with `HODOR_DATABASE_URL`, as a member of `hodor_app`. They need no cross-tenant role for the same reason the server does not. A command that fails prints the error's code and message and exits with a non-zero status.
+
+The events these commands produce record the actor as the system, since no authenticated administrator exists yet at this stage.
+
+## How the server resolves a tenant
+
+For every request under `/t/{slug}`, `hodor-server` looks the slug up in the directory and answers according to the status table in [lifecycle](#lifecycle). The lookup is one indexed read of a three-column table and is not cached yet.
 
 ## Not built yet
 

@@ -40,7 +40,7 @@ Specified in [the tenant context](../architecture/contexts/tenant.md).
 |---|---|---|
 | Issue-11 Tenant domain | Done | `hodor-tenant` crate: slug rules, lifecycle with every transition checked, settings with defaults and bounds, events |
 | Issue-12 Tenant persistence and directory | Done | Use cases and ports in `hodor-tenant`; `tenant.tenant` and `platform.tenant_directory` with their triggers; PostgreSQL repository and directory; one contract suite passed by the in-memory fake and by PostgreSQL |
-| Issue-13 Tenant commands and server resolver | Not started | — |
+| Issue-13 Tenant commands and server resolver | In progress | — |
 
 ### Known gaps in what is done
 
