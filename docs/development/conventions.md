@@ -54,11 +54,11 @@ Some names are the actual name of a standard, protocol, format or product. Nobod
 
 | Group | Names |
 |---|---|
-| Protocols and standards | OAuth, SAML, SCIM, LDAP, HTTP, HTTPS, TLS, DNS, SMTP, SMS, OTLP, PKCE, DPoP, TOTP, HOTP, WebAuthn, XACML, FAPI |
-| Formats and data | JSON, NDJSON, XML, HTML, CSS, SQL, URL, URI, UUID, JWT, JWK, JWKS, JWS, JOSE, COSE, UTC, UTF-8 |
+| Protocols and standards | OAuth, SAML, SCIM, LDAP, RADIUS, HTTP, HTTPS, TLS, DNS, SMTP, SMS, OTLP, PKCE, DPoP, TOTP, HOTP, WebAuthn, XACML, FAPI |
+| Formats and data | JSON, NDJSON, XML, YAML, HTML, CSS, SVG, PNG, OKLCH, SQL, URL, URI, UUID, JWT, JWK, JWKS, JWS, JOSE, COSE, UTC, UTF-8 |
 | Cryptography | RSA, SHA, HMAC, AES, GCM, ECDSA, EdDSA, PKCS, FIPS, and algorithm identifiers such as ES256 |
 | Attack classes | CSRF, SSRF, XSS, XXE |
-| Products, projects and organizations | PostgreSQL, Redis, OpenTelemetry, VictoriaMetrics, Kubernetes, Helm, OWASP, STRIDE, C4, RFC numbers |
+| Products, projects and organizations | PostgreSQL, Redis, OpenTelemetry, VictoriaMetrics, Kubernetes, Helm, OWASP, STRIDE, C4, RFC numbers, NIST, IBM, Entra ID |
 | Everyday technical words | API, CPU, IP address, README |
 | Published titles | The title of a specification is quoted as published, for example "OpenID Connect RP-Initiated Logout" |
 | Language tags | `en`, `pt-BR` |
@@ -72,6 +72,7 @@ Anything outside this table is written out. When in doubt, write it out. If a ne
 | [`product/`](../product/product-requirements.md) | Why Hodor exists and what it must do: Product requirements, requirements, roadmap, epics, progress |
 | [`architecture/`](../architecture/overview.md) | How it is built: structure, domain model, crates, data, tenancy, authorization, plugins, testing, and the critical review |
 | [`architecture/contexts/`](../architecture/contexts/tenant.md) | One page per bounded context: its rules, data and operations, written before the context is built |
+| [`design/`](../design/design-system.md) | How it looks and behaves for people: the design system and the consoles' structure |
 | [`protocols/`](../protocols/sequences.md) | How it behaves on the wire: sequences and lifecycles |
 | [`api/`](../api/api-spec.md) | The HTTP surfaces and their conventions |
 | [`security/`](../security/threat-model.md) | Threat models and security analysis |

@@ -87,6 +87,19 @@ These are recorded here so they are not forgotten; each is picked up by the issu
 | SQL is checked at run time, not at compile time (`sqlx::query!` with the offline cache is not set up). Every query is exercised by an integration test instead | A dedicated issue, not yet scheduled |
 | Continuous integration actions are pinned by tag, not by commit SHA | Hardening pass (threat Threat-General-15) |
 
+## Design system
+
+Specified in [the design system](../design/design-system.md) and [the control plane](../design/control-plane.md), outside the milestone plan; the React components are built with the admin console (Epic 12).
+
+| Piece | Status | What exists |
+|---|---|---|
+| Specification | Done | Foundations, components, security interaction patterns, control plane structure, console requirements (`Requirement-Console-…`), [Decision 0016](../decisions/0016-design-system.md) |
+| Tokens and styles | Done | `frontend/design-system/tokens.css`, `components.css` and `shell.css`: dark and light themes, density, reduced motion, forced colors |
+| Showcase | Done | Static pages in `frontend/design-system/showcase/`: the security posture screen with working level 2 and level 3 confirmations, step-up, secret reveal and command palette, plus a component gallery |
+| Fonts | Not done | IBM Plex is not vendored yet; the showcase loads it from Google Fonts, which the shipped frontends must not do |
+| React components and action catalog | Not started | Epic 12 |
+| Contrast checks in a token build | Not started | Planned with the React components; today contrast was checked by eye in both themes, not measured |
+
 ## Where the implementation departs from the design
 
 Each departure is reflected in the page that specifies the topic. They are collected here for a reader who knows the original design.

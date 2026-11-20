@@ -113,6 +113,7 @@ Standard collection and item routes (`GET` list, `POST`, `GET`, `PATCH`, `DELETE
 | Keys | `/admin/keys` | `POST /keys/{set}:rotate`, `POST /keys/{set}/versions/{kid}:revoke` |
 | Sessions | `/admin/sessions` | `DELETE`, `POST /sessions:revoke-all` |
 | Audit | `/admin/audit-records` (read-only) | `POST /audit-records:export` |
+| Security posture | `/admin/posture` (read-only summary), `/admin/posture/findings`, `/findings/{id}/acceptances` | `POST /posture:evaluate`; an acceptance carries a reason and an expiry ([control plane](../design/control-plane.md#security-posture)) |
 | Integrations | `/admin/webhooks`, `/admin/scim-integrations`, `/admin/plugins` | `POST /webhooks/{id}:test` |
 
 Custom actions use the `:verb` suffix so that they never collide with resource identifiers.
