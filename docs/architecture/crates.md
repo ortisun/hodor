@@ -2,16 +2,16 @@
 
 ## Consolidated structure
 
-The specification proposes 26 crates. This design has 24: four merges and two additions, justified in [ADR-0002](../adr/0002-crate-consolidation.md).
+The specification proposes 26 crates. This design has 24: four merges and two additions, justified in [Decision 0002](../decisions/0002-crate-consolidation.md).
 
 | Specification | Here | Reason |
 |---|---|---|
 | `kernel` + `shared` | `kernel` | Two "common" crates become a dumping ground; one small, reviewed crate instead |
-| `oauth2` + `oidc` | `oauth` | OIDC is a layer over the same endpoints; splitting forces shared types and a circular dependency |
-| `federation` + `social-login` | `federation` | Social connectors are configuration plus small quirks over the same RP mechanism |
+| `oauth2` + `oidc` | `oauth` | OpenID Connect is a layer over the same endpoints; splitting forces shared types and a circular dependency |
+| `federation` + `social-login` | `federation` | Social connectors are configuration plus small quirks over the same relying party mechanism |
 | `consent` | module of `oauth` | Small aggregate with no other consumer |
 | — | `keys` (new) | Rotation and JWKS are domain rules; `adapters-kms` only implements the port |
-| — | `adapters-http` (new) | The single SSRF-protected outbound HTTP client, used by federation, OPA, webhooks and JWKS fetching |
+| — | `adapters-http` (new) | The single SSRF-protected outbound HTTP client, used by federation, Open Policy Agent, webhooks and JWKS fetching |
 
 ```text
 hodor/
@@ -54,7 +54,7 @@ hodor/
 └── tests/{architecture,integration,security,conformance,performance}/
 ```
 
-A crate is created only when the phase that uses it starts. M1 creates `kernel`, `tenant`, `identity`, `credential`, `session`, `authentication`, `audit`, `notification`, `protocol-http`, `adapters-postgres`, `adapters-crypto`, `observability` and the three apps.
+A crate is created only when the phase that uses it starts. Milestone 1 creates `kernel`, `tenant`, `identity`, `credential`, `session`, `authentication`, `audit`, `notification`, `protocol-http`, `adapters-postgres`, `adapters-crypto`, `observability` and the three apps.
 
 ## Dependency graph
 
@@ -130,18 +130,18 @@ Explicit prohibitions:
 
 ## Candidate external dependencies
 
-Each one is evaluated (maintenance, audits, open advisories, license) before it enters; the cryptography choice is in [ADR-0008](../adr/0008-cryptography.md). Versions and advisory status must be re-checked at adoption time.
+Each one is evaluated (maintenance, audits, open advisories, license) before it enters; the cryptography choice is in [Decision 0008](../decisions/0008-cryptography.md). Versions and advisory status must be re-checked at adoption time.
 
 | Need | Candidate | Note |
 |---|---|---|
 | HTTP | `axum`, `tower`, `tower-http` | — |
 | Database | `sqlx` (Postgres, compile-time checks with offline mode) | — |
 | Password hashing | `argon2` (RustCrypto) | — |
-| JWS signing, AEAD, TLS | `aws-lc-rs` through `rustls` | Avoids the pure-Rust RSA implementation; see ADR-0008 |
+| JWS signing, authenticated encryption, TLS | `aws-lc-rs` through `rustls` | Avoids the pure-Rust RSA implementation; see Decision 0008 |
 | JOSE | A thin in-house layer over the primitive, or `jsonwebtoken` | Decide by spike in Phase 2 |
 | WebAuthn | `webauthn-rs` | Has an external audit |
 | OpenAPI | `utoipa` | Generated from code |
 | Observability | `tracing`, `opentelemetry`, `tracing-opentelemetry` | — |
 | LDAP | `ldap3` | Phase 6 |
 | SAML | To be decided by spike | High risk; see the critical review |
-| WASM | `wasmtime` (component model) | Phase 8 |
+| WebAssembly | `wasmtime` (component model) | Phase 8 |

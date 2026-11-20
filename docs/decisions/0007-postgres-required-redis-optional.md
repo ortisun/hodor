@@ -1,4 +1,4 @@
-# ADR-0007: PostgreSQL is required; Redis is optional
+# Decision 0007: PostgreSQL is required; Redis is optional
 
 Status: Proposed
 
@@ -17,7 +17,7 @@ The stack lists Redis as optional. If any feature silently needs it, "optional" 
 ## Consequences
 
 - A single-node install is one binary and one database.
-- Without Redis, rate limits are per node (effective limit multiplies by replica count) and caches rely on short TTLs. This is documented, and Redis is recommended above one replica.
+- Without Redis, rate limits are per node (effective limit multiplies by replica count) and caches rely on short lifetimes. This is documented, and Redis is recommended above one replica.
 - Job and outbox processing on PostgreSQL (`SKIP LOCKED`) is sufficient for the expected volume; a broker can be added behind the same ports if it stops being so.
 
 ## Alternatives considered

@@ -4,7 +4,7 @@
 
 ```mermaid
 flowchart TB
-    kernel["kernel<br/>Shared Kernel: IDs, TenantContext, events, errors"]
+    kernel["kernel<br/>Shared Kernel: Identifiers, TenantContext, events, errors"]
 
     tenant["tenant"]
     identity["identity"]
@@ -13,7 +13,7 @@ flowchart TB
     keys["keys"]
     authn["authentication"]
     fed["federation"]
-    oauth["oauth<br/>OAuth 2.x, OIDC, clients, consent"]
+    oauth["oauth<br/>OAuth 2.x, OpenID Connect, clients, consent"]
     saml["saml"]
     prov["provisioning<br/>SCIM, LDAP sync"]
     authz["authorization"]
@@ -25,7 +25,7 @@ flowchart TB
     authn -->|"Customer/Supplier"| session
     authn -->|"Conformist"| tenant
     authn -->|"Customer/Supplier"| notif
-    fed -->|"implements the Authenticator SPI"| authn
+    fed -->|"implements the Authenticator service provider interface"| authn
     fed -->|"Customer/Supplier"| identity
     oauth -->|"Customer/Supplier"| session
     oauth -->|"Customer/Supplier"| identity
@@ -33,8 +33,8 @@ flowchart TB
     oauth -->|"Conformist"| tenant
     saml --> session & identity & keys
     prov -->|"Customer/Supplier"| identity
-    audit -. "consumes events, ACL" .-> kernel
-    authz -. "PIP: reads roles and groups through a port" .-> identity
+    audit -. "consumes events, access control list" .-> kernel
+    authz -. "policy information point: reads roles and groups through a port" .-> identity
 ```
 
 Relevant relationships:
@@ -43,13 +43,13 @@ Relevant relationships:
 |---|---|---|
 | `kernel` → all | Shared Kernel | Kept minimal; changes require review |
 | `identity` → `authentication`, `oauth`, `federation` | Customer/Supplier | Downstream uses the `identity::api` facade |
-| `authentication` → `federation` | Open Host (`Authenticator` SPI) | Inverts the dependency: federation is a flow step |
+| `authentication` → `federation` | Open Host (`Authenticator` service provider interface) | Inverts the dependency: federation is a flow step |
 | `oauth` ↔ `authentication` | No code dependency | Joined over HTTP: `oauth` requires a session with certain facts; the interaction is orchestrated in `protocol-http` |
-| External IdPs → `federation` | Anti-Corruption Layer | Each connector translates the provider into `ExternalIdentity` |
-| OPA → `authorization` | Anti-Corruption Layer | `OpaAuthorizationAdapter` |
+| External identity providers → `federation` | Anti-Corruption Layer | Each connector translates the provider into `ExternalIdentity` |
+| Open Policy Agent → `authorization` | Anti-Corruption Layer | `OpaAuthorizationAdapter` |
 | all → `audit` | Published Language (events) | No context depends on `audit` |
 
-`authorization` needs the subject's roles and groups. It defines the `SubjectAttributeSource` port (a PIP); the implementation that queries `identity` is wired in the composition root, so `authorization` stays independent of `identity`.
+`authorization` needs the subject's roles and groups. It defines the `SubjectAttributeSource` port (a policy information point); the implementation that queries `identity` is wired in the composition root, so `authorization` stays independent of `identity`.
 
 ## Ubiquitous language
 
@@ -57,14 +57,14 @@ Relevant relationships:
 |---|---|
 | **Tenant** | Hard isolation boundary with its own issuer, keys, policies and data. Equivalent to a *realm*. |
 | **Organization** | B2B structure *inside* a tenant (a customer or partner company). Not an isolation boundary. |
-| **User** | Person or account with an immutable ID, belonging to exactly one tenant. |
+| **User** | Person or account with an immutable identifier, belonging to exactly one tenant. |
 | **Identifier** | Username, email or phone used to locate a user. |
-| **External Identity** | A (`provider`, `subject`) pair from an external IdP linked to a user. |
+| **External Identity** | A (`provider`, `subject`) pair from an external identity provider linked to a user. |
 | **Principal** | The subject of an action: user, service account or agent. |
 | **Credential** | Proof of authentication owned by a principal. |
 | **Authentication Transaction** | One execution of an authentication flow, from start to session. |
-| **SSO Session** | The browser's authenticated state in the tenant. |
-| **Client Session** | A client's participation in an SSO session. |
+| **Single sign-on Session** | The browser's authenticated state in the tenant. |
+| **Client Session** | A client's participation in a single sign-on session. |
 | **Application** | A registered system; owns one or more clients and may be a resource server. |
 | **Grant** | Authorization given to a client for a subject and a set of scopes. |
 | **Token Family** | The chain of refresh tokens that descends from one grant. |
@@ -179,10 +179,10 @@ Invariants: `(tenant, kind, value)` of an `Identifier` is unique; `(tenant, prov
 |---|---|---|
 | `PasswordCredential` | Argon2id hash in PHC format, parameter version, hash history | `verify`, `change`, `needs_rehash` |
 | `TotpCredential` | Encrypted secret, algorithm, digits, period, last accepted step | `verify` (rejects replay of the same step) |
-| `WebAuthnCredential` | Credential ID, COSE public key, counter, AAGUID, backup flags, transports | `verify_assertion` |
+| `WebAuthnCredential` | Credential identifier, COSE public key, counter, authenticator model identifier, backup flags, transports | `verify_assertion` |
 | `RecoveryCodeSet` | Code hashes, used markers | `consume` |
 | `ApiKey` | Prefix, hash, scopes, expiry | `verify`, `revoke` |
-| `Certificate` | SHA-256 fingerprint, subject DN, validity | `matches` |
+| `Certificate` | SHA-256 fingerprint, subject distinguished name, validity | `matches` |
 
 Every credential has a `CredentialId`, an `owner: PrincipalId`, a `status` and created, last-used and revoked timestamps. Client secrets belong to the `oauth` context.
 
@@ -233,9 +233,9 @@ Invariants: a transaction only advances through its current step; it expires in 
 
 | Aggregate | Role |
 |---|---|
-| `IdentityProvider` | Connector type, protocol, endpoints or discovery, client ID, encrypted secret, scopes, claim mapping, JIT and linking policies, branding, status |
+| `IdentityProvider` | Connector type, protocol, endpoints or discovery, client identifier, encrypted secret, scopes, claim mapping, just-in-time and linking policies, branding, status |
 | `RoutingRule` | Condition (email domain, application, organization) → provider; ordered by priority |
-| `FederationState` | `state`, `nonce` and `code_verifier` of one trip to the external IdP; single use, short TTL, bound to the `AuthTransaction` |
+| `FederationState` | `state`, `nonce` and `code_verifier` of one trip to the external identity provider; single use, short time to live, bound to the `AuthTransaction` |
 | `LinkRequest` | A link request pending proof of control |
 
 ### `oauth`
@@ -313,15 +313,15 @@ A `KeySet` (per tenant and use: `sig`, `enc`, `data`) contains `KeyVersion`s wit
 | `Permission` | `resource_type` + `action`, owned by a resource server |
 | `RoleAssignment` | Principal or group → role, with scope and validity |
 | `AclEntry` | Specific resource → principal → actions |
-| `RelationTuple` | `object#relation@subject` (ReBAC) |
-| `Policy` / `PolicyVersion` | Native rule (ABAC condition) or Rego module; immutable version with checksum |
-| `PolicyBundle` | Published set of versions with a revision; the unit distributed to OPA |
+| `RelationTuple` | `object#relation@subject` (relationship-based access control) |
+| `Policy` / `PolicyVersion` | Native rule (attribute-based access control condition) or Rego module; immutable version with checksum |
+| `PolicyBundle` | Published set of versions with a revision; the unit distributed to Open Policy Agent |
 | `EngineBinding` | Which engine answers for which *namespace* (resource server) in a tenant, with its failure policy |
 | `DecisionRecord` | Recorded decision, with input reduced according to the retention policy |
 
 ### `audit`
 
-`AuditRecord`: ID, tenant, timestamp, actor (principal, client, IP), action, target, outcome, secret-free metadata, `prev_hash` and `hash`. Immutable.
+`AuditRecord`: Identifier, tenant, timestamp, actor (principal, client, IP), action, target, outcome, secret-free metadata, `prev_hash` and `hash`. Immutable.
 
 ## Domain events (sample)
 

@@ -2,7 +2,7 @@
 
 ## Approach
 
-Extension happens at three levels, introduced in this order ([ADR-0012](../adr/0012-extension-strategy.md)):
+Extension happens at three levels, introduced in this order ([Decision 0012](../decisions/0012-extension-strategy.md)):
 
 | Level | Mechanism | Trust | Available |
 |---|---|---|---|
@@ -12,21 +12,21 @@ Extension happens at three levels, introduced in this order ([ADR-0012](../adr/0
 
 Level 1 is the real architecture: every extension point is a port that exists because the product itself needs more than one implementation. Level 3 exposes a *subset* of those ports across a sandbox boundary. Nothing is designed for plugins first.
 
-There is no dynamic loading of native libraries. Rust has no stable ABI, and a native plugin would run with the full authority of the server.
+There is no dynamic loading of native libraries. Rust has no stable binary interface, and a native plugin would run with the full authority of the server.
 
 ## Extension points
 
-| Extension point | Trait (owner crate) | Built-in implementations | Exposed to WASM |
+| Extension point | Trait (owner crate) | Built-in implementations | Exposed to WebAssembly |
 |---|---|---|---|
-| Authentication step | `Authenticator` (`authentication`) | Password, TOTP, WebAuthn, OTP, recovery code, external IdP | Yes, as an *authentication action* |
-| Identity provider connector | `IdpConnector` (`federation`) | Generic OIDC, generic OAuth2, Google, Microsoft, GitHub, Apple, … | Later; generic connectors plus mapping cover most needs |
+| Authentication step | `Authenticator` (`authentication`) | Password, TOTP, WebAuthn, one-time password, recovery code, external identity provider | Yes, as an *authentication action* |
+| Identity provider connector | `IdpConnector` (`federation`) | Generic OpenID Connect, generic OAuth2, Google, Microsoft, GitHub, Apple, … | Later; generic connectors plus mapping cover most needs |
 | Credential type | `CredentialVerifier` (`credential`) | Password, TOTP, WebAuthn, … | No (security-critical) |
 | Notification channel | `NotificationChannel` (`notification`) | SMTP, SMS providers | Yes |
-| Authorization engine | `AuthorizationEngine` (`authorization`) | Native, OPA | No; external engines integrate as adapter crates |
+| Authorization engine | `AuthorizationEngine` (`authorization`) | Native, Open Policy Agent | No; external engines integrate as adapter crates |
 | Policy source | `PolicySource` (`authorization`) | Database, Git sync | No |
 | Claims mapper | `ClaimsMapper` (`oauth`) | Attribute, role, group, constant, template | Yes |
 | Event handler | `EventHandler` (`kernel`) | Audit writer, webhook dispatcher, cache invalidators | Yes |
-| Key provider | `KeyProvider` (`keys`) | Local, cloud KMS, Vault | No |
+| Key provider | `KeyProvider` (`keys`) | Local, cloud key management service, Vault | No |
 | Risk signal | `RiskSignal` (`authentication`) | New device, new IP, velocity | Yes |
 
 ## Sandboxed plugin model
@@ -40,7 +40,7 @@ A plugin is a signed archive containing one WebAssembly component and a manifest
 id = "com.example.hr-claims"
 version = "1.2.0"
 hodor_api = "^1"                 # version of the WIT package it targets
-description = "Adds cost-center claims from the HR system"
+description = "Adds cost-center claims from the human resources system"
 
 [[extension]]
 point = "claims-mapper"

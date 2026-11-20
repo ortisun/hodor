@@ -1,4 +1,4 @@
-# ADR-0015: OpenTelemetry for instrumentation, VictoriaMetrics for metrics
+# Decision 0015: OpenTelemetry for instrumentation, VictoriaMetrics for metrics
 
 Status: Accepted (requested by the project owner)
 
@@ -22,10 +22,10 @@ The specification requires OpenTelemetry. It does not name a backend. The projec
 - Changing backend is a configuration change as long as it speaks OTLP.
 - Pushed metrics need the backend reachable from every pod; short outages lose the samples of that interval.
 - Metric names and labels reach VictoriaMetrics as OpenTelemetry emits them; resource attributes such as `service.name` become labels.
-- Label cardinality remains our responsibility: no user or session identifiers in metric attributes (NFR-OBS-02).
+- Label cardinality remains our responsibility: no user or session identifiers in metric attributes (Requirement-Observability-02).
 
 ## Alternatives considered
 
 - **Prometheus scrape endpoint**: familiar, but adds a listener and a pull topology, and VictoriaMetrics does not need it.
 - **OpenTelemetry Collector in front of every backend**: flexible routing; operators can still add one, since the binaries only speak OTLP.
-- **Backend-specific SDKs**: ties the code to a vendor.
+- **Backend-specific software development kits**: ties the code to a vendor.

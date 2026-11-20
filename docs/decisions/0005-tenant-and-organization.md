@@ -1,4 +1,4 @@
-# ADR-0005: Tenant is the isolation boundary; organizations live inside it
+# Decision 0005: Tenant is the isolation boundary; organizations live inside it
 
 Status: Proposed
 
@@ -13,7 +13,7 @@ The specification lists Tenant, Organization, Organization Unit, Department and 
 - **Organization Unit** is a tree inside an organization. **Department** is a unit with `kind = department`, not a separate entity.
 - **Group** is a tenant-level collection of users, independent of organizations.
 - Tokens can carry an organization context (`org_id` claim) selected at login or requested by the client; roles can be scoped to an organization.
-- **Cross-tenant access** is federation: one tenant registers another as an OIDC identity provider. No shared rows.
+- **Cross-tenant access** is federation: one tenant registers another as an OpenID Connect identity provider. No shared rows.
 - A **`system` tenant** holds platform administrators; platform operations are a separate API. Platform administrators have no standing access to tenant data.
 
 ## Consequences
@@ -25,5 +25,5 @@ The specification lists Tenant, Organization, Organization Unit, Department and 
 
 ## Alternatives considered
 
-- **Truly global users shared across tenants**: breaks isolation of identifiers, credentials, audit and deletion; makes per-tenant policy (password, MFA) ambiguous.
+- **Truly global users shared across tenants**: breaks isolation of identifiers, credentials, audit and deletion; makes per-tenant policy (password, multi-factor authentication) ambiguous.
 - **Organization as the isolation boundary, no tenant**: cannot give organizations separate issuers and keys without reinventing tenants.

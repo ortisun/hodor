@@ -8,7 +8,7 @@ Start with the [critical review](architecture/critical-review.md): it lists wher
 
 | # | Deliverable | Document |
 |---|---|---|
-| 1 | PRD | [product/prd.md](product/prd.md) |
+| 1 | Product requirements | [product/product-requirements.md](product/product-requirements.md) |
 | 2 | Functional Requirements | [product/requirements.md](product/requirements.md#functional-requirements) |
 | 3 | Non-functional Requirements | [product/requirements.md](product/requirements.md#non-functional-requirements) |
 | 4 | Domain Model | [architecture/domain-model.md](architecture/domain-model.md) |
@@ -17,15 +17,15 @@ Start with the [critical review](architecture/critical-review.md): it lists wher
 | 7 | C4 Container Diagram | [architecture/overview.md](architecture/overview.md#c4-level-2-containers) |
 | 8 | Component Diagrams | [architecture/overview.md](architecture/overview.md#c4-level-3-components) |
 | 9 | Crate Dependency Graph | [architecture/crates.md](architecture/crates.md) |
-| 10 | Authentication Sequence Diagrams | [protocols/sequences.md](protocols/sequences.md#1-local-authentication-with-conditional-mfa) |
+| 10 | Authentication Sequence Diagrams | [protocols/sequences.md](protocols/sequences.md#1-local-authentication-with-conditional-multi-factor-authentication) |
 | 11 | OAuth2 + PKCE Sequence | [protocols/sequences.md](protocols/sequences.md#2-oauth-20-authorization-code-with-pkce) |
-| 12 | OIDC Provider Sequence | [protocols/sequences.md](protocols/sequences.md#3-openid-provider) |
-| 13 | OIDC Social Login Sequence | [protocols/sequences.md](protocols/sequences.md#4-social-login-over-oidc) |
+| 12 | OpenID Connect Provider Sequence | [protocols/sequences.md](protocols/sequences.md#3-openid-provider) |
+| 13 | OpenID Connect Social Login Sequence | [protocols/sequences.md](protocols/sequences.md#4-social-login-over-openid-connect) |
 | 14 | Identity Linking Sequence | [protocols/sequences.md](protocols/sequences.md#5-identity-linking) |
 | 15 | Token Lifecycle | [protocols/sequences.md](protocols/sequences.md#6-token-lifecycle) |
 | 16 | Session Lifecycle | [protocols/sequences.md](protocols/sequences.md#7-session-lifecycle) |
 | 17 | Authorization Evaluation Sequence | [architecture/authorization.md](architecture/authorization.md#evaluation-sequence) |
-| 18 | OPA Integration Architecture | [architecture/authorization.md](architecture/authorization.md#opa-integration) |
+| 18 | Open Policy Agent Integration Architecture | [architecture/authorization.md](architecture/authorization.md#open-policy-agent-integration) |
 | 19 | Rego Policy Lifecycle | [architecture/authorization.md](architecture/authorization.md#rego-policy-lifecycle) |
 | 20 | Multi-tenant Isolation Strategy | [architecture/multi-tenancy.md](architecture/multi-tenancy.md) |
 | 21 | Threat Model | [security/threat-model.md](security/threat-model.md) |
@@ -34,7 +34,7 @@ Start with the [critical review](architecture/critical-review.md): it lists wher
 | 24 | Plugin Architecture | [architecture/plugins.md](architecture/plugins.md) |
 | 25 | Testing Strategy | [architecture/testing.md](architecture/testing.md) |
 | 26 | Deployment Architecture | [operations/deployment.md](operations/deployment.md) |
-| 27 | ADRs | [adr/](adr/README.md) |
+| 27 | Decision records | [decisions/](decisions/README.md) |
 | 28 | Product Roadmap | [product/roadmap.md](product/roadmap.md) |
 | 29 | Epics and Development Issues | [product/epics.md](product/epics.md) |
 | — | Critical architecture review | [architecture/critical-review.md](architecture/critical-review.md) |
@@ -53,5 +53,6 @@ Start with the [critical review](architecture/critical-review.md): it lists wher
 - Documentation comes first: the code follows these pages. See the [working conventions](development/conventions.md).
 
 - Diagrams are Mermaid, versioned next to the text.
-- Requirements have stable IDs (`FR-<context>-NN`, `NFR-<area>-NN`) referenced by epics and tests.
-- Every decision that constrains the design becomes an ADR in `docs/adr/`.
+- Requirements, threats and issues have stable identifiers made of whole words (`Requirement-Tenancy-01`, `Threat-OAuth-02`, `Issue-07`), referenced by epics and tests.
+- Words are written in full: no letter codes and no abbreviations. See the [working conventions](development/conventions.md#3-words-not-abbreviations).
+- Every decision that constrains the design becomes a decision record in `docs/decisions/`.

@@ -69,7 +69,7 @@ struct Config {
     shutdown_drain_seconds: u64,
 }
 
-/// Until the tenant context exists (M1-11 to M1-13) there are no tenants to
+/// Until the tenant context exists (Issue-11 to Issue-13) there are no tenants to
 /// resolve, so every tenant path answers "not found".
 struct NoTenants;
 

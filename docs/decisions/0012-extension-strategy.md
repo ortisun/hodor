@@ -1,10 +1,10 @@
-# ADR-0012: Traits first, webhooks second, WASM plugins last
+# Decision 0012: Traits first, webhooks second, WebAssembly plugins last
 
 Status: Proposed
 
 ## Context
 
-The specification wants a plugin architecture for ten kinds of extension and asks to evaluate WASM/WASI. A plugin system designed before the core exists tends to freeze the wrong interfaces.
+The specification wants a plugin architecture for ten kinds of extension and asks to evaluate WebAssembly and the WebAssembly System Interface. A plugin system designed before the core exists tends to freeze the wrong interfaces.
 
 ## Decision
 
@@ -22,7 +22,7 @@ The specification wants a plugin architecture for ten kinds of extension and ask
 
 ## Alternatives considered
 
-- **WASM from the start**: stable interface committed before the domain settles.
+- **WebAssembly from the start**: stable interface committed before the domain settles.
 - **Embedded scripting (JavaScript, Lua, Rhai)**: easy to adopt, harder to sandbox and to limit; one language imposed on everyone.
-- **Native dynamic libraries**: no stable ABI, full process authority.
+- **Native dynamic libraries**: no stable binary interface, full process authority.
 - **Out-of-process plugins over gRPC**: strong isolation, but an operational burden for each plugin; webhooks already cover the remote case.

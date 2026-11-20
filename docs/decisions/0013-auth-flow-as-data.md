@@ -1,4 +1,4 @@
-# ADR-0013: Authentication flows are versioned data interpreted by one engine
+# Decision 0013: Authentication flows are versioned data interpreted by one engine
 
 Status: Proposed
 
@@ -21,10 +21,10 @@ The specification asks for a declarative, visual authentication flow engine with
 
 - One code path for authentication from the first release; later phases add authenticators and conditions, not a new mechanism.
 - Phase 1 carries some engine complexity before it is visibly needed.
-- The closed condition language limits expressiveness on purpose; custom logic goes into WASM authentication actions.
+- The closed condition language limits expressiveness on purpose; custom logic goes into WebAssembly authentication actions.
 
 ## Alternatives considered
 
 - **Hard-coded flows with configuration flags**: quick, but every new combination is code, and step-up becomes special-cased.
 - **General scripting for flows**: maximal flexibility, minimal analyzability; validation and simulation become impossible to guarantee.
-- **Client-driven flows (UI decides the next step)**: moves security decisions to the browser.
+- **Client-driven flows (user interface decides the next step)**: moves security decisions to the browser.

@@ -8,15 +8,15 @@ All paths are relative to the tenant base: `https://{host}/t/{tenant}` or the te
 
 | Surface | Base path | Audience | Authentication |
 |---|---|---|---|
-| OAuth / OIDC | `/oauth2`, `/.well-known` | Clients, relying parties | Per protocol |
+| OAuth / OpenID Connect | `/oauth2`, `/.well-known` | Clients, relying parties | Per protocol |
 | Interaction API | `/interaction` | `auth-ui` only | Interaction cookie + CSRF token |
-| Federation callbacks | `/federation` | External IdPs via the browser | `state` |
-| Account API | `/api/v1/account` | `account-console`, first-party apps | Session (BFF) or access token with `account:*` scopes |
-| Admin API | `/api/v1/admin` | `admin-console`, automation, Terraform | Access token with `admin:*` scopes; RBAC on every route |
-| Authorization API | `/api/v1/authorization` | Applications (PEPs) | Access token with `authz:*` scopes |
+| Federation callbacks | `/federation` | External identity providers via the browser | `state` |
+| Account API | `/api/v1/account` | `account-console`, first-party apps | Session (backend-for-frontend) or access token with `account:*` scopes |
+| Admin API | `/api/v1/admin` | `admin-console`, automation, Terraform | Access token with `admin:*` scopes; role-based access control on every route |
+| Authorization API | `/api/v1/authorization` | Applications (policy enforcement points) | Access token with `authz:*` scopes |
 | SCIM | `/scim/v2` | Provisioning clients | Bearer token bound to a SCIM integration |
 | SAML | `/saml` | SAML peers | Per protocol |
-| OPA service API | `/opa` | OPA instances | Per-instance bearer token or mTLS |
+| Open Policy Agent service API | `/opa` | Open Policy Agent instances | Per-instance bearer token or mTLS |
 | Platform API | `https://{host}/platform/v1` | Platform operators | Token from the `system` tenant with `platform:*` scopes |
 | Operations | `/livez`, `/readyz`, `/startupz`, `/metrics` | Infrastructure | Separate listener, not internet-facing |
 
@@ -26,7 +26,7 @@ All paths are relative to the tenant base: `https://{host}/t/{tenant}` or the te
 |---|---|
 | Versioning | Major version in the path (`/api/v1`). Additive changes do not bump it. A breaking change ships as `/api/v2` with an overlap period |
 | Media type | `application/json`; UTF-8; `snake_case` field names |
-| IDs | UUID strings; type is implied by the path, not a prefix |
+| Identifiers | UUID strings; type is implied by the path, not a prefix |
 | Timestamps | RFC 3339, UTC |
 | Errors | RFC 9457 `application/problem+json` with `type`, `title`, `status`, `detail`, `instance`, plus `code` (stable machine code), `request_id` and `errors[]` for field validation |
 | Pagination | Cursor based: `?limit=` (default 50, max 200) and `?cursor=`; response has `items` and `next_cursor`. No offset pagination |
@@ -41,29 +41,29 @@ All paths are relative to the tenant base: `https://{host}/t/{tenant}` or the te
 
 OAuth endpoints follow their RFCs instead: form-encoded requests and the `error` / `error_description` JSON format.
 
-## OAuth 2.x and OIDC
+## OAuth 2.x and OpenID Connect
 
 | Method and path | Purpose | Standard |
 |---|---|---|
-| `GET /.well-known/openid-configuration` | Provider metadata | OIDC Discovery |
-| `GET /.well-known/oauth-authorization-server` | AS metadata | RFC 8414 |
+| `GET /.well-known/openid-configuration` | Provider metadata | OpenID Connect Discovery |
+| `GET /.well-known/oauth-authorization-server` | Authorization server metadata | RFC 8414 |
 | `GET /oauth2/jwks` | Public signing keys | RFC 7517 |
-| `GET, POST /oauth2/authorize` | Authorization endpoint | RFC 6749, OIDC Core |
+| `GET, POST /oauth2/authorize` | Authorization endpoint | RFC 6749, OpenID Connect Core |
 | `POST /oauth2/par` | Pushed authorization request | RFC 9126 |
 | `POST /oauth2/token` | Token endpoint: `authorization_code`, `refresh_token`, `client_credentials`, `urn:ietf:params:oauth:grant-type:device_code`, `…:token-exchange`, `…:jwt-bearer` | RFC 6749, 8628, 8693, 7523 |
 | `POST /oauth2/revoke` | Revocation | RFC 7009 |
 | `POST /oauth2/introspect` | Introspection | RFC 7662 |
-| `GET, POST /oauth2/userinfo` | UserInfo | OIDC Core |
+| `GET, POST /oauth2/userinfo` | UserInfo | OpenID Connect Core |
 | `POST /oauth2/device_authorization` | Device authorization | RFC 8628 |
 | `GET /oauth2/device` | User code entry page | RFC 8628 |
-| `GET, POST /oauth2/logout` | RP-initiated logout | OIDC RP-Initiated Logout |
+| `GET, POST /oauth2/logout` | Logout initiated by the relying party | OpenID Connect RP-Initiated Logout |
 | `POST /oauth2/register`, `GET, PUT, DELETE /oauth2/register/{client_id}` | Dynamic client registration and management | RFC 7591, 7592 |
 
 Advertised in metadata and enforced: `response_types_supported: ["code"]`, `code_challenge_methods_supported: ["S256"]`, `authorization_response_iss_parameter_supported: true`, `id_token_signing_alg_values_supported` starting with `ES256` and `RS256`.
 
 ## Interaction API
 
-Used only by the hosted login UI. It exposes the flow engine as a step machine, so the UI never encodes flow logic.
+Used only by the hosted login user interface. It exposes the flow engine as a step machine, so the user interface never encodes flow logic.
 
 | Method and path | Purpose |
 |---|---|
@@ -73,7 +73,7 @@ Used only by the hosted login UI. It exposes the flow engine as a step machine, 
 | `POST /interaction/{id}/consent` | Grant or deny scopes |
 | `POST /interaction/{id}/cancel` | Abort; returns the client an `access_denied` error |
 | `POST /interaction/registration`, `POST /interaction/recovery` | Start registration or recovery flows |
-| `GET /federation/callback/{provider}` (also `POST` for form-post providers) | Return from an external IdP |
+| `GET /federation/callback/{provider}` (also `POST` for form-post providers) | Return from an external identity provider |
 
 Every response has the same shape: `{ "status": "pending" | "completed" | "failed", "step": {...}, "redirect": "..." }`. Errors do not reveal whether an account exists.
 
@@ -115,7 +115,7 @@ Standard collection and item routes (`GET` list, `POST`, `GET`, `PATCH`, `DELETE
 | Audit | `/admin/audit-records` (read-only) | `POST /audit-records:export` |
 | Integrations | `/admin/webhooks`, `/admin/scim-integrations`, `/admin/plugins` | `POST /webhooks/{id}:test` |
 
-Custom actions use the `:verb` suffix so that they never collide with resource IDs.
+Custom actions use the `:verb` suffix so that they never collide with resource identifiers.
 
 ## Authorization API
 
@@ -158,16 +158,16 @@ Differences from the example in the specification: there is no `tenant_id` in th
 
 | Path | Purpose |
 |---|---|
-| `GET /saml/idp/metadata` | IdP metadata |
-| `GET, POST /saml/idp/sso` | SSO (Redirect and POST bindings) |
+| `GET /saml/idp/metadata` | Identity provider metadata |
+| `GET, POST /saml/idp/sso` | Single sign-on (Redirect and POST bindings) |
 | `GET, POST /saml/idp/slo` | Single logout |
-| `GET /saml/sp/{provider}/metadata` | SP metadata for a brokered IdP |
+| `GET /saml/sp/{provider}/metadata` | Service provider metadata for a brokered identity provider |
 | `POST /saml/sp/{provider}/acs` | Assertion consumer service |
 | `GET, POST /saml/sp/{provider}/slo` | Single logout |
 
-## OPA service API
+## Open Policy Agent service API
 
-| Path | Called by OPA to |
+| Path | Called by Open Policy Agent to |
 |---|---|
 | `GET /opa/bundles/{name}` | Download the bundle (`ETag` / `If-None-Match`) |
 | `POST /opa/logs` | Upload decision log batches |

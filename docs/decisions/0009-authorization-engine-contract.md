@@ -1,4 +1,4 @@
-# ADR-0009: Authorization engine contract and one engine per namespace
+# Decision 0009: Authorization engine contract and one engine per namespace
 
 Status: Proposed
 
@@ -21,7 +21,7 @@ The specification gives a conceptual `AuthorizationEngine` trait and asks that t
 
 - A caller cannot evaluate against another tenant or self-assert privileges by default.
 - Adding an engine is a new adapter crate plus registration.
-- Tenants wanting "RBAC from native plus rules from OPA" feed role data to OPA through the bundle's data documents rather than chaining engines.
+- Tenants wanting "role-based access control from native plus rules from Open Policy Agent" feed role data to Open Policy Agent through the bundle's data documents rather than chaining engines.
 - Boxed futures cost one allocation per call, negligible next to evaluation.
 
 ## Alternatives considered

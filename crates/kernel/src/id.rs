@@ -30,8 +30,8 @@ impl ParseIdError {
 ///     GroupId
 /// );
 ///
-/// let id = GroupId::generate();
-/// assert_eq!(id.to_string().parse::<GroupId>(), Ok(id));
+/// let identifier = GroupId::generate();
+/// assert_eq!(identifier.to_string().parse::<GroupId>(), Ok(identifier));
 /// ```
 #[macro_export]
 macro_rules! define_id {

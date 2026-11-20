@@ -147,7 +147,7 @@ async fn unknown_and_malformed_tenants_get_the_same_answer() {
             "application/problem+json"
         );
         let mut body = reply.json();
-        // The request id differs per request by design; everything else
+        // The request identifier differs per request by design; everything else
         // must be identical.
         body.as_object_mut().expect("object").remove("request_id");
         assert_eq!(
@@ -242,7 +242,7 @@ async fn every_response_carries_a_request_id_and_security_headers() {
         assert!(reply.headers.contains_key("x-request-id"));
     }
     assert_ne!(ok.headers["x-request-id"], missing.headers["x-request-id"]);
-    // The id in an error body matches the header.
+    // The identifier in an error body matches the header.
     assert_eq!(
         missing.json()["request_id"],
         missing.headers["x-request-id"].to_str().expect("ascii")

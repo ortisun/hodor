@@ -1,26 +1,26 @@
-# ADR-0003: Contexts talk through facades, SPIs and outbox events
+# Decision 0003: Contexts talk through facades, service provider interfaces and outbox events
 
 Status: Proposed
 
 ## Context
 
-Contexts must collaborate without circular dependencies. Three collaborations are especially cyclic by nature: authentication ↔ federation (an external IdP is a login step, and its callback completes a login), OAuth ↔ authentication (the authorization endpoint needs a login, and login returns to it), and everything ↔ audit.
+Contexts must collaborate without circular dependencies. Three collaborations are especially cyclic by nature: authentication ↔ federation (an external identity provider is a login step, and its callback completes a login), OAuth ↔ authentication (the authorization endpoint needs a login, and login returns to it), and everything ↔ audit.
 
 ## Decision
 
 Three mechanisms, chosen by the shape of the collaboration:
 
 1. **Facade call (synchronous, downstream → upstream).** A context may call the public `api` of a context it is allowed to depend on. Used when the caller needs an answer inside its transaction or request (authentication asks identity for a user).
-2. **SPI (inversion).** When an upstream context needs behavior supplied by a downstream one, the upstream defines a trait and the downstream implements it. `authentication::Authenticator` is implemented by `federation`; `authorization::SubjectAttributeSource` is implemented by a small adapter wired in the composition root.
+2. **Service provider interface (inversion).** When an upstream context needs behavior supplied by a downstream one, the upstream defines a trait and the downstream implements it. `authentication::Authenticator` is implemented by `federation`; `authorization::SubjectAttributeSource` is implemented by a small adapter wired in the composition root.
 3. **Domain events through a transactional outbox (asynchronous).** A context writes events in the same transaction as its state change. The worker dispatches them to handlers at least once; handlers are idempotent on `event_id`. Used for reactions that need not be atomic with the cause: audit, session revocation cascading to grants, cache invalidation, webhooks.
 
-OAuth and authentication have no code dependency in either direction. They meet over HTTP: `oauth` decides from the session's facts (`auth_time`, `acr`, `amr`) whether interaction is needed and redirects with an opaque interaction reference; the hosted UI drives `authentication`; the browser returns to `oauth`.
+OAuth and authentication have no code dependency in either direction. They meet over HTTP: `oauth` decides from the session's facts (`auth_time`, `acr`, `amr`) whether interaction is needed and redirects with an opaque interaction reference; the hosted user interface drives `authentication`; the browser returns to `oauth`.
 
-### Delivery semantics (added with the implementation, M1-07)
+### Delivery semantics (added with the implementation, Issue-07)
 
 - All handlers interested in an event run in one transaction of the event's tenant, together with the update that marks the event delivered. Changes handlers make to the database therefore happen exactly once.
 - If any handler fails, the whole delivery is rolled back and retried later with exponential backoff. There is no per-handler delivery record: an event is delivered to all its handlers or to none.
-- Effects outside the database (an email, a webhook) can repeat after a failure, so those handlers deduplicate on the event id.
+- Effects outside the database (an email, a webhook) can repeat after a failure, so those handlers deduplicate on the event identifier.
 - A handler added later does not receive events delivered before it existed.
 
 ## Consequences
