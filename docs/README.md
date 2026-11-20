@@ -40,7 +40,17 @@ Start with the [critical review](architecture/critical-review.md): it lists wher
 | — | Critical architecture review | [architecture/critical-review.md](architecture/critical-review.md) |
 | — | First milestone | [product/epics.md](product/epics.md#milestone-1-walking-skeleton) |
 
+## Working on Hodor
+
+| Page | What it answers |
+|---|---|
+| [development/conventions.md](development/conventions.md) | The rules: documentation first, how docs are written and organized, commits, branches, pull requests, definition of done |
+| [development/local-setup.md](development/local-setup.md) | How to build, run the checks and start Hodor locally; configuration reference |
+| [product/progress.md](product/progress.md) | What has been built so far, known gaps, and where the implementation departs from the design |
+
 ## Conventions
+
+- Documentation comes first: the code follows these pages. See the [working conventions](development/conventions.md).
 
 - Diagrams are Mermaid, versioned next to the text.
 - Requirements have stable IDs (`FR-<context>-NN`, `NFR-<area>-NN`) referenced by epics and tests.

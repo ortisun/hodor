@@ -197,8 +197,8 @@ See [authorization.md](authorization.md).
 
 | Concern | Where it lives | How |
 |---|---|---|
-| Tenant identification | `protocol-http` (middleware) | Host or `/t/{slug}` prefix → `TenantContext` in request extensions |
-| Transactions | `application` | `UnitOfWork` port; the use case delimits the transaction, the adapter opens it with `SET LOCAL app.tenant_id` |
+| Tenant identification | `protocol-http` (middleware) | Host or `/t/{slug}` prefix → `TenantContext` in request extensions. The lookup goes through the `TenantResolver` trait, implemented by the composition root, so `protocol-http` depends on no adapter |
+| Transactions | `kernel` + adapters | `UnitOfWork` port in `kernel`: the use case begins it, passes it to repositories, records events on it and commits. It is a trait object; an adapter downcasts it to reach its own transaction, which is bound to the tenant with a transaction-local `app.tenant_id` |
 | Domain events | `kernel` + `adapters-postgres` | `DomainEvent` written to `outbox` in the transaction; `hodor-worker` dispatches |
 | Errors | `kernel` | Typed `DomainError` per context; `protocol-http` translates to RFC 9457 or an OAuth error |
 | Time and randomness | `kernel` | `Clock` and `RandomSource` ports, replaceable in tests |
