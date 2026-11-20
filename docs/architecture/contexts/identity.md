@@ -128,7 +128,7 @@ Events carry identifiers of users and of login identifiers, and the kind of a lo
 | Add, verify, remove a login identifier; choose the primary | Apply the change |
 | Change profile | Replace the display name and locale |
 
-Every use case that changes a user loads it, applies the change, stores it and records its events in one unit of work.
+Every use case that changes a user loads it, applies the change, stores it and records its events in one unit of work. A change that produces no event, such as verifying an identifier that is already verified, changed nothing and stores nothing.
 
 ### Port
 

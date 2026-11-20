@@ -22,6 +22,28 @@ pub enum Actor {
     Anonymous,
 }
 
+/// Who is acting and on behalf of which request. Use cases receive it and
+/// carry it into the events they record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Caller {
+    /// Who causes the change.
+    pub actor: Actor,
+    /// The request or job that causes it.
+    pub correlation_id: CorrelationId,
+}
+
+impl Caller {
+    /// Hodor itself, acting in a new piece of work: a scheduled job, the
+    /// command-line tool or an event handler.
+    #[must_use]
+    pub fn system() -> Self {
+        Self {
+            actor: Actor::System,
+            correlation_id: CorrelationId::generate(),
+        }
+    }
+}
+
 /// Data carried by every event regardless of its type.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventMetadata {

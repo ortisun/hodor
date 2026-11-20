@@ -6,6 +6,7 @@
 //! `tenant_id` explicitly; row-level security is the second line of defence.
 
 mod database;
+mod identity;
 mod migrate;
 mod outbox;
 mod tenant;
@@ -14,6 +15,7 @@ pub mod testing;
 mod uow;
 
 pub use database::{Database, TenantTransaction, connect_pool, ping_pool};
+pub use identity::PgUserRepository;
 pub use migrate::migrate;
 pub use outbox::{DispatchReport, OutboxDispatcher};
 pub use sqlx::migrate::MigrateError;

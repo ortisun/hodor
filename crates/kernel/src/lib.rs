@@ -16,7 +16,7 @@ pub mod uow;
 
 pub use clock::{Clock, SystemClock, Timestamp};
 pub use error::{DomainError, ErrorKind};
-pub use event::{Actor, DomainEvent, EventEnvelope, EventHandler, EventMetadata};
+pub use event::{Actor, Caller, DomainEvent, EventEnvelope, EventHandler, EventMetadata};
 pub use id::{CorrelationId, EventId, ParseIdError, TenantId, UserId};
 pub use page::{Cursor, Page, PageRequest};
 pub use random::RandomSource;
