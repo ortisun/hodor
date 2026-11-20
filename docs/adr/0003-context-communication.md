@@ -16,6 +16,13 @@ Three mechanisms, chosen by the shape of the collaboration:
 
 OAuth and authentication have no code dependency in either direction. They meet over HTTP: `oauth` decides from the session's facts (`auth_time`, `acr`, `amr`) whether interaction is needed and redirects with an opaque interaction reference; the hosted UI drives `authentication`; the browser returns to `oauth`.
 
+### Delivery semantics (added with the implementation, M1-07)
+
+- All handlers interested in an event run in one transaction of the event's tenant, together with the update that marks the event delivered. Changes handlers make to the database therefore happen exactly once.
+- If any handler fails, the whole delivery is rolled back and retried later with exponential backoff. There is no per-handler delivery record: an event is delivered to all its handlers or to none.
+- Effects outside the database (an email, a webhook) can repeat after a failure, so those handlers deduplicate on the event id.
+- A handler added later does not receive events delivered before it existed.
+
 ## Consequences
 
 - The dependency graph stays acyclic and small.

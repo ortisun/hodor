@@ -4,9 +4,8 @@
 
 | Artifact | Contents |
 |---|---|
-| `hodor-server` image | The server binary plus the built static assets of the three frontends. Distroless, non-root, read-only root filesystem, `linux/amd64` and `linux/arm64` |
-| `hodor-worker` image | The worker binary. The Rego validation job additionally needs the `opa` binary, shipped in a separate `hodor-policy-tools` image |
-| `hodor-cli` image | Migrations, bootstrap, key and tenant operations |
+| `hodor` image | One image with the three binaries: `hodor-server` (the entrypoint), `hodor-worker` and `hodor-cli`, run by overriding the command. The built static assets of the frontends are added when they exist. Distroless, non-root, `linux/amd64` and `linux/arm64` |
+| `hodor-policy-tools` image | The `opa` binary for the Rego validation job (Phase 5) |
 | Helm chart | Deployments, services, ingress, migration job, network policies, PodDisruptionBudgets, HPA, optional OPA sidecar and Redis |
 | SBOM and signatures | CycloneDX SBOM and a signature per image |
 
@@ -14,7 +13,7 @@
 
 | Topology | Use | Shape |
 |---|---|---|
-| Single node | Evaluation, development | Docker Compose: server, worker, PostgreSQL |
+| Single node | Evaluation, development | Docker Compose in `deploy/docker`: server, PostgreSQL, migrations, VictoriaMetrics |
 | Standard HA | Production | Kubernetes, 3+ server replicas across zones, 2+ workers, managed PostgreSQL with a standby, optional Redis and OPA sidecars |
 | Dedicated | Regulated or very large tenants | A separate standard deployment per customer |
 
