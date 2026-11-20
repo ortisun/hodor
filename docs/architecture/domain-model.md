@@ -223,6 +223,8 @@ classDiagram
     SsoSession "1" *-- "*" ClientSession
 ```
 
+Browser sessions, the part built in Milestone 1, are specified in full in [the session context](contexts/session.md).
+
 The session carries the *authentication facts* (`auth_time`, `acr`, `amr`). That is what lets `oauth` decide whether a new login is needed without knowing the `authentication` context.
 
 ### `authentication`

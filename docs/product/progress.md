@@ -62,6 +62,13 @@ Specified in [the credential context](../architecture/contexts/credential.md).
 | Issue-18 Argon2id hasher | Done | `hodor-adapters-crypto` crate: Argon2id behind the hasher port with bounded concurrency and a bounded queue, renewal of hashes made with older parameters, a check against nothing of equal cost, and the operating system random source |
 | Issue-19 Credential storage and use cases | Done | `CredentialService`: set, change, verify with silent renewal, remove; `credential.password` and its history under row-level security; one contract suite passed by the in-memory store and by PostgreSQL |
 
+### Slice E — Authentication and session
+
+| Issue | Status | What exists |
+|---|---|---|
+| Issue-20 Session | In progress | Specified in [the session context](../architecture/contexts/session.md) |
+| Issue-21 to Issue-26 | Not started | — |
+
 ### Known gaps in what is done
 
 These are recorded here so they are not forgotten; each is picked up by the issue named.
