@@ -32,6 +32,7 @@ Start with the [critical review](architecture/critical-review.md): it lists wher
 | 21 | Threat Model | [security/threat-model.md](security/threat-model.md) |
 | 22 | Database Model | [architecture/database.md](architecture/database.md) |
 | 23 | API Specifications | [api/api-spec.md](api/api-spec.md) |
+| — | The interaction interface: how a browser signs in | [api/interaction-api.md](api/interaction-api.md) |
 | 24 | Plugin Architecture | [architecture/plugins.md](architecture/plugins.md) |
 | 25 | Testing Strategy | [architecture/testing.md](architecture/testing.md) |
 | 26 | Deployment Architecture | [operations/deployment.md](operations/deployment.md) |

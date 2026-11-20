@@ -70,7 +70,8 @@ Specified in [the credential context](../architecture/contexts/credential.md).
 | Issue-21 Authentication flow engine | Done | `hodor-authentication` crate: flows as data with the built-in flow, validation of a flow, the transaction that records a sign-in in progress, the `Authenticator` extension point and the engine. No real authenticators or storage yet. Specified in [the authentication context](../architecture/contexts/authentication.md) |
 | Issue-22 Authenticators and lockout | Done | The identifier and password authenticators over the identity, credential and tenant contexts; the attempt guard with growing lockouts on identifiers and addresses; `authentication.attempt_counter` under row-level security |
 | Issue-23 Completing a sign-in | Done | `AuthenticationService`: start, submit a step, describe, cancel; a completed sign-in starts a session exactly once; `authentication.transaction` under row-level security. A test signs a person in with nothing faked: PostgreSQL, Argon2id, SHA-256 and the operating system's random source |
-| Issue-24 to Issue-26 | Not started | — |
+| Issue-24 Interaction interface | In progress | Specified in [the interaction interface](../api/interaction-api.md) |
+| Issue-25, Issue-26 | Not started | — |
 
 ### Known gaps in what is done
 
