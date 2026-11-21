@@ -2,7 +2,9 @@
 
 The design system is the shared visual language of Hodor's three frontends: the admin console (the *control plane*), the account console and the hosted login user interface (`auth-ui`). It defines the foundations (color, type, space, motion), the components, and — most important for an identity product — the interaction patterns that keep privileged work safe.
 
-This page is the specification. The implementation lives in [`frontend/design-system/`](../../frontend/design-system/) and follows it. How the control plane is organized, screen by screen, is in [control-plane.md](control-plane.md). Why the design system is built the way it is, is recorded in [Decision 0016](../decisions/0016-design-system.md).
+The design system is built on [Astryx](https://github.com/facebook/astryx), the open source design system published by Meta: Astryx gives the foundations and the components, and Hodor adds its own theme and its security interaction patterns ([Decision 0018](../decisions/0018-astryx-component-foundation.md)). [Section 10](#10-how-it-is-built) says where each part lives.
+
+This page is the specification, and the implementation follows it. How the control plane is organized, screen by screen, is in [control-plane.md](control-plane.md). Why the design system has the principles and patterns it has is recorded in [Decision 0016](../decisions/0016-design-system.md).
 
 ## 1. Who it is for
 
@@ -31,42 +33,43 @@ These come first because every later choice follows from them. They are drawn fr
 
 All foundations are **design tokens**: named values exposed as CSS custom properties. Components use tokens only, never raw values, so that a theme is a change of token values and nothing else.
 
-Tokens come in two layers:
+The token names are Astryx's (`--color-background-surface`, `--color-text-secondary`, `--spacing-4`); the full list is printed by `npx astryx docs tokens`. The values are Hodor's, set by the **Hodor theme**, which starts from Astryx's neutral theme and changes what this section describes:
 
-- **Reference tokens** hold the raw palette (`--hodor-ink-900`, `--hodor-signal-400`). Components never use them directly.
-- **Semantic tokens** say what a value is for (`--color-surface-raised`, `--color-text-muted`, `--color-status-danger-fill`). Themes map semantic tokens to reference tokens.
+- the **palette** is generated from six seed colors (the accent, the neutral and the four status colors) in the OKLCH color space, which keeps perceived lightness even across hues, so that the status colors read as equally strong. The generation recipe is pinned, so that an upgrade of Astryx does not move a shade;
+- the **typeface** is IBM Plex;
+- the **radius** scale is Hodor's.
 
-Colors are defined in the OKLCH color space, which keeps perceived lightness even across hues, so that the status colors read as equally strong.
+Hodor's own code (the layout of a page, a security pattern) uses the same tokens and no raw value.
 
 ### 3.1 Color
 
 #### Neutrals — "ink"
 
-A cool, slightly blue-tinted neutral ramp from `ink-0` (near white) to `ink-1000` (near black). The dark theme builds its surfaces from the dark end, the light theme from the light end.
+A cool, slightly blue-tinted neutral ramp from near white to near black, generated from the seed `#737b84`. The dark theme builds its surfaces from the dark end, the light theme from the light end.
 
 | Semantic token | Use |
 |---|---|
-| `--color-canvas` | The page background |
-| `--color-surface` | Panels and cards |
-| `--color-surface-raised` | Menus, popovers, dialogs |
-| `--color-surface-sunken` | Wells, code blocks, table headers |
-| `--color-border` / `--color-border-strong` | Dividers; input and control outlines |
-| `--color-text` / `--color-text-muted` / `--color-text-subtle` | Body text; secondary text; placeholders and disabled text |
+| `--color-background-body` | The page background |
+| `--color-background-surface` / `--color-background-card` | Panels; cards |
+| `--color-background-popover` | Menus, popovers, dialogs |
+| `--color-background-muted` | Wells, code blocks, table headers |
+| `--color-border` / `--color-border-emphasized` | Dividers; input and control outlines |
+| `--color-text-primary` / `--color-text-secondary` / `--color-text-disabled` | Body text; secondary text; disabled text |
 
 #### Accent — "signal"
 
-Hodor's brand accent is **signal**, a clear cyan. It marks the current location, focus, primary actions and links. It is deliberately not a status color: a signal-colored element is "where you are" or "what you can do", never "good" or "bad".
+Hodor's brand accent is **signal**, a clear cyan (seed `#007b92`; token `--color-accent`). It marks the current location, focus, primary actions and links. It is deliberately not a status color: a signal-colored element is "where you are" or "what you can do", never "good" or "bad".
 
 #### Status
 
-Four status families, each with a `fill` (solid background), a `soft` (tinted background), a `text` and a `border` token.
+Four status families, each with a solid fill (`--color-success`), a tinted fill (`--color-success-muted`), a text color (`--color-text-success`) and a border color (`--color-border-success`).
 
-| Status | Meaning | Examples |
-|---|---|---|
-| `success` | Something finished as intended or is in a healthy state | Domain verified, policy published, check passed |
-| `warning` | Needs attention soon; nothing is broken yet | Key rotation due, secret expires in 7 days, weakened setting |
-| `danger` | Broken, blocked or destructive | Failed verification, account locked, delete |
-| `info` | Neutral information | Draft, scheduled, in progress |
+| Status | Seed | Meaning | Examples |
+|---|---|---|---|
+| `success` | `#137d41` | Something finished as intended or is in a healthy state | Domain verified, policy published, check passed |
+| `warning` | `#a06604` | Needs attention soon; nothing is broken yet | Key rotation due, secret expires in 7 days, weakened setting |
+| `error` | `#c22826` | Broken, blocked or destructive | Failed verification, account locked, delete |
+| `info` | `#3a65b8` | Neutral information | Draft, scheduled, in progress |
 
 #### Severity
 
@@ -92,20 +95,18 @@ Charts use an eight-step categorical palette derived from the same lightness ban
 | Headings and section labels | IBM Plex Sans Condensed | Same family, narrower: headings and table column labels fit dense layouts |
 | Identifiers, secrets, code, policies | IBM Plex Mono | Unambiguous glyphs (`0`/`O`, `1`/`l`/`I`), which matters for client identifiers, key identifiers and Rego |
 
-Fonts are self-hosted and served by `hodor-server` with the rest of the static assets: the Content Security Policy allows no third-party origin ([Decision 0011](../decisions/0011-frontends-bff.md)).
+Fonts are self-hosted and served by `hodor-server` with the rest of the static assets: the Content Security Policy allows no third-party origin ([Decision 0011](../decisions/0011-frontends-bff.md)). The theme names the families (`--font-family-body`, `--font-family-heading`, `--font-family-code`); each frontend bundles the font files it uses. The hosted pages use IBM Plex Sans only; the condensed and the mono families arrive with the admin console.
 
-The type scale is a 1.2 ratio anchored at 14 pixels for the admin console (15 for the account console and login).
+The type scale is Astryx's geometric scale with a 1.2 ratio anchored at 14 pixels. Text is written with Astryx's `Text` and `Heading` components, which take a role and not a size:
 
-| Token | Size / line height | Use |
-|---|---|---|
-| `--text-2xs` | 11 / 16 | Overlines and table column labels only, always uppercase with letter spacing |
-| `--text-xs` | 12 / 16 | Captions, badges, metadata |
-| `--text-sm` | 13 / 20 | Dense tables |
-| `--text-md` | 14 / 20 | Default body text in the admin console |
-| `--text-lg` | 16 / 24 | Default body text in the account console and login |
-| `--text-xl` | 20 / 28 | Section headings |
-| `--text-2xl` | 24 / 32 | Page titles |
-| `--text-3xl` | 32 / 40 | Key figures on the overview |
+| Role | Use |
+|---|---|
+| `Text` `supporting` | Captions, badges, metadata, hints under a field |
+| `Text` `body` | Default body text |
+| `Text` `large` | Body text where a page has little of it, such as a lead paragraph |
+| `Heading` levels 2 to 6 | Section headings, each one step of the scale smaller than the one above |
+| `Heading` level 1 | Page titles |
+| `Heading` `display` types | Key figures on the overview |
 
 Rules:
 
@@ -115,9 +116,9 @@ Rules:
 
 ### 3.3 Space, size and layout
 
-- **Spacing** is a 4-pixel grid: `--space-1` (4) to `--space-12` (64).
-- **Control heights**: 28 pixels (compact), 32 (default in the admin console), 40 (default in the account console and login). Every interactive target is at least 24 by 24 pixels (Web Content Accessibility Guidelines 2.2, success criterion 2.5.8).
-- **Radius**: `--radius-sm` (4) for badges and inputs, `--radius-md` (6) for buttons and cards, `--radius-lg` (10) for dialogs. Tenants may adjust radius on the login and account surfaces only.
+- **Spacing** is Astryx's 4-pixel grid: `--spacing-1` (4 pixels) to `--spacing-12`. Layout components (`VStack`, `HStack`, `Grid`) take a step of the grid, not a length.
+- **Control sizes**: Astryx's `sm`, `md` and `lg`. The admin console uses `md` (`sm` in compact density); the account console and login use `lg`. Every interactive target is at least 24 by 24 pixels (Web Content Accessibility Guidelines 2.2, success criterion 2.5.8).
+- **Radius**: `--radius-inner` (4 pixels) for badges and for what sits inside a control, `--radius-element` (6) for buttons, inputs and cards, `--radius-container` (10) for dialogs. Tenants may adjust radius on the login and account surfaces only.
 - **Layout of the admin console**: a fixed left navigation (240 pixels, collapsible to 56), a top *scope bar* ([section 6.1](#61-the-scope-bar)), and a content area with a maximum readable width of 1440 pixels. Detail views open as a side panel over lists, so that the list keeps its position.
 - **Density**: `comfortable` and `compact` modes change control height and table row height (40 and 32 pixels); text size does not change.
 
@@ -135,13 +136,13 @@ Elevation separates layers without heavy shadows. In the dark theme, higher laye
 
 ### 3.5 Motion
 
-Motion explains a change; it never decorates. Durations are short (`--motion-fast` 120 milliseconds, `--motion-base` 180, `--motion-slow` 280) with a standard ease-out curve. When the operating system asks for reduced motion, transitions become instant fades and nothing moves.
+Motion explains a change; it never decorates. Durations come from Astryx's motion tokens (`--duration-fast`, `--duration-medium`, `--duration-slow`) with its standard easing. When the operating system asks for reduced motion, transitions become instant fades and nothing moves.
 
 Two motions carry meaning and are reserved: the **pulse** on a live indicator (a stream receiving events) and the **hold-to-confirm** fill on the most destructive actions ([section 6.2](#62-the-dangerous-action-ladder)).
 
 ### 3.6 Icons
 
-One outlined icon set at 16 and 20 pixels, stroke width 1.5, drawn on a 24-pixel grid, shipped as an SVG sprite with the static assets. Icons accompany text labels; an icon alone is allowed only for universally understood actions (close, copy, search, more) and always carries an accessible name.
+One outlined icon set: the icons of Astryx's neutral theme (Lucide), used by semantic name through Astryx's `Icon` component and bundled with the frontend, so that nothing is loaded from another origin. Icons accompany text labels; an icon alone is allowed only for universally understood actions (close, copy, search, more) and always carries an accessible name.
 
 ## 4. Themes
 
@@ -152,6 +153,8 @@ One outlined icon set at 16 and 20 pixels, stroke width 1.5, drawn on a 24-pixel
 | System | — | Follows the operating system's preference when the user chooses it |
 | Forced colors | — | When the operating system's high contrast mode is on, components fall back to system colors and keep visible borders and focus rings |
 
+Light and dark are the two modes of the one Hodor theme: every color token holds a value for each, and Astryx's `Theme` component at the root of a frontend chooses the mode (`light`, `dark` or `system`). Forced colors are handled by the Astryx components themselves.
+
 The theme is a preference stored in the user's account (not in browser storage alone), so it follows the administrator across devices.
 
 ## 5. Tenant branding
@@ -159,7 +162,7 @@ The theme is a preference stored in the user's account (not in browser storage a
 Tenant branding is declarative and narrow ([Decision 0011](../decisions/0011-frontends-bff.md), Requirement-Tenancy-05). A tenant may set:
 
 - a logo (SVG sanitized by the server, or PNG) and a favicon;
-- one brand color, from which Hodor derives the accent ramp for the account console and login;
+- one brand color, from which Hodor derives the accent for the account console and login, with the same palette generation the Hodor theme uses;
 - the radius scale (sharp, default, round);
 - copy and default locale.
 
@@ -238,19 +241,32 @@ Every configuration object shows "Last changed by *name* *time ago*" linking to 
 
 ## 7. Components
 
-Status: **Specified** means defined on this page and in the token files; **Built** means implemented as a React component in `frontend/design-system/`. The React components are built with the admin console (Epic 12); until then the showcase in [`frontend/design-system/showcase/`](../../frontend/design-system/showcase/) demonstrates them in HTML and CSS.
+Components come from Astryx. A frontend imports them from `@astryxdesign/core` and does not write one Astryx has; `npx astryx component --list` prints all of them, and `npx astryx component Button` the documentation of one. The table says which Astryx components serve each need of the frontends.
 
-| Group | Components | Status |
+| Group | Need | Astryx components |
 |---|---|---|
-| Actions | Button (primary, secondary, ghost, danger; with icon; loading), icon button, split button, hold-to-confirm button | Specified |
-| Inputs | Text field, secret field, textarea, select, combobox, checkbox, radio, switch, segmented control, date and time range picker, tag input, file drop | Specified |
-| Feedback | Badge (status, severity), status dot, toast, inline alert, banner, progress, skeleton, live indicator | Specified |
-| Navigation | Side navigation, scope bar, tenant switcher, breadcrumbs, tabs, command palette, pagination | Specified |
-| Data | Data table (sorting, filtering, column selection, row selection, bulk actions, sticky header, density), key-value list, metric tile, sparkline, timeline, identifier, code block, diff viewer | Specified |
-| Overlays | Dialog, confirmation dialog (ladder levels 1–4), side panel, popover, tooltip, menu | Specified |
-| Security patterns | Secret reveal panel, step-up prompt, approval request card, weakened-setting badge, provenance line, support-grant banner, posture score | Specified |
+| Actions | Buttons (primary, secondary, ghost, destructive; with icon; loading), icon button, grouped buttons | `Button`, `IconButton`, `ButtonGroup`, `ToggleButton` |
+| Inputs | Text field, textarea, select, combobox, checkbox, radio, switch, segmented control, date and time range, tag input, file drop | `TextInput`, `TextArea`, `Selector`, `Typeahead`, `CheckboxInput`, `RadioList`, `Switch`, `SegmentedControl`, `DateRangeInput`, `DateTimeInput`, `Tokenizer`, `FileInput`, laid out with `FormLayout` |
+| Feedback | Badge, status dot, toast, inline alert, banner, progress, skeleton | `Badge`, `StatusDot`, `Toast`, `Banner`, `ProgressBar`, `Spinner`, `Skeleton` |
+| Navigation | Side navigation, breadcrumbs, tabs, command palette, pagination | `AppShell`, `SideNav`, `TopNav`, `Breadcrumbs`, `TabList`, `CommandPalette`, `Pagination` |
+| Data | Data table, key-value list, timeline, code block, timestamps | `Table` with its selection toolbar, `MetadataList`, `Stepper`, `CodeBlock`, `Timestamp` |
+| Overlays | Dialog, confirmation dialog, side panel, popover, tooltip, menu | `Dialog`, `AlertDialog`, `Drawer`, `Popover`, `Tooltip`, `DropdownMenu`, `ContextMenu` |
+| Layout and text | Stacks, grids, cards, headings, text, links | `VStack`, `HStack`, `Grid`, `Layout`, `Card`, `Heading`, `Text`, `Link` |
 
-Each component's page in the showcase lists its anatomy, states (default, hover, focus, active, disabled, loading, error), keyboard behavior and accessibility notes.
+What Astryx does not have is Hodor's to build, composed from Astryx components and its tokens, once, in the design system:
+
+| Hodor component | Built from | Status |
+|---|---|---|
+| Scope bar and tenant switcher ([section 6.1](#61-the-scope-bar)) | `TopNav`, `Selector` | Specified |
+| Confirmation dialogs of the dangerous action ladder, with the hold-to-confirm button ([section 6.2](#62-the-dangerous-action-ladder)) | `AlertDialog`, `Button`, `TextInput` | Specified |
+| Change preview and diff viewer ([section 6.3](#63-change-preview-diff-blast-radius-simulation)) | `Dialog`, `CodeBlock`, `Table` | Specified |
+| Secret field and secret reveal panel ([section 6.4](#64-secrets-and-credentials)) | `TextInput`, `Dialog`, `CheckboxInput` | Specified |
+| Identifier ([section 6.5](#65-identifiers)) | `Text`, `Tooltip`, `IconButton` | Specified |
+| Weakened-setting badge, provenance line, support-grant banner ([sections 6.6](#66-weakened-settings) and [6.7](#67-provenance)) | `Badge`, `Timestamp`, `Banner` | Specified |
+| Severity badge with its shape ([section 3.1](#31-color)) | `Badge`, `Icon` | Specified |
+| Step-up prompt, approval request card, posture score, metric tile, sparkline, live indicator | `Dialog`, `Card`, `StatusDot` | Specified |
+
+Status: **Specified** means defined on this page; **Built** means implemented as a React component. Hodor's components are built with the admin console (Epic 12). Until then the showcase ([section 10](#10-how-it-is-built)) draws most of them on Astryx components, with sample data and no server behind them. The hosted pages are built today, on nine Astryx components: `Card`, `Heading`, `Text`, `VStack`, `TextInput`, `CheckboxInput`, `Banner`, `Button` and `Link` ([hosted pages](../architecture/hosted-pages.md#appearance)).
 
 ## 8. Accessibility
 
@@ -272,11 +288,40 @@ The frontends conform to Web Content Accessibility Guidelines 2.2 level AA (Requ
 - Times are relative in lists ("4 minutes ago") with the absolute UTC time on hover; absolute in audit and exports.
 - Words are written in full, following the [conventions](../development/conventions.md#3-words-not-abbreviations); a protocol name such as OAuth or SAML stays as it is.
 
-## 10. Implementation constraints
+## 10. How it is built
 
-These follow from the Content Security Policy and the backend-for-frontend design ([Decision 0011](../decisions/0011-frontends-bff.md)):
+| Part | Where | What it is |
+|---|---|---|
+| Foundations and components | The packages `@astryxdesign/core` and `@astryxdesign/cli`, at one exact version | Astryx: the compiled style sheets `reset.css` and `astryx.css`, and the React components |
+| The Hodor theme | `frontend/auth-ui/src/themes/hodor/` | `hodorTheme.ts` is the source, written by hand. `npm run theme` compiles it into `hodor.css` and `hodor.js` beside it, which are committed and are what a frontend loads |
+| Hodor's own components | Built with the admin console (Epic 12) | The security interaction patterns of [section 6](#6-security-interaction-patterns) |
+| The showcase | `frontend/design-system/showcase/` | A small application, never shipped, built on Astryx with the Hodor theme: the security posture screen of the control plane with working confirmations of the dangerous action ladder, step-up, secret reveal and command palette, and a gallery of the foundations and components. It is where Hodor's own components are first drawn, before the admin console builds them for real |
 
-- Styles are static CSS files built from the tokens. No runtime CSS-in-JavaScript that injects `<style>` elements, and no inline `style` attributes in markup, so that the policy needs no `unsafe-inline` for styles.
-- No third-party origin: fonts, icons and images are served by `hodor-server`.
-- Tenant branding is applied by the server as a generated stylesheet of token overrides, validated before it is stored ([section 5](#5-tenant-branding)).
+The theme lives with the hosted pages because they are the only frontend built so far; the showcase reads it from there. It moves to a place of its own, shared by the three frontends, when the second one is started.
+
+The showcase is run from its folder with `npm ci` and `npm run dev`. It opens in the dark mode, the default of the admin console, and switches to the light one from its top bar.
+
+A frontend wires the design system once, at its root:
+
+```tsx
+import "@astryxdesign/core/reset.css";
+import "@astryxdesign/core/astryx.css";
+
+import { Theme } from "@astryxdesign/core/theme";
+import { defaultThemeSlug, themes } from "./astryx-themes";
+
+<Theme theme={themes[defaultThemeSlug]} mode="light">
+  <App />
+</Theme>;
+```
+
+`astryx-themes.ts` is written by `npx astryx theme add hodor`; it imports the compiled theme and its style sheet.
+
+These rules follow from the Content Security Policy and the backend-for-frontend design ([Decision 0011](../decisions/0011-frontends-bff.md)):
+
+- **Every style is a compiled file.** A frontend loads Astryx's style sheets and the compiled theme. It never defines a theme in the browser (`defineTheme` is for the source file only), because that makes a `<style>` element, which the policy refuses. Hodor's own code writes no inline `style` attribute.
+- **The compiled theme is never stale.** Continuous integration runs `npm run theme-check`, which fails when `hodor.css` no longer matches `hodorTheme.ts`.
+- **No third-party origin**: fonts, icons and images are served by `hodor-server`. Astryx's instructions for loading from a content delivery network are not used.
+- **The versions of Astryx are exact** in `package.json`, the same for every `@astryxdesign` package, and are raised together with `npx astryx upgrade --apply`, followed by the browser tests.
+- Tenant branding is applied by the server as a generated style sheet of token overrides, validated before it is stored ([section 5](#5-tenant-branding)).
 - The design system carries no data fetching and no authentication logic; it is presentation only.

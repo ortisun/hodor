@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { pathOf, type PageName } from "../address";
@@ -17,6 +17,12 @@ const unreachable = (): Response => {
   throw new TypeError("network");
 };
 const pending = (step: string) => json(200, { status: "pending", step, csrf_token: "token" });
+
+/**
+ * The alerts the page shows. The design system also keeps one region for
+ * announcements outside the page, which is not something shown.
+ */
+const shown = () => within(screen.getByRole("main")).getAllByRole("alert");
 
 function page(script: Parameters<typeof scripted>[0]) {
   const { client, sent } = scripted(script);
@@ -198,7 +204,8 @@ describe("the page that finishes", () => {
 
     expect(await screen.findByText(en.passwordTooShort)).toBeTruthy();
     expect(password.getAttribute("aria-invalid")).toBe("true");
-    expect(password.getAttribute("aria-describedby")).toContain("error");
+    const described = (password.getAttribute("aria-describedby") ?? "").split(" ");
+    expect(described.map((id) => document.getElementById(id)?.textContent).join(" ")).toContain(en.passwordTooShort);
 
     await user.type(password, " but longer now{Enter}");
     await waitFor(() => expect(go).toHaveBeenCalledWith("sign-in", "password-changed"));
@@ -271,12 +278,12 @@ describe("the sign-in page when the server cannot be reached", () => {
     render(<SignInPage {...props} notice="registered" />);
 
     const again = await screen.findByRole("button", { name: en.startAgain });
-    expect(screen.getAllByRole("alert").map((alert) => alert.textContent)).toEqual([en.unreachable]);
+    expect(shown().map((alert) => alert.textContent)).toEqual([en.unreachable]);
     // What the page before had to say is not shown over a failure.
     expect(screen.queryByText(en.noticeRegistered)).toBeNull();
 
     await user.click(again);
-    expect(screen.getAllByRole("alert")).toHaveLength(1);
+    expect(shown()).toHaveLength(1);
 
     await user.click(screen.getByRole("button", { name: en.startAgain }));
     expect(await screen.findByLabelText(en.identifierLabel)).toBeTruthy();

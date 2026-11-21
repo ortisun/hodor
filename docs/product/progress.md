@@ -166,16 +166,20 @@ Planned in [the epics](epics.md#milestone-2-signing-in-with-external-identities)
 
 ## Design system
 
-Specified in [the design system](../design/design-system.md) and [the control plane](../design/control-plane.md), outside the milestone plan; the React components are built with the admin console (Epic 12).
+Specified in [the design system](../design/design-system.md) and [the control plane](../design/control-plane.md), outside the milestone plan. Its foundations and components are Astryx's ([Decision 0018](../decisions/0018-astryx-component-foundation.md)); Hodor's own components, the security interaction patterns, are built with the admin console (Epic 12).
 
 | Piece | Status | What exists |
 |---|---|---|
 | Specification | Done | Foundations, components, security interaction patterns, control plane structure, console requirements (`Requirement-Console-…`), [Decision 0016](../decisions/0016-design-system.md) |
-| Tokens and styles | Done | `frontend/design-system/tokens.css`, `components.css` and `shell.css`: dark and light themes, density, reduced motion, forced colors |
-| Showcase | Done | Static pages in `frontend/design-system/showcase/`: the security posture screen with working level 2 and level 3 confirmations, step-up, secret reveal and command palette, plus a component gallery |
-| Fonts | Done for the hosted pages | IBM Plex Sans is bundled with `auth-ui` from the `@fontsource/ibm-plex-sans` package and served by `hodor-server`. The showcase still loads its fonts from Google Fonts, which the shipped frontends must not do |
-| React components and action catalog | Not started | Epic 12 |
-| Contrast checks in a token build | Not started | Planned with the React components. The hosted pages are measured by the accessibility checker of the browser tests, which found and fixed one pair: text on the accent in the light theme |
+| Foundations and components | Done | Astryx (`@astryxdesign/core`), at one exact version |
+| Hodor theme | Done, light mode checked | `frontend/auth-ui/src/themes/hodor/`: the ink neutrals, the signal accent, the status colors, IBM Plex and the radius scale, compiled into a static style sheet. The dark mode is generated with it and has not been looked at on a real screen: no frontend uses it yet |
+| Hosted pages on Astryx | Done | The pages of `auth-ui` are built from Astryx components; they are heavier than before ([hosted pages](../architecture/hosted-pages.md#appearance)) |
+| Earlier static design system | Removed | The hand-written `tokens.css`, `components.css` and `shell.css` are deleted |
+| Showcase | Done, on Astryx | A small application in `frontend/design-system/showcase/`, built on Astryx with the Hodor theme: the security posture screen with working level 2 and level 3 confirmations, step-up, secret reveal and command palette, plus a gallery of foundations and components. Sample data, no server |
+| Fonts | Done for the hosted pages | IBM Plex Sans is bundled with `auth-ui` from the `@fontsource/ibm-plex-sans` package and served by `hodor-server`. The showcase bundles its fonts the same way |
+| Hodor's components (the security patterns) and action catalog | Not started | Epic 12 |
+| A smaller style sheet for the hosted pages | Not started | Only the components in use, built with `@astryxdesign/build` |
+| Contrast checks of the theme | Not started | Planned with Hodor's components. The hosted pages are measured by the accessibility checker of the browser tests, which found and fixed one pair: text on the accent in the light theme |
 
 ## Defects found after merging
 

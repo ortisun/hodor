@@ -72,9 +72,20 @@ The pages exist in English (`en`) and Brazilian Portuguese (`pt-BR`). The langua
 
 ## Appearance
 
-The pages use the [design system](../design/design-system.md)'s tokens and components as static style sheets, in the light theme, and add one small style sheet of their own for the layout of a page. There are no inline styles and no styles written by scripts.
+The pages are built from the components of the [design system](../design/design-system.md): Astryx components under the Hodor theme, in the light mode. Nine of them are used: `Card`, `Heading`, `Text`, `VStack`, `TextInput`, `CheckboxInput`, `Banner`, `Button` and `Link`. The pages reach them through a few parts of their own (`Frame`, `Form`, `Field`, `Notice`, `Submit`, `Words`), so that a page says what it shows and each Astryx component is configured in one place.
+
+The styles are compiled files: Astryx's two style sheets, the compiled Hodor theme, and one small style sheet of the pages for the layout of a page. The pages' own code writes no inline style, and no theme is defined in the browser ([design system, section 10](../design/design-system.md#10-how-it-is-built)).
 
 The fonts are IBM Plex Sans, bundled with the application and served by `hodor-server`. Nothing is loaded from another origin.
+
+Astryx made the pages heavier, because it ships one style sheet for all of its components and its components bring their shared machinery with them:
+
+| File | Before Astryx | With Astryx |
+|---|---|---|
+| Style sheet | 29 kilobytes (6 compressed) | 495 kilobytes (55 compressed) |
+| Script | 242 kilobytes (75 compressed) | 701 kilobytes (222 compressed) |
+
+Both are files with the content in their name, kept by the browser for good after the first visit. Making them smaller (a style sheet holding only the components in use, built with `@astryxdesign/build`) is not done yet.
 
 ## Accessibility
 
@@ -125,8 +136,9 @@ The browser tests fail if a page reports a violation of this policy.
 
 | Path | What it holds |
 |---|---|
-| `frontend/design-system/` | Tokens and component styles, shared with the consoles to come |
 | `frontend/auth-ui/src/` | The application: pages, the client for the interaction interface, the copy in both languages |
+| `frontend/auth-ui/src/parts/` | The few parts every page is made of, each one an Astryx component configured for these pages |
+| `frontend/auth-ui/src/themes/hodor/` | The Hodor theme: its source and, compiled from it by `npm run theme`, the style sheet and module the pages load |
 | `frontend/auth-ui/browser-tests/` | The tests that drive a real browser against a running stack |
 | `crates/protocol-http/src/pages.rs` | Serving `index.html` and the files, and the Content Security Policy |
 

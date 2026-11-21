@@ -52,6 +52,24 @@ jobs:
       - run: cargo deny check
       - run: cargo machete
 
+  showcase:
+    name: Design system showcase
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend/design-system/showcase
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/design-system/showcase/package-lock.json
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm audit --audit-level=high
+      # Typechecks, then builds against the compiled theme of the hosted pages.
+      - run: npm run build
+
   pages:
     name: Hosted pages and demonstration
     runs-on: ubuntu-latest
@@ -67,6 +85,7 @@ jobs:
           cache-dependency-path: frontend/auth-ui/package-lock.json
       - run: npm ci --no-audit --no-fund
       - run: npm audit --audit-level=high
+      - run: npm run theme-check
       - run: npm run lint
       - run: npm run typecheck
       - run: npm test

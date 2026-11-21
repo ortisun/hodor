@@ -31,7 +31,8 @@ test("a person registers, reads the message, signs in and signs out", async ({ p
   const password = page.getByLabel(en.newPasswordLabel, { exact: true });
   await password.fill("short");
   await page.getByRole("button", { name: en.createAccount }).click();
-  await expect(page.getByText(en.passwordTooShort)).toBeVisible();
+  // Next to the field. The design system also announces it, outside the page.
+  await expect(page.getByRole("main").getByText(en.passwordTooShort)).toBeVisible();
   await expect(password).toHaveAttribute("aria-invalid", "true");
   await expectAccessible(page);
   await password.fill(PASSWORD);
