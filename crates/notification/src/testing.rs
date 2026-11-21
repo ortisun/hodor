@@ -175,7 +175,7 @@ pub fn verification_message(recipient: &str, at: Timestamp) -> Message {
     let variables = [
         ("link", "https://example.com/verify?token=0a1b2c"),
         ("tenant_name", "Example"),
-        ("expires_in", "24 hours"),
+        ("expires_at", "1970-01-02 00:00 UTC"),
     ]
     .into_iter()
     .map(|(name, value)| (name.to_owned(), value.to_owned()))

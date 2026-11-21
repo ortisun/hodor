@@ -73,12 +73,12 @@ The credentials in the Compose file and in `deploy/docker/postgres-init.sql` are
 
 ### What works today
 
-A person can sign in. With the stack running and a tenant created (see [creating your first tenant](#creating-your-first-tenant)), `hodor-server` serves [the interaction interface](../api/interaction-api.md) under `/t/{slug}/interaction`: a sign-in with a login identifier and a password ends with a session cookie.
+A person can register, sign in and recover a forgotten password. With the stack running and a tenant created with open registration (see [creating your first tenant](#creating-your-first-tenant)), `hodor-server` serves [the interaction interface](../api/interaction-api.md) under `/t/{slug}/interaction`, and the worker delivers the messages to the development mail server, where they can be read at <http://localhost:8025>.
 
 What is still missing around it:
 
-- There are no pages. The interface is JSON only; the hosted pages come with Issue-31.
-- There is no command to create a user or set a password yet, so a fresh stack has nobody to sign in. Registration comes with Issue-25 and the bootstrap administrator with Issue-30.
+- There are no pages. The interface is JSON only; the hosted pages come with Issue-31. Until then a link in a message leads nowhere: copy the token after `#token=` into the request that finishes the registration or the recovery.
+- In a tenant whose registration is closed there is no way to create a user yet. That comes with the administration interface, Issue-29, and the bootstrap administrator, Issue-30.
 - The session cookie is marked `Secure`. Browsers accept that on `http://localhost`; over plain HTTP on any other host name they do not.
 
 See [progress](../product/progress.md) for the full picture.
@@ -100,6 +100,7 @@ Every setting is a command-line flag with an environment variable of the same me
 | `HODOR_OTLP_TRACES_ENDPOINT` | unset | Full URL of the OTLP/HTTP traces endpoint; unset disables export |
 | `HODOR_OTLP_METRICS_ENDPOINT` | unset | Full URL of the OTLP/HTTP metrics endpoint. For VictoriaMetrics: `http://<host>:8428/opentelemetry/v1/metrics` |
 | `HODOR_SHUTDOWN_DRAIN_SECONDS` | `5` | How long to keep serving after a stop signal while readiness fails |
+| `HODOR_PUBLIC_URL` | `http://localhost:8080` | The address people reach this installation at, without a path. Links in messages start with it |
 | `HODOR_PASSWORD_HASH_MEMORY_KIBIBYTES` | `19456` | Memory one password hash uses. Raising it makes every password harder to guess offline; existing passwords are re-hashed as their owners sign in |
 | `HODOR_PASSWORD_HASH_PASSES` | `2` | Passes over that memory |
 | `HODOR_PASSWORD_HASH_LANES` | `1` | Lanes computed in parallel within one hash |
@@ -137,10 +138,26 @@ The worker connects to the database twice, with different roles: as a member of 
 With the development stack running:
 
 ```bash
-docker compose -f deploy/docker/compose.yaml run --rm --entrypoint /usr/local/bin/hodor-cli -e HODOR_DATABASE_URL=postgres://hodor_server:dev-server@postgres:5432/hodor server tenant create --slug acme --name "Acme"
+docker compose -f deploy/docker/compose.yaml run --rm --entrypoint /usr/local/bin/hodor-cli -e HODOR_DATABASE_URL=postgres://hodor_server:dev-server@postgres:5432/hodor server tenant create --slug acme --name "Acme" --open-registration
 ```
 
-`http://localhost:8080/t/acme/` then answers for the tenant instead of reporting that the tenant does not exist.
+`http://localhost:8080/t/acme/` then answers for the tenant instead of reporting that the tenant does not exist. `--open-registration` lets anyone register in it; without it only administrators create users, which is not built yet.
+
+### Registering your first person
+
+Ask to register:
+
+```bash
+curl -i -X POST http://localhost:8080/t/acme/interaction/registration -H 'Content-Type: application/json' -d '{"email":"ana@example.com"}'
+```
+
+Open the development mail server at <http://localhost:8025>, read the message, and copy the token that follows `#token=` in its link. Then finish, choosing a password:
+
+```bash
+curl -i -X POST http://localhost:8080/t/acme/interaction/registration/complete -H 'Content-Type: application/json' -d '{"token":"<the token>","password":"<a password of 12 characters or more>"}'
+```
+
+A `204` means the account exists. Signing in is described in [the interaction interface](../api/interaction-api.md#signing-in).
 
 ## Database roles
 

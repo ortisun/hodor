@@ -71,14 +71,22 @@ Specified in [the credential context](../architecture/contexts/credential.md).
 | Issue-22 Authenticators and lockout | Done | The identifier and password authenticators over the identity, credential and tenant contexts; the attempt guard with growing lockouts on identifiers and addresses; `authentication.attempt_counter` under row-level security |
 | Issue-23 Completing a sign-in | Done | `AuthenticationService`: start, submit a step, describe, cancel; a completed sign-in starts a session exactly once; `authentication.transaction` under row-level security. A test signs a person in with nothing faked: PostgreSQL, Argon2id, SHA-256 and the operating system's random source |
 | Issue-24 Interaction interface | Done | A browser signs in over HTTP: the interaction routes, a sign-in tied to the browser that started it, the sign-in and session cookies, CSRF and origin checks, all served by `hodor-server`. A test signs in to the real binary against PostgreSQL. Specified in [the interaction interface](../api/interaction-api.md) |
-| Issue-25, Issue-26 | Not started | — |
+| Issue-25 Registration and recovery | Done | A person registers and recovers a forgotten password through their mailbox: verification tokens stored only as hashes and good for one use even when presented many times at once; the password chosen at the end by whoever holds the link; the same answer to asking whoever the address belongs to; limits on asking; a recovery ends every session of the user. Four routes on the interaction interface, served by `hodor-server`. A test does the whole journey on the real binary against PostgreSQL. Specified in [the authentication context](../architecture/contexts/authentication.md#registration-and-password-recovery) and [the interaction interface](../api/interaction-api.md#registering-and-recovering-a-password) |
+| Issue-26 | Not started | — |
 
 ### Slice F — Audit, notification, administration
 
 | Issue | Status | What exists |
 |---|---|---|
-| Issue-27 Notification | Done | `hodor-notification` crate: messages queued in the transaction of the change that causes them, built-in templates in English and Brazilian Portuguese, retries with growing waits, expiry, and contents erased once a message is no longer pending; `notification.message` under row-level security; one contract suite passed by the in-memory queue and by PostgreSQL. `hodor-adapters-smtp` delivers to a mail server and is tested against a real one in a container. `hodor-worker` delivers queued messages; the development stack has a mail server whose web page shows what was sent. Nothing queues a message yet: that starts with Issue-25. Specified in [the notification context](../architecture/contexts/notification.md) |
+| Issue-27 Notification | Done | `hodor-notification` crate: messages queued in the transaction of the change that causes them, built-in templates in English and Brazilian Portuguese, retries with growing waits, expiry, and contents erased once a message is no longer pending; `notification.message` under row-level security; one contract suite passed by the in-memory queue and by PostgreSQL. `hodor-adapters-smtp` delivers to a mail server and is tested against a real one in a container. `hodor-worker` delivers queued messages; the development stack has a mail server whose web page shows what was sent. Specified in [the notification context](../architecture/contexts/notification.md) |
 | Issue-28 to Issue-30 | Not started | — |
+
+### Checked by hand on the development stack
+
+Some things are covered by tests in halves and were also tried whole, on the Compose stack, on 2026-11-21:
+
+- A person asked to register; the server queued the message, the worker delivered it to the development mail server, the message arrived in the language asked for with a working link, and the link finished the registration once and only once.
+- The worker's metrics for the outbox and for messages arrived in VictoriaMetrics.
 
 ### Known gaps in what is done
 
@@ -86,12 +94,15 @@ These are recorded here so they are not forgotten; each is picked up by the issu
 
 | Gap | Picked up by |
 |---|---|
-| The outbox metrics were not confirmed to arrive in VictoriaMetrics from the Compose stack; the export path is covered by a test | Next change to the worker |
 | Tenants have no routes of their own yet: an existing tenant answers `404` with `route.not_found` | Issue-24, the interaction API |
 | The system tenant is not created automatically by the development stack | Issue-30, with the bootstrap administrator |
 | The Argon2id hasher was not checked against a hash produced by another implementation; it relies on the library's own conformance | When a second implementation is at hand, for example password import |
 | Rows of expired and revoked sessions are never removed | A cleanup job, later in Phase 1 |
-| A fresh installation has nobody to sign in: there is no command or page to create a user or set a password | Issue-25 (registration), Issue-30 (bootstrap administrator) |
+| A person can register only in a tenant whose registration is open. In a tenant where it is closed there is still no way to create a user | Issue-29 (administration interface), Issue-30 (bootstrap administrator) |
+| The links in messages lead to pages that do not exist yet. Until they do, the token must be copied from the link into a request by hand | Issue-31 |
+| Asking to register or recover answers the same whoever the address belongs to, but not in the same time: an address with something to send costs one more write. The difference was not measured | Hardening pass |
+| A registration that fails after the user was created and before the password was set leaves an account without a password; the person gets in by recovering it | Accepted; see [the authentication context](../architecture/contexts/authentication.md#registration) |
+| Used, replaced and expired verification tokens are never removed | A cleanup job, later in Phase 1 |
 | The address used to limit attempts is the connection's, so behind a load balancer everyone shares one limit | Before any deployment behind a load balancer |
 | No event handlers are registered | Issue-28 (audit) |
 | Records of messages that were sent, failed or expired are never removed | A cleanup job, later in Phase 1 |

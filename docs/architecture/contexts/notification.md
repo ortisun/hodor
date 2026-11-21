@@ -87,9 +87,9 @@ A template is a subject and a body, in plain text, with named placeholders. Temp
 
 | Template | Sent when | Variables |
 |---|---|---|
-| `email_verification` | A person must prove control of an email address | `link`, `tenant_name`, `expires_in` |
+| `email_verification` | A person must prove control of an email address | `link`, `tenant_name`, `expires_at` |
 | `already_registered` | Someone tried to register with an address that already has an account | `tenant_name` |
-| `password_recovery` | A person asked to choose a new password | `link`, `tenant_name`, `expires_in` |
+| `password_recovery` | A person asked to choose a new password | `link`, `tenant_name`, `expires_at` |
 | `password_changed` | A password was changed | `tenant_name` |
 
 Rules:
@@ -98,6 +98,7 @@ Rules:
 - **Every placeholder must be given.** A message with a missing variable is not sent; it fails at once, since trying again would not help.
 - **Plain text only.** No HTML, no images, no tracking of any kind.
 - **Values are inserted as they are.** In plain text there is nothing to escape, but a value that contains a line break is refused, so that a variable can never add lines of its own to a message.
+- **Moments are written the same in every language.** `expires_at` is a date and time such as `2026-11-21 14:00 UTC`, so that the context asking for a message needs to know nothing about languages.
 - **No secrets in subjects.** Subjects are shown in notifications and lists.
 
 ## Operations

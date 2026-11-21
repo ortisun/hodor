@@ -4,8 +4,9 @@
 
 use crate::uow::{connection, database_error};
 use hodor_authentication::api::{
-    AttemptCounter, AttemptStore, AttemptSubject, AuthTransaction, TransactionId,
-    TransactionSnapshot, TransactionStatus, TransactionStore,
+    AttemptCounter, AttemptStore, AttemptSubject, AuthTransaction, TokenPurpose, TransactionId,
+    TransactionSnapshot, TransactionStatus, TransactionStore, VerificationToken,
+    VerificationTokenHash, VerificationTokenId, VerificationTokenSnapshot, VerificationTokenStore,
 };
 use hodor_kernel::{DomainError, Timestamp, UnitOfWork, UserId};
 use hodor_session::api::ClientInfo;
@@ -305,5 +306,163 @@ impl TransactionStore for PgTransactionStore {
                 "this sign-in does not exist; start again",
             )
         })
+    }
+}
+
+/// [`VerificationTokenStore`] on `authentication.verification_token`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PgVerificationTokenStore;
+
+const TOKEN_COLUMNS: &str = "id, purpose, token_hash, email, user_id, locale, created_at, \
+                             expires_at, used_at, replaced_at";
+
+type TokenRow = (
+    Uuid,
+    String,
+    Vec<u8>,
+    String,
+    Option<Uuid>,
+    String,
+    Timestamp,
+    Timestamp,
+    Option<Timestamp>,
+    Option<Timestamp>,
+);
+
+fn to_token(row: TokenRow) -> Result<VerificationToken, DomainError> {
+    let (
+        id,
+        purpose,
+        token_hash,
+        email,
+        user_id,
+        locale,
+        created_at,
+        expires_at,
+        used_at,
+        replaced_at,
+    ) = row;
+    let hash: [u8; 32] = token_hash
+        .try_into()
+        .map_err(|_| corrupted("token hash is not 32 bytes"))?;
+    Ok(VerificationToken::from_snapshot(
+        VerificationTokenSnapshot {
+            id: VerificationTokenId::from_uuid(id),
+            purpose: TokenPurpose::from_stored(&purpose)
+                .map_err(|_| corrupted("unknown token purpose"))?,
+            token_hash: VerificationTokenHash::from_stored(hash),
+            email,
+            user_id: user_id.map(UserId::from_uuid),
+            locale,
+            created_at,
+            expires_at,
+            used_at,
+            replaced_at,
+        },
+    ))
+}
+
+#[async_trait::async_trait]
+impl VerificationTokenStore for PgVerificationTokenStore {
+    async fn insert(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        token: &VerificationToken,
+    ) -> Result<(), DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let state = token.snapshot();
+        sqlx::query(
+            "INSERT INTO authentication.verification_token
+                 (tenant_id, id, purpose, token_hash, email, user_id, locale, created_at,
+                  expires_at, used_at, replaced_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+        )
+        .bind(tenant.as_uuid())
+        .bind(state.id.as_uuid())
+        .bind(state.purpose.as_str())
+        .bind(state.token_hash.as_bytes().as_slice())
+        .bind(&state.email)
+        .bind(state.user_id.map(|user| user.as_uuid()))
+        .bind(&state.locale)
+        .bind(state.created_at)
+        .bind(state.expires_at)
+        .bind(state.used_at)
+        .bind(state.replaced_at)
+        .execute(connection(uow)?)
+        .await
+        .map_err(|e| database_error(&e))?;
+        Ok(())
+    }
+
+    async fn replace_earlier(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        purpose: TokenPurpose,
+        email: &str,
+        now: Timestamp,
+    ) -> Result<(), DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        sqlx::query(
+            "UPDATE authentication.verification_token
+             SET replaced_at = $4
+             WHERE tenant_id = $1 AND purpose = $2 AND email = $3
+               AND used_at IS NULL AND replaced_at IS NULL",
+        )
+        .bind(tenant.as_uuid())
+        .bind(purpose.as_str())
+        .bind(email)
+        .bind(now)
+        .execute(connection(uow)?)
+        .await
+        .map_err(|e| database_error(&e))?;
+        Ok(())
+    }
+
+    async fn find(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        hash: &VerificationTokenHash,
+        purpose: TokenPurpose,
+    ) -> Result<Option<VerificationToken>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let row: Option<TokenRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT {TOKEN_COLUMNS} FROM authentication.verification_token
+             WHERE tenant_id = $1 AND token_hash = $2 AND purpose = $3"
+        )))
+        .bind(tenant.as_uuid())
+        .bind(hash.as_bytes().as_slice())
+        .bind(purpose.as_str())
+        .fetch_optional(connection(uow)?)
+        .await
+        .map_err(|e| database_error(&e))?;
+        row.map(to_token).transpose()
+    }
+
+    async fn use_up(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        hash: &VerificationTokenHash,
+        purpose: TokenPurpose,
+        now: Timestamp,
+    ) -> Result<Option<VerificationToken>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        // One statement checks that the token is good and marks it used.
+        // Of several transactions doing this at once, the first locks the
+        // row; the others wait, then see `used_at` set and change nothing.
+        let row: Option<TokenRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "UPDATE authentication.verification_token
+             SET used_at = $4
+             WHERE tenant_id = $1 AND token_hash = $2 AND purpose = $3
+               AND used_at IS NULL AND replaced_at IS NULL AND expires_at > $4
+             RETURNING {TOKEN_COLUMNS}"
+        )))
+        .bind(tenant.as_uuid())
+        .bind(hash.as_bytes().as_slice())
+        .bind(purpose.as_str())
+        .bind(now)
+        .fetch_optional(connection(uow)?)
+        .await
+        .map_err(|e| database_error(&e))?;
+        row.map(to_token).transpose()
     }
 }

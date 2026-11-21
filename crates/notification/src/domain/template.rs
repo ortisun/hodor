@@ -61,7 +61,7 @@ impl Template {
     pub const fn variables(self) -> &'static [&'static str] {
         match self {
             Self::EmailVerification | Self::PasswordRecovery => {
-                &["link", "tenant_name", "expires_in"]
+                &["link", "tenant_name", "expires_at"]
             }
             Self::AlreadyRegistered | Self::PasswordChanged => &["tenant_name"],
         }
@@ -75,7 +75,7 @@ impl Template {
                  Someone, hopefully you, used this address to create an account at {tenant_name}.\n\n\
                  To confirm that the address is yours, open this link:\n\n\
                  {link}\n\n\
-                 The link works once and stops working in {expires_in}.\n\n\
+                 The link works once and stops working on {expires_at}.\n\n\
                  If it was not you, ignore this message and nothing will happen.\n",
             ),
             (Self::EmailVerification, Language::Portuguese) => (
@@ -84,7 +84,7 @@ impl Template {
                  Alguém, esperamos que você, usou este endereço para criar uma conta em {tenant_name}.\n\n\
                  Para confirmar que o endereço é seu, abra este link:\n\n\
                  {link}\n\n\
-                 O link funciona uma única vez e deixa de funcionar em {expires_in}.\n\n\
+                 O link funciona uma única vez e deixa de funcionar em {expires_at}.\n\n\
                  Se não foi você, ignore esta mensagem e nada acontecerá.\n",
             ),
             (Self::AlreadyRegistered, Language::English) => (
@@ -111,7 +111,7 @@ impl Template {
                  Someone, hopefully you, asked to choose a new password for your account at {tenant_name}.\n\n\
                  To choose it, open this link:\n\n\
                  {link}\n\n\
-                 The link works once and stops working in {expires_in}.\n\n\
+                 The link works once and stops working on {expires_at}.\n\n\
                  If it was not you, ignore this message. Your password stays as it is.\n",
             ),
             (Self::PasswordRecovery, Language::Portuguese) => (
@@ -120,7 +120,7 @@ impl Template {
                  Alguém, esperamos que você, pediu para escolher uma nova senha para a sua conta em {tenant_name}.\n\n\
                  Para escolher, abra este link:\n\n\
                  {link}\n\n\
-                 O link funciona uma única vez e deixa de funcionar em {expires_in}.\n\n\
+                 O link funciona uma única vez e deixa de funcionar em {expires_at}.\n\n\
                  Se não foi você, ignore esta mensagem. Sua senha continua a mesma.\n",
             ),
             (Self::PasswordChanged, Language::English) => (

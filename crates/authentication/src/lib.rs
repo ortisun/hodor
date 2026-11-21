@@ -14,9 +14,10 @@ pub mod testing;
 
 /// What other crates may use from this context.
 pub mod api {
+    pub use crate::application::account::{AccountRequest, AccountService};
     pub use crate::application::authenticators::{IdentifierAuthenticator, PasswordAuthenticator};
     pub use crate::application::guard::AttemptGuard;
-    pub use crate::application::ports::{AttemptStore, TransactionStore};
+    pub use crate::application::ports::{AttemptStore, TransactionStore, VerificationTokenStore};
     pub use crate::application::service::{AuthenticationService, SignIn, StartedSignIn};
     pub use crate::domain::attempt::{AttemptCounter, AttemptSubject, LockoutRules};
     pub use crate::domain::authenticator::{
@@ -27,5 +28,9 @@ pub mod api {
     pub use crate::domain::flow::{AuthFlow, FlowStep, Requirement};
     pub use crate::domain::transaction::{
         AuthTransaction, TransactionId, TransactionSnapshot, TransactionState, TransactionStatus,
+    };
+    pub use crate::domain::verification::{
+        TokenPurpose, VerificationSecret, VerificationToken, VerificationTokenHash,
+        VerificationTokenId, VerificationTokenSnapshot,
     };
 }

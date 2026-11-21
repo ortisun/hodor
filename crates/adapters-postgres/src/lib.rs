@@ -18,7 +18,7 @@ mod tenant;
 pub mod testing;
 mod uow;
 
-pub use authentication::{PgAttemptStore, PgTransactionStore};
+pub use authentication::{PgAttemptStore, PgTransactionStore, PgVerificationTokenStore};
 pub use credential::PgPasswordStore;
 pub use database::{Database, TenantTransaction, connect_pool, ping_pool};
 pub use identity::PgUserRepository;
