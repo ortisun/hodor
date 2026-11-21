@@ -4,6 +4,7 @@ import type { Failure } from "../client";
 import { describe } from "../messages";
 import { Frame } from "../parts/Frame";
 import { Notice } from "../parts/Notice";
+import { PageLink, Ways, Words } from "../parts/Words";
 import { asFailure, type PageProps } from "./shared";
 
 interface ComingBackPageProps extends PageProps {
@@ -67,17 +68,17 @@ export function ComingBackPage({ tenant, client, text, go, path, provider, answe
   return (
     <Frame tenant={tenant} title={text.comingBackTitle} text={text}>
       {failure === null ? (
-        <p className="auth-text muted" role="status">
+        <Words quiet announced>
           {text.loading}
-        </p>
+        </Words>
       ) : (
         <>
           <Notice kind="danger">{describe(failure, text)}</Notice>
-          <ul className="auth-links">
+          <Ways>
             <li>
-              <a href={path("sign-in")}>{text.backToSignIn}</a>
+              <PageLink href={path("sign-in")}>{text.backToSignIn}</PageLink>
             </li>
-          </ul>
+          </Ways>
         </>
       )}
     </Frame>

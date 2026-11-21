@@ -56,6 +56,9 @@ export const test = base.extend<{ misbehavior: string[] }>({
 
 /** Fails if the page shown breaks a rule of the accessibility guidelines the checker can test. */
 export async function expectAccessible(page: Page): Promise<void> {
+  // What is measured is what a person is left looking at: a message that
+  // is still fading in has, for a moment, colors nobody is meant to read.
+  await page.evaluate(() => Promise.all(document.getAnimations().map((animation) => animation.finished)));
   const found = await new AxeBuilder({ page })
     .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"])
     .analyze();

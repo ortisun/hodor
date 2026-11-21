@@ -44,7 +44,7 @@ The integration tests need Docker running. Each test that touches the database s
 The hosted pages have checks of their own, run from `frontend/auth-ui` after `npm ci`:
 
 ```bash
-npm run lint && npm run typecheck && npm test && npm run build
+npm run theme-check && npm run lint && npm run typecheck && npm test && npm run build
 ```
 
 ### Running the browser tests
@@ -134,6 +134,7 @@ Every setting is a command-line flag with an environment variable of the same me
 | `HODOR_DIRECTORY_HOSTS` | empty | The LDAP directories identity providers may name, as `host:port` separated by commas, such as `ldap.example.com:636`. Empty: no directory can be added or used. See [which directories may be used](../architecture/contexts/federation.md#which-directories-may-be-used) |
 | `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` | empty | Hosts with ports, separated by commas, that [outbound requests](../security/outbound-http.md#the-exception-for-development) may reach at a private address and over plain HTTP. Never set it anywhere real |
 | `HODOR_PAGES_DIRECTORY` | unset; the image sets `/usr/share/hodor/auth-ui` | The directory holding the built [hosted pages](../architecture/hosted-pages.md#how-the-pages-are-served). Unset: no pages are served. Set to a directory without `index.html`: the server does not start |
+| `HODOR_CONSOLE_DIRECTORY` | unset; the image sets `/usr/share/hodor/admin-console` | The directory holding the built [admin console](../architecture/admin-console.md#how-it-is-served). Unset: no console page is served; the console interface is still answered. Set to a directory without `index.html`: the server does not start |
 | `HODOR_PASSWORD_HASH_MEMORY_KIBIBYTES` | `19456` | Memory one password hash uses. Raising it makes every password harder to guess offline; existing passwords are re-hashed as their owners sign in |
 | `HODOR_PASSWORD_HASH_PASSES` | `2` | Passes over that memory |
 | `HODOR_PASSWORD_HASH_LANES` | `1` | Lanes computed in parallel within one hash |

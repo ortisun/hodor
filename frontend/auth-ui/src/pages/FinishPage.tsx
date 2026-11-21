@@ -2,9 +2,11 @@ import { type FormEvent, useState } from "react";
 import type { Failure } from "../client";
 import { describe, fieldProblem, type FieldProblem } from "../messages";
 import { Field, PasswordField } from "../parts/Field";
+import { Form } from "../parts/Form";
 import { Frame } from "../parts/Frame";
 import { Notice } from "../parts/Notice";
 import { Submit } from "../parts/Submit";
+import { PageLink, Ways } from "../parts/Words";
 import { asFailure, type PageProps } from "./shared";
 
 interface FinishPageProps extends PageProps {
@@ -61,16 +63,14 @@ export function FinishPage({ tenant, client, text, go, path, purpose, token }: F
     return (
       <Frame tenant={tenant} title={text.linkInvalidTitle} text={text}>
         <Notice kind="danger">{text.linkInvalid}</Notice>
-        <ul className="auth-links">
+        <Ways>
           <li>
-            <a href={path(registering ? "register" : "recover")}>
-              {registering ? text.askForNewRegistrationLink : text.askForNewRecoveryLink}
-            </a>
+            <PageLink href={path(registering ? "register" : "recover")}>{registering ? text.askForNewRegistrationLink : text.askForNewRecoveryLink}</PageLink>
           </li>
           <li>
-            <a href={path("sign-in")}>{text.backToSignIn}</a>
+            <PageLink href={path("sign-in")}>{text.backToSignIn}</PageLink>
           </li>
-        </ul>
+        </Ways>
       </Frame>
     );
   }
@@ -87,16 +87,15 @@ export function FinishPage({ tenant, client, text, go, path, purpose, token }: F
       text={text}
     >
       {failure !== null ? <Notice kind="danger">{describe(failure, text)}</Notice> : null}
-      <form className="auth-form" method="post" noValidate onSubmit={(event) => submit(event, token)}>
+      <Form onSubmit={(event) => submit(event, token)}>
         {registering ? (
           <Field
             label={`${text.displayNameLabel} (${text.optional})`}
             name="name"
-            type="text"
             autoComplete="name"
             value={displayName}
             error={problem?.field === "displayName" ? problem.message : null}
-            onChange={(event) => setDisplayName(event.target.value)}
+            onChange={setDisplayName}
           />
         ) : null}
         <PasswordField
@@ -106,13 +105,12 @@ export function FinishPage({ tenant, client, text, go, path, purpose, token }: F
           name="new-password"
           autoComplete="new-password"
           autoFocus={!registering}
-          required
           value={password}
           error={problem?.field === "password" ? problem.message : null}
-          onChange={(event) => setPassword(event.target.value)}
+          onChange={setPassword}
         />
         <Submit label={registering ? text.createAccount : text.changePassword} busy={busy} text={text} />
-      </form>
+      </Form>
     </Frame>
   );
 }

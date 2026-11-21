@@ -3,9 +3,11 @@ import type { NoticeName } from "../address";
 import type { Client, Failure, OfferedProvider, SignInAnswer } from "../client";
 import { describe, type Messages } from "../messages";
 import { Field, PasswordField } from "../parts/Field";
+import { Form } from "../parts/Form";
 import { Frame } from "../parts/Frame";
 import { Notice } from "../parts/Notice";
-import { Submit } from "../parts/Submit";
+import { Action, Submit } from "../parts/Submit";
+import { PageLink, Ways, Words } from "../parts/Words";
 import { asFailure, type PageProps } from "./shared";
 
 type View =
@@ -240,42 +242,34 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice }: Si
       {failure !== null ? <Notice kind="danger">{describe(failure, text)}</Notice> : null}
 
       {view.kind === "loading" ? (
-        <p className="auth-text muted" role="status">
+        <Words quiet announced>
           {text.loading}
-        </p>
+        </Words>
       ) : null}
 
       {view.kind === "stopped" ? (
         <>
           <Notice kind="danger">{describe(view.failure, text)}</Notice>
-          <button type="button" className="button auth-wide" onClick={() => void startAgain()}>
-            {text.startAgain}
-          </button>
+          <Action label={text.startAgain} onClick={() => void startAgain()} />
         </>
       ) : null}
 
       {view.kind === "ended" ? (
         <>
           <Notice kind="danger">{text.signInEnded}</Notice>
-          <button type="button" className="button button--primary auth-wide" onClick={() => void startAgain()}>
-            {text.startAgain}
-          </button>
+          <Action variant="primary" label={text.startAgain} onClick={() => void startAgain()} />
         </>
       ) : null}
 
       {view.kind === "step" && view.rejected ? (
         <Notice kind="danger">
-          {text.rejected}
-          {view.attemptsLeft !== null ? ` ${text.attemptsLeft(view.attemptsLeft)}` : ""}
+          {view.attemptsLeft !== null ? `${text.rejected} ${text.attemptsLeft(view.attemptsLeft)}` : text.rejected}
         </Notice>
       ) : null}
 
       {view.kind === "step" && view.step === "identifier" && directory !== null ? (
-        <form
+        <Form
           key={`directory-${view.shown}`}
-          className="auth-form"
-          method="post"
-          noValidate
           onSubmit={(event) =>
             submit(event, () => client.signInWithDirectory(directory.alias, identifier, password))
           }
@@ -283,97 +277,79 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice }: Si
           <Field
             label={text.directoryIdentifierLabel(directory.displayName)}
             name="identifier"
-            type="text"
             autoComplete="username"
-            autoCapitalize="none"
-            spellCheck={false}
+            verbatim
             autoFocus
-            required
             value={identifier}
-            onChange={(event) => setIdentifier(event.target.value)}
+            onChange={setIdentifier}
           />
           <PasswordField
             text={text}
             label={text.passwordLabel}
             name="password"
             autoComplete="current-password"
-            required
             value={password}
-            onChange={(event) => setPassword(event.target.value)}
+            onChange={setPassword}
           />
           <Submit label={text.signIn} busy={busy} text={text} />
-          <button
-            type="button"
-            className="button button--ghost auth-wide"
+          <Action
+            variant="ghost"
+            label={text.otherWays}
             onClick={() => {
               setDirectory(null);
               setFailure(null);
               setPassword("");
             }}
-          >
-            {text.otherWays}
-          </button>
-        </form>
+          />
+        </Form>
       ) : null}
 
       {view.kind === "step" && view.step === "identifier" && directory === null ? (
-        <form
+        <Form
           key={view.shown}
-          className="auth-form"
-          method="post"
-          noValidate
           onSubmit={(event) => submit(event, () => client.submitIdentifier(identifier))}
         >
           <Field
             label={text.identifierLabel}
             name="identifier"
-            type="text"
             autoComplete="username"
-            autoCapitalize="none"
-            spellCheck={false}
+            verbatim
             autoFocus
-            required
             value={identifier}
-            onChange={(event) => setIdentifier(event.target.value)}
+            onChange={setIdentifier}
           />
           <Submit label={text.continue} busy={busy} text={text} />
-        </form>
+        </Form>
       ) : null}
 
       {view.kind === "step" && view.step === "identifier" && directory === null && providers.length > 0 ? (
         <>
           <p className="auth-divider">{text.or}</p>
-          <ul className="auth-providers">
+          <Ways>
             {providers.map((provider) => (
               <li key={provider.alias}>
-                <button
-                  type="button"
-                  className="button auth-wide"
-                  aria-disabled={busy}
+                <Action
+                  label={text.continueWith(provider.displayName)}
+                  busy={busy}
                   onClick={() => void leaveFor(provider)}
-                >
-                  {text.continueWith(provider.displayName)}
-                </button>
+                />
               </li>
             ))}
-          </ul>
+          </Ways>
         </>
       ) : null}
 
       {view.kind === "step" && view.step === "password" ? (
-        <form
+        <Form
           key={view.shown}
-          className="auth-form"
-          method="post"
-          noValidate
           onSubmit={(event) => submit(event, () => client.submitPassword(password))}
         >
           {identifier !== "" ? (
             <>
-              <p className="auth-text muted">{text.signingInAs(identifier)}</p>
+              <Words quiet>{text.signingInAs(identifier)}</Words>
               {/* Not shown and not reachable: it tells a password manager whose password this is. */}
               <input
-                className="visually-hidden"
+                className="auth-hidden"
                 type="text"
                 name="identifier"
                 autoComplete="username"
@@ -390,34 +366,29 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice }: Si
             name="password"
             autoComplete="current-password"
             autoFocus
-            required
             value={password}
-            onChange={(event) => setPassword(event.target.value)}
+            onChange={setPassword}
           />
           <Submit label={text.signIn} busy={busy} text={text} />
-          <button type="button" className="button button--ghost auth-wide" onClick={() => void startAgain()}>
-            {text.useAnotherIdentifier}
-          </button>
-        </form>
+          <Action variant="ghost" label={text.useAnotherIdentifier} onClick={() => void startAgain()} />
+        </Form>
       ) : null}
 
       {view.kind === "step" && view.step !== "identifier" && view.step !== "password" ? (
         <>
           <Notice kind="danger">{text.unknownStep}</Notice>
-          <button type="button" className="button auth-wide" onClick={() => void startAgain()}>
-            {text.startAgain}
-          </button>
+          <Action label={text.startAgain} onClick={() => void startAgain()} />
         </>
       ) : null}
 
-      <ul className="auth-links">
+      <Ways>
         <li>
-          <a href={path("recover")}>{text.forgotPassword}</a>
+          <PageLink href={path("recover")}>{text.forgotPassword}</PageLink>
         </li>
         <li>
-          {text.noAccountYet} <a href={path("register")}>{text.register}</a>
+          {text.noAccountYet} <PageLink href={path("register")}>{text.register}</PageLink>
         </li>
-      </ul>
+      </Ways>
     </Frame>
   );
 }

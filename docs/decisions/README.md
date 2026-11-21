@@ -21,5 +21,7 @@ All records below are **Proposed** unless marked otherwise: they become Accepted
 | [0013](0013-auth-flow-as-data.md) | Authentication flows are versioned data interpreted by one engine |
 | [0014](0014-saml-deferred-with-spike.md) | SAML is deferred to Phase 6 and gated by a security spike |
 | [0015](0015-observability-stack.md) | OpenTelemetry for instrumentation, VictoriaMetrics for metrics (Accepted) |
-| [0016](0016-design-system.md) | One token-based design system for the three frontends, with security patterns built in |
+| [0016](0016-design-system.md) | One token-based design system for the three frontends, with security patterns built in (how it is built is changed by 0018) |
 | [0017](0017-external-identities-before-oauth.md) | Signing in with external identities comes before OAuth (Accepted) |
+| [0018](0018-astryx-component-foundation.md) | Astryx is the foundation of the design system (Accepted) |
+| [0019](0019-console-on-the-hodor-session.md) | Until Hodor issues tokens, the admin console rides the administrator's Hodor session (Accepted) |

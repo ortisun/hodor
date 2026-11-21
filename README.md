@@ -24,7 +24,7 @@ The second command is the demonstration of the milestone: it creates two tenants
 |---|---|
 | `crates/` | One crate per bounded context, plus adapters |
 | `apps/` | `hodor-server`, `hodor-worker`, `hodor-cli` |
-| `frontend/` | The design system and the hosted pages |
+| `frontend/` | The hosted pages, the admin console and the showcase of the design system, built on Astryx with the Hodor theme |
 | `migrations/` | The database schema |
 | `deploy/` | The container image, the development stack and the demonstration |
 | `docs/` | Product, architecture, protocol, security and operations documentation, and the decision records. The design lives there; start with the [index](docs/README.md) |

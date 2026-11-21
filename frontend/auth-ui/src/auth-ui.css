@@ -1,15 +1,22 @@
 /*
  * Layout of the hosted pages. Everything else comes from the design
- * system; only its semantic tokens are used here.
- * No inline styles anywhere: the Content Security Policy allows none.
+ * system: Astryx components under the Hodor theme. Only tokens of the
+ * theme are used here.
  */
+
+body {
+  margin: 0;
+  background: var(--color-background-body);
+  color: var(--color-text-primary);
+  font-family: var(--font-family-body);
+}
 
 .auth-page {
   display: grid;
   place-items: start center;
   min-height: 100vh;
   min-height: 100dvh;
-  padding: var(--space-12) var(--space-4) var(--space-8);
+  padding: var(--spacing-12) var(--spacing-4) var(--spacing-8);
 }
 
 .auth-card {
@@ -17,128 +24,47 @@
   max-width: 26rem;
 }
 
-.auth-card__body {
-  display: grid;
-  gap: var(--space-5);
-  padding: var(--space-8) var(--space-6);
-}
-
-.auth-card__heading {
-  display: grid;
-  gap: var(--space-1);
-}
-
-.auth-card__title {
-  font-size: var(--text-2xl);
-  line-height: var(--leading-2xl);
-}
-
 /* The heading takes focus when a page opens, to be announced; it is not a control. */
-.auth-card__title:focus,
-.auth-card__title:focus-visible {
+.auth-title:focus,
+.auth-title:focus-visible {
   outline: none;
 }
 
-.auth-form {
-  display: grid;
-  gap: var(--space-4);
-}
-
-.auth-form .input,
-.auth-form .button {
-  min-height: var(--control-large);
-  font-size: var(--text-lg);
-}
-
-.auth-wide {
-  width: 100%;
-}
-
-.auth-text {
-  margin: 0;
-}
-
-.auth-links {
-  display: grid;
-  gap: var(--space-2);
+.auth-ways {
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
+/* Not shown and not reachable: see the sign-in page. */
+.auth-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* What stands between the form and the identity providers: a word with a line on each side. */
 .auth-divider {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
+  gap: var(--spacing-3);
   margin: 0;
-  color: var(--color-text-muted);
-  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
 }
 
 .auth-divider::before,
 .auth-divider::after {
   content: "";
   flex: 1;
-  border-top: 1px solid var(--color-border-subtle);
-}
-
-.auth-providers {
-  display: grid;
-  gap: var(--space-2);
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.auth-providers .button {
-  min-height: var(--control-large);
-  font-size: var(--text-lg);
-}
-
-/* Inside text, a link is told apart by more than its color. */
-.auth-page a {
-  text-decoration: underline;
-  text-underline-offset: 3px;
-}
-
-.auth-check {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-height: var(--target-minimum);
-  font-size: var(--text-sm);
-  color: var(--color-text);
-}
-
-.auth-check input {
-  width: 1rem;
-  height: 1rem;
-  margin: 0;
-  accent-color: var(--color-accent);
-}
-
-.auth-field-error {
-  margin: 0;
-  font-size: var(--text-sm);
-  color: var(--color-danger-text);
-}
-
-/* The alerts of these pages carry text only: one column. */
-.auth-page .alert {
-  grid-template-columns: 1fr;
-  color: var(--color-text-strong);
-}
-
-.auth-page .alert p {
-  margin: 0;
+  border-top: 1px solid var(--color-border);
 }
 
 @media (max-width: 30rem) {
   .auth-page {
-    padding-top: var(--space-6);
-  }
-
-  .auth-card__body {
-    padding: var(--space-6) var(--space-4);
+    padding-top: var(--spacing-6);
   }
 }

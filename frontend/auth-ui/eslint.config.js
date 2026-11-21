@@ -4,7 +4,17 @@ import globals from "globals";
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
-  { ignores: ["dist", "node_modules", "test-results", "playwright-report"] },
+  {
+    ignores: [
+      "dist",
+      "node_modules",
+      "test-results",
+      "playwright-report",
+      // Written by `npm run theme` from src/themes/hodor/hodorTheme.ts.
+      "src/astryx-themes.ts",
+      "src/themes/hodor/hodor.*",
+    ],
+  },
   js.configs.recommended,
   ...tseslint.configs.strict,
   reactHooks.configs.flat.recommended,

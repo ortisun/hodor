@@ -1,3 +1,7 @@
+import { Card } from "@astryxdesign/core/Card";
+import { Heading } from "@astryxdesign/core/Heading";
+import { Text } from "@astryxdesign/core/Text";
+import { VStack } from "@astryxdesign/core/VStack";
 import { type ReactNode, useEffect, useId, useRef } from "react";
 import type { Messages } from "../messages";
 
@@ -24,18 +28,20 @@ export function Frame({ tenant, title, text, children }: FrameProps) {
 
   return (
     <main className="auth-page">
-      <section className="card auth-card" aria-labelledby={headingId}>
-        <div className="card__body auth-card__body">
-          <div className="auth-card__heading">
-            <p className="overline auth-text">
-              {text.organization}: {tenant}
-            </p>
-            <h1 id={headingId} ref={heading} tabIndex={-1} className="auth-card__title">
-              {title}
-            </h1>
-          </div>
-          {children}
-        </div>
+      <section className="auth-card" aria-labelledby={headingId}>
+        <Card padding={6}>
+          <VStack gap={5}>
+            <VStack gap={1}>
+              <Text as="p" type="supporting" color="secondary">
+                {text.organization}: {tenant}
+              </Text>
+              <Heading level={1} id={headingId} ref={heading} tabIndex={-1} className="auth-title">
+                {title}
+              </Heading>
+            </VStack>
+            {children}
+          </VStack>
+        </Card>
       </section>
     </main>
   );

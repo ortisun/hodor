@@ -1,0 +1,6 @@
+/*
+ * The rules Astryx uses to place a menu, a tooltip or a toast beside what
+ * it belongs to. Astryx writes them into the page as a style element, which
+ * the Content Security Policy refuses. The build writes them here instead
+ * (vite.config.ts), and index.html tells Astryx they are in place.
+ */

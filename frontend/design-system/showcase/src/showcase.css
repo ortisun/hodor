@@ -1,0 +1,343 @@
+/*
+ * What the showcase draws that Astryx does not have: Hodor's own
+ * components, sketched here before the admin console builds them
+ * (docs/design/design-system.md, sections 6 and 7). Only tokens of the
+ * theme are used.
+ */
+
+body {
+  margin: 0;
+  font-family: var(--font-family-body);
+}
+
+.hodor-page {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: var(--spacing-6);
+}
+
+.hodor-overline {
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-secondary);
+}
+
+.hodor-mono,
+.hodor-code {
+  font-family: "IBM Plex Mono", var(--font-family-code);
+  font-size: 0.92em;
+}
+
+.hodor-code {
+  padding: 0 var(--spacing-1);
+  border-radius: var(--radius-inner);
+  background: var(--color-background-muted);
+}
+
+.hodor-figure {
+  font-size: var(--font-size-3xl);
+  font-weight: 600;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Two columns that become one on a narrow screen. */
+.hodor-split {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: var(--spacing-4);
+  align-items: start;
+}
+
+.hodor-split--even {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+@media (max-width: 64rem) {
+  .hodor-split,
+  .hodor-split--even {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ---------- Severity: a shape, a word and a color, never the color alone ---------- */
+
+.hodor-severity {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-1-5);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.hodor-severity svg {
+  width: 0.75rem;
+  height: 0.75rem;
+  fill: currentColor;
+}
+
+.hodor-severity--critical { color: var(--color-text-pink); }
+.hodor-severity--high { color: var(--color-text-red); }
+.hodor-severity--medium { color: var(--color-text-orange); }
+.hodor-severity--low { color: var(--color-text-yellow); }
+.hodor-severity--informational { color: var(--color-text-secondary); }
+.hodor-severity--informational svg { fill: none; }
+
+/* ---------- The dangerous action ladder ---------- */
+
+.hodor-ladder {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-2);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+.hodor-ladder__steps {
+  display: inline-flex;
+  gap: 3px;
+}
+
+.hodor-ladder__step {
+  width: 0.5rem;
+  height: 0.75rem;
+  border-radius: 2px;
+  background: var(--color-border-emphasized);
+}
+
+.hodor-ladder__step--on {
+  background: var(--color-error);
+}
+
+/* ---------- Posture score ---------- */
+
+.hodor-score {
+  position: relative;
+  width: 7.5rem;
+  height: 7.5rem;
+  flex: none;
+}
+
+.hodor-score svg {
+  width: 100%;
+  height: 100%;
+  transform: rotate(-90deg);
+  fill: none;
+}
+
+.hodor-score__track { stroke: var(--color-background-muted); }
+.hodor-score__value { stroke: var(--color-accent); stroke-linecap: round; }
+
+.hodor-score__label {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  text-align: center;
+}
+
+/* ---------- Sparkline ---------- */
+
+.hodor-spark {
+  display: block;
+  width: 100%;
+  height: 2rem;
+  fill: none;
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.hodor-spark--accent { stroke: var(--color-accent); }
+.hodor-spark--warning { stroke: var(--color-warning); }
+.hodor-spark--info { stroke: var(--color-info); }
+
+/* ---------- Lists of facts: findings, activity, consequences ---------- */
+
+.hodor-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.hodor-list > li + li {
+  border-top: 1px solid var(--color-border);
+}
+
+.hodor-finding {
+  display: grid;
+  grid-template-columns: 6rem minmax(0, 1fr) auto;
+  gap: var(--spacing-4);
+  align-items: start;
+  padding: var(--spacing-4) 0;
+}
+
+.hodor-finding--accepted {
+  opacity: 0.7;
+}
+
+.hodor-fact {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--spacing-4);
+  padding: var(--spacing-2) 0;
+}
+
+.hodor-activity {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--spacing-3);
+  padding: var(--spacing-3) 0;
+}
+
+.hodor-activity__marker {
+  padding-top: var(--spacing-1);
+}
+
+/* ---------- Diff ---------- */
+
+.hodor-diff {
+  margin: 0;
+  padding: var(--spacing-2) 0;
+  overflow-x: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-element);
+  background: var(--color-background-muted);
+  font-family: "IBM Plex Mono", var(--font-family-code);
+  font-size: var(--font-size-sm);
+  line-height: 1.7;
+}
+
+.hodor-diff__line {
+  display: grid;
+  grid-template-columns: 3rem 1.5rem minmax(0, 1fr);
+  padding-right: var(--spacing-3);
+  white-space: pre;
+}
+
+.hodor-diff__number {
+  padding-right: var(--spacing-2);
+  text-align: right;
+  color: var(--color-text-secondary);
+}
+
+.hodor-diff__line--removed { background: var(--color-error-muted); }
+.hodor-diff__line--added { background: var(--color-success-muted); }
+
+/* ---------- Decision ---------- */
+
+.hodor-decision {
+  font-family: "IBM Plex Mono", var(--font-family-code);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+}
+
+.hodor-decision--allow { color: var(--color-text-success); }
+.hodor-decision--deny { color: var(--color-text-error); }
+
+/* ---------- Identifier and secret ---------- */
+
+.hodor-identifier {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-1);
+  padding-left: var(--spacing-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-element);
+  font-family: "IBM Plex Mono", var(--font-family-code);
+  font-size: var(--font-size-sm);
+}
+
+.hodor-secret {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-3);
+  padding: var(--spacing-3);
+  border: 1px dashed var(--color-border-emphasized);
+  border-radius: var(--radius-element);
+  background: var(--color-background-muted);
+  font-family: "IBM Plex Mono", var(--font-family-code);
+  overflow-wrap: anywhere;
+}
+
+/* ---------- Hold to confirm: the reserved motion of section 3.5 ---------- */
+
+.hodor-hold {
+  position: relative;
+  overflow: hidden;
+  min-height: 2.25rem;
+  padding: 0 var(--spacing-4);
+  border: 0;
+  border-radius: var(--radius-element);
+  background: var(--color-error);
+  color: var(--color-on-error, #fff);
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.hodor-hold:focus-visible {
+  outline: 2px solid var(--focus-outline-color, var(--color-accent));
+  outline-offset: 2px;
+}
+
+.hodor-hold[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.hodor-hold::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgb(0 0 0 / 0.35);
+  transform: scaleX(0);
+  transform-origin: left;
+}
+
+.hodor-hold--holding::before {
+  transform: scaleX(1);
+  transition: transform 1500ms linear;
+}
+
+.hodor-hold > span {
+  position: relative;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hodor-hold--holding::before {
+    transition: none;
+  }
+}
+
+/* ---------- Gallery ---------- */
+
+.hodor-swatches {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+  gap: var(--spacing-3);
+}
+
+.hodor-swatch__color {
+  height: 3.5rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-element);
+}
+
+.hodor-swatch--body { background: var(--color-background-body); }
+.hodor-swatch--surface { background: var(--color-background-surface); }
+.hodor-swatch--card { background: var(--color-background-card); }
+.hodor-swatch--muted { background: var(--color-background-muted); }
+.hodor-swatch--border { background: var(--color-border-emphasized); }
+.hodor-swatch--text { background: var(--color-text-primary); }
+.hodor-swatch--text-secondary { background: var(--color-text-secondary); }
+.hodor-swatch--accent { background: var(--color-accent); }
+.hodor-swatch--success { background: var(--color-success); }
+.hodor-swatch--warning { background: var(--color-warning); }
+.hodor-swatch--error { background: var(--color-error); }
+.hodor-swatch--info { background: var(--color-info); }
