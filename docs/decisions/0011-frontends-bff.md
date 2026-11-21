@@ -14,6 +14,15 @@ There are three React applications. The hosted login user interface handles cred
 - Tenant theming is declarative: design tokens, logo, copy and locale. Tenant-supplied HTML, CSS files and JavaScript are not accepted.
 - The consoles use only the public Admin and Account APIs. Anything the console can do, an API client can do.
 
+## How it was built
+
+`auth-ui` exists since Issue-31 and is described in [the hosted pages](../architecture/hosted-pages.md). Two choices made there narrow this decision:
+
+- The static files are not compiled into the binary. They are built into a directory of the image, and `hodor-server` is told where it is. Building and testing the Rust workspace therefore needs no Node.js.
+- The Content Security Policy carries `require-trusted-types-for 'script'` with no policy allowed at all, which is stricter than "Trusted Types": the pages have no way to turn text into markup.
+
+The consoles and the backend-for-frontend do not exist yet.
+
 ## Consequences
 
 - No token ever reaches browser JavaScript in first-party apps.

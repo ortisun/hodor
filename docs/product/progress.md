@@ -2,7 +2,7 @@
 
 What has been built, issue by issue. This page is updated with every merge into `develop`; the plan it tracks is in [epics.md](epics.md).
 
-Last updated: 2026-11-20.
+Last updated: 2026-11-21.
 
 ## Milestone 1: Walking skeleton
 
@@ -12,9 +12,9 @@ Last updated: 2026-11-20.
 | B — Tenancy | 3 | 3 |
 | C — Identity | 3 | 3 |
 | D — Password credential | 3 | 3 |
-| E — Authentication and session | 5 | 7 |
-| F — Audit, notification, admin | 0 | 4 |
-| G — Hosted user interface and acceptance | 0 | 3 |
+| E — Authentication and session | 7 | 7 |
+| F — Audit, notification, admin | 4 | 4 |
+| G — Hosted user interface and acceptance | 2 | 3 |
 
 ### Slice A — Foundation
 
@@ -87,7 +87,7 @@ Specified in [the credential context](../architecture/contexts/credential.md).
 
 | Issue | Status | What exists |
 |---|---|---|
-| Issue-31 Hosted pages | Not started | — |
+| Issue-31 Hosted pages | Done | `auth-ui`, a React application in `frontend/auth-ui`, served by `hodor-server` from the directory `HODOR_PAGES_DIRECTORY` names: a person registers, signs in one step at a time, signs out and recovers a password in a browser, in English or Brazilian Portuguese. The pages only show the step the interaction interface names. `index.html` is sent with a Content Security Policy that allows files of this server only, no inline script or style, and no way to turn text into markup; the fonts are bundled. The image builds the pages and serves them. Tested in three layers: unit tests of the application, tests of the HTTP layer that need no Node.js, and browser tests with Chromium against the Compose stack, which fail on any policy violation, script error or accessibility violation and include a pass with the keyboard alone. A new continuous integration job runs all of it. Specified in [the hosted pages](../architecture/hosted-pages.md) |
 | Issue-32 Cross-tenant suite | Done | Seven cases on the real `hodor-server` against PostgreSQL, with two tenants that share a person's email address and password: a session cookie, a sign-in in progress, an administrator's access token on every operation of the OpenAPI document, registration and recovery links, and the identifiers of users and sessions are each shown to work in their own tenant and then refused by the other; lists of users and audit logs name nothing of the other tenant; a lockout in one does not reach the other. Runs with every other test in continuous integration. Done ahead of Issue-31: it tests the server, which must not rely on what a browser would or would not send. Specified in [multi-tenancy](../architecture/multi-tenancy.md#the-cross-tenant-suite) |
 | Issue-33 Demonstration and quick-start | Not started | — |
 
@@ -97,6 +97,7 @@ Some things are covered by tests in halves and were also tried whole, on the Com
 
 - A person asked to register; the server queued the message, the worker delivered it to the development mail server, the message arrived in the language asked for with a working link, and the link finished the registration once and only once.
 - The worker's metrics for the outbox and for messages arrived in VictoriaMetrics.
+- A person used the pages in Chromium, at desktop and at telephone width, in both languages: registered, followed the link from the message, was told what was wrong with a short password, signed in, was refused with a wrong password, recovered the password and signed out. The first run of the browser tests found the primary button of the light theme below the contrast the design system promises (4.27 to 1); the accent of the light theme was darkened until it measured 4.81 to 1.
 - The first administrator of a tenant was made with `hodor-cli admin bootstrap`; the token it printed listed and created users through the administration interface, a request without it was refused, the audit log read through the interface showed each step with the right actor, and `hodor-cli audit verify` found the chain intact.
 
 ### Known gaps in what is done
@@ -111,10 +112,14 @@ These are recorded here so they are not forgotten; each is picked up by the issu
 | Records removed from the end of a tenant's audit chain, or a chain rewritten whole, are noticed only through the chain head, which lives in the same database | Exporting the latest hash regularly, later in Phase 1 |
 | Audit records do not carry the address a request came from or the application that made it, and events caused by people who are not signed in are recorded as anonymous | When events carry them: with OAuth clients in Phase 2 |
 | Rows of expired and revoked sessions are never removed | A cleanup job, later in Phase 1 |
-| The cross-tenant suite does not cover OAuth tokens and codes, which do not exist yet, or the pages in a browser | Phase 2 for OAuth; Issue-31 for the pages |
+| The cross-tenant suite does not cover OAuth tokens and codes, which do not exist yet, or the pages in a browser | Phase 2 for OAuth; hardening pass for the pages |
+| The pages show the tenant's slug, not its name, logo or colors, and offer registration even when the tenant does not accept it; the person is told after asking | A public description of the tenant, Phase 2; branding, Phase 3 |
+| The pages have no place to see and end one's sessions, though the interaction interface can | The account console, Phase 2 |
+| The browser tests run in Chromium only. Safari refuses `Secure` cookies on `http://localhost`, so the pages cannot be tried there without TLS | Hardening pass |
+| The continuous integration job for the pages builds the image from nothing on every run | When the job is slow enough to matter |
+| The dependencies of the pages are checked for known vulnerabilities by `npm audit`, not for licenses | Hardening pass |
 | Roles are given only by the bootstrap command and cannot be taken away; access tokens cannot be listed or revoked through any interface | Phase 2, with OAuth and the rest of the administration interface |
 | Listing users reads each user with a query of its own | When a tenant's user list is slow |
-| The links in messages lead to pages that do not exist yet. Until they do, the token must be copied from the link into a request by hand | Issue-31 |
 | Asking to register or recover answers the same whoever the address belongs to, but not in the same time: an address with something to send costs one more write. The difference was not measured | Hardening pass |
 | A registration that fails after the user was created and before the password was set leaves an account without a password; the person gets in by recovering it | Accepted; see [the authentication context](../architecture/contexts/authentication.md#registration) |
 | Used, replaced and expired verification tokens are never removed | A cleanup job, later in Phase 1 |
@@ -135,9 +140,9 @@ Specified in [the design system](../design/design-system.md) and [the control pl
 | Specification | Done | Foundations, components, security interaction patterns, control plane structure, console requirements (`Requirement-Console-…`), [Decision 0016](../decisions/0016-design-system.md) |
 | Tokens and styles | Done | `frontend/design-system/tokens.css`, `components.css` and `shell.css`: dark and light themes, density, reduced motion, forced colors |
 | Showcase | Done | Static pages in `frontend/design-system/showcase/`: the security posture screen with working level 2 and level 3 confirmations, step-up, secret reveal and command palette, plus a component gallery |
-| Fonts | Not done | IBM Plex is not vendored yet; the showcase loads it from Google Fonts, which the shipped frontends must not do |
+| Fonts | Done for the hosted pages | IBM Plex Sans is bundled with `auth-ui` from the `@fontsource/ibm-plex-sans` package and served by `hodor-server`. The showcase still loads its fonts from Google Fonts, which the shipped frontends must not do |
 | React components and action catalog | Not started | Epic 12 |
-| Contrast checks in a token build | Not started | Planned with the React components; today contrast was checked by eye in both themes, not measured |
+| Contrast checks in a token build | Not started | Planned with the React components. The hosted pages are measured by the accessibility checker of the browser tests, which found and fixed one pair: text on the accent in the light theme |
 
 ## Defects found after merging
 
@@ -162,4 +167,6 @@ Each departure is reflected in the page that specifies the topic. They are colle
 | Audit records | Written in the same transaction as the change; columns for the target, the outcome, the client and the address | Written by the worker in the transaction that marks the event delivered, shortly after the change; the details are the event's contents, and target, outcome, client and address are not separate columns yet | [the audit context](../architecture/contexts/audit.md#how-a-record-comes-to-exist) |
 | The OpenAPI document | Generated from the code | Written by hand and kept next to the code that serves it; a test checks that it and the routes agree | [the administration interface](../api/admin-api.md) |
 | Authorization of the administration interface | The native engine behind the engine contract | A direct check of fixed roles; the engine contract comes with policies in Phase 5 | [the authorization context](../architecture/contexts/authorization.md) |
+| The files of the hosted pages | Shipped in the image; how the server finds them was open | Built into a directory of the image that `HODOR_PAGES_DIRECTORY` names, not compiled into the binary, so that the Rust workspace builds and tests without Node.js | [the hosted pages](../architecture/hosted-pages.md#how-the-pages-are-served) |
+| Navigation inside the hosted pages | A single-page application | One application, but going from page to page is an ordinary navigation of the browser: no router, nothing kept from the page before | [the hosted pages](../architecture/hosted-pages.md#where-the-code-is) |
 | Tenant lookup for HTTP | Middleware in `protocol-http` | Same, through a `TenantResolver` trait that the composition root implements, so `protocol-http` depends on no adapter | [overview](../architecture/overview.md#cross-cutting-concerns) |

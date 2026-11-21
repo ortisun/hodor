@@ -184,7 +184,7 @@ A verification token is what a link carries. It is 32 random bytes written as 64
 
 A token is good while it is unused, unexpired and not replaced by a newer one of the same purpose for the same address or user.
 
-The link in the message has the form `{public address}/t/{slug}/account/{page}#token={token}`, where the page is `complete-registration` or `reset-password`. The token is in the fragment, the part after `#`, which a browser never sends to a server and never includes in a `Referer` header: it does not reach access logs. The page reads it and sends it in the body of the request that finishes. The pages themselves come with Issue-31.
+The link in the message has the form `{public address}/t/{slug}/account/{page}#token={token}`, where the page is `complete-registration` or `reset-password`. The token is in the fragment, the part after `#`, which a browser never sends to a server and never includes in a `Referer` header: it does not reach access logs. The page reads it and sends it in the body of the request that finishes. The pages are described in [the hosted pages](../hosted-pages.md).
 
 The public address is the installation's `HODOR_PUBLIC_URL` setting.
 
@@ -327,10 +327,9 @@ All three are tenant tables under row-level security.
 
 | Item | Planned in |
 |---|---|
-| The pages of a sign-in | Issue-31 |
 | Editing flows; alternative, conditional and optional steps; simulation | Phase 4 |
 | Further authenticators, risk signals, recognizing a user's own device | Phases 3 and 4 |
 | Making a user choose a new password when the current one is marked as temporary. The mark is stored and returned by the credential context, but sign-in does not act on it yet | With the administration interface, Issue-29, which is what sets the mark |
-| Signing the person in at the end of registration or recovery | With the pages, Issue-31 |
+| Signing the person in at the end of registration or recovery. Today the person signs in with the password just chosen | With the account console, Phase 2 |
 | Changing or adding an email address on an existing account, with verification | Phase 2, account self-service |
 | Removing old transactions, counters and verification tokens | Later in Phase 1 |

@@ -85,7 +85,7 @@ fn app_with(limits: Limits) -> App {
         .route("/slow", get(slow))
         .route("/echo", post(|body: String| async move { body }));
     App {
-        router: public_router(tenants.clone(), routes, limits),
+        router: public_router(tenants.clone(), routes, Router::new(), limits),
         tenants,
     }
 }

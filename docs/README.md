@@ -34,6 +34,7 @@ Start with the [critical review](architecture/critical-review.md): it lists wher
 | 23 | API Specifications | [api/api-spec.md](api/api-spec.md) |
 | — | The interaction interface: how a browser signs in | [api/interaction-api.md](api/interaction-api.md) |
 | — | The administration interface: users, sessions and the audit log for the people who run a tenant | [api/admin-api.md](api/admin-api.md) |
+| — | The hosted pages: what a person sees when they register, sign in or recover a password, and how the pages are served and tested | [architecture/hosted-pages.md](architecture/hosted-pages.md) |
 | 24 | Plugin Architecture | [architecture/plugins.md](architecture/plugins.md) |
 | 25 | Testing Strategy | [architecture/testing.md](architecture/testing.md) |
 | 26 | Deployment Architecture | [operations/deployment.md](operations/deployment.md) |

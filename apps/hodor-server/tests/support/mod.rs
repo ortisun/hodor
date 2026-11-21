@@ -37,8 +37,17 @@ fn free_port() -> u16 {
 }
 
 pub(crate) async fn start_server(database: &TestDatabase) -> Server {
+    start_server_with(database, &[]).await
+}
+
+/// Starts the server with more settings than the tests usually need.
+pub(crate) async fn start_server_with(
+    database: &TestDatabase,
+    settings: &[(&str, &str)],
+) -> Server {
     let (public, ops) = (free_port(), free_port());
     let process = Command::new(env!("CARGO_BIN_EXE_hodor-server"))
+        .envs(settings.iter().copied())
         .env("HODOR_DATABASE_URL", database.app_url())
         .env("HODOR_LISTEN_ADDR", format!("127.0.0.1:{public}"))
         .env("HODOR_OPS_ADDR", format!("127.0.0.1:{ops}"))

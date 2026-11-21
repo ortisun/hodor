@@ -123,6 +123,7 @@ async fn world() -> World {
             globex: globex.clone(),
         }),
         Router::new().nest("/api/v1/admin", admin_routes(state)),
+        Router::new(),
         Limits::default(),
     );
 

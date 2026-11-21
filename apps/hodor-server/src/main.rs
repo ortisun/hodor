@@ -25,14 +25,15 @@ use hodor_kernel::{DomainError, Secret, SystemClock, TenantContext};
 use hodor_notification::api::Notifier;
 use hodor_observability::{LogFormat, Telemetry};
 use hodor_protocol_http::{
-    AdminState, Health, InteractionState, Limits, ReadinessCheck, ResolvedTenant, TenantResolver,
-    TenantStatus as HttpTenantStatus, admin_routes, interaction_routes, ops_router, public_router,
-    serve,
+    AdminState, Health, InteractionState, Limits, Pages, ReadinessCheck, ResolvedTenant,
+    TenantResolver, TenantStatus as HttpTenantStatus, admin_routes, interaction_routes, ops_router,
+    public_router, serve,
 };
 use hodor_session::api::SessionService;
 use hodor_tenant::api::{TenantDirectory as _, TenantService, TenantStatus};
 use std::error::Error;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
@@ -95,6 +96,11 @@ struct Config {
         default_value = "http://localhost:8080"
     )]
     public_url: String,
+
+    /// Directory holding the built hosted pages (`index.html` and
+    /// `assets`). Unset: no pages are served.
+    #[arg(long, env = "HODOR_PAGES_DIRECTORY")]
+    pages_directory: Option<PathBuf>,
 
     /// Memory one password hash uses, in kibibytes.
     #[arg(long, env = "HODOR_PASSWORD_HASH_MEMORY_KIBIBYTES", default_value_t = 19 * 1024)]
@@ -198,14 +204,26 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
     .await?;
     let health = Health::new(vec![Arc::new(DatabaseCheck(database.clone()))]);
 
+    let mut tenant_routes = axum::Router::new()
+        .nest(
+            "/interaction",
+            interaction_routes(interaction(&config, &database)?),
+        )
+        .nest("/api/v1/admin", admin_routes(administration(&database)));
+    let mut site_routes = axum::Router::new();
+    match &config.pages_directory {
+        Some(directory) => {
+            let pages = Pages::load(directory)?;
+            tenant_routes = tenant_routes.merge(pages.page_routes());
+            site_routes = site_routes.merge(pages.asset_routes());
+            tracing::info!(directory = %directory.display(), "serving the hosted pages");
+        }
+        None => tracing::warn!("HODOR_PAGES_DIRECTORY is not set: no pages are served"),
+    }
     let public = public_router(
         Arc::new(DirectoryResolver(PgTenantDirectory::new(database.clone()))),
-        axum::Router::new()
-            .nest(
-                "/interaction",
-                interaction_routes(interaction(&config, &database)?),
-            )
-            .nest("/api/v1/admin", admin_routes(administration(&database))),
+        tenant_routes,
+        site_routes,
         Limits::default(),
     );
     let ops = ops_router(health.clone());

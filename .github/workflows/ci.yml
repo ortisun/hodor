@@ -51,3 +51,48 @@ jobs:
           tool: cargo-deny,cargo-machete
       - run: cargo deny check
       - run: cargo machete
+
+  pages:
+    name: Hosted pages
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend/auth-ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/auth-ui/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm audit --audit-level=high
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+      # The browser tests drive the pages as the image serves them, with
+      # the whole development stack behind them.
+      - name: Start the development stack
+        working-directory: .
+        run: docker compose -f deploy/docker/compose.yaml up --build --wait
+      - name: Create a tenant that accepts registrations
+        working-directory: .
+        run: >
+          docker compose -f deploy/docker/compose.yaml run --rm
+          --entrypoint /usr/local/bin/hodor-cli
+          -e HODOR_DATABASE_URL=postgres://hodor_server:dev-server@postgres:5432/hodor
+          server tenant create --slug acme --name "Acme" --open-registration
+      - run: npx playwright install --with-deps chromium
+      - run: npm run browser-tests
+      - name: Show what the stack logged
+        if: failure()
+        working-directory: .
+        run: docker compose -f deploy/docker/compose.yaml logs --no-color --tail 200 server worker
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: browser-tests-report
+          path: frontend/auth-ui/playwright-report
+          retention-days: 7

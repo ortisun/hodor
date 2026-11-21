@@ -9,6 +9,7 @@ How to build Hodor, run its checks and start it on your machine.
 | Rust, the version pinned in `rust-toolchain.toml` | `rustup` installs it automatically on the first `cargo` command |
 | Docker | Integration tests start PostgreSQL and VictoriaMetrics in containers; the development stack runs on Compose |
 | `cargo-deny`, `cargo-machete` | License, advisory and unused-dependency checks |
+| Node.js 24 or newer, with `npm` | Only to work on [the hosted pages](../architecture/hosted-pages.md) or to run the browser tests. Building and testing the Rust workspace does not need it, and neither does the development stack, which builds the pages inside the image |
 
 ```bash
 cargo install cargo-deny cargo-machete
@@ -40,6 +41,26 @@ cargo machete
 
 The integration tests need Docker running. Each test that touches the database starts its own PostgreSQL container, so the suite needs no setup and leaves nothing behind.
 
+The hosted pages have checks of their own, run from `frontend/auth-ui` after `npm ci`:
+
+```bash
+npm run lint && npm run typecheck && npm test && npm run build
+```
+
+### Running the browser tests
+
+The browser tests drive Chromium against a running stack: they register, read the message in the development mail server, sign in and sign out, as a person would. Start [the development stack](#running-the-development-stack), create the tenant `acme` with open registration ([creating your first tenant](#creating-your-first-tenant)), then, from `frontend/auth-ui`:
+
+```bash
+npx playwright install chromium
+```
+
+```bash
+npm run browser-tests
+```
+
+`HODOR_URL`, `HODOR_MAIL_URL` and `HODOR_TENANT` point the tests at a stack on other ports or at another tenant; they default to `http://localhost:8080`, `http://localhost:8025` and `acme`. The tests create new people on every run and remove nothing.
+
 ## Running the development stack
 
 The Compose file in `deploy/docker` builds the image and starts everything Hodor needs:
@@ -52,7 +73,7 @@ docker compose -f deploy/docker/compose.yaml up --build --wait
 |---|---|---|
 | `postgres` | PostgreSQL 17, with the database roles created on first start | internal only |
 | `migrate` | Runs `hodor-cli migrate` once and exits | — |
-| `server` | `hodor-server` | <http://localhost:8080>, health on <http://localhost:9090/readyz> |
+| `server` | `hodor-server`, with the hosted pages | <http://localhost:8080>, health on <http://localhost:9090/readyz> |
 | `worker` | `hodor-worker`, writing the audit log and delivering email | internal only |
 | `mail` | A mail server for development. It accepts every message and delivers none: what Hodor sends can be read in its web page | <http://localhost:8025> |
 | `victoriametrics` | Metrics backend; the server pushes to it over OTLP | <http://localhost:8428/vmui> |
@@ -73,13 +94,13 @@ The credentials in the Compose file and in `deploy/docker/postgres-init.sql` are
 
 ### What works today
 
-A person can register, sign in, see and end their sessions, sign out, and recover a forgotten password. With the stack running and a tenant created with open registration (see [creating your first tenant](#creating-your-first-tenant)), `hodor-server` serves [the interaction interface](../api/interaction-api.md) under `/t/{slug}/interaction`, and the worker delivers the messages to the development mail server, where they can be read at <http://localhost:8025>.
+A person can register, sign in, sign out and recover a forgotten password, in a browser. With the stack running and a tenant created with open registration (see [creating your first tenant](#creating-your-first-tenant)), `hodor-server` serves [the hosted pages](../architecture/hosted-pages.md) under `/t/{slug}/account` and [the interaction interface](../api/interaction-api.md) they call under `/t/{slug}/interaction`. The worker delivers the messages to the development mail server, where they can be read at <http://localhost:8025>.
 
 What is still missing around it:
 
-- There are no pages. The interface is JSON only; the hosted pages come with Issue-31. Until then a link in a message leads nowhere: copy the token after `#token=` into the request that finishes the registration or the recovery.
+- The pages cover registering, signing in, signing out and recovering a password. Seeing and ending one's sessions is in the interaction interface but has no page yet.
 - [The administration interface](../api/admin-api.md) is served under `/t/{slug}/api/v1/admin`. Its first administrator and their access token come from `hodor-cli admin bootstrap`; see [the first administrator](#the-first-administrator).
-- The session cookie is marked `Secure`. Browsers accept that on `http://localhost`; over plain HTTP on any other host name they do not.
+- The session cookie is marked `Secure`. Chromium and Firefox accept that on `http://localhost`; Safari does not, and over plain HTTP on any other host name no browser does. Open the pages at `localhost`, not at `127.0.0.1`.
 
 See [progress](../product/progress.md) for the full picture.
 
@@ -101,6 +122,7 @@ Every setting is a command-line flag with an environment variable of the same me
 | `HODOR_OTLP_METRICS_ENDPOINT` | unset | Full URL of the OTLP/HTTP metrics endpoint. For VictoriaMetrics: `http://<host>:8428/opentelemetry/v1/metrics` |
 | `HODOR_SHUTDOWN_DRAIN_SECONDS` | `5` | How long to keep serving after a stop signal while readiness fails |
 | `HODOR_PUBLIC_URL` | `http://localhost:8080` | The address people reach this installation at, without a path. Links in messages start with it |
+| `HODOR_PAGES_DIRECTORY` | unset; the image sets `/usr/share/hodor/auth-ui` | The directory holding the built [hosted pages](../architecture/hosted-pages.md#how-the-pages-are-served). Unset: no pages are served. Set to a directory without `index.html`: the server does not start |
 | `HODOR_PASSWORD_HASH_MEMORY_KIBIBYTES` | `19456` | Memory one password hash uses. Raising it makes every password harder to guess offline; existing passwords are re-hashed as their owners sign in |
 | `HODOR_PASSWORD_HASH_PASSES` | `2` | Passes over that memory |
 | `HODOR_PASSWORD_HASH_LANES` | `1` | Lanes computed in parallel within one hash |
@@ -143,23 +165,16 @@ With the development stack running:
 docker compose -f deploy/docker/compose.yaml run --rm --entrypoint /usr/local/bin/hodor-cli -e HODOR_DATABASE_URL=postgres://hodor_server:dev-server@postgres:5432/hodor server tenant create --slug acme --name "Acme" --open-registration
 ```
 
-`http://localhost:8080/t/acme/` then answers for the tenant instead of reporting that the tenant does not exist. `--open-registration` lets anyone register in it; without it only administrators create users, which is not built yet.
+The tenant's pages are then at <http://localhost:8080/t/acme/account>. `--open-registration` lets anyone register in it; without it only administrators create users, through [the administration interface](../api/admin-api.md).
 
 ### Registering your first person
 
-Ask to register:
+1. Open <http://localhost:8080/t/acme/account/register> and give an address, for example `ana@example.com`.
+2. Open the development mail server at <http://localhost:8025>, read the message and follow its link.
+3. Choose a password of 12 characters or more.
+4. Sign in with the address and the password.
 
-```bash
-curl -i -X POST http://localhost:8080/t/acme/interaction/registration -H 'Content-Type: application/json' -d '{"email":"ana@example.com"}'
-```
-
-Open the development mail server at <http://localhost:8025>, read the message, and copy the token that follows `#token=` in its link. Then finish, choosing a password:
-
-```bash
-curl -i -X POST http://localhost:8080/t/acme/interaction/registration/complete -H 'Content-Type: application/json' -d '{"token":"<the token>","password":"<a password of 12 characters or more>"}'
-```
-
-A `204` means the account exists. Signing in is described in [the interaction interface](../api/interaction-api.md#signing-in).
+The same can be done without a browser, with the requests of [the interaction interface](../api/interaction-api.md#registering-and-recovering-a-password).
 
 ### The first administrator
 
