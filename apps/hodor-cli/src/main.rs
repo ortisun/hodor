@@ -1,12 +1,18 @@
-//! Operations tool: migrations, tenant management and checking the audit
-//! log.
+//! Operations tool: migrations, tenant management, the first
+//! administrator and checking the audit log.
 
 use clap::{Parser, Subcommand};
-use hodor_adapters_crypto::Sha256Digest;
+use hodor_adapters_crypto::{OsRandom, Sha256Digest};
 use hodor_adapters_postgres::{
-    Database, PgAuditLog, PgPool, PgTenantDirectory, PgTenantRepository,
+    Database, PgAccessTokenStore, PgAuditLog, PgPool, PgRoleAssignmentStore, PgTenantDirectory,
+    PgTenantRepository, PgUserRepository,
 };
 use hodor_audit::api::AuditService;
+use hodor_authorization::api::{AuthorizationService, Role};
+use hodor_credential::api::AccessTokenService;
+use hodor_identity::api::{
+    CreateUser, IdentifierKind, IdentityService, NormalizedIdentifier, Profile, UserKind,
+};
 use hodor_kernel::{Actor, CorrelationId, DomainError, Secret, SystemClock, TenantContext};
 use hodor_tenant::api::{Caller, CreateTenant, DirectoryEntry, TenantService};
 use std::error::Error;
@@ -51,6 +57,20 @@ enum Command {
         command: TenantCommand,
     },
 
+    /// Manage administrators.
+    Admin {
+        /// Connection URL of the application role.
+        #[arg(
+            long,
+            env = "HODOR_DATABASE_URL",
+            hide_env_values = true,
+            global = true
+        )]
+        database_url: Option<String>,
+        #[command(subcommand)]
+        command: AdminCommand,
+    },
+
     /// Check the audit log.
     Audit {
         /// Connection URL of the application role.
@@ -76,6 +96,26 @@ enum Command {
         /// Path to request.
         #[arg(long, default_value = "/readyz")]
         path: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum AdminCommand {
+    /// Make a user an administrator of a tenant, creating the user if
+    /// needed, and print an access token for the administration interface.
+    ///
+    /// The token is printed once. Running the command again issues a new
+    /// one and leaves earlier ones as they are.
+    Bootstrap {
+        /// The tenant's slug.
+        #[arg(long)]
+        tenant: String,
+        /// The administrator's email address.
+        #[arg(long)]
+        email: String,
+        /// How long the token lives, in minutes: 1 to 43200 (30 days).
+        #[arg(long, default_value_t = 60)]
+        token_minutes: u32,
     },
 }
 
@@ -224,6 +264,87 @@ async fn run_tenant(
     }
 }
 
+/// Makes a user an administrator of a tenant and issues an access token
+/// for them. See `docs/api/admin-api.md`, "The first administrator".
+async fn bootstrap_administrator(
+    database: &Database,
+    slug: &str,
+    email: &str,
+    token_minutes: u32,
+) -> Result<String, DomainError> {
+    let units = || Arc::new(database.clone());
+    let clock = Arc::new(SystemClock);
+    let tenants = TenantService::new(
+        units(),
+        Arc::new(PgTenantRepository),
+        Arc::new(PgTenantDirectory::new(database.clone())),
+        clock.clone(),
+    );
+    let entry = tenants.find_by_slug(slug).await?.ok_or_else(|| {
+        DomainError::not_found("tenant.not_found", "there is no tenant with this slug")
+    })?;
+    // The command-line tool is one of the places allowed to establish a
+    // tenant context: the operator names the tenant.
+    let tenant = TenantContext::assume(entry.tenant_id);
+
+    let identity = IdentityService::new(units(), Arc::new(PgUserRepository), clock.clone());
+    let address = NormalizedIdentifier::parse(IdentifierKind::Email, email)?;
+    let user = match identity
+        .find_by_login(&tenant, address.normalized())
+        .await?
+    {
+        Some(user) => user,
+        None => {
+            let command = CreateUser {
+                kind: UserKind::Human,
+                identifiers: vec![(IdentifierKind::Email, email.to_owned())],
+                profile: Profile::default(),
+                confirmed: true,
+            };
+            identity.create(&tenant, command, caller()).await?
+        }
+    };
+    if !user.may_sign_in() {
+        return Err(DomainError::conflict(
+            "identity.user_may_not_sign_in",
+            "this user may not sign in, so a token for them would not work",
+        ));
+    }
+
+    let role = Role::TenantAdministrator;
+    AuthorizationService::new(units(), Arc::new(PgRoleAssignmentStore), clock.clone())
+        .assign(&tenant, user.id(), role, caller())
+        .await?;
+    let (token, secret) = AccessTokenService::new(
+        units(),
+        Arc::new(PgAccessTokenStore),
+        Arc::new(Sha256Digest),
+        Arc::new(OsRandom),
+        clock,
+    )
+    .issue(
+        &tenant,
+        user.id(),
+        "bootstrap administrator",
+        time::Duration::minutes(i64::from(token_minutes)),
+        caller(),
+    )
+    .await?;
+
+    let expires = token
+        .snapshot()
+        .expires_at
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default();
+    Ok(format!(
+        "user {} {}\nrole {}\ntoken {}\nexpires {expires}",
+        user.id(),
+        address.display(),
+        role.as_str(),
+        secret.expose()
+    ))
+}
+
 /// Checks a tenant's chain of audit records. The outer error is a failure
 /// to check; the inner one is a chain that is broken.
 async fn verify_audit(
@@ -302,6 +423,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     return Err(format!("{}: {}", error.code(), error.message()).into());
                 }
             }
+        }
+        Command::Admin {
+            database_url,
+            command:
+                AdminCommand::Bootstrap {
+                    tenant,
+                    email,
+                    token_minutes,
+                },
+        } => {
+            let url = database_url.ok_or("HODOR_DATABASE_URL or --database-url is required")?;
+            let database = Database::connect(&Secret::from(url), 2).await?;
+            let output = bootstrap_administrator(&database, &tenant, &email, token_minutes)
+                .await
+                .map_err(|error| format!("{}: {}", error.code(), error.message()))?;
+            writeln!(std::io::stdout(), "{output}")?;
         }
         Command::Audit {
             database_url,

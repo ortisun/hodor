@@ -1206,9 +1206,13 @@ dependencies = [
  "hodor-adapters-crypto",
  "hodor-adapters-postgres",
  "hodor-audit",
+ "hodor-authorization",
+ "hodor-credential",
+ "hodor-identity",
  "hodor-kernel",
  "hodor-tenant",
  "sqlx",
+ "time",
  "tokio",
 ]
 

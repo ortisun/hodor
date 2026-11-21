@@ -12,8 +12,12 @@ clap.workspace = true
 hodor-adapters-crypto.workspace = true
 hodor-adapters-postgres.workspace = true
 hodor-audit.workspace = true
+hodor-authorization.workspace = true
+hodor-credential.workspace = true
+hodor-identity.workspace = true
 hodor-kernel.workspace = true
 hodor-tenant.workspace = true
+time.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
