@@ -130,6 +130,7 @@ These are recorded here so they are not forgotten; each is picked up by the issu
 | The worker opens a new connection to the mail server for every message | When the volume of mail calls for it |
 | The mail adapter was tested against a mail server without encryption or a password; the encrypted and authenticated paths rely on the mail library | Before the first production deployment |
 | The trace of a request has one span, the request itself: database calls are not traced. The demonstration receives the trace; no test in `cargo test` does | First issue that adds a traced database call |
+| The guarded outbound client is not tested over TLS against a server with a real certificate: the tests reach their servers through the development exception | Hardening pass |
 | The demonstration needs Python 3 on the machine that runs it | Accepted: it uses only the standard library |
 | SQL is checked at run time, not at compile time (`sqlx::query!` with the offline cache is not set up). Every query is exercised by an integration test instead | A dedicated issue, not yet scheduled |
 | Continuous integration actions are pinned by tag, not by commit SHA | Hardening pass (threat Threat-General-15) |
@@ -140,7 +141,7 @@ Planned in [the epics](epics.md#milestone-2-signing-in-with-external-identities)
 
 | Slice | Done | Total |
 |---|---|---|
-| H — What external identities stand on | 0 | 3 |
+| H — What external identities stand on | 1 | 3 |
 | I — OpenID Connect and the social logins | 0 | 6 |
 | J — LDAP | 0 | 2 |
 | K — SAML service provider | 0 | 4 |
@@ -148,7 +149,7 @@ Planned in [the epics](epics.md#milestone-2-signing-in-with-external-identities)
 | Issue | Status | What exists |
 |---|---|---|
 | Issue-35 Secrets at rest | Not started | — |
-| Issue-36 Outbound HTTP | Not started | — |
+| Issue-36 Outbound HTTP | Done | The `HttpClient` port in `hodor-kernel` and `hodor-adapters-http`, its one implementation: HTTPS only, no name and password in an address, every address a name resolves to must be public and is the one connected to, numeric spellings checked the same way, no redirects, no proxy, limits on time and on the bytes received. One exception, a list of development hosts, empty by default. Tested against servers on this machine, which are refused in eleven spellings and reached only through the exception. Nothing uses the port yet. Specified in [outbound HTTP](../security/outbound-http.md) |
 | Issue-37 A sign-in completed by one external step | Not started | — |
 | Issue-38 Federation context | Not started | — |
 | Issue-39 OpenID Connect relying party | Not started | — |

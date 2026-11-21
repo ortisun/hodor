@@ -7,6 +7,7 @@
 pub mod clock;
 pub mod error;
 pub mod event;
+pub mod http;
 pub mod id;
 pub mod page;
 pub mod random;
@@ -17,6 +18,7 @@ pub mod uow;
 pub use clock::{Clock, SystemClock, Timestamp};
 pub use error::{DomainError, ErrorKind};
 pub use event::{Actor, Caller, DomainEvent, EventEnvelope, EventHandler, EventMetadata};
+pub use http::{HttpClient, HttpMethod, HttpRequest, HttpResponse};
 pub use id::{CorrelationId, EventId, ParseIdError, TenantId, UserId};
 pub use page::{Cursor, Page, PageRequest};
 pub use random::{Digest, RandomSource};

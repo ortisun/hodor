@@ -1,0 +1,21 @@
+[package]
+name = "hodor-adapters-http"
+description = "Outbound HTTP adapter: the one guarded way out to addresses that other people chose."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+hodor-kernel.workspace = true
+reqwest = { workspace = true, features = ["rustls"] }
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["io-util"] }
+
+[lints]
+workspace = true
