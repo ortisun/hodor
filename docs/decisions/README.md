@@ -24,3 +24,4 @@ All records below are **Proposed** unless marked otherwise: they become Accepted
 | [0016](0016-design-system.md) | One token-based design system for the three frontends, with security patterns built in (how it is built is changed by 0018) |
 | [0017](0017-external-identities-before-oauth.md) | Signing in with external identities comes before OAuth (Accepted) |
 | [0018](0018-astryx-component-foundation.md) | Astryx is the foundation of the design system (Accepted) |
+| [0019](0019-saml-signature-verification.md) | SAML signatures are verified with `xml-sec` behind a narrow profile (Accepted) |
