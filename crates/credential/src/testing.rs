@@ -2,7 +2,8 @@
 //! passes.
 
 use crate::api::{
-    HistoricHash, PasswordHash, PasswordHasher, PasswordRecord, PasswordStore, PasswordVerification,
+    AccessToken, AccessTokenHash, AccessTokenId, AccessTokenStore, HistoricHash, PasswordHash,
+    PasswordHasher, PasswordRecord, PasswordStore, PasswordVerification,
 };
 use hodor_kernel::{
     DomainError, ErrorKind, Secret, TenantContext, TenantId, Timestamp, UnitOfWork,
@@ -432,5 +433,214 @@ async fn deleting_removes_the_password_and_its_history(ports: &Ports<'_>) {
             .expect("exists")
             .history()
             .is_empty()
+    );
+}
+
+/// Access tokens kept in memory.
+#[derive(Debug, Clone, Default)]
+pub struct InMemoryAccessTokens {
+    rows: Arc<Mutex<BTreeMap<(TenantId, AccessTokenId), AccessToken>>>,
+}
+
+impl InMemoryAccessTokens {
+    fn rows(&self) -> std::sync::MutexGuard<'_, BTreeMap<(TenantId, AccessTokenId), AccessToken>> {
+        self.rows.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+#[async_trait::async_trait]
+impl AccessTokenStore for InMemoryAccessTokens {
+    async fn insert(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        token: &AccessToken,
+    ) -> Result<(), DomainError> {
+        self.rows()
+            .insert((uow.tenant().tenant_id(), token.id()), token.clone());
+        Ok(())
+    }
+
+    async fn get(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: AccessTokenId,
+    ) -> Result<Option<AccessToken>, DomainError> {
+        Ok(self.rows().get(&(uow.tenant().tenant_id(), id)).cloned())
+    }
+
+    async fn find_by_hash(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        hash: &AccessTokenHash,
+    ) -> Result<Option<AccessToken>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        Ok(self
+            .rows()
+            .iter()
+            .find(|((owner, _), token)| *owner == tenant && &token.snapshot().token_hash == hash)
+            .map(|(_, token)| token.clone()))
+    }
+
+    async fn update(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        token: &AccessToken,
+    ) -> Result<(), DomainError> {
+        let key = (uow.tenant().tenant_id(), token.id());
+        let mut rows = self.rows();
+        if !rows.contains_key(&key) {
+            return Err(DomainError::not_found(
+                "credential.access_token_not_found",
+                "the access token does not exist",
+            ));
+        }
+        rows.insert(key, token.clone());
+        Ok(())
+    }
+}
+
+/// The ports under test.
+#[derive(Clone)]
+pub struct AccessTokenPorts<'a> {
+    /// Starts units of work.
+    pub units_of_work: &'a dyn UnitOfWorkFactory,
+    /// The store under test.
+    pub tokens: &'a dyn AccessTokenStore,
+}
+
+impl std::fmt::Debug for AccessTokenPorts<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AccessTokenPorts").finish_non_exhaustive()
+    }
+}
+
+/// A random source for the contract whose every call gives different
+/// bytes, so that every token made with it is different.
+struct ContractRandom;
+
+impl hodor_kernel::RandomSource for ContractRandom {
+    fn fill(&self, buffer: &mut [u8]) {
+        let unique = AccessTokenId::generate().as_uuid();
+        for (byte, source) in buffer
+            .iter_mut()
+            .zip(unique.as_bytes().iter().rev().cycle())
+        {
+            *byte = *source;
+        }
+    }
+}
+
+/// Runs every rule an access token store must obey. Each run uses tenants
+/// of its own, so runs can share one database.
+///
+/// # Panics
+///
+/// Panics if the implementation breaks a rule.
+pub async fn run_access_token_contract(ports: AccessTokenPorts<'_>) {
+    use hodor_kernel::random::testing::FakeDigest;
+    let tenant = tenant();
+    let elsewhere = self::tenant();
+    let moment = Timestamp::UNIX_EPOCH;
+    let (token, _) = AccessToken::issue(
+        UserId::generate(),
+        "first administrator",
+        time::Duration::hours(1),
+        moment,
+        &ContractRandom,
+        &FakeDigest,
+    )
+    .expect("valid token");
+    let hash = token.snapshot().token_hash;
+
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    ports
+        .tokens
+        .insert(uow.as_mut(), &token)
+        .await
+        .expect("insert");
+    uow.commit().await.expect("commit");
+
+    // A stored token is loaded unchanged, by identifier and by hash, in
+    // its own tenant only.
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    assert_eq!(
+        ports
+            .tokens
+            .get(uow.as_mut(), token.id())
+            .await
+            .expect("get"),
+        Some(token.clone())
+    );
+    assert_eq!(
+        ports
+            .tokens
+            .find_by_hash(uow.as_mut(), &hash)
+            .await
+            .expect("find"),
+        Some(token.clone())
+    );
+    drop(uow);
+    let mut uow = ports.units_of_work.begin(&elsewhere).await.expect("begin");
+    assert_eq!(
+        ports
+            .tokens
+            .get(uow.as_mut(), token.id())
+            .await
+            .expect("get"),
+        None
+    );
+    assert_eq!(
+        ports
+            .tokens
+            .find_by_hash(uow.as_mut(), &hash)
+            .await
+            .expect("find"),
+        None
+    );
+    // Nor can another tenant change it.
+    let mut revoked = token.clone();
+    revoked.revoke(moment + time::Duration::minutes(5));
+    let error = ports
+        .tokens
+        .update(uow.as_mut(), &revoked)
+        .await
+        .expect_err("another tenant's token");
+    assert_eq!(error.code(), "credential.access_token_not_found");
+    drop(uow);
+
+    // A revocation is stored.
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    ports
+        .tokens
+        .update(uow.as_mut(), &revoked)
+        .await
+        .expect("update");
+    uow.commit().await.expect("commit");
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    assert_eq!(
+        ports
+            .tokens
+            .find_by_hash(uow.as_mut(), &hash)
+            .await
+            .expect("find"),
+        Some(revoked)
+    );
+
+    // An unknown hash and an unknown identifier find nothing.
+    assert_eq!(
+        ports
+            .tokens
+            .find_by_hash(uow.as_mut(), &AccessTokenHash::from_stored([9; 32]))
+            .await
+            .expect("find"),
+        None
+    );
+    assert_eq!(
+        ports
+            .tokens
+            .get(uow.as_mut(), AccessTokenId::generate())
+            .await
+            .expect("get"),
+        None
     );
 }
