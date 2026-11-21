@@ -10,14 +10,23 @@ repository.workspace = true
 [dependencies]
 async-trait.workspace = true
 axum.workspace = true
+hodor-authentication.workspace = true
 hodor-kernel.workspace = true
+hodor-session.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tower-http.workspace = true
+time.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+hodor-authentication = { workspace = true, features = ["testing"] }
+hodor-credential = { workspace = true, features = ["testing"] }
+hodor-identity = { workspace = true, features = ["testing"] }
+hodor-kernel = { workspace = true, features = ["testing"] }
+hodor-session = { workspace = true, features = ["testing"] }
+hodor-tenant = { workspace = true, features = ["testing"] }
 tokio = { workspace = true, features = ["io-util", "test-util"] }
 http-body-util.workspace = true
 tower.workspace = true

@@ -10,12 +10,15 @@
 //! composition root implements.
 
 mod health;
+mod interaction;
 mod problem;
 mod request;
 mod server;
 mod tenant;
 
 pub use health::{Health, ReadinessCheck, ops_router};
+pub use interaction::{InteractionState, interaction_routes};
 pub use problem::Problem;
+pub use request::ClientAddress;
 pub use server::{Limits, public_router, serve};
-pub use tenant::{ResolvedTenant, TenantResolver, TenantStatus};
+pub use tenant::{ResolvedTenant, TenantResolver, TenantSlug, TenantStatus};

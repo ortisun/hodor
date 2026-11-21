@@ -78,7 +78,12 @@ pub async fn serve<F>(listener: TcpListener, router: Router, shutdown: F) -> std
 where
     F: Future<Output = ()> + Send + 'static,
 {
-    axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown)
-        .await
+    // The connection's address is made available to handlers, which use it
+    // to record where a sign-in comes from and to limit attempts.
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown)
+    .await
 }

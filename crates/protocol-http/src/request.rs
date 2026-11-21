@@ -1,10 +1,11 @@
 //! Per-request context: identifier, tracing span and security headers.
 
-use axum::extract::Request;
+use axum::extract::{ConnectInfo, Request};
 use axum::http::header::{self, HeaderName, HeaderValue};
 use axum::middleware::Next;
 use axum::response::Response;
 use hodor_kernel::CorrelationId;
+use std::net::{IpAddr, SocketAddr};
 use tracing::Instrument as _;
 
 tokio::task_local! {
@@ -31,6 +32,14 @@ const SECURITY_HEADERS: &[(HeaderName, &str)] = &[
     ),
 ];
 
+/// The network address a request came from, as the server saw it.
+///
+/// This is the address of the connection. Behind a load balancer it is the
+/// load balancer's address; trusting a forwarded address from named
+/// proxies is not built yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClientAddress(pub Option<IpAddr>);
+
 /// The identifier of the request being handled, if any.
 pub(crate) fn current_request_id() -> Option<CorrelationId> {
     REQUEST_ID.try_with(|id| *id).ok()
@@ -54,6 +63,11 @@ pub(crate) async fn request_context(mut request: Request, next: Next) -> Respons
         tenant_id = tracing::field::Empty,
     );
     request.extensions_mut().insert(request_id);
+    let address = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|connection| connection.0.ip());
+    request.extensions_mut().insert(ClientAddress(address));
 
     let mut response = REQUEST_ID
         .scope(request_id, next.run(request))

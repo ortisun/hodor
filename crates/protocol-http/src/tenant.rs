@@ -42,6 +42,11 @@ pub trait TenantResolver: Send + Sync {
     async fn resolve(&self, slug: &str) -> Result<Option<ResolvedTenant>, DomainError>;
 }
 
+/// The slug of the tenant a request is for, as it appears in the path.
+/// Handlers use it to scope cookies to the tenant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TenantSlug(pub String);
+
 /// Same response whether the slug is malformed, unknown or absent, so that
 /// tenant names cannot be probed by comparing answers.
 fn not_found() -> Response {
@@ -96,6 +101,7 @@ pub(crate) async fn resolve_tenant(
                     "tenant_id",
                     tracing::field::display(tenant.context.tenant_id()),
                 );
+                request.extensions_mut().insert(TenantSlug(slug.to_owned()));
                 request.extensions_mut().insert(tenant.context);
                 next.run(request).await
             }
