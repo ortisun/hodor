@@ -142,6 +142,110 @@ Marking the transaction completed and starting the session are two separate writ
 | `authentication.succeeded` | A sign-in completed; carries the user, the session and the methods |
 | `authentication.failed` | A step was rejected; carries the step and, when known, the user. Never the identifier typed or anything about the password |
 | `authentication.locked_out` | An identifier or an address reached its limit; carries which kind and until when |
+| `authentication.registration_completed` | A person finished registering; carries the user |
+| `authentication.recovery_requested` | A recovery link was sent; carries the user. Not recorded when the address belongs to nobody |
+| `authentication.password_reset` | A person chose a new password with a recovery link; carries the user |
+
+No event carries an email address, a token or a link.
+
+## Registration and password recovery
+
+Two things a person does without being signed in, both proved through their mailbox: creating an account, and choosing a new password after forgetting the old one. Both follow the same shape: ask, receive a link by email, finish with the link.
+
+```mermaid
+sequenceDiagram
+    actor Person
+    participant Hodor
+    participant Mailbox as The person's mailbox
+
+    Person->>Hodor: ask, giving an email address
+    Hodor-->>Person: the same answer, whoever the address belongs to
+    Hodor->>Mailbox: a message with a link, if there is one to send
+    Person->>Mailbox: reads the message
+    Person->>Hodor: finish, giving the token from the link and a password
+    Hodor-->>Person: done
+```
+
+### The rule both follow: only the mailbox decides
+
+- **The answer to "ask" never depends on the address.** Whether the address has an account, has none, or is not even well formed, the response is the same. What differs is the message that arrives in the mailbox, which only its owner reads.
+- **The password is chosen at the end, by whoever holds the link**, never at the start. Someone who types another person's address when asking gains nothing: no account exists yet, no password was set, and the link goes to the owner.
+- **A token works once.** Of any number of requests that present it at the same moment, one succeeds.
+- **Asking again makes earlier links stop working.** Only the newest link for an address is good.
+
+### Verification tokens
+
+A verification token is what a link carries. It is 32 random bytes written as 64 hexadecimal characters, made and stored exactly like a [session token](session.md): Hodor keeps only its SHA-256, so a copy of the database yields no usable link.
+
+| Purpose | Lives for | Belongs to |
+|---|---|---|
+| `registration` | 24 hours | An email address that has no account yet |
+| `password_recovery` | 1 hour | A user |
+
+A token is good while it is unused, unexpired and not replaced by a newer one of the same purpose for the same address or user.
+
+The link in the message has the form `{public address}/t/{slug}/account/{page}#token={token}`, where the page is `complete-registration` or `reset-password`. The token is in the fragment, the part after `#`, which a browser never sends to a server and never includes in a `Referer` header: it does not reach access logs. The page reads it and sends it in the body of the request that finishes. The pages themselves come with Issue-31.
+
+The public address is the installation's `HODOR_PUBLIC_URL` setting.
+
+### Registration
+
+Registration creates an account for a person. It is offered only when the tenant's [registration policy](tenant.md#registration-policy) is open; otherwise asking is refused, and saying so reveals nothing about anyone.
+
+**Asking.** The person gives an email address and, optionally, the language they read.
+
+| The address | What happens | Message sent |
+|---|---|---|
+| Has no account | A `registration` token is made for it | `email_verification`, with the link |
+| Has an account | Nothing changes | `already_registered`, with no link |
+| Is not a well-formed address | Nothing | None |
+
+No user is created at this point. An address that is never confirmed leaves nothing behind but an expired token.
+
+**Finishing.** The person presents the token and chooses a password, and may give a display name.
+
+1. The token is looked up. An unknown, used, replaced or expired token is refused, all four in the same way.
+2. The password is checked against the tenant's [password policy](tenant.md#password-policy). A password that is not acceptable is refused and the token stays good, so the person can choose another.
+3. The token is used up. Only one request gets past this point.
+4. The user is created, already active, with the address as a verified login identifier, and the password is set.
+
+If the address acquired an account between asking and finishing, step 4 is refused and the token is spent. The person is told the link no longer works.
+
+Finishing does not sign the person in. They sign in next, with the password they just chose.
+
+### Password recovery
+
+**Asking.** The person gives an email address.
+
+| The address | What happens | Message sent |
+|---|---|---|
+| Belongs to a user who may sign in | A `password_recovery` token is made for the user | `password_recovery`, with the link, in the user's language |
+| Anything else | Nothing | None |
+
+**Finishing.** The person presents the token and chooses a new password.
+
+1. The token is looked up; refused as above if it is not good.
+2. The user is loaded and must still be allowed to sign in.
+3. The password is checked against the tenant's policy, including the user's own names and their previous passwords. A password that is not acceptable is refused and the token stays good.
+4. The token is used up. Only one request gets past this point.
+5. The password is set.
+6. Every session of the user is ended. Whoever had access with the old password loses it.
+7. The address the link was sent to is marked verified, since the person just proved they read it; the count of failed attempts for it is cleared, so that the person is not kept out by a lockout their own forgetting caused.
+8. `password_changed` is sent to the address, so that the owner hears of a change they did not make.
+
+Finishing does not sign the person in.
+
+### Limits
+
+Asking is limited in the same way as password attempts, with the tenant's [lockout policy](tenant.md#lockout-policy): by the address asked about and by the address the request comes from. This keeps anyone from filling a mailbox with messages. The counts are kept apart from those of sign-in, so asking for recovery never locks a person out of signing in. Being limited is answered with "too many attempts" and reveals nothing, since the limit applies to any address.
+
+Finishing is not limited. A token cannot be guessed, and no password is hashed unless the token is good.
+
+### What is stored together
+
+Making a token and putting its message in the [message queue](notification.md) happen in one transaction: there is never a token nobody was told about, nor a message whose link was never good.
+
+Finishing spans several contexts, each of which commits on its own. The order above is chosen so that a failure part-way never leaves a hole: once the token is used up, anything that fails afterwards costs the person a new request, never a second use of the token or an account without a password that anyone can reach.
 
 ## Operations
 
@@ -151,6 +255,10 @@ Marking the transaction completed and starting the session are two separate writ
 | Submit step | Runs the current step's authenticator with what was submitted. Returns the next step, a rejection, or completion with a session token |
 | Describe sign-in | Returns the current step of a transaction, so that a page can be shown again after a reload |
 | Cancel sign-in | Ends a transaction |
+| Request registration | Sends a registration link, or a note that the address already has an account |
+| Complete registration | Uses a registration token: creates the user and sets the password |
+| Request recovery | Sends a recovery link if the address belongs to a user who may sign in |
+| Reset password | Uses a recovery token: sets the password and ends the user's sessions |
 
 ### Ports
 
@@ -158,9 +266,10 @@ Marking the transaction completed and starting the session are two separate writ
 |---|---|
 | `TransactionStore` | Store and load transactions; complete one exactly once |
 | `AttemptStore` | Keep the counts and lockouts for identifiers and addresses |
+| `VerificationTokenStore` | Store tokens; replace the earlier ones of an address or user; find a good one; use one up exactly once |
 | `Authenticator` | Perform one step. The built-in ones live in this context; other contexts and plugins add theirs |
 
-This context calls the `identity`, `credential`, `session` and `tenant` contexts through their public interfaces.
+This context calls the `identity`, `credential`, `session`, `tenant` and `notification` contexts through their public interfaces.
 
 ## Storage
 
@@ -194,16 +303,33 @@ This context calls the `identity`, `credential`, `session` and `tenant` contexts
 | `lockouts` | `integer` | Lockouts so far, which sets the next duration |
 | `locked_until` | `timestamptz` | Null when not locked out |
 
-Primary key: `tenant_id`, `subject_kind`, `subject_key`. Both are tenant tables under row-level security.
+Primary key: `tenant_id`, `subject_kind`, `subject_key`.
+
+### `authentication.verification_token`
+
+| Column | Type | Notes |
+|---|---|---|
+| `tenant_id`, `id` | `uuid` | Primary key |
+| `purpose` | `text` | `registration` or `password_recovery` |
+| `token_hash` | `bytea` | SHA-256 of the token; unique within the tenant |
+| `email` | `text` | The normalized address the link was sent to |
+| `user_id` | `uuid` | The user, for `password_recovery`; null for `registration` |
+| `locale` | `text` | The language asked for, used for later messages |
+| `created_at`, `expires_at` | `timestamptz` | |
+| `used_at` | `timestamptz` | Null until the token is used up |
+| `replaced_at` | `timestamptz` | Null until a newer token takes its place |
+
+All three are tenant tables under row-level security.
 
 ## Not built yet
 
 | Item | Planned in |
 |---|---|
 | The pages of a sign-in | Issue-31 |
-| Registration, email verification, password recovery | Issue-25 |
 | Signing out | Issue-26 |
 | Editing flows; alternative, conditional and optional steps; simulation | Phase 4 |
 | Further authenticators, risk signals, recognizing a user's own device | Phases 3 and 4 |
-| Making a user choose a new password when the current one is marked as temporary. The mark is stored and returned by the credential context, but sign-in does not act on it yet | Issue-25 |
-| Removing old transactions and counters | Later in Phase 1 |
+| Making a user choose a new password when the current one is marked as temporary. The mark is stored and returned by the credential context, but sign-in does not act on it yet | With the administration interface, Issue-29, which is what sets the mark |
+| Signing the person in at the end of registration or recovery | With the pages, Issue-31 |
+| Changing or adding an email address on an existing account, with verification | Phase 2, account self-service |
+| Removing old transactions, counters and verification tokens | Later in Phase 1 |

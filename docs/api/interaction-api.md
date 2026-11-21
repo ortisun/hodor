@@ -15,6 +15,8 @@ All paths are relative to the tenant: `https://{host}/t/{slug}`. Requests and re
 | `DELETE /interaction/sign-in` | Abandon the sign-in |
 | `GET /interaction/session` | Say who is signed in |
 
+Registration and password recovery have [their own section](#registering-and-recovering-a-password).
+
 ### What a sign-in response looks like
 
 Every response about a sign-in has the same shape:
@@ -138,6 +140,33 @@ Answers who is signed in:
 
 `expires_at` is when the session ends if it is not used again. Without a valid session the answer is `401` with the code `session.not_authenticated`, whatever the reason: no cookie, an unknown token, an expired or a revoked session.
 
+## Registering and recovering a password
+
+These requests are made by a person who is not signed in and has no sign-in in progress. The rules behind them are in [the authentication context](../architecture/contexts/authentication.md#registration-and-password-recovery).
+
+| Method and path | Body | Answer |
+|---|---|---|
+| `POST /interaction/registration` | `{ "email": "ana@example.com", "locale": "pt-BR" }` | `202`, always the same |
+| `POST /interaction/registration/complete` | `{ "token": "…", "password": "…", "display_name": "Ana" }` | `204` |
+| `POST /interaction/recovery` | `{ "email": "ana@example.com", "locale": "pt-BR" }` | `202`, always the same |
+| `POST /interaction/recovery/complete` | `{ "token": "…", "password": "…" }` | `204` |
+
+`locale` and `display_name` are optional.
+
+A `202` means "if there is something to send, it was sent". Its body is `{ "status": "accepted" }` whether the address has an account, has none or is not an address at all. The pages show one message for every case: "check your mailbox".
+
+| Situation | Status | Code |
+|---|---|---|
+| The tenant does not accept registrations | `403` | `authentication.registration_closed` |
+| Too many requests about this address or from this address | `429`, with `Retry-After` | `authentication.too_many_attempts` |
+| The token is unknown, used, replaced or expired | `404` | `authentication.verification_token_invalid` |
+| The password is not acceptable. The token stays good | `422` | the credential context's code, for example `credential.password_too_short` |
+| The server is too busy to hash a password | `503` | `credential.hashing_overloaded` |
+
+These requests carry no cookie and no CSRF token: there is nothing of the person's in the browser yet for another site to abuse. A request that names another origin is still refused, and bodies must be JSON. A forged request can do no more than cause a message to be sent to an address, which the limits above bound.
+
+Neither completion signs the person in. The pages send them to sign in.
+
 ## Where requests come from
 
 The address recorded for a sign-in, and used to limit attempts, is the address of the connection the server sees. Behind a load balancer that is the load balancer's address, which would make every person share one attempt limit. Trusting a forwarded address from named proxies is not built yet; until it is, Hodor must be reached directly or the address limit must be understood as shared.
@@ -147,7 +176,6 @@ The address recorded for a sign-in, and used to limit attempts, is the address o
 | Item | Planned in |
 |---|---|
 | The pages themselves | Issue-31 |
-| Registration, email verification, password recovery | Issue-25 |
 | Signing out, listing one's sessions | Issue-26 |
 | Trusting a forwarded client address from named proxies | Before any deployment behind a load balancer |
 | Limiting requests per address on these paths, beyond the attempt limits of the password step | Later in Phase 1 |

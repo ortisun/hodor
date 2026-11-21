@@ -67,6 +67,7 @@ A wrong password and a user who has no password, or does not exist, must be indi
 | Use case | What it does |
 |---|---|
 | Set password | Gives a user a password without asking for the current one: at registration, at recovery, or when an administrator resets it. Checks the rules, moves the current hash to the history, stores the new one |
+| Check new password | Says whether a password would be accepted for a user, by the same rules as setting it, without storing anything. Lets a caller refuse a password before doing something that cannot be undone, such as using up a recovery token |
 | Change password | The user replaces their own password: the current one must verify first |
 | Verify password | Answers "verified" or "rejected". On success, if the stored hash uses old parameters, it is replaced with a fresh one |
 | Remove password | Deletes the password and its history, for example when a user is erased |

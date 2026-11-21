@@ -71,7 +71,8 @@ Specified in [the credential context](../architecture/contexts/credential.md).
 | Issue-22 Authenticators and lockout | Done | The identifier and password authenticators over the identity, credential and tenant contexts; the attempt guard with growing lockouts on identifiers and addresses; `authentication.attempt_counter` under row-level security |
 | Issue-23 Completing a sign-in | Done | `AuthenticationService`: start, submit a step, describe, cancel; a completed sign-in starts a session exactly once; `authentication.transaction` under row-level security. A test signs a person in with nothing faked: PostgreSQL, Argon2id, SHA-256 and the operating system's random source |
 | Issue-24 Interaction interface | Done | A browser signs in over HTTP: the interaction routes, a sign-in tied to the browser that started it, the sign-in and session cookies, CSRF and origin checks, all served by `hodor-server`. A test signs in to the real binary against PostgreSQL. Specified in [the interaction interface](../api/interaction-api.md) |
-| Issue-25, Issue-26 | Not started | — |
+| Issue-25 Registration and recovery | In progress | Specified in [the authentication context](../architecture/contexts/authentication.md#registration-and-password-recovery) and [the interaction interface](../api/interaction-api.md#registering-and-recovering-a-password) |
+| Issue-26 | Not started | — |
 
 ### Slice F — Audit, notification, administration
 
