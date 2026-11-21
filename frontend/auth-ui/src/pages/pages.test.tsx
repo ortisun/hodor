@@ -286,7 +286,7 @@ describe("the sign-in page when the server cannot be reached", () => {
 });
 
 describe("identity providers on the sign-in page", () => {
-  const offered = () => json(200, { providers: [{ alias: "google", display_name: "Google" }] });
+  const offered = () => json(200, { providers: [{ alias: "google", display_name: "Google", kind: "openid_connect" }] });
 
   it("offers the providers of the tenant and leaves for the one chosen", async () => {
     const { props, sent, leave, user } = page({
@@ -402,5 +402,73 @@ describe("the page a provider sends people back to", () => {
     expect((await screen.findByRole("alert")).textContent).toBe(en.unreachable);
     expect(screen.getByRole("link", { name: en.backToSignIn })).toBeTruthy();
     expect(go).not.toHaveBeenCalled();
+  });
+});
+
+describe("a directory on the sign-in page", () => {
+  const offered = () =>
+    json(200, {
+      providers: [
+        { alias: "company", display_name: "Company", kind: "ldap" },
+        { alias: "google", display_name: "Google", kind: "openid_connect" },
+      ],
+    });
+
+  it("asks for a username and a password here, and never leaves", async () => {
+    const { props, sent, go, leave, user } = page({
+      "GET /sign-in/providers": [offered],
+      "GET /session": [nobody],
+      "GET /sign-in": [pending("identifier")],
+      "POST /sign-in/providers/company/password": [json(200, { status: "completed" })],
+    });
+    render(<SignInPage {...props} notice={null} />);
+    await user.click(await screen.findByRole("button", { name: en.continueWith("Company") }));
+
+    const identifier = screen.getByLabelText(en.directoryIdentifierLabel("Company"));
+    expect(document.activeElement).toBe(identifier);
+    // The other ways are put away while the directory's form is shown.
+    expect(screen.queryByRole("button", { name: en.continueWith("Google") })).toBeNull();
+    await user.type(identifier, "dora");
+    await user.type(screen.getByLabelText(en.passwordLabel), "her password{Enter}");
+
+    await waitFor(() => expect(go).toHaveBeenCalledWith("account"));
+    expect(leave).not.toHaveBeenCalled();
+    expect(sent.at(-1)).toMatchObject({
+      path: "/sign-in/providers/company/password",
+      body: { identifier: "dora", password: "her password" },
+      csrfToken: "token",
+    });
+  });
+
+  it("shows a refusal in the same words as for a password, and keeps the form", async () => {
+    const { props, user } = page({
+      "GET /sign-in/providers": [offered],
+      "GET /session": [nobody],
+      "GET /sign-in": [pending("identifier")],
+      "POST /sign-in/providers/company/password": [
+        json(200, { status: "rejected", step: "identifier", attempts_left: 4, csrf_token: "token" }),
+      ],
+    });
+    render(<SignInPage {...props} notice={null} />);
+    await user.click(await screen.findByRole("button", { name: en.continueWith("Company") }));
+    await user.type(screen.getByLabelText(en.directoryIdentifierLabel("Company")), "dora");
+    await user.type(screen.getByLabelText(en.passwordLabel), "wrong{Enter}");
+
+    expect((await screen.findByRole("alert")).textContent).toBe(`${en.rejected} ${en.attemptsLeft(4)}`);
+    expect(screen.getByLabelText<HTMLInputElement>(en.passwordLabel).value).toBe("");
+    expect(screen.getByLabelText(en.directoryIdentifierLabel("Company"))).toBeTruthy();
+  });
+
+  it("goes back to the other ways of signing in", async () => {
+    const { props, user } = page({
+      "GET /sign-in/providers": [offered],
+      "GET /session": [nobody],
+      "GET /sign-in": [pending("identifier")],
+    });
+    render(<SignInPage {...props} notice={null} />);
+    await user.click(await screen.findByRole("button", { name: en.continueWith("Company") }));
+    await user.click(screen.getByRole("button", { name: en.otherWays }));
+    expect(screen.getByLabelText(en.identifierLabel)).toBeTruthy();
+    expect(screen.getByRole("button", { name: en.continueWith("Google") })).toBeTruthy();
   });
 });

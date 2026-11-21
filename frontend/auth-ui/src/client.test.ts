@@ -117,11 +117,16 @@ describe("the client for the interaction interface", () => {
     const { client } = scripted({
       "GET /sign-in/providers": [
         json(200, {
-          providers: [{ alias: "google", display_name: "Google" }, { alias: 7 }, "nonsense", { alias: "x" }],
+          providers: [
+            { alias: "google", display_name: "Google", kind: "openid_connect" },
+            { alias: 7 },
+            "nonsense",
+            { alias: "x" },
+          ],
         }),
       ],
     });
-    expect(await client.providers()).toEqual([{ alias: "google", displayName: "Google" }]);
+    expect(await client.providers()).toEqual([{ alias: "google", displayName: "Google", isDirectory: false }]);
   });
 
   it("chooses a provider with the token of the sign-in and answers where to go", async () => {

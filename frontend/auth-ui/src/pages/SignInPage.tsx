@@ -89,6 +89,8 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice }: Si
   const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
   const [providers, setProviders] = useState<OfferedProvider[]>([]);
+  /** The directory the person chose to sign in through, if any. */
+  const [directory, setDirectory] = useState<OfferedProvider | null>(null);
 
   const show = useCallback(
     (answer: SignInAnswer) => {
@@ -199,6 +201,13 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice }: Si
     if (busy) {
       return;
     }
+    // Nobody leaves for a directory: its form is shown here.
+    if (provider.isDirectory) {
+      setFailure(null);
+      setPassword("");
+      setDirectory(provider);
+      return;
+    }
     setBusy(true);
     setFailure(null);
     setExpired(false);
@@ -261,7 +270,53 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice }: Si
         </Notice>
       ) : null}
 
-      {view.kind === "step" && view.step === "identifier" ? (
+      {view.kind === "step" && view.step === "identifier" && directory !== null ? (
+        <form
+          key={`directory-${view.shown}`}
+          className="auth-form"
+          method="post"
+          noValidate
+          onSubmit={(event) =>
+            submit(event, () => client.signInWithDirectory(directory.alias, identifier, password))
+          }
+        >
+          <Field
+            label={text.directoryIdentifierLabel(directory.displayName)}
+            name="identifier"
+            type="text"
+            autoComplete="username"
+            autoCapitalize="none"
+            spellCheck={false}
+            autoFocus
+            required
+            value={identifier}
+            onChange={(event) => setIdentifier(event.target.value)}
+          />
+          <PasswordField
+            text={text}
+            label={text.passwordLabel}
+            name="password"
+            autoComplete="current-password"
+            required
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+          />
+          <Submit label={text.signIn} busy={busy} text={text} />
+          <button
+            type="button"
+            className="button button--ghost auth-wide"
+            onClick={() => {
+              setDirectory(null);
+              setFailure(null);
+              setPassword("");
+            }}
+          >
+            {text.otherWays}
+          </button>
+        </form>
+      ) : null}
+
+      {view.kind === "step" && view.step === "identifier" && directory === null ? (
         <form
           key={view.shown}
           className="auth-form"
@@ -285,7 +340,7 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice }: Si
         </form>
       ) : null}
 
-      {view.kind === "step" && view.step === "identifier" && providers.length > 0 ? (
+      {view.kind === "step" && view.step === "identifier" && directory === null && providers.length > 0 ? (
         <>
           <p className="auth-divider">{text.or}</p>
           <ul className="auth-providers">
