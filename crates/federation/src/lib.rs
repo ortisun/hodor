@@ -14,6 +14,7 @@ pub mod testing;
 
 /// What other crates may use from this context.
 pub mod api {
+    pub use crate::application::github::GitHubClient;
     pub use crate::application::openid::{AuthorizationRequest, OpenIdClient, VerifiedIdentity};
     pub use crate::application::ports::{LinkStore, PendingAuthorizationStore, ProviderStore};
     pub use crate::application::service::{ChangeProvider, CreateProvider, FederationService};

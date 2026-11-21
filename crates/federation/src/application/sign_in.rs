@@ -1,4 +1,4 @@
-//! Signing in through a provider: the pending authorization there and back, and who the
+//! Signing in through a provider: the way there and back, and who the
 //! person turns out to be.
 //!
 //! See `docs/architecture/contexts/federation.md`, "Signing in through a
@@ -6,12 +6,13 @@
 //! identity is never let into an existing account because of an email
 //! address.
 
+use crate::application::github::GitHubClient;
 use crate::application::openid::{OpenIdClient, VerifiedIdentity};
 use crate::application::ports::PendingAuthorizationStore;
 use crate::application::service::FederationService;
 use crate::domain::event::FederationEvent;
 use crate::domain::pending_authorization::PendingAuthorization;
-use crate::domain::provider::{IdentityProvider, ProviderId};
+use crate::domain::provider::{IdentityProvider, ProviderId, ProviderKind};
 use hodor_authentication::api::{
     AuthTransaction, Authenticator, AuthenticatorTraits, ExternalInput, Factor, StepInput,
     StepOutcome, TransactionId,
@@ -73,6 +74,7 @@ pub fn callback_address(public_url: &str, tenant_slug: &str, alias: &str) -> Str
 pub struct ExternalSignIn {
     federation: FederationService,
     openid: OpenIdClient,
+    github: GitHubClient,
     identity: IdentityService,
     pending: Arc<dyn PendingAuthorizationStore>,
     units_of_work: Arc<dyn UnitOfWorkFactory>,
@@ -96,6 +98,7 @@ impl ExternalSignIn {
     pub fn new(
         federation: FederationService,
         openid: OpenIdClient,
+        github: GitHubClient,
         identity: IdentityService,
         pending: Arc<dyn PendingAuthorizationStore>,
         units_of_work: Arc<dyn UnitOfWorkFactory>,
@@ -107,6 +110,7 @@ impl ExternalSignIn {
         Self {
             federation,
             openid,
+            github,
             identity,
             pending,
             units_of_work,
@@ -183,7 +187,10 @@ impl ExternalSignIn {
     ) -> Result<String, DomainError> {
         let provider = self.enabled(tenant, alias).await?;
         let redirect_uri = self.callback_address(tenant_slug, provider.alias().as_str());
-        let request = self.openid.begin(&provider, &redirect_uri).await?;
+        let request = match provider.snapshot().kind {
+            ProviderKind::OpenIdConnect => self.openid.begin(&provider, &redirect_uri).await?,
+            ProviderKind::GitHub => self.github.begin(&provider, &redirect_uri),
+        };
 
         let verifier = Secret::new(request.code_verifier.expose().clone().into_bytes());
         let pending = PendingAuthorization {
@@ -255,18 +262,31 @@ impl ExternalSignIn {
             .map(Secret::new)
             .map_err(|_| hodor_kernel::sealing::unreadable("the code verifier is not text"))?;
         let client_secret = self.federation.client_secret(tenant, &provider)?;
-        let identity = match self
-            .openid
-            .finish(
-                &provider,
-                &client_secret,
-                &pending.redirect_uri,
-                code.expose(),
-                &code_verifier,
-                &pending.nonce,
-            )
-            .await
-        {
+        let answered = match provider.snapshot().kind {
+            ProviderKind::OpenIdConnect => {
+                self.openid
+                    .finish(
+                        &provider,
+                        &client_secret,
+                        &pending.redirect_uri,
+                        code.expose(),
+                        &code_verifier,
+                        &pending.nonce,
+                    )
+                    .await
+            }
+            ProviderKind::GitHub => {
+                self.github
+                    .finish(
+                        &provider,
+                        &client_secret,
+                        &pending.redirect_uri,
+                        code.expose(),
+                    )
+                    .await
+            }
+        };
+        let identity = match answered {
             Ok(identity) => identity,
             Err(error) if error.code() == "federation.identity_not_verified" => {
                 return Ok(Err(Refusal {
@@ -319,7 +339,10 @@ impl ExternalSignIn {
         }
         // A user needs a login identifier, and an address nobody vouches
         // for is not one.
-        let Some(email) = identity.email.filter(|_| identity.email_verified) else {
+        // An address counts as vouched for when the provider says so, or
+        // when an administrator said that this provider's addresses are.
+        let vouched = identity.email_verified || provider.snapshot().settings.trusts_email;
+        let Some(email) = identity.email.filter(|_| vouched) else {
             return refuse("no_vouched_email");
         };
         let command = CreateUser {

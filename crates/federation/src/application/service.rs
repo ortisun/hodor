@@ -124,7 +124,9 @@ impl FederationService {
         caller: Caller,
     ) -> Result<IdentityProvider, DomainError> {
         let alias = Alias::parse(&command.alias)?;
-        let settings = command.settings.checked_allowing(&self.development_hosts)?;
+        let settings = command
+            .settings
+            .checked_for(command.kind, &self.development_hosts)?;
         let sealed = self.seal(tenant, &command.client_secret)?;
         let provider = IdentityProvider::create(
             alias,

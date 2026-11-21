@@ -648,6 +648,7 @@ struct ProviderBody {
     client_id: String,
     scopes: Vec<String>,
     creates_users: bool,
+    trusts_email: bool,
     status: &'static str,
     callback_address: String,
     created_at: String,
@@ -667,6 +668,7 @@ fn provider_body(provider: &IdentityProvider, public_url: &str, slug: &str) -> P
         client_id: state.settings.client_id.clone(),
         scopes: state.settings.scopes.clone(),
         creates_users: state.settings.creates_users,
+        trusts_email: state.settings.trusts_email,
         status: state.status.as_str(),
         callback_address: callback_address(public_url, slug, state.alias.as_str()),
         created_at: written(state.created_at),
@@ -684,12 +686,14 @@ struct ProvidersBody {
 #[serde(deny_unknown_fields)]
 struct NewProviderBody {
     alias: String,
+    kind: Option<String>,
     display_name: String,
-    issuer: String,
+    issuer: Option<String>,
     client_id: String,
     client_secret: String,
     scopes: Option<Vec<String>>,
     creates_users: Option<bool>,
+    trusts_email: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -700,6 +704,7 @@ struct ProviderChangesBody {
     client_id: Option<String>,
     scopes: Option<Vec<String>>,
     creates_users: Option<bool>,
+    trusts_email: Option<bool>,
 }
 
 /// No `Debug`: this holds a client secret until it is sealed.
@@ -763,15 +768,33 @@ async fn create_provider(
             let caller =
                 authorize(&state, &tenant, &headers, "POST", "/identity-providers").await?;
             let new: NewProviderBody = body(&bytes)?;
+            let kind = match new.kind.as_deref() {
+                None | Some("openid_connect") => ProviderKind::OpenIdConnect,
+                Some("github") => ProviderKind::GitHub,
+                Some(_) => {
+                    return Err(failed(DomainError::invalid(
+                        "federation.kind_invalid",
+                        "an identity provider is of the kind `openid_connect` or `github`",
+                    )));
+                }
+            };
+            // Only a kind that has an issuer of its own may leave it out.
+            let issuer = new
+                .issuer
+                .or_else(|| ProviderSettings::default_issuer_for(kind).map(str::to_owned))
+                .unwrap_or_default();
             let command = CreateProvider {
                 alias: new.alias,
-                kind: ProviderKind::OpenIdConnect,
+                kind,
                 settings: ProviderSettings {
                     display_name: new.display_name,
-                    issuer: new.issuer,
+                    issuer,
                     client_id: new.client_id,
-                    scopes: new.scopes.unwrap_or_else(ProviderSettings::default_scopes),
+                    scopes: new
+                        .scopes
+                        .unwrap_or_else(|| ProviderSettings::default_scopes_for(kind)),
                     creates_users: new.creates_users.unwrap_or(true),
+                    trusts_email: new.trusts_email.unwrap_or(false),
                 },
                 client_secret: Secret::from(new.client_secret),
             };
@@ -834,6 +857,7 @@ async fn change_provider(
                 client_id: changes.client_id.unwrap_or(now.client_id),
                 scopes: changes.scopes.unwrap_or(now.scopes),
                 creates_users: changes.creates_users.unwrap_or(now.creates_users),
+                trusts_email: changes.trusts_email.unwrap_or(now.trusts_email),
             };
             let provider = federation
                 .change_provider(&tenant, ChangeProvider { id, settings }, caller)

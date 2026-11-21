@@ -20,13 +20,14 @@ A tenant has its own identity providers. Nothing about a provider is shared betw
 |---|---|
 | Identifier | Generated; never changes |
 | Alias | The name of the provider in addresses, such as `google`. 2 to 32 lowercase letters, digits and hyphens, starting with a letter or digit. Unique in the tenant. **Never changes**: it is part of the address registered at the provider, where answers are sent back |
-| Kind | `openid_connect`. Further kinds come with their issues |
+| Kind | `openid_connect` or `github`. Never changes. Further kinds come with their issues |
 | Display name | What a person reads on the sign-in page, such as "Google". 1 to 64 characters |
 | Issuer | The address that identifies the provider, such as `https://accounts.google.com`. HTTPS, no query and no fragment, at most 512 characters. Plain HTTP is accepted only for a host and port on the installation's list of [development hosts](../../security/outbound-http.md#the-exception-for-development), which is empty anywhere real. Compared exactly, character by character, with what the provider says about itself |
 | Client identifier | Who Hodor is to the provider. 1 to 255 characters |
 | Client secret | What Hodor proves that with. [Kept encrypted](../../security/secrets-at-rest.md), for the purpose `federation.client_secret`. Written, never read back: no operation, interface or event returns it |
-| Scopes | What Hodor asks the provider for. Always includes `openid`; `openid email profile` unless said otherwise. At most 16 |
+| Scopes | What Hodor asks the provider for. At most 16. For `openid_connect`: always includes `openid`; `openid email profile` unless said otherwise. For `github`: `read:user user:email` unless said otherwise |
 | Creates users | Whether a person nobody knows yet is created on their first sign-in through this provider. Yes unless said otherwise |
+| Trusts email | Whether every email address this provider gives is taken as vouched for, even when the provider does not say so. No unless said otherwise. See [below](#when-a-provider-does-not-say-whether-it-vouches) |
 | Status | Enabled or disabled. A disabled provider is not offered and signs nobody in; its links are kept |
 
 A tenant has at most 20 identity providers.
@@ -139,6 +140,42 @@ A token refused by any check signs nobody in, and the reason is recorded for the
 
 Nothing else in the token is used. In particular no group, role or permission is ever taken from it (Threat-Federation-07).
 
+### When a provider does not say whether it vouches
+
+Some providers give an email address and never say whether they checked it. Microsoft Entra ID is one: its tokens carry no `email_verified`. By the rule above nobody could be created through such a provider.
+
+**Trusts email** is the administrator's own statement that every address this provider gives belongs to the person. It is right for a provider whose addresses the organization itself hands out and takes away: its own Entra ID tenant, its own directory. It is wrong for any provider where a person can type in an address of their choice, and for a provider shared by many organizations.
+
+It changes one thing: an address from this provider counts as vouched for when a person nobody knows is created. It never lets an external identity into an account that already exists; that rule has no exception.
+
+## Signing in through GitHub
+
+GitHub is not an OpenID Connect provider: it issues no ID token. A provider of the kind `github` asks GitHub's own interface who the person is, with an access token that is used for that and then forgotten.
+
+| Step | What Hodor does |
+|---|---|
+| Sending the person | To `{issuer}/login/oauth/authorize`, with the client identifier, the address to come back to, the scopes and the `state` |
+| Exchanging the code | At `{issuer}/login/oauth/access_token`, with the client secret. GitHub answers `200` even when it refuses; the answer's `error` is what says so |
+| Asking who it is | `GET /user`: the numeric `id` is the subject, and never the login name, which a person can change and another can take afterwards (Threat-Federation-11) |
+| Asking for the address | `GET /user/emails`: the address marked both primary and verified, or none |
+
+The issuer is `https://github.com` unless another is given, for an installation of GitHub Enterprise Server. The interface is at `https://api.github.com` for the first and at `{issuer}/api/v3` for any other.
+
+There is no nonce and no ID token to check: what stands in their place is that the answer comes from GitHub's interface over TLS, asked with a token GitHub issued for this code a moment ago. The state, the pending authorization and every rule about who the person is are the same as for OpenID Connect.
+
+## Recipes
+
+What to enter for the providers people ask for first. None of these is checked against the real provider in continuous integration; each was built from the provider's documentation.
+
+| Provider | Kind | Issuer | Notes |
+|---|---|---|---|
+| Google | `openid_connect` | `https://accounts.google.com` | Says whether it vouches for an address |
+| Microsoft Entra ID, one organization | `openid_connect` | `https://login.microsoftonline.com/{tenant identifier}/v2.0` | Use the organization's own tenant identifier, never `common` or `organizations`: with those any Microsoft account of any organization would be let in (Threat-Federation-06), and Hodor refuses them because the provider's description names another issuer. Does not say whether it vouches; set **trusts email** if the organization hands out the addresses |
+| GitHub | `github` | leave empty | |
+| Keycloak, one realm | `openid_connect` | `https://{host}/realms/{realm}` | |
+
+In each, the address to register at the provider is the provider's callback address, which the administration interface and the command-line tool show.
+
 ## Signing in through a provider
 
 Signing in through a provider is an [alternative](authentication.md#alternatives) of the tenant's sign-in flow, named `external`: one step that establishes who is signing in and proves it. It ends in the same Hodor session as a password does.
@@ -200,7 +237,7 @@ The link is looked up by the provider and the token's subject, and by nothing el
 | The external identity is linked to a user who may sign in | That user is signed in |
 | It is linked to a user who may not sign in: suspended, deactivated, pending | Refused |
 | It is not linked, and the provider does not create users | Refused |
-| It is not linked, the provider creates users, and the provider vouches for an email address that no user of the tenant has | A user is created with that address, already verified, and the name and language the provider gave; the external identity is linked to it. Both in one unit of work: a user without its link, or a link without its user, is never stored |
+| It is not linked, the provider creates users, and the provider vouches for an email address that no user of the tenant has (or gives one and the provider is set to trust email) | A user is created with that address, already verified, and the name and language the provider gave; the external identity is linked to it. Both in one unit of work: a user without its link, or a link without its user, is never stored |
 | It is not linked, and the provider gives no email address or does not vouch for it | Refused. A user needs a login identifier, and an address nobody vouches for is not one |
 | It is not linked, and a user of the tenant already has the email address | **Refused. The external identity is never let into an existing account because of an email address** (Threat-Federation-01). The existing account stays exactly as it was |
 
@@ -295,7 +332,9 @@ All tables are under [forced row-level security](../multi-tenancy.md#isolation-b
 
 | Item | Planned in |
 |---|---|
-| Providers that are not plain OpenID Connect: GitHub, Apple; directories; SAML | Issue-43, Issue-44, Issue-48 |
+| Apple. Its client secret is a token Hodor must sign with a private key, and its answer arrives as a form posted by another site. Both wait for keys that Hodor holds and signs with | With the key domain, Phase 2 |
+| Microsoft accounts of any organization (`common`, `organizations`), which need the issuer checked against a list of allowed tenants | When asked for |
+| Directories; SAML | Issue-44, Issue-48 |
 | Signature algorithms beyond `RS256`, `PS256` and `ES256`; encrypted ID tokens; the UserInfo endpoint | When a provider that needs them is to be supported |
 | A cache of provider descriptions and keys shared between server instances. Each instance keeps its own | With Redis, when instances are many |
 | What happens to the sessions of a provider's users when it is disabled (Threat-Federation-10). Today disabling stops new sign-ins only | With the consoles |

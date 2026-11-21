@@ -1,7 +1,7 @@
 //! Operations tool: migrations, tenant management, the first
 //! administrator and checking the audit log.
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use hodor_adapters_crypto::{OsRandom, SecretKeys, Sha256Digest};
 use hodor_adapters_postgres::{
     Database, PgAccessTokenStore, PgAuditLog, PgLinkStore, PgPool, PgProviderStore,
@@ -165,6 +165,12 @@ enum AdminCommand {
     },
 }
 
+#[derive(Clone, Copy, ValueEnum)]
+enum ProviderKindArg {
+    OpenidConnect,
+    Github,
+}
+
 #[derive(Subcommand)]
 enum ProviderCommand {
     /// Add an OpenID Connect provider to a tenant, enabled.
@@ -183,9 +189,13 @@ enum ProviderCommand {
         /// What a person reads on the sign-in page.
         #[arg(long)]
         name: String,
-        /// The address that identifies the provider.
+        /// How Hodor talks to the provider.
+        #[arg(long, value_enum, default_value = "openid-connect")]
+        kind: ProviderKindArg,
+        /// The address that identifies the provider. May be left out for
+        /// GitHub.
         #[arg(long)]
-        issuer: String,
+        issuer: Option<String>,
         /// Who Hodor is to the provider.
         #[arg(long)]
         client_id: String,
@@ -196,6 +206,11 @@ enum ProviderCommand {
         /// Do not create a person nobody knows yet on first sign-in.
         #[arg(long)]
         no_create_users: bool,
+        /// Take every address this provider gives as vouched for, even
+        /// when the provider does not say so. Only for a provider whose
+        /// addresses the organization itself hands out.
+        #[arg(long)]
+        trust_email: bool,
     },
     /// List a tenant's providers.
     List {
@@ -437,12 +452,18 @@ async fn run_provider(
         ProviderCommand::Add {
             alias,
             name,
+            kind,
             issuer,
             client_id,
             scopes,
             no_create_users,
+            trust_email,
             ..
         } => {
+            let kind = match kind {
+                ProviderKindArg::OpenidConnect => ProviderKind::OpenIdConnect,
+                ProviderKindArg::Github => ProviderKind::GitHub,
+            };
             let client_secret = std::env::var("HODOR_PROVIDER_CLIENT_SECRET").map_err(|_| {
                 DomainError::invalid(
                     "federation.client_secret_invalid",
@@ -454,17 +475,22 @@ async fn run_provider(
                     &tenant,
                     CreateProvider {
                         alias,
-                        kind: ProviderKind::OpenIdConnect,
+                        kind,
                         settings: ProviderSettings {
                             display_name: name,
-                            issuer,
+                            issuer: issuer
+                                .or_else(|| {
+                                    ProviderSettings::default_issuer_for(kind).map(str::to_owned)
+                                })
+                                .unwrap_or_default(),
                             client_id,
                             scopes: if scopes.is_empty() {
-                                ProviderSettings::default_scopes()
+                                ProviderSettings::default_scopes_for(kind)
                             } else {
                                 scopes
                             },
                             creates_users: !no_create_users,
+                            trusts_email: trust_email,
                         },
                         client_secret: Secret::from(client_secret),
                     },

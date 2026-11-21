@@ -24,7 +24,8 @@ use hodor_authentication::api::{
 use hodor_authorization::api::AuthorizationService;
 use hodor_credential::api::{AccessTokenService, CredentialService};
 use hodor_federation::api::{
-    EXTERNAL_STEP, ExternalIdentityAuthenticator, ExternalSignIn, FederationService, OpenIdClient,
+    EXTERNAL_STEP, ExternalIdentityAuthenticator, ExternalSignIn, FederationService, GitHubClient,
+    OpenIdClient,
 };
 use hodor_identity::api::IdentityService;
 use hodor_kernel::{DomainError, Secret, SystemClock, TenantContext};
@@ -425,16 +426,18 @@ fn external_sign_in(
     )
     .allowing_development_hosts(&development_hosts);
     let openid = OpenIdClient::new(
-        http,
+        http.clone(),
         Arc::new(AwsLcVerifier),
         digest.clone(),
         Arc::new(OsRandom),
         clock.clone(),
     )
     .allowing_development_hosts(&development_hosts);
+    let github = GitHubClient::new(http.clone(), Arc::new(OsRandom));
     Ok(Some(ExternalSignIn::new(
         federation,
         openid,
+        github,
         identity.clone(),
         Arc::new(PgPendingAuthorizationStore),
         units(),

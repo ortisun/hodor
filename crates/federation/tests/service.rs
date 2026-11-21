@@ -44,6 +44,7 @@ fn settings() -> ProviderSettings {
         client_id: "hodor".to_owned(),
         scopes: ProviderSettings::default_scopes(),
         creates_users: true,
+        trusts_email: false,
     }
 }
 

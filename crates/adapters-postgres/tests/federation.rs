@@ -48,6 +48,7 @@ fn create(alias: &str) -> CreateProvider {
             client_id: "hodor".to_owned(),
             scopes: ProviderSettings::default_scopes(),
             creates_users: true,
+            trusts_email: false,
         },
         client_secret: Secret::from(SECRET.to_owned()),
     }

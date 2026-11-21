@@ -1454,6 +1454,7 @@
           "client_id",
           "scopes",
           "creates_users",
+          "trusts_email",
           "status",
           "callback_address",
           "created_at",
@@ -1471,7 +1472,8 @@
           "kind": {
             "type": "string",
             "enum": [
-              "openid_connect"
+              "openid_connect",
+              "github"
             ]
           },
           "display_name": {
@@ -1513,6 +1515,10 @@
           "updated_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "trusts_email": {
+            "type": "boolean",
+            "description": "Whether every address the provider gives is taken as vouched for, even when the provider does not say so."
           }
         }
       },
@@ -1522,7 +1528,6 @@
         "required": [
           "alias",
           "display_name",
-          "issuer",
           "client_id",
           "client_secret"
         ],
@@ -1535,7 +1540,8 @@
           },
           "issuer": {
             "type": "string",
-            "format": "uri"
+            "format": "uri",
+            "description": "May be left out for the kind `github`."
           },
           "client_id": {
             "type": "string"
@@ -1552,6 +1558,18 @@
           },
           "creates_users": {
             "type": "boolean"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "openid_connect",
+              "github"
+            ],
+            "default": "openid_connect"
+          },
+          "trusts_email": {
+            "type": "boolean",
+            "default": false
           }
         }
       },
@@ -1577,6 +1595,9 @@
             }
           },
           "creates_users": {
+            "type": "boolean"
+          },
+          "trusts_email": {
             "type": "boolean"
           }
         }

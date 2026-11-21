@@ -18,7 +18,8 @@ use hodor_credential::api::{CredentialService, NewPassword, PasswordRules};
 use hodor_credential::testing::{FakeHasher, InMemoryPasswords};
 use hodor_federation::api::{
     CreateProvider, EXTERNAL_STEP, ExternalIdentityAuthenticator, ExternalSignIn,
-    FederationService, OpenIdClient, ProviderId, ProviderKind, ProviderSettings, ProviderStatus,
+    FederationService, GitHubClient, OpenIdClient, ProviderId, ProviderKind, ProviderSettings,
+    ProviderStatus,
 };
 use hodor_federation::testing::InMemoryFederation;
 use hodor_identity::api::{CreateUser, IdentifierKind, IdentityService, Profile, UserKind};
@@ -26,7 +27,10 @@ use hodor_identity::testing::InMemoryUsers;
 use hodor_kernel::clock::testing::FixedClock;
 use hodor_kernel::sealing::testing::FakeSecretBox;
 use hodor_kernel::uow::testing::InMemoryUnitOfWorkFactory;
-use hodor_kernel::{Caller, DomainError, Secret, TenantContext, Timestamp, UserId};
+use hodor_kernel::{
+    Caller, DomainError, HttpClient, HttpRequest, HttpResponse, Secret, TenantContext, Timestamp,
+    UserId,
+};
 use hodor_notification::api::Notifier;
 use hodor_notification::testing::InMemoryMessages;
 use hodor_protocol_http::{
@@ -41,6 +45,7 @@ use http_body_util::BodyExt as _;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
+use std::sync::Mutex;
 use time::Duration;
 use tower::ServiceExt as _;
 
@@ -70,11 +75,73 @@ impl TenantResolver for Tenants {
     }
 }
 
+/// GitHub, as far as Hodor talks to it: it answers a code with a token,
+/// and a token with who the person is. Every request is kept.
+#[derive(Clone, Default)]
+struct FakeGitHub {
+    /// What `/user` answers, and what `/user/emails` answers.
+    person: Arc<Mutex<(Value, Value)>>,
+    requests: Arc<Mutex<Vec<HttpRequest>>>,
+}
+
+impl FakeGitHub {
+    fn is(&self, user: Value, emails: Value) {
+        *self.person.lock().expect("person") = (user, emails);
+    }
+
+    fn requests(&self) -> Vec<HttpRequest> {
+        self.requests.lock().expect("requests").clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl HttpClient for FakeGitHub {
+    async fn send(&self, request: HttpRequest) -> Result<HttpResponse, DomainError> {
+        self.requests
+            .lock()
+            .expect("requests")
+            .push(request.clone());
+        let (user, emails) = self.person.lock().expect("person").clone();
+        let answer = |status: u16, body: Value| HttpResponse {
+            status,
+            headers: Vec::new(),
+            body: body.to_string().into_bytes(),
+        };
+        let authorized = request
+            .headers
+            .iter()
+            .any(|(name, value)| name == "authorization" && value == "Bearer token-of-github");
+        Ok(match request.url.as_str() {
+            "https://github.com/login/oauth/access_token" => {
+                let form: HashMap<String, String> =
+                    form_urlencoded::parse(request.body.as_deref().unwrap_or_default())
+                        .into_owned()
+                        .collect();
+                let good = form.get("code").map(String::as_str) == Some("github-code")
+                    && form.get("client_secret").map(String::as_str) == Some(CLIENT_SECRET);
+                if good {
+                    answer(
+                        200,
+                        json!({ "access_token": "token-of-github", "token_type": "bearer" }),
+                    )
+                } else {
+                    // As GitHub does: a refusal with status 200.
+                    answer(200, json!({ "error": "bad_verification_code" }))
+                }
+            }
+            "https://api.github.com/user" if authorized => answer(200, user),
+            "https://api.github.com/user/emails" if authorized => answer(200, emails),
+            _ => answer(401, json!({ "message": "Bad credentials" })),
+        })
+    }
+}
+
 struct World {
     router: Router,
     clock: Arc<FixedClock>,
     units_of_work: InMemoryUnitOfWorkFactory,
     provider: TestProvider,
+    github: FakeGitHub,
     key: SigningKey,
     federation: FederationService,
     identity: IdentityService,
@@ -91,6 +158,7 @@ fn settings(creates_users: bool) -> ProviderSettings {
         client_id: CLIENT_ID.to_owned(),
         scopes: ProviderSettings::default_scopes(),
         creates_users,
+        trusts_email: false,
     }
 }
 
@@ -147,9 +215,14 @@ async fn world() -> World {
         Arc::new(SequentialRandom::default()),
         clock.clone(),
     );
+    let github = FakeGitHub::default();
     let external = ExternalSignIn::new(
         federation.clone(),
         openid,
+        GitHubClient::new(
+            Arc::new(github.clone()),
+            Arc::new(SequentialRandom::default()),
+        ),
         identity.clone(),
         Arc::new(stores),
         units(),
@@ -255,6 +328,7 @@ async fn world() -> World {
         clock,
         units_of_work,
         provider,
+        github,
         key,
         federation,
         identity,
@@ -1182,4 +1256,258 @@ async fn rejections_through_a_provider_count_against_the_sign_in() {
     }
     let last = last.expect("five answers");
     assert_eq!(last.sign_in_status(), "failed", "{:?}", last.body);
+}
+
+impl World {
+    /// Adds a provider of the kind GitHub to acme.
+    async fn with_github(&self) {
+        self.federation
+            .create_provider(
+                &self.acme,
+                CreateProvider {
+                    alias: "github".to_owned(),
+                    kind: ProviderKind::GitHub,
+                    settings: ProviderSettings {
+                        display_name: "GitHub".to_owned(),
+                        issuer: "https://github.com".to_owned(),
+                        client_id: "github-client".to_owned(),
+                        scopes: ProviderSettings::default_scopes_for(ProviderKind::GitHub),
+                        creates_users: true,
+                        trusts_email: false,
+                    },
+                    client_secret: Secret::from(CLIENT_SECRET.to_owned()),
+                },
+                Caller::system(),
+            )
+            .await
+            .expect("provider");
+    }
+
+    /// One whole sign-in through GitHub with this code.
+    async fn sign_in_with_github(&self, code: &str) -> (Browser, Reply) {
+        let mut browser = Browser::default();
+        browser
+            .send(self, Method::POST, "/t/acme/interaction/sign-in", None)
+            .await;
+        let chosen = browser
+            .send(
+                self,
+                Method::POST,
+                "/t/acme/interaction/sign-in/providers/github",
+                None,
+            )
+            .await;
+        assert_eq!(chosen.status, StatusCode::OK, "{:?}", chosen.body);
+        let redirect = chosen.body["redirect"].as_str().expect("an address");
+        let (address, query) = redirect.split_once('?').expect("a query");
+        assert_eq!(address, "https://github.com/login/oauth/authorize");
+        let sent: HashMap<String, String> = form_urlencoded::parse(query.as_bytes())
+            .into_owned()
+            .collect();
+        assert_eq!(sent["client_id"], "github-client");
+        assert_eq!(sent["scope"], "read:user user:email");
+        assert_eq!(
+            sent["redirect_uri"],
+            format!("{PUBLIC}/t/acme/account/providers/github/callback")
+        );
+        let state = sent["state"].clone();
+        assert_eq!(state.len(), 64);
+        let reply = browser
+            .come_back(self, "acme", "github", code, &state)
+            .await;
+        (browser, reply)
+    }
+}
+
+#[tokio::test]
+async fn a_person_signs_in_through_github_by_their_number_and_their_verified_address() {
+    let world = world().await;
+    world.with_github().await;
+    world.github.is(
+        json!({ "id": 583_231, "login": "octocat", "name": "The Octocat", "email": "shown@example.com" }),
+        json!([
+            { "email": "old@example.com", "primary": false, "verified": true },
+            { "email": "unchecked@example.com", "primary": true, "verified": false },
+            { "email": "octocat@example.com", "primary": true, "verified": true },
+        ]),
+    );
+
+    let (mut browser, reply) = world.sign_in_with_github("github-code").await;
+    assert_eq!(reply.sign_in_status(), "completed", "{:?}", reply.body);
+
+    // Created with the address that is both primary and verified, not
+    // the one in the profile and not an unverified one.
+    let user = world
+        .identity
+        .find_by_login(&world.acme, "octocat@example.com")
+        .await
+        .expect("find")
+        .expect("created");
+    assert_eq!(
+        user.snapshot().profile.display_name.as_deref(),
+        Some("The Octocat")
+    );
+    for other in [
+        "shown@example.com",
+        "unchecked@example.com",
+        "old@example.com",
+    ] {
+        assert_eq!(world.user_with(other).await, None, "{other}");
+    }
+    // Linked by the number, never by the login name.
+    let links = world
+        .federation
+        .links_of(&world.acme, user.id())
+        .await
+        .expect("links");
+    assert_eq!(links[0].subject.expose(), "583231");
+    let session = browser.who(&world, "acme").await;
+    assert_eq!(session.body["user_id"], user.id().to_string());
+
+    // The person renames themself at GitHub: still the same user here.
+    world.github.is(
+        json!({ "id": 583_231, "login": "renamed", "name": "Another Name" }),
+        json!([{ "email": "other@example.com", "primary": true, "verified": true }]),
+    );
+    let (mut again, reply) = world.sign_in_with_github("github-code").await;
+    assert_eq!(reply.sign_in_status(), "completed");
+    assert_eq!(
+        again.who(&world, "acme").await.body["user_id"],
+        user.id().to_string()
+    );
+    assert_eq!(world.count("identity.user_created"), 1);
+
+    // The client secret went to GitHub's token address and nowhere else.
+    for request in world.github.requests() {
+        let body =
+            String::from_utf8_lossy(request.body.as_deref().unwrap_or_default()).into_owned();
+        assert_eq!(
+            body.contains("client_secret"),
+            request.url.ends_with("/login/oauth/access_token"),
+            "{}",
+            request.url
+        );
+    }
+}
+
+#[tokio::test]
+async fn github_signs_nobody_in_without_a_good_code_a_number_or_a_verified_address() {
+    let world = world().await;
+    world.with_github().await;
+    let octocat = json!({ "id": 583_231, "login": "octocat" });
+    let verified = json!([{ "email": "octocat@example.com", "primary": true, "verified": true }]);
+
+    // A code GitHub refuses, which it does with status 200.
+    world.github.is(octocat.clone(), verified.clone());
+    let (_, reply) = world.sign_in_with_github("a-code-of-someone-else").await;
+    rejected(&reply);
+
+    // No address that is both primary and verified.
+    world.github.is(
+        octocat.clone(),
+        json!([{ "email": "octocat@example.com", "primary": true, "verified": false }]),
+    );
+    let (_, reply) = world.sign_in_with_github("github-code").await;
+    rejected(&reply);
+    world.github.is(octocat, json!({ "message": "Not Found" }));
+    let (_, reply) = world.sign_in_with_github("github-code").await;
+    rejected(&reply);
+
+    // An answer that does not say who the person is by number.
+    for user in [
+        json!({ "login": "octocat" }),
+        json!({ "id": "583231" }),
+        json!([]),
+    ] {
+        world.github.is(user, verified.clone());
+        let (_, reply) = world.sign_in_with_github("github-code").await;
+        rejected(&reply);
+    }
+
+    assert_eq!(world.count("identity.user_created"), 0);
+    assert_eq!(
+        world.refusals(),
+        [
+            "answer_refused",
+            "no_vouched_email",
+            "no_vouched_email",
+            "answer_refused",
+            "answer_refused",
+            "answer_refused"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn github_does_not_open_an_account_that_exists_with_the_same_address() {
+    let world = world().await;
+    world.with_github().await;
+    let ana = world.ana_with_a_password().await;
+    world.github.is(
+        json!({ "id": 99, "login": "not-ana" }),
+        json!([{ "email": "ana@example.com", "primary": true, "verified": true }]),
+    );
+
+    let (_, reply) = world.sign_in_with_github("github-code").await;
+
+    rejected(&reply);
+    assert_eq!(world.refusals(), ["email_belongs_to_a_user"]);
+    assert!(
+        world
+            .federation
+            .links_of(&world.acme, ana)
+            .await
+            .expect("links")
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn a_provider_trusted_with_addresses_creates_people_it_does_not_vouch_for_and_opens_no_account()
+ {
+    let world = world().await;
+    let ana = world.ana_with_a_password().await;
+    let mut trusting = settings(true);
+    trusting.trusts_email = true;
+    world
+        .federation
+        .change_provider(
+            &world.acme,
+            hodor_federation::api::ChangeProvider {
+                id: world.example,
+                settings: trusting,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("change");
+
+    // The provider gives an address and does not say it vouches: created.
+    let (_, reply) = world
+        .sign_in("subject-of-bia", Some(("bia@example.com", false)))
+        .await;
+    assert_eq!(reply.sign_in_status(), "completed", "{:?}", reply.body);
+    assert!(world.user_with("bia@example.com").await.is_some());
+
+    // No address at all still creates nobody.
+    let (_, reply) = world.sign_in("subject-of-carla", None).await;
+    rejected(&reply);
+
+    // And trust in addresses never opens an account that exists.
+    let (_, reply) = world
+        .sign_in("subject-of-a-stranger", Some(("ana@example.com", false)))
+        .await;
+    rejected(&reply);
+    assert!(
+        world
+            .federation
+            .links_of(&world.acme, ana)
+            .await
+            .expect("links")
+            .is_empty()
+    );
+    assert_eq!(
+        world.refusals(),
+        ["no_vouched_email", "email_belongs_to_a_user"]
+    );
 }
