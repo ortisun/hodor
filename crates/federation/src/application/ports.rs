@@ -2,6 +2,8 @@
 
 use crate::domain::link::{ExternalIdentity, Subject};
 use crate::domain::provider::{Alias, IdentityProvider, ProviderId};
+use crate::domain::trip::Trip;
+use hodor_authentication::api::TransactionId;
 use hodor_kernel::{DomainError, Timestamp, UnitOfWork, UserId};
 
 /// Stores identity providers. Every method works inside the tenant the
@@ -129,4 +131,29 @@ pub trait LinkStore: Send + Sync {
         provider_id: ProviderId,
         subject: &Subject,
     ) -> Result<Option<UserId>, DomainError>;
+}
+
+/// Stores the trip of a sign-in in progress. Every method works inside
+/// the tenant the unit of work is bound to.
+#[async_trait::async_trait]
+pub trait TripStore: Send + Sync {
+    /// Stores the trip of a sign-in, replacing the one it had.
+    ///
+    /// # Errors
+    ///
+    /// Returns `federation.provider_not_found` if the tenant has no such
+    /// provider.
+    async fn put(&self, uow: &mut dyn UnitOfWork, trip: &Trip) -> Result<(), DomainError>;
+
+    /// Takes the trip of a sign-in away and returns it, if it had one.
+    /// Of several callers at the same moment, one gets it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn take(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        transaction_id: TransactionId,
+    ) -> Result<Option<Trip>, DomainError>;
 }

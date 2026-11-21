@@ -44,6 +44,7 @@ A flow may also list **alternatives**: steps that, satisfied at the very start o
 | An alternative is performed by an authenticator that establishes who is signing in **and** proves it, in one step | There is no earlier step to have named the person, and none after it to prove anything |
 | An alternative is accepted only while no step of the flow has been satisfied | A sign-in is completed by its steps or by one alternative, never by part of each. A person who typed an identifier and then wants an external identity starts a new sign-in |
 | A rejected alternative counts as a rejection of the sign-in, like a rejected step | The same tolerance applies whichever way is tried |
+| After a rejected alternative the sign-in is waiting for the step it was waiting for before | The alternative was a way around the steps, not one of them; the person is back where they were |
 | An authenticator answers only in the way its kind allows: a step never answers as an alternative, an alternative never as a step | An authenticator that breaks this is a defect, and the sign-in does not advance |
 
 What a person submits to an alternative is a set of named values that only its authenticator understands, every one of them treated as a secret: the code an identity provider sent back, a password for a directory.

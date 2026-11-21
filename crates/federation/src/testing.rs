@@ -2,8 +2,9 @@
 
 use crate::api::{
     Alias, ExternalIdentity, IdentityProvider, LinkStore, ProviderId, ProviderKind,
-    ProviderSettings, ProviderSnapshot, ProviderStatus, ProviderStore, Subject,
+    ProviderSettings, ProviderSnapshot, ProviderStatus, ProviderStore, Subject, Trip, TripStore,
 };
+use hodor_authentication::api::TransactionId;
 use hodor_kernel::{
     DomainError, SealedSecret, TenantContext, TenantId, Timestamp, UnitOfWork, UnitOfWorkFactory,
     UserId,
@@ -13,6 +14,7 @@ use std::sync::{Arc, Mutex};
 
 type ProviderRows = BTreeMap<(TenantId, ProviderId), ProviderSnapshot>;
 type LinkRows = BTreeMap<(TenantId, ProviderId, Subject), ExternalIdentity>;
+type TripRows = BTreeMap<(TenantId, TransactionId), Trip>;
 
 /// Providers and links kept in memory. One value serves as both stores,
 /// since a link must name a provider that exists.
@@ -20,9 +22,14 @@ type LinkRows = BTreeMap<(TenantId, ProviderId, Subject), ExternalIdentity>;
 pub struct InMemoryFederation {
     providers: Arc<Mutex<ProviderRows>>,
     links: Arc<Mutex<LinkRows>>,
+    trips: Arc<Mutex<TripRows>>,
 }
 
 impl InMemoryFederation {
+    fn trips(&self) -> std::sync::MutexGuard<'_, TripRows> {
+        self.trips.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     fn providers(&self) -> std::sync::MutexGuard<'_, ProviderRows> {
         self.providers.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -197,6 +204,32 @@ impl LinkStore for InMemoryFederation {
     }
 }
 
+#[async_trait::async_trait]
+impl TripStore for InMemoryFederation {
+    async fn put(&self, uow: &mut dyn UnitOfWork, trip: &Trip) -> Result<(), DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        if !self.providers().contains_key(&(tenant, trip.provider_id)) {
+            return Err(DomainError::not_found(
+                "federation.provider_not_found",
+                "there is no such identity provider",
+            ));
+        }
+        self.trips()
+            .insert((tenant, trip.transaction_id), trip.clone());
+        Ok(())
+    }
+
+    async fn take(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        transaction_id: TransactionId,
+    ) -> Result<Option<Trip>, DomainError> {
+        Ok(self
+            .trips()
+            .remove(&(uow.tenant().tenant_id(), transaction_id)))
+    }
+}
+
 /// The ports under test.
 #[derive(Clone)]
 pub struct Ports<'a> {
@@ -206,6 +239,8 @@ pub struct Ports<'a> {
     pub providers: &'a dyn ProviderStore,
     /// The link store under test.
     pub links: &'a dyn LinkStore,
+    /// The trip store under test.
+    pub trips: &'a dyn TripStore,
 }
 
 impl std::fmt::Debug for Ports<'_> {
@@ -544,4 +579,69 @@ pub async fn run_contract(ports: Ports<'_>) {
         .insert(uow, &relinked)
         .await
         .expect("insert")));
+
+    // Trips: one for a sign-in, taken once.
+    let sign_in = TransactionId::generate();
+    let trip = |provider: &IdentityProvider, nonce: &str| Trip {
+        transaction_id: sign_in,
+        provider_id: provider.id(),
+        state_hash: [7; 32],
+        nonce: nonce.to_owned(),
+        code_verifier: SealedSecret::from_stored(vec![0, 255, 128]),
+        redirect_uri: "https://hodor.example.com/t/acme/account/providers/google/callback"
+            .to_owned(),
+        expires_at: later,
+    };
+    assert!(
+        within!(ports, &tenant, |uow| ports
+            .trips
+            .take(uow, sign_in)
+            .await
+            .expect("take"))
+        .is_none()
+    );
+    within!(ports, &tenant, |uow| ports
+        .trips
+        .put(uow, &trip(&google, "first"))
+        .await
+        .expect("put"));
+    // Choosing a provider again replaces the trip.
+    within!(ports, &tenant, |uow| ports
+        .trips
+        .put(uow, &trip(&entra, "second"))
+        .await
+        .expect("put"));
+    // Another tenant cannot take it, and cannot make one for a provider
+    // it does not have.
+    assert!(
+        within!(ports, &elsewhere, |uow| ports
+            .trips
+            .take(uow, sign_in)
+            .await
+            .expect("take"))
+        .is_none()
+    );
+    let mut unit = ports.units_of_work.begin(&elsewhere).await.expect("begin");
+    let error = ports
+        .trips
+        .put(unit.as_mut(), &trip(&google, "foreign"))
+        .await
+        .expect_err("a provider of another tenant");
+    assert_eq!(error.code(), "federation.provider_not_found");
+    drop(unit);
+    let taken = within!(ports, &tenant, |uow| ports
+        .trips
+        .take(uow, sign_in)
+        .await
+        .expect("take"))
+    .expect("the trip");
+    assert_eq!(taken, trip(&entra, "second"));
+    assert!(
+        within!(ports, &tenant, |uow| ports
+            .trips
+            .take(uow, sign_in)
+            .await
+            .expect("take"))
+        .is_none()
+    );
 }

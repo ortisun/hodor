@@ -395,37 +395,42 @@ impl OpenIdClient {
         let settings = &provider.snapshot().settings;
         let known = self.known(&settings.issuer).await?;
 
-        let mut form = form_urlencoded::Serializer::new(String::new());
-        form.append_pair("grant_type", "authorization_code")
-            .append_pair("code", code)
-            .append_pair("redirect_uri", redirect_uri)
-            .append_pair("code_verifier", code_verifier.expose());
-        let mut request_headers = Vec::new();
-        if known.description.secret_in_body {
-            form.append_pair("client_id", &settings.client_id)
-                .append_pair("client_secret", client_secret.expose());
-        } else {
-            // Each part is form-encoded before the two are joined, as
-            // RFC 6749, section 2.3.1, asks.
-            let encode = |part: &str| -> String {
-                form_urlencoded::byte_serialize(part.as_bytes()).collect()
-            };
-            let pair = format!(
-                "{}:{}",
-                encode(&settings.client_id),
-                encode(client_secret.expose())
-            );
-            request_headers.push(("authorization", format!("Basic {}", STANDARD.encode(pair))));
-        }
-        let mut request = HttpRequest::post(
-            known.description.token_endpoint.clone(),
-            "application/x-www-form-urlencoded",
-            form.finish().into_bytes(),
-        )
-        .header("accept", "application/json");
-        for (name, value) in request_headers {
-            request = request.header(name, value);
-        }
+        // Built in a scope of its own: the form encoder must not live
+        // across the request.
+        let request = {
+            let mut form = form_urlencoded::Serializer::new(String::new());
+            form.append_pair("grant_type", "authorization_code")
+                .append_pair("code", code)
+                .append_pair("redirect_uri", redirect_uri)
+                .append_pair("code_verifier", code_verifier.expose());
+            let mut request_headers = Vec::new();
+            if known.description.secret_in_body {
+                form.append_pair("client_id", &settings.client_id)
+                    .append_pair("client_secret", client_secret.expose());
+            } else {
+                // Each part is form-encoded before the two are joined, as
+                // RFC 6749, section 2.3.1, asks.
+                let encode = |part: &str| -> String {
+                    form_urlencoded::byte_serialize(part.as_bytes()).collect()
+                };
+                let pair = format!(
+                    "{}:{}",
+                    encode(&settings.client_id),
+                    encode(client_secret.expose())
+                );
+                request_headers.push(("authorization", format!("Basic {}", STANDARD.encode(pair))));
+            }
+            let mut request = HttpRequest::post(
+                known.description.token_endpoint.clone(),
+                "application/x-www-form-urlencoded",
+                form.finish().into_bytes(),
+            )
+            .header("accept", "application/json");
+            for (name, value) in request_headers {
+                request = request.header(name, value);
+            }
+            request
+        };
         let response = self.http.send(request).await.map_err(|error| {
             unavailable(format!("the code could not be exchanged: {}", error.code()))
         })?;

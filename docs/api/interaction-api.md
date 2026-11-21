@@ -68,6 +68,43 @@ Submitting a step other than the one the sign-in is waiting for is an error (`42
 | The request comes from another site | `403` | `request.cross_origin` |
 | The body is not JSON of the expected shape | `400`, `415` or `422` | — |
 
+### Signing in through an identity provider
+
+A tenant may offer [identity providers](../architecture/contexts/federation.md#signing-in-through-a-provider). A person who chooses one leaves for the provider and comes back to a page of Hodor, which finishes the sign-in.
+
+| Method and path | Purpose |
+|---|---|
+| `GET /interaction/sign-in/providers` | The providers the tenant offers |
+| `POST /interaction/sign-in/providers/{alias}` | Choose a provider for the current sign-in |
+| `POST /interaction/sign-in/providers/{alias}/callback` | Finish, with what the provider sent back |
+
+`GET /interaction/sign-in/providers` needs no sign-in and answers with what the sign-in page shows, enabled providers only:
+
+```json
+{ "providers": [ { "alias": "google", "display_name": "Google" } ] }
+```
+
+`POST /interaction/sign-in/providers/{alias}` needs the sign-in cookie and the CSRF token. It answers `200` with the address to send the browser to:
+
+```json
+{ "redirect": "https://accounts.example.com/authorize?response_type=code&…" }
+```
+
+The provider sends the person back to `/t/{slug}/account/providers/{alias}/callback`, a page. The page sends what arrived in its address to `POST /interaction/sign-in/providers/{alias}/callback`, with the sign-in cookie and the CSRF token:
+
+```json
+{ "code": "…", "state": "…" }
+```
+
+The answer has [the shape of every sign-in response](#what-a-sign-in-response-looks-like): `completed` with the session cookie set, or `rejected`, in the same words whatever the reason.
+
+| Situation | Status | Code |
+|---|---|---|
+| The tenant has no enabled provider with this alias | `404` | `federation.provider_not_found` |
+| Finishing, when the sign-in has already had a step satisfied: a sign-in is completed by its steps or through a provider, never by part of each | `422` | `authentication.unexpected_step` |
+| The provider cannot be reached or describes itself wrongly | `503` | `federation.provider_unavailable` |
+| The server has no keys to keep secrets with (`HODOR_SECRET_KEYS`) | No provider is offered, and each of these routes answers `404` with `federation.provider_not_found` | |
+
 ## How a sign-in is tied to one browser
 
 A sign-in belongs to the browser that started it. Nobody else can continue it, even knowing its identifier.

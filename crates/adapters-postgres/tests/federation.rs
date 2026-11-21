@@ -2,7 +2,7 @@
 
 use hodor_adapters_crypto::{OsRandom, SecretKeys};
 use hodor_adapters_postgres::testing::TestDatabase;
-use hodor_adapters_postgres::{PgLinkStore, PgProviderStore};
+use hodor_adapters_postgres::{PgLinkStore, PgProviderStore, PgTripStore};
 use hodor_federation::api::{
     CreateProvider, FederationService, ProviderKind, ProviderSettings, Subject,
 };
@@ -21,6 +21,7 @@ async fn the_postgres_stores_pass_the_contract() {
         units_of_work: database.app(),
         providers: &PgProviderStore,
         links: &PgLinkStore,
+        trips: &PgTripStore,
     })
     .await;
 }
@@ -64,10 +65,11 @@ async fn a_client_secret_is_nowhere_in_the_database_and_still_comes_back() {
         .expect("create");
 
     // Everything the database holds about providers and their events,
-    // read as the owner of the tables, with bytes written out as text.
+    // read as the owner of the tables. Bytes are written out so that any
+    // text among them stays readable, whatever the other bytes are.
     let everything: String = sqlx::query_scalar(
         r#"SELECT concat(
-               (SELECT string_agg(to_jsonb(t)::text || convert_from(t.client_secret, 'LATIN1'), '')
+               (SELECT string_agg(to_jsonb(t)::text || encode(t.client_secret, 'escape'), '')
                 FROM federation.identity_provider t),
                (SELECT string_agg(to_jsonb(t)::text, '') FROM platform.outbox t))"#,
     )

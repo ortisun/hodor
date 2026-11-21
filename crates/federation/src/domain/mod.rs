@@ -3,3 +3,4 @@
 pub(crate) mod event;
 pub(crate) mod link;
 pub(crate) mod provider;
+pub(crate) mod trip;
