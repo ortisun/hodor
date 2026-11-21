@@ -81,13 +81,19 @@ Specified in [the credential context](../architecture/contexts/credential.md).
 | Issue-27 Notification | Done | `hodor-notification` crate: messages queued in the transaction of the change that causes them, built-in templates in English and Brazilian Portuguese, retries with growing waits, expiry, and contents erased once a message is no longer pending; `notification.message` under row-level security; one contract suite passed by the in-memory queue and by PostgreSQL. `hodor-adapters-smtp` delivers to a mail server and is tested against a real one in a container. `hodor-worker` delivers queued messages; the development stack has a mail server whose web page shows what was sent. Specified in [the notification context](../architecture/contexts/notification.md) |
 | Issue-28 to Issue-30 | Not started | — |
 
+### Checked by hand on the development stack
+
+Some things are covered by tests in halves and were also tried whole, on the Compose stack, on 2026-11-21:
+
+- A person asked to register; the server queued the message, the worker delivered it to the development mail server, the message arrived in the language asked for with a working link, and the link finished the registration once and only once.
+- The worker's metrics for the outbox and for messages arrived in VictoriaMetrics.
+
 ### Known gaps in what is done
 
 These are recorded here so they are not forgotten; each is picked up by the issue named.
 
 | Gap | Picked up by |
 |---|---|
-| The outbox metrics were not confirmed to arrive in VictoriaMetrics from the Compose stack; the export path is covered by a test | Next change to the worker |
 | Tenants have no routes of their own yet: an existing tenant answers `404` with `route.not_found` | Issue-24, the interaction API |
 | The system tenant is not created automatically by the development stack | Issue-30, with the bootstrap administrator |
 | The Argon2id hasher was not checked against a hash produced by another implementation; it relies on the library's own conformance | When a second implementation is at hand, for example password import |
