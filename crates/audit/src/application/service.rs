@@ -3,8 +3,8 @@
 use crate::application::ports::AuditLog;
 use crate::domain::record::{AuditRecord, Verification, Verifier};
 use hodor_kernel::{
-    Clock, Digest, DomainError, EventEnvelope, EventHandler, TenantContext, UnitOfWork,
-    UnitOfWorkFactory,
+    Clock, Cursor, Digest, DomainError, EventEnvelope, EventHandler, Page, PageRequest,
+    TenantContext, UnitOfWork, UnitOfWorkFactory,
 };
 use std::sync::Arc;
 
@@ -88,6 +88,42 @@ impl AuditService {
         self.log
             .list(uow.as_mut(), after, limit.clamp(1, MAX_PAGE))
             .await
+    }
+
+    /// Returns the tenant's records in order, a page at a time. The cursor
+    /// is the sequence of the last record of the page before.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Invalid` with code `request.cursor_invalid` if the cursor
+    /// is not one this use case gave out.
+    pub async fn page(
+        &self,
+        tenant: &TenantContext,
+        page: &PageRequest,
+    ) -> Result<Page<AuditRecord>, DomainError> {
+        let after = page
+            .cursor()
+            .map(|cursor| {
+                cursor.as_str().parse::<u64>().map_err(|_| {
+                    DomainError::invalid("request.cursor_invalid", "the cursor is not valid")
+                })
+            })
+            .transpose()?
+            .unwrap_or(0);
+        let mut uow = self.units_of_work.begin(tenant).await?;
+        // One more than asked for, to know whether there is a next page.
+        let mut items = self.log.list(uow.as_mut(), after, page.limit() + 1).await?;
+        let more = items.len() > page.limit() as usize;
+        items.truncate(page.limit() as usize);
+        let next_cursor = more
+            .then(|| {
+                items
+                    .last()
+                    .map(|record| Cursor::new(record.sequence.to_string()))
+            })
+            .flatten();
+        Ok(Page { items, next_cursor })
     }
 
     /// Checks the tenant's whole chain and reports the first break.

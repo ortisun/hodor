@@ -9,6 +9,7 @@
 //! comes in through traits ([`TenantResolver`], [`ReadinessCheck`]) that the
 //! composition root implements.
 
+mod admin;
 mod health;
 mod interaction;
 mod problem;
@@ -16,6 +17,7 @@ mod request;
 mod server;
 mod tenant;
 
+pub use admin::{ADMIN_OPENAPI, ADMIN_OPERATIONS, AdminState, admin_routes};
 pub use health::{Health, ReadinessCheck, ops_router};
 pub use interaction::{InteractionState, interaction_routes};
 pub use problem::Problem;
