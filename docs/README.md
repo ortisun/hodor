@@ -30,6 +30,7 @@ Start with the [critical review](architecture/critical-review.md): it lists wher
 | 19 | Rego Policy Lifecycle | [architecture/authorization.md](architecture/authorization.md#rego-policy-lifecycle) |
 | 20 | Multi-tenant Isolation Strategy | [architecture/multi-tenancy.md](architecture/multi-tenancy.md) |
 | 21 | Threat Model | [security/threat-model.md](security/threat-model.md) |
+| — | Outbound HTTP: the one guarded way out to addresses other people chose | [security/outbound-http.md](security/outbound-http.md) |
 | 22 | Database Model | [architecture/database.md](architecture/database.md) |
 | 23 | API Specifications | [api/api-spec.md](api/api-spec.md) |
 | — | The interaction interface: how a browser signs in | [api/interaction-api.md](api/interaction-api.md) |

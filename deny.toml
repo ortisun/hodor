@@ -27,6 +27,10 @@ allow = [
     "Zlib",
     # Asks for nothing, not even attribution. Used by the mail library.
     "0BSD",
+    # A permissive license for data: the list of certificate authorities
+    # that the TLS verifier of the outbound HTTP client carries for
+    # platforms without a trust store of their own.
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.9
 
