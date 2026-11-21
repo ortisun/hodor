@@ -1,17 +1,20 @@
-# Local development stack: PostgreSQL, migrations, the server, the worker
-# and VictoriaMetrics. Not for production: credentials are placeholders and
-# nothing is persisted outside named volumes.
+# Local development stack: PostgreSQL, migrations, the server, the worker,
+# a mail server that delivers nothing, VictoriaMetrics and VictoriaTraces.
+# Not for production: credentials are placeholders and nothing is persisted
+# outside named volumes.
 #
 #   docker compose -f deploy/docker/compose.yaml up --build --wait
 #
 # Server:           http://localhost:8080
 # Health:           http://localhost:9090/readyz
 # VictoriaMetrics:  http://localhost:8428/vmui
+# VictoriaTraces:   http://localhost:10428/select/vmui
 # Mail sent:        http://localhost:8025
 #
 # If a port is taken on your machine, override it:
 #
-#   HODOR_HTTP_PORT=18080 HODOR_OPS_PORT=19090 HODOR_VM_PORT=18428 HODOR_MAIL_PORT=18025 \
+#   HODOR_HTTP_PORT=18080 HODOR_OPS_PORT=19090 HODOR_VM_PORT=18428 \
+#   HODOR_TRACES_PORT=20428 HODOR_MAIL_PORT=18025 \
 #     docker compose -f deploy/docker/compose.yaml up --build --wait
 
 name: hodor
@@ -46,6 +49,18 @@ services:
         condition: service_healthy
     restart: "no"
 
+  # Creates the system tenant, unless it already exists.
+  system-tenant:
+    image: hodor:dev
+    entrypoint: ["/usr/local/bin/hodor-cli"]
+    command: ["tenant", "create-system"]
+    environment:
+      HODOR_DATABASE_URL: postgres://hodor_server:dev-server@postgres:5432/hodor
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
   victoriametrics:
     image: victoriametrics/victoria-metrics:v1.156.0
     command: ["-retentionPeriod=7d"]
@@ -53,6 +68,15 @@ services:
       - "127.0.0.1:${HODOR_VM_PORT:-8428}:8428"
     volumes:
       - victoriametrics-data:/victoria-metrics-data
+
+  # Receives traces over OTLP and answers queries in the Jaeger format.
+  victoriatraces:
+    image: victoriametrics/victoria-traces:v0.13.0
+    command: ["-retentionPeriod=7d", "-storageDataPath=/victoria-traces-data"]
+    ports:
+      - "127.0.0.1:${HODOR_TRACES_PORT:-10428}:10428"
+    volumes:
+      - victoriatraces-data:/victoria-traces-data
 
   # Accepts every message and delivers none; what was sent is shown on its
   # web page.
@@ -67,6 +91,7 @@ services:
       HODOR_DATABASE_URL: postgres://hodor_server:dev-server@postgres:5432/hodor
       HODOR_LOG_FORMAT: pretty
       HODOR_OTLP_METRICS_ENDPOINT: http://victoriametrics:8428/opentelemetry/v1/metrics
+      HODOR_OTLP_TRACES_ENDPOINT: http://victoriatraces:10428/insert/opentelemetry/v1/traces
     ports:
       - "127.0.0.1:${HODOR_HTTP_PORT:-8080}:8080"
       - "127.0.0.1:${HODOR_OPS_PORT:-9090}:9090"
@@ -74,6 +99,8 @@ services:
       migrate:
         condition: service_completed_successfully
       victoriametrics:
+        condition: service_started
+      victoriatraces:
         condition: service_started
     healthcheck:
       test: ["CMD", "/usr/local/bin/hodor-cli", "probe", "--addr", "127.0.0.1:9090", "--path", "/readyz"]
@@ -92,10 +119,13 @@ services:
       HODOR_MAIL_FROM: Hodor <no-reply@hodor.localhost>
       HODOR_LOG_FORMAT: pretty
       HODOR_OTLP_METRICS_ENDPOINT: http://victoriametrics:8428/opentelemetry/v1/metrics
+      HODOR_OTLP_TRACES_ENDPOINT: http://victoriatraces:10428/insert/opentelemetry/v1/traces
     depends_on:
       migrate:
         condition: service_completed_successfully
       victoriametrics:
+        condition: service_started
+      victoriatraces:
         condition: service_started
       mail:
         condition: service_started
@@ -109,3 +139,4 @@ services:
 volumes:
   postgres-data:
   victoriametrics-data:
+  victoriatraces-data:

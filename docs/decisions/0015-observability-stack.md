@@ -11,7 +11,7 @@ The specification requires OpenTelemetry. It does not name a backend. The projec
 - Code is instrumented only through `tracing` and the OpenTelemetry API. No backend-specific client is used anywhere.
 - Traces and metrics leave the process over OTLP/HTTP (protobuf). Endpoints are configured as full URLs, because backends accept OTLP on different paths.
 - **Metrics** are pushed to VictoriaMetrics, which ingests OTLP natively at `/opentelemetry/v1/metrics` and is queried with PromQL/MetricsQL. Dashboards and alert rules shipped with the Helm chart target it.
-- **Traces** go to any OTLP-compatible backend. VictoriaTraces is the natural companion; it is not part of the development Compose file yet and the pairing is not verified by a test.
+- **Traces** go to any OTLP-compatible backend. VictoriaTraces is the natural companion: it ingests OTLP at `/insert/opentelemetry/v1/traces` and answers queries in the Jaeger format. It is part of the development Compose file, and [the demonstration](../operations/quick-start.md#the-demonstration), which runs in continuous integration, finds the trace of a sign-in in it.
 - **Logs** are JSON on standard output, collected by the platform. VictoriaLogs is the suggested store.
 - Metrics are pushed, not scraped: the binaries expose no Prometheus endpoint in v1. This removes a listener and a second metrics format.
 - Telemetry is initialized from `main` before the async runtime starts, because the exporters use a blocking HTTP client on their own threads.

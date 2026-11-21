@@ -38,6 +38,7 @@ Start with the [critical review](architecture/critical-review.md): it lists wher
 | 24 | Plugin Architecture | [architecture/plugins.md](architecture/plugins.md) |
 | 25 | Testing Strategy | [architecture/testing.md](architecture/testing.md) |
 | 26 | Deployment Architecture | [operations/deployment.md](operations/deployment.md) |
+| — | Quick-start: from a clean checkout to a tenant people sign in to, and the demonstration of Milestone 1 | [operations/quick-start.md](operations/quick-start.md) |
 | 27 | Decision records | [decisions/](decisions/README.md) |
 | 28 | Product Roadmap | [product/roadmap.md](product/roadmap.md) |
 | 29 | Epics and Development Issues | [product/epics.md](product/epics.md) |

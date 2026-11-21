@@ -1,6 +1,6 @@
 # Local setup
 
-How to build Hodor, run its checks and start it on your machine.
+How to build Hodor, run its checks and start it on your machine. To only run Hodor and see what it does, the [quick-start](../operations/quick-start.md) is shorter.
 
 ## What you need
 
@@ -75,16 +75,20 @@ docker compose -f deploy/docker/compose.yaml up --build --wait
 |---|---|---|
 | `postgres` | PostgreSQL 17, with the database roles created on first start | internal only |
 | `migrate` | Runs `hodor-cli migrate` once and exits | — |
+| `system-tenant` | Runs `hodor-cli tenant create-system` once and exits. It creates the system tenant unless it exists | — |
 | `server` | `hodor-server`, with the hosted pages | <http://localhost:8080>, health on <http://localhost:9090/readyz> |
 | `worker` | `hodor-worker`, writing the audit log and delivering email | internal only |
 | `mail` | A mail server for development. It accepts every message and delivers none: what Hodor sends can be read in its web page | <http://localhost:8025> |
-| `victoriametrics` | Metrics backend; the server pushes to it over OTLP | <http://localhost:8428/vmui> |
+| `victoriametrics` | Metrics backend; the server and the worker push to it over OTLP | <http://localhost:8428/vmui> |
+| `victoriatraces` | Traces backend; the server and the worker push to it over OTLP | <http://localhost:10428/select/vmui> |
 
 If one of those ports is taken on your machine, choose others:
 
 ```bash
-HODOR_HTTP_PORT=18080 HODOR_OPS_PORT=19090 HODOR_VM_PORT=18428 HODOR_MAIL_PORT=18025 docker compose -f deploy/docker/compose.yaml up --build --wait
+HODOR_HTTP_PORT=18080 HODOR_OPS_PORT=19090 HODOR_VM_PORT=18428 HODOR_TRACES_PORT=20428 HODOR_MAIL_PORT=18025 docker compose -f deploy/docker/compose.yaml up --build --wait
 ```
+
+Set the same variables for every later `docker compose` command on that stack. The commands on this page pass `--no-deps` to `run`, so that running the command-line tool never restarts a service of the stack.
 
 Stop the stack and delete its data:
 
@@ -120,7 +124,7 @@ Every setting is a command-line flag with an environment variable of the same me
 | `HODOR_DATABASE_MAX_CONNECTIONS` | `10` | Pool size |
 | `HODOR_LOG_FORMAT` | `json` | `json` or `pretty` |
 | `HODOR_LOG_FILTER` | `info` | `tracing` filter, for example `info,hodor_oauth=debug` |
-| `HODOR_OTLP_TRACES_ENDPOINT` | unset | Full URL of the OTLP/HTTP traces endpoint; unset disables export |
+| `HODOR_OTLP_TRACES_ENDPOINT` | unset | Full URL of the OTLP/HTTP traces endpoint; unset disables export. For VictoriaTraces: `http://<host>:10428/insert/opentelemetry/v1/traces` |
 | `HODOR_OTLP_METRICS_ENDPOINT` | unset | Full URL of the OTLP/HTTP metrics endpoint. For VictoriaMetrics: `http://<host>:8428/opentelemetry/v1/metrics` |
 | `HODOR_SHUTDOWN_DRAIN_SECONDS` | `5` | How long to keep serving after a stop signal while readiness fails |
 | `HODOR_PUBLIC_URL` | `http://localhost:8080` | The address people reach this installation at, without a path. Links in messages start with it |
@@ -164,7 +168,7 @@ The worker connects to the database twice, with different roles: as a member of 
 With the development stack running:
 
 ```bash
-docker compose -f deploy/docker/compose.yaml run --rm --entrypoint /usr/local/bin/hodor-cli -e HODOR_DATABASE_URL=postgres://hodor_server:dev-server@postgres:5432/hodor server tenant create --slug acme --name "Acme" --open-registration
+docker compose -f deploy/docker/compose.yaml run --rm --no-deps --entrypoint /usr/local/bin/hodor-cli -e HODOR_DATABASE_URL=postgres://hodor_server:dev-server@postgres:5432/hodor server tenant create --slug acme --name "Acme" --open-registration
 ```
 
 The tenant's pages are then at <http://localhost:8080/t/acme/account>. `--open-registration` lets anyone register in it; without it only administrators create users, through [the administration interface](../api/admin-api.md).
@@ -183,7 +187,7 @@ The same can be done without a browser, with the requests of [the interaction in
 Make someone an administrator of the tenant and get an access token for them:
 
 ```bash
-docker compose -f deploy/docker/compose.yaml run --rm --entrypoint /usr/local/bin/hodor-cli -e HODOR_DATABASE_URL=postgres://hodor_server:dev-server@postgres:5432/hodor server admin bootstrap --tenant acme --email ana@example.com
+docker compose -f deploy/docker/compose.yaml run --rm --no-deps --entrypoint /usr/local/bin/hodor-cli -e HODOR_DATABASE_URL=postgres://hodor_server:dev-server@postgres:5432/hodor server admin bootstrap --tenant acme --email ana@example.com
 ```
 
 Use the token it prints to call the administration interface, for example to list the tenant's users:

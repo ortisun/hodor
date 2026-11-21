@@ -9,7 +9,7 @@ const HELP = `
 The browser tests need the development stack and a tenant that accepts registrations:
 
   docker compose -f deploy/docker/compose.yaml up --build --wait
-  docker compose -f deploy/docker/compose.yaml run --rm --entrypoint /usr/local/bin/hodor-cli \\
+  docker compose -f deploy/docker/compose.yaml run --rm --no-deps --entrypoint /usr/local/bin/hodor-cli \\
     -e HODOR_DATABASE_URL=postgres://hodor_server:dev-server@postgres:5432/hodor \\
     server tenant create --slug ${TENANT} --name "Acme" --open-registration
 
