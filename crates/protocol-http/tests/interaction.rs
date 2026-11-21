@@ -214,6 +214,7 @@ async fn world() -> World {
         authentication,
         accounts,
         sessions,
+        external: None,
         digest,
         clock: clock.clone(),
     };

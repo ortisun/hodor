@@ -75,12 +75,12 @@ struct Kept {
 pub struct AuthorizationRequest {
     /// The address at the provider to send the person to.
     pub url: String,
-    /// Returned by the provider untouched; recognizes this trip.
+    /// Returned by the provider untouched; recognizes this request.
     pub state: String,
-    /// Put by the provider inside the token; ties the token to this trip.
+    /// Put by the provider inside the token; ties the token to this request.
     pub nonce: String,
     /// Proves, when the code is exchanged, that the exchange is made by
-    /// whoever started the trip. Never sent to the browser.
+    /// whoever made the request. Never sent to the browser.
     pub code_verifier: Secret<String>,
 }
 
@@ -332,8 +332,8 @@ impl OpenIdClient {
         Ok(Some(keys))
     }
 
-    /// Prepares one trip to the provider: the address to send the person
-    /// to, and the three values made for this trip.
+    /// Prepares one authorization request to the provider: the address to send the person
+    /// to, and the three values made for this request.
     ///
     /// # Errors
     ///
@@ -375,7 +375,7 @@ impl OpenIdClient {
     }
 
     /// Exchanges the code a person came back with and checks the ID
-    /// token it yields against everything this trip was made with.
+    /// token it yields against everything this request was made with.
     ///
     /// # Errors
     ///
@@ -395,37 +395,42 @@ impl OpenIdClient {
         let settings = &provider.snapshot().settings;
         let known = self.known(&settings.issuer).await?;
 
-        let mut form = form_urlencoded::Serializer::new(String::new());
-        form.append_pair("grant_type", "authorization_code")
-            .append_pair("code", code)
-            .append_pair("redirect_uri", redirect_uri)
-            .append_pair("code_verifier", code_verifier.expose());
-        let mut request_headers = Vec::new();
-        if known.description.secret_in_body {
-            form.append_pair("client_id", &settings.client_id)
-                .append_pair("client_secret", client_secret.expose());
-        } else {
-            // Each part is form-encoded before the two are joined, as
-            // RFC 6749, section 2.3.1, asks.
-            let encode = |part: &str| -> String {
-                form_urlencoded::byte_serialize(part.as_bytes()).collect()
-            };
-            let pair = format!(
-                "{}:{}",
-                encode(&settings.client_id),
-                encode(client_secret.expose())
-            );
-            request_headers.push(("authorization", format!("Basic {}", STANDARD.encode(pair))));
-        }
-        let mut request = HttpRequest::post(
-            known.description.token_endpoint.clone(),
-            "application/x-www-form-urlencoded",
-            form.finish().into_bytes(),
-        )
-        .header("accept", "application/json");
-        for (name, value) in request_headers {
-            request = request.header(name, value);
-        }
+        // Built in a scope of its own: the form encoder must not live
+        // across the request.
+        let request = {
+            let mut form = form_urlencoded::Serializer::new(String::new());
+            form.append_pair("grant_type", "authorization_code")
+                .append_pair("code", code)
+                .append_pair("redirect_uri", redirect_uri)
+                .append_pair("code_verifier", code_verifier.expose());
+            let mut request_headers = Vec::new();
+            if known.description.secret_in_body {
+                form.append_pair("client_id", &settings.client_id)
+                    .append_pair("client_secret", client_secret.expose());
+            } else {
+                // Each part is form-encoded before the two are joined, as
+                // RFC 6749, section 2.3.1, asks.
+                let encode = |part: &str| -> String {
+                    form_urlencoded::byte_serialize(part.as_bytes()).collect()
+                };
+                let pair = format!(
+                    "{}:{}",
+                    encode(&settings.client_id),
+                    encode(client_secret.expose())
+                );
+                request_headers.push(("authorization", format!("Basic {}", STANDARD.encode(pair))));
+            }
+            let mut request = HttpRequest::post(
+                known.description.token_endpoint.clone(),
+                "application/x-www-form-urlencoded",
+                form.finish().into_bytes(),
+            )
+            .header("accept", "application/json");
+            for (name, value) in request_headers {
+                request = request.header(name, value);
+            }
+            request
+        };
         let response = self.http.send(request).await.map_err(|error| {
             unavailable(format!("the code could not be exchanged: {}", error.code()))
         })?;
@@ -567,7 +572,7 @@ impl OpenIdClient {
 
         // Nonce.
         if nonce.is_empty() || text(&claims, "nonce") != Some(nonce) {
-            return Err(not_verified("the ID token was not issued for this trip"));
+            return Err(not_verified("the ID token was not issued for this request"));
         }
 
         // Subject.

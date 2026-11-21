@@ -3,9 +3,11 @@
 //! See `docs/architecture/contexts/federation.md`, "Storage".
 
 use crate::uow::{connection, database_error};
+use hodor_authentication::api::TransactionId;
 use hodor_federation::api::{
-    Alias, ExternalIdentity, IdentityProvider, LinkStore, ProviderId, ProviderKind,
-    ProviderSettings, ProviderSnapshot, ProviderStatus, ProviderStore, Subject,
+    Alias, ExternalIdentity, IdentityProvider, LinkStore, PendingAuthorization,
+    PendingAuthorizationStore, ProviderId, ProviderKind, ProviderSettings, ProviderSnapshot,
+    ProviderStatus, ProviderStore, Subject,
 };
 use hodor_kernel::{DomainError, SealedSecret, Timestamp, UnitOfWork, UserId};
 use sqlx::Row as _;
@@ -13,6 +15,7 @@ use sqlx::postgres::PgRow;
 
 const ALIAS_CONSTRAINT: &str = "identity_provider_alias_unique";
 const PROVIDER_CONSTRAINT: &str = "external_identity_provider_fk";
+const PENDING_PROVIDER_CONSTRAINT: &str = "pending_authorization_provider_fk";
 
 fn corrupted(what: &str) -> DomainError {
     DomainError::internal(
@@ -337,5 +340,86 @@ impl LinkStore for PgLinkStore {
         .await
         .map_err(|e| database_error(&e))?;
         Ok(removed.map(UserId::from_uuid))
+    }
+}
+
+/// [`PendingAuthorizationStore`] on `federation.pending_authorization`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PgPendingAuthorizationStore;
+
+#[async_trait::async_trait]
+impl PendingAuthorizationStore for PgPendingAuthorizationStore {
+    async fn put(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        pending: &PendingAuthorization,
+    ) -> Result<(), DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let stored = sqlx::query(
+            "INSERT INTO federation.pending_authorization
+                 (tenant_id, transaction_id, provider_id, state_hash, nonce, code_verifier,
+                  redirect_uri, expires_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+             ON CONFLICT (tenant_id, transaction_id) DO UPDATE
+             SET provider_id = EXCLUDED.provider_id, state_hash = EXCLUDED.state_hash,
+                 nonce = EXCLUDED.nonce, code_verifier = EXCLUDED.code_verifier,
+                 redirect_uri = EXCLUDED.redirect_uri, expires_at = EXCLUDED.expires_at",
+        )
+        .bind(tenant.as_uuid())
+        .bind(pending.transaction_id.as_uuid())
+        .bind(pending.provider_id.as_uuid())
+        .bind(pending.state_hash.as_slice())
+        .bind(&pending.nonce)
+        .bind(pending.code_verifier.as_bytes())
+        .bind(&pending.redirect_uri)
+        .bind(pending.expires_at)
+        .execute(connection(uow)?)
+        .await;
+        match stored {
+            Ok(_) => Ok(()),
+            Err(sqlx::Error::Database(error))
+                if error.constraint() == Some(PENDING_PROVIDER_CONSTRAINT) =>
+            {
+                Err(DomainError::not_found(
+                    "federation.provider_not_found",
+                    "there is no such identity provider",
+                ))
+            }
+            Err(error) => Err(database_error(&error)),
+        }
+    }
+
+    async fn take(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        transaction_id: TransactionId,
+    ) -> Result<Option<PendingAuthorization>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        // One statement: of several callers at the same moment, one
+        // deletes the row and gets it back.
+        let row = sqlx::query(
+            "DELETE FROM federation.pending_authorization
+             WHERE tenant_id = $1 AND transaction_id = $2
+             RETURNING provider_id, state_hash, nonce, code_verifier, redirect_uri, expires_at",
+        )
+        .bind(tenant.as_uuid())
+        .bind(transaction_id.as_uuid())
+        .fetch_optional(connection(uow)?)
+        .await
+        .map_err(|e| database_error(&e))?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let get = |error: sqlx::Error| database_error(&error);
+        let state_hash: Vec<u8> = row.try_get("state_hash").map_err(get)?;
+        Ok(Some(PendingAuthorization {
+            transaction_id,
+            provider_id: ProviderId::from_uuid(row.try_get("provider_id").map_err(get)?),
+            state_hash: state_hash.try_into().map_err(|_| corrupted("state hash"))?,
+            nonce: row.try_get("nonce").map_err(get)?,
+            code_verifier: SealedSecret::from_stored(row.try_get("code_verifier").map_err(get)?),
+            redirect_uri: row.try_get("redirect_uri").map_err(get)?,
+            expires_at: row.try_get("expires_at").map_err(get)?,
+        }))
     }
 }

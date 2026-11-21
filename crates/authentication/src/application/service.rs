@@ -207,9 +207,11 @@ impl AuthenticationService {
             Progress::Rejected { attempts_left } => {
                 self.store(tenant, &transaction, Some(self.failed(step, &transaction)))
                     .await?;
+                // The step the sign-in is waiting for, which is not the
+                // one that was tried when an alternative was rejected.
                 Ok(SignIn::Rejected {
                     transaction_id: transaction.id(),
-                    step: step.to_owned(),
+                    step: self.pending_step(&transaction)?,
                     attempts_left,
                 })
             }

@@ -128,6 +128,8 @@ Every setting is a command-line flag with an environment variable of the same me
 | `HODOR_OTLP_METRICS_ENDPOINT` | unset | Full URL of the OTLP/HTTP metrics endpoint. For VictoriaMetrics: `http://<host>:8428/opentelemetry/v1/metrics` |
 | `HODOR_SHUTDOWN_DRAIN_SECONDS` | `5` | How long to keep serving after a stop signal while readiness fails |
 | `HODOR_PUBLIC_URL` | `http://localhost:8080` | The address people reach this installation at, without a path. Links in messages start with it |
+| `HODOR_SECRET_KEYS` | unset | The keys that keep secrets [encrypted at rest](../security/secrets-at-rest.md#keys). Unset: no identity provider can be used, and none is offered |
+| `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` | empty | Hosts with ports, separated by commas, that [outbound requests](../security/outbound-http.md#the-exception-for-development) may reach at a private address and over plain HTTP. Never set it anywhere real |
 | `HODOR_PAGES_DIRECTORY` | unset; the image sets `/usr/share/hodor/auth-ui` | The directory holding the built [hosted pages](../architecture/hosted-pages.md#how-the-pages-are-served). Unset: no pages are served. Set to a directory without `index.html`: the server does not start |
 | `HODOR_PASSWORD_HASH_MEMORY_KIBIBYTES` | `19456` | Memory one password hash uses. Raising it makes every password harder to guess offline; existing passwords are re-hashed as their owners sign in |
 | `HODOR_PASSWORD_HASH_PASSES` | `2` | Passes over that memory |

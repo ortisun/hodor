@@ -80,7 +80,7 @@ The federation context does not check that the user exists: users belong to the 
 
 ## Asking an OpenID Connect provider who somebody is
 
-For a provider of the kind `openid_connect`, Hodor is a relying party: it sends the person to the provider and, when they come back, asks the provider who they are. This section is what Hodor does on its side of that exchange. Keeping track of the trip in between, and signing the person in, are described with Issue-40.
+For a provider of the kind `openid_connect`, Hodor is a relying party: it sends the person to the provider and, when they come back, asks the provider who they are. This section is what Hodor does on its side of that exchange. Keeping track of the pending authorization in between, and signing the person in, are described with Issue-40.
 
 Every request to a provider goes through [the guarded outbound client](../../security/outbound-http.md).
 
@@ -97,12 +97,12 @@ Hodor reads the provider's own description of itself at `{issuer}/.well-known/op
 
 ### Sending the person to the provider
 
-Hodor builds the address with the client identifier, the scopes, the address to come back to, and three values made for this one trip:
+Hodor builds the address with the client identifier, the scopes, the address to come back to, and three values made for this one pending authorization:
 
 | Value | What it is for |
 |---|---|
-| `state` | Returned by the provider untouched. Lets Hodor recognize the trip it started, and refuse one it did not (Threat-Federation-03) |
-| `nonce` | Put by the provider inside the token it issues. Ties the token to this trip, so a token issued for another trip, or for another client, cannot be used here (Threat-Federation-05) |
+| `state` | Returned by the provider untouched. Lets Hodor recognize the pending authorization it started, and refuse one it did not (Threat-Federation-03) |
+| `nonce` | Put by the provider inside the token it issues. Ties the token to this request, so a token issued for another request, or for another client, cannot be used here (Threat-Federation-05) |
 | PKCE code verifier | Kept by Hodor; only its SHA-256 hash is sent. The code that comes back can be exchanged only by whoever holds the verifier |
 
 Each is 256 random bits. The method of the PKCE challenge is always `S256`.
@@ -124,10 +124,10 @@ The client secret is sent in the `Authorization` header (`client_secret_basic`) 
 | Issuer | `iss` is not the configured issuer, character for character |
 | Audience | `aud` does not contain this client. With several audiences, or whenever `azp` is present, `azp` must be this client |
 | Time | `exp` has passed, `iat` is in the future, or `nbf` has not come, allowing one minute for clocks that disagree. `exp` and `iat` must be there |
-| Nonce | `nonce` is not the one made for this trip |
+| Nonce | `nonce` is not the one made for this request |
 | Subject | `sub` is missing or is not a usable subject |
 
-A token refused by any check signs nobody in, and the reason is written to the log, never shown to the person: all they learn is that it did not work.
+A token refused by any check signs nobody in, and the reason is recorded for the audit log, never shown to the person: all they learn is that it did not work.
 
 ### What Hodor takes from the token
 
@@ -139,6 +139,79 @@ A token refused by any check signs nobody in, and the reason is written to the l
 
 Nothing else in the token is used. In particular no group, role or permission is ever taken from it (Threat-Federation-07).
 
+## Signing in through a provider
+
+Signing in through a provider is an [alternative](authentication.md#alternatives) of the tenant's sign-in flow, named `external`: one step that establishes who is signing in and proves it. It ends in the same Hodor session as a password does.
+
+```mermaid
+sequenceDiagram
+    participant Browser
+    participant Hodor
+    participant Provider
+    Browser->>Hodor: start a sign-in
+    Browser->>Hodor: choose a provider
+    Hodor->>Hodor: keep a pending authorization, for this sign-in only
+    Hodor-->>Browser: the address at the provider
+    Browser->>Provider: go there, sign in
+    Provider-->>Browser: back to Hodor's page, with a code and the state
+    Browser->>Hodor: finish, with the code and the state
+    Hodor->>Hodor: take the pending authorization, once
+    Hodor->>Provider: exchange the code
+    Provider-->>Hodor: the ID token
+    Hodor->>Hodor: check the token, find or create the user
+    Hodor-->>Browser: signed in, or "that did not work"
+```
+
+### The pending authorization
+
+When a person chooses a provider, Hodor keeps one **pending authorization** for their sign-in: what it needs to recognize the answer when the person comes back.
+
+| Part | Rules |
+|---|---|
+| The sign-in it belongs to | A pending authorization belongs to one sign-in in progress, which belongs to one browser. Choosing a provider again replaces the pending authorization |
+| The provider | The answer is only ever checked against the provider the pending authorization was made for |
+| The state | Only its SHA-256 hash is kept |
+| The nonce and the PKCE verifier | The verifier is [kept encrypted](../../security/secrets-at-rest.md), for the purpose `federation.code_verifier` |
+| The address to come back to | `{public address}/t/{slug}/account/providers/{alias}/callback`: a page of Hodor, one per provider. This is the address to register at the provider |
+| Expiry | Ten minutes, like the sign-in |
+
+**A pending authorization is used once.** Finishing takes the pending authorization away before anything is checked, so whatever the outcome, the same answer from a provider cannot be presented twice.
+
+The person comes back to a page, not to an interface: the cookie that ties a sign-in to its browser is not sent when another site sends the browser to Hodor, so the page that opens is what presents the code, from Hodor's own origin.
+
+### Finishing
+
+Finishing is refused, in the same words as a wrong password, when:
+
+- there is no pending authorization for this sign-in, or it has expired;
+- the state is not the one of the pending authorization. This is what stops an answer obtained by someone else from being finished in a victim's browser (Threat-Federation-03);
+- the provider named is not the pending authorization's, or is disabled;
+- the provider refuses the code, or the ID token fails [a check](#when-the-person-comes-back);
+- the person cannot be let in, by the rules below.
+
+A refusal counts against the sign-in like a rejected step, and leaves the sign-in waiting for the step it was waiting for. The person is told nothing of the reason. It is recorded as the event `federation.sign_in_refused`, which reaches the audit log, so that an administrator can see why somebody could not get in.
+
+### Who the person is
+
+The link is looked up by the provider and the token's subject, and by nothing else.
+
+| Situation | What happens |
+|---|---|
+| The external identity is linked to a user who may sign in | That user is signed in |
+| It is linked to a user who may not sign in: suspended, deactivated, pending | Refused |
+| It is not linked, and the provider does not create users | Refused |
+| It is not linked, the provider creates users, and the provider vouches for an email address that no user of the tenant has | A user is created with that address, already verified, and the name and language the provider gave; the external identity is linked to it. Both in one unit of work: a user without its link, or a link without its user, is never stored |
+| It is not linked, and the provider gives no email address or does not vouch for it | Refused. A user needs a login identifier, and an address nobody vouches for is not one |
+| It is not linked, and a user of the tenant already has the email address | **Refused. The external identity is never let into an existing account because of an email address** (Threat-Federation-01). The existing account stays exactly as it was |
+
+The last row is the rule that matters most. An email address at a provider proves control of a mailbox at best, at some time, according to that provider. Letting it into an account that already exists would make every provider a tenant adds a way into every account of the tenant. Connecting an external identity to an existing account needs proof of both, which comes with the account console.
+
+It has a cost that is accepted for now: a person who registered with a password and later tries a social login with the same address is refused, and is told only that it did not work.
+
+### What is recorded
+
+A sign-in through a provider is recorded in the session with the method `external`, and counts as one factor: Hodor does not know how the provider convinced itself. The audit log holds `authentication.succeeded` with that method, and for a first sign-in `identity.user_created` and `federation.identity_linked`.
+
 ## Events
 
 | Event | When | Carries |
@@ -149,6 +222,7 @@ Nothing else in the token is used. In particular no group, role or permission is
 | `federation.provider_disabled`, `federation.provider_enabled` | Its status changed | Its identifier and alias |
 | `federation.identity_linked` | A link was made | The provider, the user. Not the subject |
 | `federation.identity_unlinked` | A link was removed | The provider, the user |
+| `federation.sign_in_refused` | A sign-in through a provider was refused | The provider, the reason as a fixed name such as `state_mismatch` or `email_belongs_to_a_user`, and what the check of the provider's answer said when that is the reason |
 
 No event carries a secret. No event carries a subject either: it identifies a person at another organization, and events are kept for a long time and read by many.
 
@@ -172,7 +246,8 @@ No event carries a secret. No event carries a subject either: it identifies a pe
 |---|---|
 | `ProviderStore` | Stores identity providers |
 | `LinkStore` | Stores links |
-| `SecretBox`, from the kernel | Seals and opens client secrets |
+| `PendingAuthorizationStore` | Stores the pending authorization of a sign-in in progress |
+| `SecretBox`, from the kernel | Seals and opens client secrets and PKCE verifiers |
 | `HttpClient`, from the kernel | Every request to a provider |
 | `SignatureVerifier`, from the kernel | Checks the signature of an ID token. Hodor implements no cryptography of its own |
 
@@ -180,7 +255,7 @@ Each store has an implementation in memory, behind the crate's `testing` feature
 
 ## Storage
 
-Both tables are under [forced row-level security](../multi-tenancy.md#isolation-by-layer).
+All tables are under [forced row-level security](../multi-tenancy.md#isolation-by-layer).
 
 ### `federation.identity_provider`
 
@@ -205,11 +280,21 @@ Both tables are under [forced row-level security](../multi-tenancy.md#isolation-
 | `user_id` | `uuid` | A user of the identity context; deliberately not a foreign key, since contexts do not reference each other's tables |
 | `linked_at`, `last_used_at` | `timestamptz` | |
 
+### `federation.pending_authorization`
+
+| Column | Type | Notes |
+|---|---|---|
+| `tenant_id`, `transaction_id` | `uuid` | Primary key: one pending authorization per sign-in in progress. The sign-in belongs to the authentication context; deliberately not a foreign key |
+| `provider_id` | `uuid` | Foreign key within the tenant |
+| `state_hash` | `bytea` | SHA-256 of the state |
+| `nonce`, `redirect_uri` | `text` | |
+| `code_verifier` | `bytea` | The sealed PKCE verifier |
+| `expires_at` | `timestamptz` | |
+
 ## Not built yet
 
 | Item | Planned in |
 |---|---|
-| Signing in through a provider, creating a user on first sign-in, the rules against taking over an account | Issue-40 |
 | Managing providers through the administration interface and the command-line tool | Issue-41 |
 | Providers that are not plain OpenID Connect: GitHub, Apple; directories; SAML | Issue-43, Issue-44, Issue-48 |
 | Signature algorithms beyond `RS256`, `PS256` and `ES256`; encrypted ID tokens; the UserInfo endpoint | When a provider that needs them is to be supported |
@@ -217,3 +302,7 @@ Both tables are under [forced row-level security](../multi-tenancy.md#isolation-
 | What happens to the sessions of a provider's users when it is disabled (Threat-Federation-10). Today disabling stops new sign-ins only | With the consoles |
 | Mapping what a provider says about a person to the user's profile, groups or roles | Issue-40 for the profile; groups and roles are not in Milestone 2 |
 | Linking and unlinking by the person themself, routing by email domain | The account console |
+| Letting a person who already has an account connect an external identity to it, with proof of both | The account console |
+| Pending authorizations that were never finished are never removed | A cleanup job, later |
+| Bringing the name and the language up to date on later sign-ins | With claim mapping |
+| Protection against a local account made in advance with someone else's address (Threat-Federation-02). Such an account keeps the person's external identity out; it is not taken over | With linking, in the account console |

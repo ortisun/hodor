@@ -87,7 +87,7 @@ Groups and organizations are Phase 1 but outside Milestone 1.
 | Identifier | Issue | Acceptance | Depends on |
 |---|---|---|---|
 | Issue-17 | `credential` domain: `PasswordCredential`, policy check, history, `PasswordHasher` port | Unit tests with a fake hasher | Issue-04 |
-| Issue-18 | `adapters-crypto`: Argon2id hasher with versioned parameters, bounded blocking pool and semaphore, dummy-hash verification | PHC round trip; rehash on old parameters; saturation returns a typed overload error | Issue-17 |
+| Issue-18 | `adapters-crypto`: Argon2id hasher with versioned parameters, bounded blocking pool and semaphore, dummy-hash verification | PHC round pending authorization; rehash on old parameters; saturation returns a typed overload error | Issue-17 |
 | Issue-19 | Credential repository and use cases: set, verify, change password | Contract suite; change revokes history beyond depth | Issue-05, Issue-17 |
 
 ### Slice E — Authentication and session (Epic 4)
@@ -166,7 +166,7 @@ Built before Phase 2 at the project owner's request; [Decision 0017](../decision
 |---|---|---|---|
 | Issue-38 | `federation` context: the identity provider with its encrypted secret, the link between a user and an external identity, storage under row-level security, contract suite | A secret is never read back; a link is found by provider and external subject only; tenant isolation cases pass | Issue-35 |
 | Issue-39 | OpenID Connect relying party: discovery, key set with caching and refresh on an unknown key, ID token validation (signature, issuer, audience, authorized party, expiry, nonce), PKCE | Every invalid token of the test corpus is refused for the right reason, against a provider run by the test | Issue-36, Issue-38 |
-| Issue-40 | Federated sign-in over HTTP: start and callback routes, the state of one trip bound to the browser and the sign-in, creation on first sign-in, the rules against takeover | A whole sign-in against the test provider; a replayed or foreign callback is refused; an external identity never enters an existing account by its email address alone | Issue-37, Issue-39 |
+| Issue-40 | Federated sign-in over HTTP: start and callback routes, the state of one pending authorization bound to the browser and the sign-in, creation on first sign-in, the rules against takeover | A whole sign-in against the test provider; a replayed or foreign callback is refused; an external identity never enters an existing account by its email address alone | Issue-37, Issue-39 |
 | Issue-41 | Managing providers: administration interface and command-line tool | A provider is created, changed, disabled and listed; its secret is write-only | Issue-38 |
 | Issue-42 | The pages: the providers a tenant offers on the sign-in page; the way back from a provider | Browser tests against a provider in the Compose stack, with the policy, accessibility and keyboard checks | Issue-40, Issue-41 |
 | Issue-43 | Connectors: Google and Microsoft (OpenID Connect, issuer pinned to allowed tenants), GitHub (OAuth 2.0 with the email interface), Apple (form post, client secret as a signed token) | Each connector's quirks are tested against recorded answers; none is verified against the real provider in continuous integration | Issue-40 |

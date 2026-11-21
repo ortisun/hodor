@@ -56,6 +56,17 @@ pub enum FederationEvent {
         /// The user.
         user_id: UserId,
     },
+    /// A sign-in through a provider was refused. The person is told only
+    /// that it did not work; this is where the reason is kept.
+    SignInRefused {
+        /// The provider named, if the tenant has it.
+        provider_id: Option<ProviderId>,
+        /// Why, as a fixed name.
+        reason: &'static str,
+        /// What the check of the provider's answer said, if that is why.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
+    },
     /// A link was removed.
     IdentityUnlinked {
         /// The provider.
@@ -75,6 +86,7 @@ impl DomainEvent for FederationEvent {
             Self::ProviderEnabled { .. } => "federation.provider_enabled",
             Self::IdentityLinked { .. } => "federation.identity_linked",
             Self::IdentityUnlinked { .. } => "federation.identity_unlinked",
+            Self::SignInRefused { .. } => "federation.sign_in_refused",
         }
     }
 }

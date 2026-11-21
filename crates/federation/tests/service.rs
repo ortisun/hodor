@@ -68,6 +68,7 @@ async fn the_in_memory_stores_pass_the_contract() {
         units_of_work: &units_of_work,
         providers: &stores,
         links: &stores,
+        pending: &stores,
     })
     .await;
 }

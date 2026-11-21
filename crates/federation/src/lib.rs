@@ -15,10 +15,14 @@ pub mod testing;
 /// What other crates may use from this context.
 pub mod api {
     pub use crate::application::openid::{AuthorizationRequest, OpenIdClient, VerifiedIdentity};
-    pub use crate::application::ports::{LinkStore, ProviderStore};
+    pub use crate::application::ports::{LinkStore, PendingAuthorizationStore, ProviderStore};
     pub use crate::application::service::{ChangeProvider, CreateProvider, FederationService};
+    pub use crate::application::sign_in::{
+        EXTERNAL_STEP, ExternalIdentityAuthenticator, ExternalSignIn, OfferedProvider,
+    };
     pub use crate::domain::event::FederationEvent;
     pub use crate::domain::link::{ExternalIdentity, Subject};
+    pub use crate::domain::pending_authorization::PendingAuthorization;
     pub use crate::domain::provider::{
         Alias, IdentityProvider, ProviderId, ProviderKind, ProviderSettings, ProviderSnapshot,
         ProviderStatus,

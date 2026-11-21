@@ -65,23 +65,56 @@ impl IdentityService {
         command: CreateUser,
         caller: Caller,
     ) -> Result<User, DomainError> {
+        let mut uow = self.units_of_work.begin(tenant).await?;
+        let user = self.create_in(uow.as_mut(), command, false, caller).await?;
+        uow.commit().await?;
+        Ok(user)
+    }
+
+    /// Creates a user inside the caller's unit of work, so that the user
+    /// is stored together with whatever else the caller is doing, or not
+    /// at all. With `verified`, every identifier that can be verified
+    /// starts verified: for a caller that has proof the person controls
+    /// them.
+    ///
+    /// # Errors
+    ///
+    /// As [`IdentityService::create`]. After an error the unit of work
+    /// must be abandoned.
+    pub async fn create_in(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        command: CreateUser,
+        verified: bool,
+        caller: Caller,
+    ) -> Result<User, DomainError> {
         let identifiers = command
             .identifiers
             .iter()
             .map(|(kind, value)| NormalizedIdentifier::parse(*kind, value))
             .collect::<Result<Vec<_>, _>>()?;
-        let (user, events) = User::create(
+        let now = self.clock.now();
+        let (mut user, mut events) = User::create(
             command.kind,
             identifiers,
             command.profile,
             command.confirmed,
-            self.clock.now(),
+            now,
         )?;
-
-        let mut uow = self.units_of_work.begin(tenant).await?;
-        self.users.insert(uow.as_mut(), &user).await?;
-        self.record(uow.as_mut(), caller, &events)?;
-        uow.commit().await?;
+        if verified {
+            let verifiable: Vec<_> = user
+                .snapshot()
+                .identifiers
+                .iter()
+                .filter(|identifier| identifier.value.kind().needs_verification())
+                .map(|identifier| identifier.id)
+                .collect();
+            for id in verifiable {
+                events.extend(user.verify_identifier(id, now)?);
+            }
+        }
+        self.users.insert(uow, &user).await?;
+        self.record(uow, caller, &events)?;
         Ok(user)
     }
 

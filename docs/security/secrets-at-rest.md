@@ -47,7 +47,7 @@ HODOR_SECRET_KEYS=2026-11:q83vEjRWeJCrze8SNFZ4kKvN7xI0VniQq83vEjRWeJA=,2026-05:â
 - An identifier is 1 to 32 lowercase letters, digits and hyphens. It is stored with every sealed secret, so it must never be reused for another key.
 - A key is 32 random bytes in Base64. `hodor-cli secrets generate-key` prints one.
 - **The first key seals. Every key opens.**
-- The setting is required only by a process that has secrets to keep. A process started without it refuses to seal or open, and says so.
+- The setting is read by `hodor-server`. Without it the server starts, logs a warning, and offers no identity provider.
 
 ### Changing the key
 
