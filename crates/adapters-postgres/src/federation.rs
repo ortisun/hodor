@@ -5,8 +5,9 @@
 use crate::uow::{connection, database_error};
 use hodor_authentication::api::TransactionId;
 use hodor_federation::api::{
-    Alias, ExternalIdentity, IdentityProvider, LinkStore, ProviderId, ProviderKind,
-    ProviderSettings, ProviderSnapshot, ProviderStatus, ProviderStore, Subject, Trip, TripStore,
+    Alias, ExternalIdentity, IdentityProvider, LinkStore, PendingAuthorization,
+    PendingAuthorizationStore, ProviderId, ProviderKind, ProviderSettings, ProviderSnapshot,
+    ProviderStatus, ProviderStore, Subject,
 };
 use hodor_kernel::{DomainError, SealedSecret, Timestamp, UnitOfWork, UserId};
 use sqlx::Row as _;
@@ -14,7 +15,7 @@ use sqlx::postgres::PgRow;
 
 const ALIAS_CONSTRAINT: &str = "identity_provider_alias_unique";
 const PROVIDER_CONSTRAINT: &str = "external_identity_provider_fk";
-const TRIP_PROVIDER_CONSTRAINT: &str = "trip_provider_fk";
+const PENDING_PROVIDER_CONSTRAINT: &str = "pending_authorization_provider_fk";
 
 fn corrupted(what: &str) -> DomainError {
     DomainError::internal(
@@ -342,16 +343,20 @@ impl LinkStore for PgLinkStore {
     }
 }
 
-/// [`TripStore`] on `federation.trip`.
+/// [`PendingAuthorizationStore`] on `federation.pending_authorization`.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct PgTripStore;
+pub struct PgPendingAuthorizationStore;
 
 #[async_trait::async_trait]
-impl TripStore for PgTripStore {
-    async fn put(&self, uow: &mut dyn UnitOfWork, trip: &Trip) -> Result<(), DomainError> {
+impl PendingAuthorizationStore for PgPendingAuthorizationStore {
+    async fn put(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        pending: &PendingAuthorization,
+    ) -> Result<(), DomainError> {
         let tenant = uow.tenant().tenant_id();
         let stored = sqlx::query(
-            "INSERT INTO federation.trip
+            "INSERT INTO federation.pending_authorization
                  (tenant_id, transaction_id, provider_id, state_hash, nonce, code_verifier,
                   redirect_uri, expires_at)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -361,19 +366,19 @@ impl TripStore for PgTripStore {
                  redirect_uri = EXCLUDED.redirect_uri, expires_at = EXCLUDED.expires_at",
         )
         .bind(tenant.as_uuid())
-        .bind(trip.transaction_id.as_uuid())
-        .bind(trip.provider_id.as_uuid())
-        .bind(trip.state_hash.as_slice())
-        .bind(&trip.nonce)
-        .bind(trip.code_verifier.as_bytes())
-        .bind(&trip.redirect_uri)
-        .bind(trip.expires_at)
+        .bind(pending.transaction_id.as_uuid())
+        .bind(pending.provider_id.as_uuid())
+        .bind(pending.state_hash.as_slice())
+        .bind(&pending.nonce)
+        .bind(pending.code_verifier.as_bytes())
+        .bind(&pending.redirect_uri)
+        .bind(pending.expires_at)
         .execute(connection(uow)?)
         .await;
         match stored {
             Ok(_) => Ok(()),
             Err(sqlx::Error::Database(error))
-                if error.constraint() == Some(TRIP_PROVIDER_CONSTRAINT) =>
+                if error.constraint() == Some(PENDING_PROVIDER_CONSTRAINT) =>
             {
                 Err(DomainError::not_found(
                     "federation.provider_not_found",
@@ -388,12 +393,12 @@ impl TripStore for PgTripStore {
         &self,
         uow: &mut dyn UnitOfWork,
         transaction_id: TransactionId,
-    ) -> Result<Option<Trip>, DomainError> {
+    ) -> Result<Option<PendingAuthorization>, DomainError> {
         let tenant = uow.tenant().tenant_id();
         // One statement: of several callers at the same moment, one
         // deletes the row and gets it back.
         let row = sqlx::query(
-            "DELETE FROM federation.trip
+            "DELETE FROM federation.pending_authorization
              WHERE tenant_id = $1 AND transaction_id = $2
              RETURNING provider_id, state_hash, nonce, code_verifier, redirect_uri, expires_at",
         )
@@ -407,7 +412,7 @@ impl TripStore for PgTripStore {
         };
         let get = |error: sqlx::Error| database_error(&error);
         let state_hash: Vec<u8> = row.try_get("state_hash").map_err(get)?;
-        Ok(Some(Trip {
+        Ok(Some(PendingAuthorization {
             transaction_id,
             provider_id: ProviderId::from_uuid(row.try_get("provider_id").map_err(get)?),
             state_hash: state_hash.try_into().map_err(|_| corrupted("state hash"))?,

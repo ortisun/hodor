@@ -288,7 +288,7 @@ struct Browser {
 }
 
 /// What a browser carries away to a provider and back.
-struct Trip {
+struct Departure {
     state: String,
     nonce: String,
 }
@@ -356,7 +356,7 @@ impl Browser {
     }
 
     /// Starts a sign-in in `tenant` and chooses the provider `alias`.
-    async fn leave_for(&mut self, world: &World, tenant: &str, alias: &str) -> Trip {
+    async fn leave_for(&mut self, world: &World, tenant: &str, alias: &str) -> Departure {
         let started = self
             .send(
                 world,
@@ -369,7 +369,7 @@ impl Browser {
         self.choose(world, tenant, alias).await
     }
 
-    async fn choose(&mut self, world: &World, tenant: &str, alias: &str) -> Trip {
+    async fn choose(&mut self, world: &World, tenant: &str, alias: &str) -> Departure {
         let chosen = self
             .send(
                 world,
@@ -390,7 +390,7 @@ impl Browser {
             format!("{PUBLIC}/t/{tenant}/account/providers/{alias}/callback"),
             "the provider sends people back to a page of this tenant and provider"
         );
-        Trip {
+        Departure {
             state: sent["state"].clone(),
             nonce: sent["nonce"].clone(),
         }
@@ -426,11 +426,11 @@ impl Browser {
 }
 
 impl World {
-    /// Makes the provider answer `code` with a token for this person and trip.
+    /// Makes the provider answer `code` with a token for this person and request.
     fn provider_vouches(
         &self,
         code: &str,
-        trip: &Trip,
+        leaving: &Departure,
         subject: &str,
         email: Option<(&str, bool)>,
     ) {
@@ -440,7 +440,7 @@ impl World {
             "sub": subject,
             "exp": NOW + 300,
             "iat": NOW,
-            "nonce": trip.nonce,
+            "nonce": leaving.nonce,
             "name": "Bia Example",
             "locale": "pt-BR",
         });
@@ -457,10 +457,10 @@ impl World {
     /// One whole sign-in through the provider `example` of acme.
     async fn sign_in(&self, subject: &str, email: Option<(&str, bool)>) -> (Browser, Reply) {
         let mut browser = Browser::default();
-        let trip = browser.leave_for(self, "acme", "example").await;
-        self.provider_vouches("code", &trip, subject, email);
+        let leaving = browser.leave_for(self, "acme", "example").await;
+        self.provider_vouches("code", &leaving, subject, email);
         let reply = browser
-            .come_back(self, "acme", "example", "code", &trip.state)
+            .come_back(self, "acme", "example", "code", &leaving.state)
             .await;
         (browser, reply)
     }
@@ -764,10 +764,10 @@ async fn a_linked_user_who_may_not_sign_in_is_refused() {
 async fn an_answer_with_another_state_is_refused_and_the_trip_is_gone() {
     let world = world().await;
     let mut browser = Browser::default();
-    let trip = browser.leave_for(&world, "acme", "example").await;
+    let leaving = browser.leave_for(&world, "acme", "example").await;
     world.provider_vouches(
         "code",
-        &trip,
+        &leaving,
         "subject-of-bia",
         Some(("bia@example.com", true)),
     );
@@ -776,13 +776,16 @@ async fn an_answer_with_another_state_is_refused_and_the_trip_is_gone() {
         .come_back(&world, "acme", "example", "code", "not-the-state")
         .await;
     rejected(&wrong);
-    // Even the right state no longer works: the trip was used.
+    // Even the right state no longer works: the pending authorization was used.
     let late = browser
-        .come_back(&world, "acme", "example", "code", &trip.state)
+        .come_back(&world, "acme", "example", "code", &leaving.state)
         .await;
     rejected(&late);
 
-    assert_eq!(world.refusals(), ["state_mismatch", "no_trip"]);
+    assert_eq!(
+        world.refusals(),
+        ["state_mismatch", "no_pending_authorization"]
+    );
     assert_eq!(world.count("identity.user_created"), 0);
     assert_eq!(
         world.provider.requests_to("/token"),
@@ -795,15 +798,15 @@ async fn an_answer_with_another_state_is_refused_and_the_trip_is_gone() {
 async fn an_answer_cannot_be_presented_twice() {
     let world = world().await;
     let mut browser = Browser::default();
-    let trip = browser.leave_for(&world, "acme", "example").await;
+    let leaving = browser.leave_for(&world, "acme", "example").await;
     world.provider_vouches(
         "code",
-        &trip,
+        &leaving,
         "subject-of-bia",
         Some(("bia@example.com", true)),
     );
     let first = browser
-        .come_back(&world, "acme", "example", "code", &trip.state)
+        .come_back(&world, "acme", "example", "code", &leaving.state)
         .await;
     assert_eq!(first.sign_in_status(), "completed");
 
@@ -813,17 +816,20 @@ async fn an_answer_cannot_be_presented_twice() {
         .send(&world, Method::POST, "/t/acme/interaction/sign-in", None)
         .await;
     let replayed = thief
-        .come_back(&world, "acme", "example", "code", &trip.state)
+        .come_back(&world, "acme", "example", "code", &leaving.state)
         .await;
     rejected(&replayed);
-    // And after making a trip of their own, to have one at all.
+    // And after making a pending authorization of their own, to have one at all.
     thief.choose(&world, "acme", "example").await;
     let replayed = thief
-        .come_back(&world, "acme", "example", "code", &trip.state)
+        .come_back(&world, "acme", "example", "code", &leaving.state)
         .await;
     rejected(&replayed);
 
-    assert_eq!(world.refusals(), ["no_trip", "state_mismatch"]);
+    assert_eq!(
+        world.refusals(),
+        ["no_pending_authorization", "state_mismatch"]
+    );
     assert_eq!(
         thief.who(&world, "acme").await.status,
         StatusCode::UNAUTHORIZED
@@ -843,7 +849,7 @@ async fn an_answer_obtained_by_someone_else_cannot_be_finished_in_a_victims_brow
         Some(("attacker@example.com", true)),
     );
 
-    // The victim's browser is made to present it, with a trip of its own
+    // The victim's browser is made to present it, with a pending authorization of its own
     // under way.
     let mut victim = Browser::default();
     victim.leave_for(&world, "acme", "example").await;
@@ -857,7 +863,7 @@ async fn an_answer_obtained_by_someone_else_cannot_be_finished_in_a_victims_brow
         victim.who(&world, "acme").await.status,
         StatusCode::UNAUTHORIZED
     );
-    // The attacker's own trip was not touched by any of it.
+    // The attacker's own pending authorization was not touched by any of it.
     let own = attacker
         .come_back(&world, "acme", "example", "attacker-code", &theirs.state)
         .await;
@@ -885,16 +891,16 @@ async fn an_answer_is_only_checked_against_the_provider_the_trip_was_made_for() 
     drop(other_key);
 
     let mut browser = Browser::default();
-    let trip = browser.leave_for(&world, "acme", "example").await;
+    let leaving = browser.leave_for(&world, "acme", "example").await;
     world.provider_vouches(
         "code",
-        &trip,
+        &leaving,
         "subject-of-bia",
         Some(("bia@example.com", true)),
     );
     // Presented at the address of the other provider.
     let crossed = browser
-        .come_back(&world, "acme", "other", "code", &trip.state)
+        .come_back(&world, "acme", "other", "code", &leaving.state)
         .await;
 
     rejected(&crossed);
@@ -920,11 +926,11 @@ async fn a_disabled_provider_is_not_offered_and_signs_nobody_in() {
         "what the page shows, and nothing else"
     );
 
-    // A trip is under way when the provider is disabled.
-    let trip = browser.leave_for(&world, "acme", "example").await;
+    // A pending authorization is under way when the provider is disabled.
+    let leaving = browser.leave_for(&world, "acme", "example").await;
     world.provider_vouches(
         "code",
-        &trip,
+        &leaving,
         "subject-of-bia",
         Some(("bia@example.com", true)),
     );
@@ -940,7 +946,7 @@ async fn a_disabled_provider_is_not_offered_and_signs_nobody_in() {
         .expect("disable");
 
     let finished = browser
-        .come_back(&world, "acme", "example", "code", &trip.state)
+        .come_back(&world, "acme", "example", "code", &leaving.state)
         .await;
     rejected(&finished);
     assert_eq!(world.refusals(), ["provider_not_offered"]);
@@ -1001,15 +1007,15 @@ async fn the_provider_of_one_tenant_does_nothing_in_another() {
     // An answer made for acme, presented to globex by a browser with a
     // sign-in there.
     let mut at_acme = Browser::default();
-    let trip = at_acme.leave_for(&world, "acme", "example").await;
+    let leaving = at_acme.leave_for(&world, "acme", "example").await;
     world.provider_vouches(
         "code",
-        &trip,
+        &leaving,
         "subject-of-bia",
         Some(("bia@example.com", true)),
     );
     let crossed = browser
-        .come_back(&world, "globex", "example", "code", &trip.state)
+        .come_back(&world, "globex", "example", "code", &leaving.state)
         .await;
     rejected(&crossed);
     assert_eq!(
@@ -1088,15 +1094,15 @@ async fn a_sign_in_is_completed_by_its_steps_or_by_a_provider_never_by_part_of_e
         )
         .await;
     // Then a provider vouches for somebody else.
-    let trip = browser.choose(&world, "acme", "example").await;
+    let leaving = browser.choose(&world, "acme", "example").await;
     world.provider_vouches(
         "code",
-        &trip,
+        &leaving,
         "subject-of-bia",
         Some(("bia@example.com", true)),
     );
     let mixed = browser
-        .come_back(&world, "acme", "example", "code", &trip.state)
+        .come_back(&world, "acme", "example", "code", &leaving.state)
         .await;
 
     assert_eq!(
@@ -1117,17 +1123,17 @@ async fn a_sign_in_is_completed_by_its_steps_or_by_a_provider_never_by_part_of_e
 async fn a_trip_expires_with_its_sign_in() {
     let world = world().await;
     let mut browser = Browser::default();
-    let trip = browser.leave_for(&world, "acme", "example").await;
+    let leaving = browser.leave_for(&world, "acme", "example").await;
     world.provider_vouches(
         "code",
-        &trip,
+        &leaving,
         "subject-of-bia",
         Some(("bia@example.com", true)),
     );
 
     world.clock.advance(Duration::minutes(11));
     let late = browser
-        .come_back(&world, "acme", "example", "code", &trip.state)
+        .come_back(&world, "acme", "example", "code", &leaving.state)
         .await;
 
     assert_ne!(late.sign_in_status(), "completed");

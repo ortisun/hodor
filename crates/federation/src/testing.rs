@@ -1,8 +1,9 @@
 //! In-memory stores and the contract every implementation passes.
 
 use crate::api::{
-    Alias, ExternalIdentity, IdentityProvider, LinkStore, ProviderId, ProviderKind,
-    ProviderSettings, ProviderSnapshot, ProviderStatus, ProviderStore, Subject, Trip, TripStore,
+    Alias, ExternalIdentity, IdentityProvider, LinkStore, PendingAuthorization,
+    PendingAuthorizationStore, ProviderId, ProviderKind, ProviderSettings, ProviderSnapshot,
+    ProviderStatus, ProviderStore, Subject,
 };
 use hodor_authentication::api::TransactionId;
 use hodor_kernel::{
@@ -14,7 +15,7 @@ use std::sync::{Arc, Mutex};
 
 type ProviderRows = BTreeMap<(TenantId, ProviderId), ProviderSnapshot>;
 type LinkRows = BTreeMap<(TenantId, ProviderId, Subject), ExternalIdentity>;
-type TripRows = BTreeMap<(TenantId, TransactionId), Trip>;
+type PendingRows = BTreeMap<(TenantId, TransactionId), PendingAuthorization>;
 
 /// Providers and links kept in memory. One value serves as both stores,
 /// since a link must name a provider that exists.
@@ -22,12 +23,12 @@ type TripRows = BTreeMap<(TenantId, TransactionId), Trip>;
 pub struct InMemoryFederation {
     providers: Arc<Mutex<ProviderRows>>,
     links: Arc<Mutex<LinkRows>>,
-    trips: Arc<Mutex<TripRows>>,
+    pending: Arc<Mutex<PendingRows>>,
 }
 
 impl InMemoryFederation {
-    fn trips(&self) -> std::sync::MutexGuard<'_, TripRows> {
-        self.trips.lock().unwrap_or_else(|e| e.into_inner())
+    fn pending(&self) -> std::sync::MutexGuard<'_, PendingRows> {
+        self.pending.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     fn providers(&self) -> std::sync::MutexGuard<'_, ProviderRows> {
@@ -205,17 +206,24 @@ impl LinkStore for InMemoryFederation {
 }
 
 #[async_trait::async_trait]
-impl TripStore for InMemoryFederation {
-    async fn put(&self, uow: &mut dyn UnitOfWork, trip: &Trip) -> Result<(), DomainError> {
+impl PendingAuthorizationStore for InMemoryFederation {
+    async fn put(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        pending: &PendingAuthorization,
+    ) -> Result<(), DomainError> {
         let tenant = uow.tenant().tenant_id();
-        if !self.providers().contains_key(&(tenant, trip.provider_id)) {
+        if !self
+            .providers()
+            .contains_key(&(tenant, pending.provider_id))
+        {
             return Err(DomainError::not_found(
                 "federation.provider_not_found",
                 "there is no such identity provider",
             ));
         }
-        self.trips()
-            .insert((tenant, trip.transaction_id), trip.clone());
+        self.pending()
+            .insert((tenant, pending.transaction_id), pending.clone());
         Ok(())
     }
 
@@ -223,9 +231,9 @@ impl TripStore for InMemoryFederation {
         &self,
         uow: &mut dyn UnitOfWork,
         transaction_id: TransactionId,
-    ) -> Result<Option<Trip>, DomainError> {
+    ) -> Result<Option<PendingAuthorization>, DomainError> {
         Ok(self
-            .trips()
+            .pending()
             .remove(&(uow.tenant().tenant_id(), transaction_id)))
     }
 }
@@ -239,8 +247,8 @@ pub struct Ports<'a> {
     pub providers: &'a dyn ProviderStore,
     /// The link store under test.
     pub links: &'a dyn LinkStore,
-    /// The trip store under test.
-    pub trips: &'a dyn TripStore,
+    /// The pending authorization store under test.
+    pub pending: &'a dyn PendingAuthorizationStore,
 }
 
 impl std::fmt::Debug for Ports<'_> {
@@ -580,9 +588,9 @@ pub async fn run_contract(ports: Ports<'_>) {
         .await
         .expect("insert")));
 
-    // Trips: one for a sign-in, taken once.
+    // Pending authorizations: one for a sign-in, taken once.
     let sign_in = TransactionId::generate();
-    let trip = |provider: &IdentityProvider, nonce: &str| Trip {
+    let pending = |provider: &IdentityProvider, nonce: &str| PendingAuthorization {
         transaction_id: sign_in,
         provider_id: provider.id(),
         state_hash: [7; 32],
@@ -594,28 +602,28 @@ pub async fn run_contract(ports: Ports<'_>) {
     };
     assert!(
         within!(ports, &tenant, |uow| ports
-            .trips
+            .pending
             .take(uow, sign_in)
             .await
             .expect("take"))
         .is_none()
     );
     within!(ports, &tenant, |uow| ports
-        .trips
-        .put(uow, &trip(&google, "first"))
+        .pending
+        .put(uow, &pending(&google, "first"))
         .await
         .expect("put"));
-    // Choosing a provider again replaces the trip.
+    // Choosing a provider again replaces the pending authorization.
     within!(ports, &tenant, |uow| ports
-        .trips
-        .put(uow, &trip(&entra, "second"))
+        .pending
+        .put(uow, &pending(&entra, "second"))
         .await
         .expect("put"));
     // Another tenant cannot take it, and cannot make one for a provider
     // it does not have.
     assert!(
         within!(ports, &elsewhere, |uow| ports
-            .trips
+            .pending
             .take(uow, sign_in)
             .await
             .expect("take"))
@@ -623,22 +631,22 @@ pub async fn run_contract(ports: Ports<'_>) {
     );
     let mut unit = ports.units_of_work.begin(&elsewhere).await.expect("begin");
     let error = ports
-        .trips
-        .put(unit.as_mut(), &trip(&google, "foreign"))
+        .pending
+        .put(unit.as_mut(), &pending(&google, "foreign"))
         .await
         .expect_err("a provider of another tenant");
     assert_eq!(error.code(), "federation.provider_not_found");
     drop(unit);
     let taken = within!(ports, &tenant, |uow| ports
-        .trips
+        .pending
         .take(uow, sign_in)
         .await
         .expect("take"))
-    .expect("the trip");
-    assert_eq!(taken, trip(&entra, "second"));
+    .expect("the pending");
+    assert_eq!(taken, pending(&entra, "second"));
     assert!(
         within!(ports, &tenant, |uow| ports
-            .trips
+            .pending
             .take(uow, sign_in)
             .await
             .expect("take"))

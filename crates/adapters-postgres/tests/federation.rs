@@ -2,7 +2,7 @@
 
 use hodor_adapters_crypto::{OsRandom, SecretKeys};
 use hodor_adapters_postgres::testing::TestDatabase;
-use hodor_adapters_postgres::{PgLinkStore, PgProviderStore, PgTripStore};
+use hodor_adapters_postgres::{PgLinkStore, PgPendingAuthorizationStore, PgProviderStore};
 use hodor_federation::api::{
     CreateProvider, FederationService, ProviderKind, ProviderSettings, Subject,
 };
@@ -21,7 +21,7 @@ async fn the_postgres_stores_pass_the_contract() {
         units_of_work: database.app(),
         providers: &PgProviderStore,
         links: &PgLinkStore,
-        trips: &PgTripStore,
+        pending: &PgPendingAuthorizationStore,
     })
     .await;
 }

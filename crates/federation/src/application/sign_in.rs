@@ -1,4 +1,4 @@
-//! Signing in through a provider: the trip there and back, and who the
+//! Signing in through a provider: the pending authorization there and back, and who the
 //! person turns out to be.
 //!
 //! See `docs/architecture/contexts/federation.md`, "Signing in through a
@@ -7,11 +7,11 @@
 //! address.
 
 use crate::application::openid::{OpenIdClient, VerifiedIdentity};
-use crate::application::ports::TripStore;
+use crate::application::ports::PendingAuthorizationStore;
 use crate::application::service::FederationService;
 use crate::domain::event::FederationEvent;
+use crate::domain::pending_authorization::PendingAuthorization;
 use crate::domain::provider::{IdentityProvider, ProviderId};
-use crate::domain::trip::Trip;
 use hodor_authentication::api::{
     AuthTransaction, Authenticator, AuthenticatorTraits, ExternalInput, Factor, StepInput,
     StepOutcome, TransactionId,
@@ -28,8 +28,8 @@ use time::Duration;
 pub const EXTERNAL_STEP: &str = "external";
 /// The purpose PKCE verifiers are sealed for.
 const CODE_VERIFIER: &str = "federation.code_verifier";
-/// A trip lasts as long as a sign-in.
-const TRIP_LIFETIME: Duration = Duration::minutes(10);
+/// A pending authorization lasts as long as a sign-in.
+const PENDING_LIFETIME: Duration = Duration::minutes(10);
 
 /// A provider as the sign-in page shows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,7 +63,7 @@ pub struct ExternalSignIn {
     federation: FederationService,
     openid: OpenIdClient,
     identity: IdentityService,
-    trips: Arc<dyn TripStore>,
+    pending: Arc<dyn PendingAuthorizationStore>,
     units_of_work: Arc<dyn UnitOfWorkFactory>,
     secrets: Arc<dyn SecretBox>,
     digest: Arc<dyn Digest>,
@@ -86,7 +86,7 @@ impl ExternalSignIn {
         federation: FederationService,
         openid: OpenIdClient,
         identity: IdentityService,
-        trips: Arc<dyn TripStore>,
+        pending: Arc<dyn PendingAuthorizationStore>,
         units_of_work: Arc<dyn UnitOfWorkFactory>,
         secrets: Arc<dyn SecretBox>,
         digest: Arc<dyn Digest>,
@@ -97,7 +97,7 @@ impl ExternalSignIn {
             federation,
             openid,
             identity,
-            trips,
+            pending,
             units_of_work,
             secrets,
             digest,
@@ -157,8 +157,8 @@ impl ExternalSignIn {
         }
     }
 
-    /// Starts the trip of a sign-in to a provider and answers with the
-    /// address at the provider to send the person to. A trip the sign-in
+    /// Starts the pending authorization of a sign-in to a provider and answers with the
+    /// address at the provider to send the person to. A pending authorization the sign-in
     /// already had is replaced.
     ///
     /// # Errors
@@ -178,34 +178,34 @@ impl ExternalSignIn {
         let request = self.openid.begin(&provider, &redirect_uri).await?;
 
         let verifier = Secret::new(request.code_verifier.expose().clone().into_bytes());
-        let trip = Trip {
+        let pending = PendingAuthorization {
             transaction_id,
             provider_id: provider.id(),
             state_hash: self.digest.sha256(request.state.as_bytes()),
             nonce: request.nonce,
             code_verifier: self.secrets.seal(tenant, CODE_VERIFIER, &verifier)?,
             redirect_uri,
-            expires_at: self.clock.now() + TRIP_LIFETIME,
+            expires_at: self.clock.now() + PENDING_LIFETIME,
         };
         let mut uow = self.units_of_work.begin(tenant).await?;
-        self.trips.put(uow.as_mut(), &trip).await?;
+        self.pending.put(uow.as_mut(), &pending).await?;
         uow.commit().await?;
         Ok(request.url)
     }
 
-    /// Takes the trip of a sign-in, so that it cannot be finished twice.
-    async fn take_trip(
+    /// Takes the pending authorization of a sign-in, so that it cannot be finished twice.
+    async fn take_pending(
         &self,
         tenant: &TenantContext,
         transaction_id: TransactionId,
-    ) -> Result<Option<Trip>, DomainError> {
+    ) -> Result<Option<PendingAuthorization>, DomainError> {
         let mut uow = self.units_of_work.begin(tenant).await?;
-        let trip = self.trips.take(uow.as_mut(), transaction_id).await?;
+        let pending = self.pending.take(uow.as_mut(), transaction_id).await?;
         uow.commit().await?;
-        Ok(trip)
+        Ok(pending)
     }
 
-    /// Finishes the trip of a sign-in with what the provider sent back.
+    /// Finishes the pending authorization of a sign-in with what the provider sent back.
     /// Answers the user who signed in, or why nobody did.
     async fn finish(
         &self,
@@ -213,13 +213,13 @@ impl ExternalSignIn {
         transaction_id: TransactionId,
         input: &ExternalInput,
     ) -> Result<Result<UserId, Refusal>, DomainError> {
-        // The trip is gone before anything is checked.
-        let Some(trip) = self.take_trip(tenant, transaction_id).await? else {
-            return Ok(Err(Refusal::new(None, "no_trip")));
+        // The pending authorization is gone before anything is checked.
+        let Some(pending) = self.take_pending(tenant, transaction_id).await? else {
+            return Ok(Err(Refusal::new(None, "no_pending_authorization")));
         };
-        let refuse = |reason| Ok(Err(Refusal::new(Some(trip.provider_id), reason)));
-        if self.clock.now() >= trip.expires_at {
-            return refuse("trip_expired");
+        let refuse = |reason| Ok(Err(Refusal::new(Some(pending.provider_id), reason)));
+        if self.clock.now() >= pending.expires_at {
+            return refuse("authorization_expired");
         }
         let (Some(alias), Some(code), Some(state)) = (
             input.field("provider"),
@@ -228,11 +228,11 @@ impl ExternalSignIn {
         ) else {
             return refuse("answer_incomplete");
         };
-        if self.digest.sha256(state.expose().as_bytes()) != trip.state_hash {
+        if self.digest.sha256(state.expose().as_bytes()) != pending.state_hash {
             return refuse("state_mismatch");
         }
         let provider = match self.enabled(tenant, alias.expose()).await {
-            Ok(provider) if provider.id() == trip.provider_id => provider,
+            Ok(provider) if provider.id() == pending.provider_id => provider,
             Ok(_) => return refuse("another_provider"),
             Err(error) if error.kind() == ErrorKind::NotFound => {
                 return refuse("provider_not_offered");
@@ -242,7 +242,7 @@ impl ExternalSignIn {
 
         let opened = self
             .secrets
-            .open(tenant, CODE_VERIFIER, &trip.code_verifier)?;
+            .open(tenant, CODE_VERIFIER, &pending.code_verifier)?;
         let code_verifier = String::from_utf8(opened.expose().clone())
             .map(Secret::new)
             .map_err(|_| hodor_kernel::sealing::unreadable("the code verifier is not text"))?;
@@ -252,10 +252,10 @@ impl ExternalSignIn {
             .finish(
                 &provider,
                 &client_secret,
-                &trip.redirect_uri,
+                &pending.redirect_uri,
                 code.expose(),
                 &code_verifier,
-                &trip.nonce,
+                &pending.nonce,
             )
             .await
         {

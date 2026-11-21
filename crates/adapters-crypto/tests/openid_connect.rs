@@ -96,32 +96,32 @@ fn header(algorithm: &str, key_id: &str) -> Value {
 }
 
 impl World {
-    /// One whole trip: start it, let `token` make the ID token for its
+    /// One whole exchange: start it, let `token` make the ID token for its
     /// nonce, and finish it.
     async fn sign_in(
         &self,
         token: impl FnOnce(&Self, &str) -> String,
     ) -> Result<VerifiedIdentity, DomainError> {
-        let trip = self
+        let request = self
             .client
             .begin(&self.configured, REDIRECT)
             .await
             .expect("begin");
         self.provider
-            .answer_code("the-code", &token(self, &trip.nonce));
+            .answer_code("the-code", &token(self, &request.nonce));
         self.client
             .finish(
                 &self.configured,
                 &Secret::from(CLIENT_SECRET.to_owned()),
                 REDIRECT,
                 "the-code",
-                &trip.code_verifier,
-                &trip.nonce,
+                &request.code_verifier,
+                &request.nonce,
             )
             .await
     }
 
-    /// A trip whose token has these changes to the good claims.
+    /// An exchange whose token has these changes to the good claims.
     async fn with_claims(
         &self,
         change: impl FnOnce(&mut Value),
@@ -209,7 +209,7 @@ async fn the_trip_is_started_with_everything_the_specification_asks() {
     assert!(!first.url.contains(CLIENT_SECRET));
     assert_eq!(sent.len(), 8, "nothing else is sent: {sent:?}");
 
-    // 256 random bits each, new for every trip.
+    // 256 random bits each, new for every request.
     assert_eq!(first.state.len(), 64);
     assert_eq!(first.nonce.len(), 64);
     assert_eq!(first.code_verifier.expose().len(), 43);
@@ -533,17 +533,17 @@ async fn every_claim_is_held_to_its_rule() {
         ),
         ("not valid yet", Box::new(|c| c["nbf"] = json!(NOW + 61))),
         (
-            "not issued for this trip",
-            Box::new(|c| c["nonce"] = json!("another-trip")),
+            "not issued for this request",
+            Box::new(|c| c["nonce"] = json!("another-request")),
         ),
         (
-            "not issued for this trip",
+            "not issued for this request",
             Box::new(|c| {
                 c.as_object_mut().expect("object").remove("nonce");
             }),
         ),
         (
-            "not issued for this trip",
+            "not issued for this request",
             Box::new(|c| c["nonce"] = json!("")),
         ),
         (
@@ -611,7 +611,7 @@ async fn a_token_of_another_trip_cannot_be_used_for_this_one() {
         .token(&header("RS256", "rsa-1"), &claims(&earlier.nonce));
     refused(
         world.sign_in(|_, _| replayed.clone()).await,
-        "not issued for this trip",
+        "not issued for this request",
     );
 }
 
@@ -684,7 +684,7 @@ async fn only_the_exact_value_true_means_the_address_is_vouched_for() {
 #[tokio::test]
 async fn a_refused_code_signs_nobody_in() {
     let world = world();
-    let trip = world
+    let request = world
         .client
         .begin(&world.configured, REDIRECT)
         .await
@@ -697,8 +697,8 @@ async fn a_refused_code_signs_nobody_in() {
             &Secret::from(CLIENT_SECRET.to_owned()),
             REDIRECT,
             "stolen-code",
-            &trip.code_verifier,
-            &trip.nonce,
+            &request.code_verifier,
+            &request.nonce,
         )
         .await;
     refused(result, "refused the code with status 400: invalid_grant");
@@ -875,11 +875,11 @@ async fn one_provider_is_never_checked_with_the_keys_of_another() {
     // A token the other provider really signed, for the same client and
     // subject, but naming this provider as its issuer.
     let configured_other = configured("https://other.example.com");
-    let trip = client
+    let request = client
         .begin(&configured_other, REDIRECT)
         .await
         .expect("begin");
-    let forged = other_key.token(&header("RS256", "rsa-1"), &claims(&trip.nonce));
+    let forged = other_key.token(&header("RS256", "rsa-1"), &claims(&request.nonce));
     other.answer_code("the-code", &forged);
     let result = client
         .finish(
@@ -887,8 +887,8 @@ async fn one_provider_is_never_checked_with_the_keys_of_another() {
             &Secret::from(CLIENT_SECRET.to_owned()),
             REDIRECT,
             "the-code",
-            &trip.code_verifier,
-            &trip.nonce,
+            &request.code_verifier,
+            &request.nonce,
         )
         .await;
     refused(result, "from another issuer");

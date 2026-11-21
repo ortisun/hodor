@@ -75,12 +75,12 @@ struct Kept {
 pub struct AuthorizationRequest {
     /// The address at the provider to send the person to.
     pub url: String,
-    /// Returned by the provider untouched; recognizes this trip.
+    /// Returned by the provider untouched; recognizes this request.
     pub state: String,
-    /// Put by the provider inside the token; ties the token to this trip.
+    /// Put by the provider inside the token; ties the token to this request.
     pub nonce: String,
     /// Proves, when the code is exchanged, that the exchange is made by
-    /// whoever started the trip. Never sent to the browser.
+    /// whoever made the request. Never sent to the browser.
     pub code_verifier: Secret<String>,
 }
 
@@ -332,8 +332,8 @@ impl OpenIdClient {
         Ok(Some(keys))
     }
 
-    /// Prepares one trip to the provider: the address to send the person
-    /// to, and the three values made for this trip.
+    /// Prepares one authorization request to the provider: the address to send the person
+    /// to, and the three values made for this request.
     ///
     /// # Errors
     ///
@@ -375,7 +375,7 @@ impl OpenIdClient {
     }
 
     /// Exchanges the code a person came back with and checks the ID
-    /// token it yields against everything this trip was made with.
+    /// token it yields against everything this request was made with.
     ///
     /// # Errors
     ///
@@ -572,7 +572,7 @@ impl OpenIdClient {
 
         // Nonce.
         if nonce.is_empty() || text(&claims, "nonce") != Some(nonce) {
-            return Err(not_verified("the ID token was not issued for this trip"));
+            return Err(not_verified("the ID token was not issued for this request"));
         }
 
         // Subject.

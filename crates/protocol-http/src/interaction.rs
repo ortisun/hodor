@@ -561,7 +561,7 @@ async fn choose_provider(
     let (Some(external), Some(alias)) = (&state.external, alias_of(&parameters)) else {
         return provider_not_found();
     };
-    // A trip is made only for a sign-in that is this browser's and is
+    // A pending authorization is made only for a sign-in that is this browser's and is
     // still in progress.
     match state
         .authentication

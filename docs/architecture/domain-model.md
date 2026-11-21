@@ -243,7 +243,7 @@ Invariants: a transaction only advances through its current step; it expires in 
 |---|---|
 | `IdentityProvider` | Connector type, protocol, endpoints or discovery, client identifier, encrypted secret, scopes, claim mapping, just-in-time and linking policies, branding, status |
 | `RoutingRule` | Condition (email domain, application, organization) → provider; ordered by priority |
-| `FederationState` | `state`, `nonce` and `code_verifier` of one trip to the external identity provider; single use, short time to live, bound to the `AuthTransaction` |
+| `PendingAuthorization` | What Hodor keeps while a person is away at an external identity provider: the hash of the `state`, the `nonce` and the sealed `code_verifier` of the request it made; single use, short time to live, bound to the `AuthTransaction` |
 | `LinkRequest` | A link request pending proof of control |
 
 ### `oauth`

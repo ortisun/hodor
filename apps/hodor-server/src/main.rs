@@ -12,8 +12,8 @@ use hodor_adapters_crypto::{
 use hodor_adapters_http::{GuardedHttpClient, OutboundPolicy};
 use hodor_adapters_postgres::{
     Database, PgAccessTokenStore, PgAttemptStore, PgAuditLog, PgLinkStore, PgMessageQueue,
-    PgPasswordStore, PgProviderStore, PgRoleAssignmentStore, PgSessionStore, PgTenantDirectory,
-    PgTenantRepository, PgTransactionStore, PgTripStore, PgUserRepository,
+    PgPasswordStore, PgPendingAuthorizationStore, PgProviderStore, PgRoleAssignmentStore,
+    PgSessionStore, PgTenantDirectory, PgTenantRepository, PgTransactionStore, PgUserRepository,
     PgVerificationTokenStore,
 };
 use hodor_audit::api::AuditService;
@@ -424,7 +424,7 @@ fn external_sign_in(
         federation,
         openid,
         identity.clone(),
-        Arc::new(PgTripStore),
+        Arc::new(PgPendingAuthorizationStore),
         units(),
         secrets,
         digest,
