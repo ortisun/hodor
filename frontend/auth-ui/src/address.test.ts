@@ -80,12 +80,20 @@ describe("the page a provider sends people back to", () => {
   });
 
   it("reads what the provider put in the address", () => {
-    expect(providerAnswerOf("?code=abc&state=def")).toEqual({ code: "abc", state: "def", error: null });
+    const nothing = { code: null, state: null, error: null, binding: null, receipt: null };
+    expect(providerAnswerOf("?code=abc&state=def")).toEqual({ ...nothing, code: "abc", state: "def" });
     expect(providerAnswerOf("?error=access_denied&state=def")).toEqual({
-      code: null,
+      ...nothing,
       state: "def",
       error: "access_denied",
     });
-    expect(providerAnswerOf("")).toEqual({ code: null, state: null, error: null });
+    expect(providerAnswerOf("")).toEqual(nothing);
+    expect(providerAnswerOf("?binding=saml&state=def&receipt=ghi")).toEqual({
+      ...nothing,
+      state: "def",
+      binding: "saml",
+      receipt: "ghi",
+    });
+    expect(providerAnswerOf("?binding=other&state=def").binding).toBeNull();
   });
 });

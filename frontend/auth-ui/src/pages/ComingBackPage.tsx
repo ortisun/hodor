@@ -21,21 +21,32 @@ interface ComingBackPageProps extends PageProps {
  */
 export function ComingBackPage({ tenant, client, text, go, path, provider, answer }: ComingBackPageProps) {
   const [failure, setFailure] = useState<Failure | null>(null);
-  const { code, state, error } = answer;
+  const { code, state, error, binding, receipt } = answer;
 
   useEffect(() => {
     let current = true;
     const finish = async () => {
-      // The provider sent no code: the person cancelled there, or it refused.
-      if (error !== null || code === null || state === null) {
-        return () => go("sign-in", "provider-cancelled");
+      let proof: { code: string } | { receipt: string };
+      if (binding === "saml") {
+        // Hodor kept a SAML response and sent this browser here with a
+        // receipt for it. Without one, there is nothing it could use.
+        if (state === null || receipt === null) {
+          return () => go("sign-in", "provider-refused");
+        }
+        proof = { receipt };
+      } else {
+        // The provider sent no code: the person cancelled there, or it refused.
+        if (error !== null || code === null || state === null) {
+          return () => go("sign-in", "provider-cancelled");
+        }
+        proof = { code };
       }
       // Asking where the sign-in stands is what gives this page the
       // token its request needs.
       if ((await client.currentSignIn()) === null) {
         return () => go("sign-in", "provider-refused");
       }
-      const result = await client.finishWithProvider(provider, code, state);
+      const result = await client.finishWithProvider(provider, state, proof);
       return result.status === "completed"
         ? () => go("account")
         : () => go("sign-in", "provider-refused");
@@ -63,7 +74,7 @@ export function ComingBackPage({ tenant, client, text, go, path, provider, answe
     return () => {
       current = false;
     };
-  }, [client, go, provider, code, state, error]);
+  }, [client, go, provider, code, state, error, binding, receipt]);
 
   return (
     <Frame tenant={tenant} title={text.comingBackTitle} text={text}>

@@ -12,7 +12,7 @@ use hodor_authorization::api::{AuthorizationService, Role};
 use hodor_credential::api::AccessTokenService;
 use hodor_federation::api::{
     CreateProvider, DirectorySettings, FederationService, IdentityProvider, ProviderKind,
-    ProviderSettings, ProviderStatus, callback_address,
+    ProviderSettings, ProviderStatus, SamlSettings, callback_address, saml_metadata_address,
 };
 use hodor_identity::api::{
     CreateUser, IdentifierKind, IdentityService, NormalizedIdentifier, Profile, UserKind,
@@ -183,6 +183,7 @@ enum ProviderKindArg {
     OpenidConnect,
     Github,
     Ldap,
+    Saml,
 }
 
 #[allow(
@@ -191,11 +192,12 @@ enum ProviderKindArg {
 )]
 #[derive(Subcommand)]
 enum ProviderCommand {
-    /// Add an OpenID Connect provider to a tenant, enabled.
+    /// Add an identity provider to a tenant, enabled.
     ///
     /// The client secret is read from the environment variable
     /// `HODOR_PROVIDER_CLIENT_SECRET`, never from an argument, so that it
-    /// shows neither in the list of processes nor in a shell's history.
+    /// shows neither in the list of processes nor in a shell's history. A
+    /// SAML provider has no secret.
     Add {
         /// The tenant's slug.
         #[arg(long)]
@@ -211,12 +213,12 @@ enum ProviderCommand {
         #[arg(long, value_enum, default_value = "openid-connect")]
         kind: ProviderKindArg,
         /// The address that identifies the provider. May be left out for
-        /// GitHub.
+        /// GitHub. For a SAML provider, its entity identifier.
         #[arg(long)]
         issuer: Option<String>,
-        /// Who Hodor is to the provider.
+        /// Who Hodor is to the provider. None for a SAML provider.
         #[arg(long)]
-        client_id: String,
+        client_id: Option<String>,
         /// What to ask the provider for. May be given several times;
         /// `openid email profile` unless given.
         #[arg(long = "scope")]
@@ -234,12 +236,23 @@ enum ProviderCommand {
         /// For a directory: the attribute that never changes for a person.
         #[arg(long, default_value = "entryUUID")]
         subject_attribute: String,
-        /// For a directory: the attribute holding the address.
-        #[arg(long, default_value = "mail")]
-        email_attribute: String,
-        /// For a directory: the attribute holding the name.
-        #[arg(long, default_value = "cn")]
-        name_attribute: String,
+        /// For a directory or a SAML provider: the attribute holding the
+        /// address. `mail` for a directory, `email` for a SAML provider,
+        /// unless given.
+        #[arg(long)]
+        email_attribute: Option<String>,
+        /// For a directory or a SAML provider: the attribute holding the
+        /// name. `cn` for a directory, `name` for a SAML provider, unless
+        /// given.
+        #[arg(long)]
+        name_attribute: Option<String>,
+        /// For a SAML provider: where the person is sent with the request.
+        #[arg(long)]
+        sign_on_address: Option<String>,
+        /// For a SAML provider: its signing certificate, in PEM. It is not
+        /// secret. PEM starts with dashes, which are not a flag here.
+        #[arg(long, allow_hyphen_values = true)]
+        certificate: Option<String>,
         /// Take every address this provider gives as vouched for, even
         /// when the provider does not say so. Only for a provider whose
         /// addresses the organization itself hands out.
@@ -432,11 +445,14 @@ async fn run_tenant(
 /// to register at the provider.
 fn provider_line(provider: &IdentityProvider, public_url: &str, slug: &str) -> String {
     let state = provider.snapshot();
-    let back = if state.kind == ProviderKind::Ldap {
+    let back = match state.kind {
         // Nobody leaves for a directory.
-        "-".to_owned()
-    } else {
-        callback_address(public_url, slug, state.alias.as_str())
+        ProviderKind::Ldap => "-".to_owned(),
+        // A SAML identity provider is given Hodor's metadata.
+        ProviderKind::Saml => saml_metadata_address(public_url, slug, state.alias.as_str()),
+        ProviderKind::OpenIdConnect | ProviderKind::GitHub => {
+            callback_address(public_url, slug, state.alias.as_str())
+        }
     };
     format!(
         "{} {} {} {back}",
@@ -504,12 +520,15 @@ async fn run_provider(
             subject_attribute,
             email_attribute,
             name_attribute,
+            sign_on_address,
+            certificate,
             ..
         } => {
             let kind = match kind {
                 ProviderKindArg::OpenidConnect => ProviderKind::OpenIdConnect,
                 ProviderKindArg::Github => ProviderKind::GitHub,
                 ProviderKindArg::Ldap => ProviderKind::Ldap,
+                ProviderKindArg::Saml => ProviderKind::Saml,
             };
             // A directory's settings, given for a directory; any other
             // kind that is given them is refused by the federation context.
@@ -519,16 +538,38 @@ async fn run_provider(
                     base: base.unwrap_or_default(),
                     filter: filter.unwrap_or_default(),
                     subject_attribute,
-                    email_attribute,
-                    name_attribute,
+                    email_attribute: email_attribute.clone().unwrap_or_else(|| "mail".to_owned()),
+                    name_attribute: name_attribute.clone().unwrap_or_else(|| "cn".to_owned()),
                 }),
             };
-            let client_secret = std::env::var("HODOR_PROVIDER_CLIENT_SECRET").map_err(|_| {
-                DomainError::invalid(
-                    "federation.client_secret_invalid",
-                    "the client secret is read from HODOR_PROVIDER_CLIENT_SECRET, which is not set",
-                )
-            })?;
+            // The same for a SAML identity provider's settings.
+            let saml = match (sign_on_address, certificate) {
+                (None, None) => None,
+                (address, certificate) => {
+                    let mut settings = SamlSettings::new(
+                        &address.unwrap_or_default(),
+                        &certificate.unwrap_or_default(),
+                    );
+                    if let Some(email) = email_attribute {
+                        settings.email_attribute = email;
+                    }
+                    if let Some(name) = name_attribute {
+                        settings.name_attribute = name;
+                    }
+                    Some(settings)
+                }
+            };
+            // A SAML identity provider is not proved anything with a secret.
+            let client_secret = if kind == ProviderKind::Saml {
+                String::new()
+            } else {
+                std::env::var("HODOR_PROVIDER_CLIENT_SECRET").map_err(|_| {
+                    DomainError::invalid(
+                        "federation.client_secret_invalid",
+                        "the client secret is read from HODOR_PROVIDER_CLIENT_SECRET, which is not set",
+                    )
+                })?
+            };
             let provider = federation
                 .create_provider(
                     &tenant,
@@ -536,14 +577,14 @@ async fn run_provider(
                         alias,
                         kind,
                         settings: ProviderSettings {
-                            saml: None,
+                            saml,
                             display_name: name,
                             issuer: issuer
                                 .or_else(|| {
                                     ProviderSettings::default_issuer_for(kind).map(str::to_owned)
                                 })
                                 .unwrap_or_default(),
-                            client_id,
+                            client_id: client_id.unwrap_or_default(),
                             scopes: if scopes.is_empty() {
                                 ProviderSettings::default_scopes_for(kind)
                             } else {
@@ -559,13 +600,17 @@ async fn run_provider(
                 )
                 .await?;
             let created = format!("created {}", provider_line(&provider, public_url, &slug));
-            Ok(if kind == ProviderKind::Ldap {
-                created
-            } else {
-                format!(
+            let alias = provider.alias().as_str();
+            Ok(match kind {
+                ProviderKind::Ldap => created,
+                ProviderKind::Saml => format!(
+                    "{created}\ngive this metadata to the identity provider: {}",
+                    saml_metadata_address(public_url, &slug, alias)
+                ),
+                ProviderKind::OpenIdConnect | ProviderKind::GitHub => format!(
                     "{created}\nregister this address at the provider: {}",
-                    callback_address(public_url, &slug, provider.alias().as_str())
-                )
+                    callback_address(public_url, &slug, alias)
+                ),
             })
         }
         ProviderCommand::List { .. } => Ok(federation

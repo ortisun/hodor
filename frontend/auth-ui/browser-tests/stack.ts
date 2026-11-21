@@ -8,6 +8,8 @@ export const TENANT = process.env["HODOR_TENANT"] ?? "acme";
 export const PROVIDER = process.env["HODOR_PROVIDER"] ?? "development";
 /** The alias of the development directory in that tenant. */
 export const DIRECTORY = process.env["HODOR_DIRECTORY"] ?? "directory";
+/** The alias of the development SAML identity provider in that tenant. */
+export const SAML_PROVIDER = process.env["HODOR_SAML_PROVIDER"] ?? "corp";
 
 const HELP = `
 The browser tests need the development stack and a tenant that accepts registrations:
@@ -34,7 +36,16 @@ and the development directory:
     --issuer ldap://directory:389 --client-id cn=readonly,dc=example,dc=org \\
     --base ou=people,dc=example,dc=org --filter "(uid={identifier})" --trust-email
 
-Set HODOR_URL, HODOR_MAIL_URL, HODOR_TENANT, HODOR_PROVIDER or HODOR_DIRECTORY if yours are elsewhere.`;
+and the development SAML identity provider:
+
+  docker compose -f deploy/docker/compose.yaml run --rm --no-deps --entrypoint /usr/local/bin/hodor-cli \\
+    -e HODOR_DATABASE_URL=postgres://hodor_server:dev-server@postgres:5432/hodor \\
+    server provider add --tenant ${TENANT} --alias ${SAML_PROVIDER} --kind saml \\
+    --name "Development SAML provider" --issuer urn:hodor:development-saml-provider \\
+    --sign-on-address http://localhost:9500/sso \\
+    --certificate "$(cat deploy/dev-saml-provider/certificate.pem)" --trust-email
+
+Set HODOR_URL, HODOR_MAIL_URL, HODOR_TENANT, HODOR_PROVIDER, HODOR_DIRECTORY or HODOR_SAML_PROVIDER if yours are elsewhere.`;
 
 export default async function checkTheStack(): Promise<void> {
   const page = `${SERVER}/t/${TENANT}/account/sign-in`;
@@ -56,7 +67,7 @@ export default async function checkTheStack(): Promise<void> {
     (response) => response.json() as Promise<{ providers: { alias: string }[] }>,
     () => ({ providers: [] }),
   );
-  for (const alias of [PROVIDER, DIRECTORY]) {
+  for (const alias of [PROVIDER, DIRECTORY, SAML_PROVIDER]) {
     if (!offered.providers.some((provider) => provider.alias === alias)) {
       throw new Error(`The tenant ${TENANT} does not offer the identity provider ${alias}.${HELP}`);
     }

@@ -76,7 +76,6 @@ struct World {
     /// The administrator of Acme and their token.
     administrator: UserId,
     administrator_token: String,
-    federation: FederationService,
 }
 
 async fn world() -> World {
@@ -130,7 +129,7 @@ async fn world() -> World {
         identity: identity.clone(),
         sessions: sessions.clone(),
         audit: audit.clone(),
-        federation: Some(federation.clone()),
+        federation: Some(federation),
         public_url: "https://auth.example".to_owned(),
     };
     let router = public_router(
@@ -157,7 +156,6 @@ async fn world() -> World {
         globex,
         administrator: UserId::generate(),
         administrator_token: String::new(),
-        federation,
     };
     let acme = world.acme.clone();
     let (administrator, token) = world
@@ -1124,8 +1122,10 @@ async fn what_breaks_a_rule_of_identity_providers_is_refused_with_its_code() {
             |b| {
                 b.as_object_mut().expect("object").remove("client_id");
             },
+            // A SAML provider has none, so the body may leave it out; an
+            // OpenID Connect provider is refused without one.
             StatusCode::UNPROCESSABLE_ENTITY,
-            "request.body_invalid",
+            "federation.client_id_invalid",
         ),
         (
             |b| b["unexpected"] = true.into(),
@@ -1284,7 +1284,7 @@ async fn a_provider_is_of_a_kind_and_may_be_trusted_with_addresses() {
     assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(refused.code(), "federation.issuer_invalid");
     let mut unknown = new_provider("example");
-    unknown["kind"] = "saml".into();
+    unknown["kind"] = "kerberos".into();
     let refused = world
         .as_administrator(Method::POST, "/identity-providers", Some(unknown))
         .await;
@@ -1412,49 +1412,84 @@ async fn an_administrator_adds_and_changes_a_directory() {
 }
 
 #[tokio::test]
-async fn a_change_to_a_saml_provider_keeps_its_saml_settings() {
-    use hodor_federation::api::{CreateProvider, ProviderKind, ProviderSettings, SamlSettings};
+async fn an_administrator_adds_and_changes_a_saml_provider() {
     let world = world().await;
     let identity_provider = hodor_saml::testing::TestIdentityProvider::rsa("urn:corp:idp");
     let created = world
-        .federation
-        .create_provider(
-            &world.acme,
-            CreateProvider {
-                alias: "corp".to_owned(),
-                kind: ProviderKind::Saml,
-                settings: ProviderSettings {
-                    display_name: "Corp".to_owned(),
-                    issuer: "urn:corp:idp".to_owned(),
-                    client_id: String::new(),
-                    scopes: Vec::new(),
-                    creates_users: true,
-                    trusts_email: true,
-                    directory: None,
-                    saml: Some(SamlSettings::new(
-                        "https://idp.corp.example/sso",
-                        identity_provider.certificate_pem(),
-                    )),
+        .as_administrator(
+            Method::POST,
+            "/identity-providers",
+            Some(serde_json::json!({
+                "alias": "corp",
+                "kind": "saml",
+                "display_name": "Corp",
+                "issuer": "urn:corp:idp",
+                "trusts_email": true,
+                "saml": {
+                    "single_sign_on_address": "https://idp.corp.example/sso",
+                    "certificate": identity_provider.certificate_pem(),
                 },
-                client_secret: hodor_kernel::Secret::from(String::new()),
-            },
-            hodor_kernel::Caller::system(),
+            })),
         )
-        .await
-        .expect("a SAML provider");
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.body);
+    assert_eq!(created.body["kind"], "saml");
+    assert_eq!(created.body["client_id"], "");
+    assert_eq!(created.body["saml"]["email_attribute"], "email");
+    assert_eq!(created.body["saml"]["name_attribute"], "name");
+    assert_eq!(
+        created.body["metadata_address"],
+        "https://auth.example/t/acme/interaction/sign-in/providers/corp/saml/metadata",
+        "what to give the identity provider"
+    );
+    assert_eq!(
+        created.body["callback_address"],
+        serde_json::Value::Null,
+        "a SAML provider is given Hodor's metadata, not a callback page"
+    );
+    let path = format!(
+        "/identity-providers/{}",
+        created.body["id"].as_str().expect("id")
+    );
+
+    // What is left out of a change stays as it is, its SAML settings too.
     let changed = world
         .as_administrator(
             Method::PATCH,
-            &format!("/identity-providers/{}", created.id()),
-            Some(serde_json::json!({ "display_name": "Corp SSO", "trusts_email": false })),
+            &path,
+            Some(serde_json::json!({
+                "display_name": "Corp SSO",
+                "trusts_email": false,
+                "saml": { "email_attribute": "mail" },
+            })),
         )
         .await;
     assert_eq!(changed.status, StatusCode::OK, "{:?}", changed.body);
     assert_eq!(changed.body["display_name"], "Corp SSO");
     assert_eq!(changed.body["trusts_email"], false);
+    assert_eq!(changed.body["saml"]["email_attribute"], "mail");
     assert_eq!(
-        changed.body["callback_address"],
-        serde_json::Value::Null,
-        "a SAML provider is given Hodor's metadata, not a callback page"
+        changed.body["saml"]["single_sign_on_address"],
+        "https://idp.corp.example/sso"
     );
+
+    let broken = world
+        .as_administrator(
+            Method::PATCH,
+            &path,
+            Some(serde_json::json!({ "saml": { "certificate": "not a certificate" } })),
+        )
+        .await;
+    assert_eq!(broken.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(broken.code(), "federation.saml_invalid");
+
+    let secret = world
+        .as_administrator(
+            Method::PUT,
+            &format!("{path}/client-secret"),
+            Some(serde_json::json!({ "client_secret": "a secret" })),
+        )
+        .await;
+    assert_eq!(secret.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(secret.code(), "federation.client_secret_invalid");
 }

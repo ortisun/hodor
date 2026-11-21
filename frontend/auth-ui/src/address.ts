@@ -83,9 +83,23 @@ export interface ProviderAnswer {
   state: string | null;
   /** The provider's own word for why it sent no code, such as `access_denied`. */
   error: string | null;
+  /**
+   * `saml` when a SAML identity provider's response was posted to Hodor,
+   * which sent the browser here with the state and a receipt instead of a
+   * code.
+   */
+  binding: "saml" | null;
+  /** What Hodor gave the browser that carried a SAML response. */
+  receipt: string | null;
 }
 
 export function providerAnswerOf(search: string): ProviderAnswer {
   const query = new URLSearchParams(search);
-  return { code: query.get("code"), state: query.get("state"), error: query.get("error") };
+  return {
+    code: query.get("code"),
+    state: query.get("state"),
+    error: query.get("error"),
+    binding: query.get("binding") === "saml" ? "saml" : null,
+    receipt: query.get("receipt"),
+  };
 }

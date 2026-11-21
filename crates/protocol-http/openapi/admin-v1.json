@@ -1459,7 +1459,9 @@
           "callback_address",
           "created_at",
           "updated_at",
-          "directory"
+          "directory",
+          "saml",
+          "metadata_address"
         ],
         "properties": {
           "id": {
@@ -1475,7 +1477,8 @@
             "enum": [
               "openid_connect",
               "github",
-              "ldap"
+              "ldap",
+              "saml"
             ]
           },
           "display_name": {
@@ -1535,6 +1538,25 @@
               }
             ],
             "description": "What only a directory has; `null` for every other kind."
+          },
+          "saml": {
+            "description": "What only a SAML identity provider has; `null` for every other kind.",
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SamlSettings"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "metadata_address": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uri",
+            "description": "Hodor's metadata for a SAML identity provider, to give it; `null` for every other kind."
           }
         }
       },
@@ -1543,9 +1565,7 @@
         "additionalProperties": false,
         "required": [
           "alias",
-          "display_name",
-          "client_id",
-          "client_secret"
+          "display_name"
         ],
         "properties": {
           "alias": {
@@ -1560,11 +1580,13 @@
             "description": "May be left out for the kind `github`."
           },
           "client_id": {
-            "type": "string"
+            "type": "string",
+            "description": "Required for every kind but `saml`, which has none."
           },
           "client_secret": {
             "type": "string",
-            "writeOnly": true
+            "writeOnly": true,
+            "description": "Required for every kind but `saml`, which has none."
           },
           "scopes": {
             "type": "array",
@@ -1580,7 +1602,8 @@
             "enum": [
               "openid_connect",
               "github",
-              "ldap"
+              "ldap",
+              "saml"
             ],
             "default": "openid_connect"
           },
@@ -1590,6 +1613,9 @@
           },
           "directory": {
             "$ref": "#/components/schemas/DirectoryInput"
+          },
+          "saml": {
+            "$ref": "#/components/schemas/SamlInput"
           }
         }
       },
@@ -1622,6 +1648,9 @@
           },
           "directory": {
             "$ref": "#/components/schemas/DirectoryInput"
+          },
+          "saml": {
+            "$ref": "#/components/schemas/SamlInput"
           }
         }
       },
@@ -1677,6 +1706,51 @@
             "type": "string"
           },
           "subject_attribute": {
+            "type": "string"
+          },
+          "email_attribute": {
+            "type": "string"
+          },
+          "name_attribute": {
+            "type": "string"
+          }
+        }
+      },
+      "SamlSettings": {
+        "type": "object",
+        "required": [
+          "single_sign_on_address",
+          "certificate",
+          "email_attribute",
+          "name_attribute"
+        ],
+        "properties": {
+          "single_sign_on_address": {
+            "type": "string",
+            "format": "uri"
+          },
+          "certificate": {
+            "type": "string",
+            "description": "The identity provider's signing certificate, in PEM."
+          },
+          "email_attribute": {
+            "type": "string"
+          },
+          "name_attribute": {
+            "type": "string"
+          }
+        }
+      },
+      "SamlInput": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "What is left out is `email` and `name` for the attribute names, or, in a change, what it was. A new provider needs the single sign-on address and the certificate.",
+        "properties": {
+          "single_sign_on_address": {
+            "type": "string",
+            "format": "uri"
+          },
+          "certificate": {
             "type": "string"
           },
           "email_attribute": {
