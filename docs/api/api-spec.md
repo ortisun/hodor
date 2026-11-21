@@ -1,6 +1,8 @@
 # API specification
 
-This document is the contract outline. The machine-readable OpenAPI 3.1 document is generated from the code (`utoipa`) starting in Phase 0 and published at `/api/openapi.json`; once it exists it is the source of truth and this file keeps only conventions and the surface map.
+This document is the contract outline: the conventions and the map of surfaces. What is built of each surface has a page of its own: [the interaction interface](interaction-api.md) and [the administration interface](admin-api.md).
+
+The administration interface also has a machine-readable OpenAPI 3.1 document, written by hand, kept next to the code that serves it and served by it. A test holds the document and the routes together.
 
 ## Surfaces
 
