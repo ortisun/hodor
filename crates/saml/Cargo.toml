@@ -1,0 +1,30 @@
+[package]
+name = "hodor-saml"
+description = "SAML as computation on text: checks responses from identity providers, writes requests and metadata."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[features]
+# An identity provider with keys of its own, which signs real responses, for
+# tests of code that checks them. Signing is compiled only with this feature.
+testing = ["xml-sec/xmldsig-sign", "dep:aws-lc-rs", "dep:rcgen"]
+
+[dependencies]
+aws-lc-rs = { workspace = true, optional = true }
+base64.workspace = true
+form_urlencoded.workspace = true
+miniz_oxide.workspace = true
+rcgen = { workspace = true, optional = true }
+thiserror.workspace = true
+time.workspace = true
+x509-parser.workspace = true
+xml-sec.workspace = true
+
+[dev-dependencies]
+hodor-saml = { path = ".", features = ["testing"] }
+
+[lints]
+workspace = true
