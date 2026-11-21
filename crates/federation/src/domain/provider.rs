@@ -52,6 +52,9 @@ impl Alias {
 pub enum ProviderKind {
     /// An OpenID Connect provider.
     OpenIdConnect,
+    /// GitHub, which issues no ID token and is asked through its own
+    /// interface who a person is.
+    GitHub,
 }
 
 impl ProviderKind {
@@ -60,6 +63,7 @@ impl ProviderKind {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::OpenIdConnect => "openid_connect",
+            Self::GitHub => "github",
         }
     }
 
@@ -71,6 +75,7 @@ impl ProviderKind {
     pub fn from_stored(value: &str) -> Result<Self, DomainError> {
         match value {
             "openid_connect" => Ok(Self::OpenIdConnect),
+            "github" => Ok(Self::GitHub),
             _ => Err(stored_data_invalid()),
         }
     }
@@ -131,13 +136,38 @@ pub struct ProviderSettings {
     pub scopes: Vec<String>,
     /// Whether a person nobody knows yet is created on first sign-in.
     pub creates_users: bool,
+    /// Whether every address the provider gives is taken as vouched for,
+    /// even when the provider does not say so.
+    pub trusts_email: bool,
 }
 
 impl ProviderSettings {
-    /// The scopes asked for unless said otherwise.
+    /// The scopes asked of an OpenID Connect provider unless said
+    /// otherwise.
     #[must_use]
     pub fn default_scopes() -> Vec<String> {
-        ["openid", "email", "profile"].map(str::to_owned).to_vec()
+        Self::default_scopes_for(ProviderKind::OpenIdConnect)
+    }
+
+    /// The scopes asked of a provider of this kind unless said otherwise.
+    #[must_use]
+    pub fn default_scopes_for(kind: ProviderKind) -> Vec<String> {
+        match kind {
+            ProviderKind::OpenIdConnect => {
+                ["openid", "email", "profile"].map(str::to_owned).to_vec()
+            }
+            ProviderKind::GitHub => ["read:user", "user:email"].map(str::to_owned).to_vec(),
+        }
+    }
+
+    /// The issuer of a provider of this kind when none is given, if the
+    /// kind has one.
+    #[must_use]
+    pub const fn default_issuer_for(kind: ProviderKind) -> Option<&'static str> {
+        match kind {
+            ProviderKind::OpenIdConnect => None,
+            ProviderKind::GitHub => Some("https://github.com"),
+        }
     }
 
     /// Checks every setting against its rule and tidies what may be
@@ -147,10 +177,21 @@ impl ProviderSettings {
     ///
     /// Returns the `Invalid` error of the first rule that is broken.
     pub fn checked(self) -> Result<Self, DomainError> {
-        self.checked_allowing(&[])
+        self.checked_for(ProviderKind::OpenIdConnect, &[])
     }
 
-    /// As [`ProviderSettings::checked`], except that the issuer may be
+    /// As [`ProviderSettings::checked_for`], for an OpenID Connect
+    /// provider.
+    ///
+    /// # Errors
+    ///
+    /// Returns the `Invalid` error of the first rule that is broken.
+    pub fn checked_allowing(self, development_hosts: &[String]) -> Result<Self, DomainError> {
+        self.checked_for(ProviderKind::OpenIdConnect, development_hosts)
+    }
+
+    /// Checks the settings of a provider of `kind`, which decides what the
+    /// scopes must include. The issuer may be
     /// plain HTTP when its host and port are one of `development_hosts`,
     /// such as `provider:9000`. For a development stack on one machine;
     /// the list is empty anywhere real.
@@ -158,7 +199,11 @@ impl ProviderSettings {
     /// # Errors
     ///
     /// Returns the `Invalid` error of the first rule that is broken.
-    pub fn checked_allowing(mut self, development_hosts: &[String]) -> Result<Self, DomainError> {
+    pub fn checked_for(
+        mut self,
+        kind: ProviderKind,
+        development_hosts: &[String],
+    ) -> Result<Self, DomainError> {
         self.display_name = self.display_name.trim().to_owned();
         let name_length = self.display_name.chars().count();
         if !(1..=64).contains(&name_length) || self.display_name.chars().any(char::is_control) {
@@ -195,7 +240,13 @@ impl ProviderSettings {
                 scopes.push(scope);
             }
         }
-        if scopes.len() > MAX_SCOPES || !scopes.iter().any(|scope| scope == "openid") {
+        // An OpenID Connect provider issues no ID token unless asked for
+        // `openid`; other kinds have no scope that must be there.
+        let needs_openid = kind == ProviderKind::OpenIdConnect;
+        if scopes.is_empty()
+            || scopes.len() > MAX_SCOPES
+            || (needs_openid && !scopes.iter().any(|scope| scope == "openid"))
+        {
             return Err(scopes_invalid());
         }
         self.scopes = scopes;
@@ -307,7 +358,7 @@ impl IdentityProvider {
                 id: ProviderId::generate(),
                 alias,
                 kind,
-                settings: settings.checked_allowing(development_hosts)?,
+                settings: settings.checked_for(kind, development_hosts)?,
                 client_secret,
                 status: ProviderStatus::Enabled,
                 created_at: now,
@@ -359,7 +410,7 @@ impl IdentityProvider {
         development_hosts: &[String],
         now: Timestamp,
     ) -> Result<bool, DomainError> {
-        let settings = settings.checked_allowing(development_hosts)?;
+        let settings = settings.checked_for(self.state.kind, development_hosts)?;
         if settings == self.state.settings {
             return Ok(false);
         }
@@ -396,6 +447,7 @@ mod tests {
             client_id: "hodor".to_owned(),
             scopes: ProviderSettings::default_scopes(),
             creates_users: true,
+            trusts_email: false,
         }
     }
 
@@ -543,6 +595,36 @@ mod tests {
         // And nowhere at all when the list is empty, as it is anywhere real.
         assert!(with("http://provider:9000", &[]).is_err());
         assert!(with("https://accounts.example.com", &hosts).is_ok());
+    }
+
+    #[test]
+    fn what_scopes_must_include_depends_on_the_kind() {
+        let with = |scopes: &[&str], kind| {
+            let mut given = settings();
+            given.scopes = scopes.iter().map(|scope| (*scope).to_owned()).collect();
+            given.checked_for(kind, &[])
+        };
+        assert!(with(&["read:user", "user:email"], ProviderKind::GitHub).is_ok());
+        assert!(with(&["read:user", "user:email"], ProviderKind::OpenIdConnect).is_err());
+        assert!(with(&[], ProviderKind::GitHub).is_err(), "no scopes at all");
+        assert_eq!(
+            ProviderSettings::default_scopes_for(ProviderKind::GitHub),
+            ["read:user", "user:email"]
+        );
+        assert_eq!(
+            ProviderSettings::default_issuer_for(ProviderKind::GitHub),
+            Some("https://github.com")
+        );
+        assert_eq!(
+            ProviderSettings::default_issuer_for(ProviderKind::OpenIdConnect),
+            None
+        );
+        for kind in [ProviderKind::OpenIdConnect, ProviderKind::GitHub] {
+            assert_eq!(
+                ProviderKind::from_stored(kind.as_str()).expect("known"),
+                kind
+            );
+        }
     }
 
     #[test]

@@ -174,6 +174,7 @@ An identity provider:
   "client_id": "1234.apps.googleusercontent.com",
   "scopes": ["openid", "email", "profile"],
   "creates_users": true,
+  "trusts_email": false,
   "status": "enabled",
   "callback_address": "https://auth.example.com/t/acme/account/providers/google/callback",
   "created_at": "2026-11-21T14:03:11Z",
@@ -199,9 +200,11 @@ An identity provider:
 }
 ```
 
-`scopes` and `creates_users` are optional. The answer is `201` with the provider, enabled.
+`kind` is `openid_connect` unless given; the other is `github`, for which `issuer` may be left out. `scopes`, `creates_users` and `trusts_email` are optional. The answer is `201` with the provider, enabled.
 
-`PATCH /identity-providers/{provider_id}` takes any of `display_name`, `issuer`, `client_id`, `scopes` and `creates_users`; what is left out stays as it is. The alias cannot be changed: it is part of the callback address. The answer is `200` with the provider.
+`trusts_email` is a statement about the provider that is easy to get wrong; read [what it means](../architecture/contexts/federation.md#when-a-provider-does-not-say-whether-it-vouches) before setting it.
+
+`PATCH /identity-providers/{provider_id}` takes any of `display_name`, `issuer`, `client_id`, `scopes`, `creates_users` and `trusts_email`; what is left out stays as it is. Neither the alias nor the kind can be changed: the alias is part of the callback address, and another kind is another provider. The answer is `200` with the provider.
 
 `PUT /identity-providers/{provider_id}/client-secret` with `{ "client_secret": "…" }` answers `204`.
 

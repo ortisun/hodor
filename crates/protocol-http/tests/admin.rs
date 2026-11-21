@@ -1244,3 +1244,73 @@ async fn the_identity_providers_of_one_tenant_do_not_exist_for_another() {
         .await;
     assert_eq!(still.body["status"], "enabled");
 }
+
+#[tokio::test]
+async fn a_provider_is_of_a_kind_and_may_be_trusted_with_addresses() {
+    let world = world().await;
+
+    // GitHub has an issuer and scopes of its own.
+    let github = world
+        .as_administrator(
+            Method::POST,
+            "/identity-providers",
+            Some(serde_json::json!({
+                "alias": "github", "kind": "github", "display_name": "GitHub",
+                "client_id": "github-client", "client_secret": CLIENT_SECRET,
+            })),
+        )
+        .await;
+    assert_eq!(github.status, StatusCode::CREATED, "{:?}", github.body);
+    assert_eq!(github.body["kind"], "github");
+    assert_eq!(github.body["issuer"], "https://github.com");
+    assert_eq!(
+        github.body["scopes"],
+        serde_json::json!(["read:user", "user:email"])
+    );
+    assert_eq!(github.body["trusts_email"], false);
+
+    // An OpenID Connect provider has neither.
+    let mut without_issuer = new_provider("example");
+    without_issuer
+        .as_object_mut()
+        .expect("object")
+        .remove("issuer");
+    let refused = world
+        .as_administrator(Method::POST, "/identity-providers", Some(without_issuer))
+        .await;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(refused.code(), "federation.issuer_invalid");
+    let mut unknown = new_provider("example");
+    unknown["kind"] = "saml".into();
+    let refused = world
+        .as_administrator(Method::POST, "/identity-providers", Some(unknown))
+        .await;
+    assert_eq!(refused.code(), "federation.kind_invalid");
+
+    // Trust in addresses is off unless asked for, and can be changed.
+    let mut trusted = new_provider("entra");
+    trusted["trusts_email"] = true.into();
+    let created = world
+        .as_administrator(Method::POST, "/identity-providers", Some(trusted))
+        .await;
+    assert_eq!(created.body["trusts_email"], true);
+    let id = created.body["id"].as_str().expect("id");
+    let changed = world
+        .as_administrator(
+            Method::PATCH,
+            &format!("/identity-providers/{id}"),
+            Some(serde_json::json!({ "trusts_email": false })),
+        )
+        .await;
+    assert_eq!(changed.body["trusts_email"], false);
+
+    // The kind is not something a change can touch.
+    let rekinded = world
+        .as_administrator(
+            Method::PATCH,
+            &format!("/identity-providers/{id}"),
+            Some(serde_json::json!({ "kind": "github" })),
+        )
+        .await;
+    assert_eq!(rekinded.status, StatusCode::UNPROCESSABLE_ENTITY);
+}

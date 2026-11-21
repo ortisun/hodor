@@ -41,6 +41,7 @@ fn provider_from(row: &PgRow) -> Result<IdentityProvider, DomainError> {
             client_id: row.try_get("client_id").map_err(get)?,
             scopes: row.try_get("scopes").map_err(get)?,
             creates_users: row.try_get("creates_users").map_err(get)?,
+            trusts_email: row.try_get("trusts_email").map_err(get)?,
         },
         client_secret: SealedSecret::from_stored(row.try_get("client_secret").map_err(get)?),
         status: ProviderStatus::from_stored(&status)?,
@@ -78,8 +79,8 @@ impl ProviderStore for PgProviderStore {
         let inserted = sqlx::query(
             "INSERT INTO federation.identity_provider
                  (tenant_id, id, alias, kind, display_name, issuer, client_id, client_secret,
-                  scopes, creates_users, status, created_at, updated_at, version)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 0)",
+                  scopes, creates_users, trusts_email, status, created_at, updated_at, version)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 0)",
         )
         .bind(tenant.as_uuid())
         .bind(state.id.as_uuid())
@@ -91,6 +92,7 @@ impl ProviderStore for PgProviderStore {
         .bind(state.client_secret.as_bytes())
         .bind(&state.settings.scopes)
         .bind(state.settings.creates_users)
+        .bind(state.settings.trusts_email)
         .bind(state.status.as_str())
         .bind(state.created_at)
         .bind(state.updated_at)
@@ -121,9 +123,9 @@ impl ProviderStore for PgProviderStore {
         let updated = sqlx::query(
             "UPDATE federation.identity_provider
              SET display_name = $3, issuer = $4, client_id = $5, client_secret = $6,
-                 scopes = $7, creates_users = $8, status = $9, updated_at = $10,
-                 version = version + 1
-             WHERE tenant_id = $1 AND id = $2 AND version = $11",
+                 scopes = $7, creates_users = $8, trusts_email = $9, status = $10,
+                 updated_at = $11, version = version + 1
+             WHERE tenant_id = $1 AND id = $2 AND version = $12",
         )
         .bind(tenant.as_uuid())
         .bind(state.id.as_uuid())
@@ -133,6 +135,7 @@ impl ProviderStore for PgProviderStore {
         .bind(state.client_secret.as_bytes())
         .bind(&state.settings.scopes)
         .bind(state.settings.creates_users)
+        .bind(state.settings.trusts_email)
         .bind(state.status.as_str())
         .bind(state.updated_at)
         .bind(version)
@@ -157,7 +160,7 @@ impl ProviderStore for PgProviderStore {
         let tenant = uow.tenant().tenant_id();
         sqlx::query(
             "SELECT id, alias, kind, display_name, issuer, client_id, client_secret,
-                    scopes, creates_users, status, created_at, updated_at, version
+                    scopes, creates_users, trusts_email, status, created_at, updated_at, version
              FROM federation.identity_provider
              WHERE tenant_id = $1 AND id = $2",
         )
@@ -179,7 +182,7 @@ impl ProviderStore for PgProviderStore {
         let tenant = uow.tenant().tenant_id();
         sqlx::query(
             "SELECT id, alias, kind, display_name, issuer, client_id, client_secret,
-                    scopes, creates_users, status, created_at, updated_at, version
+                    scopes, creates_users, trusts_email, status, created_at, updated_at, version
              FROM federation.identity_provider
              WHERE tenant_id = $1 AND alias = $2",
         )
@@ -197,7 +200,7 @@ impl ProviderStore for PgProviderStore {
         let tenant = uow.tenant().tenant_id();
         sqlx::query(
             "SELECT id, alias, kind, display_name, issuer, client_id, client_secret,
-                    scopes, creates_users, status, created_at, updated_at, version
+                    scopes, creates_users, trusts_email, status, created_at, updated_at, version
              FROM federation.identity_provider
              WHERE tenant_id = $1 ORDER BY alias COLLATE \"C\"",
         )

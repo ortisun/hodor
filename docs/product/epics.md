@@ -169,7 +169,7 @@ Built before Phase 2 at the project owner's request; [Decision 0017](../decision
 | Issue-40 | Federated sign-in over HTTP: start and callback routes, the state of one pending authorization bound to the browser and the sign-in, creation on first sign-in, the rules against takeover | A whole sign-in against the test provider; a replayed or foreign callback is refused; an external identity never enters an existing account by its email address alone | Issue-37, Issue-39 |
 | Issue-41 | Managing providers: administration interface and command-line tool | A provider is created, changed, disabled and listed; its secret is write-only | Issue-38 |
 | Issue-42 | The pages: the providers a tenant offers on the sign-in page; the way back from a provider | Browser tests against a provider in the Compose stack, with the policy, accessibility and keyboard checks | Issue-40, Issue-41 |
-| Issue-43 | Connectors: Google and Microsoft (OpenID Connect, issuer pinned to allowed tenants), GitHub (OAuth 2.0 with the email interface), Apple (form post, client secret as a signed token) | Each connector's quirks are tested against recorded answers; none is verified against the real provider in continuous integration | Issue-40 |
+| Issue-43 | Connectors: Google and Microsoft Entra ID for one organization (OpenID Connect, with a setting for a provider that does not say whether it vouches for an address), GitHub (its own kind, with the email interface). Apple moved out: it needs a private key Hodor signs with, which comes with the key domain of Phase 2 | Each connector's quirks are tested against answers shaped like the provider's; none is verified against the real provider in continuous integration | Issue-40 |
 
 ### Slice J — LDAP
 

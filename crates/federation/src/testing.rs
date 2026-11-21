@@ -267,6 +267,7 @@ fn provider(alias: &str, issuer: &str) -> IdentityProvider {
             client_id: "hodor".to_owned(),
             scopes: vec!["openid".to_owned(), "email".to_owned()],
             creates_users: true,
+            trusts_email: false,
         },
         SealedSecret::from_stored(vec![0, 159, 146, 150, 255]),
         &[],
