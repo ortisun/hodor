@@ -22,7 +22,9 @@ pub struct Limits {
     pub max_body_bytes: usize,
     /// Largest accepted body of the one request that carries a SAML
     /// response, which a SAML identity provider posts to an assertion
-    /// consumer address.
+    /// consumer address. Form encoding writes some characters of base64
+    /// and its line breaks three times longer, so the body may be larger
+    /// than the response it holds.
     pub max_saml_response_bytes: usize,
     /// Longest time a request may take before it is answered with 408.
     pub request_timeout: Duration,
@@ -32,7 +34,7 @@ impl Default for Limits {
     fn default() -> Self {
         Self {
             max_body_bytes: 64 * 1024,
-            max_saml_response_bytes: hodor_federation::api::MAX_SAML_POSTED_BYTES + 1024,
+            max_saml_response_bytes: 2 * hodor_federation::api::MAX_SAML_POSTED_BYTES,
             request_timeout: Duration::from_secs(30),
         }
     }

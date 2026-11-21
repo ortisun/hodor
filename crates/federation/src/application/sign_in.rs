@@ -267,6 +267,7 @@ impl ExternalSignIn {
             redirect_uri,
             expires_at: self.clock.now() + PENDING_LIFETIME,
             saml_response: None,
+            saml_receipt_hash: None,
         };
         let mut uow = self.units_of_work.begin(tenant).await?;
         self.pending.put(uow.as_mut(), &pending).await?;
@@ -302,8 +303,10 @@ impl ExternalSignIn {
     }
 
     /// Keeps the response a SAML identity provider posted, unread, with the
-    /// pending authorization whose state hashes to `relay_state`. Says
-    /// nothing of whether there was one: the caller answers the same way.
+    /// pending authorization whose state hashes to `relay_state`, and answers
+    /// with a new receipt for the browser that posted it: only that browser
+    /// can finish with the response. A receipt is made whether or not there
+    /// was a pending authorization: the caller answers the same way.
     ///
     /// # Errors
     ///
@@ -314,17 +317,27 @@ impl ExternalSignIn {
         alias: &str,
         relay_state: &str,
         response: &str,
-    ) -> Result<(), DomainError> {
+    ) -> Result<String, DomainError> {
+        let receipt = self.saml.receipt();
         let provider = match self.enabled(tenant, alias).await {
             Ok(provider) if provider.snapshot().kind == ProviderKind::Saml => provider,
-            Ok(_) => return Ok(()),
-            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+            Ok(_) => return Ok(receipt),
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(receipt),
             Err(error) => return Err(error),
         };
-        if response.len() > hodor_saml::MAX_POSTED_BYTES || relay_state.is_empty() {
-            return Ok(());
+        // Only what could be a response is kept: base64, in lines.
+        let base64 = response.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'=' | b'\r' | b'\n')
+        });
+        if response.is_empty()
+            || response.len() > hodor_saml::MAX_POSTED_BYTES
+            || !base64
+            || relay_state.is_empty()
+        {
+            return Ok(receipt);
         }
         let state_hash = self.digest.sha256(relay_state.as_bytes());
+        let receipt_hash = self.digest.sha256(receipt.as_bytes());
         let mut uow = self.units_of_work.begin(tenant).await?;
         self.pending
             .keep_response(
@@ -332,10 +345,12 @@ impl ExternalSignIn {
                 provider.id(),
                 state_hash,
                 response,
+                receipt_hash,
                 self.clock.now(),
             )
             .await?;
-        uow.commit().await
+        uow.commit().await?;
+        Ok(receipt)
     }
 
     /// Takes the pending authorization of a sign-in, so that it cannot be finished twice.
@@ -382,7 +397,9 @@ impl ExternalSignIn {
         };
 
         if provider.snapshot().kind == ProviderKind::Saml {
-            return self.finish_with_saml(tenant, &provider, &pending).await;
+            return self
+                .finish_with_saml(tenant, &provider, &pending, input)
+                .await;
         }
         let Some(code) = input.field("code") else {
             return refuse("answer_incomplete");
@@ -443,14 +460,27 @@ impl ExternalSignIn {
         tenant: &TenantContext,
         provider: &IdentityProvider,
         pending: &PendingAuthorization,
+        input: &ExternalInput,
     ) -> Result<Result<UserId, Refusal>, DomainError> {
         let refuse = |reason| Ok(Err(Refusal::new(Some(provider.id()), reason)));
         let Some(settings) = saml::settings_of(provider) else {
             return refuse("another_kind");
         };
-        let Some(response) = pending.saml_response.as_deref() else {
+        let (Some(response), Some(kept_receipt)) =
+            (pending.saml_response.as_deref(), pending.saml_receipt_hash)
+        else {
             return refuse("no_response");
         };
+        // The browser that finishes must be the one that carried the
+        // response here: whoever started the sign-in knows its state, and
+        // could have handed the address at the identity provider to
+        // somebody else.
+        let carried = input
+            .field("receipt")
+            .is_some_and(|receipt| self.digest.sha256(receipt.expose().as_bytes()) == kept_receipt);
+        if !carried {
+            return refuse("receipt_mismatch");
+        }
         let service_provider = saml::service_provider_at(&pending.redirect_uri);
         match SamlClient::finish(
             provider,

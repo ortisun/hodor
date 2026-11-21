@@ -148,6 +148,10 @@ struct CallbackBody {
     #[serde(default)]
     code: Option<String>,
     state: String,
+    /// What the assertion consumer gave the browser that posted a SAML
+    /// response.
+    #[serde(default)]
+    receipt: Option<String>,
 }
 
 /// What a SAML identity provider posts. No `Debug`: the response says who
@@ -639,6 +643,9 @@ async fn finish_with_provider(
     if let Some(code) = body.code {
         fields.push(("code".to_owned(), Secret::from(code)));
     }
+    if let Some(receipt) = body.receipt {
+        fields.push(("receipt".to_owned(), Secret::from(receipt)));
+    }
     let input = StepInput::External(ExternalInput {
         step: EXTERNAL_STEP.to_owned(),
         fields,
@@ -668,25 +675,30 @@ async fn receive_saml_response(
 ) -> Response {
     // The alias goes into the address the browser is sent to: only one
     // that is an alias at all.
-    let Some(alias) = alias_of(&parameters).filter(|alias| Alias::parse(alias).is_ok()) else {
+    let (Some(external), Some(alias)) = (
+        &state.external,
+        alias_of(&parameters).filter(|alias| Alias::parse(alias).is_ok()),
+    ) else {
         return provider_not_found();
     };
-    let mut relay_state = None;
-    if let (Some(external), Ok(axum::Form(post))) = (&state.external, posted)
+    let mut location = format!("/t/{slug}/account/providers/{alias}/callback?binding=saml");
+    if let Ok(axum::Form(post)) = posted
         && is_plain_token(&post.relay_state)
     {
-        if let Err(error) = external
+        // The receipt goes to this browser only, in the address it is sent
+        // to: finishing needs it, so the browser that finishes is the one
+        // that carried the response.
+        let receipt = match external
             .keep_saml_response(&tenant, &alias, &post.relay_state, &post.response)
             .await
         {
-            return Problem::from(error).into_response();
-        }
-        relay_state = Some(post.relay_state);
-    }
-    let mut location = format!("/t/{slug}/account/providers/{alias}/callback?binding=saml");
-    if let Some(relay_state) = relay_state {
+            Ok(receipt) => receipt,
+            Err(error) => return Problem::from(error).into_response(),
+        };
         location.push_str("&state=");
-        location.push_str(&relay_state);
+        location.push_str(&post.relay_state);
+        location.push_str("&receipt=");
+        location.push_str(&receipt);
     }
     match HeaderValue::from_str(&location) {
         Ok(location) => (StatusCode::SEE_OTHER, [(header::LOCATION, location)]).into_response(),

@@ -474,7 +474,7 @@ impl PendingAuthorizationStore for PgPendingAuthorizationStore {
              SET provider_id = EXCLUDED.provider_id, state_hash = EXCLUDED.state_hash,
                  nonce = EXCLUDED.nonce, code_verifier = EXCLUDED.code_verifier,
                  redirect_uri = EXCLUDED.redirect_uri, expires_at = EXCLUDED.expires_at,
-                 saml_response = NULL",
+                 saml_response = NULL, saml_receipt_hash = NULL",
         )
         .bind(tenant.as_uuid())
         .bind(pending.transaction_id.as_uuid())
@@ -512,7 +512,7 @@ impl PendingAuthorizationStore for PgPendingAuthorizationStore {
             "DELETE FROM federation.pending_authorization
              WHERE tenant_id = $1 AND transaction_id = $2
              RETURNING provider_id, state_hash, nonce, code_verifier, redirect_uri, expires_at,
-                       saml_response",
+                       saml_response, saml_receipt_hash",
         )
         .bind(tenant.as_uuid())
         .bind(transaction_id.as_uuid())
@@ -533,6 +533,11 @@ impl PendingAuthorizationStore for PgPendingAuthorizationStore {
             redirect_uri: row.try_get("redirect_uri").map_err(get)?,
             expires_at: row.try_get("expires_at").map_err(get)?,
             saml_response: row.try_get("saml_response").map_err(get)?,
+            saml_receipt_hash: row
+                .try_get::<Option<Vec<u8>>, _>("saml_receipt_hash")
+                .map_err(get)?
+                .map(|hash| hash.try_into().map_err(|_| corrupted("receipt hash")))
+                .transpose()?,
         }))
     }
 
@@ -542,6 +547,7 @@ impl PendingAuthorizationStore for PgPendingAuthorizationStore {
         provider_id: ProviderId,
         state_hash: [u8; 32],
         response: &str,
+        receipt_hash: [u8; 32],
         now: Timestamp,
     ) -> Result<bool, DomainError> {
         let tenant = uow.tenant().tenant_id();
@@ -549,7 +555,7 @@ impl PendingAuthorizationStore for PgPendingAuthorizationStore {
         // one wins.
         let kept = sqlx::query(
             "UPDATE federation.pending_authorization
-             SET saml_response = $5
+             SET saml_response = $5, saml_receipt_hash = $6
              WHERE tenant_id = $1 AND provider_id = $2 AND state_hash = $3
                AND expires_at > $4 AND saml_response IS NULL",
         )
@@ -558,6 +564,7 @@ impl PendingAuthorizationStore for PgPendingAuthorizationStore {
         .bind(state_hash.as_slice())
         .bind(now)
         .bind(response)
+        .bind(receipt_hash.as_slice())
         .execute(connection(uow)?)
         .await
         .map_err(|e| database_error(&e))?;

@@ -243,6 +243,7 @@ impl PendingAuthorizationStore for InMemoryFederation {
         provider_id: ProviderId,
         state_hash: [u8; 32],
         response: &str,
+        receipt_hash: [u8; 32],
         now: Timestamp,
     ) -> Result<bool, DomainError> {
         let tenant = uow.tenant().tenant_id();
@@ -256,6 +257,7 @@ impl PendingAuthorizationStore for InMemoryFederation {
         });
         Ok(found.is_some_and(|(_, pending)| {
             pending.saml_response = Some(response.to_owned());
+            pending.saml_receipt_hash = Some(receipt_hash);
             true
         }))
     }
@@ -627,6 +629,7 @@ pub async fn run_contract(ports: Ports<'_>) {
             .to_owned(),
         expires_at: later,
         saml_response: None,
+        saml_receipt_hash: None,
     };
     assert!(
         within!(ports, &tenant, |uow| ports
@@ -688,7 +691,7 @@ pub async fn run_contract(ports: Ports<'_>) {
             let mut unit = ports.units_of_work.begin(owner).await.expect("begin");
             let kept = ports
                 .pending
-                .keep_response(unit.as_mut(), provider, state, response, at)
+                .keep_response(unit.as_mut(), provider, state, response, [9; 32], at)
                 .await
                 .expect("keep");
             unit.commit().await.expect("commit");
@@ -702,7 +705,14 @@ pub async fn run_contract(ports: Ports<'_>) {
     assert!(
         !ports
             .pending
-            .keep_response(unit.as_mut(), google.id(), [7; 32], "other tenant", before)
+            .keep_response(
+                unit.as_mut(),
+                google.id(),
+                [7; 32],
+                "other tenant",
+                [9; 32],
+                before,
+            )
             .await
             .expect("keep")
     );
@@ -716,6 +726,7 @@ pub async fn run_contract(ports: Ports<'_>) {
         .expect("take"))
     .expect("the pending");
     assert_eq!(taken.saml_response.as_deref(), Some("first"));
+    assert_eq!(taken.saml_receipt_hash, Some([9; 32]));
     assert!(
         within!(ports, &tenant, |uow| ports
             .pending

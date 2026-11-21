@@ -25,4 +25,7 @@ pub struct PendingAuthorization {
     /// The response a SAML identity provider posted, unread, as it arrived.
     /// Kept once; `None` until then, and for every other kind.
     pub saml_response: Option<String>,
+    /// The SHA-256 of the receipt given to the browser that posted the
+    /// response. Kept with it: only that browser can finish with it.
+    pub saml_receipt_hash: Option<[u8; 32]>,
 }

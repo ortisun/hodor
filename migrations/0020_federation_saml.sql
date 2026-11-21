@@ -38,11 +38,18 @@ ALTER TABLE federation.identity_provider
         END
     );
 
--- The response a SAML identity provider posted, unread, kept once.
+-- The response a SAML identity provider posted, unread, kept once, with
+-- the SHA-256 of the receipt given to the browser that posted it.
 ALTER TABLE federation.pending_authorization
-    ADD COLUMN saml_response text,
+    ADD COLUMN saml_response     text,
+    ADD COLUMN saml_receipt_hash bytea,
     ADD CONSTRAINT pending_authorization_saml_response_size
-    CHECK (saml_response IS NULL OR octet_length(saml_response) <= 393216);
+    CHECK (saml_response IS NULL OR octet_length(saml_response) <= 393216),
+    ADD CONSTRAINT pending_authorization_saml_receipt
+    CHECK (
+        (saml_response IS NULL AND saml_receipt_hash IS NULL)
+        OR (saml_response IS NOT NULL AND octet_length(saml_receipt_hash) = 32)
+    );
 
 -- A response is kept with the pending authorization its provider and state
 -- name.

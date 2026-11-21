@@ -391,7 +391,7 @@ async fn an_external_identity_is_linked_to_one_user_and_found_by_its_subject_alo
     assert_eq!(
         world
             .service
-            .find_user(uow.as_mut(), provider.id(), &subject("abc"))
+            .find_user(uow.as_mut(), provider.id(), &subject("subject-of-ana"))
             .await
             .expect("find"),
         None
@@ -401,7 +401,7 @@ async fn an_external_identity_is_linked_to_one_user_and_found_by_its_subject_alo
         .link(
             uow.as_mut(),
             provider.id(),
-            subject("abc"),
+            subject("subject-of-ana"),
             ana,
             Caller::system(),
         )
@@ -417,7 +417,7 @@ async fn an_external_identity_is_linked_to_one_user_and_found_by_its_subject_alo
     assert_eq!(
         world
             .service
-            .find_user(uow.as_mut(), provider.id(), &subject("abc"))
+            .find_user(uow.as_mut(), provider.id(), &subject("subject-of-ana"))
             .await
             .expect("find"),
         Some(ana)
@@ -429,7 +429,7 @@ async fn an_external_identity_is_linked_to_one_user_and_found_by_its_subject_alo
             .link(
                 uow.as_mut(),
                 provider.id(),
-                subject("abc"),
+                subject("subject-of-ana"),
                 user,
                 Caller::system(),
             )
@@ -439,7 +439,7 @@ async fn an_external_identity_is_linked_to_one_user_and_found_by_its_subject_alo
     }
     world
         .service
-        .mark_used(uow.as_mut(), provider.id(), &subject("abc"))
+        .mark_used(uow.as_mut(), provider.id(), &subject("subject-of-ana"))
         .await
         .expect("used");
     let error = world
@@ -473,7 +473,7 @@ async fn an_external_identity_is_linked_to_one_user_and_found_by_its_subject_alo
         .unlink(
             &world.tenant,
             provider.id(),
-            &subject("abc"),
+            &subject("subject-of-ana"),
             Caller::system(),
         )
         .await
@@ -483,7 +483,7 @@ async fn an_external_identity_is_linked_to_one_user_and_found_by_its_subject_alo
         .unlink(
             &world.tenant,
             provider.id(),
-            &subject("abc"),
+            &subject("subject-of-ana"),
             Caller::system(),
         )
         .await
@@ -495,7 +495,8 @@ async fn an_external_identity_is_linked_to_one_user_and_found_by_its_subject_alo
     let said = format!("{events:?}");
     assert!(said.contains("federation.identity_linked"));
     assert!(said.contains("federation.identity_unlinked"));
-    assert!(!said.contains("abc"), "{said}");
+    // The subject is not hexadecimal, so no identifier can contain it by chance.
+    assert!(!said.contains("subject-of-ana"), "{said}");
 }
 
 #[tokio::test]

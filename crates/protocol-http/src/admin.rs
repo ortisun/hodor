@@ -1126,7 +1126,9 @@ async fn change_provider(
             let current = federation.provider(&tenant, id).await.map_err(failed)?;
             let now = current.snapshot().settings.clone();
             let settings = ProviderSettings {
-                saml: None,
+                // Not changed through this interface yet (Issue-49); what is
+                // stored stays as it is.
+                saml: now.saml,
                 display_name: changes.display_name.unwrap_or(now.display_name),
                 issuer: changes.issuer.unwrap_or(now.issuer),
                 client_id: changes.client_id.unwrap_or(now.client_id),

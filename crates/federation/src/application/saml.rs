@@ -82,6 +82,13 @@ impl SamlClient {
         Self { random }
     }
 
+    /// A new receipt for a posted response: 256 random bits in hexadecimal.
+    pub(crate) fn receipt(&self) -> String {
+        let mut receipt = [0_u8; 32];
+        self.random.fill(&mut receipt);
+        receipt.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
     /// Prepares one request: the address at the identity provider, the
     /// relay state made for it, and the request's identifier in place of a
     /// nonce. There is no code verifier.
