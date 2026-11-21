@@ -2,7 +2,7 @@
 //! administrator and checking the audit log.
 
 use clap::{Parser, Subcommand};
-use hodor_adapters_crypto::{OsRandom, Sha256Digest};
+use hodor_adapters_crypto::{OsRandom, SecretKeys, Sha256Digest};
 use hodor_adapters_postgres::{
     Database, PgAccessTokenStore, PgAuditLog, PgPool, PgRoleAssignmentStore, PgTenantDirectory,
     PgTenantRepository, PgUserRepository,
@@ -85,6 +85,12 @@ enum Command {
         command: AuditCommand,
     },
 
+    /// Work with the keys that keep secrets encrypted at rest.
+    Secrets {
+        #[command(subcommand)]
+        command: SecretsCommand,
+    },
+
     /// Check a health endpoint and exit non-zero unless it answers 200.
     ///
     /// For container health checks: the runtime image has no shell or HTTP
@@ -117,6 +123,15 @@ enum AdminCommand {
         #[arg(long, default_value_t = 60)]
         token_minutes: u32,
     },
+}
+
+#[derive(Subcommand)]
+enum SecretsCommand {
+    /// Print a new key for `HODOR_SECRET_KEYS`: 32 random bytes in Base64.
+    ///
+    /// The key is printed once and stored nowhere. Give it an identifier
+    /// and put the pair first in the setting.
+    GenerateKey,
 }
 
 #[derive(Subcommand)]
@@ -452,6 +467,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .await
                 .map_err(|error| format!("{}: {}", error.code(), error.message()))??;
             writeln!(std::io::stdout(), "{output}")?;
+        }
+        Command::Secrets {
+            command: SecretsCommand::GenerateKey,
+        } => {
+            let key = SecretKeys::generate(&OsRandom);
+            writeln!(std::io::stdout(), "{}", key.expose())?;
         }
         Command::Probe { addr, path } => {
             if !probe(addr, &path)? {
