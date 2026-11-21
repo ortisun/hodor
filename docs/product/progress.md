@@ -79,7 +79,8 @@ Specified in [the credential context](../architecture/contexts/credential.md).
 | Issue | Status | What exists |
 |---|---|---|
 | Issue-27 Notification | Done | `hodor-notification` crate: messages queued in the transaction of the change that causes them, built-in templates in English and Brazilian Portuguese, retries with growing waits, expiry, and contents erased once a message is no longer pending; `notification.message` under row-level security; one contract suite passed by the in-memory queue and by PostgreSQL. `hodor-adapters-smtp` delivers to a mail server and is tested against a real one in a container. `hodor-worker` delivers queued messages; the development stack has a mail server whose web page shows what was sent. Specified in [the notification context](../architecture/contexts/notification.md) |
-| Issue-28 to Issue-30 | Not started | — |
+| Issue-28 Audit | In progress | Specified in [the audit context](../architecture/contexts/audit.md) |
+| Issue-29, Issue-30 | Not started | — |
 
 ### Checked by hand on the development stack
 
@@ -145,4 +146,5 @@ Each departure is reflected in the page that specifies the topic. They are colle
 | Outbox delivery | A handler registry with per-handler idempotency | Delivery is atomic per event: all handlers for an event commit together with the "delivered" mark | [Decision 0003](../decisions/0003-context-communication.md) |
 | `UnitOfWork` | Port named, shape open | A trait object that adapters downcast to reach their transaction | [overview](../architecture/overview.md#cross-cutting-concerns) |
 | Email delivery | An event handler in the worker that reacts to events of other contexts | A queue of its own: the context that wants a message sent puts it in the queue inside its own transaction, and the worker delivers from the queue. An event must never carry a link that is as good as a token, and the queue can erase a message's contents once it is sent | [the notification context](../architecture/contexts/notification.md#how-a-message-gets-sent) |
+| Audit records | Written in the same transaction as the change; columns for the target, the outcome, the client and the address | Written by the worker in the transaction that marks the event delivered, shortly after the change; the details are the event's contents, and target, outcome, client and address are not separate columns yet | [the audit context](../architecture/contexts/audit.md#how-a-record-comes-to-exist) |
 | Tenant lookup for HTTP | Middleware in `protocol-http` | Same, through a `TenantResolver` trait that the composition root implements, so `protocol-http` depends on no adapter | [overview](../architecture/overview.md#cross-cutting-concerns) |

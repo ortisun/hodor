@@ -170,7 +170,7 @@ Slug lookup goes through `platform.tenant_directory`, a routing table outside ro
 
 | Table | Key columns | Notes |
 |---|---|---|
-| `audit.record` | `id`, `occurred_at`, `actor_kind`, `actor_id`, `client_id`, `ip`, `action`, `target_kind`, `target_id`, `outcome`, `metadata jsonb`, `prev_hash`, `hash` | Partitioned by month; `hodor_app` has `INSERT` and `SELECT` only |
+| `audit.record`, `audit.chain_head` | See [the audit context](contexts/audit.md#storage) | `hodor_app` has `INSERT` and `SELECT` only on `audit.record`; a trigger refuses every update and delete |
 | `platform.outbox` | `id`, `tenant_id`, `event_type`, `payload jsonb`, `occurred_at`, `dispatched_at`, `attempts` | Polled with `FOR UPDATE SKIP LOCKED` |
 | `platform.job` | `id`, `tenant_id`, `kind`, `payload`, `run_at`, `locked_by`, `attempts`, `last_error` | Same locking pattern |
 | `platform.webhook_endpoint`, `platform.webhook_delivery` | Endpoint URL, secret, event filter; delivery attempts | Tenant-scoped despite the schema |
