@@ -94,6 +94,15 @@ async fn a_running_worker_delivers_events_and_stops_cleanly() {
     }
     assert_eq!(remaining, 0, "the worker should deliver every event");
 
+    // Each event became one audit record, in its own tenant's chain.
+    let chains: Vec<(i64, i64)> = sqlx::query_as(
+        "SELECT count(*), max(sequence) FROM audit.record GROUP BY tenant_id ORDER BY 1",
+    )
+    .fetch_all(database.owner())
+    .await
+    .expect("read");
+    assert_eq!(chains, [(2, 2), (3, 3)]);
+
     terminate(&worker);
     let status = tokio::task::spawn_blocking(move || worker.wait())
         .await

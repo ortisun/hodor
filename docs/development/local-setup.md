@@ -53,7 +53,7 @@ docker compose -f deploy/docker/compose.yaml up --build --wait
 | `postgres` | PostgreSQL 17, with the database roles created on first start | internal only |
 | `migrate` | Runs `hodor-cli migrate` once and exits | — |
 | `server` | `hodor-server` | <http://localhost:8080>, health on <http://localhost:9090/readyz> |
-| `worker` | `hodor-worker`, delivering outbox events and email | internal only |
+| `worker` | `hodor-worker`, writing the audit log and delivering email | internal only |
 | `mail` | A mail server for development. It accepts every message and delivers none: what Hodor sends can be read in its web page | <http://localhost:8025> |
 | `victoriametrics` | Metrics backend; the server pushes to it over OTLP | <http://localhost:8428/vmui> |
 
@@ -131,6 +131,7 @@ The worker connects to the database twice, with different roles: as a member of 
 |---|---|---|
 | `migrate` | `HODOR_DATABASE_OWNER_URL` (required) | Applies pending migrations as the role that owns the schema |
 | `tenant create`, `tenant create-system`, `tenant list`, `tenant suspend`, `tenant reactivate` | `HODOR_DATABASE_URL` (required) | Manage tenants as a member of `hodor_app`. See [the tenant context](../architecture/contexts/tenant.md#command-line-tool) |
+| `audit verify --tenant <slug>` | `HODOR_DATABASE_URL` (required) | Checks a tenant's whole chain of audit records and exits non-zero if a record was changed, removed or inserted. See [the audit context](../architecture/contexts/audit.md#verifying) |
 | `probe` | — | Requests a health endpoint (`--addr`, `--path`) and exits non-zero unless it answers 200. Used by container health checks, since the image has no shell |
 
 ### Creating your first tenant

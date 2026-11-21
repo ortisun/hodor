@@ -66,6 +66,8 @@ flowchart TB
 
 `hodor-worker` runs background work. Today that is two jobs: delivering outbox events to their handlers ([Decision 0003](../decisions/0003-context-communication.md)), and delivering queued messages to the mail server ([the notification context](../architecture/contexts/notification.md)).
 
+The one handler today is the [audit log](../architecture/contexts/audit.md): every event becomes an audit record. An installation without a running worker loses nothing, but its audit log falls behind until a worker runs.
+
 Both jobs work the same way:
 
 - **Loop**: the worker asks for a batch of pending work and handles it. If the batch had work in it, it asks again at once; if it was empty, it pauses for the poll interval. A database error is logged and followed by a pause, never by an exit: the worker waits for the database to come back.

@@ -79,7 +79,7 @@ Specified in [the credential context](../architecture/contexts/credential.md).
 | Issue | Status | What exists |
 |---|---|---|
 | Issue-27 Notification | Done | `hodor-notification` crate: messages queued in the transaction of the change that causes them, built-in templates in English and Brazilian Portuguese, retries with growing waits, expiry, and contents erased once a message is no longer pending; `notification.message` under row-level security; one contract suite passed by the in-memory queue and by PostgreSQL. `hodor-adapters-smtp` delivers to a mail server and is tested against a real one in a container. `hodor-worker` delivers queued messages; the development stack has a mail server whose web page shows what was sent. Specified in [the notification context](../architecture/contexts/notification.md) |
-| Issue-28 Audit | In progress | Specified in [the audit context](../architecture/contexts/audit.md) |
+| Issue-28 Audit | Done | `hodor-audit` crate: every event becomes one record, chained per tenant with SHA-256 so that a changed, removed or inserted record is found; `audit.record` under row-level security, append-only by permission and by a trigger; the worker records each event in the transaction that marks it delivered; `hodor-cli audit verify` checks a tenant's chain. Tests deliver with three workers at once, try to change records as every database role, tamper behind the protections and verify, and search every record for a password, tokens and an email address used in a registration and a recovery. Specified in [the audit context](../architecture/contexts/audit.md) |
 | Issue-29, Issue-30 | Not started | — |
 
 ### Checked by hand on the development stack
@@ -98,6 +98,8 @@ These are recorded here so they are not forgotten; each is picked up by the issu
 | Tenants have no routes of their own yet: an existing tenant answers `404` with `route.not_found` | Issue-24, the interaction API |
 | The system tenant is not created automatically by the development stack | Issue-30, with the bootstrap administrator |
 | The Argon2id hasher was not checked against a hash produced by another implementation; it relies on the library's own conformance | When a second implementation is at hand, for example password import |
+| Records removed from the end of a tenant's audit chain, or a chain rewritten whole, are noticed only through the chain head, which lives in the same database | Exporting the latest hash regularly, later in Phase 1 |
+| Audit records do not carry the address a request came from or the application that made it, and events caused by people who are not signed in are recorded as anonymous | Issue-29, the administration interface |
 | Rows of expired and revoked sessions are never removed | A cleanup job, later in Phase 1 |
 | A person can register only in a tenant whose registration is open. In a tenant where it is closed there is still no way to create a user | Issue-29 (administration interface), Issue-30 (bootstrap administrator) |
 | The links in messages lead to pages that do not exist yet. Until they do, the token must be copied from the link into a request by hand | Issue-31 |
@@ -105,7 +107,6 @@ These are recorded here so they are not forgotten; each is picked up by the issu
 | A registration that fails after the user was created and before the password was set leaves an account without a password; the person gets in by recovering it | Accepted; see [the authentication context](../architecture/contexts/authentication.md#registration) |
 | Used, replaced and expired verification tokens are never removed | A cleanup job, later in Phase 1 |
 | The address used to limit attempts is the connection's, so behind a load balancer everyone shares one limit | Before any deployment behind a load balancer |
-| No event handlers are registered | Issue-28 (audit) |
 | Records of messages that were sent, failed or expired are never removed | A cleanup job, later in Phase 1 |
 | The worker opens a new connection to the mail server for every message | When the volume of mail calls for it |
 | The mail adapter was tested against a mail server without encryption or a password; the encrypted and authenticated paths rely on the mail library | Before the first production deployment |

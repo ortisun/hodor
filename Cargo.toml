@@ -13,6 +13,7 @@ repository = "https://github.com/ortisun/hodor"
 hodor-adapters-crypto = { path = "crates/adapters-crypto" }
 hodor-adapters-postgres = { path = "crates/adapters-postgres" }
 hodor-adapters-smtp = { path = "crates/adapters-smtp" }
+hodor-audit = { path = "crates/audit" }
 hodor-authentication = { path = "crates/authentication" }
 hodor-credential = { path = "crates/credential" }
 hodor-identity = { path = "crates/identity" }

@@ -62,7 +62,7 @@ The hash is the SHA-256 of these fields, each preceded by its length so that no 
 3. The sequence
 4. The event's identifier
 5. The action
-6. When it occurred, in nanoseconds since 1970
+6. When it occurred, in microseconds since 1970, which is as fine as the database keeps time
 7. The actor
 8. The correlation identifier
 9. The details, as JSON with the keys of every object in alphabetical order
@@ -95,7 +95,7 @@ Verifying reads a tenant's records in order and recomputes every hash. It report
 hodor-cli audit verify --tenant acme
 ```
 
-prints the result and exits with a non-zero status if the chain is broken.
+prints `intact: 42 records`, or says at which record the chain is broken and how, and exits with a non-zero status. It needs `HODOR_DATABASE_URL`, like the tenant commands.
 
 ## Append-only
 

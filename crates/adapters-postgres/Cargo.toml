@@ -13,6 +13,7 @@ testing = ["dep:testcontainers", "dep:testcontainers-modules", "dep:tokio"]
 
 [dependencies]
 async-trait.workspace = true
+hodor-audit.workspace = true
 hodor-authentication.workspace = true
 hodor-credential.workspace = true
 hodor-identity.workspace = true
@@ -31,6 +32,7 @@ tokio = { workspace = true, optional = true }
 # Dev-only: the full sign-in test runs the real hasher against the real
 # database. Adapters never depend on each other in production code.
 hodor-adapters-crypto.workspace = true
+hodor-audit = { workspace = true, features = ["testing"] }
 hodor-authentication = { workspace = true, features = ["testing"] }
 hodor-session = { workspace = true, features = ["testing"] }
 hodor-notification = { workspace = true, features = ["testing"] }
