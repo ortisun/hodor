@@ -2,6 +2,8 @@
 
 Status: Proposed
 
+> The use of `aws-lc-rs` for authenticated encryption and signatures, which departs from a literal "RustCrypto only" reading of the specification, was approved by the project owner on 2026-11-21, when secrets at rest were built. The rest of this record is still to be reviewed.
+
 ## Context
 
 The specification asks for the "audited RustCrypto ecosystem". RustCrypto is a collection of crates with uneven audit coverage, not a single audited library. In particular, the pure-Rust RSA implementation has had a published timing side-channel advisory, and RSA signing (RS256) is unavoidable for OpenID Connect interoperability. The choice of primitives must be made per algorithm, on evidence, and re-verified when implementation starts.
