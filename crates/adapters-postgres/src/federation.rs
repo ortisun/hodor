@@ -7,7 +7,7 @@ use hodor_authentication::api::TransactionId;
 use hodor_federation::api::{
     Alias, DirectorySettings, ExternalIdentity, IdentityProvider, LinkStore, PendingAuthorization,
     PendingAuthorizationStore, ProviderId, ProviderKind, ProviderSettings, ProviderSnapshot,
-    ProviderStatus, ProviderStore, Subject,
+    ProviderStatus, ProviderStore, SamlSettings, Subject,
 };
 use hodor_kernel::{DomainError, SealedSecret, Timestamp, UnitOfWork, UserId};
 use sqlx::Row as _;
@@ -55,6 +55,18 @@ fn provider_from(row: &PgRow) -> Result<IdentityProvider, DomainError> {
                 }),
                 None => None,
             },
+            saml: match row
+                .try_get::<Option<String>, _>("saml_single_sign_on_address")
+                .map_err(get)?
+            {
+                Some(single_sign_on_address) => Some(SamlSettings {
+                    single_sign_on_address,
+                    certificate: row.try_get("saml_certificate").map_err(get)?,
+                    email_attribute: row.try_get("saml_email_attribute").map_err(get)?,
+                    name_attribute: row.try_get("saml_name_attribute").map_err(get)?,
+                }),
+                None => None,
+            },
         },
         client_secret: SealedSecret::from_stored(row.try_get("client_secret").map_err(get)?),
         status: ProviderStatus::from_stored(&status)?,
@@ -62,6 +74,12 @@ fn provider_from(row: &PgRow) -> Result<IdentityProvider, DomainError> {
         updated_at: row.try_get("updated_at").map_err(get)?,
         version: u32::try_from(version).map_err(|_| corrupted("negative version"))?,
     }))
+}
+
+/// One part of a provider's SAML settings, for a column that is empty for
+/// every other kind.
+fn saml_part(state: &ProviderSnapshot, part: fn(&SamlSettings) -> &String) -> Option<String> {
+    state.settings.saml.as_ref().map(|saml| part(saml).clone())
 }
 
 fn link_from(row: &PgRow) -> Result<ExternalIdentity, DomainError> {
@@ -94,9 +112,11 @@ impl ProviderStore for PgProviderStore {
                  (tenant_id, id, alias, kind, display_name, issuer, client_id, client_secret,
                   scopes, creates_users, trusts_email, status, created_at, updated_at, version,
                     directory_base, directory_filter, directory_subject_attribute,
-                    directory_email_attribute, directory_name_attribute)
+                    directory_email_attribute, directory_name_attribute,
+                    saml_single_sign_on_address, saml_certificate, saml_email_attribute,
+                    saml_name_attribute)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 0,
-                     $15, $16, $17, $18, $19)",
+                     $15, $16, $17, $18, $19, $20, $21, $22, $23)",
         )
         .bind(tenant.as_uuid())
         .bind(state.id.as_uuid())
@@ -135,6 +155,10 @@ impl ProviderStore for PgProviderStore {
                 .as_ref()
                 .map(|d| d.name_attribute.clone()),
         )
+        .bind(saml_part(state, |s| &s.single_sign_on_address))
+        .bind(saml_part(state, |s| &s.certificate))
+        .bind(saml_part(state, |s| &s.email_attribute))
+        .bind(saml_part(state, |s| &s.name_attribute))
         .execute(connection(uow)?)
         .await;
         match inserted {
@@ -166,7 +190,9 @@ impl ProviderStore for PgProviderStore {
                  updated_at = $11, version = version + 1,
                  directory_base = $13, directory_filter = $14,
                  directory_subject_attribute = $15, directory_email_attribute = $16,
-                 directory_name_attribute = $17
+                 directory_name_attribute = $17,
+                 saml_single_sign_on_address = $18, saml_certificate = $19,
+                 saml_email_attribute = $20, saml_name_attribute = $21
              WHERE tenant_id = $1 AND id = $2 AND version = $12",
         )
         .bind(tenant.as_uuid())
@@ -204,6 +230,10 @@ impl ProviderStore for PgProviderStore {
                 .as_ref()
                 .map(|d| d.name_attribute.clone()),
         )
+        .bind(saml_part(state, |s| &s.single_sign_on_address))
+        .bind(saml_part(state, |s| &s.certificate))
+        .bind(saml_part(state, |s| &s.email_attribute))
+        .bind(saml_part(state, |s| &s.name_attribute))
         .execute(connection(uow)?)
         .await
         .map_err(|e| database_error(&e))?;
@@ -227,7 +257,9 @@ impl ProviderStore for PgProviderStore {
             "SELECT id, alias, kind, display_name, issuer, client_id, client_secret,
                     scopes, creates_users, trusts_email, status, created_at, updated_at, version,
                     directory_base, directory_filter, directory_subject_attribute,
-                    directory_email_attribute, directory_name_attribute
+                    directory_email_attribute, directory_name_attribute,
+                    saml_single_sign_on_address, saml_certificate, saml_email_attribute,
+                    saml_name_attribute
              FROM federation.identity_provider
              WHERE tenant_id = $1 AND id = $2",
         )
@@ -251,7 +283,9 @@ impl ProviderStore for PgProviderStore {
             "SELECT id, alias, kind, display_name, issuer, client_id, client_secret,
                     scopes, creates_users, trusts_email, status, created_at, updated_at, version,
                     directory_base, directory_filter, directory_subject_attribute,
-                    directory_email_attribute, directory_name_attribute
+                    directory_email_attribute, directory_name_attribute,
+                    saml_single_sign_on_address, saml_certificate, saml_email_attribute,
+                    saml_name_attribute
              FROM federation.identity_provider
              WHERE tenant_id = $1 AND alias = $2",
         )
@@ -271,7 +305,9 @@ impl ProviderStore for PgProviderStore {
             "SELECT id, alias, kind, display_name, issuer, client_id, client_secret,
                     scopes, creates_users, trusts_email, status, created_at, updated_at, version,
                     directory_base, directory_filter, directory_subject_attribute,
-                    directory_email_attribute, directory_name_attribute
+                    directory_email_attribute, directory_name_attribute,
+                    saml_single_sign_on_address, saml_certificate, saml_email_attribute,
+                    saml_name_attribute
              FROM federation.identity_provider
              WHERE tenant_id = $1 ORDER BY alias COLLATE \"C\"",
         )
@@ -437,7 +473,8 @@ impl PendingAuthorizationStore for PgPendingAuthorizationStore {
              ON CONFLICT (tenant_id, transaction_id) DO UPDATE
              SET provider_id = EXCLUDED.provider_id, state_hash = EXCLUDED.state_hash,
                  nonce = EXCLUDED.nonce, code_verifier = EXCLUDED.code_verifier,
-                 redirect_uri = EXCLUDED.redirect_uri, expires_at = EXCLUDED.expires_at",
+                 redirect_uri = EXCLUDED.redirect_uri, expires_at = EXCLUDED.expires_at,
+                 saml_response = NULL",
         )
         .bind(tenant.as_uuid())
         .bind(pending.transaction_id.as_uuid())
@@ -474,7 +511,8 @@ impl PendingAuthorizationStore for PgPendingAuthorizationStore {
         let row = sqlx::query(
             "DELETE FROM federation.pending_authorization
              WHERE tenant_id = $1 AND transaction_id = $2
-             RETURNING provider_id, state_hash, nonce, code_verifier, redirect_uri, expires_at",
+             RETURNING provider_id, state_hash, nonce, code_verifier, redirect_uri, expires_at,
+                       saml_response",
         )
         .bind(tenant.as_uuid())
         .bind(transaction_id.as_uuid())
@@ -494,6 +532,35 @@ impl PendingAuthorizationStore for PgPendingAuthorizationStore {
             code_verifier: SealedSecret::from_stored(row.try_get("code_verifier").map_err(get)?),
             redirect_uri: row.try_get("redirect_uri").map_err(get)?,
             expires_at: row.try_get("expires_at").map_err(get)?,
+            saml_response: row.try_get("saml_response").map_err(get)?,
         }))
+    }
+
+    async fn keep_response(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        provider_id: ProviderId,
+        state_hash: [u8; 32],
+        response: &str,
+        now: Timestamp,
+    ) -> Result<bool, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        // One statement: of two responses at the same moment, the first
+        // one wins.
+        let kept = sqlx::query(
+            "UPDATE federation.pending_authorization
+             SET saml_response = $5
+             WHERE tenant_id = $1 AND provider_id = $2 AND state_hash = $3
+               AND expires_at > $4 AND saml_response IS NULL",
+        )
+        .bind(tenant.as_uuid())
+        .bind(provider_id.as_uuid())
+        .bind(state_hash.as_slice())
+        .bind(now)
+        .bind(response)
+        .execute(connection(uow)?)
+        .await
+        .map_err(|e| database_error(&e))?;
+        Ok(kept.rows_affected() > 0)
     }
 }

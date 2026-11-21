@@ -161,6 +161,23 @@ pub trait PendingAuthorizationStore: Send + Sync {
         uow: &mut dyn UnitOfWork,
         transaction_id: TransactionId,
     ) -> Result<Option<PendingAuthorization>, DomainError>;
+
+    /// Keeps the response a SAML identity provider posted with the pending
+    /// authorization of this provider whose state hashes to `state_hash`,
+    /// if it has not expired at `now` and has no response yet: the first
+    /// one wins. Returns whether it was kept.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn keep_response(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        provider_id: ProviderId,
+        state_hash: [u8; 32],
+        response: &str,
+        now: Timestamp,
+    ) -> Result<bool, DomainError>;
 }
 
 /// What to ask a directory about one person.

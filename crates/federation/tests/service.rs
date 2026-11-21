@@ -2,7 +2,7 @@
 
 use hodor_federation::api::{
     ChangeProvider, CreateProvider, FederationService, ProviderKind, ProviderSettings,
-    ProviderStatus, Subject,
+    ProviderStatus, SamlSettings, Subject,
 };
 use hodor_federation::testing::{InMemoryFederation, Ports, run_contract};
 use hodor_kernel::clock::testing::FixedClock;
@@ -11,6 +11,7 @@ use hodor_kernel::uow::testing::InMemoryUnitOfWorkFactory;
 use hodor_kernel::{
     Caller, Secret, TenantContext, TenantId, Timestamp, UnitOfWorkFactory as _, UserId,
 };
+use hodor_saml::testing::{TestIdentityProvider, certificate_with_short_rsa_key};
 use std::sync::Arc;
 
 const SECRET: &str = "the-client-secret-of-the-provider";
@@ -39,6 +40,7 @@ fn world() -> World {
 
 fn settings() -> ProviderSettings {
     ProviderSettings {
+        saml: None,
         display_name: "Example".to_owned(),
         issuer: "https://accounts.example.com".to_owned(),
         client_id: "hodor".to_owned(),
@@ -526,4 +528,73 @@ async fn a_link_that_is_not_committed_is_not_made() {
 
     // The event belongs to the unit of work that was abandoned.
     assert_eq!(world.units_of_work.committed_events().len(), before);
+}
+
+fn saml(certificate: &str, secret: &str) -> CreateProvider {
+    CreateProvider {
+        alias: "corp".to_owned(),
+        kind: ProviderKind::Saml,
+        settings: ProviderSettings {
+            display_name: "Corp".to_owned(),
+            issuer: "http://www.okta.com/exk1a2b3c4".to_owned(),
+            client_id: String::new(),
+            scopes: Vec::new(),
+            creates_users: true,
+            trusts_email: false,
+            directory: None,
+            saml: Some(SamlSettings::new(
+                "https://corp.okta.com/app/sso/saml",
+                certificate,
+            )),
+        },
+        client_secret: Secret::from(secret.to_owned()),
+    }
+}
+
+#[tokio::test]
+async fn a_saml_provider_has_a_certificate_and_no_secret() {
+    let world = world();
+    let identity_provider = TestIdentityProvider::rsa("http://www.okta.com/exk1a2b3c4");
+    let certificate = identity_provider.certificate_pem();
+
+    let error = world
+        .service
+        .create_provider(
+            &world.tenant,
+            saml(certificate, "a secret"),
+            Caller::system(),
+        )
+        .await
+        .expect_err("a secret");
+    assert_eq!(error.code(), "federation.client_secret_invalid");
+
+    let error = world
+        .service
+        .create_provider(
+            &world.tenant,
+            saml(&certificate_with_short_rsa_key(), ""),
+            Caller::system(),
+        )
+        .await
+        .expect_err("a short key");
+    assert_eq!(error.code(), "federation.saml_invalid");
+    assert_eq!(error.detail(), Some("key_too_short"));
+
+    let created = world
+        .service
+        .create_provider(&world.tenant, saml(certificate, ""), Caller::system())
+        .await
+        .expect("a SAML provider");
+    assert_eq!(created.snapshot().kind, ProviderKind::Saml);
+    let error = world
+        .service
+        .change_provider_secret(
+            &world.tenant,
+            created.id(),
+            &Secret::from("a secret".to_owned()),
+            Caller::system(),
+        )
+        .await
+        .expect_err("no secret to change");
+    assert_eq!(error.code(), "federation.client_secret_invalid");
 }

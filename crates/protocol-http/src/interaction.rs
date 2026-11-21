@@ -19,7 +19,7 @@ use hodor_authentication::api::{
     AccountRequest, AccountService, AuthenticationService, ExternalInput, SignIn, StepInput,
     TransactionId,
 };
-use hodor_federation::api::{EXTERNAL_STEP, ExternalSignIn};
+use hodor_federation::api::{Alias, EXTERNAL_STEP, ExternalSignIn};
 use hodor_kernel::{
     Actor, Caller, Clock, CorrelationId, Digest, DomainError, Secret, TenantContext,
 };
@@ -88,6 +88,17 @@ pub fn interaction_routes(state: InteractionState) -> Router {
         .route("/recovery", post(request_recovery))
         .route("/recovery/complete", post(reset_password))
         .layer(middleware::from_fn(refuse_other_origins))
+        // Another site posts to the assertion consumer: it is outside the
+        // origin check, and can only keep a response for a sign-in that
+        // this origin's page finishes.
+        .route(
+            "/sign-in/providers/{alias}/saml",
+            post(receive_saml_response),
+        )
+        .route(
+            "/sign-in/providers/{alias}/saml/metadata",
+            get(saml_metadata),
+        )
         .with_state(state)
 }
 
@@ -132,8 +143,21 @@ struct DirectoryBody {
 /// No `Debug`: this holds what a provider sent back until it is used.
 #[derive(Deserialize)]
 struct CallbackBody {
-    code: String,
+    /// What an OpenID Connect provider or GitHub sent back. A SAML
+    /// provider sends no code: its response was kept when it was posted.
+    #[serde(default)]
+    code: Option<String>,
     state: String,
+}
+
+/// What a SAML identity provider posts. No `Debug`: the response says who
+/// a person is until it is checked.
+#[derive(Deserialize)]
+struct SamlPost {
+    #[serde(rename = "SAMLResponse")]
+    response: String,
+    #[serde(rename = "RelayState", default)]
+    relay_state: String,
 }
 
 #[derive(Deserialize)]
@@ -608,15 +632,90 @@ async fn finish_with_provider(
     let (Some(_), Some(alias)) = (&state.external, alias_of(&parameters)) else {
         return provider_not_found();
     };
+    let mut fields = vec![
+        ("provider".to_owned(), Secret::from(alias)),
+        ("state".to_owned(), Secret::from(body.state)),
+    ];
+    if let Some(code) = body.code {
+        fields.push(("code".to_owned(), Secret::from(code)));
+    }
     let input = StepInput::External(ExternalInput {
         step: EXTERNAL_STEP.to_owned(),
-        fields: vec![
-            ("provider".to_owned(), Secret::from(alias)),
-            ("code".to_owned(), Secret::from(body.code)),
-            ("state".to_owned(), Secret::from(body.state)),
-        ],
+        fields,
     });
     submit(&state, &tenant, &slug, &headers, input).await
+}
+
+/// A relay state that may be written into an address: a plain token, as
+/// Hodor makes them, of at most 80 characters.
+fn is_plain_token(relay_state: &str) -> bool {
+    (1..=80).contains(&relay_state.len())
+        && relay_state
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+}
+
+/// Where a SAML identity provider posts its response. The response is kept,
+/// unread, with the pending authorization its relay state names, and the
+/// browser is sent to the page that finishes. The answer is the same
+/// whatever was found.
+async fn receive_saml_response(
+    State(state): State<InteractionState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(TenantSlug(slug)): Extension<TenantSlug>,
+    parameters: RawPathParams,
+    posted: Result<axum::Form<SamlPost>, axum::extract::rejection::FormRejection>,
+) -> Response {
+    // The alias goes into the address the browser is sent to: only one
+    // that is an alias at all.
+    let Some(alias) = alias_of(&parameters).filter(|alias| Alias::parse(alias).is_ok()) else {
+        return provider_not_found();
+    };
+    let mut relay_state = None;
+    if let (Some(external), Ok(axum::Form(post))) = (&state.external, posted)
+        && is_plain_token(&post.relay_state)
+    {
+        if let Err(error) = external
+            .keep_saml_response(&tenant, &alias, &post.relay_state, &post.response)
+            .await
+        {
+            return Problem::from(error).into_response();
+        }
+        relay_state = Some(post.relay_state);
+    }
+    let mut location = format!("/t/{slug}/account/providers/{alias}/callback?binding=saml");
+    if let Some(relay_state) = relay_state {
+        location.push_str("&state=");
+        location.push_str(&relay_state);
+    }
+    match HeaderValue::from_str(&location) {
+        Ok(location) => (StatusCode::SEE_OTHER, [(header::LOCATION, location)]).into_response(),
+        Err(_) => provider_not_found(),
+    }
+}
+
+/// Hodor's metadata for one SAML provider of the tenant.
+async fn saml_metadata(
+    State(state): State<InteractionState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(TenantSlug(slug)): Extension<TenantSlug>,
+    parameters: RawPathParams,
+) -> Response {
+    let (Some(external), Some(alias)) = (&state.external, alias_of(&parameters)) else {
+        return provider_not_found();
+    };
+    match external.saml_metadata(&tenant, &slug, &alias).await {
+        Ok(metadata) => (
+            StatusCode::OK,
+            [(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("application/samlmetadata+xml"),
+            )],
+            metadata,
+        )
+            .into_response(),
+        Err(error) => Problem::from(error).into_response(),
+    }
 }
 
 async fn sign_in_with_directory(

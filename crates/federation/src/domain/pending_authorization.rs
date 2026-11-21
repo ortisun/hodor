@@ -22,4 +22,7 @@ pub struct PendingAuthorization {
     pub redirect_uri: String,
     /// When the pending authorization can no longer be finished.
     pub expires_at: Timestamp,
+    /// The response a SAML identity provider posted, unread, as it arrived.
+    /// Kept once; `None` until then, and for every other kind.
+    pub saml_response: Option<String>,
 }

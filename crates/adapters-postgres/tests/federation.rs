@@ -43,6 +43,7 @@ fn create(alias: &str) -> CreateProvider {
         alias: alias.to_owned(),
         kind: ProviderKind::OpenIdConnect,
         settings: ProviderSettings {
+            saml: None,
             display_name: "Example".to_owned(),
             issuer: "https://accounts.example.com".to_owned(),
             client_id: "hodor".to_owned(),
@@ -284,6 +285,7 @@ async fn a_directory_comes_back_with_its_own_settings() {
                 alias: "company".to_owned(),
                 kind: ProviderKind::Ldap,
                 settings: ProviderSettings {
+                    saml: None,
                     display_name: "Company".to_owned(),
                     issuer: "ldaps://ldap.example.com".to_owned(),
                     client_id: "cn=hodor,ou=services,dc=example,dc=com".to_owned(),
@@ -309,6 +311,62 @@ async fn a_directory_comes_back_with_its_own_settings() {
     // refused by the database itself.
     for statement in [
         "UPDATE federation.identity_provider SET directory_base = NULL",
+        "UPDATE federation.identity_provider SET kind = 'openid_connect'",
+    ] {
+        assert!(
+            sqlx::query(statement)
+                .execute(database.owner())
+                .await
+                .is_err(),
+            "{statement}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_saml_provider_comes_back_with_its_own_settings() {
+    use hodor_federation::api::SamlSettings;
+    let database = TestDatabase::start().await;
+    let service = service(&database);
+    let tenant = TenantContext::assume(TenantId::generate());
+    let identity_provider = hodor_saml::testing::TestIdentityProvider::rsa("urn:corp:idp");
+    let mut saml = SamlSettings::new(
+        "https://idp.corp.example/sso",
+        identity_provider.certificate_pem(),
+    );
+    saml.email_attribute =
+        "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress".to_owned();
+    let created = service
+        .create_provider(
+            &tenant,
+            CreateProvider {
+                alias: "corp".to_owned(),
+                kind: ProviderKind::Saml,
+                settings: ProviderSettings {
+                    display_name: "Corp".to_owned(),
+                    issuer: "urn:corp:idp".to_owned(),
+                    client_id: String::new(),
+                    scopes: Vec::new(),
+                    creates_users: true,
+                    trusts_email: true,
+                    directory: None,
+                    saml: Some(saml),
+                },
+                client_secret: Secret::from(String::new()),
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("a SAML provider");
+    let read = service.provider(&tenant, created.id()).await.expect("read");
+    assert_eq!(read.snapshot().kind, ProviderKind::Saml);
+    assert_eq!(read.snapshot().settings, created.snapshot().settings);
+
+    // A SAML provider without its settings, with a client identifier, or
+    // another kind with them, is refused by the database itself.
+    for statement in [
+        "UPDATE federation.identity_provider SET saml_certificate = NULL",
+        "UPDATE federation.identity_provider SET client_id = 'hodor'",
         "UPDATE federation.identity_provider SET kind = 'openid_connect'",
     ] {
         assert!(

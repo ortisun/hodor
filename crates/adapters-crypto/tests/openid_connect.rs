@@ -40,6 +40,7 @@ fn configured(issuer: &str) -> IdentityProvider {
         Alias::parse("example").expect("alias"),
         ProviderKind::OpenIdConnect,
         ProviderSettings {
+            saml: None,
             display_name: "Example".to_owned(),
             issuer: issuer.to_owned(),
             client_id: CLIENT_ID.to_owned(),

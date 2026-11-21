@@ -236,6 +236,29 @@ impl PendingAuthorizationStore for InMemoryFederation {
             .pending()
             .remove(&(uow.tenant().tenant_id(), transaction_id)))
     }
+
+    async fn keep_response(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        provider_id: ProviderId,
+        state_hash: [u8; 32],
+        response: &str,
+        now: Timestamp,
+    ) -> Result<bool, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let mut pending = self.pending();
+        let found = pending.iter_mut().find(|((owner, _), pending)| {
+            *owner == tenant
+                && pending.provider_id == provider_id
+                && pending.state_hash == state_hash
+                && pending.expires_at > now
+                && pending.saml_response.is_none()
+        });
+        Ok(found.is_some_and(|(_, pending)| {
+            pending.saml_response = Some(response.to_owned());
+            true
+        }))
+    }
 }
 
 /// The ports under test.
@@ -269,6 +292,7 @@ fn provider(alias: &str, issuer: &str) -> IdentityProvider {
             creates_users: true,
             trusts_email: false,
             directory: None,
+            saml: None,
         },
         SealedSecret::from_stored(vec![0, 159, 146, 150, 255]),
         &[],
@@ -602,6 +626,7 @@ pub async fn run_contract(ports: Ports<'_>) {
         redirect_uri: "https://hodor.example.com/t/acme/account/providers/google/callback"
             .to_owned(),
         expires_at: later,
+        saml_response: None,
     };
     assert!(
         within!(ports, &tenant, |uow| ports
@@ -647,6 +672,50 @@ pub async fn run_contract(ports: Ports<'_>) {
         .expect("take"))
     .expect("the pending");
     assert_eq!(taken, pending(&entra, "second"));
+
+    // A SAML response is kept once, with the pending authorization of its
+    // provider and state, in its tenant, before it expires.
+    within!(ports, &tenant, |uow| ports
+        .pending
+        .put(uow, &pending(&google, "request"))
+        .await
+        .expect("put"));
+    let before = later - time::Duration::seconds(1);
+    let owner = &tenant;
+    let keep = |provider: ProviderId, state: [u8; 32], response: &'static str, at: Timestamp| {
+        let ports = ports.clone();
+        async move {
+            let mut unit = ports.units_of_work.begin(owner).await.expect("begin");
+            let kept = ports
+                .pending
+                .keep_response(unit.as_mut(), provider, state, response, at)
+                .await
+                .expect("keep");
+            unit.commit().await.expect("commit");
+            kept
+        }
+    };
+    assert!(!keep(entra.id(), [7; 32], "other provider", before).await);
+    assert!(!keep(google.id(), [8; 32], "other state", before).await);
+    assert!(!keep(google.id(), [7; 32], "too late", later).await);
+    let mut unit = ports.units_of_work.begin(&elsewhere).await.expect("begin");
+    assert!(
+        !ports
+            .pending
+            .keep_response(unit.as_mut(), google.id(), [7; 32], "other tenant", before)
+            .await
+            .expect("keep")
+    );
+    drop(unit);
+    assert!(keep(google.id(), [7; 32], "first", before).await);
+    assert!(!keep(google.id(), [7; 32], "second", before).await);
+    let taken = within!(ports, &tenant, |uow| ports
+        .pending
+        .take(uow, sign_in)
+        .await
+        .expect("take"))
+    .expect("the pending");
+    assert_eq!(taken.saml_response.as_deref(), Some("first"));
     assert!(
         within!(ports, &tenant, |uow| ports
             .pending

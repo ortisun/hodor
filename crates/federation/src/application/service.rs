@@ -61,6 +61,13 @@ impl std::fmt::Debug for FederationService {
     }
 }
 
+fn no_secret_for_saml() -> DomainError {
+    DomainError::invalid(
+        "federation.client_secret_invalid",
+        "a SAML identity provider has no client secret",
+    )
+}
+
 fn provider_not_found() -> DomainError {
     DomainError::not_found(
         "federation.provider_not_found",
@@ -162,7 +169,17 @@ impl FederationService {
             .settings
             .checked_for(command.kind, &self.development_hosts)?;
         self.check_directory(command.kind, &settings.issuer)?;
-        let sealed = self.seal(tenant, &command.client_secret)?;
+        let sealed = if command.kind == ProviderKind::Saml {
+            // A SAML identity provider is not proved anything with a
+            // secret; an empty one is sealed in its place.
+            if !command.client_secret.expose().is_empty() {
+                return Err(no_secret_for_saml());
+            }
+            self.secrets
+                .seal(tenant, CLIENT_SECRET, &Secret::new(Vec::new()))?
+        } else {
+            self.seal(tenant, &command.client_secret)?
+        };
         let provider = IdentityProvider::create(
             alias,
             command.kind,
@@ -258,6 +275,9 @@ impl FederationService {
         let sealed = self.seal(tenant, client_secret)?;
         let now = self.clock.now();
         self.change_with(tenant, id, caller, |provider| {
+            if provider.snapshot().kind == ProviderKind::Saml {
+                return Err(no_secret_for_saml());
+            }
             provider.change_secret(sealed, now);
             Ok(Some(FederationEvent::ProviderSecretChanged {
                 provider_id: provider.id(),

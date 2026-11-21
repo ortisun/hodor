@@ -11,6 +11,7 @@ use crate::application::openid::{OpenIdClient, VerifiedIdentity};
 use crate::application::ports::{
     DirectoryAnswer, DirectoryClient, DirectoryQuery, LockoutPolicy, PendingAuthorizationStore,
 };
+use crate::application::saml::{self, SamlClient};
 use crate::application::service::FederationService;
 use crate::domain::event::FederationEvent;
 use crate::domain::link::Subject;
@@ -81,6 +82,7 @@ pub struct ExternalSignIn {
     federation: FederationService,
     openid: OpenIdClient,
     github: GitHubClient,
+    saml: SamlClient,
     identity: IdentityService,
     pending: Arc<dyn PendingAuthorizationStore>,
     units_of_work: Arc<dyn UnitOfWorkFactory>,
@@ -116,6 +118,7 @@ impl ExternalSignIn {
         federation: FederationService,
         openid: OpenIdClient,
         github: GitHubClient,
+        saml: SamlClient,
         identity: IdentityService,
         pending: Arc<dyn PendingAuthorizationStore>,
         units_of_work: Arc<dyn UnitOfWorkFactory>,
@@ -128,6 +131,7 @@ impl ExternalSignIn {
             federation,
             openid,
             github,
+            saml,
             identity,
             pending,
             units_of_work,
@@ -222,10 +226,28 @@ impl ExternalSignIn {
         alias: &str,
     ) -> Result<String, DomainError> {
         let provider = self.enabled(tenant, alias).await?;
-        let redirect_uri = self.callback_address(tenant_slug, provider.alias().as_str());
+        let mut redirect_uri = self.callback_address(tenant_slug, provider.alias().as_str());
         let request = match provider.snapshot().kind {
             ProviderKind::OpenIdConnect => self.openid.begin(&provider, &redirect_uri).await?,
             ProviderKind::GitHub => self.github.begin(&provider, &redirect_uri),
+            ProviderKind::Saml => {
+                let settings = saml::settings_of(&provider).ok_or_else(|| {
+                    DomainError::internal(
+                        "federation.stored_data_invalid",
+                        "a SAML provider has no SAML settings",
+                    )
+                })?;
+                // What a SAML provider answers at, and checks the response
+                // against, is the assertion consumer address.
+                redirect_uri = saml::saml_assertion_consumer_address(
+                    &self.public_url,
+                    tenant_slug,
+                    provider.alias().as_str(),
+                );
+                let service_provider = saml::service_provider_at(&redirect_uri);
+                self.saml
+                    .begin(settings, &service_provider, self.clock.now())
+            }
             // Nobody leaves for a directory.
             ProviderKind::Ldap => {
                 return Err(DomainError::not_found(
@@ -244,11 +266,76 @@ impl ExternalSignIn {
             code_verifier: self.secrets.seal(tenant, CODE_VERIFIER, &verifier)?,
             redirect_uri,
             expires_at: self.clock.now() + PENDING_LIFETIME,
+            saml_response: None,
         };
         let mut uow = self.units_of_work.begin(tenant).await?;
         self.pending.put(uow.as_mut(), &pending).await?;
         uow.commit().await?;
         Ok(request.url)
+    }
+
+    /// Hodor's metadata for a SAML provider of the tenant, to give the
+    /// identity provider.
+    ///
+    /// # Errors
+    ///
+    /// Returns `federation.provider_not_found` if the tenant has no
+    /// enabled SAML provider with this alias.
+    pub async fn saml_metadata(
+        &self,
+        tenant: &TenantContext,
+        tenant_slug: &str,
+        alias: &str,
+    ) -> Result<String, DomainError> {
+        let provider = self.enabled(tenant, alias).await?;
+        if provider.snapshot().kind != ProviderKind::Saml {
+            return Err(DomainError::not_found(
+                "federation.provider_not_found",
+                "there is no such identity provider",
+            ));
+        }
+        Ok(hodor_saml::metadata(&saml::saml_service_provider(
+            &self.public_url,
+            tenant_slug,
+            provider.alias().as_str(),
+        )))
+    }
+
+    /// Keeps the response a SAML identity provider posted, unread, with the
+    /// pending authorization whose state hashes to `relay_state`. Says
+    /// nothing of whether there was one: the caller answers the same way.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    pub async fn keep_saml_response(
+        &self,
+        tenant: &TenantContext,
+        alias: &str,
+        relay_state: &str,
+        response: &str,
+    ) -> Result<(), DomainError> {
+        let provider = match self.enabled(tenant, alias).await {
+            Ok(provider) if provider.snapshot().kind == ProviderKind::Saml => provider,
+            Ok(_) => return Ok(()),
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        if response.len() > hodor_saml::MAX_POSTED_BYTES || relay_state.is_empty() {
+            return Ok(());
+        }
+        let state_hash = self.digest.sha256(relay_state.as_bytes());
+        let mut uow = self.units_of_work.begin(tenant).await?;
+        self.pending
+            .keep_response(
+                uow.as_mut(),
+                provider.id(),
+                state_hash,
+                response,
+                self.clock.now(),
+            )
+            .await?;
+        uow.commit().await
     }
 
     /// Takes the pending authorization of a sign-in, so that it cannot be finished twice.
@@ -279,11 +366,7 @@ impl ExternalSignIn {
         if self.clock.now() >= pending.expires_at {
             return refuse("authorization_expired");
         }
-        let (Some(alias), Some(code), Some(state)) = (
-            input.field("provider"),
-            input.field("code"),
-            input.field("state"),
-        ) else {
+        let (Some(alias), Some(state)) = (input.field("provider"), input.field("state")) else {
             return refuse("answer_incomplete");
         };
         if self.digest.sha256(state.expose().as_bytes()) != pending.state_hash {
@@ -298,6 +381,12 @@ impl ExternalSignIn {
             Err(error) => return Err(error),
         };
 
+        if provider.snapshot().kind == ProviderKind::Saml {
+            return self.finish_with_saml(tenant, &provider, &pending).await;
+        }
+        let Some(code) = input.field("code") else {
+            return refuse("answer_incomplete");
+        };
         let opened = self
             .secrets
             .open(tenant, CODE_VERIFIER, &pending.code_verifier)?;
@@ -318,8 +407,9 @@ impl ExternalSignIn {
                     )
                     .await
             }
-            // A directory has no pending authorization to finish.
-            ProviderKind::Ldap => return refuse("another_kind"),
+            // A directory has no pending authorization to finish, and a
+            // SAML provider was finished above.
+            ProviderKind::Ldap | ProviderKind::Saml => return refuse("another_kind"),
             ProviderKind::GitHub => {
                 self.github
                     .finish(
@@ -344,6 +434,35 @@ impl ExternalSignIn {
         };
 
         self.resolve(tenant, &provider, identity).await
+    }
+
+    /// Finishes the pending authorization of a SAML sign-in with the
+    /// response kept for it, checked against this sign-in's request.
+    async fn finish_with_saml(
+        &self,
+        tenant: &TenantContext,
+        provider: &IdentityProvider,
+        pending: &PendingAuthorization,
+    ) -> Result<Result<UserId, Refusal>, DomainError> {
+        let refuse = |reason| Ok(Err(Refusal::new(Some(provider.id()), reason)));
+        let Some(settings) = saml::settings_of(provider) else {
+            return refuse("another_kind");
+        };
+        let Some(response) = pending.saml_response.as_deref() else {
+            return refuse("no_response");
+        };
+        let service_provider = saml::service_provider_at(&pending.redirect_uri);
+        match SamlClient::finish(
+            provider,
+            settings,
+            &service_provider,
+            response,
+            &pending.nonce,
+            self.clock.now(),
+        ) {
+            Ok(identity) => self.resolve(tenant, provider, identity).await,
+            Err(reason) => refuse(reason),
+        }
     }
 
     /// Signs a person in through a directory, with what they typed.

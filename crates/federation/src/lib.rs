@@ -20,6 +20,10 @@ pub mod api {
         DirectoryAnswer, DirectoryClient, DirectoryEntry, DirectoryQuery, LinkStore, LockoutPolicy,
         PendingAuthorizationStore, ProviderStore,
     };
+    pub use crate::application::saml::{
+        MAX_SAML_POSTED_BYTES, SamlClient, saml_assertion_consumer_address, saml_metadata_address,
+        saml_service_provider,
+    };
     pub use crate::application::service::{ChangeProvider, CreateProvider, FederationService};
     pub use crate::application::sign_in::{
         EXTERNAL_STEP, ExternalIdentityAuthenticator, ExternalSignIn, OfferedProvider,
@@ -30,6 +34,6 @@ pub mod api {
     pub use crate::domain::pending_authorization::PendingAuthorization;
     pub use crate::domain::provider::{
         Alias, DirectorySettings, IdentityProvider, ProviderId, ProviderKind, ProviderSettings,
-        ProviderSnapshot, ProviderStatus, directory_host,
+        ProviderSnapshot, ProviderStatus, SamlSettings, directory_host,
     };
 }
