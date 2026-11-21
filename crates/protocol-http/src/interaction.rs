@@ -1,4 +1,5 @@
-//! The interaction interface: how a browser signs in.
+//! The interaction interface: how a browser signs in, and how a person
+//! registers or recovers a password.
 //!
 //! Specified in `docs/api/interaction-api.md`. These handlers translate
 //! between HTTP and the authentication context; they decide nothing about
@@ -14,8 +15,12 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
-use hodor_authentication::api::{AuthenticationService, SignIn, StepInput, TransactionId};
-use hodor_kernel::{Clock, Digest, DomainError, Secret, TenantContext};
+use hodor_authentication::api::{
+    AccountRequest, AccountService, AuthenticationService, SignIn, StepInput, TransactionId,
+};
+use hodor_kernel::{
+    Actor, Caller, Clock, CorrelationId, Digest, DomainError, Secret, TenantContext,
+};
 use hodor_session::api::{ClientInfo, Session, SessionService, SessionToken};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -32,6 +37,8 @@ const SIGN_IN_COOKIE_SECONDS: i64 = 600;
 pub struct InteractionState {
     /// The sign-in use cases.
     pub authentication: AuthenticationService,
+    /// Registration and password recovery.
+    pub accounts: AccountService,
     /// The session use cases.
     pub sessions: SessionService,
     /// For deriving the CSRF token from a sign-in's secret.
@@ -59,6 +66,10 @@ pub fn interaction_routes(state: InteractionState) -> Router {
         .route("/sign-in/steps/identifier", post(submit_identifier))
         .route("/sign-in/steps/password", post(submit_password))
         .route("/session", get(current_session))
+        .route("/registration", post(request_registration))
+        .route("/registration/complete", post(complete_registration))
+        .route("/recovery", post(request_recovery))
+        .route("/recovery/complete", post(reset_password))
         .layer(middleware::from_fn(refuse_other_origins))
         .with_state(state)
 }
@@ -84,6 +95,34 @@ struct IdentifierBody {
 #[derive(Deserialize)]
 struct PasswordBody {
     password: String,
+}
+
+/// What a person gives when asking to register or to recover a password.
+#[derive(Deserialize)]
+struct AskBody {
+    email: String,
+    locale: Option<String>,
+}
+
+/// No `Debug`: this holds a token and a password until they are used.
+#[derive(Deserialize)]
+struct CompleteRegistrationBody {
+    token: String,
+    password: String,
+    display_name: Option<String>,
+}
+
+/// No `Debug`: this holds a token and a password until they are used.
+#[derive(Deserialize)]
+struct ResetPasswordBody {
+    token: String,
+    password: String,
+}
+
+/// The one answer to asking, whoever the address belongs to.
+#[derive(Debug, Serialize)]
+struct AcceptedBody {
+    status: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -465,4 +504,109 @@ async fn current_session(
         Ok(None) => not_authenticated(),
         Err(error) => Problem::from(error).into_response(),
     }
+}
+
+/// Someone who is not signed in.
+fn anonymous() -> Caller {
+    Caller {
+        actor: Actor::Anonymous,
+        correlation_id: CorrelationId::generate(),
+    }
+}
+
+/// "If there is something to send, it was sent": the same whether the
+/// address has an account, has none or is not an address at all.
+fn accepted(result: Result<(), DomainError>) -> Response {
+    match result {
+        Ok(()) => (
+            StatusCode::ACCEPTED,
+            Json(AcceptedBody { status: "accepted" }),
+        )
+            .into_response(),
+        Err(error) => Problem::from(error).into_response(),
+    }
+}
+
+fn done<T>(result: Result<T, DomainError>) -> Response {
+    match result {
+        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => Problem::from(error).into_response(),
+    }
+}
+
+async fn request_registration(
+    State(state): State<InteractionState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(ClientAddress(address)): Extension<ClientAddress>,
+    Json(body): Json<AskBody>,
+) -> Response {
+    let address = address.map(|a| a.to_string());
+    let request = AccountRequest {
+        email: &body.email,
+        locale: body.locale.as_deref(),
+        address: address.as_deref(),
+    };
+    accepted(
+        state
+            .accounts
+            .request_registration(&tenant, request, anonymous())
+            .await,
+    )
+}
+
+async fn complete_registration(
+    State(state): State<InteractionState>,
+    Extension(tenant): Extension<TenantContext>,
+    Json(body): Json<CompleteRegistrationBody>,
+) -> Response {
+    done(
+        state
+            .accounts
+            .complete_registration(
+                &tenant,
+                &body.token,
+                &Secret::from(body.password),
+                body.display_name,
+                anonymous(),
+            )
+            .await,
+    )
+}
+
+async fn request_recovery(
+    State(state): State<InteractionState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(ClientAddress(address)): Extension<ClientAddress>,
+    Json(body): Json<AskBody>,
+) -> Response {
+    let address = address.map(|a| a.to_string());
+    let request = AccountRequest {
+        email: &body.email,
+        locale: body.locale.as_deref(),
+        address: address.as_deref(),
+    };
+    accepted(
+        state
+            .accounts
+            .request_recovery(&tenant, request, anonymous())
+            .await,
+    )
+}
+
+async fn reset_password(
+    State(state): State<InteractionState>,
+    Extension(tenant): Extension<TenantContext>,
+    Json(body): Json<ResetPasswordBody>,
+) -> Response {
+    done(
+        state
+            .accounts
+            .reset_password(
+                &tenant,
+                &body.token,
+                &Secret::from(body.password),
+                anonymous(),
+            )
+            .await,
+    )
 }

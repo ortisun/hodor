@@ -25,6 +25,7 @@ hodor-authentication = { workspace = true, features = ["testing"] }
 hodor-credential = { workspace = true, features = ["testing"] }
 hodor-identity = { workspace = true, features = ["testing"] }
 hodor-kernel = { workspace = true, features = ["testing"] }
+hodor-notification = { workspace = true, features = ["testing"] }
 hodor-session = { workspace = true, features = ["testing"] }
 hodor-tenant = { workspace = true, features = ["testing"] }
 tokio = { workspace = true, features = ["io-util", "test-util"] }

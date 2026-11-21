@@ -5,10 +5,12 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{HeaderMap, Method, Request, StatusCode, header};
 use hodor_authentication::api::{
-    AttemptGuard, AuthFlow, AuthenticationService, FlowEngine, IdentifierAuthenticator,
-    PasswordAuthenticator,
+    AccountService, AttemptGuard, AuthFlow, AuthenticationService, FlowEngine,
+    IdentifierAuthenticator, PasswordAuthenticator,
 };
-use hodor_authentication::testing::{InMemoryAttempts, InMemoryTransactions};
+use hodor_authentication::testing::{
+    InMemoryAttempts, InMemoryTransactions, InMemoryVerificationTokens,
+};
 use hodor_credential::api::{CredentialService, NewPassword, PasswordRules};
 use hodor_credential::testing::{FakeHasher, InMemoryPasswords};
 use hodor_identity::api::{CreateUser, IdentifierKind, IdentityService, Profile, UserKind};
@@ -17,6 +19,8 @@ use hodor_kernel::clock::testing::FixedClock;
 use hodor_kernel::random::testing::FakeDigest;
 use hodor_kernel::uow::testing::InMemoryUnitOfWorkFactory;
 use hodor_kernel::{Caller, DomainError, Secret, TenantContext, Timestamp, UserId};
+use hodor_notification::api::Notifier;
+use hodor_notification::testing::InMemoryMessages;
 use hodor_protocol_http::{
     InteractionState, Limits, ResolvedTenant, TenantResolver, TenantStatus, interaction_routes,
     public_router,
@@ -58,6 +62,31 @@ struct World {
     router: Router,
     clock: Arc<FixedClock>,
     ana: UserId,
+    acme: TenantContext,
+    /// What would be in people's mailboxes.
+    messages: InMemoryMessages,
+}
+
+impl World {
+    /// The token in the link of the newest message, as a page would read
+    /// it from the address bar.
+    fn newest_token(&self) -> String {
+        let message = self
+            .messages
+            .of_tenant(self.acme.tenant_id())
+            .pop()
+            .expect("a message was queued");
+        let link = &message.snapshot().variables["link"];
+        link.split_once("#token=").expect("token").1.to_owned()
+    }
+
+    fn templates(&self) -> Vec<&'static str> {
+        self.messages
+            .of_tenant(self.acme.tenant_id())
+            .iter()
+            .map(|message| message.snapshot().template.key())
+            .collect()
+    }
 }
 
 async fn world() -> World {
@@ -102,8 +131,23 @@ async fn world() -> World {
             credentials.clone(),
             identity.clone(),
             tenants.clone(),
-            guard,
+            guard.clone(),
         )));
+    let messages = InMemoryMessages::default();
+    let accounts = AccountService::new(
+        units(),
+        Arc::new(InMemoryVerificationTokens::default()),
+        identity.clone(),
+        credentials.clone(),
+        sessions.clone(),
+        tenants.clone(),
+        Notifier::new(Arc::new(messages.clone()), clock.clone()),
+        guard,
+        digest.clone(),
+        Arc::new(SequentialRandom::default()),
+        clock.clone(),
+        "https://auth.example",
+    );
     let authentication = AuthenticationService::new(
         units(),
         Arc::new(InMemoryTransactions::default()),
@@ -125,7 +169,8 @@ async fn world() -> World {
                 CreateTenant {
                     slug: slug.to_owned(),
                     display_name: slug.to_owned(),
-                    open_registration: false,
+                    // Acme accepts registrations; Globex does not.
+                    open_registration: slug == "acme",
                     system: false,
                 },
                 Caller::system(),
@@ -167,16 +212,26 @@ async fn world() -> World {
 
     let state = InteractionState {
         authentication,
+        accounts,
         sessions,
         digest,
         clock: clock.clone(),
     };
     let router = public_router(
-        Arc::new(Tenants { acme, globex }),
+        Arc::new(Tenants {
+            acme: acme.clone(),
+            globex,
+        }),
         Router::new().nest("/interaction", interaction_routes(state)),
         Limits::default(),
     );
-    World { router, clock, ana }
+    World {
+        router,
+        clock,
+        ana,
+        acme,
+        messages,
+    }
 }
 
 struct Reply {
@@ -676,4 +731,246 @@ async fn a_body_of_the_wrong_shape_is_refused_before_anything_happens() {
         .send(&world, Method::GET, "/t/acme/interaction/sign-in", None)
         .await;
     assert_eq!(state.body["step"], "identifier", "nothing advanced");
+}
+
+impl Browser {
+    async fn post(&mut self, world: &World, path: &str, body: serde_json::Value) -> Reply {
+        self.send(
+            world,
+            Method::POST,
+            &format!("/t/acme/interaction/{path}"),
+            Some(body),
+        )
+        .await
+    }
+
+    /// Signs in from the first step and says whether it completed.
+    async fn signs_in(&mut self, world: &World, email: &str, password: &str) -> bool {
+        self.start(world).await;
+        self.identifier(world, email).await;
+        self.password(world, password).await.body["status"] == "completed"
+    }
+}
+
+#[tokio::test]
+async fn a_person_registers_through_their_mailbox_and_then_signs_in() {
+    let world = world().await;
+    let mut browser = Browser::default();
+
+    let asked = browser
+        .post(
+            &world,
+            "registration",
+            serde_json::json!({ "email": "bia@example.com", "locale": "pt-BR" }),
+        )
+        .await;
+    assert_eq!(asked.status, StatusCode::ACCEPTED);
+    assert_eq!(asked.body, serde_json::json!({ "status": "accepted" }));
+    assert!(asked.set_cookies().is_empty());
+
+    let finished = browser
+        .post(
+            &world,
+            "registration/complete",
+            serde_json::json!({
+                "token": world.newest_token(),
+                "password": "a long passphrase for bia",
+                "display_name": "Bia"
+            }),
+        )
+        .await;
+    assert_eq!(finished.status, StatusCode::NO_CONTENT);
+    // Finishing does not sign the person in.
+    assert!(finished.set_cookies().is_empty());
+
+    assert!(
+        browser
+            .signs_in(&world, "bia@example.com", "a long passphrase for bia")
+            .await
+    );
+}
+
+#[tokio::test]
+async fn asking_answers_the_same_whoever_the_address_belongs_to() {
+    let world = world().await;
+    let mut answers = Vec::new();
+    for path in ["registration", "recovery"] {
+        for email in ["ana@example.com", "nobody@example.com", "not an address"] {
+            let reply = Browser::default()
+                .post(&world, path, serde_json::json!({ "email": email }))
+                .await;
+            answers.push((reply.status, reply.body.to_string()));
+        }
+    }
+
+    assert!(
+        answers
+            .iter()
+            .all(|answer| *answer == (StatusCode::ACCEPTED, r#"{"status":"accepted"}"#.to_owned())),
+        "{answers:?}"
+    );
+    // What differs is what reached the mailboxes: a note to the address
+    // that has an account, a link to the one that has none, then a
+    // recovery link to the one that has an account.
+    assert_eq!(
+        world.templates(),
+        [
+            "already_registered",
+            "email_verification",
+            "password_recovery"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_person_recovers_a_password_and_every_session_ends() {
+    let world = world().await;
+    let mut signed_in = Browser::default();
+    assert!(
+        signed_in
+            .signs_in(&world, "ana@example.com", PASSWORD)
+            .await
+    );
+    assert_eq!(
+        signed_in.session(&world, "acme").await.status,
+        StatusCode::OK
+    );
+
+    let mut browser = Browser::default();
+    let asked = browser
+        .post(
+            &world,
+            "recovery",
+            serde_json::json!({ "email": "ana@example.com" }),
+        )
+        .await;
+    assert_eq!(asked.status, StatusCode::ACCEPTED);
+    let token = world.newest_token();
+
+    // A password that is not acceptable is refused and the link stays good.
+    let refused = browser
+        .post(
+            &world,
+            "recovery/complete",
+            serde_json::json!({ "token": token, "password": "short" }),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    let reset = browser
+        .post(
+            &world,
+            "recovery/complete",
+            serde_json::json!({ "token": token, "password": "a different long passphrase" }),
+        )
+        .await;
+    assert_eq!(reset.status, StatusCode::NO_CONTENT);
+    assert!(reset.set_cookies().is_empty());
+
+    // The browser that was signed in no longer is.
+    assert_eq!(
+        signed_in.session(&world, "acme").await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert!(
+        !Browser::default()
+            .signs_in(&world, "ana@example.com", PASSWORD)
+            .await
+    );
+    assert!(
+        Browser::default()
+            .signs_in(&world, "ana@example.com", "a different long passphrase")
+            .await
+    );
+    assert_eq!(world.templates().last(), Some(&"password_changed"));
+
+    // The link worked once.
+    let again = browser
+        .post(
+            &world,
+            "recovery/complete",
+            serde_json::json!({ "token": token, "password": "yet another long passphrase" }),
+        )
+        .await;
+    assert_eq!(again.status, StatusCode::NOT_FOUND);
+    assert_eq!(again.code(), "authentication.verification_token_invalid");
+}
+
+#[tokio::test]
+async fn a_token_that_is_not_good_is_refused_in_one_way() {
+    let world = world().await;
+    for path in ["registration/complete", "recovery/complete"] {
+        for token in ["", "abc", &"0".repeat(64)] {
+            let reply = Browser::default()
+                .post(
+                    &world,
+                    path,
+                    serde_json::json!({ "token": token, "password": "a long enough passphrase" }),
+                )
+                .await;
+            assert_eq!(reply.status, StatusCode::NOT_FOUND, "{path} {token}");
+            assert_eq!(reply.code(), "authentication.verification_token_invalid");
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_tenant_that_does_not_accept_registrations_says_so() {
+    let world = world().await;
+    let reply = Browser::default()
+        .send(
+            &world,
+            Method::POST,
+            "/t/globex/interaction/registration",
+            Some(serde_json::json!({ "email": "bia@example.com" })),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::FORBIDDEN);
+    assert_eq!(reply.code(), "authentication.registration_closed");
+}
+
+#[tokio::test]
+async fn asking_too_often_is_answered_with_how_long_to_wait() {
+    let world = world().await;
+    let mut last = None;
+    for _ in 0..6 {
+        last = Some(
+            Browser::default()
+                .post(
+                    &world,
+                    "recovery",
+                    serde_json::json!({ "email": "ana@example.com" }),
+                )
+                .await,
+        );
+    }
+    let last = last.expect("a reply");
+    assert_eq!(last.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(last.code(), "authentication.too_many_attempts");
+    assert!(last.headers.contains_key(header::RETRY_AFTER));
+    assert_eq!(world.templates().len(), 5);
+}
+
+#[tokio::test]
+async fn account_requests_from_another_site_or_of_the_wrong_shape_are_refused() {
+    let world = world().await;
+    let mut elsewhere = Browser {
+        origin: Some("https://evil.example"),
+        ..Browser::default()
+    };
+    let forged = elsewhere
+        .post(
+            &world,
+            "recovery",
+            serde_json::json!({ "email": "ana@example.com" }),
+        )
+        .await;
+    assert_eq!(forged.status, StatusCode::FORBIDDEN);
+    assert_eq!(forged.code(), "request.cross_origin");
+
+    let malformed = Browser::default()
+        .post(&world, "registration", serde_json::json!({ "mail": "x" }))
+        .await;
+    assert!(malformed.status.is_client_error());
+    assert!(world.templates().is_empty());
 }

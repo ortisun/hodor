@@ -9,16 +9,17 @@ use hodor_adapters_crypto::{
     Argon2Parameters, Argon2idHasher, HashingLimits, OsRandom, Sha256Digest,
 };
 use hodor_adapters_postgres::{
-    Database, PgAttemptStore, PgPasswordStore, PgSessionStore, PgTenantDirectory,
-    PgTenantRepository, PgTransactionStore, PgUserRepository,
+    Database, PgAttemptStore, PgMessageQueue, PgPasswordStore, PgSessionStore, PgTenantDirectory,
+    PgTenantRepository, PgTransactionStore, PgUserRepository, PgVerificationTokenStore,
 };
 use hodor_authentication::api::{
-    AttemptGuard, AuthFlow, AuthenticationService, FlowEngine, IdentifierAuthenticator,
-    PasswordAuthenticator,
+    AccountService, AttemptGuard, AuthFlow, AuthenticationService, FlowEngine,
+    IdentifierAuthenticator, PasswordAuthenticator,
 };
 use hodor_credential::api::CredentialService;
 use hodor_identity::api::IdentityService;
 use hodor_kernel::{DomainError, Secret, SystemClock, TenantContext};
+use hodor_notification::api::Notifier;
 use hodor_observability::{LogFormat, Telemetry};
 use hodor_protocol_http::{
     Health, InteractionState, Limits, ReadinessCheck, ResolvedTenant, TenantResolver,
@@ -81,6 +82,15 @@ struct Config {
     /// so the load balancer can take the instance out of rotation.
     #[arg(long, env = "HODOR_SHUTDOWN_DRAIN_SECONDS", default_value_t = 5)]
     shutdown_drain_seconds: u64,
+
+    /// The address people reach this installation at, without a path.
+    /// Links in messages start with it.
+    #[arg(
+        long,
+        env = "HODOR_PUBLIC_URL",
+        default_value = "http://localhost:8080"
+    )]
+    public_url: String,
 
     /// Memory one password hash uses, in kibibytes.
     #[arg(long, env = "HODOR_PASSWORD_HASH_MEMORY_KIBIBYTES", default_value_t = 19 * 1024)]
@@ -225,7 +235,7 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Builds everything a sign-in needs. This is the composition root: the
+/// Builds everything the interaction interface needs. This is the composition root: the
 /// one place that knows which adapter stands behind each port.
 fn interaction(config: &Config, database: &Database) -> Result<InteractionState, DomainError> {
     let units = || Arc::new(database.clone());
@@ -278,11 +288,26 @@ fn interaction(config: &Config, database: &Database) -> Result<InteractionState,
             digest.clone(),
         )))
         .with(Arc::new(PasswordAuthenticator::new(
-            credentials,
+            credentials.clone(),
             identity.clone(),
             tenants.clone(),
-            guard,
+            guard.clone(),
         )));
+    // The server only queues messages; the worker delivers them.
+    let accounts = AccountService::new(
+        units(),
+        Arc::new(PgVerificationTokenStore),
+        identity.clone(),
+        credentials,
+        sessions.clone(),
+        tenants.clone(),
+        Notifier::new(Arc::new(PgMessageQueue), clock.clone()),
+        guard,
+        digest.clone(),
+        random.clone(),
+        clock.clone(),
+        &config.public_url,
+    );
     let authentication = AuthenticationService::new(
         units(),
         Arc::new(PgTransactionStore),
@@ -297,6 +322,7 @@ fn interaction(config: &Config, database: &Database) -> Result<InteractionState,
     )?;
     Ok(InteractionState {
         authentication,
+        accounts,
         sessions,
         digest,
         clock,
