@@ -174,6 +174,7 @@ An identity provider:
   "client_id": "1234.apps.googleusercontent.com",
   "scopes": ["openid", "email", "profile"],
   "creates_users": true,
+  "trusts_email": false,
   "status": "enabled",
   "callback_address": "https://auth.example.com/t/acme/account/providers/google/callback",
   "created_at": "2026-11-21T14:03:11Z",
@@ -181,7 +182,21 @@ An identity provider:
 }
 ```
 
-`callback_address` is the address to register at the provider as the place it sends people back to.
+`callback_address` is the address to register at the provider as the place it sends people back to. It is `null` for a directory, which nobody leaves for.
+
+A provider of the kind `ldap`, a [directory](../architecture/contexts/federation.md#signing-in-through-a-directory), also has `directory`; every other kind has it `null`:
+
+```json
+"directory": {
+  "base": "ou=people,dc=example,dc=com",
+  "filter": "(uid={identifier})",
+  "subject_attribute": "entryUUID",
+  "email_attribute": "mail",
+  "name_attribute": "cn"
+}
+```
+
+For a directory, `issuer` is its address (`ldaps://host`), `client_id` is the name Hodor binds with to search, and `client_secret` is that name's password.
 
 **The client secret is never part of an answer.** It is given when a provider is added and when the secret is replaced, and after that no operation returns it.
 
@@ -199,9 +214,11 @@ An identity provider:
 }
 ```
 
-`scopes` and `creates_users` are optional. The answer is `201` with the provider, enabled.
+`kind` is `openid_connect` unless given; the others are `github`, for which `issuer` may be left out, and `ldap`, which needs `directory` with at least `base` and `filter`. The attribute names are `entryUUID`, `mail` and `cn` unless given. A directory whose host and port are not on the installation's list is refused with `403` and `federation.directory_not_allowed`. `scopes`, `creates_users` and `trusts_email` are optional. The answer is `201` with the provider, enabled.
 
-`PATCH /identity-providers/{provider_id}` takes any of `display_name`, `issuer`, `client_id`, `scopes` and `creates_users`; what is left out stays as it is. The alias cannot be changed: it is part of the callback address. The answer is `200` with the provider.
+`trusts_email` is a statement about the provider that is easy to get wrong; read [what it means](../architecture/contexts/federation.md#when-a-provider-does-not-say-whether-it-vouches) before setting it.
+
+`PATCH /identity-providers/{provider_id}` takes any of `display_name`, `issuer`, `client_id`, `scopes`, `creates_users`, `trusts_email` and, for a directory, `directory` with any of its fields; what is left out stays as it is. Neither the alias nor the kind can be changed: the alias is part of the callback address, and another kind is another provider. The answer is `200` with the provider.
 
 `PUT /identity-providers/{provider_id}/client-secret` with `{ "client_secret": "…" }` answers `204`.
 

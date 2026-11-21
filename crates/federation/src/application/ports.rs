@@ -3,8 +3,9 @@
 use crate::domain::link::{ExternalIdentity, Subject};
 use crate::domain::pending_authorization::PendingAuthorization;
 use crate::domain::provider::{Alias, IdentityProvider, ProviderId};
-use hodor_authentication::api::TransactionId;
+use hodor_authentication::api::{LockoutRules, TransactionId};
 use hodor_kernel::{DomainError, Timestamp, UnitOfWork, UserId};
+use hodor_kernel::{Secret, TenantContext};
 
 /// Stores identity providers. Every method works inside the tenant the
 /// unit of work is bound to.
@@ -160,4 +161,86 @@ pub trait PendingAuthorizationStore: Send + Sync {
         uow: &mut dyn UnitOfWork,
         transaction_id: TransactionId,
     ) -> Result<Option<PendingAuthorization>, DomainError>;
+}
+
+/// What to ask a directory about one person.
+#[derive(Debug)]
+pub struct DirectoryQuery {
+    /// The directory's address, such as `ldaps://ldap.example.com`.
+    pub address: String,
+    /// The name Hodor binds with to search.
+    pub bind_name: String,
+    /// The password of that name.
+    pub bind_password: Secret<String>,
+    /// Where people are searched for.
+    pub base: String,
+    /// The filter, with what the person typed already escaped and in
+    /// its place.
+    pub filter: String,
+    /// The attributes to read from the entry that is found.
+    pub attributes: Vec<String>,
+}
+
+/// One entry of a directory, as far as it was asked for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectoryEntry {
+    /// The entry's own name in the directory.
+    pub name: String,
+    /// Attribute names and their values. A value is bytes: not every
+    /// directory's every attribute is text.
+    pub attributes: Vec<(String, Vec<Vec<u8>>)>,
+}
+
+impl DirectoryEntry {
+    /// The first value of an attribute, by its name in any case.
+    #[must_use]
+    pub fn first(&self, attribute: &str) -> Option<&[u8]> {
+        self.attributes
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(attribute))
+            .and_then(|(_, values)| values.first())
+            .map(Vec::as_slice)
+    }
+}
+
+/// What a directory said about a person and a password.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DirectoryAnswer {
+    /// Exactly one entry was found, and the directory accepted the
+    /// password for it.
+    Verified(DirectoryEntry),
+    /// Nobody is signed in. The reason is a fixed name, for the record:
+    /// `not_found`, `ambiguous` or `wrong_password`.
+    Refused(&'static str),
+}
+
+/// Asks a directory. Implemented by `hodor-adapters-ldap`.
+#[async_trait::async_trait]
+pub trait DirectoryClient: Send + Sync {
+    /// Binds as Hodor, searches for the one entry the query's filter
+    /// matches, and binds as that entry with `password`. The caller has
+    /// already refused an empty password; an implementation refuses one
+    /// as well.
+    ///
+    /// # Errors
+    ///
+    /// Returns `federation.provider_unavailable` if the directory cannot
+    /// be reached or refuses Hodor's own name.
+    async fn verify(
+        &self,
+        query: &DirectoryQuery,
+        password: &Secret<String>,
+    ) -> Result<DirectoryAnswer, DomainError>;
+}
+
+/// The tenant's rules for counting attempts. They belong to the tenant
+/// context, which the composition root asks.
+#[async_trait::async_trait]
+pub trait LockoutPolicy: Send + Sync {
+    /// The rules of this tenant.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if they cannot be read.
+    async fn rules(&self, tenant: &TenantContext) -> Result<LockoutRules, DomainError>;
 }

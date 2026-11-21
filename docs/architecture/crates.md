@@ -47,6 +47,7 @@ hodor/
 │   ├── adapters-crypto/
 │   ├── adapters-kms/
 │   ├── adapters-http/          # Phase 3
+│   ├── adapters-ldap/          # Milestone 2: directories over LDAP
 │   ├── adapters-smtp/
 │   └── observability/
 ├── frontend/{admin-console,account-console,auth-ui}/

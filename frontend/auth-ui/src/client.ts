@@ -34,6 +34,8 @@ export interface SignInAnswer {
 export interface OfferedProvider {
   alias: string;
   displayName: string;
+  /** A directory is signed in through here, with a password; any other provider by leaving for it. */
+  isDirectory: boolean;
 }
 
 /** Who is signed in. */
@@ -179,7 +181,8 @@ export class Client {
       const fields = typeof entry === "object" && entry !== null ? (entry as Record<string, unknown>) : {};
       const alias = text(fields["alias"]);
       const displayName = text(fields["display_name"]);
-      return alias !== null && displayName !== null ? [{ alias, displayName }] : [];
+      const isDirectory = text(fields["kind"]) === "ldap";
+      return alias !== null && displayName !== null ? [{ alias, displayName, isDirectory }] : [];
     });
   }
 
@@ -195,6 +198,13 @@ export class Client {
       throw new Failure(null, reply.status);
     }
     return redirect;
+  }
+
+  /** Signs in through a directory with what the person typed. */
+  async signInWithDirectory(alias: string, identifier: string, password: string): Promise<SignInAnswer> {
+    return this.#signIn(
+      await this.#send("POST", `/sign-in/providers/${encodeURIComponent(alias)}/password`, { identifier, password }),
+    );
   }
 
   /** Finishes the sign-in with what the provider sent back. */

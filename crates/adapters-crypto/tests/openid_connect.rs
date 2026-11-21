@@ -45,6 +45,8 @@ fn configured(issuer: &str) -> IdentityProvider {
             client_id: CLIENT_ID.to_owned(),
             scopes: ProviderSettings::default_scopes(),
             creates_users: true,
+            trusts_email: false,
+            directory: None,
         },
         SealedSecret::from_stored(vec![1]),
         &[],

@@ -20,8 +20,8 @@ use hodor_audit::api::{AuditRecord, AuditService};
 use hodor_authorization::api::{AuthorizationService, Permission};
 use hodor_credential::api::AccessTokenService;
 use hodor_federation::api::{
-    ChangeProvider, CreateProvider, FederationService, IdentityProvider, ProviderId, ProviderKind,
-    ProviderSettings, ProviderStatus, callback_address,
+    ChangeProvider, CreateProvider, DirectorySettings, FederationService, IdentityProvider,
+    ProviderId, ProviderKind, ProviderSettings, ProviderStatus, callback_address,
 };
 use hodor_identity::api::{CreateUser, IdentifierKind, IdentityService, Profile, User, UserKind};
 use hodor_kernel::{
@@ -648,8 +648,10 @@ struct ProviderBody {
     client_id: String,
     scopes: Vec<String>,
     creates_users: bool,
+    trusts_email: bool,
     status: &'static str,
-    callback_address: String,
+    callback_address: Option<String>,
+    directory: Option<DirectoryBody>,
     created_at: String,
     updated_at: String,
 }
@@ -667,10 +669,59 @@ fn provider_body(provider: &IdentityProvider, public_url: &str, slug: &str) -> P
         client_id: state.settings.client_id.clone(),
         scopes: state.settings.scopes.clone(),
         creates_users: state.settings.creates_users,
+        trusts_email: state.settings.trusts_email,
         status: state.status.as_str(),
-        callback_address: callback_address(public_url, slug, state.alias.as_str()),
+        // Nobody leaves for a directory, so nobody comes back from one.
+        callback_address: (state.kind != ProviderKind::Ldap)
+            .then(|| callback_address(public_url, slug, state.alias.as_str())),
+        directory: state
+            .settings
+            .directory
+            .as_ref()
+            .map(|directory| DirectoryBody {
+                base: directory.base.clone(),
+                filter: directory.filter.clone(),
+                subject_attribute: directory.subject_attribute.clone(),
+                email_attribute: directory.email_attribute.clone(),
+                name_attribute: directory.name_attribute.clone(),
+            }),
         created_at: written(state.created_at),
         updated_at: written(state.updated_at),
+    }
+}
+
+/// What only a directory has, as an administrator reads and writes it.
+#[derive(Debug, Serialize)]
+struct DirectoryBody {
+    base: String,
+    filter: String,
+    subject_attribute: String,
+    email_attribute: String,
+    name_attribute: String,
+}
+
+/// A directory's settings as given: what is left out is the usual, or,
+/// in a change, what it was.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DirectoryInput {
+    base: Option<String>,
+    filter: Option<String>,
+    subject_attribute: Option<String>,
+    email_attribute: Option<String>,
+    name_attribute: Option<String>,
+}
+
+impl DirectoryInput {
+    /// These settings laid over `on`.
+    fn over(self, on: DirectorySettings) -> DirectorySettings {
+        DirectorySettings {
+            base: self.base.unwrap_or(on.base),
+            filter: self.filter.unwrap_or(on.filter),
+            subject_attribute: self.subject_attribute.unwrap_or(on.subject_attribute),
+            email_attribute: self.email_attribute.unwrap_or(on.email_attribute),
+            name_attribute: self.name_attribute.unwrap_or(on.name_attribute),
+        }
     }
 }
 
@@ -684,12 +735,15 @@ struct ProvidersBody {
 #[serde(deny_unknown_fields)]
 struct NewProviderBody {
     alias: String,
+    kind: Option<String>,
     display_name: String,
-    issuer: String,
+    issuer: Option<String>,
     client_id: String,
     client_secret: String,
     scopes: Option<Vec<String>>,
     creates_users: Option<bool>,
+    trusts_email: Option<bool>,
+    directory: Option<DirectoryInput>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -700,6 +754,8 @@ struct ProviderChangesBody {
     client_id: Option<String>,
     scopes: Option<Vec<String>>,
     creates_users: Option<bool>,
+    trusts_email: Option<bool>,
+    directory: Option<DirectoryInput>,
 }
 
 /// No `Debug`: this holds a client secret until it is sealed.
@@ -763,15 +819,39 @@ async fn create_provider(
             let caller =
                 authorize(&state, &tenant, &headers, "POST", "/identity-providers").await?;
             let new: NewProviderBody = body(&bytes)?;
+            let kind = match new.kind.as_deref() {
+                None | Some("openid_connect") => ProviderKind::OpenIdConnect,
+                Some("github") => ProviderKind::GitHub,
+                Some("ldap") => ProviderKind::Ldap,
+                Some(_) => {
+                    return Err(failed(DomainError::invalid(
+                        "federation.kind_invalid",
+                        "an identity provider is of the kind `openid_connect`, `github` or `ldap`",
+                    )));
+                }
+            };
+            // Only a kind that has an issuer of its own may leave it out.
+            let issuer = new
+                .issuer
+                .or_else(|| ProviderSettings::default_issuer_for(kind).map(str::to_owned))
+                .unwrap_or_default();
             let command = CreateProvider {
                 alias: new.alias,
-                kind: ProviderKind::OpenIdConnect,
+                kind,
                 settings: ProviderSettings {
                     display_name: new.display_name,
-                    issuer: new.issuer,
+                    issuer,
                     client_id: new.client_id,
-                    scopes: new.scopes.unwrap_or_else(ProviderSettings::default_scopes),
+                    scopes: new
+                        .scopes
+                        .unwrap_or_else(|| ProviderSettings::default_scopes_for(kind)),
                     creates_users: new.creates_users.unwrap_or(true),
+                    trusts_email: new.trusts_email.unwrap_or(false),
+                    // Given for a directory, laid over the usual names;
+                    // for any other kind it is refused when given.
+                    directory: new
+                        .directory
+                        .map(|given| given.over(DirectorySettings::new("", ""))),
                 },
                 client_secret: Secret::from(new.client_secret),
             };
@@ -834,6 +914,12 @@ async fn change_provider(
                 client_id: changes.client_id.unwrap_or(now.client_id),
                 scopes: changes.scopes.unwrap_or(now.scopes),
                 creates_users: changes.creates_users.unwrap_or(now.creates_users),
+                trusts_email: changes.trusts_email.unwrap_or(now.trusts_email),
+                directory: match (changes.directory, now.directory) {
+                    (Some(given), Some(was)) => Some(given.over(was)),
+                    (Some(given), None) => Some(given.over(DirectorySettings::new("", ""))),
+                    (None, was) => was,
+                },
             };
             let provider = federation
                 .change_provider(&tenant, ChangeProvider { id, settings }, caller)

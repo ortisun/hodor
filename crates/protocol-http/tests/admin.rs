@@ -118,7 +118,8 @@ async fn world() -> World {
         Arc::new(providers),
         Arc::new(FakeSecretBox),
         clock.clone(),
-    );
+    )
+    .allowing_directory_hosts(&["ldap.example.com:636".to_owned()]);
 
     let acme = TenantContext::assume(TenantId::generate());
     let globex = TenantContext::assume(TenantId::generate());
@@ -1243,4 +1244,167 @@ async fn the_identity_providers_of_one_tenant_do_not_exist_for_another() {
         .as_administrator(Method::GET, &format!("/identity-providers/{id}"), None)
         .await;
     assert_eq!(still.body["status"], "enabled");
+}
+
+#[tokio::test]
+async fn a_provider_is_of_a_kind_and_may_be_trusted_with_addresses() {
+    let world = world().await;
+
+    // GitHub has an issuer and scopes of its own.
+    let github = world
+        .as_administrator(
+            Method::POST,
+            "/identity-providers",
+            Some(serde_json::json!({
+                "alias": "github", "kind": "github", "display_name": "GitHub",
+                "client_id": "github-client", "client_secret": CLIENT_SECRET,
+            })),
+        )
+        .await;
+    assert_eq!(github.status, StatusCode::CREATED, "{:?}", github.body);
+    assert_eq!(github.body["kind"], "github");
+    assert_eq!(github.body["issuer"], "https://github.com");
+    assert_eq!(
+        github.body["scopes"],
+        serde_json::json!(["read:user", "user:email"])
+    );
+    assert_eq!(github.body["trusts_email"], false);
+
+    // An OpenID Connect provider has neither.
+    let mut without_issuer = new_provider("example");
+    without_issuer
+        .as_object_mut()
+        .expect("object")
+        .remove("issuer");
+    let refused = world
+        .as_administrator(Method::POST, "/identity-providers", Some(without_issuer))
+        .await;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(refused.code(), "federation.issuer_invalid");
+    let mut unknown = new_provider("example");
+    unknown["kind"] = "saml".into();
+    let refused = world
+        .as_administrator(Method::POST, "/identity-providers", Some(unknown))
+        .await;
+    assert_eq!(refused.code(), "federation.kind_invalid");
+
+    // Trust in addresses is off unless asked for, and can be changed.
+    let mut trusted = new_provider("entra");
+    trusted["trusts_email"] = true.into();
+    let created = world
+        .as_administrator(Method::POST, "/identity-providers", Some(trusted))
+        .await;
+    assert_eq!(created.body["trusts_email"], true);
+    let id = created.body["id"].as_str().expect("id");
+    let changed = world
+        .as_administrator(
+            Method::PATCH,
+            &format!("/identity-providers/{id}"),
+            Some(serde_json::json!({ "trusts_email": false })),
+        )
+        .await;
+    assert_eq!(changed.body["trusts_email"], false);
+
+    // The kind is not something a change can touch.
+    let rekinded = world
+        .as_administrator(
+            Method::PATCH,
+            &format!("/identity-providers/{id}"),
+            Some(serde_json::json!({ "kind": "github" })),
+        )
+        .await;
+    assert_eq!(rekinded.status, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn an_administrator_adds_and_changes_a_directory() {
+    let world = world().await;
+    let directory = |issuer: &str| {
+        serde_json::json!({
+            "alias": "company", "kind": "ldap", "display_name": "Company directory",
+            "issuer": issuer,
+            "client_id": "cn=hodor,ou=services,dc=example,dc=com",
+            "client_secret": CLIENT_SECRET,
+            "trusts_email": true,
+            "directory": { "base": "ou=people,dc=example,dc=com", "filter": "(uid={identifier})" },
+        })
+    };
+
+    // A directory that is not on the installation's list.
+    let refused = world
+        .as_administrator(
+            Method::POST,
+            "/identity-providers",
+            Some(directory("ldaps://ldap.elsewhere.example")),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{:?}", refused.body);
+    assert_eq!(refused.code(), "federation.directory_not_allowed");
+
+    let created = world
+        .as_administrator(
+            Method::POST,
+            "/identity-providers",
+            Some(directory("ldaps://ldap.example.com")),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.body);
+    assert_eq!(created.body["kind"], "ldap");
+    assert_eq!(created.body["callback_address"], serde_json::Value::Null);
+    assert_eq!(created.body["scopes"], serde_json::json!([]));
+    assert_eq!(
+        created.body["directory"],
+        serde_json::json!({
+            "base": "ou=people,dc=example,dc=com", "filter": "(uid={identifier})",
+            "subject_attribute": "entryUUID", "email_attribute": "mail", "name_attribute": "cn",
+        })
+    );
+    assert!(!created.body.to_string().contains(CLIENT_SECRET));
+
+    // A change of one field keeps the others.
+    let id = created.body["id"].as_str().expect("id");
+    let changed = world
+        .as_administrator(
+            Method::PATCH,
+            &format!("/identity-providers/{id}"),
+            Some(serde_json::json!({
+                "directory": { "filter": "(sAMAccountName={identifier})", "subject_attribute": "objectGUID" }
+            })),
+        )
+        .await;
+    assert_eq!(changed.status, StatusCode::OK, "{:?}", changed.body);
+    assert_eq!(
+        changed.body["directory"]["filter"],
+        "(sAMAccountName={identifier})"
+    );
+    assert_eq!(changed.body["directory"]["subject_attribute"], "objectGUID");
+    assert_eq!(
+        changed.body["directory"]["base"],
+        "ou=people,dc=example,dc=com"
+    );
+
+    // A filter that would match without what is typed is refused.
+    let broken = world
+        .as_administrator(
+            Method::PATCH,
+            &format!("/identity-providers/{id}"),
+            Some(serde_json::json!({ "directory": { "filter": "(objectClass=*)" } })),
+        )
+        .await;
+    assert_eq!(broken.code(), "federation.directory_invalid");
+
+    // Another kind cannot be given a directory, nor a directory left without one.
+    let mut misplaced = new_provider("example");
+    misplaced["directory"] = serde_json::json!({ "base": "dc=x", "filter": "(uid={identifier})" });
+    let refused = world
+        .as_administrator(Method::POST, "/identity-providers", Some(misplaced))
+        .await;
+    assert_eq!(refused.code(), "federation.directory_invalid");
+    let mut bare = directory("ldaps://ldap.example.com");
+    bare["alias"] = "bare".into();
+    bare.as_object_mut().expect("object").remove("directory");
+    let refused = world
+        .as_administrator(Method::POST, "/identity-providers", Some(bare))
+        .await;
+    assert_eq!(refused.code(), "federation.directory_invalid");
 }
