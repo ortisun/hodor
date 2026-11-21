@@ -885,8 +885,10 @@ fn provider_body(provider: &IdentityProvider, public_url: &str, slug: &str) -> P
         creates_users: state.settings.creates_users,
         trusts_email: state.settings.trusts_email,
         status: state.status.as_str(),
-        // Nobody leaves for a directory, so nobody comes back from one.
-        callback_address: (state.kind != ProviderKind::Ldap)
+        // Nobody leaves for a directory, so nobody comes back from one. A
+        // SAML provider is given Hodor's metadata instead, which the
+        // administration interface shows with Issue-49.
+        callback_address: (!matches!(state.kind, ProviderKind::Ldap | ProviderKind::Saml))
             .then(|| callback_address(public_url, slug, state.alias.as_str())),
         directory: state
             .settings
@@ -1053,6 +1055,7 @@ async fn create_provider(
                 alias: new.alias,
                 kind,
                 settings: ProviderSettings {
+                    saml: None,
                     display_name: new.display_name,
                     issuer,
                     client_id: new.client_id,
@@ -1123,6 +1126,9 @@ async fn change_provider(
             let current = federation.provider(&tenant, id).await.map_err(failed)?;
             let now = current.snapshot().settings.clone();
             let settings = ProviderSettings {
+                // Not changed through this interface yet (Issue-49); what is
+                // stored stays as it is.
+                saml: now.saml,
                 display_name: changes.display_name.unwrap_or(now.display_name),
                 issuer: changes.issuer.unwrap_or(now.issuer),
                 client_id: changes.client_id.unwrap_or(now.client_id),

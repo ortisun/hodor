@@ -3,5 +3,6 @@
 pub(crate) mod github;
 pub(crate) mod openid;
 pub(crate) mod ports;
+pub(crate) mod saml;
 pub(crate) mod service;
 pub(crate) mod sign_in;

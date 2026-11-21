@@ -38,6 +38,7 @@ hodor-audit = { workspace = true, features = ["testing"] }
 hodor-authentication = { workspace = true, features = ["testing"] }
 hodor-authorization = { workspace = true, features = ["testing"] }
 hodor-federation = { workspace = true, features = ["testing"] }
+hodor-saml = { workspace = true, features = ["testing"] }
 hodor-session = { workspace = true, features = ["testing"] }
 hodor-notification = { workspace = true, features = ["testing"] }
 hodor-credential = { workspace = true, features = ["testing"] }

@@ -22,6 +22,7 @@ use hodor_federation::api::{
     CreateProvider, DirectoryAnswer, DirectoryClient, DirectoryQuery, DirectorySettings,
     EXTERNAL_STEP, ExternalIdentityAuthenticator, ExternalSignIn, FederationService, GitHubClient,
     LockoutPolicy, OpenIdClient, ProviderId, ProviderKind, ProviderSettings, ProviderStatus,
+    SamlClient, SamlSettings, saml_service_provider,
 };
 use hodor_federation::testing::InMemoryFederation;
 use hodor_identity::api::{CreateUser, IdentifierKind, IdentityService, Profile, UserKind};
@@ -39,6 +40,7 @@ use hodor_protocol_http::{
     InteractionState, Limits, ResolvedTenant, TenantResolver, TenantStatus, interaction_routes,
     public_router,
 };
+use hodor_saml::testing::{ResponseDraft, TestIdentityProvider, encode};
 use hodor_session::api::SessionService;
 use hodor_session::testing::{InMemorySessions, SequentialRandom};
 use hodor_tenant::api::{CreateTenant, TenantService};
@@ -155,6 +157,7 @@ struct World {
 
 fn settings(creates_users: bool) -> ProviderSettings {
     ProviderSettings {
+        saml: None,
         display_name: "Example".to_owned(),
         issuer: ISSUER.to_owned(),
         client_id: CLIENT_ID.to_owned(),
@@ -237,6 +240,7 @@ async fn world_with(directory: Option<(String, Arc<dyn DirectoryClient>)>) -> Wo
             Arc::new(github.clone()),
             Arc::new(SequentialRandom::default()),
         ),
+        SamlClient::new(Arc::new(SequentialRandom::default())),
         identity.clone(),
         Arc::new(stores),
         units(),
@@ -1288,6 +1292,7 @@ impl World {
                     alias: "github".to_owned(),
                     kind: ProviderKind::GitHub,
                     settings: ProviderSettings {
+                        saml: None,
                         display_name: "GitHub".to_owned(),
                         issuer: "https://github.com".to_owned(),
                         client_id: "github-client".to_owned(),
@@ -1614,6 +1619,7 @@ async fn directory_world(trusts_email: bool) -> DirectoryWorld {
                 alias: "company".to_owned(),
                 kind: ProviderKind::Ldap,
                 settings: ProviderSettings {
+                    saml: None,
                     display_name: "Company directory".to_owned(),
                     issuer: directory.address.clone(),
                     client_id: BIND_NAME.to_owned(),
@@ -1870,6 +1876,7 @@ async fn a_directory_that_is_not_on_the_list_cannot_be_added() {
                 alias: "elsewhere".to_owned(),
                 kind: ProviderKind::Ldap,
                 settings: ProviderSettings {
+                    saml: None,
                     display_name: "Somewhere".to_owned(),
                     issuer: "ldaps://ldap.internal.example:636".to_owned(),
                     client_id: BIND_NAME.to_owned(),
@@ -1885,4 +1892,455 @@ async fn a_directory_that_is_not_on_the_list_cannot_be_added() {
         .await
         .expect_err("not on the list");
     assert_eq!(refused.code(), "federation.directory_not_allowed");
+}
+
+// SAML identity providers. The response is posted by another site, kept,
+// and read only when the browser that carried it finishes the sign-in.
+
+const SAML_ISSUER: &str = "https://idp.corp.example/saml";
+const SAML_SIGN_ON: &str = "https://idp.corp.example/sso";
+
+/// The world, with a SAML provider `corp` in acme that trusts addresses.
+async fn saml_world() -> (World, TestIdentityProvider) {
+    let world = world().await;
+    let identity_provider = TestIdentityProvider::rsa(SAML_ISSUER);
+    world
+        .federation
+        .create_provider(
+            &world.acme,
+            CreateProvider {
+                alias: "corp".to_owned(),
+                kind: ProviderKind::Saml,
+                settings: ProviderSettings {
+                    display_name: "Corp".to_owned(),
+                    issuer: SAML_ISSUER.to_owned(),
+                    client_id: String::new(),
+                    scopes: Vec::new(),
+                    creates_users: true,
+                    trusts_email: true,
+                    directory: None,
+                    saml: Some(SamlSettings::new(
+                        SAML_SIGN_ON,
+                        identity_provider.certificate_pem(),
+                    )),
+                },
+                client_secret: Secret::from(String::new()),
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("a SAML provider");
+    (world, identity_provider)
+}
+
+/// What a browser carries to a SAML identity provider.
+struct SamlDeparture {
+    relay_state: String,
+    request_id: String,
+}
+
+/// The answer to a post to the assertion consumer: where the browser goes.
+struct Posted {
+    status: StatusCode,
+    location: String,
+}
+
+impl Posted {
+    /// The page's address, as somebody who knows only the state would write it.
+    fn with_state_only(relay_state: &str) -> Self {
+        Self {
+            status: StatusCode::SEE_OTHER,
+            location: format!(
+                "/t/acme/account/providers/corp/callback?binding=saml&state={relay_state}"
+            ),
+        }
+    }
+}
+
+impl Browser {
+    async fn leave_for_saml(&mut self, world: &World) -> SamlDeparture {
+        let started = self
+            .send(world, Method::POST, "/t/acme/interaction/sign-in", None)
+            .await;
+        assert_eq!(started.status, StatusCode::CREATED, "{:?}", started.body);
+        let chosen = self
+            .send(
+                world,
+                Method::POST,
+                "/t/acme/interaction/sign-in/providers/corp",
+                None,
+            )
+            .await;
+        assert_eq!(chosen.status, StatusCode::OK, "{:?}", chosen.body);
+        let redirect = chosen.body["redirect"].as_str().expect("an address");
+        let (address, query) = redirect.split_once('?').expect("a query");
+        assert_eq!(address, SAML_SIGN_ON);
+        let sent: HashMap<String, String> = form_urlencoded::parse(query.as_bytes())
+            .into_owned()
+            .collect();
+        let compressed = base64::Engine::decode(
+            &base64::engine::general_purpose::STANDARD,
+            &sent["SAMLRequest"],
+        )
+        .expect("base64");
+        let request = String::from_utf8(
+            miniz_oxide::inflate::decompress_to_vec(&compressed).expect("deflate"),
+        )
+        .expect("text");
+        let start = request.find(r#" ID=""#).expect("an identifier") + 5;
+        let end = start + request[start..].find('"').expect("its end");
+        assert!(request.contains(&format!(
+            r#"AssertionConsumerServiceURL="{PUBLIC}/t/acme/interaction/sign-in/providers/corp/saml""#
+        )));
+        SamlDeparture {
+            relay_state: sent["RelayState"].clone(),
+            request_id: request[start..end].to_owned(),
+        }
+    }
+
+    /// Finishes on the page the browser was sent to, with what its address
+    /// carries.
+    async fn finish_saml(&mut self, world: &World, posted: &Posted) -> Reply {
+        let query = posted
+            .location
+            .split_once('?')
+            .map_or("", |(_, query)| query);
+        let carried: HashMap<String, String> = form_urlencoded::parse(query.as_bytes())
+            .into_owned()
+            .collect();
+        let mut body = json!({ "state": carried.get("state").cloned().unwrap_or_default() });
+        if let Some(receipt) = carried.get("receipt") {
+            body["receipt"] = json!(receipt);
+        }
+        self.send(
+            world,
+            Method::POST,
+            "/t/acme/interaction/sign-in/providers/corp/callback",
+            Some(body),
+        )
+        .await
+    }
+}
+
+impl World {
+    /// The identity provider's site makes a browser post `response`. No
+    /// cookie goes with it, and its origin is the identity provider's.
+    async fn post_saml(&self, response: &str, relay_state: &str) -> Posted {
+        let body = form_urlencoded::Serializer::new(String::new())
+            .append_pair("SAMLResponse", response)
+            .append_pair("RelayState", relay_state)
+            .finish();
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/t/acme/interaction/sign-in/providers/corp/saml")
+            .header(header::HOST, HOST)
+            .header(header::ORIGIN, "https://idp.corp.example")
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(Body::from(body))
+            .expect("request");
+        let response = self
+            .router
+            .clone()
+            .oneshot(request)
+            .await
+            .expect("response");
+        Posted {
+            status: response.status(),
+            location: response
+                .headers()
+                .get(header::LOCATION)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+                .to_owned(),
+        }
+    }
+
+    /// The identity provider's signed response for this person, to the
+    /// request with this identifier.
+    fn saml_response(
+        &self,
+        identity_provider: &TestIdentityProvider,
+        request_id: &str,
+        subject: &str,
+        email: &str,
+    ) -> String {
+        let service_provider = saml_service_provider(PUBLIC, "acme", "corp");
+        let now = Timestamp::from_unix_timestamp(NOW).expect("now");
+        let draft = ResponseDraft {
+            name_id: subject.to_owned(),
+            attributes: vec![
+                ("email".to_owned(), vec![email.to_owned()]),
+                ("name".to_owned(), vec!["Bia Corp".to_owned()]),
+            ],
+            ..ResponseDraft::good(&service_provider, identity_provider, request_id, now)
+        };
+        encode(&identity_provider.respond(&draft))
+    }
+}
+
+#[tokio::test]
+async fn a_person_signs_in_through_a_saml_identity_provider_and_is_the_same_user_every_time() {
+    let (world, identity_provider) = saml_world().await;
+    let mut first_user = None;
+    for _ in 0..2 {
+        let mut browser = Browser::default();
+        let leaving = browser.leave_for_saml(&world).await;
+        let response = world.saml_response(
+            &identity_provider,
+            &leaving.request_id,
+            "corp-0042",
+            "bia@corp.example",
+        );
+        let posted = world.post_saml(&response, &leaving.relay_state).await;
+        assert_eq!(posted.status, StatusCode::SEE_OTHER);
+        let expected = format!(
+            "/t/acme/account/providers/corp/callback?binding=saml&state={}&receipt=",
+            leaving.relay_state
+        );
+        assert!(
+            posted.location.starts_with(&expected),
+            "{}",
+            posted.location
+        );
+        let finished = browser.finish_saml(&world, &posted).await;
+        assert_eq!(
+            finished.sign_in_status(),
+            "completed",
+            "{:?}",
+            finished.body
+        );
+        let user = world.user_with("bia@corp.example").await.expect("created");
+        assert_eq!(*first_user.get_or_insert(user), user);
+    }
+    assert_eq!(world.count("identity.user_created"), 1);
+    assert!(world.refusals().is_empty(), "{:?}", world.refusals());
+}
+
+#[tokio::test]
+async fn in_response_to_other_browser() {
+    // A response obtained for one browser's request, kept for another
+    // browser's sign-in, answers a request that sign-in never made.
+    let (world, identity_provider) = saml_world().await;
+    let mut attacker = Browser::default();
+    let theirs = attacker.leave_for_saml(&world).await;
+    let mut victim = Browser::default();
+    let victims = victim.leave_for_saml(&world).await;
+    let response = world.saml_response(
+        &identity_provider,
+        &theirs.request_id,
+        "corp-eve",
+        "eve@corp.example",
+    );
+    let posted = world.post_saml(&response, &victims.relay_state).await;
+    rejected(&victim.finish_saml(&world, &posted).await);
+    assert_eq!(world.refusals(), ["request"]);
+    assert_eq!(world.user_with("eve@corp.example").await, None);
+}
+
+#[tokio::test]
+async fn in_response_to_used() {
+    let (world, identity_provider) = saml_world().await;
+    let mut browser = Browser::default();
+    let leaving = browser.leave_for_saml(&world).await;
+    let response = world.saml_response(
+        &identity_provider,
+        &leaving.request_id,
+        "corp-0042",
+        "bia@corp.example",
+    );
+    let posted = world.post_saml(&response, &leaving.relay_state).await;
+    let finished = browser.finish_saml(&world, &posted).await;
+    assert_eq!(finished.sign_in_status(), "completed");
+
+    // The same response presented again, with a new sign-in in progress.
+    let mut again = Browser::default();
+    let started = again
+        .send(&world, Method::POST, "/t/acme/interaction/sign-in", None)
+        .await;
+    assert_eq!(started.status, StatusCode::CREATED);
+    let posted = world.post_saml(&response, &leaving.relay_state).await;
+    rejected(&again.finish_saml(&world, &posted).await);
+    assert_eq!(world.refusals(), ["no_pending_authorization"]);
+}
+
+#[tokio::test]
+async fn relay_state_handed_to_victim() {
+    // The attacker starts a sign-in and hands the address at the identity
+    // provider to a victim who is signed in there. The victim's browser
+    // posts the victim's response, which answers the attacker's request.
+    let (world, identity_provider) = saml_world().await;
+    let mut attacker = Browser::default();
+    let theirs = attacker.leave_for_saml(&world).await;
+    let victims_answer = world.saml_response(
+        &identity_provider,
+        &theirs.request_id,
+        "corp-victim",
+        "victim@corp.example",
+    );
+    let posted_by_the_victim = world.post_saml(&victims_answer, &theirs.relay_state).await;
+    assert!(posted_by_the_victim.location.contains("&receipt="));
+    // The attacker knows the state, not the receipt the victim's browser got.
+    let reply = attacker
+        .finish_saml(&world, &Posted::with_state_only(&theirs.relay_state))
+        .await;
+    rejected(&reply);
+    assert_eq!(world.refusals(), ["receipt_mismatch"]);
+    assert_eq!(world.user_with("victim@corp.example").await, None);
+}
+
+#[tokio::test]
+async fn a_guessed_receipt_finishes_nothing() {
+    let (world, identity_provider) = saml_world().await;
+    let mut browser = Browser::default();
+    let leaving = browser.leave_for_saml(&world).await;
+    let response = world.saml_response(
+        &identity_provider,
+        &leaving.request_id,
+        "corp-0042",
+        "bia@corp.example",
+    );
+    world.post_saml(&response, &leaving.relay_state).await;
+    let mut guessed = Posted::with_state_only(&leaving.relay_state);
+    guessed
+        .location
+        .push_str(&format!("&receipt={}", "0".repeat(64)));
+    rejected(&browser.finish_saml(&world, &guessed).await);
+    assert_eq!(world.refusals(), ["receipt_mismatch"]);
+}
+
+#[tokio::test]
+async fn relay_state_address() {
+    let (world, identity_provider) = saml_world().await;
+    let mut browser = Browser::default();
+    let leaving = browser.leave_for_saml(&world).await;
+    let response = world.saml_response(
+        &identity_provider,
+        &leaving.request_id,
+        "corp-0042",
+        "bia@corp.example",
+    );
+    let posted = world
+        .post_saml(&response, "https://evil.example/landing")
+        .await;
+    assert_eq!(posted.status, StatusCode::SEE_OTHER);
+    assert_eq!(
+        posted.location, "/t/acme/account/providers/corp/callback?binding=saml",
+        "the relay state is never written into the answer"
+    );
+    // Nothing was kept for this browser's sign-in.
+    let reply = browser
+        .finish_saml(&world, &Posted::with_state_only(&leaving.relay_state))
+        .await;
+    rejected(&reply);
+    assert_eq!(world.refusals(), ["no_response"]);
+}
+
+#[tokio::test]
+async fn a_response_that_is_not_base64_is_not_kept() {
+    let (world, _) = saml_world().await;
+    let mut browser = Browser::default();
+    let leaving = browser.leave_for_saml(&world).await;
+    let posted = world.post_saml("not\0base64", &leaving.relay_state).await;
+    assert_eq!(posted.status, StatusCode::SEE_OTHER);
+    rejected(&browser.finish_saml(&world, &posted).await);
+    assert_eq!(world.refusals(), ["no_response"]);
+}
+
+#[tokio::test]
+async fn a_saml_response_is_checked_when_it_is_finished_and_refused_for_its_reason() {
+    let (world, identity_provider) = saml_world().await;
+    let mut browser = Browser::default();
+    let leaving = browser.leave_for_saml(&world).await;
+    // Signed by somebody else who claims the same entity identifier.
+    let impostor = TestIdentityProvider::rsa(SAML_ISSUER);
+    let forged = world.saml_response(
+        &impostor,
+        &leaving.request_id,
+        "corp-0042",
+        "bia@corp.example",
+    );
+    let posted = world.post_saml(&forged, &leaving.relay_state).await;
+    assert_eq!(posted.status, StatusCode::SEE_OTHER, "kept unread");
+    // A second response does not replace the first: the first one wins.
+    let good = world.saml_response(
+        &identity_provider,
+        &leaving.request_id,
+        "corp-0042",
+        "bia@corp.example",
+    );
+    world.post_saml(&good, &leaving.relay_state).await;
+    rejected(&browser.finish_saml(&world, &posted).await);
+    assert_eq!(world.refusals(), ["signature"]);
+    assert_eq!(world.user_with("bia@corp.example").await, None);
+}
+
+#[tokio::test]
+async fn hodor_describes_itself_to_a_saml_identity_provider() {
+    let (world, _) = saml_world().await;
+    let metadata = |alias: &str| {
+        Request::builder()
+            .uri(format!(
+                "/t/acme/interaction/sign-in/providers/{alias}/saml/metadata"
+            ))
+            .header(header::HOST, HOST)
+            .body(Body::empty())
+            .expect("request")
+    };
+    let response = world
+        .router
+        .clone()
+        .oneshot(metadata("corp"))
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers()[header::CONTENT_TYPE],
+        "application/samlmetadata+xml"
+    );
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body")
+        .to_bytes();
+    let metadata_text = String::from_utf8(body.to_vec()).expect("text");
+    assert!(metadata_text.contains(&format!(
+        r#"entityID="{PUBLIC}/t/acme/interaction/sign-in/providers/corp/saml/metadata""#
+    )));
+    assert!(metadata_text.contains(&format!(
+        r#"Location="{PUBLIC}/t/acme/interaction/sign-in/providers/corp/saml""#
+    )));
+    // A provider of another kind has no SAML metadata.
+    let response = world
+        .router
+        .clone()
+        .oneshot(metadata("example"))
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn only_a_posted_saml_response_may_be_larger_than_other_requests() {
+    let (world, _) = saml_world().await;
+    // Base64 in lines, as some identity providers write it: form encoding
+    // makes the body larger than the response.
+    let line = format!("{}+/\r\n", "A".repeat(74));
+    let large = line.repeat(300 * 1024 / line.len());
+    let posted = world.post_saml(&large, "some-state").await;
+    assert_eq!(
+        posted.status,
+        StatusCode::SEE_OTHER,
+        "accepted, and kept nowhere"
+    );
+    let mut browser = Browser::default();
+    let reply = browser
+        .send(
+            &world,
+            Method::POST,
+            "/t/acme/interaction/sign-in/providers/corp/callback",
+            Some(json!({ "state": "A".repeat(100 * 1024) })),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::PAYLOAD_TOO_LARGE);
 }

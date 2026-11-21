@@ -78,6 +78,8 @@ A tenant may offer [identity providers](../architecture/contexts/federation.md#s
 | `POST /interaction/sign-in/providers/{alias}` | Choose a provider for the current sign-in |
 | `POST /interaction/sign-in/providers/{alias}/callback` | Finish, with what the provider sent back |
 | `POST /interaction/sign-in/providers/{alias}/password` | Sign in through a directory, with an identifier and a password |
+| `POST /interaction/sign-in/providers/{alias}/saml` | Where a SAML identity provider posts its response |
+| `GET /interaction/sign-in/providers/{alias}/saml/metadata` | Hodor's metadata for a SAML identity provider |
 
 `GET /interaction/sign-in/providers` needs no sign-in and answers with what the sign-in page shows, enabled providers only:
 
@@ -106,6 +108,24 @@ A provider in the list carries its `kind`. For one of the kind `ldap`, a [direct
 ```
 
 The answer has the shape of every sign-in response. Attempts are limited as for a password of Hodor's own (`429`, `authentication.too_many_attempts`).
+
+#### SAML identity providers
+
+For a provider of the kind `saml`, choosing it answers with the identity provider's single sign-on address carrying the request, as for any provider. The identity provider then makes the browser post its response, from its own site, to `POST /interaction/sign-in/providers/{alias}/saml`, form-encoded with `SAMLResponse` and `RelayState`. That route [is different](../architecture/contexts/federation.md#when-the-response-arrives):
+
+- It is the one changing request that comes from another site: it needs no cookie, no CSRF token, and its `Origin` is not checked. It changes nothing but the pending authorization whose state hashes to `RelayState`, and only once: it keeps the response there, unread, if none was kept before, with the hash of a new random **receipt**.
+- Its body is at most 768 kibibytes, form-encoded; the response in it at most 384.
+- It answers `303 See Other` to `/t/{slug}/account/providers/{alias}/callback?binding=saml&state={RelayState}&receipt={receipt}`, whether or not a pending authorization was found, and without `state` and `receipt` when the relay state is not a plain token of at most 80 characters. An alias that is not an alias is `404`, as is any alias when the server has no keys to keep secrets with; a failure of storage is `500`.
+
+The page then finishes as for any provider, with `POST /interaction/sign-in/providers/{alias}/callback`, the sign-in cookie and the CSRF token, and the state and the receipt from its address:
+
+```json
+{ "state": "…", "receipt": "…" }
+```
+
+Only then is the response read and checked, against the request of this browser's sign-in. The receipt shows that the browser finishing is the one that carried the response: see [why](../architecture/contexts/federation.md#when-the-response-arrives).
+
+`GET /interaction/sign-in/providers/{alias}/saml/metadata` needs no sign-in and answers with Hodor's metadata for that provider, `application/samlmetadata+xml`, for an administrator to give the identity provider. A provider of another kind, or none, is `404`.
 
 | Situation | Status | Code |
 |---|---|---|
@@ -146,6 +166,8 @@ A page on another site must not be able to make a person's browser act on their 
 3. **A request that names another origin is refused.** If the browser sends an `Origin` header and it is not this server's own, the answer is `403`.
 
 Bodies must be JSON, which a plain cross-site form cannot send.
+
+The route a SAML identity provider posts its response to is outside all three, because another site is the one that sends it. It can do nothing but keep a response, once, on the pending authorization its relay state names; the response is read only when this origin's page finishes the sign-in with the cookie and the token ([above](#saml-identity-providers)).
 
 Starting a sign-in is the one changing request that carries no CSRF token, since there is no sign-in yet to derive one from. It is covered by the origin check, and a forged start does no harm: it gives the browser a fresh sign-in that nobody has typed anything into.
 

@@ -536,6 +536,7 @@ async fn run_provider(
                         alias,
                         kind,
                         settings: ProviderSettings {
+                            saml: None,
                             display_name: name,
                             issuer: issuer
                                 .or_else(|| {

@@ -58,6 +58,8 @@ pub enum ProviderKind {
     /// A directory reached over LDAP. Nobody leaves for it: Hodor asks
     /// it with what the person typed.
     Ldap,
+    /// A SAML identity provider: Hodor is its service provider.
+    Saml,
 }
 
 impl ProviderKind {
@@ -68,6 +70,7 @@ impl ProviderKind {
             Self::OpenIdConnect => "openid_connect",
             Self::GitHub => "github",
             Self::Ldap => "ldap",
+            Self::Saml => "saml",
         }
     }
 
@@ -81,6 +84,7 @@ impl ProviderKind {
             "openid_connect" => Ok(Self::OpenIdConnect),
             "github" => Ok(Self::GitHub),
             "ldap" => Ok(Self::Ldap),
+            "saml" => Ok(Self::Saml),
             _ => Err(stored_data_invalid()),
         }
     }
@@ -202,6 +206,99 @@ impl DirectorySettings {
     }
 }
 
+/// What only a SAML identity provider has.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SamlSettings {
+    /// Where the person is sent with the request: the identity provider's
+    /// single sign-on address for the HTTP-Redirect binding.
+    pub single_sign_on_address: String,
+    /// The identity provider's signing certificate, in PEM or as the
+    /// base64 its metadata carries.
+    pub certificate: String,
+    /// The attribute that carries the person's address.
+    pub email_attribute: String,
+    /// The attribute that carries the person's name.
+    pub name_attribute: String,
+}
+
+impl SamlSettings {
+    /// The settings of a SAML identity provider whose attributes are named
+    /// `email` and `name`.
+    #[must_use]
+    pub fn new(single_sign_on_address: &str, certificate: &str) -> Self {
+        Self {
+            single_sign_on_address: single_sign_on_address.to_owned(),
+            certificate: certificate.to_owned(),
+            email_attribute: "email".to_owned(),
+            name_attribute: "name".to_owned(),
+        }
+    }
+
+    /// The key every response of this identity provider is checked with.
+    ///
+    /// # Errors
+    ///
+    /// Returns `federation.saml_invalid` if the certificate cannot be used.
+    pub fn key(&self) -> Result<hodor_saml::IdentityProviderKey, DomainError> {
+        hodor_saml::IdentityProviderKey::from_certificate(&self.certificate).map_err(|error| {
+            DomainError::invalid("federation.saml_invalid", "the certificate cannot be used")
+                .with_detail(error.reason())
+        })
+    }
+
+    fn checked(mut self, development_hosts: &[String]) -> Result<Self, DomainError> {
+        let invalid = |what: &'static str| DomainError::invalid("federation.saml_invalid", what);
+        self.single_sign_on_address = self.single_sign_on_address.trim().to_owned();
+        self.certificate = self.certificate.trim().to_owned();
+        self.email_attribute = self.email_attribute.trim().to_owned();
+        self.name_attribute = self.name_attribute.trim().to_owned();
+        check_address(&self.single_sign_on_address, development_hosts).map_err(|_| {
+            invalid("a single sign-on address is an HTTPS address without a fragment, at most 512 characters")
+        })?;
+        if self.certificate.len() > 16 * 1024 {
+            return Err(invalid("a certificate is at most 16 kibibytes"));
+        }
+        self.key()?;
+        for attribute in [&self.email_attribute, &self.name_attribute] {
+            let named = (1..=255).contains(&attribute.chars().count())
+                && !attribute
+                    .chars()
+                    .any(|c| c.is_control() || c.is_whitespace());
+            if !named {
+                return Err(invalid(
+                    "an attribute name is 1 to 255 characters without spaces",
+                ));
+            }
+        }
+        Ok(self)
+    }
+}
+
+/// A SAML entity identifier: an absolute address or a `urn:` name, at most
+/// 512 characters, without spaces. It names the identity provider and is
+/// never fetched, so plain HTTP is allowed. Kept exactly as given.
+fn check_entity_id(issuer: &str) -> Result<(), DomainError> {
+    let absolute = issuer
+        .strip_prefix("https://")
+        .or_else(|| issuer.strip_prefix("http://"))
+        .is_some_and(|rest| !rest.is_empty() && !rest.starts_with('/'))
+        || issuer
+            .strip_prefix("urn:")
+            .is_some_and(|rest| !rest.is_empty());
+    let plain = issuer.len() <= 512
+        && issuer
+            .bytes()
+            .all(|b| b.is_ascii_graphic() && !matches!(b, b'\\' | b'"' | b'<' | b'>'));
+    if absolute && plain {
+        Ok(())
+    } else {
+        Err(DomainError::invalid(
+            "federation.issuer_invalid",
+            "a SAML entity identifier is an absolute address or a `urn:` name, at most 512 characters",
+        ))
+    }
+}
+
 /// The host and port of a directory's address, as `host:port`, for
 /// comparing with the installation's list. `None` if it is not an
 /// address of a directory.
@@ -250,6 +347,9 @@ pub struct ProviderSettings {
     /// What only a directory has. There for the kind `ldap` and for no
     /// other.
     pub directory: Option<DirectorySettings>,
+    /// What only a SAML identity provider has. There for the kind `saml`
+    /// and for no other.
+    pub saml: Option<SamlSettings>,
 }
 
 impl ProviderSettings {
@@ -268,7 +368,7 @@ impl ProviderSettings {
                 ["openid", "email", "profile"].map(str::to_owned).to_vec()
             }
             ProviderKind::GitHub => ["read:user", "user:email"].map(str::to_owned).to_vec(),
-            ProviderKind::Ldap => Vec::new(),
+            ProviderKind::Ldap | ProviderKind::Saml => Vec::new(),
         }
     }
 
@@ -277,7 +377,7 @@ impl ProviderSettings {
     #[must_use]
     pub const fn default_issuer_for(kind: ProviderKind) -> Option<&'static str> {
         match kind {
-            ProviderKind::OpenIdConnect | ProviderKind::Ldap => None,
+            ProviderKind::OpenIdConnect | ProviderKind::Ldap | ProviderKind::Saml => None,
             ProviderKind::GitHub => Some("https://github.com"),
         }
     }
@@ -325,7 +425,10 @@ impl ProviderSettings {
             ));
         }
         let is_directory = kind == ProviderKind::Ldap;
-        if is_directory {
+        let is_saml = kind == ProviderKind::Saml;
+        if is_saml {
+            check_entity_id(&self.issuer)?;
+        } else if is_directory {
             // A directory's address: over TLS, or in the clear at a
             // development host only.
             let reachable = directory_host(&self.issuer).is_some_and(|host| {
@@ -344,7 +447,10 @@ impl ProviderSettings {
             check_issuer(&self.issuer, development_hosts)?;
         }
         let id_length = self.client_id.chars().count();
-        if !(1..=255).contains(&id_length)
+        // A SAML identity provider knows Hodor by an entity identifier
+        // made from the alias, not by a client identifier.
+        let lengths = if is_saml { 0..=0 } else { 1..=255 };
+        if !lengths.contains(&id_length)
             || self
                 .client_id
                 .chars()
@@ -374,9 +480,9 @@ impl ProviderSettings {
         // An OpenID Connect provider issues no ID token unless asked for
         // `openid`; other kinds have no scope that must be there.
         let needs_openid = kind == ProviderKind::OpenIdConnect;
-        // A directory is asked for nothing by scope; every other kind is
-        // asked for something.
-        if scopes.is_empty() != is_directory
+        // A directory and a SAML identity provider are asked for nothing
+        // by scope; every other kind is asked for something.
+        if scopes.is_empty() != (is_directory || is_saml)
             || scopes.len() > MAX_SCOPES
             || (needs_openid && !scopes.iter().any(|scope| scope == "openid"))
         {
@@ -392,6 +498,16 @@ impl ProviderSettings {
                 return Err(DomainError::invalid(
                     "federation.directory_invalid",
                     "a directory has a base and a filter, and no other kind of provider has",
+                ));
+            }
+        };
+        self.saml = match (is_saml, self.saml) {
+            (true, Some(saml)) => Some(saml.checked(development_hosts)?),
+            (false, None) => None,
+            _ => {
+                return Err(DomainError::invalid(
+                    "federation.saml_invalid",
+                    "a SAML provider has a single sign-on address and a certificate, and no other kind of provider has",
                 ));
             }
         };
@@ -430,12 +546,24 @@ pub(crate) fn is_development_address(address: &str, development_hosts: &[String]
 /// is compared character by character with what the provider says. Plain
 /// HTTP is accepted for a development host only.
 fn check_issuer(issuer: &str, development_hosts: &[String]) -> Result<(), DomainError> {
-    let invalid = || {
-        DomainError::invalid(
-            "federation.issuer_invalid",
-            "an issuer is an HTTPS address without a query or a fragment, at most 512 characters",
-        )
-    };
+    check_address(issuer, development_hosts)?;
+    if issuer.contains('?') {
+        return Err(issuer_invalid());
+    }
+    Ok(())
+}
+
+fn issuer_invalid() -> DomainError {
+    DomainError::invalid(
+        "federation.issuer_invalid",
+        "an issuer is an HTTPS address without a query or a fragment, at most 512 characters",
+    )
+}
+
+/// An HTTPS address with a host, without a name and password or a
+/// fragment, at most 512 characters. Plain HTTP for a development host only.
+fn check_address(issuer: &str, development_hosts: &[String]) -> Result<(), DomainError> {
+    let invalid = issuer_invalid;
     let rest = match issuer.strip_prefix("https://") {
         Some(rest) => rest,
         None if is_development_address(issuer, development_hosts) => {
@@ -447,9 +575,9 @@ fn check_issuer(issuer: &str, development_hosts: &[String]) -> Result<(), Domain
     let plain = issuer.len() <= 512
         && !host.is_empty()
         && !host.contains('@')
-        && issuer.bytes().all(|b| {
-            b.is_ascii_graphic() && !matches!(b, b'?' | b'#' | b'\\' | b'"' | b'<' | b'>')
-        });
+        && issuer
+            .bytes()
+            .all(|b| b.is_ascii_graphic() && !matches!(b, b'#' | b'\\' | b'"' | b'<' | b'>'));
     if plain { Ok(()) } else { Err(invalid()) }
 }
 
@@ -594,6 +722,7 @@ mod tests {
             creates_users: true,
             trusts_email: false,
             directory: None,
+            saml: None,
         }
     }
 
@@ -785,6 +914,7 @@ mod tests {
             creates_users: true,
             trusts_email: false,
             directory: Some(directory),
+            saml: None,
         }
         .checked_for(ProviderKind::Ldap, &["ldap.dev:389".to_owned()])
     }
@@ -842,6 +972,101 @@ mod tests {
                 .expect_err("not a directory")
                 .code(),
             "federation.directory_invalid"
+        );
+    }
+
+    fn saml_settings(issuer: &str, certificate: &str) -> Result<ProviderSettings, DomainError> {
+        ProviderSettings {
+            display_name: "Corp".to_owned(),
+            issuer: issuer.to_owned(),
+            client_id: String::new(),
+            scopes: Vec::new(),
+            creates_users: true,
+            trusts_email: false,
+            directory: None,
+            saml: Some(SamlSettings::new(
+                "https://idp.example.com/sso",
+                certificate,
+            )),
+        }
+        .checked_for(ProviderKind::Saml, &[])
+    }
+
+    #[test]
+    fn a_saml_provider_is_held_to_its_rules() {
+        let identity_provider = hodor_saml::testing::TestIdentityProvider::rsa("urn:corp");
+        let certificate = identity_provider.certificate_pem();
+        // An entity identifier names the provider and is never fetched.
+        for issuer in [
+            "https://sts.windows.net/8d6a2b6e/",
+            "http://www.okta.com/exk1a2b3c4",
+            "http://adfs.example.com/adfs/services/trust",
+            "urn:example:idp",
+        ] {
+            assert_eq!(
+                saml_settings(issuer, certificate).expect(issuer).issuer,
+                issuer
+            );
+        }
+        for issuer in [
+            "",
+            "urn:",
+            "idp.example.com",
+            "https://",
+            "https://a b",
+            "ftp://idp",
+        ] {
+            let error = saml_settings(issuer, certificate).expect_err(issuer);
+            assert_eq!(error.code(), "federation.issuer_invalid", "{issuer}");
+        }
+        let error = saml_settings("urn:corp", "not a certificate").expect_err("certificate");
+        assert_eq!(error.code(), "federation.saml_invalid");
+        assert_eq!(error.detail(), Some("certificate_unreadable"));
+
+        let broken = |change: fn(&mut ProviderSettings)| {
+            let mut given = saml_settings("urn:corp", certificate).expect("valid");
+            change(&mut given);
+            given
+                .checked_for(ProviderKind::Saml, &[])
+                .expect_err("broken")
+                .code()
+                .to_owned()
+        };
+        assert_eq!(
+            broken(|s| s.client_id = "hodor".to_owned()),
+            "federation.client_id_invalid"
+        );
+        assert_eq!(
+            broken(|s| s.scopes = vec!["openid".to_owned()]),
+            "federation.scopes_invalid"
+        );
+        assert_eq!(broken(|s| s.saml = None), "federation.saml_invalid");
+        for address in [
+            "http://idp.example.com/sso",
+            "https://idp.example.com/sso#x",
+            "idp",
+        ] {
+            let mut given = saml_settings("urn:corp", certificate).expect("valid");
+            if let Some(saml) = given.saml.as_mut() {
+                address.clone_into(&mut saml.single_sign_on_address);
+            }
+            let error = given
+                .checked_for(ProviderKind::Saml, &[])
+                .expect_err(address);
+            assert_eq!(error.code(), "federation.saml_invalid", "{address}");
+        }
+        // A query is kept: some identity providers name the application there.
+        let mut with_query = saml_settings("urn:corp", certificate).expect("valid");
+        if let Some(saml) = with_query.saml.as_mut() {
+            saml.single_sign_on_address = "https://idp.example.com/sso?app=hodor".to_owned();
+        }
+        assert!(with_query.checked_for(ProviderKind::Saml, &[]).is_ok());
+        // SAML settings belong to a SAML provider only.
+        let mut not_saml = settings();
+        not_saml.saml = saml_settings("urn:corp", certificate).expect("valid").saml;
+        assert_eq!(
+            not_saml.checked().expect_err("not SAML").code(),
+            "federation.saml_invalid"
         );
     }
 

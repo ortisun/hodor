@@ -26,7 +26,7 @@ use hodor_authorization::api::AuthorizationService;
 use hodor_credential::api::{AccessTokenService, CredentialService};
 use hodor_federation::api::{
     EXTERNAL_STEP, ExternalIdentityAuthenticator, ExternalSignIn, FederationService, GitHubClient,
-    LockoutPolicy, OpenIdClient,
+    LockoutPolicy, OpenIdClient, SamlClient,
 };
 use hodor_identity::api::IdentityService;
 use hodor_kernel::{DomainError, Secret, SystemClock, TenantContext};
@@ -504,6 +504,7 @@ fn external_sign_in(
         federation,
         openid,
         github,
+        SamlClient::new(Arc::new(OsRandom)),
         identity.clone(),
         Arc::new(PgPendingAuthorizationStore),
         units(),
