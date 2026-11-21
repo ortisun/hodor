@@ -3,6 +3,8 @@ import type { Failure, Session } from "../client";
 import { describe } from "../messages";
 import { Frame } from "../parts/Frame";
 import { Notice } from "../parts/Notice";
+import { Action } from "../parts/Submit";
+import { Words } from "../parts/Words";
 import { asFailure, type PageProps } from "./shared";
 
 /** Where a signed-in person lands: who they are to the server, and the way out. */
@@ -69,10 +71,8 @@ export function AccountPage({ tenant, client, text, go }: PageProps) {
       {failure !== null ? <Notice kind="danger">{describe(failure, text)}</Notice> : null}
       {since !== null ? (
         <>
-          <p className="auth-text">{text.signedInSince(since)}</p>
-          <button type="button" className="button auth-wide" aria-disabled={busy} onClick={() => void signOut()}>
-            {busy ? text.working : text.signOut}
-          </button>
+          <Words>{text.signedInSince(since)}</Words>
+          <Action label={busy ? text.working : text.signOut} busy={busy} onClick={() => void signOut()} />
         </>
       ) : null}
     </Frame>

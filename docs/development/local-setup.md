@@ -44,7 +44,7 @@ The integration tests need Docker running. Each test that touches the database s
 The hosted pages have checks of their own, run from `frontend/auth-ui` after `npm ci`:
 
 ```bash
-npm run lint && npm run typecheck && npm test && npm run build
+npm run theme-check && npm run lint && npm run typecheck && npm test && npm run build
 ```
 
 ### Running the browser tests

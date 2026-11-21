@@ -2,9 +2,11 @@ import { type FormEvent, useState } from "react";
 import type { Failure } from "../client";
 import { describe } from "../messages";
 import { Field } from "../parts/Field";
+import { Form } from "../parts/Form";
 import { Frame } from "../parts/Frame";
 import { Notice } from "../parts/Notice";
-import { Submit } from "../parts/Submit";
+import { Action, Submit } from "../parts/Submit";
+import { PageLink, Ways, Words } from "../parts/Words";
 import { asFailure, type PageProps } from "./shared";
 
 interface AskPageProps extends PageProps {
@@ -51,16 +53,14 @@ export function AskPage({ tenant, client, text, path, purpose }: AskPageProps) {
   if (sentTo !== null) {
     return (
       <Frame tenant={tenant} title={text.checkMailboxTitle} text={text}>
-        <p className="auth-text">{text.checkMailbox(sentTo)}</p>
-        <p className="auth-text muted">{text.checkMailboxHint}</p>
-        <button type="button" className="button auth-wide" onClick={() => setSentTo(null)}>
-          {text.askAgain}
-        </button>
-        <ul className="auth-links">
+        <Words>{text.checkMailbox(sentTo)}</Words>
+        <Words quiet>{text.checkMailboxHint}</Words>
+        <Action label={text.askAgain} onClick={() => setSentTo(null)} />
+        <Ways>
           <li>
-            <a href={path("sign-in")}>{text.backToSignIn}</a>
+            <PageLink href={path("sign-in")}>{text.backToSignIn}</PageLink>
           </li>
-        </ul>
+        </Ways>
       </Frame>
     );
   }
@@ -68,29 +68,27 @@ export function AskPage({ tenant, client, text, path, purpose }: AskPageProps) {
   const registering = purpose === "registration";
   return (
     <Frame tenant={tenant} title={registering ? text.registerTitle : text.recoverTitle} text={text}>
-      <p className="auth-text">{registering ? text.registerLead : text.recoverLead}</p>
+      <Words>{registering ? text.registerLead : text.recoverLead}</Words>
       {failure !== null ? <Notice kind="danger">{describe(failure, text)}</Notice> : null}
-      <form className="auth-form" method="post" noValidate onSubmit={submit}>
+      <Form onSubmit={submit}>
         <Field
           label={text.emailLabel}
           name="email"
           type="email"
           autoComplete="email"
-          autoCapitalize="none"
-          spellCheck={false}
+          verbatim
           autoFocus
-          required
           value={email}
-          onChange={(event) => setEmail(event.target.value)}
+          onChange={setEmail}
         />
         <Submit label={text.sendLink} busy={busy} text={text} />
-      </form>
-      <ul className="auth-links">
+      </Form>
+      <Ways>
         <li>
           {registering ? `${text.alreadyRegistered} ` : null}
-          <a href={path("sign-in")}>{registering ? text.signIn : text.backToSignIn}</a>
+          <PageLink href={path("sign-in")}>{registering ? text.signIn : text.backToSignIn}</PageLink>
         </li>
-      </ul>
+      </Ways>
     </Frame>
   );
 }

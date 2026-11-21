@@ -9,7 +9,6 @@ WORKDIR /src/frontend
 COPY frontend/auth-ui/package.json frontend/auth-ui/package-lock.json auth-ui/
 RUN --mount=type=cache,target=/root/.npm \
     cd auth-ui && npm ci --ignore-scripts --no-audit --no-fund
-COPY frontend/design-system design-system
 COPY frontend/auth-ui auth-ui
 RUN cd auth-ui && npm run build
 

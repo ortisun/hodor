@@ -1,16 +1,13 @@
-import type { ReactNode } from "react";
+import { Banner } from "@astryxdesign/core/Banner";
 
 interface NoticeProps {
   kind: "danger" | "success" | "info";
-  children: ReactNode;
+  children: string;
 }
+
+const status = { danger: "error", success: "success", info: "info" } as const;
 
 /** A message about the whole form. A failure is announced at once. */
 export function Notice({ kind, children }: NoticeProps) {
-  const variant = kind === "info" ? "alert" : `alert alert--${kind}`;
-  return (
-    <div className={variant} role={kind === "danger" ? "alert" : "status"}>
-      <p>{children}</p>
-    </div>
-  );
+  return <Banner status={status[kind]} title={children} role={kind === "danger" ? "alert" : "status"} />;
 }

@@ -4,10 +4,11 @@ import "@fontsource/ibm-plex-sans/latin-600.css";
 import "@fontsource/ibm-plex-sans/latin-ext-400.css";
 import "@fontsource/ibm-plex-sans/latin-ext-500.css";
 import "@fontsource/ibm-plex-sans/latin-ext-600.css";
-import "../../design-system/tokens.css";
-import "../../design-system/components.css";
+import "@astryxdesign/core/reset.css";
+import "@astryxdesign/core/astryx.css";
 import "./auth-ui.css";
 
+import { Theme } from "@astryxdesign/core/theme";
 import { createRoot } from "react-dom/client";
 import {
   type NoticeName,
@@ -19,6 +20,7 @@ import {
   tokenOf,
 } from "./address";
 import { App } from "./App";
+import { defaultThemeSlug, themes } from "./astryx-themes";
 import { Client } from "./client";
 import { chooseMessages } from "./messages";
 
@@ -45,15 +47,17 @@ if (root !== null && place !== null) {
   };
 
   createRoot(root).render(
-    <App
-      place={place}
-      client={new Client(place.tenant)}
-      text={text}
-      notice={notice}
-      token={tokenOf(window.location.hash)}
-      go={go}
-      leave={(url) => window.location.assign(url)}
-      providerAnswer={providerAnswer}
-    />,
+    <Theme theme={themes[defaultThemeSlug]} mode="light">
+      <App
+        place={place}
+        client={new Client(place.tenant)}
+        text={text}
+        notice={notice}
+        token={tokenOf(window.location.hash)}
+        go={go}
+        leave={(url) => window.location.assign(url)}
+        providerAnswer={providerAnswer}
+      />
+    </Theme>,
   );
 }
