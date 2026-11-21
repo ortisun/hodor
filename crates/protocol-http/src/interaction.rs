@@ -76,6 +76,10 @@ pub fn interaction_routes(state: InteractionState) -> Router {
             "/sign-in/providers/{alias}/callback",
             post(finish_with_provider),
         )
+        .route(
+            "/sign-in/providers/{alias}/password",
+            post(sign_in_with_directory),
+        )
         .route("/session", get(current_session).delete(sign_out))
         .route("/sessions", get(list_sessions).delete(end_other_sessions))
         .route("/sessions/{session_id}", delete(end_session))
@@ -104,6 +108,7 @@ struct SignInBody {
 struct OfferedBody {
     alias: String,
     display_name: String,
+    kind: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -115,6 +120,13 @@ struct ProvidersBody {
 #[derive(Debug, Serialize)]
 struct RedirectBody {
     redirect: String,
+}
+
+/// No `Debug`: this holds a password until it is wrapped.
+#[derive(Deserialize)]
+struct DirectoryBody {
+    identifier: String,
+    password: String,
 }
 
 /// No `Debug`: this holds what a provider sent back until it is used.
@@ -533,6 +545,7 @@ async fn offered_providers(
                 .map(|provider| OfferedBody {
                     alias: provider.alias,
                     display_name: provider.display_name,
+                    kind: provider.kind.as_str(),
                 })
                 .collect(),
         })
@@ -601,6 +614,28 @@ async fn finish_with_provider(
             ("provider".to_owned(), Secret::from(alias)),
             ("code".to_owned(), Secret::from(body.code)),
             ("state".to_owned(), Secret::from(body.state)),
+        ],
+    });
+    submit(&state, &tenant, &slug, &headers, input).await
+}
+
+async fn sign_in_with_directory(
+    State(state): State<InteractionState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(TenantSlug(slug)): Extension<TenantSlug>,
+    parameters: RawPathParams,
+    headers: HeaderMap,
+    Json(body): Json<DirectoryBody>,
+) -> Response {
+    let (Some(_), Some(alias)) = (&state.external, alias_of(&parameters)) else {
+        return provider_not_found();
+    };
+    let input = StepInput::External(ExternalInput {
+        step: EXTERNAL_STEP.to_owned(),
+        fields: vec![
+            ("provider".to_owned(), Secret::from(alias)),
+            ("identifier".to_owned(), Secret::from(body.identifier)),
+            ("password".to_owned(), Secret::from(body.password)),
         ],
     });
     submit(&state, &tenant, &slug, &headers, input).await

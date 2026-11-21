@@ -109,6 +109,28 @@ services:
       timeout: 2s
       retries: 30
 
+  # An LDAP directory for development, with one person in it: dora,
+  # whose password is written in deploy/dev-directory/people.ldif.
+  # Reachable from inside the stack only.
+  directory:
+    image: osixia/openldap:1.5.0
+    command: ["--copy-service"]
+    environment:
+      LDAP_ORGANISATION: Example
+      LDAP_DOMAIN: example.org
+      LDAP_ADMIN_PASSWORD: admin-password
+      LDAP_READONLY_USER: "true"
+      LDAP_READONLY_USER_USERNAME: readonly
+      LDAP_READONLY_USER_PASSWORD: readonly-password
+      LDAP_TLS: "false"
+    volumes:
+      - ../dev-directory/people.ldif:/container/service/slapd/assets/config/bootstrap/ldif/custom/people.ldif:ro
+    healthcheck:
+      test: ["CMD", "ldapwhoami", "-x", "-H", "ldap://127.0.0.1:389", "-D", "cn=readonly,dc=example,dc=org", "-w", "readonly-password"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+
   server:
     image: hodor:dev
     environment:
@@ -122,7 +144,9 @@ services:
       # The development provider is at a private address, over plain
       # HTTP. This is the setting that allows it; never set it anywhere
       # real.
-      HODOR_OUTBOUND_DEVELOPMENT_HOSTS: provider:9400,localhost:${HODOR_PROVIDER_PORT:-9400}
+      HODOR_OUTBOUND_DEVELOPMENT_HOSTS: provider:9400,localhost:${HODOR_PROVIDER_PORT:-9400},directory:389
+      # The development directory, the one directory this stack may use.
+      HODOR_DIRECTORY_HOSTS: directory:389
       HODOR_LOG_FORMAT: pretty
       HODOR_OTLP_METRICS_ENDPOINT: http://victoriametrics:8428/opentelemetry/v1/metrics
       HODOR_OTLP_TRACES_ENDPOINT: http://victoriatraces:10428/insert/opentelemetry/v1/traces

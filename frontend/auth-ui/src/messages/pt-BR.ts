@@ -69,6 +69,8 @@ export const ptBR: Messages = {
   or: "ou",
   continueWith: (provider) => `Continuar com ${provider}`,
   comingBackTitle: "Entrando",
+  directoryIdentifierLabel: (directory) => `Usuário em ${directory}`,
+  otherWays: "Outras formas de entrar",
 
   pageNotFoundTitle: "Página não encontrada",
   pageNotFound: "Não há nada neste endereço.",

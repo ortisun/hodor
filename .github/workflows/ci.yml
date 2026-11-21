@@ -133,6 +133,17 @@ jobs:
           -e HODOR_PROVIDER_CLIENT_SECRET=development-client-secret
           server provider add --tenant acme --alias development
           --name "Development provider" --issuer http://provider:9400 --client-id hodor
+      - name: Add the development directory to the tenant
+        working-directory: .
+        run: >
+          docker compose -f deploy/docker/compose.yaml run --rm --no-deps
+          --entrypoint /usr/local/bin/hodor-cli
+          -e HODOR_DATABASE_URL=postgres://hodor_server:dev-server@postgres:5432/hodor
+          -e HODOR_PROVIDER_CLIENT_SECRET=readonly-password
+          server provider add --tenant acme --alias directory --kind ldap
+          --name "Company directory" --issuer ldap://directory:389
+          --client-id cn=readonly,dc=example,dc=org
+          --base ou=people,dc=example,dc=org --filter "(uid={identifier})" --trust-email
       - run: npx playwright install --with-deps chromium
       - run: npm run browser-tests
       # The demonstration of the milestone, as the quick-start tells an
@@ -143,7 +154,7 @@ jobs:
       - name: Show what the stack logged
         if: failure()
         working-directory: .
-        run: docker compose -f deploy/docker/compose.yaml logs --no-color --tail 200 server worker system-tenant provider
+        run: docker compose -f deploy/docker/compose.yaml logs --no-color --tail 200 server worker system-tenant provider directory
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

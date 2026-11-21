@@ -13,6 +13,7 @@ axum.workspace = true
 clap.workspace = true
 hodor-adapters-crypto.workspace = true
 hodor-adapters-http.workspace = true
+hodor-adapters-ldap.workspace = true
 hodor-adapters-postgres.workspace = true
 hodor-audit.workspace = true
 hodor-authentication.workspace = true
@@ -26,6 +27,7 @@ hodor-observability.workspace = true
 hodor-protocol-http.workspace = true
 hodor-session.workspace = true
 hodor-tenant.workspace = true
+time.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 

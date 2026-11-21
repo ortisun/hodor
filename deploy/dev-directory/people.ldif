@@ -1,0 +1,14 @@
+# The people of the development directory. NOT FOR ANYTHING REAL: the
+# password is written here. See docs/development/local-setup.md.
+
+dn: ou=people,dc=example,dc=org
+objectClass: organizationalUnit
+ou: people
+
+dn: uid=dora,ou=people,dc=example,dc=org
+objectClass: inetOrgPerson
+uid: dora
+cn: Dora Directory
+sn: Directory
+mail: dora@example.org
+userPassword: dora-directory-password

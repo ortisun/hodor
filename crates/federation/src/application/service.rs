@@ -5,11 +5,11 @@ use crate::domain::event::FederationEvent;
 use crate::domain::link::{ExternalIdentity, Subject};
 use crate::domain::provider::{
     Alias, IdentityProvider, MAX_PROVIDERS, ProviderId, ProviderKind, ProviderSettings,
-    ProviderStatus,
+    ProviderStatus, directory_host,
 };
 use hodor_kernel::{
-    Caller, Clock, DomainError, EventEnvelope, EventMetadata, Secret, SecretBox, TenantContext,
-    UnitOfWork, UnitOfWorkFactory, UserId,
+    Caller, Clock, DomainError, ErrorKind, EventEnvelope, EventMetadata, Secret, SecretBox,
+    TenantContext, UnitOfWork, UnitOfWorkFactory, UserId,
 };
 use std::sync::Arc;
 
@@ -50,6 +50,9 @@ pub struct FederationService {
     /// Hosts with ports whose issuer may be plain HTTP. Empty anywhere
     /// real.
     development_hosts: Arc<[String]>,
+    /// The directories this installation may connect to, as `host:port`.
+    /// Empty unless set: then no directory can be used.
+    directory_hosts: Arc<[String]>,
 }
 
 impl std::fmt::Debug for FederationService {
@@ -82,6 +85,37 @@ impl FederationService {
             secrets,
             clock,
             development_hosts: Arc::from(Vec::new()),
+            directory_hosts: Arc::from(Vec::new()),
+        }
+    }
+
+    /// The same use cases, accepting directories at these hosts, each
+    /// written as `host:port`.
+    #[must_use]
+    pub fn allowing_directory_hosts(mut self, hosts: &[String]) -> Self {
+        self.directory_hosts = Arc::from(hosts.to_vec());
+        self
+    }
+
+    /// Refuses a directory whose host and port are not on the
+    /// installation's list.
+    fn check_directory(&self, kind: ProviderKind, issuer: &str) -> Result<(), DomainError> {
+        if kind != ProviderKind::Ldap {
+            return Ok(());
+        }
+        let allowed = directory_host(issuer).is_some_and(|host| {
+            self.directory_hosts
+                .iter()
+                .any(|listed| listed.eq_ignore_ascii_case(&host))
+        });
+        if allowed {
+            Ok(())
+        } else {
+            Err(DomainError::new(
+                ErrorKind::Forbidden,
+                "federation.directory_not_allowed",
+                "this installation may not connect to that directory",
+            ))
         }
     }
 
@@ -124,7 +158,10 @@ impl FederationService {
         caller: Caller,
     ) -> Result<IdentityProvider, DomainError> {
         let alias = Alias::parse(&command.alias)?;
-        let settings = command.settings.checked_allowing(&self.development_hosts)?;
+        let settings = command
+            .settings
+            .checked_for(command.kind, &self.development_hosts)?;
+        self.check_directory(command.kind, &settings.issuer)?;
         let sealed = self.seal(tenant, &command.client_secret)?;
         let provider = IdentityProvider::create(
             alias,
@@ -192,7 +229,9 @@ impl FederationService {
     ) -> Result<IdentityProvider, DomainError> {
         let now = self.clock.now();
         let development_hosts = self.development_hosts.clone();
-        self.change_with(tenant, command.id, caller, |provider| {
+        let service = self.clone();
+        self.change_with(tenant, command.id, caller, move |provider| {
+            service.check_directory(provider.snapshot().kind, &command.settings.issuer)?;
             Ok(provider
                 .change(command.settings, &development_hosts, now)?
                 .then(|| FederationEvent::ProviderChanged {

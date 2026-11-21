@@ -28,6 +28,7 @@ tracing.workspace = true
 [dev-dependencies]
 form_urlencoded.workspace = true
 hodor-adapters-crypto = { workspace = true, features = ["testing"] }
+hodor-adapters-ldap = { workspace = true, features = ["testing"] }
 hodor-federation = { workspace = true, features = ["testing"] }
 hodor-audit = { workspace = true, features = ["testing"] }
 hodor-authentication = { workspace = true, features = ["testing"] }

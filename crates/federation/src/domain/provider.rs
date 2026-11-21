@@ -52,6 +52,12 @@ impl Alias {
 pub enum ProviderKind {
     /// An OpenID Connect provider.
     OpenIdConnect,
+    /// GitHub, which issues no ID token and is asked through its own
+    /// interface who a person is.
+    GitHub,
+    /// A directory reached over LDAP. Nobody leaves for it: Hodor asks
+    /// it with what the person typed.
+    Ldap,
 }
 
 impl ProviderKind {
@@ -60,6 +66,8 @@ impl ProviderKind {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::OpenIdConnect => "openid_connect",
+            Self::GitHub => "github",
+            Self::Ldap => "ldap",
         }
     }
 
@@ -71,6 +79,8 @@ impl ProviderKind {
     pub fn from_stored(value: &str) -> Result<Self, DomainError> {
         match value {
             "openid_connect" => Ok(Self::OpenIdConnect),
+            "github" => Ok(Self::GitHub),
+            "ldap" => Ok(Self::Ldap),
             _ => Err(stored_data_invalid()),
         }
     }
@@ -116,6 +126,109 @@ fn stored_data_invalid() -> DomainError {
     )
 }
 
+/// What only a directory has: where its people are and how one is found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectorySettings {
+    /// Where people are searched for, such as `ou=people,dc=example,dc=com`.
+    pub base: String,
+    /// How a person is found, with `{identifier}` where what they typed
+    /// goes, such as `(uid={identifier})`.
+    pub filter: String,
+    /// The attribute that never changes for a person.
+    pub subject_attribute: String,
+    /// The attribute holding the person's email address.
+    pub email_attribute: String,
+    /// The attribute holding the person's name.
+    pub name_attribute: String,
+}
+
+/// Where what a person typed goes in a directory's filter.
+pub(crate) const IDENTIFIER_PLACE: &str = "{identifier}";
+
+impl DirectorySettings {
+    /// The settings of a directory with the usual attribute names:
+    /// `entryUUID`, `mail` and `cn`.
+    #[must_use]
+    pub fn new(base: &str, filter: &str) -> Self {
+        Self {
+            base: base.to_owned(),
+            filter: filter.to_owned(),
+            subject_attribute: "entryUUID".to_owned(),
+            email_attribute: "mail".to_owned(),
+            name_attribute: "cn".to_owned(),
+        }
+    }
+
+    fn checked(mut self) -> Result<Self, DomainError> {
+        let invalid =
+            |what: &'static str| DomainError::invalid("federation.directory_invalid", what);
+        self.base = self.base.trim().to_owned();
+        self.filter = self.filter.trim().to_owned();
+        let plain = |text: &str, longest: usize| {
+            !text.is_empty()
+                && text.chars().count() <= longest
+                && !text.chars().any(char::is_control)
+        };
+        if !plain(&self.base, 255) {
+            return Err(invalid("a directory's base is 1 to 255 characters"));
+        }
+        let wrapped = self.filter.starts_with('(') && self.filter.ends_with(')');
+        if !plain(&self.filter, 512)
+            || !wrapped
+            || self.filter.matches(IDENTIFIER_PLACE).count() != 1
+        {
+            return Err(invalid(
+                "a directory's filter is in parentheses and contains `{identifier}` exactly once",
+            ));
+        }
+        for attribute in [
+            &self.subject_attribute,
+            &self.email_attribute,
+            &self.name_attribute,
+        ] {
+            let bytes = attribute.as_bytes();
+            let named = (1..=64).contains(&bytes.len())
+                && bytes[0].is_ascii_alphabetic()
+                && bytes
+                    .iter()
+                    .all(|b| b.is_ascii_alphanumeric() || *b == b'-');
+            if !named {
+                return Err(invalid(
+                    "an attribute name is a letter followed by letters, digits and hyphens",
+                ));
+            }
+        }
+        Ok(self)
+    }
+}
+
+/// The host and port of a directory's address, as `host:port`, for
+/// comparing with the installation's list. `None` if it is not an
+/// address of a directory.
+#[must_use]
+pub fn directory_host(address: &str) -> Option<String> {
+    let (rest, usual_port) = if let Some(rest) = address.strip_prefix("ldaps://") {
+        (rest, 636)
+    } else {
+        (address.strip_prefix("ldap://")?, 389)
+    };
+    // Nothing after the host: no path, no query, no name and password.
+    let plain = !rest.is_empty()
+        && rest.len() <= 255
+        && rest
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b':'));
+    if !plain {
+        return None;
+    }
+    let (host, port) = match rest.split_once(':') {
+        Some((host, port)) => (host, port.parse::<u16>().ok().filter(|port| *port != 0)?),
+        None => (rest, usual_port),
+    };
+    (!host.is_empty() && !host.contains(':'))
+        .then(|| format!("{}:{port}", host.to_ascii_lowercase()))
+}
+
 /// What an administrator decides about a provider, apart from its alias,
 /// its kind and its secret. Checked as a whole: a provider never holds a
 /// setting that breaks a rule.
@@ -131,13 +244,42 @@ pub struct ProviderSettings {
     pub scopes: Vec<String>,
     /// Whether a person nobody knows yet is created on first sign-in.
     pub creates_users: bool,
+    /// Whether every address the provider gives is taken as vouched for,
+    /// even when the provider does not say so.
+    pub trusts_email: bool,
+    /// What only a directory has. There for the kind `ldap` and for no
+    /// other.
+    pub directory: Option<DirectorySettings>,
 }
 
 impl ProviderSettings {
-    /// The scopes asked for unless said otherwise.
+    /// The scopes asked of an OpenID Connect provider unless said
+    /// otherwise.
     #[must_use]
     pub fn default_scopes() -> Vec<String> {
-        ["openid", "email", "profile"].map(str::to_owned).to_vec()
+        Self::default_scopes_for(ProviderKind::OpenIdConnect)
+    }
+
+    /// The scopes asked of a provider of this kind unless said otherwise.
+    #[must_use]
+    pub fn default_scopes_for(kind: ProviderKind) -> Vec<String> {
+        match kind {
+            ProviderKind::OpenIdConnect => {
+                ["openid", "email", "profile"].map(str::to_owned).to_vec()
+            }
+            ProviderKind::GitHub => ["read:user", "user:email"].map(str::to_owned).to_vec(),
+            ProviderKind::Ldap => Vec::new(),
+        }
+    }
+
+    /// The issuer of a provider of this kind when none is given, if the
+    /// kind has one.
+    #[must_use]
+    pub const fn default_issuer_for(kind: ProviderKind) -> Option<&'static str> {
+        match kind {
+            ProviderKind::OpenIdConnect | ProviderKind::Ldap => None,
+            ProviderKind::GitHub => Some("https://github.com"),
+        }
     }
 
     /// Checks every setting against its rule and tidies what may be
@@ -147,10 +289,21 @@ impl ProviderSettings {
     ///
     /// Returns the `Invalid` error of the first rule that is broken.
     pub fn checked(self) -> Result<Self, DomainError> {
-        self.checked_allowing(&[])
+        self.checked_for(ProviderKind::OpenIdConnect, &[])
     }
 
-    /// As [`ProviderSettings::checked`], except that the issuer may be
+    /// As [`ProviderSettings::checked_for`], for an OpenID Connect
+    /// provider.
+    ///
+    /// # Errors
+    ///
+    /// Returns the `Invalid` error of the first rule that is broken.
+    pub fn checked_allowing(self, development_hosts: &[String]) -> Result<Self, DomainError> {
+        self.checked_for(ProviderKind::OpenIdConnect, development_hosts)
+    }
+
+    /// Checks the settings of a provider of `kind`, which decides what the
+    /// scopes must include. The issuer may be
     /// plain HTTP when its host and port are one of `development_hosts`,
     /// such as `provider:9000`. For a development stack on one machine;
     /// the list is empty anywhere real.
@@ -158,7 +311,11 @@ impl ProviderSettings {
     /// # Errors
     ///
     /// Returns the `Invalid` error of the first rule that is broken.
-    pub fn checked_allowing(mut self, development_hosts: &[String]) -> Result<Self, DomainError> {
+    pub fn checked_for(
+        mut self,
+        kind: ProviderKind,
+        development_hosts: &[String],
+    ) -> Result<Self, DomainError> {
         self.display_name = self.display_name.trim().to_owned();
         let name_length = self.display_name.chars().count();
         if !(1..=64).contains(&name_length) || self.display_name.chars().any(char::is_control) {
@@ -167,13 +324,32 @@ impl ProviderSettings {
                 "a display name is 1 to 64 characters",
             ));
         }
-        check_issuer(&self.issuer, development_hosts)?;
+        let is_directory = kind == ProviderKind::Ldap;
+        if is_directory {
+            // A directory's address: over TLS, or in the clear at a
+            // development host only.
+            let reachable = directory_host(&self.issuer).is_some_and(|host| {
+                self.issuer.starts_with("ldaps://")
+                    || development_hosts
+                        .iter()
+                        .any(|allowed| allowed.eq_ignore_ascii_case(&host))
+            });
+            if !reachable {
+                return Err(DomainError::invalid(
+                    "federation.issuer_invalid",
+                    "a directory's address is `ldaps://host` or `ldaps://host:port`",
+                ));
+            }
+        } else {
+            check_issuer(&self.issuer, development_hosts)?;
+        }
         let id_length = self.client_id.chars().count();
         if !(1..=255).contains(&id_length)
             || self
                 .client_id
                 .chars()
-                .any(|c| c.is_control() || c.is_whitespace())
+                // The name Hodor binds to a directory with may have spaces.
+                .any(|c| c.is_control() || (c.is_whitespace() && !is_directory))
         {
             return Err(DomainError::invalid(
                 "federation.client_id_invalid",
@@ -195,10 +371,30 @@ impl ProviderSettings {
                 scopes.push(scope);
             }
         }
-        if scopes.len() > MAX_SCOPES || !scopes.iter().any(|scope| scope == "openid") {
+        // An OpenID Connect provider issues no ID token unless asked for
+        // `openid`; other kinds have no scope that must be there.
+        let needs_openid = kind == ProviderKind::OpenIdConnect;
+        // A directory is asked for nothing by scope; every other kind is
+        // asked for something.
+        if scopes.is_empty() != is_directory
+            || scopes.len() > MAX_SCOPES
+            || (needs_openid && !scopes.iter().any(|scope| scope == "openid"))
+        {
             return Err(scopes_invalid());
         }
         self.scopes = scopes;
+        // What only a directory has is there for a directory and for
+        // nothing else.
+        self.directory = match (is_directory, self.directory) {
+            (true, Some(directory)) => Some(directory.checked()?),
+            (false, None) => None,
+            _ => {
+                return Err(DomainError::invalid(
+                    "federation.directory_invalid",
+                    "a directory has a base and a filter, and no other kind of provider has",
+                ));
+            }
+        };
         Ok(self)
     }
 }
@@ -307,7 +503,7 @@ impl IdentityProvider {
                 id: ProviderId::generate(),
                 alias,
                 kind,
-                settings: settings.checked_allowing(development_hosts)?,
+                settings: settings.checked_for(kind, development_hosts)?,
                 client_secret,
                 status: ProviderStatus::Enabled,
                 created_at: now,
@@ -359,7 +555,7 @@ impl IdentityProvider {
         development_hosts: &[String],
         now: Timestamp,
     ) -> Result<bool, DomainError> {
-        let settings = settings.checked_allowing(development_hosts)?;
+        let settings = settings.checked_for(self.state.kind, development_hosts)?;
         if settings == self.state.settings {
             return Ok(false);
         }
@@ -396,6 +592,8 @@ mod tests {
             client_id: "hodor".to_owned(),
             scopes: ProviderSettings::default_scopes(),
             creates_users: true,
+            trusts_email: false,
+            directory: None,
         }
     }
 
@@ -543,6 +741,132 @@ mod tests {
         // And nowhere at all when the list is empty, as it is anywhere real.
         assert!(with("http://provider:9000", &[]).is_err());
         assert!(with("https://accounts.example.com", &hosts).is_ok());
+    }
+
+    #[test]
+    fn what_scopes_must_include_depends_on_the_kind() {
+        let with = |scopes: &[&str], kind| {
+            let mut given = settings();
+            given.scopes = scopes.iter().map(|scope| (*scope).to_owned()).collect();
+            given.checked_for(kind, &[])
+        };
+        assert!(with(&["read:user", "user:email"], ProviderKind::GitHub).is_ok());
+        assert!(with(&["read:user", "user:email"], ProviderKind::OpenIdConnect).is_err());
+        assert!(with(&[], ProviderKind::GitHub).is_err(), "no scopes at all");
+        assert_eq!(
+            ProviderSettings::default_scopes_for(ProviderKind::GitHub),
+            ["read:user", "user:email"]
+        );
+        assert_eq!(
+            ProviderSettings::default_issuer_for(ProviderKind::GitHub),
+            Some("https://github.com")
+        );
+        assert_eq!(
+            ProviderSettings::default_issuer_for(ProviderKind::OpenIdConnect),
+            None
+        );
+        for kind in [ProviderKind::OpenIdConnect, ProviderKind::GitHub] {
+            assert_eq!(
+                ProviderKind::from_stored(kind.as_str()).expect("known"),
+                kind
+            );
+        }
+    }
+
+    fn directory(
+        issuer: &str,
+        directory: DirectorySettings,
+    ) -> Result<ProviderSettings, DomainError> {
+        ProviderSettings {
+            display_name: "Company".to_owned(),
+            issuer: issuer.to_owned(),
+            client_id: "cn=hodor,ou=services,dc=example,dc=com".to_owned(),
+            scopes: Vec::new(),
+            creates_users: true,
+            trusts_email: false,
+            directory: Some(directory),
+        }
+        .checked_for(ProviderKind::Ldap, &["ldap.dev:389".to_owned()])
+    }
+
+    #[test]
+    fn a_directory_is_held_to_its_rules() {
+        let good = DirectorySettings::new("ou=people,dc=example,dc=com", "(uid={identifier})");
+        let checked = directory("ldaps://ldap.example.com", good.clone()).expect("valid");
+        // A name to bind with may have spaces.
+        assert!(checked.client_id.contains(','));
+        assert!(directory("ldaps://ldap.example.com:3269", good.clone()).is_ok());
+        // In the clear only at a development host.
+        assert!(directory("ldap://ldap.dev:389", good.clone()).is_ok());
+        assert!(directory("ldap://ldap.dev", good.clone()).is_ok());
+        for issuer in [
+            "ldap://ldap.example.com",
+            "https://ldap.example.com",
+            "ldaps://",
+            "ldaps://ldap.example.com/dc=example",
+            "ldaps://user:password@ldap.example.com",
+            "ldaps://ldap.example.com:0",
+            "ldaps://ldap.example.com:99999",
+        ] {
+            let error = directory(issuer, good.clone()).expect_err(issuer);
+            assert_eq!(error.code(), "federation.issuer_invalid", "{issuer}");
+        }
+        let broken = |change: fn(&mut DirectorySettings)| -> String {
+            let mut given = good.clone();
+            change(&mut given);
+            directory("ldaps://ldap.example.com", given)
+                .expect_err("broken")
+                .code()
+                .to_owned()
+        };
+        for change in [
+            (|d: &mut DirectorySettings| d.base = String::new()) as fn(&mut DirectorySettings),
+            |d| d.filter = "uid={identifier}".to_owned(),
+            |d| d.filter = "(uid=ana)".to_owned(),
+            |d| d.filter = "(|(uid={identifier})(mail={identifier}))".to_owned(),
+            |d| d.subject_attribute = "entry UUID".to_owned(),
+            |d| d.email_attribute = "1mail".to_owned(),
+            |d| d.name_attribute = String::new(),
+        ] {
+            assert_eq!(broken(change), "federation.directory_invalid");
+        }
+        // Scopes are for other kinds; a directory's settings are for a directory.
+        let mut with_scopes = directory("ldaps://ldap.example.com", good.clone()).expect("valid");
+        with_scopes.scopes = vec!["openid".to_owned()];
+        assert!(with_scopes.checked_for(ProviderKind::Ldap, &[]).is_err());
+        let mut not_a_directory = settings();
+        not_a_directory.directory = Some(good);
+        assert_eq!(
+            not_a_directory
+                .checked()
+                .expect_err("not a directory")
+                .code(),
+            "federation.directory_invalid"
+        );
+    }
+
+    #[test]
+    fn a_directory_address_names_its_host_and_port() {
+        assert_eq!(
+            directory_host("ldaps://LDAP.Example.com").as_deref(),
+            Some("ldap.example.com:636")
+        );
+        assert_eq!(
+            directory_host("ldap://ldap.example.com").as_deref(),
+            Some("ldap.example.com:389")
+        );
+        assert_eq!(
+            directory_host("ldaps://10.0.0.5:3269").as_deref(),
+            Some("10.0.0.5:3269")
+        );
+        for address in [
+            "https://ldap.example.com",
+            "ldaps://",
+            "ldaps://host/path",
+            "ldaps://a:b:c",
+        ] {
+            assert_eq!(directory_host(address), None, "{address}");
+        }
     }
 
     #[test]

@@ -1454,10 +1454,12 @@
           "client_id",
           "scopes",
           "creates_users",
+          "trusts_email",
           "status",
           "callback_address",
           "created_at",
-          "updated_at"
+          "updated_at",
+          "directory"
         ],
         "properties": {
           "id": {
@@ -1471,7 +1473,9 @@
           "kind": {
             "type": "string",
             "enum": [
-              "openid_connect"
+              "openid_connect",
+              "github",
+              "ldap"
             ]
           },
           "display_name": {
@@ -1502,9 +1506,12 @@
             ]
           },
           "callback_address": {
-            "type": "string",
+            "type": [
+              "string",
+              "null"
+            ],
             "format": "uri",
-            "description": "The address to register at the provider as the place it sends people back to."
+            "description": "The address to register at the provider. `null` for a directory, which nobody leaves for."
           },
           "created_at": {
             "type": "string",
@@ -1513,6 +1520,21 @@
           "updated_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "trusts_email": {
+            "type": "boolean",
+            "description": "Whether every address the provider gives is taken as vouched for, even when the provider does not say so."
+          },
+          "directory": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/DirectorySettings"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What only a directory has; `null` for every other kind."
           }
         }
       },
@@ -1522,7 +1544,6 @@
         "required": [
           "alias",
           "display_name",
-          "issuer",
           "client_id",
           "client_secret"
         ],
@@ -1535,7 +1556,8 @@
           },
           "issuer": {
             "type": "string",
-            "format": "uri"
+            "format": "uri",
+            "description": "May be left out for the kind `github`."
           },
           "client_id": {
             "type": "string"
@@ -1552,6 +1574,22 @@
           },
           "creates_users": {
             "type": "boolean"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "openid_connect",
+              "github",
+              "ldap"
+            ],
+            "default": "openid_connect"
+          },
+          "trusts_email": {
+            "type": "boolean",
+            "default": false
+          },
+          "directory": {
+            "$ref": "#/components/schemas/DirectoryInput"
           }
         }
       },
@@ -1578,6 +1616,12 @@
           },
           "creates_users": {
             "type": "boolean"
+          },
+          "trusts_email": {
+            "type": "boolean"
+          },
+          "directory": {
+            "$ref": "#/components/schemas/DirectoryInput"
           }
         }
       },
@@ -1591,6 +1635,55 @@
           "client_secret": {
             "type": "string",
             "writeOnly": true
+          }
+        }
+      },
+      "DirectorySettings": {
+        "type": "object",
+        "required": [
+          "base",
+          "filter",
+          "subject_attribute",
+          "email_attribute",
+          "name_attribute"
+        ],
+        "properties": {
+          "base": {
+            "type": "string"
+          },
+          "filter": {
+            "type": "string"
+          },
+          "subject_attribute": {
+            "type": "string"
+          },
+          "email_attribute": {
+            "type": "string"
+          },
+          "name_attribute": {
+            "type": "string"
+          }
+        }
+      },
+      "DirectoryInput": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "What is left out is `entryUUID`, `mail` and `cn` for the attribute names, or, in a change, what it was.",
+        "properties": {
+          "base": {
+            "type": "string"
+          },
+          "filter": {
+            "type": "string"
+          },
+          "subject_attribute": {
+            "type": "string"
+          },
+          "email_attribute": {
+            "type": "string"
+          },
+          "name_attribute": {
+            "type": "string"
           }
         }
       }

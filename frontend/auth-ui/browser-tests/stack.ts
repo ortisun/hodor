@@ -6,6 +6,8 @@ export const MAIL = process.env["HODOR_MAIL_URL"] ?? "http://localhost:8025";
 export const TENANT = process.env["HODOR_TENANT"] ?? "acme";
 /** The alias of the development identity provider in that tenant. */
 export const PROVIDER = process.env["HODOR_PROVIDER"] ?? "development";
+/** The alias of the development directory in that tenant. */
+export const DIRECTORY = process.env["HODOR_DIRECTORY"] ?? "directory";
 
 const HELP = `
 The browser tests need the development stack and a tenant that accepts registrations:
@@ -23,7 +25,16 @@ and the development identity provider added to that tenant:
     server provider add --tenant ${TENANT} --alias ${PROVIDER} --name "Development provider" \\
     --issuer http://provider:9400 --client-id hodor
 
-Set HODOR_URL, HODOR_MAIL_URL, HODOR_TENANT or HODOR_PROVIDER if yours are elsewhere.`;
+and the development directory:
+
+  docker compose -f deploy/docker/compose.yaml run --rm --no-deps --entrypoint /usr/local/bin/hodor-cli \\
+    -e HODOR_DATABASE_URL=postgres://hodor_server:dev-server@postgres:5432/hodor \\
+    -e HODOR_PROVIDER_CLIENT_SECRET=readonly-password \\
+    server provider add --tenant ${TENANT} --alias ${DIRECTORY} --kind ldap --name "Company directory" \\
+    --issuer ldap://directory:389 --client-id cn=readonly,dc=example,dc=org \\
+    --base ou=people,dc=example,dc=org --filter "(uid={identifier})" --trust-email
+
+Set HODOR_URL, HODOR_MAIL_URL, HODOR_TENANT, HODOR_PROVIDER or HODOR_DIRECTORY if yours are elsewhere.`;
 
 export default async function checkTheStack(): Promise<void> {
   const page = `${SERVER}/t/${TENANT}/account/sign-in`;
@@ -45,8 +56,10 @@ export default async function checkTheStack(): Promise<void> {
     (response) => response.json() as Promise<{ providers: { alias: string }[] }>,
     () => ({ providers: [] }),
   );
-  if (!offered.providers.some((provider) => provider.alias === PROVIDER)) {
-    throw new Error(`The tenant ${TENANT} does not offer the identity provider ${PROVIDER}.${HELP}`);
+  for (const alias of [PROVIDER, DIRECTORY]) {
+    if (!offered.providers.some((provider) => provider.alias === alias)) {
+      throw new Error(`The tenant ${TENANT} does not offer the identity provider ${alias}.${HELP}`);
+    }
   }
 
   // Asking for links is limited by the address the requests come from,

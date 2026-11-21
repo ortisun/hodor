@@ -1,7 +1,7 @@
 //! Operations tool: migrations, tenant management, the first
 //! administrator and checking the audit log.
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use hodor_adapters_crypto::{OsRandom, SecretKeys, Sha256Digest};
 use hodor_adapters_postgres::{
     Database, PgAccessTokenStore, PgAuditLog, PgLinkStore, PgPool, PgProviderStore,
@@ -11,8 +11,8 @@ use hodor_audit::api::AuditService;
 use hodor_authorization::api::{AuthorizationService, Role};
 use hodor_credential::api::AccessTokenService;
 use hodor_federation::api::{
-    CreateProvider, FederationService, IdentityProvider, ProviderKind, ProviderSettings,
-    ProviderStatus, callback_address,
+    CreateProvider, DirectorySettings, FederationService, IdentityProvider, ProviderKind,
+    ProviderSettings, ProviderStatus, callback_address,
 };
 use hodor_identity::api::{
     CreateUser, IdentifierKind, IdentityService, NormalizedIdentifier, Profile, UserKind,
@@ -33,6 +33,10 @@ struct Cli {
     command: Command,
 }
 
+#[allow(
+    clippy::large_enum_variant,
+    reason = "parsed once when the tool starts; its size does not matter"
+)]
 #[derive(Subcommand)]
 enum Command {
     /// Apply pending database migrations.
@@ -113,6 +117,15 @@ enum Command {
             global = true
         )]
         development_hosts: Vec<String>,
+        /// The LDAP directories providers may name, as `host:port`
+        /// separated by commas, as the server has them.
+        #[arg(
+            long,
+            env = "HODOR_DIRECTORY_HOSTS",
+            value_delimiter = ',',
+            global = true
+        )]
+        directory_hosts: Vec<String>,
         /// The address people reach this installation at, without a path.
         #[arg(
             long,
@@ -165,6 +178,17 @@ enum AdminCommand {
     },
 }
 
+#[derive(Clone, Copy, ValueEnum)]
+enum ProviderKindArg {
+    OpenidConnect,
+    Github,
+    Ldap,
+}
+
+#[allow(
+    clippy::large_enum_variant,
+    reason = "parsed once when the tool starts; its size does not matter"
+)]
 #[derive(Subcommand)]
 enum ProviderCommand {
     /// Add an OpenID Connect provider to a tenant, enabled.
@@ -183,9 +207,13 @@ enum ProviderCommand {
         /// What a person reads on the sign-in page.
         #[arg(long)]
         name: String,
-        /// The address that identifies the provider.
+        /// How Hodor talks to the provider.
+        #[arg(long, value_enum, default_value = "openid-connect")]
+        kind: ProviderKindArg,
+        /// The address that identifies the provider. May be left out for
+        /// GitHub.
         #[arg(long)]
-        issuer: String,
+        issuer: Option<String>,
         /// Who Hodor is to the provider.
         #[arg(long)]
         client_id: String,
@@ -196,6 +224,27 @@ enum ProviderCommand {
         /// Do not create a person nobody knows yet on first sign-in.
         #[arg(long)]
         no_create_users: bool,
+        /// For a directory: where people are searched for.
+        #[arg(long)]
+        base: Option<String>,
+        /// For a directory: how a person is found, with `{identifier}`
+        /// where what they type goes, such as `(uid={identifier})`.
+        #[arg(long)]
+        filter: Option<String>,
+        /// For a directory: the attribute that never changes for a person.
+        #[arg(long, default_value = "entryUUID")]
+        subject_attribute: String,
+        /// For a directory: the attribute holding the address.
+        #[arg(long, default_value = "mail")]
+        email_attribute: String,
+        /// For a directory: the attribute holding the name.
+        #[arg(long, default_value = "cn")]
+        name_attribute: String,
+        /// Take every address this provider gives as vouched for, even
+        /// when the provider does not say so. Only for a provider whose
+        /// addresses the organization itself hands out.
+        #[arg(long)]
+        trust_email: bool,
     },
     /// List a tenant's providers.
     List {
@@ -383,12 +432,17 @@ async fn run_tenant(
 /// to register at the provider.
 fn provider_line(provider: &IdentityProvider, public_url: &str, slug: &str) -> String {
     let state = provider.snapshot();
+    let back = if state.kind == ProviderKind::Ldap {
+        // Nobody leaves for a directory.
+        "-".to_owned()
+    } else {
+        callback_address(public_url, slug, state.alias.as_str())
+    };
     format!(
-        "{} {} {} {}",
+        "{} {} {} {back}",
         state.alias.as_str(),
         state.status.as_str(),
         state.settings.issuer,
-        callback_address(public_url, slug, state.alias.as_str())
     )
 }
 
@@ -397,6 +451,7 @@ async fn run_provider(
     database: &Database,
     secret_keys: Option<String>,
     development_hosts: &[String],
+    directory_hosts: &[String],
     public_url: &str,
     command: ProviderCommand,
 ) -> Result<String, DomainError> {
@@ -421,7 +476,8 @@ async fn run_provider(
         Arc::new(SecretKeys::parse(&Secret::from(setting))?),
         clock,
     )
-    .allowing_development_hosts(development_hosts);
+    .allowing_development_hosts(development_hosts)
+    .allowing_directory_hosts(directory_hosts);
     let slug = match &command {
         ProviderCommand::Add { tenant, .. }
         | ProviderCommand::List { tenant }
@@ -437,12 +493,36 @@ async fn run_provider(
         ProviderCommand::Add {
             alias,
             name,
+            kind,
             issuer,
             client_id,
             scopes,
             no_create_users,
+            trust_email,
+            base,
+            filter,
+            subject_attribute,
+            email_attribute,
+            name_attribute,
             ..
         } => {
+            let kind = match kind {
+                ProviderKindArg::OpenidConnect => ProviderKind::OpenIdConnect,
+                ProviderKindArg::Github => ProviderKind::GitHub,
+                ProviderKindArg::Ldap => ProviderKind::Ldap,
+            };
+            // A directory's settings, given for a directory; any other
+            // kind that is given them is refused by the federation context.
+            let directory = match (base, filter) {
+                (None, None) => None,
+                (base, filter) => Some(DirectorySettings {
+                    base: base.unwrap_or_default(),
+                    filter: filter.unwrap_or_default(),
+                    subject_attribute,
+                    email_attribute,
+                    name_attribute,
+                }),
+            };
             let client_secret = std::env::var("HODOR_PROVIDER_CLIENT_SECRET").map_err(|_| {
                 DomainError::invalid(
                     "federation.client_secret_invalid",
@@ -454,28 +534,38 @@ async fn run_provider(
                     &tenant,
                     CreateProvider {
                         alias,
-                        kind: ProviderKind::OpenIdConnect,
+                        kind,
                         settings: ProviderSettings {
                             display_name: name,
-                            issuer,
+                            issuer: issuer
+                                .or_else(|| {
+                                    ProviderSettings::default_issuer_for(kind).map(str::to_owned)
+                                })
+                                .unwrap_or_default(),
                             client_id,
                             scopes: if scopes.is_empty() {
-                                ProviderSettings::default_scopes()
+                                ProviderSettings::default_scopes_for(kind)
                             } else {
                                 scopes
                             },
                             creates_users: !no_create_users,
+                            trusts_email: trust_email,
+                            directory,
                         },
                         client_secret: Secret::from(client_secret),
                     },
                     caller(),
                 )
                 .await?;
-            Ok(format!(
-                "created {}\nregister this address at the provider: {}",
-                provider_line(&provider, public_url, &slug),
-                callback_address(public_url, &slug, provider.alias().as_str())
-            ))
+            let created = format!("created {}", provider_line(&provider, public_url, &slug));
+            Ok(if kind == ProviderKind::Ldap {
+                created
+            } else {
+                format!(
+                    "{created}\nregister this address at the provider: {}",
+                    callback_address(public_url, &slug, provider.alias().as_str())
+                )
+            })
         }
         ProviderCommand::List { .. } => Ok(federation
             .providers(&tenant)
@@ -692,6 +782,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             database_url,
             secret_keys,
             development_hosts,
+            directory_hosts,
             public_url,
             command,
         } => {
@@ -701,6 +792,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 &database,
                 secret_keys,
                 &development_hosts,
+                &directory_hosts,
                 &public_url,
                 command,
             )

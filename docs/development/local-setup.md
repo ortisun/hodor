@@ -80,6 +80,7 @@ docker compose -f deploy/docker/compose.yaml up --build --wait
 | `worker` | `hodor-worker`, writing the audit log and delivering email | internal only |
 | `mail` | A mail server for development. It accepts every message and delivers none: what Hodor sends can be read in its web page | <http://localhost:8025> |
 | `provider` | [The development identity provider](#the-development-identity-provider), which lets anyone sign in as anyone | <http://localhost:9400> |
+| `directory` | [The development directory](#the-development-directory), OpenLDAP with one person in it | internal only |
 | `victoriametrics` | Metrics backend; the server and the worker push to it over OTLP | <http://localhost:8428/vmui> |
 | `victoriatraces` | Traces backend; the server and the worker push to it over OTLP | <http://localhost:10428/select/vmui> |
 
@@ -130,6 +131,7 @@ Every setting is a command-line flag with an environment variable of the same me
 | `HODOR_SHUTDOWN_DRAIN_SECONDS` | `5` | How long to keep serving after a stop signal while readiness fails |
 | `HODOR_PUBLIC_URL` | `http://localhost:8080` | The address people reach this installation at, without a path. Links in messages start with it |
 | `HODOR_SECRET_KEYS` | unset | The keys that keep secrets [encrypted at rest](../security/secrets-at-rest.md#keys). Unset: no identity provider can be used, and none is offered |
+| `HODOR_DIRECTORY_HOSTS` | empty | The LDAP directories identity providers may name, as `host:port` separated by commas, such as `ldap.example.com:636`. Empty: no directory can be added or used. See [which directories may be used](../architecture/contexts/federation.md#which-directories-may-be-used) |
 | `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` | empty | Hosts with ports, separated by commas, that [outbound requests](../security/outbound-http.md#the-exception-for-development) may reach at a private address and over plain HTTP. Never set it anywhere real |
 | `HODOR_PAGES_DIRECTORY` | unset; the image sets `/usr/share/hodor/auth-ui` | The directory holding the built [hosted pages](../architecture/hosted-pages.md#how-the-pages-are-served). Unset: no pages are served. Set to a directory without `index.html`: the server does not start |
 | `HODOR_CONSOLE_DIRECTORY` | unset; the image sets `/usr/share/hodor/admin-console` | The directory holding the built [admin console](../architecture/admin-console.md#how-it-is-served). Unset: no console page is served; the console interface is still answered. Set to a directory without `index.html`: the server does not start |
@@ -165,7 +167,7 @@ The worker connects to the database twice, with different roles: as a member of 
 | `tenant create`, `tenant create-system`, `tenant list`, `tenant suspend`, `tenant reactivate` | `HODOR_DATABASE_URL` (required) | Manage tenants as a member of `hodor_app`. See [the tenant context](../architecture/contexts/tenant.md#command-line-tool) |
 | `admin bootstrap --tenant <slug> --email <address>` | `HODOR_DATABASE_URL` (required) | Makes a user an administrator of a tenant, creating the user if needed, and prints an access token for [the administration interface](../api/admin-api.md#the-first-administrator) |
 | `audit verify --tenant <slug>` | `HODOR_DATABASE_URL` (required) | Checks a tenant's whole chain of audit records and exits non-zero if a record was changed, removed or inserted. See [the audit context](../architecture/contexts/audit.md#verifying) |
-| `provider add`, `provider list`, `provider disable`, `provider enable` | `HODOR_DATABASE_URL` and `HODOR_SECRET_KEYS` (required) | Manage a tenant's [identity providers](../architecture/contexts/federation.md#identity-providers). `provider add` reads the client secret from `HODOR_PROVIDER_CLIENT_SECRET`, never from an argument, so that it does not show in the list of processes or in the history of a shell |
+| `provider add`, `provider list`, `provider disable`, `provider enable` | `HODOR_DATABASE_URL` and `HODOR_SECRET_KEYS` (required); `HODOR_DIRECTORY_HOSTS` for a directory | Manage a tenant's [identity providers](../architecture/contexts/federation.md#identity-providers). `provider add` reads the client secret from `HODOR_PROVIDER_CLIENT_SECRET`, never from an argument, so that it does not show in the list of processes or in the history of a shell |
 | `secrets generate-key` | — | Prints a new key for `HODOR_SECRET_KEYS`. See [secrets at rest](../security/secrets-at-rest.md#keys) |
 | `probe` | — | Requests a health endpoint (`--addr`, `--path`) and exits non-zero unless it answers 200. Used by container health checks, since the image has no shell |
 
@@ -206,6 +208,18 @@ Two things in the Compose file make this work, and neither belongs anywhere real
 - `HODOR_SECRET_KEYS` holds a key written in the repository.
 
 Hodor reaches the provider as `provider:9400`; a browser reaches it as `localhost:9400`. That is why the provider is told both addresses.
+
+### The development directory
+
+The stack also has an LDAP directory, `directory`: OpenLDAP with one person in it, `dora`, whose password is `dora-directory-password`. It is for trying a sign-in through a directory and for the browser tests, and has no other use. It is not reachable from outside the stack.
+
+Add it to a tenant:
+
+```bash
+docker compose -f deploy/docker/compose.yaml run --rm --no-deps --entrypoint /usr/local/bin/hodor-cli -e HODOR_DATABASE_URL=postgres://hodor_server:dev-server@postgres:5432/hodor -e HODOR_PROVIDER_CLIENT_SECRET=readonly-password server provider add --tenant acme --alias directory --kind ldap --name "Company directory" --issuer ldap://directory:389 --client-id cn=readonly,dc=example,dc=org --base ou=people,dc=example,dc=org --filter "(uid={identifier})" --trust-email
+```
+
+The sign-in page then offers "Continue with Company directory". The Compose file names the directory in `HODOR_DIRECTORY_HOSTS` and, since it answers in the clear, in `HODOR_OUTBOUND_DEVELOPMENT_HOSTS`; neither belongs anywhere real.
 
 ### The first administrator
 

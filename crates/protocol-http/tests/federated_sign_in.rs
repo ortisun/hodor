@@ -7,9 +7,11 @@ use axum::body::Body;
 use axum::http::{HeaderMap, Method, Request, StatusCode, header};
 use hodor_adapters_crypto::testing::{CLIENT_ID, CLIENT_SECRET, SigningKey, TestProvider};
 use hodor_adapters_crypto::{AwsLcVerifier, Sha256Digest};
+use hodor_adapters_ldap::LdapDirectoryClient;
+use hodor_adapters_ldap::testing::{BASE, BIND_NAME, BIND_PASSWORD, Person, TestDirectory};
 use hodor_authentication::api::{
     AccountService, AttemptGuard, AuthFlow, AuthenticationService, FlowEngine,
-    IdentifierAuthenticator, PasswordAuthenticator,
+    IdentifierAuthenticator, LockoutRules, PasswordAuthenticator,
 };
 use hodor_authentication::testing::{
     InMemoryAttempts, InMemoryTransactions, InMemoryVerificationTokens,
@@ -17,8 +19,9 @@ use hodor_authentication::testing::{
 use hodor_credential::api::{CredentialService, NewPassword, PasswordRules};
 use hodor_credential::testing::{FakeHasher, InMemoryPasswords};
 use hodor_federation::api::{
-    CreateProvider, EXTERNAL_STEP, ExternalIdentityAuthenticator, ExternalSignIn,
-    FederationService, OpenIdClient, ProviderId, ProviderKind, ProviderSettings, ProviderStatus,
+    CreateProvider, DirectoryAnswer, DirectoryClient, DirectoryQuery, DirectorySettings,
+    EXTERNAL_STEP, ExternalIdentityAuthenticator, ExternalSignIn, FederationService, GitHubClient,
+    LockoutPolicy, OpenIdClient, ProviderId, ProviderKind, ProviderSettings, ProviderStatus,
 };
 use hodor_federation::testing::InMemoryFederation;
 use hodor_identity::api::{CreateUser, IdentifierKind, IdentityService, Profile, UserKind};
@@ -26,7 +29,10 @@ use hodor_identity::testing::InMemoryUsers;
 use hodor_kernel::clock::testing::FixedClock;
 use hodor_kernel::sealing::testing::FakeSecretBox;
 use hodor_kernel::uow::testing::InMemoryUnitOfWorkFactory;
-use hodor_kernel::{Caller, DomainError, Secret, TenantContext, Timestamp, UserId};
+use hodor_kernel::{
+    Caller, DomainError, HttpClient, HttpRequest, HttpResponse, Secret, TenantContext, Timestamp,
+    UserId,
+};
 use hodor_notification::api::Notifier;
 use hodor_notification::testing::InMemoryMessages;
 use hodor_protocol_http::{
@@ -41,6 +47,7 @@ use http_body_util::BodyExt as _;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
+use std::sync::Mutex;
 use time::Duration;
 use tower::ServiceExt as _;
 
@@ -70,11 +77,73 @@ impl TenantResolver for Tenants {
     }
 }
 
+/// GitHub, as far as Hodor talks to it: it answers a code with a token,
+/// and a token with who the person is. Every request is kept.
+#[derive(Clone, Default)]
+struct FakeGitHub {
+    /// What `/user` answers, and what `/user/emails` answers.
+    person: Arc<Mutex<(Value, Value)>>,
+    requests: Arc<Mutex<Vec<HttpRequest>>>,
+}
+
+impl FakeGitHub {
+    fn is(&self, user: Value, emails: Value) {
+        *self.person.lock().expect("person") = (user, emails);
+    }
+
+    fn requests(&self) -> Vec<HttpRequest> {
+        self.requests.lock().expect("requests").clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl HttpClient for FakeGitHub {
+    async fn send(&self, request: HttpRequest) -> Result<HttpResponse, DomainError> {
+        self.requests
+            .lock()
+            .expect("requests")
+            .push(request.clone());
+        let (user, emails) = self.person.lock().expect("person").clone();
+        let answer = |status: u16, body: Value| HttpResponse {
+            status,
+            headers: Vec::new(),
+            body: body.to_string().into_bytes(),
+        };
+        let authorized = request
+            .headers
+            .iter()
+            .any(|(name, value)| name == "authorization" && value == "Bearer token-of-github");
+        Ok(match request.url.as_str() {
+            "https://github.com/login/oauth/access_token" => {
+                let form: HashMap<String, String> =
+                    form_urlencoded::parse(request.body.as_deref().unwrap_or_default())
+                        .into_owned()
+                        .collect();
+                let good = form.get("code").map(String::as_str) == Some("github-code")
+                    && form.get("client_secret").map(String::as_str) == Some(CLIENT_SECRET);
+                if good {
+                    answer(
+                        200,
+                        json!({ "access_token": "token-of-github", "token_type": "bearer" }),
+                    )
+                } else {
+                    // As GitHub does: a refusal with status 200.
+                    answer(200, json!({ "error": "bad_verification_code" }))
+                }
+            }
+            "https://api.github.com/user" if authorized => answer(200, user),
+            "https://api.github.com/user/emails" if authorized => answer(200, emails),
+            _ => answer(401, json!({ "message": "Bad credentials" })),
+        })
+    }
+}
+
 struct World {
     router: Router,
     clock: Arc<FixedClock>,
     units_of_work: InMemoryUnitOfWorkFactory,
     provider: TestProvider,
+    github: FakeGitHub,
     key: SigningKey,
     federation: FederationService,
     identity: IdentityService,
@@ -91,10 +160,18 @@ fn settings(creates_users: bool) -> ProviderSettings {
         client_id: CLIENT_ID.to_owned(),
         scopes: ProviderSettings::default_scopes(),
         creates_users,
+        trusts_email: false,
+        directory: None,
     }
 }
 
 async fn world() -> World {
+    world_with(None).await
+}
+
+/// A world whose sign-in can also ask this directory, as
+/// `host:port`, through this client.
+async fn world_with(directory: Option<(String, Arc<dyn DirectoryClient>)>) -> World {
     let units_of_work = InMemoryUnitOfWorkFactory::default();
     let clock = Arc::new(FixedClock::at(
         Timestamp::from_unix_timestamp(NOW).expect("a time"),
@@ -133,13 +210,18 @@ async fn world() -> World {
     let key = SigningKey::p256();
     let provider = TestProvider::new(ISSUER, &[("key-1", &key)]);
     let stores = InMemoryFederation::default();
+    // A directory in a container is reached in the clear at a private
+    // address: both lists name it, as they would on a development stack.
+    let hosts: Vec<String> = directory.iter().map(|(host, _)| host.clone()).collect();
     let federation = FederationService::new(
         units(),
         Arc::new(stores.clone()),
         Arc::new(stores.clone()),
         Arc::new(FakeSecretBox),
         clock.clone(),
-    );
+    )
+    .allowing_development_hosts(&hosts)
+    .allowing_directory_hosts(&hosts);
     let openid = OpenIdClient::new(
         Arc::new(provider.clone()),
         Arc::new(AwsLcVerifier),
@@ -147,9 +229,14 @@ async fn world() -> World {
         Arc::new(SequentialRandom::default()),
         clock.clone(),
     );
+    let github = FakeGitHub::default();
     let external = ExternalSignIn::new(
         federation.clone(),
         openid,
+        GitHubClient::new(
+            Arc::new(github.clone()),
+            Arc::new(SequentialRandom::default()),
+        ),
         identity.clone(),
         Arc::new(stores),
         units(),
@@ -158,6 +245,12 @@ async fn world() -> World {
         clock.clone(),
         PUBLIC,
     );
+    let external = match directory {
+        Some((_, client)) => {
+            external.with_directories(client, guard.clone(), Arc::new(FiveAttempts))
+        }
+        None => external,
+    };
 
     let engine = FlowEngine::new()
         .with(Arc::new(IdentifierAuthenticator::new(
@@ -255,6 +348,7 @@ async fn world() -> World {
         clock,
         units_of_work,
         provider,
+        github,
         key,
         federation,
         identity,
@@ -922,7 +1016,7 @@ async fn a_disabled_provider_is_not_offered_and_signs_nobody_in() {
         .await;
     assert_eq!(
         offered.body,
-        json!({ "providers": [{ "alias": "example", "display_name": "Example" }] }),
+        json!({ "providers": [{ "alias": "example", "display_name": "Example", "kind": "openid_connect" }] }),
         "what the page shows, and nothing else"
     );
 
@@ -1182,4 +1276,613 @@ async fn rejections_through_a_provider_count_against_the_sign_in() {
     }
     let last = last.expect("five answers");
     assert_eq!(last.sign_in_status(), "failed", "{:?}", last.body);
+}
+
+impl World {
+    /// Adds a provider of the kind GitHub to acme.
+    async fn with_github(&self) {
+        self.federation
+            .create_provider(
+                &self.acme,
+                CreateProvider {
+                    alias: "github".to_owned(),
+                    kind: ProviderKind::GitHub,
+                    settings: ProviderSettings {
+                        display_name: "GitHub".to_owned(),
+                        issuer: "https://github.com".to_owned(),
+                        client_id: "github-client".to_owned(),
+                        scopes: ProviderSettings::default_scopes_for(ProviderKind::GitHub),
+                        creates_users: true,
+                        trusts_email: false,
+                        directory: None,
+                    },
+                    client_secret: Secret::from(CLIENT_SECRET.to_owned()),
+                },
+                Caller::system(),
+            )
+            .await
+            .expect("provider");
+    }
+
+    /// One whole sign-in through GitHub with this code.
+    async fn sign_in_with_github(&self, code: &str) -> (Browser, Reply) {
+        let mut browser = Browser::default();
+        browser
+            .send(self, Method::POST, "/t/acme/interaction/sign-in", None)
+            .await;
+        let chosen = browser
+            .send(
+                self,
+                Method::POST,
+                "/t/acme/interaction/sign-in/providers/github",
+                None,
+            )
+            .await;
+        assert_eq!(chosen.status, StatusCode::OK, "{:?}", chosen.body);
+        let redirect = chosen.body["redirect"].as_str().expect("an address");
+        let (address, query) = redirect.split_once('?').expect("a query");
+        assert_eq!(address, "https://github.com/login/oauth/authorize");
+        let sent: HashMap<String, String> = form_urlencoded::parse(query.as_bytes())
+            .into_owned()
+            .collect();
+        assert_eq!(sent["client_id"], "github-client");
+        assert_eq!(sent["scope"], "read:user user:email");
+        assert_eq!(
+            sent["redirect_uri"],
+            format!("{PUBLIC}/t/acme/account/providers/github/callback")
+        );
+        let state = sent["state"].clone();
+        assert_eq!(state.len(), 64);
+        let reply = browser
+            .come_back(self, "acme", "github", code, &state)
+            .await;
+        (browser, reply)
+    }
+}
+
+#[tokio::test]
+async fn a_person_signs_in_through_github_by_their_number_and_their_verified_address() {
+    let world = world().await;
+    world.with_github().await;
+    world.github.is(
+        json!({ "id": 583_231, "login": "octocat", "name": "The Octocat", "email": "shown@example.com" }),
+        json!([
+            { "email": "old@example.com", "primary": false, "verified": true },
+            { "email": "unchecked@example.com", "primary": true, "verified": false },
+            { "email": "octocat@example.com", "primary": true, "verified": true },
+        ]),
+    );
+
+    let (mut browser, reply) = world.sign_in_with_github("github-code").await;
+    assert_eq!(reply.sign_in_status(), "completed", "{:?}", reply.body);
+
+    // Created with the address that is both primary and verified, not
+    // the one in the profile and not an unverified one.
+    let user = world
+        .identity
+        .find_by_login(&world.acme, "octocat@example.com")
+        .await
+        .expect("find")
+        .expect("created");
+    assert_eq!(
+        user.snapshot().profile.display_name.as_deref(),
+        Some("The Octocat")
+    );
+    for other in [
+        "shown@example.com",
+        "unchecked@example.com",
+        "old@example.com",
+    ] {
+        assert_eq!(world.user_with(other).await, None, "{other}");
+    }
+    // Linked by the number, never by the login name.
+    let links = world
+        .federation
+        .links_of(&world.acme, user.id())
+        .await
+        .expect("links");
+    assert_eq!(links[0].subject.expose(), "583231");
+    let session = browser.who(&world, "acme").await;
+    assert_eq!(session.body["user_id"], user.id().to_string());
+
+    // The person renames themself at GitHub: still the same user here.
+    world.github.is(
+        json!({ "id": 583_231, "login": "renamed", "name": "Another Name" }),
+        json!([{ "email": "other@example.com", "primary": true, "verified": true }]),
+    );
+    let (mut again, reply) = world.sign_in_with_github("github-code").await;
+    assert_eq!(reply.sign_in_status(), "completed");
+    assert_eq!(
+        again.who(&world, "acme").await.body["user_id"],
+        user.id().to_string()
+    );
+    assert_eq!(world.count("identity.user_created"), 1);
+
+    // The client secret went to GitHub's token address and nowhere else.
+    for request in world.github.requests() {
+        let body =
+            String::from_utf8_lossy(request.body.as_deref().unwrap_or_default()).into_owned();
+        assert_eq!(
+            body.contains("client_secret"),
+            request.url.ends_with("/login/oauth/access_token"),
+            "{}",
+            request.url
+        );
+    }
+}
+
+#[tokio::test]
+async fn github_signs_nobody_in_without_a_good_code_a_number_or_a_verified_address() {
+    let world = world().await;
+    world.with_github().await;
+    let octocat = json!({ "id": 583_231, "login": "octocat" });
+    let verified = json!([{ "email": "octocat@example.com", "primary": true, "verified": true }]);
+
+    // A code GitHub refuses, which it does with status 200.
+    world.github.is(octocat.clone(), verified.clone());
+    let (_, reply) = world.sign_in_with_github("a-code-of-someone-else").await;
+    rejected(&reply);
+
+    // No address that is both primary and verified.
+    world.github.is(
+        octocat.clone(),
+        json!([{ "email": "octocat@example.com", "primary": true, "verified": false }]),
+    );
+    let (_, reply) = world.sign_in_with_github("github-code").await;
+    rejected(&reply);
+    world.github.is(octocat, json!({ "message": "Not Found" }));
+    let (_, reply) = world.sign_in_with_github("github-code").await;
+    rejected(&reply);
+
+    // An answer that does not say who the person is by number.
+    for user in [
+        json!({ "login": "octocat" }),
+        json!({ "id": "583231" }),
+        json!([]),
+    ] {
+        world.github.is(user, verified.clone());
+        let (_, reply) = world.sign_in_with_github("github-code").await;
+        rejected(&reply);
+    }
+
+    assert_eq!(world.count("identity.user_created"), 0);
+    assert_eq!(
+        world.refusals(),
+        [
+            "answer_refused",
+            "no_vouched_email",
+            "no_vouched_email",
+            "answer_refused",
+            "answer_refused",
+            "answer_refused"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn github_does_not_open_an_account_that_exists_with_the_same_address() {
+    let world = world().await;
+    world.with_github().await;
+    let ana = world.ana_with_a_password().await;
+    world.github.is(
+        json!({ "id": 99, "login": "not-ana" }),
+        json!([{ "email": "ana@example.com", "primary": true, "verified": true }]),
+    );
+
+    let (_, reply) = world.sign_in_with_github("github-code").await;
+
+    rejected(&reply);
+    assert_eq!(world.refusals(), ["email_belongs_to_a_user"]);
+    assert!(
+        world
+            .federation
+            .links_of(&world.acme, ana)
+            .await
+            .expect("links")
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn a_provider_trusted_with_addresses_creates_people_it_does_not_vouch_for_and_opens_no_account()
+ {
+    let world = world().await;
+    let ana = world.ana_with_a_password().await;
+    let mut trusting = settings(true);
+    trusting.trusts_email = true;
+    world
+        .federation
+        .change_provider(
+            &world.acme,
+            hodor_federation::api::ChangeProvider {
+                id: world.example,
+                settings: trusting,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("change");
+
+    // The provider gives an address and does not say it vouches: created.
+    let (_, reply) = world
+        .sign_in("subject-of-bia", Some(("bia@example.com", false)))
+        .await;
+    assert_eq!(reply.sign_in_status(), "completed", "{:?}", reply.body);
+    assert!(world.user_with("bia@example.com").await.is_some());
+
+    // No address at all still creates nobody.
+    let (_, reply) = world.sign_in("subject-of-carla", None).await;
+    rejected(&reply);
+
+    // And trust in addresses never opens an account that exists.
+    let (_, reply) = world
+        .sign_in("subject-of-a-stranger", Some(("ana@example.com", false)))
+        .await;
+    rejected(&reply);
+    assert!(
+        world
+            .federation
+            .links_of(&world.acme, ana)
+            .await
+            .expect("links")
+            .is_empty()
+    );
+    assert_eq!(
+        world.refusals(),
+        ["no_vouched_email", "email_belongs_to_a_user"]
+    );
+}
+
+/// The lockout policy of these tests: five failures in fifteen minutes.
+struct FiveAttempts;
+
+#[async_trait::async_trait]
+impl LockoutPolicy for FiveAttempts {
+    async fn rules(&self, _tenant: &TenantContext) -> Result<LockoutRules, DomainError> {
+        Ok(LockoutRules {
+            max_failures: 5,
+            window: Duration::minutes(15),
+            first_lockout: Duration::minutes(1),
+            longest_lockout: Duration::hours(1),
+        })
+    }
+}
+
+/// The real directory client, counting the questions it is asked.
+struct Counting {
+    inner: LdapDirectoryClient,
+    asked: Arc<std::sync::atomic::AtomicUsize>,
+    filters: Arc<Mutex<Vec<String>>>,
+}
+
+#[async_trait::async_trait]
+impl DirectoryClient for Counting {
+    async fn verify(
+        &self,
+        query: &DirectoryQuery,
+        password: &Secret<String>,
+    ) -> Result<DirectoryAnswer, DomainError> {
+        self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.filters
+            .lock()
+            .expect("filters")
+            .push(query.filter.clone());
+        self.inner.verify(query, password).await
+    }
+}
+
+const ANA_IN_DIRECTORY: Person<'static> = Person {
+    uid: "ana",
+    name: "Ana Example",
+    email: "ana@example.com",
+    password: "the directory password of ana",
+};
+
+struct DirectoryWorld {
+    world: World,
+    directory: TestDirectory,
+    asked: Arc<std::sync::atomic::AtomicUsize>,
+    filters: Arc<Mutex<Vec<String>>>,
+}
+
+/// A world with a real directory holding ana and bia, offered by acme as
+/// the provider `company`.
+async fn directory_world(trusts_email: bool) -> DirectoryWorld {
+    let directory = TestDirectory::start().await;
+    directory.add(&ANA_IN_DIRECTORY).await;
+    directory
+        .add(&Person {
+            uid: "bia",
+            name: "Bia Example",
+            email: "bia@example.com",
+            password: "the directory password of bia",
+        })
+        .await;
+    let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let filters = Arc::new(Mutex::new(Vec::new()));
+    let client = Counting {
+        inner: LdapDirectoryClient::new(std::slice::from_ref(&directory.host)),
+        asked: asked.clone(),
+        filters: filters.clone(),
+    };
+    let world = world_with(Some((directory.host.clone(), Arc::new(client)))).await;
+    world
+        .federation
+        .create_provider(
+            &world.acme,
+            CreateProvider {
+                alias: "company".to_owned(),
+                kind: ProviderKind::Ldap,
+                settings: ProviderSettings {
+                    display_name: "Company directory".to_owned(),
+                    issuer: directory.address.clone(),
+                    client_id: BIND_NAME.to_owned(),
+                    scopes: Vec::new(),
+                    creates_users: true,
+                    trusts_email,
+                    directory: Some(DirectorySettings::new(BASE, "(uid={identifier})")),
+                },
+                client_secret: Secret::from(BIND_PASSWORD.to_owned()),
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("the directory provider");
+    DirectoryWorld {
+        world,
+        directory,
+        asked,
+        filters,
+    }
+}
+
+impl DirectoryWorld {
+    fn asked(&self) -> usize {
+        self.asked.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Signs in through the directory with what a person typed.
+    async fn sign_in(&self, browser: &mut Browser, identifier: &str, password: &str) -> Reply {
+        if !browser.cookies.contains_key("__Secure-hodor_signin") {
+            browser
+                .send(
+                    &self.world,
+                    Method::POST,
+                    "/t/acme/interaction/sign-in",
+                    None,
+                )
+                .await;
+        }
+        browser
+            .send(
+                &self.world,
+                Method::POST,
+                "/t/acme/interaction/sign-in/providers/company/password",
+                Some(json!({ "identifier": identifier, "password": password })),
+            )
+            .await
+    }
+}
+
+#[tokio::test]
+async fn a_person_signs_in_through_the_directory_and_is_the_same_user_every_time() {
+    let setup = directory_world(true).await;
+    let world = &setup.world;
+
+    // The page learns the provider is a directory, to ask for a password.
+    let mut browser = Browser::default();
+    let offered = browser
+        .send(
+            world,
+            Method::GET,
+            "/t/acme/interaction/sign-in/providers",
+            None,
+        )
+        .await;
+    assert_eq!(
+        offered.body["providers"][0],
+        json!({ "alias": "company", "display_name": "Company directory", "kind": "ldap" })
+    );
+
+    let reply = setup
+        .sign_in(&mut browser, "ana", ANA_IN_DIRECTORY.password)
+        .await;
+    assert_eq!(reply.sign_in_status(), "completed", "{:?}", reply.body);
+    let session = browser.who(world, "acme").await;
+    assert_eq!(session.body["methods"], json!(["external"]));
+
+    let ana = world
+        .identity
+        .find_by_login(&world.acme, "ana@example.com")
+        .await
+        .expect("find")
+        .expect("created, the provider being trusted with addresses");
+    assert_eq!(
+        ana.snapshot().profile.display_name.as_deref(),
+        Some("Ana Example")
+    );
+    // Linked by the directory's unchanging identifier of the entry.
+    let links = world
+        .federation
+        .links_of(&world.acme, ana.id())
+        .await
+        .expect("links");
+    assert_eq!(links[0].subject.expose().len(), 36);
+
+    // The directory changes her address: still the same user here.
+    setup
+        .directory
+        .change_email("ana", "ana.renamed@example.com")
+        .await;
+    let mut again = Browser::default();
+    let reply = setup
+        .sign_in(&mut again, "ana", ANA_IN_DIRECTORY.password)
+        .await;
+    assert_eq!(reply.sign_in_status(), "completed");
+    assert_eq!(
+        again.who(world, "acme").await.body["user_id"],
+        ana.id().to_string()
+    );
+    assert_eq!(world.count("identity.user_created"), 1);
+}
+
+#[tokio::test]
+async fn every_refusal_of_the_directory_is_answered_alike() {
+    let setup = directory_world(true).await;
+    for (identifier, password, reason) in [
+        ("ana", "a wrong password", "wrong_password"),
+        ("ana", "the directory password of bia", "wrong_password"),
+        ("nobody", "the directory password of ana", "not_found"),
+        // A filter cannot be widened or closed by what is typed: these
+        // are looked for as they are, and are nobody.
+        ("*", "the directory password of ana", "not_found"),
+        ("ana)(uid=*", "the directory password of ana", "not_found"),
+        ("a*", "the directory password of ana", "not_found"),
+        // An anonymous bind would succeed: the directory is not even asked.
+        ("ana", "", "empty_password"),
+    ] {
+        let mut browser = Browser::default();
+        let reply = setup.sign_in(&mut browser, identifier, password).await;
+        rejected(&reply);
+        assert_eq!(
+            setup.world.refusals().last().map(String::as_str),
+            Some(reason),
+            "{identifier}"
+        );
+    }
+    assert_eq!(setup.world.count("identity.user_created"), 0);
+    // What was typed reached the directory only escaped.
+    let filters = setup.filters.lock().expect("filters").clone();
+    assert!(filters.contains(&"(uid=\\2a)".to_owned()), "{filters:?}");
+    assert!(
+        filters.contains(&"(uid=ana\\29\\28uid=\\2a)".to_owned()),
+        "{filters:?}"
+    );
+    assert!(!filters.iter().any(|filter| filter.contains("(uid=*)")));
+    assert_eq!(setup.asked(), 6, "the empty password was never asked about");
+}
+
+#[tokio::test]
+async fn attempts_through_the_directory_are_limited_before_it_is_asked() {
+    let setup = directory_world(true).await;
+    for _ in 0..5 {
+        let mut browser = Browser::default();
+        rejected(&setup.sign_in(&mut browser, "ana", "a wrong guess").await);
+    }
+    assert_eq!(setup.asked(), 5);
+
+    // Locked out: even the right password is refused, and the directory
+    // is not asked.
+    let mut browser = Browser::default();
+    let locked = setup
+        .sign_in(&mut browser, "ana", ANA_IN_DIRECTORY.password)
+        .await;
+    assert_eq!(
+        locked.status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "{:?}",
+        locked.body
+    );
+    assert_eq!(locked.code(), "authentication.too_many_attempts");
+    assert_eq!(setup.asked(), 5);
+
+    // Somebody else is not locked out by it.
+    let mut other = Browser::default();
+    let reply = setup
+        .sign_in(&mut other, "bia", "the directory password of bia")
+        .await;
+    assert_eq!(reply.sign_in_status(), "completed");
+}
+
+#[tokio::test]
+async fn a_directory_does_not_vouch_for_addresses_unless_its_provider_is_trusted() {
+    let setup = directory_world(false).await;
+    let mut browser = Browser::default();
+    let reply = setup
+        .sign_in(&mut browser, "ana", ANA_IN_DIRECTORY.password)
+        .await;
+    rejected(&reply);
+    assert_eq!(setup.world.refusals(), ["no_vouched_email"]);
+    assert_eq!(setup.world.count("identity.user_created"), 0);
+}
+
+#[tokio::test]
+async fn a_directory_does_not_open_an_account_that_exists_with_the_same_address() {
+    let setup = directory_world(true).await;
+    let ana = setup.world.ana_with_a_password().await;
+    let mut browser = Browser::default();
+    let reply = setup
+        .sign_in(&mut browser, "ana", ANA_IN_DIRECTORY.password)
+        .await;
+    rejected(&reply);
+    assert_eq!(setup.world.refusals(), ["email_belongs_to_a_user"]);
+    assert!(
+        setup
+            .world
+            .federation
+            .links_of(&setup.world.acme, ana)
+            .await
+            .expect("links")
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn a_directory_is_not_left_for_and_another_provider_takes_no_password() {
+    let setup = directory_world(true).await;
+    let world = &setup.world;
+    let mut browser = Browser::default();
+    browser
+        .send(world, Method::POST, "/t/acme/interaction/sign-in", None)
+        .await;
+    let left = browser
+        .send(
+            world,
+            Method::POST,
+            "/t/acme/interaction/sign-in/providers/company",
+            None,
+        )
+        .await;
+    assert_eq!(left.status, StatusCode::NOT_FOUND);
+    assert_eq!(left.code(), "federation.provider_not_found");
+
+    let reply = browser
+        .send(
+            world,
+            Method::POST,
+            "/t/acme/interaction/sign-in/providers/example/password",
+            Some(json!({ "identifier": "ana", "password": "x" })),
+        )
+        .await;
+    rejected(&reply);
+    assert_eq!(world.refusals(), ["another_kind"]);
+    assert_eq!(setup.asked(), 0);
+}
+
+#[tokio::test]
+async fn a_directory_that_is_not_on_the_list_cannot_be_added() {
+    let world = world().await;
+    let refused = world
+        .federation
+        .create_provider(
+            &world.acme,
+            CreateProvider {
+                alias: "elsewhere".to_owned(),
+                kind: ProviderKind::Ldap,
+                settings: ProviderSettings {
+                    display_name: "Somewhere".to_owned(),
+                    issuer: "ldaps://ldap.internal.example:636".to_owned(),
+                    client_id: BIND_NAME.to_owned(),
+                    scopes: Vec::new(),
+                    creates_users: true,
+                    trusts_email: false,
+                    directory: Some(DirectorySettings::new(BASE, "(uid={identifier})")),
+                },
+                client_secret: Secret::from(BIND_PASSWORD.to_owned()),
+            },
+            Caller::system(),
+        )
+        .await
+        .expect_err("not on the list");
+    assert_eq!(refused.code(), "federation.directory_not_allowed");
 }

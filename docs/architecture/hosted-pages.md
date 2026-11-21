@@ -51,6 +51,8 @@ When the tenant [offers identity providers](contexts/federation.md#signing-in-th
 
 Choosing one asks the server for the address at the provider and sends the browser there. The page refuses to go anywhere that is not an HTTP or HTTPS address.
 
+A [directory](contexts/federation.md#signing-in-through-a-directory) is different: nobody leaves for it. Choosing one shows a form on the same page, "Username at" and the directory's name, and a password, with a way back to the other ways of signing in. What it answers is shown like the answer to a password of Hodor's own: "that did not work", or how long to wait after too many attempts.
+
 The provider sends the person back to `/account/providers/{alias}/callback`. That page:
 
 - reads the code and the state from its address once and takes them out of the address at the same moment, so that the code does not stay in the browser's history;
