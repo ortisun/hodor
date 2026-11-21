@@ -6,6 +6,8 @@ Last updated: 2026-11-21.
 
 ## Milestone 1: Walking skeleton
 
+All 34 issues of the milestone are done. Its goal — a person registers, verifies an email address, signs in with a password and gets a session in a tenant, with tenant isolation, audit and observability proven — is what [the demonstration](../operations/quick-start.md#the-demonstration) shows and checks on every pull request.
+
 | Slice | Done | Total |
 |---|---|---|
 | A — Foundation | 11 | 11 |
@@ -14,7 +16,7 @@ Last updated: 2026-11-21.
 | D — Password credential | 3 | 3 |
 | E — Authentication and session | 7 | 7 |
 | F — Audit, notification, admin | 4 | 4 |
-| G — Hosted user interface and acceptance | 2 | 3 |
+| G — Hosted user interface and acceptance | 3 | 3 |
 
 ### Slice A — Foundation
 
@@ -89,7 +91,7 @@ Specified in [the credential context](../architecture/contexts/credential.md).
 |---|---|---|
 | Issue-31 Hosted pages | Done | `auth-ui`, a React application in `frontend/auth-ui`, served by `hodor-server` from the directory `HODOR_PAGES_DIRECTORY` names: a person registers, signs in one step at a time, signs out and recovers a password in a browser, in English or Brazilian Portuguese. The pages only show the step the interaction interface names. `index.html` is sent with a Content Security Policy that allows files of this server only, no inline script or style, and no way to turn text into markup; the fonts are bundled. The image builds the pages and serves them. Tested in three layers: unit tests of the application, tests of the HTTP layer that need no Node.js, and browser tests with Chromium against the Compose stack, which fail on any policy violation, script error or accessibility violation and include a pass with the keyboard alone. A new continuous integration job runs all of it. Specified in [the hosted pages](../architecture/hosted-pages.md) |
 | Issue-32 Cross-tenant suite | Done | Seven cases on the real `hodor-server` against PostgreSQL, with two tenants that share a person's email address and password: a session cookie, a sign-in in progress, an administrator's access token on every operation of the OpenAPI document, registration and recovery links, and the identifiers of users and sessions are each shown to work in their own tenant and then refused by the other; lists of users and audit logs name nothing of the other tenant; a lockout in one does not reach the other. Runs with every other test in continuous integration. Done ahead of Issue-31: it tests the server, which must not rely on what a browser would or would not send. Specified in [multi-tenancy](../architecture/multi-tenancy.md#the-cross-tenant-suite) |
-| Issue-33 Demonstration and quick-start | Not started | — |
+| Issue-33 Demonstration and quick-start | Done | [The quick-start](../operations/quick-start.md) takes an operator from a clean checkout to a tenant people sign in to. `deploy/demo/demo.py` is the demonstration of the milestone: two tenants made with the command-line tool, the same address registered in both by a link from a message, a sign-in and its session, a lockout after five wrong passwords, the session cookie and the administrator's token of one tenant refused by the other, the audit log with its chain intact, the worker's metrics in VictoriaMetrics and the trace of the sign-in in VictoriaTraces. It checks every answer and runs in continuous integration against the image. The development stack gained VictoriaTraces and creates the system tenant by itself |
 
 ### Checked by hand on the development stack
 
@@ -98,6 +100,7 @@ Some things are covered by tests in halves and were also tried whole, on the Com
 - A person asked to register; the server queued the message, the worker delivered it to the development mail server, the message arrived in the language asked for with a working link, and the link finished the registration once and only once.
 - The worker's metrics for the outbox and for messages arrived in VictoriaMetrics.
 - A person used the pages in Chromium, at desktop and at telephone width, in both languages: registered, followed the link from the message, was told what was wrong with a short password, signed in, was refused with a wrong password, recovered the password and signed out. The first run of the browser tests found the primary button of the light theme below the contrast the design system promises (4.27 to 1); the accent of the light theme was darkened until it measured 4.81 to 1.
+- The demonstration ran against the image from start to end and passed: the trace of the sign-in was found in VictoriaTraces, the first time traces of Hodor were received by anything.
 - The first administrator of a tenant was made with `hodor-cli admin bootstrap`; the token it printed listed and created users through the administration interface, a request without it was refused, the audit log read through the interface showed each step with the right actor, and `hodor-cli audit verify` found the chain intact.
 
 ### Known gaps in what is done
@@ -107,7 +110,6 @@ These are recorded here so they are not forgotten; each is picked up by the issu
 | Gap | Picked up by |
 |---|---|
 | Tenants have no routes of their own yet: an existing tenant answers `404` with `route.not_found` | Issue-24, the interaction API |
-| The system tenant is not created automatically by the development stack | Issue-33, with the quick-start |
 | The Argon2id hasher was not checked against a hash produced by another implementation; it relies on the library's own conformance | When a second implementation is at hand, for example password import |
 | Records removed from the end of a tenant's audit chain, or a chain rewritten whole, are noticed only through the chain head, which lives in the same database | Exporting the latest hash regularly, later in Phase 1 |
 | Audit records do not carry the address a request came from or the application that made it, and events caused by people who are not signed in are recorded as anonymous | When events carry them: with OAuth clients in Phase 2 |
@@ -127,7 +129,8 @@ These are recorded here so they are not forgotten; each is picked up by the issu
 | Records of messages that were sent, failed or expired are never removed | A cleanup job, later in Phase 1 |
 | The worker opens a new connection to the mail server for every message | When the volume of mail calls for it |
 | The mail adapter was tested against a mail server without encryption or a password; the encrypted and authenticated paths rely on the mail library | Before the first production deployment |
-| Traces are exported but no test receives them | First issue that adds a traced database call |
+| The trace of a request has one span, the request itself: database calls are not traced. The demonstration receives the trace; no test in `cargo test` does | First issue that adds a traced database call |
+| The demonstration needs Python 3 on the machine that runs it | Accepted: it uses only the standard library |
 | SQL is checked at run time, not at compile time (`sqlx::query!` with the offline cache is not set up). Every query is exercised by an integration test instead | A dedicated issue, not yet scheduled |
 | Continuous integration actions are pinned by tag, not by commit SHA | Hardening pass (threat Threat-General-15) |
 
