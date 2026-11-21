@@ -1119,10 +1119,15 @@ dependencies = [
  "async-trait",
  "aws-lc-rs",
  "base64 0.22.1",
+ "form_urlencoded",
  "getrandom 0.4.3",
+ "hodor-adapters-crypto",
  "hodor-credential",
+ "hodor-federation",
  "hodor-kernel",
+ "serde_json",
  "sha2",
+ "time",
  "tokio",
  "zeroize",
 ]
@@ -1264,9 +1269,12 @@ name = "hodor-federation"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
+ "form_urlencoded",
  "hodor-federation",
  "hodor-kernel",
  "serde",
+ "serde_json",
  "time",
  "tokio",
 ]
