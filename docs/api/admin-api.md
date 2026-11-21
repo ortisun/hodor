@@ -29,6 +29,33 @@ The check comes before anything else. A request that is refused learns nothing a
 
 There are no cookies on this interface, so there is nothing for another site to forge and no CSRF token.
 
+### The first administrator
+
+Nobody can be given a role through this interface yet, so the first administrator of a tenant is made from outside it, by someone who can run commands against the installation:
+
+```
+hodor-cli admin bootstrap --tenant acme --email ana@example.com
+```
+
+The command:
+
+1. Finds the user with that address in the tenant, or creates one, active and without a password.
+2. Gives the user the `tenant_administrator` role, if they do not hold it already.
+3. Issues an access token for the user and prints it, once.
+
+```
+user 0193f1c2-… ana@example.com
+role tenant_administrator
+token hodor_at_3f9c…
+expires 2026-11-21T15:03:11Z
+```
+
+The token lives for one hour unless `--token-minutes` says otherwise, from 1 to 43200, which is 30 days. It works in its own tenant and in no other.
+
+The command can be run again, for the same person or another: each run issues a new token and leaves earlier ones as they are. It is also the way back in when every administrator has lost access. Whoever can run it can already read and change the database, so it grants nothing they did not have; what it does is recorded in the audit log like everything else, with Hodor itself as the actor.
+
+It needs `HODOR_DATABASE_URL`, like the tenant commands.
+
 ## Routes
 
 | Method and path | Permission | Purpose |
@@ -129,7 +156,6 @@ What an administrator does through this interface is itself recorded: the actor 
 | Item | Planned in |
 |---|---|
 | Everything else in the [outline of the Admin API](api-spec.md#admin-api) | The phase of each area |
-| Issuing the first administrator's token | Issue-30, the bootstrap command |
 | OAuth access tokens with scopes, in place of the access token of this version | Phase 2 |
 | `ETag` and `If-Match`, `Idempotency-Key`, filtering and sorting, rate-limit headers | Phase 2, with the rest of the conventions |
 | Reactivating a user, changing a user, removing a user | Phase 2 |

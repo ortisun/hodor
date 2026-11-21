@@ -81,7 +81,7 @@ A tenant table under row-level security. `user_id` refers to a user of the ident
 | Item | Planned in |
 |---|---|
 | Roles and permissions that a tenant defines; roles through groups; role hierarchies | Phase 2 |
-| Assigning and revoking roles through the administration interface. Today the only way is the bootstrap command of Issue-30 | Phase 2 |
+| Assigning and revoking roles through the administration interface. Today the only way to give a role is [the bootstrap command](../../api/admin-api.md#the-first-administrator), and there is no way to take one away | Phase 2 |
 | Access control lists, conditions on attributes, relationships | Phase 5 |
 | The engine contract, Open Policy Agent, policy lifecycle, the record of decisions | Phase 5 |
 | The authorization interface for applications | Phase 5 |

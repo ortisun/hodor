@@ -78,7 +78,7 @@ A person can register, sign in, see and end their sessions, sign out, and recove
 What is still missing around it:
 
 - There are no pages. The interface is JSON only; the hosted pages come with Issue-31. Until then a link in a message leads nowhere: copy the token after `#token=` into the request that finishes the registration or the recovery.
-- [The administration interface](../api/admin-api.md) is served under `/t/{slug}/api/v1/admin`, but nothing creates the first administrator or their access token yet. That comes with the bootstrap command, Issue-30.
+- [The administration interface](../api/admin-api.md) is served under `/t/{slug}/api/v1/admin`. Its first administrator and their access token come from `hodor-cli admin bootstrap`; see [the first administrator](#the-first-administrator).
 - The session cookie is marked `Secure`. Browsers accept that on `http://localhost`; over plain HTTP on any other host name they do not.
 
 See [progress](../product/progress.md) for the full picture.
@@ -131,6 +131,7 @@ The worker connects to the database twice, with different roles: as a member of 
 |---|---|---|
 | `migrate` | `HODOR_DATABASE_OWNER_URL` (required) | Applies pending migrations as the role that owns the schema |
 | `tenant create`, `tenant create-system`, `tenant list`, `tenant suspend`, `tenant reactivate` | `HODOR_DATABASE_URL` (required) | Manage tenants as a member of `hodor_app`. See [the tenant context](../architecture/contexts/tenant.md#command-line-tool) |
+| `admin bootstrap --tenant <slug> --email <address>` | `HODOR_DATABASE_URL` (required) | Makes a user an administrator of a tenant, creating the user if needed, and prints an access token for [the administration interface](../api/admin-api.md#the-first-administrator) |
 | `audit verify --tenant <slug>` | `HODOR_DATABASE_URL` (required) | Checks a tenant's whole chain of audit records and exits non-zero if a record was changed, removed or inserted. See [the audit context](../architecture/contexts/audit.md#verifying) |
 | `probe` | — | Requests a health endpoint (`--addr`, `--path`) and exits non-zero unless it answers 200. Used by container health checks, since the image has no shell |
 
@@ -159,6 +160,22 @@ curl -i -X POST http://localhost:8080/t/acme/interaction/registration/complete -
 ```
 
 A `204` means the account exists. Signing in is described in [the interaction interface](../api/interaction-api.md#signing-in).
+
+### The first administrator
+
+Make someone an administrator of the tenant and get an access token for them:
+
+```bash
+docker compose -f deploy/docker/compose.yaml run --rm --entrypoint /usr/local/bin/hodor-cli -e HODOR_DATABASE_URL=postgres://hodor_server:dev-server@postgres:5432/hodor server admin bootstrap --tenant acme --email ana@example.com
+```
+
+Use the token it prints to call the administration interface, for example to list the tenant's users:
+
+```bash
+curl -s http://localhost:8080/t/acme/api/v1/admin/users -H 'Authorization: Bearer <the token>'
+```
+
+The token lives for an hour. Running the command again gives a new one.
 
 ## Database roles
 
