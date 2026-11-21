@@ -161,6 +161,9 @@ jobs:
       - name: Run the demonstration
         working-directory: .
         run: python3 deploy/demo/demo.py
+      - name: Run the demonstration of Milestone 2
+        working-directory: .
+        run: python3 deploy/demo/external_identities.py
       - name: Show what the stack logged
         if: failure()
         working-directory: .

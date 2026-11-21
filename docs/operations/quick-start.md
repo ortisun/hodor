@@ -116,6 +116,29 @@ The demonstration runs in continuous integration on every pull request, against 
 
 If the stack is on other ports, tell the script: `HODOR_URL`, `HODOR_MAIL_URL`, `HODOR_METRICS_URL` and `HODOR_TRACES_URL`. The command-line tool is run through Compose with the environment the script was started in, so the variables that chose the ports when the stack was started must be set again.
 
+## The demonstration of Milestone 2
+
+[Milestone 2](../product/epics.md#milestone-2-signing-in-with-external-identities) lets people sign in with an identity they already have elsewhere. Its demonstration does what a person would do in a browser, through the development providers of the stack: an OpenID Connect provider, an LDAP directory and a SAML identity provider, all of which let anyone sign in as anyone.
+
+With the stack running:
+
+```bash
+python3 deploy/demo/external_identities.py
+```
+
+| Step | What it shows |
+|---|---|
+| A provider | An OpenID Connect provider is added to a new tenant with the command-line tool |
+| The first sign-in | A person signs in through it and is created, with the address the provider vouched for |
+| The second sign-in | The same person signs in again and is the same user |
+| No takeover | Someone who registered with a password keeps their account to themselves: the provider vouching for their address does not let anyone into it |
+| Tenants apart | The provider of the first tenant does not exist in a second one |
+| A directory | A person signs in through the LDAP directory, with what they would type on the page |
+| A SAML identity provider | A person signs in through the SAML identity provider: the request, the signed response posted back by the browser, the receipt, the finish |
+| A tampered response | The same, with the subject of the signed response changed on the way: refused, and the audit log says why, `digest` |
+
+It ends with `The demonstration passed.` It can be run again and again, and runs in continuous integration after the one of Milestone 1. The variables of [the first demonstration](#the-demonstration) tell it where the stack is, and `HODOR_SAML_PROVIDER_URL` where the SAML identity provider is, `http://localhost:9500` unless set.
+
 ## Stop
 
 Stop the stack and delete its data:
