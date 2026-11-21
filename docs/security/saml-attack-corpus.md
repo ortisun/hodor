@@ -6,7 +6,7 @@ The corpus is about Hodor as a **service provider**: the side that receives a re
 
 ## Where the tests are
 
-Each case is one test, named after the case, in `crates/saml/tests/corpus.rs`, against the crate `hodor-saml` that checks responses. Three cases are about the sign-in a response belongs to rather than the response itself: `in-response-to-other-browser`, `in-response-to-used` and `relay-state-address`. They are tested where sign-ins are, in `crates/federation`, and come with the SAML provider kind (Issue-48).
+Each case is one test, named after the case, in `crates/saml/tests/corpus.rs`, against the crate `hodor-saml` that checks responses. Three cases are about the sign-in a response belongs to rather than the response itself: `in-response-to-other-browser`, `in-response-to-used` and `relay-state-address`. They are tested where a sign-in goes through, over HTTP, in `crates/protocol-http/tests/federated_sign_in.rs`.
 
 ## How the cases are made
 
@@ -93,7 +93,7 @@ One case is not refused, and its test says why:
 | `status-not-success` | `StatusCode` is not `Success`, with a signed assertion inside anyway | Status | `status` |
 | `bearer-missing` | No `SubjectConfirmation` with the bearer method | Confirmation | `confirmation` |
 | `transient-name-id` | The `NameID` format is `transient` | A subject that changes every time cannot be linked | `subject` |
-| `relay-state-address` | `RelayState` is an address to go to | `RelayState` is an opaque reference to the sign-in, never an address; no pending authorization has it as its state | `no_pending_authorization` |
+| `relay-state-address` | `RelayState` is an address to go to | `RelayState` is an opaque reference to the sign-in, never an address: it is never written into Hodor's answer, and no pending authorization has it as its state, so nothing is kept and the sign-in finds no response | `no_response` |
 
 ## Encrypted assertions
 

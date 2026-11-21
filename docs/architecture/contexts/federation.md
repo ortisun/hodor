@@ -20,7 +20,7 @@ A tenant has its own identity providers. Nothing about a provider is shared betw
 |---|---|
 | Identifier | Generated; never changes |
 | Alias | The name of the provider in addresses, such as `google`. 2 to 32 lowercase letters, digits and hyphens, starting with a letter or digit. Unique in the tenant. **Never changes**: it is part of the address registered at the provider, where answers are sent back |
-| Kind | `openid_connect`, `github` or `ldap`. Never changes. `saml` comes with Issue-48 |
+| Kind | `openid_connect`, `github`, `ldap` or `saml`. Never changes |
 | Display name | What a person reads on the sign-in page, such as "Google". 1 to 64 characters |
 | Issuer | The address that identifies the provider, such as `https://accounts.google.com`. HTTPS, no query and no fragment, at most 512 characters. Plain HTTP is accepted only for a host and port on the installation's list of [development hosts](../../security/outbound-http.md#the-exception-for-development), which is empty anywhere real. Compared exactly, character by character, with what the provider says about itself |
 | Client identifier | Who Hodor is to the provider. 1 to 255 characters |
@@ -203,7 +203,7 @@ The connection is made for one sign-in and closed. Its time is limited to ten se
 
 ## Signing in through a SAML identity provider
 
-> Built in steps. The checks of a response, the crate `hodor-saml`, exist. The provider kind, the routes and the pages come with Issue-48 and Issue-49; until then this section is the design they follow.
+> Built in steps. The checks of a response, the provider kind, the routes and the finishing exist. The pages, the administration interface and the command-line tool come with Issue-49.
 
 A provider of the kind `saml` is an organization's SAML identity provider: Microsoft Entra ID, Okta, Active Directory Federation Services, Keycloak, Shibboleth. Hodor is the **service provider**: it sends the person there with a request, and receives a signed answer, a **response**, through the person's browser. How the signature is checked is [Decision 0019](../../decisions/0019-saml-signature-verification.md); what must be refused is the [attack corpus](../../security/saml-attack-corpus.md).
 
@@ -212,7 +212,7 @@ A SAML provider uses the parts of a provider this way, and adds its own:
 | Part | For a SAML provider |
 |---|---|
 | Issuer | The identity provider's entity identifier, as its metadata gives it, such as `https://sts.windows.net/{tenant identifier}/` or `http://www.okta.com/{identifier}`. Any absolute address or `urn:` name, at most 512 characters. It names the provider and is never fetched, so plain `http:` is allowed here. Compared exactly with the `Issuer` of every response |
-| Client identifier, client secret, scopes | None |
+| Client identifier, client secret, scopes | None: the client identifier is empty, the secret is an empty one sealed |
 | Single sign-on address | Where the person is sent with the request: the identity provider's `SingleSignOnService` for the HTTP-Redirect binding. HTTPS; plain HTTP only at a [development host](../../security/outbound-http.md#the-exception-for-development) |
 | Certificate | The identity provider's signing certificate, in PEM, from its metadata. Its key is the only key a response is checked with. An RSA key of 2048 bits at least, or an elliptic curve key on P-256. The certificate's dates and issuer are not checked: it is a way of writing down a key, as SAML uses it |
 | Email attribute, name attribute | The names of the attributes that carry the person's address and name. `email` and `name` unless said otherwise; the [recipes](#recipes) give the names each identity provider uses |
@@ -403,6 +403,7 @@ No event carries a secret. No event carries a subject either: it identifies a pe
 | `federation.link_not_found` | Not found | There is no such link |
 | `federation.provider_unavailable` | Unavailable | The provider did not answer, or answered something that cannot be used: no description, a description for another issuer, no keys |
 | `federation.directory_invalid` | Invalid | A directory's base, filter or attribute name breaks its rule |
+| `federation.saml_invalid` | Invalid | A SAML provider's single sign-on address, certificate or attribute name breaks its rule; the certificate's reason, such as `key_too_short`, is in the detail |
 | `federation.directory_not_allowed` | Forbidden | The directory's host and port are not on the installation's list |
 | `federation.identity_not_verified` | Unauthenticated | The provider's answer does not establish who the person is: the code was refused, or the ID token failed a check |
 
@@ -433,14 +434,16 @@ All tables are under [forced row-level security](../multi-tenancy.md#isolation-b
 |---|---|---|
 | `tenant_id`, `id` | `uuid` | Primary key |
 | `alias` | `text` | Unique with `tenant_id` |
-| `kind` | `text` | `openid_connect` |
-| `display_name`, `issuer`, `client_id` | `text` | |
+| `kind` | `text` | `openid_connect`, `github`, `ldap` or `saml` |
+| `display_name`, `issuer`, `client_id` | `text` | The client identifier is empty for `saml` |
 | `client_secret` | `bytea` | The sealed secret |
 | `scopes` | `text[]` | |
 | `creates_users` | `boolean` | |
 | `status` | `text` | `enabled` or `disabled` |
 | `created_at`, `updated_at` | `timestamptz` | |
 | `version` | `integer` | For optimistic locking |
+| `directory_base`, `directory_filter`, `directory_subject_attribute`, `directory_email_attribute`, `directory_name_attribute` | `text` | All present for `ldap`, all absent otherwise |
+| `saml_single_sign_on_address`, `saml_certificate`, `saml_email_attribute`, `saml_name_attribute` | `text` | All present for `saml`, all absent otherwise. The certificate in PEM |
 
 ### `federation.external_identity`
 
@@ -457,9 +460,10 @@ All tables are under [forced row-level security](../multi-tenancy.md#isolation-b
 | `tenant_id`, `transaction_id` | `uuid` | Primary key: one pending authorization per sign-in in progress. The sign-in belongs to the authentication context; deliberately not a foreign key |
 | `provider_id` | `uuid` | Foreign key within the tenant |
 | `state_hash` | `bytea` | SHA-256 of the state |
-| `nonce`, `redirect_uri` | `text` | |
-| `code_verifier` | `bytea` | The sealed PKCE verifier |
+| `nonce`, `redirect_uri` | `text` | For SAML the nonce holds the identifier of the request |
+| `code_verifier` | `bytea` | The sealed PKCE verifier. For SAML, which has none, an empty secret sealed |
 | `expires_at` | `timestamptz` | |
+| `saml_response` | `text` | The response a SAML identity provider posted, unread, as it arrived. Set once |
 
 ## Not built yet
 
@@ -471,7 +475,6 @@ All tables are under [forced row-level security](../multi-tenancy.md#isolation-b
 | A directory's own certificate authority. The connection trusts what the operating system trusts | When a directory with a private authority is to be used |
 | Reusing connections to a directory between sign-ins | When the volume calls for it |
 | Synchronizing people and groups from a directory | Phase 6 |
-| SAML providers: the kind, the assertion consumer address, the metadata, the pending authorization of a SAML sign-in | Issue-48 |
 | SAML on the pages, in the administration interface and the command-line tool, in the demonstration | Issue-49 |
 | Signed requests, encrypted assertions, single logout, responses nobody asked for, several certificates for one provider during a change of keys | When an identity provider that needs them is to be supported |
 | Signature algorithms beyond `RS256`, `PS256` and `ES256`; encrypted ID tokens; the UserInfo endpoint | When a provider that needs them is to be supported |
