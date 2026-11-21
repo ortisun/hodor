@@ -98,6 +98,10 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+      # Compose takes a service that exits as a failure of `up --wait`
+      # unless another service waits for it to complete.
+      system-tenant:
+        condition: service_completed_successfully
       victoriametrics:
         condition: service_started
       victoriatraces:
