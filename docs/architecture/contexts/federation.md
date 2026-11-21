@@ -295,7 +295,6 @@ All tables are under [forced row-level security](../multi-tenancy.md#isolation-b
 
 | Item | Planned in |
 |---|---|
-| Managing providers through the administration interface and the command-line tool | Issue-41 |
 | Providers that are not plain OpenID Connect: GitHub, Apple; directories; SAML | Issue-43, Issue-44, Issue-48 |
 | Signature algorithms beyond `RS256`, `PS256` and `ES256`; encrypted ID tokens; the UserInfo endpoint | When a provider that needs them is to be supported |
 | A cache of provider descriptions and keys shared between server instances. Each instance keeps its own | With Redis, when instances are many |

@@ -14,10 +14,13 @@ use hodor_authorization::api::{AuthorizationService, Permission, Role};
 use hodor_authorization::testing::InMemoryRoleAssignments;
 use hodor_credential::api::AccessTokenService;
 use hodor_credential::testing::InMemoryAccessTokens;
+use hodor_federation::api::FederationService;
+use hodor_federation::testing::InMemoryFederation;
 use hodor_identity::api::{CreateUser, IdentifierKind, IdentityService, Profile, UserKind};
 use hodor_identity::testing::InMemoryUsers;
 use hodor_kernel::clock::testing::FixedClock;
 use hodor_kernel::random::testing::FakeDigest;
+use hodor_kernel::sealing::testing::FakeSecretBox;
 use hodor_kernel::uow::testing::InMemoryUnitOfWorkFactory;
 use hodor_kernel::{
     Caller, DomainError, EventHandler, TenantContext, TenantId, Timestamp, UnitOfWorkFactory,
@@ -108,6 +111,15 @@ async fn world() -> World {
         clock.clone(),
     );
 
+    let providers = InMemoryFederation::default();
+    let federation = FederationService::new(
+        units(),
+        Arc::new(providers.clone()),
+        Arc::new(providers),
+        Arc::new(FakeSecretBox),
+        clock.clone(),
+    );
+
     let acme = TenantContext::assume(TenantId::generate());
     let globex = TenantContext::assume(TenantId::generate());
     let state = AdminState {
@@ -116,6 +128,8 @@ async fn world() -> World {
         identity: identity.clone(),
         sessions: sessions.clone(),
         audit: audit.clone(),
+        federation: Some(federation),
+        public_url: "https://auth.example".to_owned(),
     };
     let router = public_router(
         Arc::new(Tenants {
@@ -313,6 +327,7 @@ impl Operation {
             self.template
                 .replace("{user_id}", &UserId::generate().to_string())
                 .replace("{session_id}", &UserId::generate().to_string())
+                .replace("{provider_id}", &UserId::generate().to_string())
         )
     }
 }
@@ -359,7 +374,7 @@ fn the_document_and_the_routes_list_the_same_operations_and_permissions() {
         })
         .collect();
     assert_eq!(documented, served);
-    assert_eq!(served.len(), 7);
+    assert_eq!(served.len(), 14);
 
     // Every operation says how it refuses.
     let document: serde_json::Value = serde_json::from_str(ADMIN_OPENAPI).expect("valid JSON");
@@ -909,4 +924,323 @@ async fn what_an_administrator_does_is_in_the_audit_log_under_their_name() {
     assert!(!everything.contains(&world.administrator_token[9..]));
     // Another tenant's log is not this tenant's.
     assert!(!everything.contains(&world.globex.tenant_id().to_string()));
+}
+
+const CLIENT_SECRET: &str = "the-client-secret-of-the-provider";
+
+/// A change to the body that adds a provider.
+type Change = fn(&mut serde_json::Value);
+
+fn new_provider(alias: &str) -> serde_json::Value {
+    serde_json::json!({
+        "alias": alias,
+        "display_name": "Example",
+        "issuer": "https://accounts.example.com",
+        "client_id": "hodor",
+        "client_secret": CLIENT_SECRET,
+    })
+}
+
+#[tokio::test]
+async fn an_administrator_adds_changes_and_disables_an_identity_provider() {
+    let world = world().await;
+
+    let created = world
+        .as_administrator(
+            Method::POST,
+            "/identity-providers",
+            Some(new_provider("example")),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.body);
+    let provider = &created.body;
+    assert_eq!(provider["alias"], "example");
+    assert_eq!(provider["kind"], "openid_connect");
+    assert_eq!(provider["status"], "enabled");
+    assert_eq!(provider["creates_users"], true);
+    assert_eq!(
+        provider["scopes"],
+        serde_json::json!(["openid", "email", "profile"])
+    );
+    assert_eq!(
+        provider["callback_address"],
+        "https://auth.example/t/acme/account/providers/example/callback",
+        "the address to register at the provider"
+    );
+    let id = provider["id"].as_str().expect("id").to_owned();
+    let path = format!("/identity-providers/{id}");
+
+    // What is left out of a change stays as it is.
+    let changed = world
+        .as_administrator(
+            Method::PATCH,
+            &path,
+            Some(serde_json::json!({ "display_name": "Another name", "creates_users": false })),
+        )
+        .await;
+    assert_eq!(changed.status, StatusCode::OK, "{:?}", changed.body);
+    assert_eq!(changed.body["display_name"], "Another name");
+    assert_eq!(changed.body["creates_users"], false);
+    assert_eq!(changed.body["issuer"], "https://accounts.example.com");
+    assert_eq!(changed.body["alias"], "example");
+
+    let disabled = world
+        .as_administrator(Method::POST, &format!("{path}:disable"), None)
+        .await;
+    assert_eq!(disabled.status, StatusCode::OK);
+    assert_eq!(disabled.body["status"], "disabled");
+    let enabled = world
+        .as_administrator(Method::POST, &format!("{path}:enable"), None)
+        .await;
+    assert_eq!(enabled.body["status"], "enabled");
+
+    let replaced = world
+        .as_administrator(
+            Method::PUT,
+            &format!("{path}/client-secret"),
+            Some(serde_json::json!({ "client_secret": "a brand new secret" })),
+        )
+        .await;
+    assert_eq!(replaced.status, StatusCode::NO_CONTENT);
+
+    let read = world.as_administrator(Method::GET, &path, None).await;
+    assert_eq!(read.status, StatusCode::OK);
+    assert_eq!(read.body["display_name"], "Another name");
+    let listed = world
+        .as_administrator(Method::GET, "/identity-providers", None)
+        .await;
+    assert_eq!(listed.body["items"].as_array().expect("items").len(), 1);
+
+    // Each change was made by the administrator, and is announced as theirs.
+    let said = format!("{:?}", world.units_of_work.committed_events());
+    for event in [
+        "federation.provider_created",
+        "federation.provider_changed",
+        "federation.provider_disabled",
+        "federation.provider_enabled",
+        "federation.provider_secret_changed",
+    ] {
+        assert!(said.contains(event), "{event}");
+    }
+    assert!(said.contains(&world.administrator.to_string()));
+}
+
+#[tokio::test]
+async fn a_client_secret_is_never_part_of_an_answer() {
+    let world = world().await;
+    let created = world
+        .as_administrator(
+            Method::POST,
+            "/identity-providers",
+            Some(new_provider("example")),
+        )
+        .await;
+    let id = created.body["id"].as_str().expect("id").to_owned();
+    let path = format!("/identity-providers/{id}");
+
+    let answers = [
+        created,
+        world.as_administrator(Method::GET, &path, None).await,
+        world
+            .as_administrator(Method::GET, "/identity-providers", None)
+            .await,
+        world
+            .as_administrator(
+                Method::PATCH,
+                &path,
+                Some(serde_json::json!({ "client_id": "other" })),
+            )
+            .await,
+        world
+            .as_administrator(Method::POST, &format!("{path}:disable"), None)
+            .await,
+        world
+            .as_administrator(
+                Method::PUT,
+                &format!("{path}/client-secret"),
+                Some(serde_json::json!({ "client_secret": "replaced-secret-value" })),
+            )
+            .await,
+        world.as_administrator(Method::GET, &path, None).await,
+    ];
+    for answer in &answers {
+        let body = answer.body.to_string();
+        assert!(!body.contains(CLIENT_SECRET), "{body}");
+        assert!(!body.contains("replaced-secret-value"), "{body}");
+        assert!(
+            !body.contains("secret"),
+            "no field is named for it either: {body}"
+        );
+    }
+    // Nor of what is announced.
+    let said = format!("{:?}", world.units_of_work.committed_events());
+    assert!(!said.contains(CLIENT_SECRET));
+    assert!(!said.contains("replaced-secret-value"));
+
+    // The secret cannot be slipped into a change of settings.
+    let slipped = world
+        .as_administrator(
+            Method::PATCH,
+            &path,
+            Some(serde_json::json!({ "client_secret": "x", "alias": "renamed" })),
+        )
+        .await;
+    assert_eq!(slipped.status, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn what_breaks_a_rule_of_identity_providers_is_refused_with_its_code() {
+    let world = world().await;
+    let with = |change: Change| {
+        let mut body = new_provider("example");
+        change(&mut body);
+        body
+    };
+    let cases: [(Change, StatusCode, &str); 6] = [
+        (
+            |b| b["alias"] = "Not An Alias".into(),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "federation.alias_invalid",
+        ),
+        (
+            |b| b["issuer"] = "http://plain.example.com".into(),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "federation.issuer_invalid",
+        ),
+        (
+            |b| b["client_secret"] = "".into(),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "federation.client_secret_invalid",
+        ),
+        (
+            |b| b["scopes"] = serde_json::json!(["email"]),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "federation.scopes_invalid",
+        ),
+        (
+            |b| {
+                b.as_object_mut().expect("object").remove("client_id");
+            },
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "request.body_invalid",
+        ),
+        (
+            |b| b["unexpected"] = true.into(),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "request.body_invalid",
+        ),
+    ];
+    for (change, status, code) in cases {
+        let reply = world
+            .as_administrator(Method::POST, "/identity-providers", Some(with(change)))
+            .await;
+        assert_eq!(reply.status, status, "{code}: {:?}", reply.body);
+        assert_eq!(reply.code(), code);
+    }
+
+    let first = world
+        .as_administrator(
+            Method::POST,
+            "/identity-providers",
+            Some(new_provider("example")),
+        )
+        .await;
+    assert_eq!(first.status, StatusCode::CREATED);
+    let again = world
+        .as_administrator(
+            Method::POST,
+            "/identity-providers",
+            Some(new_provider("example")),
+        )
+        .await;
+    assert_eq!(again.status, StatusCode::CONFLICT);
+    assert_eq!(again.code(), "federation.alias_taken");
+
+    for path in [
+        format!("/identity-providers/{}", UserId::generate()),
+        "/identity-providers/not-an-identifier".to_owned(),
+        format!("/identity-providers/{}:disable", UserId::generate()),
+    ] {
+        let method = if path.ends_with(":disable") {
+            Method::POST
+        } else {
+            Method::GET
+        };
+        let reply = world.as_administrator(method, &path, None).await;
+        assert_eq!(reply.status, StatusCode::NOT_FOUND, "{path}");
+        assert_eq!(reply.code(), "federation.provider_not_found", "{path}");
+    }
+    let id = first.body["id"].as_str().expect("id");
+    let unknown_action = world
+        .as_administrator(
+            Method::POST,
+            &format!("/identity-providers/{id}:delete"),
+            None,
+        )
+        .await;
+    assert_eq!(unknown_action.status, StatusCode::NOT_FOUND);
+    assert_eq!(unknown_action.code(), "route.not_found");
+}
+
+#[tokio::test]
+async fn the_identity_providers_of_one_tenant_do_not_exist_for_another() {
+    let world = world().await;
+    let created = world
+        .as_administrator(
+            Method::POST,
+            "/identity-providers",
+            Some(new_provider("example")),
+        )
+        .await;
+    let id = created.body["id"].as_str().expect("id").to_owned();
+    let globex = world.globex.clone();
+    let (_, theirs) = world
+        .person(&globex, "root@globex.example", &[Role::TenantAdministrator])
+        .await;
+    let authorization = format!("Bearer {theirs}");
+
+    let listed = world
+        .send(
+            Method::GET,
+            "/t/globex/api/v1/admin/identity-providers",
+            Some(&authorization),
+            None,
+        )
+        .await;
+    assert_eq!(listed.status, StatusCode::OK);
+    assert_eq!(listed.body["items"], serde_json::json!([]));
+    for (method, suffix) in [
+        (Method::GET, ""),
+        (Method::POST, ":disable"),
+        (Method::PATCH, ""),
+    ] {
+        let reply = world
+            .send(
+                method.clone(),
+                &format!("/t/globex/api/v1/admin/identity-providers/{id}{suffix}"),
+                Some(&authorization),
+                Some(serde_json::json!({})),
+            )
+            .await;
+        assert_eq!(reply.status, StatusCode::NOT_FOUND, "{method} {suffix}");
+        assert_eq!(reply.code(), "federation.provider_not_found");
+    }
+    // The same alias is theirs to use.
+    let own = world
+        .send(
+            Method::POST,
+            "/t/globex/api/v1/admin/identity-providers",
+            Some(&authorization),
+            Some(new_provider("example")),
+        )
+        .await;
+    assert_eq!(own.status, StatusCode::CREATED);
+    assert_eq!(
+        own.body["callback_address"],
+        "https://auth.example/t/globex/account/providers/example/callback"
+    );
+    let still = world
+        .as_administrator(Method::GET, &format!("/identity-providers/{id}"), None)
+        .await;
+    assert_eq!(still.body["status"], "enabled");
 }

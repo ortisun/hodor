@@ -227,7 +227,10 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
             "/interaction",
             interaction_routes(interaction(&config, &database)?),
         )
-        .nest("/api/v1/admin", admin_routes(administration(&database)));
+        .nest(
+            "/api/v1/admin",
+            admin_routes(administration(&config, &database)?),
+        );
     let mut site_routes = axum::Router::new();
     match &config.pages_directory {
         Some(directory) => {
@@ -434,12 +437,24 @@ fn external_sign_in(
 }
 
 /// Builds everything the administration interface needs.
-fn administration(database: &Database) -> AdminState {
+fn administration(config: &Config, database: &Database) -> Result<AdminState, DomainError> {
     let units = || Arc::new(database.clone());
     let clock = Arc::new(SystemClock);
     let digest = Arc::new(Sha256Digest);
     let random = Arc::new(OsRandom);
-    AdminState {
+    // Without keys to keep secrets with there are no identity providers
+    // to manage; the routes say so.
+    let federation = match &config.secret_keys {
+        Some(setting) => Some(FederationService::new(
+            units(),
+            Arc::new(PgProviderStore),
+            Arc::new(PgLinkStore),
+            Arc::new(SecretKeys::parse(&Secret::from(setting.clone()))?),
+            clock.clone(),
+        )),
+        None => None,
+    };
+    Ok(AdminState {
         tokens: AccessTokenService::new(
             units(),
             Arc::new(PgAccessTokenStore),
@@ -462,7 +477,9 @@ fn administration(database: &Database) -> AdminState {
         ),
         // The server reads the audit log; the worker writes it.
         audit: AuditService::new(units(), Arc::new(PgAuditLog), digest, clock),
-    }
+        federation,
+        public_url: config.public_url.clone(),
+    })
 }
 
 async fn wait_for(mut stopped: watch::Receiver<bool>) {

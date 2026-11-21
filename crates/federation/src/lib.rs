@@ -19,6 +19,7 @@ pub mod api {
     pub use crate::application::service::{ChangeProvider, CreateProvider, FederationService};
     pub use crate::application::sign_in::{
         EXTERNAL_STEP, ExternalIdentityAuthenticator, ExternalSignIn, OfferedProvider,
+        callback_address,
     };
     pub use crate::domain::event::FederationEvent;
     pub use crate::domain::link::{ExternalIdentity, Subject};

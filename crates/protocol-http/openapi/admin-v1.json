@@ -3,7 +3,7 @@
   "info": {
     "title": "Hodor administration interface",
     "version": "1.0.0",
-    "description": "Users, sessions and the audit log of a tenant, for the people who run it. Paths are relative to https://{host}/t/{slug}/api/v1/admin. Every operation needs an access token whose user holds a role with the permission named in `x-hodor-permission`."
+    "description": "Users, sessions, the audit log and the identity providers of a tenant, for the people who run it. Paths are relative to https://{host}/t/{slug}/api/v1/admin. Every operation needs an access token whose user holds a role with the permission named in `x-hodor-permission`."
   },
   "servers": [
     {
@@ -583,6 +583,583 @@
           }
         }
       }
+    },
+    "/identity-providers": {
+      "get": {
+        "operationId": "listIdentityProviders",
+        "summary": "List the tenant's identity providers",
+        "x-hodor-permission": "identity-providers:read",
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The providers, ordered by alias. Never their secrets.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "items"
+                  ],
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/IdentityProvider"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "This installation has no keys to keep the secrets of identity providers with.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createIdentityProvider",
+        "summary": "Add an identity provider",
+        "x-hodor-permission": "identity-providers:write",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewIdentityProvider"
+              }
+            }
+          }
+        },
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "The provider, enabled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProvider"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The alias is taken, or the tenant already has as many providers as it may.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A value breaks its rule, or the body is not of the expected shape.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "This installation has no keys to keep the secrets of identity providers with.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/identity-providers/{provider_id}": {
+      "get": {
+        "operationId": "getIdentityProvider",
+        "summary": "Read one identity provider",
+        "x-hodor-permission": "identity-providers:read",
+        "parameters": [
+          {
+            "name": "provider_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The provider.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProvider"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such identity provider in this tenant.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "This installation has no keys to keep the secrets of identity providers with.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "operationId": "changeIdentityProvider",
+        "summary": "Change an identity provider's settings",
+        "x-hodor-permission": "identity-providers:write",
+        "parameters": [
+          {
+            "name": "provider_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IdentityProviderChanges"
+              }
+            }
+          }
+        },
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The provider.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProvider"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such identity provider in this tenant.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Someone else changed the provider at the same moment.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A value breaks its rule, or the body is not of the expected shape.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "This installation has no keys to keep the secrets of identity providers with.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/identity-providers/{provider_id}/client-secret": {
+      "put": {
+        "operationId": "replaceIdentityProviderClientSecret",
+        "summary": "Replace an identity provider's client secret",
+        "x-hodor-permission": "identity-providers:write",
+        "parameters": [
+          {
+            "name": "provider_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClientSecret"
+              }
+            }
+          }
+        },
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "The secret was replaced."
+          },
+          "404": {
+            "description": "No such identity provider in this tenant.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A value breaks its rule, or the body is not of the expected shape.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "This installation has no keys to keep the secrets of identity providers with.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/identity-providers/{provider_id}:disable": {
+      "post": {
+        "operationId": "disableIdentityProvider",
+        "summary": "Stop an identity provider from signing people in",
+        "x-hodor-permission": "identity-providers:write",
+        "parameters": [
+          {
+            "name": "provider_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The provider.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProvider"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such identity provider in this tenant.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "This installation has no keys to keep the secrets of identity providers with.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/identity-providers/{provider_id}:enable": {
+      "post": {
+        "operationId": "enableIdentityProvider",
+        "summary": "Let an identity provider sign people in again",
+        "x-hodor-permission": "identity-providers:write",
+        "parameters": [
+          {
+            "name": "provider_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The provider.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProvider"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such identity provider in this tenant.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "This installation has no keys to keep the secrets of identity providers with.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -862,6 +1439,158 @@
           },
           "request_id": {
             "type": "string"
+          }
+        }
+      },
+      "IdentityProvider": {
+        "type": "object",
+        "description": "An identity provider of the tenant. It has no field for the client secret, which no operation returns.",
+        "required": [
+          "id",
+          "alias",
+          "kind",
+          "display_name",
+          "issuer",
+          "client_id",
+          "scopes",
+          "creates_users",
+          "status",
+          "callback_address",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "alias": {
+            "type": "string",
+            "description": "The provider's name in addresses. It never changes."
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "openid_connect"
+            ]
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "issuer": {
+            "type": "string",
+            "format": "uri"
+          },
+          "client_id": {
+            "type": "string"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "creates_users": {
+            "type": "boolean",
+            "description": "Whether a person nobody knows yet is created on first sign-in."
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "enabled",
+              "disabled"
+            ]
+          },
+          "callback_address": {
+            "type": "string",
+            "format": "uri",
+            "description": "The address to register at the provider as the place it sends people back to."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "NewIdentityProvider": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "alias",
+          "display_name",
+          "issuer",
+          "client_id",
+          "client_secret"
+        ],
+        "properties": {
+          "alias": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "issuer": {
+            "type": "string",
+            "format": "uri"
+          },
+          "client_id": {
+            "type": "string"
+          },
+          "client_secret": {
+            "type": "string",
+            "writeOnly": true
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "creates_users": {
+            "type": "boolean"
+          }
+        }
+      },
+      "IdentityProviderChanges": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "What is left out stays as it is.",
+        "properties": {
+          "display_name": {
+            "type": "string"
+          },
+          "issuer": {
+            "type": "string",
+            "format": "uri"
+          },
+          "client_id": {
+            "type": "string"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "creates_users": {
+            "type": "boolean"
+          }
+        }
+      },
+      "ClientSecret": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "client_secret"
+        ],
+        "properties": {
+          "client_secret": {
+            "type": "string",
+            "writeOnly": true
           }
         }
       }
