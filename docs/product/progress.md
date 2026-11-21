@@ -81,7 +81,7 @@ Specified in [the credential context](../architecture/contexts/credential.md).
 | Issue-27 Notification | Done | `hodor-notification` crate: messages queued in the transaction of the change that causes them, built-in templates in English and Brazilian Portuguese, retries with growing waits, expiry, and contents erased once a message is no longer pending; `notification.message` under row-level security; one contract suite passed by the in-memory queue and by PostgreSQL. `hodor-adapters-smtp` delivers to a mail server and is tested against a real one in a container. `hodor-worker` delivers queued messages; the development stack has a mail server whose web page shows what was sent. Specified in [the notification context](../architecture/contexts/notification.md) |
 | Issue-28 Audit | Done | `hodor-audit` crate: every event becomes one record, chained per tenant with SHA-256 so that a changed, removed or inserted record is found; `audit.record` under row-level security, append-only by permission and by a trigger; the worker records each event in the transaction that marks it delivered; `hodor-cli audit verify` checks a tenant's chain. Tests deliver with three workers at once, try to change records as every database role, tamper behind the protections and verify, and search every record for a password, tokens and an email address used in a registration and a recovery. Specified in [the audit context](../architecture/contexts/audit.md) |
 | Issue-29 Administration interface | Done | The first routes of the administration interface, served by `hodor-server`: create, list, read and suspend users; list and end a user's sessions; read the audit log. `hodor-authorization` crate with two fixed roles and the check; access tokens in the credential context, stored only as hashes; an OpenAPI document served by the interface. Every operation in the document is tried without a token, with ten kinds of token that are not good, with a role that lacks the permission and with another tenant's token. A test does an administrator's work on the real binary against PostgreSQL and finds it in the audit log under their name. Specified in [the administration interface](../api/admin-api.md), [the authorization context](../architecture/contexts/authorization.md) and [access tokens](../architecture/contexts/credential.md#access-tokens) |
-| Issue-30 | Not started | — |
+| Issue-30 Bootstrap administrator | Done | `hodor-cli admin bootstrap` makes a user an administrator of a tenant, creating the user if needed, and prints an access token once. Run as the real binary against PostgreSQL: the token and the role work in their tenant and in no other, a second run issues another token for the same user, and a user who may not sign in gets none. Specified in [the administration interface](../api/admin-api.md#the-first-administrator) |
 
 ### Checked by hand on the development stack
 
@@ -89,6 +89,7 @@ Some things are covered by tests in halves and were also tried whole, on the Com
 
 - A person asked to register; the server queued the message, the worker delivered it to the development mail server, the message arrived in the language asked for with a working link, and the link finished the registration once and only once.
 - The worker's metrics for the outbox and for messages arrived in VictoriaMetrics.
+- The first administrator of a tenant was made with `hodor-cli admin bootstrap`; the token it printed listed and created users through the administration interface, a request without it was refused, the audit log read through the interface showed each step with the right actor, and `hodor-cli audit verify` found the chain intact.
 
 ### Known gaps in what is done
 
@@ -97,12 +98,12 @@ These are recorded here so they are not forgotten; each is picked up by the issu
 | Gap | Picked up by |
 |---|---|
 | Tenants have no routes of their own yet: an existing tenant answers `404` with `route.not_found` | Issue-24, the interaction API |
-| The system tenant is not created automatically by the development stack | Issue-30, with the bootstrap administrator |
+| The system tenant is not created automatically by the development stack | Issue-33, with the quick-start |
 | The Argon2id hasher was not checked against a hash produced by another implementation; it relies on the library's own conformance | When a second implementation is at hand, for example password import |
 | Records removed from the end of a tenant's audit chain, or a chain rewritten whole, are noticed only through the chain head, which lives in the same database | Exporting the latest hash regularly, later in Phase 1 |
 | Audit records do not carry the address a request came from or the application that made it, and events caused by people who are not signed in are recorded as anonymous | When events carry them: with OAuth clients in Phase 2 |
 | Rows of expired and revoked sessions are never removed | A cleanup job, later in Phase 1 |
-| An administrator can create users, but nothing creates the first administrator or gives anyone a role or a token: the administration interface cannot be reached on a fresh installation | Issue-30 (bootstrap administrator) |
+| Roles are given only by the bootstrap command and cannot be taken away; access tokens cannot be listed or revoked through any interface | Phase 2, with OAuth and the rest of the administration interface |
 | Listing users reads each user with a query of its own | When a tenant's user list is slow |
 | The links in messages lead to pages that do not exist yet. Until they do, the token must be copied from the link into a request by hand | Issue-31 |
 | Asking to register or recover answers the same whoever the address belongs to, but not in the same time: an address with something to send costs one more write. The difference was not measured | Hardening pass |
