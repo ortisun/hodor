@@ -173,7 +173,8 @@ export function SignInPage({ tenant, client, text, go, path, notice }: SignInPag
       await client.abandonSignIn();
       await open(true);
     } catch (thrown) {
-      setFailure(asFailure(thrown));
+      // Nothing can be shown but the reason, and the way to try once more.
+      setView({ kind: "stopped", failure: asFailure(thrown) });
     } finally {
       setBusy(false);
     }

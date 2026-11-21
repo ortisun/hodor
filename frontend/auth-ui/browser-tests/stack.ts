@@ -31,4 +31,19 @@ export default async function checkTheStack(): Promise<void> {
   if (answers[1] !== 200) {
     throw new Error(`The development mail server at ${MAIL} did not answer.${HELP}`);
   }
+
+  // Asking for links is limited by the address the requests come from,
+  // and every run asks for about ten. Run after run, a tenant refuses.
+  const asked = await fetch(`${SERVER}/t/${TENANT}/interaction/recovery`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email: `nobody-${Date.now()}@example.com` }),
+  });
+  if (asked.status === 429) {
+    throw new Error(
+      `The tenant ${TENANT} is limiting requests from this address after too many runs in a row. ` +
+        `Wait ${asked.headers.get("Retry-After") ?? "some"} seconds, or create another tenant ` +
+        `with open registration and name it in HODOR_TENANT.`,
+    );
+  }
 }

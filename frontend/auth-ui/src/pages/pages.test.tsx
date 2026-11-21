@@ -13,6 +13,9 @@ afterEach(cleanup);
 
 const nobody = () => problem(401, "session.not_authenticated");
 const noSignIn = () => problem(404, "authentication.transaction_not_found");
+const unreachable = (): Response => {
+  throw new TypeError("network");
+};
 const pending = (step: string) => json(200, { status: "pending", step, csrf_token: "token" });
 
 function page(script: Parameters<typeof scripted>[0]) {
@@ -255,5 +258,27 @@ describe("the account page", () => {
 
     await waitFor(() => expect(go).toHaveBeenCalledWith("sign-in", "signed-out"));
     expect(sent.at(-1)).toMatchObject({ method: "DELETE", path: "/session", csrfToken: "of-the-session" });
+  });
+});
+
+describe("the sign-in page when the server cannot be reached", () => {
+  it("says so once, and offers to try again", async () => {
+    const { props, user } = page({
+      "GET /session": [unreachable, nobody],
+      "DELETE /sign-in": [unreachable, noSignIn],
+      "POST /sign-in": [pending("identifier")],
+    });
+    render(<SignInPage {...props} notice="registered" />);
+
+    const again = await screen.findByRole("button", { name: en.startAgain });
+    expect(screen.getAllByRole("alert").map((alert) => alert.textContent)).toEqual([en.unreachable]);
+    // What the page before had to say is not shown over a failure.
+    expect(screen.queryByText(en.noticeRegistered)).toBeNull();
+
+    await user.click(again);
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+
+    await user.click(screen.getByRole("button", { name: en.startAgain }));
+    expect(await screen.findByLabelText(en.identifierLabel)).toBeTruthy();
   });
 });

@@ -62,6 +62,7 @@ The pages show their own words, chosen by the `code` of the [problem document](.
 | `authentication.registration_closed` | This organization does not accept registrations |
 | `authentication.verification_token_invalid` | The link was already used or has expired; how to ask for a new one |
 | `credential.password_too_short`, `credential.password_too_long`, `credential.password_is_own_name`, `credential.password_reused` | What is wrong with the password, next to the field |
+| `identity.display_name_invalid` | The name cannot be used, next to the field |
 | `credential.hashing_overloaded` | The server is busy; try again in a moment |
 | No answer at all | The server could not be reached |
 
@@ -163,6 +164,7 @@ npm run browser-tests
 |---|---|---|
 | Unit tests of the application | The client turns answers and problem documents into what the pages show; both languages have the same messages; each page renders the step it is given | `npm test` in `frontend/auth-ui`, with no server |
 | Tests of the HTTP layer | The listed pages get `index.html` with the policy above, other paths get `404`, files get the right caching, and a path cannot climb out of the directory | `cargo test`, with a directory made by the test; Node.js is not needed |
+| Tests of the server binary | The real `hodor-server` serves the pages of the directory it is given, serves none without the setting, and refuses to start with a directory that has no application | `cargo test`, with a directory made by the test |
 | Browser tests | A person registers, reads the message, chooses a password, signs in and signs out; recovers a password; is refused with a wrong password; signs in with the keyboard alone. No page reports a Content Security Policy violation, a script error or an accessibility violation | Playwright with Chromium against the Compose stack, in continuous integration |
 
 The browser tests read the messages from the development mail server of the Compose stack, as a person would read their mailbox.

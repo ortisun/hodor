@@ -61,6 +61,8 @@ npm run browser-tests
 
 `HODOR_URL`, `HODOR_MAIL_URL` and `HODOR_TENANT` point the tests at a stack on other ports or at another tenant; they default to `http://localhost:8080`, `http://localhost:8025` and `acme`. The tests create new people on every run and remove nothing.
 
+Every run asks for about ten links, and a tenant limits how many may be asked for from one address: fifty in fifteen minutes by default, with waits that grow. After several runs in a row the tests stop before they start and say so. Wait, or create another tenant with open registration and name it in `HODOR_TENANT`.
+
 ## Running the development stack
 
 The Compose file in `deploy/docker` builds the image and starts everything Hodor needs:
@@ -100,7 +102,7 @@ What is still missing around it:
 
 - The pages cover registering, signing in, signing out and recovering a password. Seeing and ending one's sessions is in the interaction interface but has no page yet.
 - [The administration interface](../api/admin-api.md) is served under `/t/{slug}/api/v1/admin`. Its first administrator and their access token come from `hodor-cli admin bootstrap`; see [the first administrator](#the-first-administrator).
-- The session cookie is marked `Secure`. Chromium and Firefox accept that on `http://localhost`; Safari does not, and over plain HTTP on any other host name no browser does. Open the pages at `localhost`, not at `127.0.0.1`.
+- The session cookie is marked `Secure`. Chromium and Firefox accept that on `http://localhost`; Safari does not, and over plain HTTP on any other host name no browser does. Use `localhost` throughout, not `127.0.0.1`: the links in messages point at `localhost`, and a browser keeps the cookies of the two apart.
 
 See [progress](../product/progress.md) for the full picture.
 
