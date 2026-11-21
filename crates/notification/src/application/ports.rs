@@ -61,7 +61,10 @@ pub trait EmailSender: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns an error if the mail server refused the message or could
-    /// not be reached. The error's detail is kept for operators.
+    /// Returns an error of the kind `Invalid` if the message can never be
+    /// sent, for example because its recipient cannot be addressed; it is
+    /// not tried again. Returns any other error if the mail server refused
+    /// the message or could not be reached; it is tried again later. The
+    /// error's detail is kept for operators.
     async fn send(&self, email: &Email) -> Result<(), DomainError>;
 }

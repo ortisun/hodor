@@ -156,3 +156,16 @@ fn configuration_that_is_not_valid_is_refused_without_repeating_it() {
     let sender = SmtpSender::new(&good, "Hodor <no-reply@example.com>").expect("valid");
     assert!(!format!("{sender:?}").contains("hunter2"));
 }
+
+#[tokio::test]
+async fn a_recipient_that_cannot_be_addressed_is_an_error_not_to_retry() {
+    let url = Secret::from("smtp://127.0.0.1:1".to_owned());
+    let sender = SmtpSender::new(&url, "no-reply@example.com").expect("valid configuration");
+    let mut message = email();
+    message.recipient = "not an address".to_owned();
+
+    let error = sender.send(&message).await.expect_err("refused");
+
+    assert_eq!(error.kind(), hodor_kernel::ErrorKind::Invalid);
+    assert_eq!(error.code(), "notification.recipient_refused");
+}

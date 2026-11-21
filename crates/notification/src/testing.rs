@@ -95,7 +95,8 @@ impl PendingMessages for InMemoryMessages {
 }
 
 /// A mail server for tests: keeps what it was asked to send, and can be
-/// told to refuse everything.
+/// told to refuse everything. A recipient at `unaddressable.example` can
+/// never be sent to.
 #[derive(Debug, Default)]
 pub struct RecordingSender {
     sent: Mutex<Vec<Email>>,
@@ -118,6 +119,12 @@ impl RecordingSender {
 #[async_trait::async_trait]
 impl EmailSender for RecordingSender {
     async fn send(&self, email: &Email) -> Result<(), DomainError> {
+        if email.recipient.ends_with("@unaddressable.example") {
+            return Err(DomainError::invalid(
+                "notification.recipient_refused",
+                "the recipient cannot be addressed",
+            ));
+        }
         if self.refusing.load(Ordering::SeqCst) {
             return Err(DomainError::internal(
                 "notification.delivery_failed",

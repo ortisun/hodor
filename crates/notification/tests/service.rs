@@ -279,3 +279,27 @@ async fn messages_of_several_tenants_are_delivered_in_one_pass() {
     assert_eq!(world.deliver().await.sent, 2);
     assert_eq!(world.messages.of_tenant(other.tenant_id()).len(), 1);
 }
+
+#[tokio::test]
+async fn a_message_that_can_never_be_sent_fails_at_once() {
+    let world = world();
+    world
+        .enqueue(recovery(
+            "person@unaddressable.example",
+            "en",
+            world.in_an_hour(),
+        ))
+        .await;
+
+    let report = world.deliver().await;
+
+    assert_eq!(report.failed, 1);
+    assert_eq!(world.status(), MessageStatus::Failed);
+    let stored = &world.messages.of_tenant(world.tenant.tenant_id())[0];
+    assert_eq!(stored.snapshot().attempts, 0);
+    assert!(stored.snapshot().variables.is_empty());
+    assert_eq!(
+        world.units_of_work.committed_event_types(),
+        ["notification.message_failed"]
+    );
+}

@@ -5,8 +5,8 @@ use crate::domain::event::NotificationEvent;
 use crate::domain::message::{Locale, Message, MessageId};
 use crate::domain::template::Template;
 use hodor_kernel::{
-    Caller, Clock, DomainError, EventEnvelope, EventMetadata, TenantContext, Timestamp, UnitOfWork,
-    UnitOfWorkFactory,
+    Caller, Clock, DomainError, ErrorKind, EventEnvelope, EventMetadata, TenantContext, Timestamp,
+    UnitOfWork, UnitOfWorkFactory,
 };
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -194,6 +194,10 @@ impl DeliveryService {
                 ),
                 Ok(email) => match self.sender.send(&email).await {
                     Ok(()) => (Outcome::Sent, Some(message.mark_sent(self.clock.now())?)),
+                    Err(error) if error.kind() == ErrorKind::Invalid => (
+                        Outcome::Failed,
+                        Some(message.fail_for_good(&describe(&error))?),
+                    ),
                     Err(error) => {
                         match message.record_failure(self.clock.now(), &describe(&error))? {
                             Some(event) => (Outcome::Failed, Some(event)),

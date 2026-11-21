@@ -97,8 +97,12 @@ fn failed(detail: String) -> DomainError {
 #[async_trait::async_trait]
 impl EmailSender for SmtpSender {
     async fn send(&self, email: &Email) -> Result<(), DomainError> {
+        // Trying again would not help: the address will not change.
         let to: Mailbox = email.recipient.parse().map_err(|_| {
-            failed("the recipient is not an address a mail server accepts".to_owned())
+            DomainError::invalid(
+                "notification.recipient_refused",
+                "the recipient cannot be addressed",
+            )
         })?;
         let message = Message::builder()
             .from(self.from.clone())

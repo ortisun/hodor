@@ -65,6 +65,8 @@ Rules:
 
 - A message is delivered inside one transaction of its tenant, which holds the message locked while the mail server is spoken to. The mail adapter gives up after 30 seconds, so the lock is never held for long.
 - Delivery is tried up to 8 times. After a failure the next try waits twice as long as the one before, starting at 30 seconds, up to 30 minutes.
+- A message that can never be delivered fails at once, without being tried again: one that cannot be written because a variable is missing, or one whose recipient the mail adapter cannot address.
+- A refusal by the mail server is always tried again, even when the server calls it permanent. A server that refuses everything because it is set up wrongly says the same thing as one that refuses a single recipient, and losing every message during such a mistake is worse than trying a hopeless one a few more times.
 - A message that expires before it is delivered is dropped. A link that no longer works is worse than no message.
 - "Sent" means the mail server accepted the message. Whether it reaches an inbox is beyond what Hodor can know.
 - A message may, rarely, be sent twice: if the worker stops after the mail server accepted it and before that was recorded. Messages are written so that receiving one twice is harmless.
@@ -118,7 +120,7 @@ Rules:
 |---|---|
 | `MessageQueue` | Store a message of a tenant; take one for delivery so that no other worker takes it; store what delivery did to it |
 | `PendingMessages` | Find the messages that are due, across tenants. The one port of this context that is not bound to a tenant; only the worker is given it |
-| `EmailSender` | Hand a rendered message to a mail server |
+| `EmailSender` | Hand a rendered message to a mail server. An error of the kind "invalid" means the message can never be sent; any other error means: try again |
 
 `EmailSender` is implemented by the `adapters-smtp` crate. Any number of workers can deliver at once: a message being delivered is locked, and other workers skip it.
 
