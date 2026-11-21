@@ -10,6 +10,7 @@ mod authentication;
 mod authorization;
 mod credential;
 mod database;
+mod federation;
 mod identity;
 mod migrate;
 mod notification;
@@ -25,6 +26,7 @@ pub use authentication::{PgAttemptStore, PgTransactionStore, PgVerificationToken
 pub use authorization::PgRoleAssignmentStore;
 pub use credential::{PgAccessTokenStore, PgPasswordStore};
 pub use database::{Database, TenantTransaction, connect_pool, ping_pool};
+pub use federation::{PgLinkStore, PgProviderStore};
 pub use identity::PgUserRepository;
 pub use migrate::migrate;
 pub use notification::{PgMessageQueue, PgPendingMessages};
