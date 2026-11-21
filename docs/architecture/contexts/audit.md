@@ -52,7 +52,7 @@ Each record's hash covers the record itself and the hash of the record before it
 
 ```mermaid
 flowchart LR
-    first["Record 1<br/>previous: zeros<br/>hash: H1"] --> second["Record 2<br/>previous: H1<br/>hash: H2"] --> third["Record 3<br/>previous: H2<br/>hash: H3"]
+    first["Record 1<br/>previous hash: zeros"] --> second["Record 2<br/>previous hash: the hash of record 1"] --> third["Record 3<br/>previous hash: the hash of record 2"]
 ```
 
 The hash is the SHA-256 of these fields, each preceded by its length so that no two different records can produce the same bytes:
