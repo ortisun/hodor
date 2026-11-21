@@ -10,6 +10,7 @@ use hodor_adapters_crypto::{
     Sha256Digest,
 };
 use hodor_adapters_http::{GuardedHttpClient, OutboundPolicy};
+use hodor_adapters_ldap::LdapDirectoryClient;
 use hodor_adapters_postgres::{
     Database, PgAccessTokenStore, PgAttemptStore, PgAuditLog, PgLinkStore, PgMessageQueue,
     PgPasswordStore, PgPendingAuthorizationStore, PgProviderStore, PgRoleAssignmentStore,
@@ -19,13 +20,13 @@ use hodor_adapters_postgres::{
 use hodor_audit::api::AuditService;
 use hodor_authentication::api::{
     AccountService, AttemptGuard, AuthFlow, AuthenticationService, FlowEngine,
-    IdentifierAuthenticator, PasswordAuthenticator,
+    IdentifierAuthenticator, LockoutRules, PasswordAuthenticator,
 };
 use hodor_authorization::api::AuthorizationService;
 use hodor_credential::api::{AccessTokenService, CredentialService};
 use hodor_federation::api::{
     EXTERNAL_STEP, ExternalIdentityAuthenticator, ExternalSignIn, FederationService, GitHubClient,
-    OpenIdClient,
+    LockoutPolicy, OpenIdClient,
 };
 use hodor_identity::api::IdentityService;
 use hodor_kernel::{DomainError, Secret, SystemClock, TenantContext};
@@ -120,6 +121,11 @@ struct Config {
     /// development stack on one machine; never set it anywhere real.
     #[arg(long, env = "HODOR_OUTBOUND_DEVELOPMENT_HOSTS", value_delimiter = ',')]
     outbound_development_hosts: Vec<String>,
+
+    /// The LDAP directories identity providers may name, as `host:port`
+    /// separated by commas. Empty: no directory can be used.
+    #[arg(long, env = "HODOR_DIRECTORY_HOSTS", value_delimiter = ',')]
+    directory_hosts: Vec<String>,
 
     /// Memory one password hash uses, in kibibytes.
     #[arg(long, env = "HODOR_PASSWORD_HASH_MEMORY_KIBIBYTES", default_value_t = 19 * 1024)]
@@ -342,7 +348,7 @@ fn interaction(config: &Config, database: &Database) -> Result<InteractionState,
     // Signing in through an identity provider is an alternative of the
     // flow, offered only by an installation that can keep secrets.
     let mut flow = AuthFlow::built_in();
-    let external = external_sign_in(config, database, &identity)?;
+    let external = external_sign_in(config, database, &identity, &tenants, &guard)?;
     if let Some(external) = &external {
         engine = engine.with(Arc::new(ExternalIdentityAuthenticator::new(
             external.clone(),
@@ -397,12 +403,49 @@ fn development_hosts(config: &Config) -> Vec<String> {
         .collect()
 }
 
+/// The directories that may be connected to: empty unless set.
+fn directory_hosts(config: &Config) -> Vec<String> {
+    config
+        .directory_hosts
+        .iter()
+        .map(|host| host.trim().to_ascii_lowercase())
+        .filter(|host| !host.is_empty())
+        .collect()
+}
+
+/// The tenant's lockout rules, read from the tenant context, for the
+/// federation context's directories.
+struct TenantLockout(TenantService);
+
+#[async_trait::async_trait]
+impl LockoutPolicy for TenantLockout {
+    async fn rules(&self, tenant: &TenantContext) -> Result<LockoutRules, DomainError> {
+        let settings = self
+            .0
+            .get(tenant)
+            .await?
+            .snapshot()
+            .settings
+            .lockout
+            .clone();
+        let seconds = |value: u32| time::Duration::seconds(i64::from(value));
+        Ok(LockoutRules {
+            max_failures: u32::from(settings.max_failures),
+            window: seconds(settings.window_seconds),
+            first_lockout: seconds(settings.first_lockout_seconds),
+            longest_lockout: seconds(settings.longest_lockout_seconds),
+        })
+    }
+}
+
 /// Builds what signing in through an identity provider needs, if this
 /// installation has keys to keep secrets with.
 fn external_sign_in(
     config: &Config,
     database: &Database,
     identity: &IdentityService,
+    tenants: &TenantService,
+    guard: &AttemptGuard,
 ) -> Result<Option<ExternalSignIn>, DomainError> {
     let Some(setting) = &config.secret_keys else {
         tracing::warn!("HODOR_SECRET_KEYS is not set: no identity provider can be used");
@@ -424,7 +467,8 @@ fn external_sign_in(
         secrets.clone(),
         clock.clone(),
     )
-    .allowing_development_hosts(&development_hosts);
+    .allowing_development_hosts(&development_hosts)
+    .allowing_directory_hosts(&directory_hosts(config));
     let openid = OpenIdClient::new(
         http.clone(),
         Arc::new(AwsLcVerifier),
@@ -434,7 +478,7 @@ fn external_sign_in(
     )
     .allowing_development_hosts(&development_hosts);
     let github = GitHubClient::new(http.clone(), Arc::new(OsRandom));
-    Ok(Some(ExternalSignIn::new(
+    let sign_in = ExternalSignIn::new(
         federation,
         openid,
         github,
@@ -445,7 +489,13 @@ fn external_sign_in(
         digest,
         clock,
         &config.public_url,
-    )))
+    )
+    .with_directories(
+        Arc::new(LdapDirectoryClient::new(&directory_hosts(config))),
+        guard.clone(),
+        Arc::new(TenantLockout(tenants.clone())),
+    );
+    Ok(Some(sign_in))
 }
 
 /// Builds everything the administration interface needs.

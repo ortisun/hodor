@@ -795,6 +795,7 @@ async fn create_provider(
                         .unwrap_or_else(|| ProviderSettings::default_scopes_for(kind)),
                     creates_users: new.creates_users.unwrap_or(true),
                     trusts_email: new.trusts_email.unwrap_or(false),
+                    directory: None,
                 },
                 client_secret: Secret::from(new.client_secret),
             };
@@ -858,6 +859,8 @@ async fn change_provider(
                 scopes: changes.scopes.unwrap_or(now.scopes),
                 creates_users: changes.creates_users.unwrap_or(now.creates_users),
                 trusts_email: changes.trusts_email.unwrap_or(now.trusts_email),
+                // A directory's own settings are not changed here.
+                directory: now.directory,
             };
             let provider = federation
                 .change_provider(&tenant, ChangeProvider { id, settings }, caller)

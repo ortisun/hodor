@@ -491,6 +491,7 @@ async fn run_provider(
                             },
                             creates_users: !no_create_users,
                             trusts_email: trust_email,
+                            directory: None,
                         },
                         client_secret: Secret::from(client_secret),
                     },

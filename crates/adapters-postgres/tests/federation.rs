@@ -49,6 +49,7 @@ fn create(alias: &str) -> CreateProvider {
             scopes: ProviderSettings::default_scopes(),
             creates_users: true,
             trusts_email: false,
+            directory: None,
         },
         client_secret: Secret::from(SECRET.to_owned()),
     }
@@ -263,4 +264,56 @@ async fn the_database_itself_refuses_what_the_rules_forbid() {
         .execute(database.owner())
         .await;
     assert!(refused.is_err());
+}
+
+#[tokio::test]
+async fn a_directory_comes_back_with_its_own_settings() {
+    use hodor_federation::api::DirectorySettings;
+    let database = TestDatabase::start().await;
+    let service = service(&database).allowing_directory_hosts(&["ldap.example.com:636".to_owned()]);
+    let tenant = TenantContext::assume(TenantId::generate());
+    let mut settings = DirectorySettings::new(
+        "ou=people,dc=example,dc=com",
+        "(sAMAccountName={identifier})",
+    );
+    settings.subject_attribute = "objectGUID".to_owned();
+    let created = service
+        .create_provider(
+            &tenant,
+            CreateProvider {
+                alias: "company".to_owned(),
+                kind: ProviderKind::Ldap,
+                settings: ProviderSettings {
+                    display_name: "Company".to_owned(),
+                    issuer: "ldaps://ldap.example.com".to_owned(),
+                    client_id: "cn=hodor,ou=services,dc=example,dc=com".to_owned(),
+                    scopes: Vec::new(),
+                    creates_users: true,
+                    trusts_email: true,
+                    directory: Some(settings.clone()),
+                },
+                client_secret: Secret::from("the bind password".to_owned()),
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("a directory");
+    let read = service.provider(&tenant, created.id()).await.expect("read");
+    assert_eq!(read, created);
+    assert_eq!(read.snapshot().settings.directory, Some(settings));
+
+    // A directory without its settings, or another kind with them, is
+    // refused by the database itself.
+    for statement in [
+        "UPDATE federation.identity_provider SET directory_base = NULL",
+        "UPDATE federation.identity_provider SET kind = 'openid_connect'",
+    ] {
+        assert!(
+            sqlx::query(statement)
+                .execute(database.owner())
+                .await
+                .is_err(),
+            "{statement}"
+        );
+    }
 }

@@ -77,11 +77,12 @@ A tenant may offer [identity providers](../architecture/contexts/federation.md#s
 | `GET /interaction/sign-in/providers` | The providers the tenant offers |
 | `POST /interaction/sign-in/providers/{alias}` | Choose a provider for the current sign-in |
 | `POST /interaction/sign-in/providers/{alias}/callback` | Finish, with what the provider sent back |
+| `POST /interaction/sign-in/providers/{alias}/password` | Sign in through a directory, with an identifier and a password |
 
 `GET /interaction/sign-in/providers` needs no sign-in and answers with what the sign-in page shows, enabled providers only:
 
 ```json
-{ "providers": [ { "alias": "google", "display_name": "Google" } ] }
+{ "providers": [ { "alias": "google", "display_name": "Google", "kind": "openid_connect" } ] }
 ```
 
 `POST /interaction/sign-in/providers/{alias}` needs the sign-in cookie and the CSRF token. It answers `200` with the address to send the browser to:
@@ -97,6 +98,14 @@ The provider sends the person back to `/t/{slug}/account/providers/{alias}/callb
 ```
 
 The answer has [the shape of every sign-in response](#what-a-sign-in-response-looks-like): `completed` with the session cookie set, or `rejected`, in the same words whatever the reason.
+
+A provider in the list carries its `kind`. For one of the kind `ldap`, a [directory](../architecture/contexts/federation.md#signing-in-through-a-directory), nobody leaves: the page asks for an identifier and a password and sends them to `POST /interaction/sign-in/providers/{alias}/password`, with the sign-in cookie and the CSRF token:
+
+```json
+{ "identifier": "ana", "password": "…" }
+```
+
+The answer has the shape of every sign-in response. Attempts are limited as for a password of Hodor's own (`429`, `authentication.too_many_attempts`).
 
 | Situation | Status | Code |
 |---|---|---|
