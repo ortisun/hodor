@@ -1,7 +1,7 @@
 //! What happens during sign-ins, as other contexts hear about it.
 //!
-//! Events never carry the identifier that was typed or anything about a
-//! password.
+//! Events never carry the identifier that was typed, an email address, a
+//! token, a link or anything about a password.
 
 use hodor_kernel::{DomainEvent, Timestamp, UserId};
 use serde::Serialize;
@@ -35,6 +35,21 @@ pub enum AuthenticationEvent {
         #[serde(with = "time::serde::rfc3339")]
         until: Timestamp,
     },
+    /// A person finished registering.
+    RegistrationCompleted {
+        /// The user that was created.
+        user_id: UserId,
+    },
+    /// A recovery link was sent to a user.
+    RecoveryRequested {
+        /// Whose password may be chosen anew.
+        user_id: UserId,
+    },
+    /// A person chose a new password with a recovery link.
+    PasswordReset {
+        /// Whose password it is.
+        user_id: UserId,
+    },
 }
 
 impl DomainEvent for AuthenticationEvent {
@@ -43,6 +58,9 @@ impl DomainEvent for AuthenticationEvent {
             Self::Succeeded { .. } => "authentication.succeeded",
             Self::Failed { .. } => "authentication.failed",
             Self::LockedOut { .. } => "authentication.locked_out",
+            Self::RegistrationCompleted { .. } => "authentication.registration_completed",
+            Self::RecoveryRequested { .. } => "authentication.recovery_requested",
+            Self::PasswordReset { .. } => "authentication.password_reset",
         }
     }
 }

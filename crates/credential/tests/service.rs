@@ -227,6 +227,48 @@ async fn recent_passwords_cannot_be_reused_until_they_leave_the_history() {
 }
 
 #[tokio::test]
+async fn a_password_can_be_checked_by_every_rule_without_being_stored() {
+    let world = world();
+    world.set("password number 1").await.expect("first");
+    let events = world.units_of_work.committed_event_types().len();
+    let check = |password: &'static str| {
+        let world = &world;
+        async move {
+            let password = secret(password);
+            let new = NewPassword {
+                password: &password,
+                rules: RULES,
+                own_names: &["ana@example.com"],
+            };
+            world
+                .service
+                .check_new_password(&world.tenant, world.user, new)
+                .await
+        }
+    };
+
+    assert_eq!(
+        check("password number 1").await.expect_err("reused").code(),
+        "credential.password_reused"
+    );
+    assert!(check("short").await.is_err());
+    assert!(check("ana@example.com").await.is_err());
+    check("password number 2").await.expect("acceptable");
+
+    // Nothing was stored or announced: the old password still verifies
+    // and the checked one does not.
+    assert_eq!(world.units_of_work.committed_event_types().len(), events);
+    assert!(matches!(
+        world.check(Some(world.user), "password number 1").await,
+        PasswordCheck::Verified { .. }
+    ));
+    assert_eq!(
+        world.check(Some(world.user), "password number 2").await,
+        PasswordCheck::Rejected
+    );
+}
+
+#[tokio::test]
 async fn changing_requires_the_current_password() {
     let world = world();
     world.set("the current password").await.expect("set");

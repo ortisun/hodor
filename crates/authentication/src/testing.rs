@@ -2,11 +2,14 @@
 
 use crate::api::{
     AttemptCounter, AttemptStore, AttemptSubject, AuthFlow, AuthTransaction, LockoutRules,
-    TransactionId, TransactionStore,
+    TokenPurpose, TransactionId, TransactionStore, VerificationSecret, VerificationToken,
+    VerificationTokenHash, VerificationTokenId, VerificationTokenStore,
 };
+use hodor_kernel::random::testing::FakeDigest;
 use hodor_kernel::{
     DomainError, TenantContext, TenantId, Timestamp, UnitOfWork, UnitOfWorkFactory,
 };
+use hodor_kernel::{RandomSource, UserId};
 use hodor_session::api::ClientInfo;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -349,4 +352,324 @@ pub async fn run_transaction_contract(ports: TransactionPorts<'_>) {
         .await
         .expect_err("cross-tenant");
     assert_eq!(error.code(), "authentication.transaction_not_found");
+}
+
+/// Verification tokens kept in memory.
+#[derive(Debug, Clone, Default)]
+pub struct InMemoryVerificationTokens {
+    rows: Arc<Mutex<BTreeMap<(TenantId, VerificationTokenId), VerificationToken>>>,
+}
+
+impl InMemoryVerificationTokens {
+    fn rows(
+        &self,
+    ) -> std::sync::MutexGuard<'_, BTreeMap<(TenantId, VerificationTokenId), VerificationToken>>
+    {
+        self.rows.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+#[async_trait::async_trait]
+impl VerificationTokenStore for InMemoryVerificationTokens {
+    async fn insert(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        token: &VerificationToken,
+    ) -> Result<(), DomainError> {
+        self.rows()
+            .insert((uow.tenant().tenant_id(), token.id()), token.clone());
+        Ok(())
+    }
+
+    async fn replace_earlier(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        purpose: TokenPurpose,
+        email: &str,
+        now: Timestamp,
+    ) -> Result<(), DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        for ((owner, _), token) in self.rows().iter_mut() {
+            let state = token.snapshot();
+            if *owner == tenant
+                && state.purpose == purpose
+                && state.email == email
+                && state.used_at.is_none()
+                && state.replaced_at.is_none()
+            {
+                token.mark_replaced(now);
+            }
+        }
+        Ok(())
+    }
+
+    async fn find(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        hash: &VerificationTokenHash,
+        purpose: TokenPurpose,
+    ) -> Result<Option<VerificationToken>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        Ok(self
+            .rows()
+            .iter()
+            .find(|((owner, _), token)| {
+                *owner == tenant
+                    && token.snapshot().purpose == purpose
+                    && &token.snapshot().token_hash == hash
+            })
+            .map(|(_, token)| token.clone()))
+    }
+
+    async fn use_up(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        hash: &VerificationTokenHash,
+        purpose: TokenPurpose,
+        now: Timestamp,
+    ) -> Result<Option<VerificationToken>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let mut rows = self.rows();
+        let found = rows.iter_mut().find(|((owner, _), token)| {
+            *owner == tenant
+                && token.snapshot().purpose == purpose
+                && &token.snapshot().token_hash == hash
+                && token.is_good_at(now)
+        });
+        Ok(found.map(|(_, token)| {
+            token.mark_used(now);
+            token.clone()
+        }))
+    }
+}
+
+/// The ports under test.
+#[derive(Clone)]
+pub struct VerificationTokenPorts<'a> {
+    /// Starts units of work.
+    pub units_of_work: &'a dyn UnitOfWorkFactory,
+    /// The store under test.
+    pub tokens: &'a dyn VerificationTokenStore,
+}
+
+impl std::fmt::Debug for VerificationTokenPorts<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VerificationTokenPorts")
+            .finish_non_exhaustive()
+    }
+}
+
+/// A random source for the contract whose every call gives different
+/// bytes, so that every token made with it is different.
+struct ContractRandom;
+
+impl RandomSource for ContractRandom {
+    fn fill(&self, buffer: &mut [u8]) {
+        let unique = VerificationTokenId::generate().as_uuid();
+        for (byte, source) in buffer
+            .iter_mut()
+            .zip(unique.as_bytes().iter().rev().cycle())
+        {
+            *byte = *source;
+        }
+    }
+}
+
+fn issue(
+    purpose: TokenPurpose,
+    email: &str,
+    user_id: Option<UserId>,
+) -> (VerificationToken, VerificationSecret) {
+    VerificationToken::issue(
+        purpose,
+        email,
+        user_id,
+        "pt-BR",
+        MOMENT,
+        &ContractRandom,
+        &FakeDigest,
+    )
+}
+
+fn hash_of(secret: &VerificationSecret) -> VerificationTokenHash {
+    VerificationTokenHash::of_presented(secret.expose(), &FakeDigest).expect("well formed")
+}
+
+async fn store_token(
+    ports: &VerificationTokenPorts<'_>,
+    tenant: &TenantContext,
+    token: &VerificationToken,
+) {
+    let mut uow = ports.units_of_work.begin(tenant).await.expect("begin");
+    ports
+        .tokens
+        .insert(uow.as_mut(), token)
+        .await
+        .expect("insert");
+    uow.commit().await.expect("commit");
+}
+
+async fn find_token(
+    ports: &VerificationTokenPorts<'_>,
+    tenant: &TenantContext,
+    secret: &VerificationSecret,
+    purpose: TokenPurpose,
+) -> Option<VerificationToken> {
+    let mut uow = ports.units_of_work.begin(tenant).await.expect("begin");
+    ports
+        .tokens
+        .find(uow.as_mut(), &hash_of(secret), purpose)
+        .await
+        .expect("find")
+}
+
+async fn use_token(
+    ports: &VerificationTokenPorts<'_>,
+    tenant: &TenantContext,
+    secret: &VerificationSecret,
+    purpose: TokenPurpose,
+    now: Timestamp,
+) -> Option<VerificationToken> {
+    let mut uow = ports.units_of_work.begin(tenant).await.expect("begin");
+    let used = ports
+        .tokens
+        .use_up(uow.as_mut(), &hash_of(secret), purpose, now)
+        .await
+        .expect("use up");
+    uow.commit().await.expect("commit");
+    used
+}
+
+/// Runs the whole contract of a verification token store. Each run uses
+/// tenants of its own, so runs can share one database.
+///
+/// # Panics
+///
+/// Panics when the implementation breaks the contract.
+pub async fn run_verification_token_contract(ports: VerificationTokenPorts<'_>) {
+    use TokenPurpose::{PasswordRecovery, Registration};
+    let tenant = TenantContext::assume(TenantId::generate());
+    let elsewhere = TenantContext::assume(TenantId::generate());
+    let soon = MOMENT + Duration::minutes(5);
+
+    // A stored token is loaded unchanged, by its own tenant and purpose only.
+    let user = UserId::generate();
+    let (recovery, recovery_secret) = issue(PasswordRecovery, "ana@example.com", Some(user));
+    store_token(&ports, &tenant, &recovery).await;
+    assert_eq!(
+        find_token(&ports, &tenant, &recovery_secret, PasswordRecovery).await,
+        Some(recovery.clone())
+    );
+    assert_eq!(
+        find_token(&ports, &tenant, &recovery_secret, Registration).await,
+        None
+    );
+    assert_eq!(
+        find_token(&ports, &elsewhere, &recovery_secret, PasswordRecovery).await,
+        None
+    );
+
+    // It cannot be used up by another tenant or for another purpose.
+    assert_eq!(
+        use_token(&ports, &elsewhere, &recovery_secret, PasswordRecovery, soon).await,
+        None
+    );
+    assert_eq!(
+        use_token(&ports, &tenant, &recovery_secret, Registration, soon).await,
+        None
+    );
+
+    // It is used up once, and the use is remembered.
+    let used = use_token(&ports, &tenant, &recovery_secret, PasswordRecovery, soon)
+        .await
+        .expect("good");
+    assert_eq!(used.snapshot().user_id, Some(user));
+    assert_eq!(used.snapshot().used_at, Some(soon));
+    assert_eq!(
+        use_token(&ports, &tenant, &recovery_secret, PasswordRecovery, soon).await,
+        None
+    );
+    let stored = find_token(&ports, &tenant, &recovery_secret, PasswordRecovery)
+        .await
+        .expect("still stored");
+    assert_eq!(stored.snapshot().used_at, Some(soon));
+
+    // An expired token cannot be used up, and stays unused.
+    let (expiring, expiring_secret) = issue(Registration, "bia@example.com", None);
+    store_token(&ports, &tenant, &expiring).await;
+    let too_late = MOMENT + Registration.lifetime();
+    assert_eq!(
+        use_token(&ports, &tenant, &expiring_secret, Registration, too_late).await,
+        None
+    );
+    assert!(
+        use_token(
+            &ports,
+            &tenant,
+            &expiring_secret,
+            Registration,
+            too_late - Duration::seconds(1)
+        )
+        .await
+        .is_some()
+    );
+
+    // Replacing touches only unused tokens of the same purpose and address,
+    // in the same tenant.
+    let (first, first_secret) = issue(Registration, "caio@example.com", None);
+    let (other_address, other_address_secret) = issue(Registration, "dora@example.com", None);
+    let (other_purpose, other_purpose_secret) =
+        issue(PasswordRecovery, "caio@example.com", Some(user));
+    let (other_tenant, other_tenant_secret) = issue(Registration, "caio@example.com", None);
+    for token in [&first, &other_address, &other_purpose] {
+        store_token(&ports, &tenant, token).await;
+    }
+    store_token(&ports, &elsewhere, &other_tenant).await;
+
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    ports
+        .tokens
+        .replace_earlier(uow.as_mut(), Registration, "caio@example.com", soon)
+        .await
+        .expect("replace");
+    uow.commit().await.expect("commit");
+
+    let replaced = find_token(&ports, &tenant, &first_secret, Registration)
+        .await
+        .expect("still stored");
+    assert_eq!(replaced.snapshot().replaced_at, Some(soon));
+    assert_eq!(
+        use_token(&ports, &tenant, &first_secret, Registration, soon).await,
+        None
+    );
+    assert!(
+        use_token(&ports, &tenant, &other_address_secret, Registration, soon)
+            .await
+            .is_some()
+    );
+    assert!(
+        use_token(
+            &ports,
+            &tenant,
+            &other_purpose_secret,
+            PasswordRecovery,
+            soon
+        )
+        .await
+        .is_some()
+    );
+    assert!(
+        use_token(&ports, &elsewhere, &other_tenant_secret, Registration, soon)
+            .await
+            .is_some()
+    );
+
+    // A token made after the replacement is good.
+    let (second, second_secret) = issue(Registration, "caio@example.com", None);
+    store_token(&ports, &tenant, &second).await;
+    assert!(
+        use_token(&ports, &tenant, &second_secret, Registration, soon)
+            .await
+            .is_some()
+    );
 }

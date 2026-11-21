@@ -51,7 +51,7 @@ fn recovery(recipient: &str, locale: &str, expires_at: Timestamp) -> EnqueueMess
         variables: [
             ("link", "https://example.com/reset?token=0a1b2c"),
             ("tenant_name", "Example"),
-            ("expires_in", "1 hour"),
+            ("expires_at", "1970-01-01 01:00 UTC"),
         ]
         .into_iter()
         .map(|(name, value)| (name.to_owned(), value.to_owned()))

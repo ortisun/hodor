@@ -111,6 +111,25 @@ impl CredentialService {
         .await
     }
 
+    /// Says whether a password would be accepted for a user, by the same
+    /// rules as [`Self::set_password`], without storing anything. Lets a
+    /// caller refuse a password before doing something that cannot be
+    /// undone.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Invalid` if the password breaks a rule or repeats a recent
+    /// one, and `Unavailable` if hashing is overloaded.
+    pub async fn check_new_password(
+        &self,
+        tenant: &TenantContext,
+        user_id: UserId,
+        new: NewPassword<'_>,
+    ) -> Result<(), DomainError> {
+        let existing = self.read(tenant, user_id).await?;
+        self.check_new(existing.as_ref(), &new).await
+    }
+
     /// Replaces a user's own password after checking the current one.
     ///
     /// # Errors
@@ -242,6 +261,27 @@ impl CredentialService {
         self.passwords.get(uow.as_mut(), user_id).await
     }
 
+    /// Checks a new password against every rule, including the user's
+    /// previous passwords.
+    async fn check_new(
+        &self,
+        existing: Option<&PasswordRecord>,
+        new: &NewPassword<'_>,
+    ) -> Result<(), DomainError> {
+        check_acceptable(new.password, &new.rules, new.own_names)?;
+        if let Some(record) = existing {
+            for barred in record.hashes_barred_from_reuse(new.rules.history_depth) {
+                if self.hasher.verify(new.password, barred).await?.matches {
+                    return Err(DomainError::invalid(
+                        "credential.password_reused",
+                        "this password was used recently; choose another",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Checks a new password against every rule, hashes it and stores it.
     #[allow(clippy::too_many_arguments)]
     async fn store_new(
@@ -254,17 +294,7 @@ impl CredentialService {
         caller: Caller,
         event: PasswordEvent,
     ) -> Result<(), DomainError> {
-        check_acceptable(new.password, &new.rules, new.own_names)?;
-        if let Some(record) = &existing {
-            for barred in record.hashes_barred_from_reuse(new.rules.history_depth) {
-                if self.hasher.verify(new.password, barred).await?.matches {
-                    return Err(DomainError::invalid(
-                        "credential.password_reused",
-                        "this password was used recently; choose another",
-                    ));
-                }
-            }
-        }
+        self.check_new(existing.as_ref(), new).await?;
         let hash = self.hasher.hash(new.password).await?;
         let now = self.clock.now();
         match existing {

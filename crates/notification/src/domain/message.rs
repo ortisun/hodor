@@ -414,7 +414,7 @@ mod tests {
         [
             ("link", "https://example.com/verify?token=abc"),
             ("tenant_name", "Example"),
-            ("expires_in", "24 hours"),
+            ("expires_at", "1970-01-02 00:00 UTC"),
         ]
         .into_iter()
         .map(|(name, value)| (name.to_owned(), value.to_owned()))

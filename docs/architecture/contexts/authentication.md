@@ -211,6 +211,8 @@ No user is created at this point. An address that is never confirmed leaves noth
 
 If the address acquired an account between asking and finishing, step 4 is refused and the token is spent. The person is told the link no longer works.
 
+If setting the password fails after the user was created, which happens only when the server is too busy to hash it, the account exists without a password. The person is told to try later, and gets in by recovering the password: the address is already verified.
+
 Finishing does not sign the person in. They sign in next, with the password they just chose.
 
 ### Password recovery
