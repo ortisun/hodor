@@ -19,6 +19,8 @@ import { inflateRawSync } from "node:zlib";
 const PORT = Number(process.env.PORT ?? 9500);
 // What the identity provider calls itself: the issuer of what it sends.
 const ENTITY_ID = process.env.ENTITY_ID ?? "urn:hodor:development-saml-provider";
+// Where a person's browser reaches it.
+const BROWSER_URL = process.env.BROWSER_URL ?? `http://localhost:${PORT}`;
 const here = new URL(".", import.meta.url);
 const KEY = readFileSync(process.env.KEY_FILE ?? new URL("signing-key.pem", here), "utf8");
 const CERTIFICATE = readFileSync(process.env.CERTIFICATE_FILE ?? new URL("certificate.pem", here), "utf8");
@@ -254,7 +256,7 @@ function metadata(response) {
     `<md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" entityID="${attribute(ENTITY_ID)}">` +
       `<md:IDPSSODescriptor protocolSupportEnumeration="${PROTOCOL}">` +
       `<md:KeyDescriptor use="signing"><ds:KeyInfo xmlns:ds="${SIGNATURE}"><ds:X509Data><ds:X509Certificate>${CERTIFICATE_BASE64}</ds:X509Certificate></ds:X509Data></ds:KeyInfo></md:KeyDescriptor>` +
-      `<md:SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="/sso"/>` +
+      `<md:SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="${attribute(`${BROWSER_URL}/sso`)}"/>` +
       `</md:IDPSSODescriptor></md:EntityDescriptor>`,
   );
 }

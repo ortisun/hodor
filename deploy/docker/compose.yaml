@@ -119,6 +119,7 @@ services:
     environment:
       PORT: "9500"
       ENTITY_ID: urn:hodor:development-saml-provider
+      BROWSER_URL: http://localhost:${HODOR_SAML_PROVIDER_PORT:-9500}
     volumes:
       - ../dev-saml-provider:/saml-provider:ro
     ports:

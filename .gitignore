@@ -1,3 +1,8 @@
 /target
 .env
 .DS_Store
+
+# The development SAML identity provider signs with a key that is written in
+# the repository on purpose: see deploy/dev-saml-provider/README.md. A rule
+# elsewhere that ignores every PEM file must not keep it out.
+!deploy/dev-saml-provider/*.pem

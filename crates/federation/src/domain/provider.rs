@@ -241,8 +241,13 @@ impl SamlSettings {
     /// Returns `federation.saml_invalid` if the certificate cannot be used.
     pub fn key(&self) -> Result<hodor_saml::IdentityProviderKey, DomainError> {
         hodor_saml::IdentityProviderKey::from_certificate(&self.certificate).map_err(|error| {
-            DomainError::invalid("federation.saml_invalid", "the certificate cannot be used")
-                .with_detail(error.reason())
+            // The reason is in the message as well, which is what an
+            // administrator reads.
+            DomainError::invalid(
+                "federation.saml_invalid",
+                format!("the certificate cannot be used: {}", error.reason()),
+            )
+            .with_detail(error.reason())
         })
     }
 

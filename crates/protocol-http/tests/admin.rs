@@ -1482,6 +1482,13 @@ async fn an_administrator_adds_and_changes_a_saml_provider() {
         .await;
     assert_eq!(broken.status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(broken.code(), "federation.saml_invalid");
+    assert!(
+        broken.body["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("certificate_unreadable")),
+        "{:?}",
+        broken.body
+    );
 
     let secret = world
         .as_administrator(
