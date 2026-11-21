@@ -237,11 +237,15 @@ When the person chooses a SAML provider, Hodor keeps a [pending authorization](#
 
 The identity provider makes the person's browser post the response to the assertion consumer address, from the identity provider's site. The cookie that ties a sign-in to its browser is not sent on such a request, so this is not where the sign-in is finished:
 
-1. The assertion consumer address accepts `SAMLResponse` and `RelayState`, form-encoded, at most 384 kibibytes. It is the one route of the interaction interface that accepts a request started by another site.
-2. It finds the pending authorization of that provider whose state hashes to the `RelayState`, and keeps the response with it, unread. A second response for the same pending authorization is ignored: the first one wins.
-3. Whatever it found, it answers `303 See Other` to `/t/{slug}/account/providers/{alias}/callback?state={RelayState}&binding=saml`. It says nothing else: an unknown state and a known one look the same.
+1. The assertion consumer address accepts `SAMLResponse` and `RelayState`, form-encoded, a body of at most 768 kibibytes holding a response of at most 384. It is the one route of the interaction interface that accepts a request started by another site.
+2. It makes a **receipt**: a new random value of 256 bits.
+3. It finds the pending authorization of that provider whose state hashes to the `RelayState`, and keeps the response with it, unread, with the hash of the receipt. A second response for the same pending authorization is ignored: the first one wins. A response that is not base64 is not kept.
+4. Whatever it found, it answers `303 See Other` to `/t/{slug}/account/providers/{alias}/callback?binding=saml&state={RelayState}&receipt={receipt}`. It says nothing else: an unknown state and a known one look the same. A relay state that is not a plain token of at most 80 characters is not written into the address, and nothing is kept for it.
 
-The page at that address finishes as it does for OpenID Connect, from Hodor's own origin with the cookie: the state is presented, the pending authorization is taken once, and only then is the kept response read and checked. The response is checked against the request of **this browser's** sign-in, which is what stops a response obtained by someone else from being finished in a victim's browser (Threat-Federation-03).
+The page at that address finishes as it does for OpenID Connect, from Hodor's own origin with the cookie, presenting the state and the receipt: the pending authorization is taken once, and only then is the kept response read and checked. Two things must hold, and each stops one attack:
+
+- **The response answers the request of this browser's sign-in.** A response obtained by someone else, kept on a victim's sign-in, answers a request the victim's sign-in never made, and is refused (Threat-Federation-03).
+- **The browser that finishes is the one that carried the response.** Whoever starts a sign-in knows its relay state, and the address at the identity provider is a real address on the identity provider's own site. Without the receipt, an attacker could start a sign-in, send that address to a victim already signed in at the identity provider, and finish their own sign-in with the response the victim's browser posted: they would be signed in as the victim. The receipt goes only to the browser that posted the response, in the address it is sent to; the attacker never sees it, and a sign-in finished without it is refused.
 
 ### Checking the response
 
@@ -464,6 +468,7 @@ All tables are under [forced row-level security](../multi-tenancy.md#isolation-b
 | `code_verifier` | `bytea` | The sealed PKCE verifier. For SAML, which has none, an empty secret sealed |
 | `expires_at` | `timestamptz` | |
 | `saml_response` | `text` | The response a SAML identity provider posted, unread, as it arrived. Set once |
+| `saml_receipt_hash` | `bytea` | SHA-256 of the receipt given to the browser that posted the response. Set with it |
 
 ## Not built yet
 
@@ -483,6 +488,6 @@ All tables are under [forced row-level security](../multi-tenancy.md#isolation-b
 | Mapping what a provider says about a person to the user's profile, groups or roles | Issue-40 for the profile; groups and roles are not in Milestone 2 |
 | Linking and unlinking by the person themself, routing by email domain | The account console |
 | Letting a person who already has an account connect an external identity to it, with proof of both | The account console |
-| Pending authorizations that were never finished are never removed | A cleanup job, later |
+| Pending authorizations that were never finished are never removed. One that kept a SAML response holds up to 384 kibibytes, and starting a sign-in and choosing a provider are not limited | A cleanup job and limits on starting sign-ins, before SAML is used anywhere real |
 | Bringing the name and the language up to date on later sign-ins | With claim mapping |
 | Protection against a local account made in advance with someone else's address (Threat-Federation-02). Such an account keeps the person's external identity out; it is not taken over | With linking, in the account console |

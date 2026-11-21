@@ -6,7 +6,7 @@ The corpus is about Hodor as a **service provider**: the side that receives a re
 
 ## Where the tests are
 
-Each case is one test, named after the case, in `crates/saml/tests/corpus.rs`, against the crate `hodor-saml` that checks responses. Three cases are about the sign-in a response belongs to rather than the response itself: `in-response-to-other-browser`, `in-response-to-used` and `relay-state-address`. They are tested where a sign-in goes through, over HTTP, in `crates/protocol-http/tests/federated_sign_in.rs`.
+Each case is one test, named after the case, in `crates/saml/tests/corpus.rs`, against the crate `hodor-saml` that checks responses. Four cases are about the sign-in a response belongs to rather than the response itself: `in-response-to-other-browser`, `in-response-to-used`, `relay-state-address` and `relay-state-handed-to-victim`. They are tested where a sign-in goes through, over HTTP, in `crates/protocol-http/tests/federated_sign_in.rs`.
 
 ## How the cases are made
 
@@ -87,6 +87,7 @@ One case is not refused, and its test says why:
 | `in-response-to-other-browser` | `InResponseTo` names a request made for another browser's sign-in | Request: checked against the request of the sign-in that finishes | `request` |
 | `in-response-to-used` | The same response presented a second time | The pending authorization that held the request was taken the first time | `no_pending_authorization` |
 | `unsolicited` | No `InResponseTo` at all | Responses not asked for are refused | `unsolicited` |
+| `relay-state-handed-to-victim` | An attacker starts a sign-in and sends the address at the identity provider, with its relay state, to a victim signed in there; the victim's browser posts the victim's response, and the attacker finishes their own sign-in with it | The browser that finishes must be the one that carried the response: it holds the receipt, the attacker does not | `receipt_mismatch` |
 | `expired` | `NotOnOrAfter` has passed, beyond one minute of clock difference | Time | `time` |
 | `not-yet-valid` | `NotBefore` is in the future, beyond one minute | Time | `time` |
 | `confirmation-expired` | `SubjectConfirmationData/@NotOnOrAfter` has passed | Time | `time` |
