@@ -8,8 +8,12 @@ mod digest;
 mod password;
 mod random;
 mod sealing;
+mod signature;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 
 pub use digest::Sha256Digest;
 pub use password::{Argon2Parameters, Argon2idHasher, HashingLimits};
 pub use random::OsRandom;
 pub use sealing::SecretKeys;
+pub use signature::AwsLcVerifier;

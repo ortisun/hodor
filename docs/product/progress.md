@@ -131,6 +131,7 @@ These are recorded here so they are not forgotten; each is picked up by the issu
 | The mail adapter was tested against a mail server without encryption or a password; the encrypted and authenticated paths rely on the mail library | Before the first production deployment |
 | The trace of a request has one span, the request itself: database calls are not traced. The demonstration receives the trace; no test in `cargo test` does | First issue that adds a traced database call |
 | The guarded outbound client is not tested over TLS against a server with a real certificate: the tests reach their servers through the development exception | Hardening pass |
+| That RSA keys shorter than 2048 bits are refused when checking an ID token rests on the parameters of the cryptography library; no test presents such a key | Hardening pass |
 | The demonstration needs Python 3 on the machine that runs it | Accepted: it uses only the standard library |
 | SQL is checked at run time, not at compile time (`sqlx::query!` with the offline cache is not set up). Every query is exercised by an integration test instead | A dedicated issue, not yet scheduled |
 | Continuous integration actions are pinned by tag, not by commit SHA | Hardening pass (threat Threat-General-15) |
@@ -142,7 +143,7 @@ Planned in [the epics](epics.md#milestone-2-signing-in-with-external-identities)
 | Slice | Done | Total |
 |---|---|---|
 | H — What external identities stand on | 3 | 3 |
-| I — OpenID Connect and the social logins | 1 | 6 |
+| I — OpenID Connect and the social logins | 2 | 6 |
 | J — LDAP | 0 | 2 |
 | K — SAML service provider | 0 | 4 |
 
@@ -152,7 +153,7 @@ Planned in [the epics](epics.md#milestone-2-signing-in-with-external-identities)
 | Issue-36 Outbound HTTP | Done | The `HttpClient` port in `hodor-kernel` and `hodor-adapters-http`, its one implementation: HTTPS only, no name and password in an address, every address a name resolves to must be public and is the one connected to, numeric spellings checked the same way, no redirects, no proxy, limits on time and on the bytes received. One exception, a list of development hosts, empty by default. Tested against servers on this machine, which are refused in eleven spellings and reached only through the exception. Nothing uses the port yet. Specified in [outbound HTTP](../security/outbound-http.md) |
 | Issue-37 A sign-in completed by one external step | Done | A flow may list alternatives: steps that, satisfied at the very start, complete the sign-in in place of all its steps. An alternative is performed by an authenticator that establishes who is signing in and proves it at once, is accepted only while no step has been satisfied, and shares the sign-in's tolerance for rejections. An authenticator that answers in a way its place in the flow does not allow is a defect and advances nothing. The built-in flow has no alternative yet. Specified in [the authentication context](../architecture/contexts/authentication.md#alternatives) |
 | Issue-38 Federation context | Done | `hodor-federation` crate: identity providers with their rules (an alias that never changes, an issuer kept exactly as given, a client secret sealed and never read back, at most 20 a tenant) and links between an external identity and a user, found by provider and subject and by nothing else. `federation.identity_provider` and `federation.external_identity` under row-level security; one contract suite passed by the stores in memory and on PostgreSQL. On PostgreSQL: the secret is nowhere in the database in the clear, eight links of one identity made at once leave one, and a link is stored with whatever else its unit of work does or not at all. No interface reaches it yet. Specified in [the federation context](../architecture/contexts/federation.md) |
-| Issue-39 OpenID Connect relying party | Not started | — |
+| Issue-39 OpenID Connect relying party | Done | `OpenIdClient` in `hodor-federation`: reads a provider's description and keys through the guarded outbound client and keeps them for an hour, starts a trip with `state`, `nonce` and a PKCE verifier of 256 random bits each, exchanges the code, and checks the ID token (shape, algorithm, key, signature, issuer, audience, time, nonce, subject) before believing anything in it. The `SignatureVerifier` port in the kernel, implemented with `aws-lc-rs` for `RS256`, `PS256` and `ES256`. Tested against a provider that publishes real keys and signs real tokens: about sixty invalid tokens and descriptions are each refused for the reason the specification gives. Nothing calls it yet. Specified in [the federation context](../architecture/contexts/federation.md#asking-an-openid-connect-provider-who-somebody-is) |
 | Issue-40 Federated sign-in over HTTP | Not started | — |
 | Issue-41 Managing providers | Not started | — |
 | Issue-42 The pages | Not started | — |

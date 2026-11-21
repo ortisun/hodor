@@ -14,6 +14,7 @@ pub mod testing;
 
 /// What other crates may use from this context.
 pub mod api {
+    pub use crate::application::openid::{AuthorizationRequest, OpenIdClient, VerifiedIdentity};
     pub use crate::application::ports::{LinkStore, ProviderStore};
     pub use crate::application::service::{ChangeProvider, CreateProvider, FederationService};
     pub use crate::domain::event::FederationEvent;

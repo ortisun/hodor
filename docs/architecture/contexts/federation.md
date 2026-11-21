@@ -78,6 +78,67 @@ A link says that one external identity belongs to one user.
 
 The federation context does not check that the user exists: users belong to the identity context, and whoever asks for a link has just read or created the user in the same unit of work.
 
+## Asking an OpenID Connect provider who somebody is
+
+For a provider of the kind `openid_connect`, Hodor is a relying party: it sends the person to the provider and, when they come back, asks the provider who they are. This section is what Hodor does on its side of that exchange. Keeping track of the trip in between, and signing the person in, are described with Issue-40.
+
+Every request to a provider goes through [the guarded outbound client](../../security/outbound-http.md).
+
+### What Hodor learns about the provider
+
+Hodor reads the provider's own description of itself at `{issuer}/.well-known/openid-configuration`.
+
+| Rule | Why |
+|---|---|
+| The `issuer` in the description must be the configured issuer, character for character | A description served from the right address that names another issuer is a provider claiming to be someone else (Threat-Federation-04) |
+| It must name where to send people, where to exchange a code, and where its keys are, each an HTTPS address | Nothing is guessed, and nothing is fetched in the clear |
+| The description and the keys are kept in memory for an hour | A sign-in must not depend on two extra requests every time |
+| When a token names a key Hodor does not have, the keys are fetched again, at most once a minute for one provider | Providers change keys; a flood of tokens naming keys that do not exist must not become a flood of requests |
+
+### Sending the person to the provider
+
+Hodor builds the address with the client identifier, the scopes, the address to come back to, and three values made for this one trip:
+
+| Value | What it is for |
+|---|---|
+| `state` | Returned by the provider untouched. Lets Hodor recognize the trip it started, and refuse one it did not (Threat-Federation-03) |
+| `nonce` | Put by the provider inside the token it issues. Ties the token to this trip, so a token issued for another trip, or for another client, cannot be used here (Threat-Federation-05) |
+| PKCE code verifier | Kept by Hodor; only its SHA-256 hash is sent. The code that comes back can be exchanged only by whoever holds the verifier |
+
+Each is 256 random bits. The method of the PKCE challenge is always `S256`.
+
+### When the person comes back
+
+The provider sends the person back with a code. Hodor exchanges it at the provider's token endpoint, proving who it is with the client secret, and gets an ID token: a statement signed by the provider about who the person is.
+
+The client secret is sent in the `Authorization` header (`client_secret_basic`) unless the provider's description says it only accepts it in the body (`client_secret_post`).
+
+**Everything about the ID token is checked before anything in it is believed:**
+
+| Check | Refused when |
+|---|---|
+| Shape | It is not three parts of Base64 separated by dots, or is larger than 16 kibibytes |
+| Algorithm | The header names anything but `RS256`, `PS256` or `ES256`. In particular `none` and the `HS` family, which would let anyone who knows a public value sign |
+| Key | The header names a key the provider does not publish, or the key is not of the kind the algorithm needs, or is marked for something other than signatures. A token that names no key is accepted only if the provider publishes exactly one key that fits |
+| Signature | It does not verify under that key. RSA keys shorter than 2048 bits are refused |
+| Issuer | `iss` is not the configured issuer, character for character |
+| Audience | `aud` does not contain this client. With several audiences, or whenever `azp` is present, `azp` must be this client |
+| Time | `exp` has passed, `iat` is in the future, or `nbf` has not come, allowing one minute for clocks that disagree. `exp` and `iat` must be there |
+| Nonce | `nonce` is not the one made for this trip |
+| Subject | `sub` is missing or is not a usable subject |
+
+A token refused by any check signs nobody in, and the reason is written to the log, never shown to the person: all they learn is that it did not work.
+
+### What Hodor takes from the token
+
+| From the token | Becomes |
+|---|---|
+| `sub` | The subject of the external identity. The only thing a link is found by |
+| `email`, and `email_verified` when it is exactly `true` | An email address, and whether the provider vouches for it. Anything but the JSON value `true` means it does not |
+| `name`, `locale` | Suggestions for the profile of a user created on first sign-in |
+
+Nothing else in the token is used. In particular no group, role or permission is ever taken from it (Threat-Federation-07).
+
 ## Events
 
 | Event | When | Carries |
@@ -102,6 +163,8 @@ No event carries a secret. No event carries a subject either: it identifies a pe
 | `federation.provider_modified_concurrently` | Conflict | Someone else changed the provider first |
 | `federation.identity_already_linked` | Conflict | The external identity already belongs to a user |
 | `federation.link_not_found` | Not found | There is no such link |
+| `federation.provider_unavailable` | Unavailable | The provider did not answer, or answered something that cannot be used: no description, a description for another issuer, no keys |
+| `federation.identity_not_verified` | Unauthenticated | The provider's answer does not establish who the person is: the code was refused, or the ID token failed a check |
 
 ## Ports
 
@@ -110,6 +173,8 @@ No event carries a secret. No event carries a subject either: it identifies a pe
 | `ProviderStore` | Stores identity providers |
 | `LinkStore` | Stores links |
 | `SecretBox`, from the kernel | Seals and opens client secrets |
+| `HttpClient`, from the kernel | Every request to a provider |
+| `SignatureVerifier`, from the kernel | Checks the signature of an ID token. Hodor implements no cryptography of its own |
 
 Each store has an implementation in memory, behind the crate's `testing` feature, and one on PostgreSQL. Both pass the same contract suite, which includes the tenant isolation cases.
 
@@ -144,10 +209,11 @@ Both tables are under [forced row-level security](../multi-tenancy.md#isolation-
 
 | Item | Planned in |
 |---|---|
-| Asking a provider who somebody is: discovery, keys, checking what comes back | Issue-39 |
 | Signing in through a provider, creating a user on first sign-in, the rules against taking over an account | Issue-40 |
 | Managing providers through the administration interface and the command-line tool | Issue-41 |
 | Providers that are not plain OpenID Connect: GitHub, Apple; directories; SAML | Issue-43, Issue-44, Issue-48 |
+| Signature algorithms beyond `RS256`, `PS256` and `ES256`; encrypted ID tokens; the UserInfo endpoint | When a provider that needs them is to be supported |
+| A cache of provider descriptions and keys shared between server instances. Each instance keeps its own | With Redis, when instances are many |
 | What happens to the sessions of a provider's users when it is disabled (Threat-Federation-10). Today disabling stops new sign-ins only | With the consoles |
 | Mapping what a provider says about a person to the user's profile, groups or roles | Issue-40 for the profile; groups and roles are not in Milestone 2 |
 | Linking and unlinking by the person themself, routing by email domain | The account console |
