@@ -112,7 +112,7 @@ Removing a tenant's records when the tenant is deleted or when retention ends is
 | Use case | What it does |
 |---|---|
 | Record event | Appends a record for an event. Run by the worker for every event |
-| List records | Returns a tenant's records in order, a page at a time |
+| List records | Returns a tenant's records in order, a page at a time. Served to administrators by [the administration interface](../../api/admin-api.md#the-audit-log) |
 | Verify chain | Checks a tenant's whole chain and reports the first break |
 
 ### Ports
@@ -150,8 +150,7 @@ Both are tenant tables under row-level security. `audit.record` is append-only a
 
 | Item | Planned in |
 |---|---|
-| Reading records over HTTP | Issue-29, the administration interface |
-| The address a request came from, and the application that made it, on every record | With the administration interface: events do not carry them yet |
+| The address a request came from, and the application that made it, on every record | When events carry them: with OAuth clients in Phase 2 |
 | Exporting the latest hash regularly, so that a chain cut short or rewritten is noticed | Later in Phase 1 |
 | Search and filters, retention, export | Phase 2 |
 | Delivery to other systems | Phase 5 |

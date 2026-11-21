@@ -258,3 +258,45 @@ async fn a_removed_record_is_found_where_the_gap_is() {
         }
     );
 }
+
+#[tokio::test]
+async fn records_are_read_a_page_at_a_time_with_a_cursor() {
+    use hodor_kernel::{Cursor, PageRequest};
+    let world = world();
+    world.happen(&world.tenant, 5).await;
+
+    let first = world
+        .service
+        .page(&world.tenant, &PageRequest::new(Some(2), None))
+        .await
+        .expect("page");
+    assert_eq!(
+        first.items.iter().map(|r| r.sequence).collect::<Vec<_>>(),
+        [1, 2]
+    );
+    assert_eq!(first.next_cursor, Some(Cursor::new("2")));
+
+    let last = world
+        .service
+        .page(
+            &world.tenant,
+            &PageRequest::new(Some(3), Some(Cursor::new("2"))),
+        )
+        .await
+        .expect("page");
+    assert_eq!(
+        last.items.iter().map(|r| r.sequence).collect::<Vec<_>>(),
+        [3, 4, 5]
+    );
+    assert_eq!(last.next_cursor, None, "the last page has no cursor");
+
+    let error = world
+        .service
+        .page(
+            &world.tenant,
+            &PageRequest::new(None, Some(Cursor::new("not a cursor"))),
+        )
+        .await
+        .expect_err("refused");
+    assert_eq!(error.code(), "request.cursor_invalid");
+}

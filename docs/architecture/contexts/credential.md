@@ -62,6 +62,22 @@ A wrong password and a user who has no password, or does not exist, must be indi
 - The answer to a check is only "verified" or "rejected". There is no separate answer for "no such user" or "no password set".
 - When there is nothing to check against, a real hash computation with the current parameters is still performed and its result discarded, so that the time taken is the same.
 
+## Access tokens
+
+An access token lets a program act as a user on Hodor's administration interface. It exists so that the interface can be used before OAuth is built; when OAuth access tokens arrive in Phase 2 they replace it.
+
+| Property | Rule |
+|---|---|
+| Shape | The text `hodor_at_` followed by 64 hexadecimal characters: 32 random bytes from the operating system. The fixed beginning lets tools that scan for leaked secrets recognize one |
+| Storage | Only the SHA-256 of the token is stored. The token is returned once, when it is issued |
+| Owner | One user. The token can do what that user may do, in that user's tenant, and nothing else |
+| Lifetime | Chosen when it is issued, from one minute to 30 days. There is no token that does not expire |
+| Ending early | A token can be revoked. Revoking is final |
+
+A token that is malformed, unknown, expired or revoked is refused in the same way. A token of one tenant presented to another is unknown there.
+
+Holding a valid token is not enough: whoever accepts it must still ask the identity context whether the user may sign in, and the [authorization context](authorization.md) whether the user may do what is asked. A suspended user's tokens stop working without anyone revoking them.
+
 ## Operations
 
 | Use case | What it does |
@@ -69,6 +85,9 @@ A wrong password and a user who has no password, or does not exist, must be indi
 | Set password | Gives a user a password without asking for the current one: at registration, at recovery, or when an administrator resets it. Checks the rules, moves the current hash to the history, stores the new one |
 | Check new password | Says whether a password would be accepted for a user, by the same rules as setting it, without storing anything. Lets a caller refuse a password before doing something that cannot be undone, such as using up a recovery token |
 | Change password | The user replaces their own password: the current one must verify first |
+| Issue access token | Makes a token for a user with a lifetime and a note of what it is for, and returns it once |
+| Authenticate access token | Says which user and token a presented token belongs to, or nothing |
+| Revoke access token | Ends a token |
 | Verify password | Answers "verified" or "rejected". On success, if the stored hash uses old parameters, it is replaced with a fresh one |
 | Remove password | Deletes the password and its history, for example when a user is erased |
 | Has password | Says whether a user has a password; for administrators and the account pages, never for a sign-in form |
@@ -80,14 +99,17 @@ A wrong password and a user who has no password, or does not exist, must be indi
 | `credential.password_set` | A password was set or reset; says whether it must be changed at the next sign-in |
 | `credential.password_changed` | A user changed their own password |
 | `credential.password_removed` | A password was removed |
+| `credential.access_token_issued` | An access token was issued; carries the user, the token's identifier and when it expires |
+| `credential.access_token_revoked` | An access token was revoked; carries the user and the token's identifier |
 
-Events carry the user's identifier and nothing derived from the password. Replacing a hash because the parameters changed produces no event: nothing the user or an auditor cares about happened.
+Events carry the user's identifier and nothing derived from the password or from a token. Replacing a hash because the parameters changed produces no event: nothing the user or an auditor cares about happened.
 
 ### Ports
 
 | Port | Purpose |
 |---|---|
 | `PasswordStore` | Store and load a user's password record and history, with optimistic locking |
+| `AccessTokenStore` | Store access tokens, find one by the hash of its token, mark one revoked |
 | `PasswordHasher` | Hash a password, verify a password against a stored hash and say whether the hash should be renewed, and perform a discarded computation of equal cost |
 
 The hasher is a port because the choice of library is an infrastructure decision ([Decision 0008](../../decisions/0008-cryptography.md)); the context only knows that hashing is slow and can be unavailable.
@@ -114,7 +136,18 @@ The hasher is a port because the choice of library is an infrastructure decision
 | `password_hash` | `text` | A previous hash |
 | `replaced_at` | `timestamptz` | When it stopped being the current password |
 
-Both are tenant tables under row-level security. `user_id` refers to a user of the identity context but is not a database foreign key: contexts do not reference each other's tables.
+### `credential.access_token`
+
+| Column | Type | Notes |
+|---|---|---|
+| `tenant_id`, `id` | `uuid` | Primary key |
+| `user_id` | `uuid` | The user the token acts as |
+| `token_hash` | `bytea` | SHA-256 of the token; unique within the tenant |
+| `description` | `text` | What the token is for, as written by whoever issued it |
+| `created_at`, `expires_at` | `timestamptz` | |
+| `revoked_at` | `timestamptz` | Null unless revoked |
+
+All three are tenant tables under row-level security. `user_id` refers to a user of the identity context but is not a database foreign key: contexts do not reference each other's tables.
 
 The design's data model has a general `credential` table with one row per credential of any kind. It is introduced with the second kind of credential; with only passwords it would add a table and a join for nothing.
 
@@ -126,3 +159,4 @@ The design's data model has a general `credential` table with one row per creden
 | A secret key mixed into every hash, kept outside the database | With the keys context, Phase 2 |
 | One-time password generators, passkeys, recovery codes | Phase 4 |
 | Keys for programs and certificates | Phases 5 and 6 |
+| Listing and revoking access tokens through an interface, and recording when one was last used | With OAuth in Phase 2, which replaces them |

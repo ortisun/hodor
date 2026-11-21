@@ -122,6 +122,7 @@ Events carry identifiers of users and of login identifiers, and the kind of a lo
 | Use case | What it does |
 |---|---|
 | Create user | Creates a user with at least one login identifier, Pending or already Active |
+| List users | Returns the tenant's users in the order they were created, a page at a time |
 | Get user | Returns a user of the current tenant by identifier |
 | Find user by login | Returns the user that a typed login identifier belongs to, if any |
 | Activate, suspend, reactivate, deactivate, restore, mark deleted | Apply the transition |

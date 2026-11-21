@@ -78,7 +78,7 @@ A person can register, sign in, see and end their sessions, sign out, and recove
 What is still missing around it:
 
 - There are no pages. The interface is JSON only; the hosted pages come with Issue-31. Until then a link in a message leads nowhere: copy the token after `#token=` into the request that finishes the registration or the recovery.
-- In a tenant whose registration is closed there is no way to create a user yet. That comes with the administration interface, Issue-29, and the bootstrap administrator, Issue-30.
+- [The administration interface](../api/admin-api.md) is served under `/t/{slug}/api/v1/admin`, but nothing creates the first administrator or their access token yet. That comes with the bootstrap command, Issue-30.
 - The session cookie is marked `Secure`. Browsers accept that on `http://localhost`; over plain HTTP on any other host name they do not.
 
 See [progress](../product/progress.md) for the full picture.

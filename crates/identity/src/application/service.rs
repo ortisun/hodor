@@ -5,8 +5,8 @@ use crate::domain::event::UserEvent;
 use crate::domain::identifier::{IdentifierId, IdentifierKind, NormalizedIdentifier};
 use crate::domain::user::{Profile, User, UserKind};
 use hodor_kernel::{
-    Caller, Clock, DomainError, EventEnvelope, EventMetadata, TenantContext, UnitOfWork,
-    UnitOfWorkFactory, UserId,
+    Caller, Clock, Cursor, DomainError, EventEnvelope, EventMetadata, Page, PageRequest,
+    TenantContext, UnitOfWork, UnitOfWorkFactory, UserId,
 };
 use std::sync::Arc;
 
@@ -93,6 +93,40 @@ impl IdentityService {
     pub async fn get(&self, tenant: &TenantContext, id: UserId) -> Result<User, DomainError> {
         let mut uow = self.units_of_work.begin(tenant).await?;
         self.load(uow.as_mut(), id).await
+    }
+
+    /// Returns the tenant's users in the order they were created, a page
+    /// at a time.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Invalid` with code `request.cursor_invalid` if the cursor
+    /// is not one this use case gave out.
+    pub async fn list(
+        &self,
+        tenant: &TenantContext,
+        page: &PageRequest,
+    ) -> Result<Page<User>, DomainError> {
+        let after = page
+            .cursor()
+            .map(|cursor| {
+                cursor.as_str().parse::<UserId>().map_err(|_| {
+                    DomainError::invalid("request.cursor_invalid", "the cursor is not valid")
+                })
+            })
+            .transpose()?;
+        let mut uow = self.units_of_work.begin(tenant).await?;
+        // One more than asked for, to know whether there is a next page.
+        let mut items = self
+            .users
+            .list(uow.as_mut(), after, page.limit() + 1)
+            .await?;
+        let more = items.len() > page.limit() as usize;
+        items.truncate(page.limit() as usize);
+        let next_cursor = more
+            .then(|| items.last().map(|user| Cursor::new(user.id().to_string())))
+            .flatten();
+        Ok(Page { items, next_cursor })
     }
 
     /// Returns the user that a typed login identifier belongs to.

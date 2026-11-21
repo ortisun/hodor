@@ -34,6 +34,19 @@ pub trait UserRepository: Send + Sync {
         identifier: &NormalizedIdentifier,
     ) -> Result<Option<User>, DomainError>;
 
+    /// Returns up to `limit` users of the tenant in the order they were
+    /// created, starting after the given user.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn list(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        after: Option<UserId>,
+        limit: u32,
+    ) -> Result<Vec<User>, DomainError>;
+
     /// Stores changes to a user loaded earlier, including changes to the
     /// login identifiers.
     ///

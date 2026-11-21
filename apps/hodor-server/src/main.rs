@@ -9,21 +9,25 @@ use hodor_adapters_crypto::{
     Argon2Parameters, Argon2idHasher, HashingLimits, OsRandom, Sha256Digest,
 };
 use hodor_adapters_postgres::{
-    Database, PgAttemptStore, PgMessageQueue, PgPasswordStore, PgSessionStore, PgTenantDirectory,
-    PgTenantRepository, PgTransactionStore, PgUserRepository, PgVerificationTokenStore,
+    Database, PgAccessTokenStore, PgAttemptStore, PgAuditLog, PgMessageQueue, PgPasswordStore,
+    PgRoleAssignmentStore, PgSessionStore, PgTenantDirectory, PgTenantRepository,
+    PgTransactionStore, PgUserRepository, PgVerificationTokenStore,
 };
+use hodor_audit::api::AuditService;
 use hodor_authentication::api::{
     AccountService, AttemptGuard, AuthFlow, AuthenticationService, FlowEngine,
     IdentifierAuthenticator, PasswordAuthenticator,
 };
-use hodor_credential::api::CredentialService;
+use hodor_authorization::api::AuthorizationService;
+use hodor_credential::api::{AccessTokenService, CredentialService};
 use hodor_identity::api::IdentityService;
 use hodor_kernel::{DomainError, Secret, SystemClock, TenantContext};
 use hodor_notification::api::Notifier;
 use hodor_observability::{LogFormat, Telemetry};
 use hodor_protocol_http::{
-    Health, InteractionState, Limits, ReadinessCheck, ResolvedTenant, TenantResolver,
-    TenantStatus as HttpTenantStatus, interaction_routes, ops_router, public_router, serve,
+    AdminState, Health, InteractionState, Limits, ReadinessCheck, ResolvedTenant, TenantResolver,
+    TenantStatus as HttpTenantStatus, admin_routes, interaction_routes, ops_router, public_router,
+    serve,
 };
 use hodor_session::api::SessionService;
 use hodor_tenant::api::{TenantDirectory as _, TenantService, TenantStatus};
@@ -196,10 +200,12 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
 
     let public = public_router(
         Arc::new(DirectoryResolver(PgTenantDirectory::new(database.clone()))),
-        axum::Router::new().nest(
-            "/interaction",
-            interaction_routes(interaction(&config, &database)?),
-        ),
+        axum::Router::new()
+            .nest(
+                "/interaction",
+                interaction_routes(interaction(&config, &database)?),
+            )
+            .nest("/api/v1/admin", admin_routes(administration(&database))),
         Limits::default(),
     );
     let ops = ops_router(health.clone());
@@ -327,6 +333,38 @@ fn interaction(config: &Config, database: &Database) -> Result<InteractionState,
         digest,
         clock,
     })
+}
+
+/// Builds everything the administration interface needs.
+fn administration(database: &Database) -> AdminState {
+    let units = || Arc::new(database.clone());
+    let clock = Arc::new(SystemClock);
+    let digest = Arc::new(Sha256Digest);
+    let random = Arc::new(OsRandom);
+    AdminState {
+        tokens: AccessTokenService::new(
+            units(),
+            Arc::new(PgAccessTokenStore),
+            digest.clone(),
+            random.clone(),
+            clock.clone(),
+        ),
+        authorization: AuthorizationService::new(
+            units(),
+            Arc::new(PgRoleAssignmentStore),
+            clock.clone(),
+        ),
+        identity: IdentityService::new(units(), Arc::new(PgUserRepository), clock.clone()),
+        sessions: SessionService::new(
+            units(),
+            Arc::new(PgSessionStore),
+            digest.clone(),
+            random,
+            clock.clone(),
+        ),
+        // The server reads the audit log; the worker writes it.
+        audit: AuditService::new(units(), Arc::new(PgAuditLog), digest, clock),
+    }
 }
 
 async fn wait_for(mut stopped: watch::Receiver<bool>) {

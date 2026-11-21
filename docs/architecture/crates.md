@@ -56,7 +56,7 @@ hodor/
 └── tests/{architecture,integration,security,conformance,performance}/
 ```
 
-A crate is created only when the phase that uses it starts. Milestone 1 creates `kernel`, `tenant`, `identity`, `credential`, `session`, `authentication`, `audit`, `notification`, `protocol-http`, `adapters-postgres`, `adapters-crypto`, `adapters-smtp`, `observability` and the three apps.
+A crate is created only when the phase that uses it starts. Milestone 1 creates `kernel`, `tenant`, `identity`, `credential`, `session`, `authentication`, `authorization`, `audit`, `notification`, `protocol-http`, `adapters-postgres`, `adapters-crypto`, `adapters-smtp`, `observability` and the three apps.
 
 ## Dependency graph
 

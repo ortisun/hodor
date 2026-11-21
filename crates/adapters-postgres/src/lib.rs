@@ -7,6 +7,7 @@
 
 mod audit;
 mod authentication;
+mod authorization;
 mod credential;
 mod database;
 mod identity;
@@ -21,7 +22,8 @@ mod uow;
 
 pub use audit::PgAuditLog;
 pub use authentication::{PgAttemptStore, PgTransactionStore, PgVerificationTokenStore};
-pub use credential::PgPasswordStore;
+pub use authorization::PgRoleAssignmentStore;
+pub use credential::{PgAccessTokenStore, PgPasswordStore};
 pub use database::{Database, TenantTransaction, connect_pool, ping_pool};
 pub use identity::PgUserRepository;
 pub use migrate::migrate;

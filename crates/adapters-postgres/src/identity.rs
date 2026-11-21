@@ -224,6 +224,37 @@ impl UserRepository for PgUserRepository {
         }
     }
 
+    async fn list(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        after: Option<UserId>,
+        limit: u32,
+    ) -> Result<Vec<User>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let connection = connection(uow)?;
+        // Identifiers are made from the time, so their order is the order
+        // of creation, and the primary key serves the search.
+        let ids: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM identity.\"user\"
+             WHERE tenant_id = $1 AND ($2::uuid IS NULL OR id > $2)
+             ORDER BY id
+             LIMIT $3",
+        )
+        .bind(tenant.as_uuid())
+        .bind(after.map(|after| after.as_uuid()))
+        .bind(i64::from(limit))
+        .fetch_all(&mut *connection)
+        .await
+        .map_err(|e| database_error(&e))?;
+        let mut users = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(user) = load_user(connection, tenant, id).await? {
+                users.push(user);
+            }
+        }
+        Ok(users)
+    }
+
     async fn update(&self, uow: &mut dyn UnitOfWork, user: &User) -> Result<(), DomainError> {
         let tenant = uow.tenant().tenant_id();
         let state = user.snapshot();

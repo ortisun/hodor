@@ -12,7 +12,7 @@ Start with the [critical review](architecture/critical-review.md): it lists wher
 | 2 | Functional Requirements | [product/requirements.md](product/requirements.md#functional-requirements) |
 | 3 | Non-functional Requirements | [product/requirements.md](product/requirements.md#non-functional-requirements) |
 | 4 | Domain Model | [architecture/domain-model.md](architecture/domain-model.md) |
-| — | Context specifications, one page per bounded context, written before the context is built | [tenant](architecture/contexts/tenant.md), [identity](architecture/contexts/identity.md), [credential](architecture/contexts/credential.md), [session](architecture/contexts/session.md), [authentication](architecture/contexts/authentication.md), [notification](architecture/contexts/notification.md), [audit](architecture/contexts/audit.md) |
+| — | Context specifications, one page per bounded context, written before the context is built | [tenant](architecture/contexts/tenant.md), [identity](architecture/contexts/identity.md), [credential](architecture/contexts/credential.md), [session](architecture/contexts/session.md), [authentication](architecture/contexts/authentication.md), [notification](architecture/contexts/notification.md), [audit](architecture/contexts/audit.md), [authorization](architecture/contexts/authorization.md) |
 | 5 | Bounded Context Map | [architecture/domain-model.md](architecture/domain-model.md#bounded-context-map) |
 | 6 | C4 Context Diagram | [architecture/overview.md](architecture/overview.md#c4-level-1-context) |
 | 7 | C4 Container Diagram | [architecture/overview.md](architecture/overview.md#c4-level-2-containers) |
@@ -33,6 +33,7 @@ Start with the [critical review](architecture/critical-review.md): it lists wher
 | 22 | Database Model | [architecture/database.md](architecture/database.md) |
 | 23 | API Specifications | [api/api-spec.md](api/api-spec.md) |
 | — | The interaction interface: how a browser signs in | [api/interaction-api.md](api/interaction-api.md) |
+| — | The administration interface: users, sessions and the audit log for the people who run a tenant | [api/admin-api.md](api/admin-api.md) |
 | 24 | Plugin Architecture | [architecture/plugins.md](architecture/plugins.md) |
 | 25 | Testing Strategy | [architecture/testing.md](architecture/testing.md) |
 | 26 | Deployment Architecture | [operations/deployment.md](operations/deployment.md) |
