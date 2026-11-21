@@ -331,9 +331,11 @@ async fn bootstrap_administrator(
     )
     .await?;
 
-    let expires = token
-        .snapshot()
-        .expires_at
+    // Written to the second: nobody plans around less.
+    let expires_at = token.snapshot().expires_at;
+    let expires = expires_at
+        .replace_nanosecond(0)
+        .unwrap_or(expires_at)
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_default();
     Ok(format!(

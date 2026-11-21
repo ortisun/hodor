@@ -89,6 +89,7 @@ Some things are covered by tests in halves and were also tried whole, on the Com
 
 - A person asked to register; the server queued the message, the worker delivered it to the development mail server, the message arrived in the language asked for with a working link, and the link finished the registration once and only once.
 - The worker's metrics for the outbox and for messages arrived in VictoriaMetrics.
+- The first administrator of a tenant was made with `hodor-cli admin bootstrap`; the token it printed listed and created users through the administration interface, a request without it was refused, the audit log read through the interface showed each step with the right actor, and `hodor-cli audit verify` found the chain intact.
 
 ### Known gaps in what is done
 

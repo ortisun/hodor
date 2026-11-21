@@ -134,6 +134,8 @@ async fn the_first_administrator_gets_a_role_and_a_token_that_work_in_their_tena
         "{}",
         output["user"]
     );
+    // To the second, in the form `2026-11-21T15:03:11Z`.
+    assert_eq!(output["expires"].len(), 20, "{}", output["expires"]);
     assert!(output["expires"].ends_with('Z'), "{}", output["expires"]);
     let user: UserId = output["user"]
         .split(' ')
