@@ -53,13 +53,14 @@ docker compose -f deploy/docker/compose.yaml up --build --wait
 | `postgres` | PostgreSQL 17, with the database roles created on first start | internal only |
 | `migrate` | Runs `hodor-cli migrate` once and exits | — |
 | `server` | `hodor-server` | <http://localhost:8080>, health on <http://localhost:9090/readyz> |
-| `worker` | `hodor-worker`, delivering outbox events | internal only |
+| `worker` | `hodor-worker`, delivering outbox events and email | internal only |
+| `mail` | A mail server for development. It accepts every message and delivers none: what Hodor sends can be read in its web page | <http://localhost:8025> |
 | `victoriametrics` | Metrics backend; the server pushes to it over OTLP | <http://localhost:8428/vmui> |
 
 If one of those ports is taken on your machine, choose others:
 
 ```bash
-HODOR_HTTP_PORT=18080 HODOR_OPS_PORT=19090 HODOR_VM_PORT=18428 docker compose -f deploy/docker/compose.yaml up --build --wait
+HODOR_HTTP_PORT=18080 HODOR_OPS_PORT=19090 HODOR_VM_PORT=18428 HODOR_MAIL_PORT=18025 docker compose -f deploy/docker/compose.yaml up --build --wait
 ```
 
 Stop the stack and delete its data:
@@ -117,6 +118,10 @@ The worker connects to the database twice, with different roles: as a member of 
 | `HODOR_OPS_ADDR` | `127.0.0.1:9091` | Operations listener (health) |
 | `HODOR_OUTBOX_BATCH_SIZE` | `100` | Most events handled per pass |
 | `HODOR_OUTBOX_POLL_INTERVAL_MS` | `500` | Pause between passes when there is nothing to deliver |
+| `HODOR_SMTP_URL` | unset | Where to send mail: `smtps://user:password@host:465` for an encrypted connection, `smtp://user:password@host:587?tls=required` to encrypt after connecting. Plain `smtp://host:25` does not encrypt and is for development only. Unset: no mail is delivered and messages wait |
+| `HODOR_MAIL_FROM` | — (required with `HODOR_SMTP_URL`) | The address messages are sent from, for example `Hodor <no-reply@example.com>` |
+| `HODOR_MAIL_BATCH_SIZE` | `50` | Most messages handled per pass |
+| `HODOR_MAIL_POLL_INTERVAL_MS` | `1000` | Pause between passes when there is no message to deliver |
 | `HODOR_LOG_FORMAT`, `HODOR_LOG_FILTER`, `HODOR_OTLP_TRACES_ENDPOINT`, `HODOR_OTLP_METRICS_ENDPOINT` | as for the server | Telemetry |
 
 ### `hodor-cli`

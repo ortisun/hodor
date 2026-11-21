@@ -64,13 +64,25 @@ flowchart TB
 
 ## The worker
 
-`hodor-worker` runs background work. Today that is one job: delivering outbox events to their handlers ([Decision 0003](../decisions/0003-context-communication.md)).
+`hodor-worker` runs background work. Today that is two jobs: delivering outbox events to their handlers ([Decision 0003](../decisions/0003-context-communication.md)), and delivering queued messages to the mail server ([the notification context](../architecture/contexts/notification.md)).
 
-- **Loop**: the worker asks for a batch of pending events and handles them. If the batch had work in it, it asks again at once; if it was empty, it pauses for the poll interval. A database error is logged and followed by a pause, never by an exit: the worker waits for the database to come back.
-- **Scaling**: any number of workers can run. Events are locked one at a time with `FOR UPDATE SKIP LOCKED`, so workers never handle the same event together and need no leader.
-- **Stopping**: on SIGTERM the worker finishes the batch it is handling and exits with code 0. An event whose handling is interrupted is rolled back and delivered by another worker later.
-- **Health**: `/livez` and `/readyz` on the operations listener, as for the server. Readiness depends on both database connections.
-- **Metrics**: `hodor.outbox.events` (counter, by `outcome`: `delivered`, `failed`) and `hodor.outbox.passes` (counter, by `outcome`: `ok`, `error`).
+Both jobs work the same way:
+
+- **Loop**: the worker asks for a batch of pending work and handles it. If the batch had work in it, it asks again at once; if it was empty, it pauses for the poll interval. A database error is logged and followed by a pause, never by an exit: the worker waits for the database to come back.
+- **Scaling**: any number of workers can run. Each event or message is locked with `FOR UPDATE SKIP LOCKED` while it is handled, so workers never handle the same one together and need no leader.
+- **Stopping**: on SIGTERM the worker finishes the batches it is handling and exits with code 0. Work that is interrupted is rolled back and done by another worker later.
+- **Health**: `/livez` and `/readyz` on the operations listener, as for the server. Readiness depends on both database connections. It does not depend on the mail server: a mail server that is down delays messages, and they are retried.
+
+Mail delivery runs only when `HODOR_SMTP_URL` is set. Without it the worker says so once when it starts, and messages wait in the queue until a worker with a mail server is started or they expire.
+
+| Metric | Kind | Labels |
+|---|---|---|
+| `hodor.outbox.events` | Counter | `outcome`: `delivered`, `failed` |
+| `hodor.outbox.passes` | Counter | `outcome`: `ok`, `error` |
+| `hodor.notification.messages` | Counter | `outcome`: `sent`, `retrying`, `failed`, `expired` |
+| `hodor.notification.passes` | Counter | `outcome`: `ok`, `error` |
+
+A growing count of `retrying` messages means the mail server is refusing or unreachable; the reason for each message is in the `last_error` column of `notification.message`.
 
 ## Configuration and secrets
 

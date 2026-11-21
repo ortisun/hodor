@@ -63,6 +63,7 @@ stateDiagram-v2
 
 Rules:
 
+- A message is delivered inside one transaction of its tenant, which holds the message locked while the mail server is spoken to. The mail adapter gives up after 30 seconds, so the lock is never held for long.
 - Delivery is tried up to 8 times. After a failure the next try waits twice as long as the one before, starting at 30 seconds, up to 30 minutes.
 - A message that expires before it is delivered is dropped. A link that no longer works is worse than no message.
 - "Sent" means the mail server accepted the message. Whether it reaches an inbox is beyond what Hodor can know.
@@ -115,7 +116,8 @@ Rules:
 
 | Port | Purpose |
 |---|---|
-| `MessageQueue` | Store messages; find pending ones across tenants; take one for delivery so that no other worker takes it |
+| `MessageQueue` | Store a message of a tenant; take one for delivery so that no other worker takes it; store what delivery did to it |
+| `PendingMessages` | Find the messages that are due, across tenants. The one port of this context that is not bound to a tenant; only the worker is given it |
 | `EmailSender` | Hand a rendered message to a mail server |
 
 `EmailSender` is implemented by the `adapters-smtp` crate. Any number of workers can deliver at once: a message being delivered is locked, and other workers skip it.
@@ -147,7 +149,9 @@ A tenant table under row-level security. The worker finds pending messages with 
 | `HODOR_SMTP_URL` | Where to send mail, for example `smtps://user:password@mail.example.com:465`. Without it the worker delivers nothing and messages wait |
 | `HODOR_MAIL_FROM` | The address messages are sent from, for example `Hodor <no-reply@example.com>` |
 
-One sender address serves the whole installation in this version.
+One sender address serves the whole installation in this version. Both settings belong to `hodor-worker`; see [local setup](../../development/local-setup.md#hodor-worker) for every setting of the worker.
+
+The development stack includes a mail server that accepts every message and delivers none, so that what Hodor sends can be read without sending anything to anyone.
 
 ## Not built yet
 
