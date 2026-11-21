@@ -27,9 +27,11 @@ hodor-session = { path = "crates/session" }
 hodor-tenant = { path = "crates/tenant" }
 
 argon2 = "0.6"
+aws-lc-rs = "1"
 async-trait = "0.1"
 axum = "0.8"
 cargo_metadata = "0.23"
+base64 = "0.22"
 clap = { version = "4", features = ["derive", "env"] }
 proptest = "1"
 opentelemetry = "0.33"

@@ -141,14 +141,14 @@ Planned in [the epics](epics.md#milestone-2-signing-in-with-external-identities)
 
 | Slice | Done | Total |
 |---|---|---|
-| H — What external identities stand on | 1 | 3 |
+| H — What external identities stand on | 2 | 3 |
 | I — OpenID Connect and the social logins | 0 | 6 |
 | J — LDAP | 0 | 2 |
 | K — SAML service provider | 0 | 4 |
 
 | Issue | Status | What exists |
 |---|---|---|
-| Issue-35 Secrets at rest | Not started | — |
+| Issue-35 Secrets at rest | Done | The `SecretBox` port in `hodor-kernel` and its implementation in `hodor-adapters-crypto`: AES-256-GCM from `aws-lc-rs`, keys from `HODOR_SECRET_KEYS`, every sealed secret bound to its tenant and purpose and naming the key that sealed it, so that a key is changed by putting a new one first. `hodor-cli secrets generate-key` prints a key. Nothing uses the port yet; no binary reads the setting until the federation context does. Specified in [secrets at rest](../security/secrets-at-rest.md) |
 | Issue-36 Outbound HTTP | Done | The `HttpClient` port in `hodor-kernel` and `hodor-adapters-http`, its one implementation: HTTPS only, no name and password in an address, every address a name resolves to must be public and is the one connected to, numeric spellings checked the same way, no redirects, no proxy, limits on time and on the bytes received. One exception, a list of development hosts, empty by default. Tested against servers on this machine, which are refused in eleven spellings and reached only through the exception. Nothing uses the port yet. Specified in [outbound HTTP](../security/outbound-http.md) |
 | Issue-37 A sign-in completed by one external step | Not started | — |
 | Issue-38 Federation context | Not started | — |
