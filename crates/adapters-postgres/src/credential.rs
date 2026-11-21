@@ -3,7 +3,10 @@
 //! See `docs/architecture/contexts/credential.md`, "Storage".
 
 use crate::uow::{connection, database_error};
-use hodor_credential::api::{HistoricHash, PasswordHash, PasswordRecord, PasswordStore};
+use hodor_credential::api::{
+    AccessToken, AccessTokenHash, AccessTokenId, AccessTokenSnapshot, AccessTokenStore,
+    HistoricHash, PasswordHash, PasswordRecord, PasswordStore,
+};
 use hodor_kernel::{DomainError, TenantId, Timestamp, UnitOfWork, UserId};
 use sqlx::PgConnection;
 use sqlx::types::Uuid;
@@ -204,5 +207,131 @@ impl PasswordStore for PgPasswordStore {
                 .map_err(|e| database_error(&e))?
                 .rows_affected();
         Ok(deleted > 0)
+    }
+}
+
+/// [`AccessTokenStore`] on `credential.access_token`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PgAccessTokenStore;
+
+const TOKEN_COLUMNS: &str =
+    "id, user_id, token_hash, description, created_at, expires_at, revoked_at";
+
+type TokenRow = (
+    Uuid,
+    Uuid,
+    Vec<u8>,
+    String,
+    Timestamp,
+    Timestamp,
+    Option<Timestamp>,
+);
+
+fn to_token(row: TokenRow) -> Result<AccessToken, DomainError> {
+    let (id, user_id, token_hash, description, created_at, expires_at, revoked_at) = row;
+    let hash: [u8; 32] = token_hash
+        .try_into()
+        .map_err(|_| out_of_range("token hash is not 32 bytes"))?;
+    Ok(AccessToken::from_snapshot(AccessTokenSnapshot {
+        id: AccessTokenId::from_uuid(id),
+        user_id: UserId::from_uuid(user_id),
+        token_hash: AccessTokenHash::from_stored(hash),
+        description,
+        created_at,
+        expires_at,
+        revoked_at,
+    }))
+}
+
+#[async_trait::async_trait]
+impl AccessTokenStore for PgAccessTokenStore {
+    async fn insert(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        token: &AccessToken,
+    ) -> Result<(), DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let state = token.snapshot();
+        sqlx::query(
+            "INSERT INTO credential.access_token
+                 (tenant_id, id, user_id, token_hash, description, created_at, expires_at,
+                  revoked_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        )
+        .bind(tenant.as_uuid())
+        .bind(state.id.as_uuid())
+        .bind(state.user_id.as_uuid())
+        .bind(state.token_hash.as_bytes().as_slice())
+        .bind(&state.description)
+        .bind(state.created_at)
+        .bind(state.expires_at)
+        .bind(state.revoked_at)
+        .execute(connection(uow)?)
+        .await
+        .map_err(|e| database_error(&e))?;
+        Ok(())
+    }
+
+    async fn get(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: AccessTokenId,
+    ) -> Result<Option<AccessToken>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let row: Option<TokenRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT {TOKEN_COLUMNS} FROM credential.access_token WHERE tenant_id = $1 AND id = $2"
+        )))
+        .bind(tenant.as_uuid())
+        .bind(id.as_uuid())
+        .fetch_optional(connection(uow)?)
+        .await
+        .map_err(|e| database_error(&e))?;
+        row.map(to_token).transpose()
+    }
+
+    async fn find_by_hash(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        hash: &AccessTokenHash,
+    ) -> Result<Option<AccessToken>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let row: Option<TokenRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT {TOKEN_COLUMNS} FROM credential.access_token
+             WHERE tenant_id = $1 AND token_hash = $2"
+        )))
+        .bind(tenant.as_uuid())
+        .bind(hash.as_bytes().as_slice())
+        .fetch_optional(connection(uow)?)
+        .await
+        .map_err(|e| database_error(&e))?;
+        row.map(to_token).transpose()
+    }
+
+    async fn update(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        token: &AccessToken,
+    ) -> Result<(), DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let state = token.snapshot();
+        // Only the revocation can change; everything else about a token
+        // is fixed when it is issued.
+        let updated = sqlx::query(
+            "UPDATE credential.access_token SET revoked_at = $3
+             WHERE tenant_id = $1 AND id = $2",
+        )
+        .bind(tenant.as_uuid())
+        .bind(state.id.as_uuid())
+        .bind(state.revoked_at)
+        .execute(connection(uow)?)
+        .await
+        .map_err(|e| database_error(&e))?;
+        if updated.rows_affected() == 0 {
+            return Err(DomainError::not_found(
+                "credential.access_token_not_found",
+                "the access token does not exist",
+            ));
+        }
+        Ok(())
     }
 }

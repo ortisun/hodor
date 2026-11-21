@@ -1118,6 +1118,7 @@ dependencies = [
  "hodor-adapters-postgres",
  "hodor-audit",
  "hodor-authentication",
+ "hodor-authorization",
  "hodor-credential",
  "hodor-identity",
  "hodor-kernel",

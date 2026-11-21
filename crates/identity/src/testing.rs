@@ -79,6 +79,24 @@ impl UserRepository for InMemoryUsers {
             .map(|(_, user)| user.clone()))
     }
 
+    async fn list(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        after: Option<UserId>,
+        limit: u32,
+    ) -> Result<Vec<User>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        // The map is ordered by tenant and then by identifier, and
+        // identifiers sort by creation time.
+        Ok(self
+            .rows()
+            .iter()
+            .filter(|((owner, id), _)| *owner == tenant && after.is_none_or(|after| *id > after))
+            .take(limit as usize)
+            .map(|(_, user)| user.clone())
+            .collect())
+    }
+
     async fn update(&self, uow: &mut dyn UnitOfWork, user: &User) -> Result<(), DomainError> {
         let tenant = uow.tenant().tenant_id();
         let mut rows = self.rows();
@@ -186,6 +204,7 @@ pub async fn run_contract(ports: Ports<'_>) {
     an_update_cannot_take_another_users_identifier(&ports).await;
     an_update_cannot_reach_another_tenant(&ports).await;
     an_erased_user_frees_its_identifiers(&ports).await;
+    users_are_listed_in_the_order_they_were_created(&ports).await;
 }
 
 fn tenant() -> TenantContext {
@@ -380,4 +399,33 @@ async fn an_erased_user_frees_its_identifiers(ports: &Ports<'_>) {
     store(ports, &tenant, &person(vec![email("ana@example.com")]))
         .await
         .expect("the address can be registered again");
+}
+
+async fn users_are_listed_in_the_order_they_were_created(ports: &Ports<'_>) {
+    let (home, elsewhere) = (tenant(), tenant());
+    let mut created = Vec::new();
+    for index in 0..5 {
+        let user = person(vec![email(&format!("person{index}@example.com"))]);
+        store(ports, &home, &user).await.expect("insert");
+        created.push(user);
+    }
+    store(ports, &elsewhere, &person(vec![email("other@example.com")]))
+        .await
+        .expect("insert");
+    // Identifiers are made from the time, so creation order is their order.
+    created.sort_by_key(User::id);
+
+    let home = &home;
+    let list = |after: Option<UserId>, limit: u32| async move {
+        let mut uow = ports.units_of_work.begin(home).await.expect("begin");
+        ports
+            .users
+            .list(uow.as_mut(), after, limit)
+            .await
+            .expect("list")
+    };
+    assert_eq!(list(None, 100).await, created);
+    assert_eq!(list(None, 2).await, created[..2]);
+    assert_eq!(list(Some(created[1].id()), 2).await, created[2..4]);
+    assert!(list(Some(created[4].id()), 10).await.is_empty());
 }
