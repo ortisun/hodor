@@ -235,7 +235,8 @@ async fn the_database_itself_refuses_what_the_rules_forbid() {
         "UPDATE federation.identity_provider SET alias = 'Not An Alias'",
         "UPDATE federation.identity_provider SET kind = 'something_else'",
         "UPDATE federation.identity_provider SET status = 'half'",
-        "UPDATE federation.identity_provider SET issuer = 'http://plain.example.com'",
+        "UPDATE federation.identity_provider SET issuer = 'ftp://files.example.com'",
+        "UPDATE federation.identity_provider SET issuer = 'accounts.example.com'",
         "UPDATE federation.identity_provider SET client_secret = ''",
     ] {
         let refused = sqlx::query(statement).execute(database.owner()).await;

@@ -181,6 +181,44 @@ fn the_policy_allows_nothing_inline_and_nothing_from_elsewhere() {
 }
 
 #[tokio::test]
+async fn the_page_a_provider_sends_people_back_to_is_the_application_too() {
+    let built = Built::new();
+    let router = built.router();
+
+    // Whatever the provider added to the address, the page is the same.
+    for path in [
+        "/t/acme/account/providers/example/callback",
+        "/t/acme/account/providers/example/callback?code=abc&state=def",
+        "/t/acme/account/providers/example/callback?error=access_denied",
+    ] {
+        let reply = get(&router, path).await;
+        assert_eq!(reply.status, StatusCode::OK, "{path}");
+        assert_eq!(reply.body, INDEX, "{path}");
+        assert_eq!(
+            reply.header(header::CONTENT_SECURITY_POLICY),
+            PAGES_CONTENT_SECURITY_POLICY
+        );
+        // The address carries a code: it is sent to no other site.
+        assert_eq!(reply.header(header::REFERRER_POLICY), "no-referrer");
+    }
+    for path in [
+        "/t/acme/account/providers/example",
+        "/t/acme/account/providers/example/callback/more",
+        "/t/acme/account/providers/a/b/callback",
+    ] {
+        let reply = get(&router, path).await;
+        assert_eq!(reply.status, StatusCode::NOT_FOUND, "{path}");
+    }
+    let post = send(
+        &router,
+        Method::POST,
+        "/t/acme/account/providers/example/callback",
+    )
+    .await;
+    assert_eq!(post.status, StatusCode::METHOD_NOT_ALLOWED);
+}
+
+#[tokio::test]
 async fn other_paths_under_account_are_not_found() {
     let built = Built::new();
     let router = built.router();

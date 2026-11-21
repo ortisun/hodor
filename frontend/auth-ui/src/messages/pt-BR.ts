@@ -63,6 +63,12 @@ export const ptBR: Messages = {
   noticeRegistered: "Sua conta está pronta. Entre para continuar.",
   noticePasswordChanged: "Sua senha foi trocada. Entre com a nova.",
   noticeSignedOut: "Você saiu.",
+  noticeProviderRefused: "Não deu certo. Tente de novo ou entre de outra forma.",
+  noticeProviderCancelled: "A entrada não foi concluída no provedor.",
+
+  or: "ou",
+  continueWith: (provider) => `Continuar com ${provider}`,
+  comingBackTitle: "Entrando",
 
   pageNotFoundTitle: "Página não encontrada",
   pageNotFound: "Não há nada neste endereço.",

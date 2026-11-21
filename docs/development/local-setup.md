@@ -49,7 +49,7 @@ npm run theme-check && npm run lint && npm run typecheck && npm test && npm run 
 
 ### Running the browser tests
 
-The browser tests drive Chromium against a running stack: they register, read the message in the development mail server, sign in and sign out, as a person would. Start [the development stack](#running-the-development-stack), create the tenant `acme` with open registration ([creating your first tenant](#creating-your-first-tenant)), then, from `frontend/auth-ui`:
+The browser tests drive Chromium against a running stack: they register, read the message in the development mail server, sign in and sign out, as a person would. Start [the development stack](#running-the-development-stack), create the tenant `acme` with open registration ([creating your first tenant](#creating-your-first-tenant)), add [the development identity provider](#the-development-identity-provider) to it, then, from `frontend/auth-ui`:
 
 ```bash
 npx playwright install chromium
@@ -59,7 +59,7 @@ npx playwright install chromium
 npm run browser-tests
 ```
 
-`HODOR_URL`, `HODOR_MAIL_URL` and `HODOR_TENANT` point the tests at a stack on other ports or at another tenant; they default to `http://localhost:8080`, `http://localhost:8025` and `acme`. The tests create new people on every run and remove nothing.
+`HODOR_URL`, `HODOR_MAIL_URL`, `HODOR_TENANT` and `HODOR_PROVIDER` point the tests at a stack on other ports, at another tenant or at a provider under another alias; they default to `http://localhost:8080`, `http://localhost:8025`, `acme` and `development`. The tests create new people on every run and remove nothing.
 
 Every run asks for about ten links, and a tenant limits how many may be asked for from one address: fifty in fifteen minutes by default, with waits that grow. After several runs in a row the tests stop before they start and say so. Wait, or create another tenant with open registration and name it in `HODOR_TENANT`.
 
@@ -79,13 +79,14 @@ docker compose -f deploy/docker/compose.yaml up --build --wait
 | `server` | `hodor-server`, with the hosted pages | <http://localhost:8080>, health on <http://localhost:9090/readyz> |
 | `worker` | `hodor-worker`, writing the audit log and delivering email | internal only |
 | `mail` | A mail server for development. It accepts every message and delivers none: what Hodor sends can be read in its web page | <http://localhost:8025> |
+| `provider` | [The development identity provider](#the-development-identity-provider), which lets anyone sign in as anyone | <http://localhost:9400> |
 | `victoriametrics` | Metrics backend; the server and the worker push to it over OTLP | <http://localhost:8428/vmui> |
 | `victoriatraces` | Traces backend; the server and the worker push to it over OTLP | <http://localhost:10428/select/vmui> |
 
 If one of those ports is taken on your machine, choose others:
 
 ```bash
-HODOR_HTTP_PORT=18080 HODOR_OPS_PORT=19090 HODOR_VM_PORT=18428 HODOR_TRACES_PORT=20428 HODOR_MAIL_PORT=18025 docker compose -f deploy/docker/compose.yaml up --build --wait
+HODOR_HTTP_PORT=18080 HODOR_OPS_PORT=19090 HODOR_VM_PORT=18428 HODOR_TRACES_PORT=20428 HODOR_MAIL_PORT=18025 HODOR_PROVIDER_PORT=19400 docker compose -f deploy/docker/compose.yaml up --build --wait
 ```
 
 Set the same variables for every later `docker compose` command on that stack. The commands on this page pass `--no-deps` to `run`, so that running the command-line tool never restarts a service of the stack.
@@ -186,6 +187,25 @@ The tenant's pages are then at <http://localhost:8080/t/acme/account>. `--open-r
 4. Sign in with the address and the password.
 
 The same can be done without a browser, with the requests of [the interaction interface](../api/interaction-api.md#registering-and-recovering-a-password).
+
+### The development identity provider
+
+The stack has an identity provider of its own, `deploy/dev-provider/provider.mjs`: one file for Node.js with no dependencies. It speaks enough OpenID Connect for Hodor to sign people in through it, and **it lets anyone sign in as anyone**: its sign-in page asks who you would like to be, and whether it should vouch for the address. It is there to try signing in through a provider and to test it, and has no other use.
+
+Add it to a tenant:
+
+```bash
+docker compose -f deploy/docker/compose.yaml run --rm --no-deps --entrypoint /usr/local/bin/hodor-cli -e HODOR_DATABASE_URL=postgres://hodor_server:dev-server@postgres:5432/hodor -e HODOR_PROVIDER_CLIENT_SECRET=development-client-secret server provider add --tenant acme --alias development --name "Development provider" --issuer http://provider:9400 --client-id hodor
+```
+
+The sign-in page of the tenant, <http://localhost:8080/t/acme/account/sign-in>, then offers "Continue with Development provider".
+
+Two things in the Compose file make this work, and neither belongs anywhere real:
+
+- `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` names the provider, which is at a private address over plain HTTP. Without it Hodor [refuses to call it](../security/outbound-http.md#the-exception-for-development) and refuses its issuer.
+- `HODOR_SECRET_KEYS` holds a key written in the repository.
+
+Hodor reaches the provider as `provider:9400`; a browser reaches it as `localhost:9400`. That is why the provider is told both addresses.
 
 ### The first administrator
 

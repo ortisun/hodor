@@ -146,7 +146,19 @@ impl ProviderSettings {
     /// # Errors
     ///
     /// Returns the `Invalid` error of the first rule that is broken.
-    pub fn checked(mut self) -> Result<Self, DomainError> {
+    pub fn checked(self) -> Result<Self, DomainError> {
+        self.checked_allowing(&[])
+    }
+
+    /// As [`ProviderSettings::checked`], except that the issuer may be
+    /// plain HTTP when its host and port are one of `development_hosts`,
+    /// such as `provider:9000`. For a development stack on one machine;
+    /// the list is empty anywhere real.
+    ///
+    /// # Errors
+    ///
+    /// Returns the `Invalid` error of the first rule that is broken.
+    pub fn checked_allowing(mut self, development_hosts: &[String]) -> Result<Self, DomainError> {
         self.display_name = self.display_name.trim().to_owned();
         let name_length = self.display_name.chars().count();
         if !(1..=64).contains(&name_length) || self.display_name.chars().any(char::is_control) {
@@ -155,7 +167,7 @@ impl ProviderSettings {
                 "a display name is 1 to 64 characters",
             ));
         }
-        check_issuer(&self.issuer)?;
+        check_issuer(&self.issuer, development_hosts)?;
         let id_length = self.client_id.chars().count();
         if !(1..=255).contains(&id_length)
             || self
@@ -198,17 +210,43 @@ fn scopes_invalid() -> DomainError {
     )
 }
 
+/// Whether `address` is plain HTTP to exactly one of the development
+/// hosts, each written as `host:port`.
+#[must_use]
+pub(crate) fn is_development_address(address: &str, development_hosts: &[String]) -> bool {
+    let Some(rest) = address.strip_prefix("http://") else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    // A port that is left out is the one plain HTTP uses.
+    let named = if authority.contains(':') {
+        authority.to_owned()
+    } else {
+        format!("{authority}:80")
+    };
+    development_hosts
+        .iter()
+        .any(|host| host.eq_ignore_ascii_case(&named))
+}
+
 /// An issuer is an HTTPS address with a host, without a name and
 /// password, a query or a fragment. It is kept exactly as given, since it
-/// is compared character by character with what the provider says.
-fn check_issuer(issuer: &str) -> Result<(), DomainError> {
+/// is compared character by character with what the provider says. Plain
+/// HTTP is accepted for a development host only.
+fn check_issuer(issuer: &str, development_hosts: &[String]) -> Result<(), DomainError> {
     let invalid = || {
         DomainError::invalid(
             "federation.issuer_invalid",
             "an issuer is an HTTPS address without a query or a fragment, at most 512 characters",
         )
     };
-    let rest = issuer.strip_prefix("https://").ok_or_else(invalid)?;
+    let rest = match issuer.strip_prefix("https://") {
+        Some(rest) => rest,
+        None if is_development_address(issuer, development_hosts) => {
+            issuer.strip_prefix("http://").ok_or_else(invalid)?
+        }
+        None => return Err(invalid()),
+    };
     let host = rest.split('/').next().unwrap_or_default();
     let plain = issuer.len() <= 512
         && !host.is_empty()
@@ -249,7 +287,9 @@ pub struct IdentityProvider {
 }
 
 impl IdentityProvider {
-    /// A new provider, enabled.
+    /// A new provider, enabled. With `development_hosts`, the issuer may
+    /// be plain HTTP at one of them; see
+    /// [`ProviderSettings::checked_allowing`].
     ///
     /// # Errors
     ///
@@ -259,6 +299,7 @@ impl IdentityProvider {
         kind: ProviderKind,
         settings: ProviderSettings,
         client_secret: SealedSecret,
+        development_hosts: &[String],
         now: Timestamp,
     ) -> Result<Self, DomainError> {
         Ok(Self {
@@ -266,7 +307,7 @@ impl IdentityProvider {
                 id: ProviderId::generate(),
                 alias,
                 kind,
-                settings: settings.checked()?,
+                settings: settings.checked_allowing(development_hosts)?,
                 client_secret,
                 status: ProviderStatus::Enabled,
                 created_at: now,
@@ -315,9 +356,10 @@ impl IdentityProvider {
     pub fn change(
         &mut self,
         settings: ProviderSettings,
+        development_hosts: &[String],
         now: Timestamp,
     ) -> Result<bool, DomainError> {
-        let settings = settings.checked()?;
+        let settings = settings.checked_allowing(development_hosts)?;
         if settings == self.state.settings {
             return Ok(false);
         }
@@ -467,6 +509,43 @@ mod tests {
     }
 
     #[test]
+    fn a_plain_http_issuer_is_accepted_only_at_a_development_host() {
+        let hosts = ["provider:9000".to_owned(), "localhost:80".to_owned()];
+        let with = |issuer: &str, hosts: &[String]| {
+            let mut given = settings();
+            given.issuer = issuer.to_owned();
+            given.checked_allowing(hosts)
+        };
+        for issuer in [
+            "http://provider:9000",
+            "http://provider:9000/realms/acme",
+            "http://PROVIDER:9000",
+            // A port that is left out is the one plain HTTP uses.
+            "http://localhost",
+            "http://localhost/path",
+        ] {
+            assert!(with(issuer, &hosts).is_ok(), "{issuer}");
+        }
+        for issuer in [
+            // Another port, another host, a host that only starts the same.
+            "http://provider:9001",
+            "http://provider",
+            "http://other:9000",
+            "http://provider:9000.evil.example",
+            "http://provider:9000@evil.example",
+            "http://evil.example/provider:9000",
+            "http://evil.example?provider:9000",
+            "http://localhost:8080",
+        ] {
+            let error = with(issuer, &hosts).expect_err(issuer);
+            assert_eq!(error.code(), "federation.issuer_invalid", "{issuer}");
+        }
+        // And nowhere at all when the list is empty, as it is anywhere real.
+        assert!(with("http://provider:9000", &[]).is_err());
+        assert!(with("https://accounts.example.com", &hosts).is_ok());
+    }
+
+    #[test]
     fn an_issuer_is_kept_exactly_as_given() {
         for issuer in [
             "https://accounts.example.com",
@@ -490,22 +569,27 @@ mod tests {
             ProviderKind::OpenIdConnect,
             settings(),
             sealed,
+            &[],
             now,
         )
         .expect("provider");
         assert!(provider.is_enabled());
 
-        assert!(!provider.change(settings(), later).expect("same settings"));
+        assert!(
+            !provider
+                .change(settings(), &[], later)
+                .expect("same settings")
+        );
         assert_eq!(provider.snapshot().updated_at, now);
 
         let mut renamed = settings();
         renamed.display_name = "Another name".to_owned();
-        assert!(provider.change(renamed, later).expect("change"));
+        assert!(provider.change(renamed, &[], later).expect("change"));
         assert_eq!(provider.snapshot().updated_at, later);
 
         let mut broken = settings();
         broken.issuer = "http://insecure.example.com".to_owned();
-        assert!(provider.change(broken, later).is_err());
+        assert!(provider.change(broken, &[], later).is_err());
         assert_eq!(provider.snapshot().settings.display_name, "Another name");
 
         assert!(provider.set_status(ProviderStatus::Disabled, later));

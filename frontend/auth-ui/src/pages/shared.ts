@@ -9,6 +9,8 @@ export interface PageProps {
   text: Messages;
   /** Sends the person to another page of the tenant. */
   go: (page: PageName, notice?: NoticeName) => void;
+  /** Sends the browser to another site: an identity provider. */
+  leave: (url: string) => void;
   /** The path of another page of the tenant, for links. */
   path: (page: PageName) => string;
 }

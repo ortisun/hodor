@@ -14,7 +14,7 @@ This page is for someone who wants to run Hodor and see what it does. To change 
 | A browser | Chromium, Chrome, Edge or Firefox. Safari refuses the session cookie over plain HTTP |
 | Python 3 | Only for [the demonstration](#the-demonstration). It uses nothing outside the standard library |
 
-The stack uses the ports 8080, 9090, 8025, 8428 and 10428 on `localhost`. [Local setup](../development/local-setup.md#running-the-development-stack) says how to choose others.
+The stack uses the ports 8080, 9090, 8025, 8428, 9400 and 10428 on `localhost`. [Local setup](../development/local-setup.md#running-the-development-stack) says how to choose others.
 
 ## 1. Start the stack
 

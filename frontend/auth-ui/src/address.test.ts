@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { noticeOf, pathOf, placeOf, tokenOf } from "./address";
+import { noticeOf, pathOf, placeOf, providerAnswerOf, tokenOf } from "./address";
 
 describe("placeOf", () => {
   it("reads the tenant and the page from the path", () => {
@@ -55,5 +55,37 @@ describe("tokenOf", () => {
     expect(tokenOf("#token=")).toBeNull();
     expect(tokenOf("#token=not-hexadecimal")).toBeNull();
     expect(tokenOf(`#other=${token}`)).toBeNull();
+  });
+});
+
+describe("the page a provider sends people back to", () => {
+  it("is read from the path, with the provider's alias", () => {
+    expect(placeOf("/t/acme/account/providers/google/callback")).toEqual({
+      tenant: "acme",
+      page: "provider-callback",
+      provider: "google",
+    });
+    expect(placeOf("/t/acme/account/providers/entra-id/callback/")?.provider).toBe("entra-id");
+  });
+
+  it("is no page when the alias could not be one", () => {
+    for (const path of [
+      "/t/acme/account/providers/Google/callback",
+      "/t/acme/account/providers//callback",
+      "/t/acme/account/providers/a/b/callback",
+      "/t/acme/account/providers/google",
+    ]) {
+      expect(placeOf(path)?.page ?? null, path).toBeNull();
+    }
+  });
+
+  it("reads what the provider put in the address", () => {
+    expect(providerAnswerOf("?code=abc&state=def")).toEqual({ code: "abc", state: "def", error: null });
+    expect(providerAnswerOf("?error=access_denied&state=def")).toEqual({
+      code: null,
+      state: "def",
+      error: "access_denied",
+    });
+    expect(providerAnswerOf("")).toEqual({ code: null, state: null, error: null });
   });
 });

@@ -6,7 +6,7 @@
 //! before every check there has passed.
 
 use crate::domain::link::Subject;
-use crate::domain::provider::IdentityProvider;
+use crate::domain::provider::{IdentityProvider, is_development_address};
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use hodor_kernel::{
@@ -109,6 +109,9 @@ pub struct OpenIdClient {
     clock: Arc<dyn Clock>,
     /// By issuer. Each server instance keeps its own.
     kept: Arc<Mutex<HashMap<String, Kept>>>,
+    /// Hosts with ports whose endpoints may be plain HTTP. Empty anywhere
+    /// real.
+    development_hosts: Arc<[String]>,
 }
 
 impl std::fmt::Debug for OpenIdClient {
@@ -121,9 +124,19 @@ fn text<'a>(object: &'a Value, name: &str) -> Option<&'a str> {
     object.get(name).and_then(Value::as_str)
 }
 
-fn https_address(description: &Value, name: &str) -> Result<String, DomainError> {
+/// An address from a provider's description: HTTPS, or plain HTTP at one
+/// of the development hosts.
+fn usable_address(
+    description: &Value,
+    name: &str,
+    development_hosts: &[String],
+) -> Result<String, DomainError> {
     text(description, name)
-        .filter(|address| address.starts_with("https://") && address.len() <= 2048)
+        .filter(|address| {
+            address.len() <= 2048
+                && (address.starts_with("https://")
+                    || is_development_address(address, development_hosts))
+        })
         .map(str::to_owned)
         .ok_or_else(|| unavailable(format!("the provider's description has no usable `{name}`")))
 }
@@ -206,7 +219,17 @@ impl OpenIdClient {
             random,
             clock,
             kept: Arc::default(),
+            development_hosts: Arc::from(Vec::new()),
         }
+    }
+
+    /// The same client, accepting plain HTTP endpoints at these hosts,
+    /// each written as `host:port`. For a development stack on one
+    /// machine.
+    #[must_use]
+    pub fn allowing_development_hosts(mut self, hosts: &[String]) -> Self {
+        self.development_hosts = Arc::from(hosts.to_vec());
+        self
     }
 
     fn now(&self) -> i64 {
@@ -269,9 +292,13 @@ impl OpenIdClient {
             ));
         }
         Ok(Description {
-            authorization_endpoint: https_address(&document, "authorization_endpoint")?,
-            token_endpoint: https_address(&document, "token_endpoint")?,
-            jwks_uri: https_address(&document, "jwks_uri")?,
+            authorization_endpoint: usable_address(
+                &document,
+                "authorization_endpoint",
+                &self.development_hosts,
+            )?,
+            token_endpoint: usable_address(&document, "token_endpoint", &self.development_hosts)?,
+            jwks_uri: usable_address(&document, "jwks_uri", &self.development_hosts)?,
             secret_in_body,
         })
     }

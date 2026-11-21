@@ -61,6 +61,12 @@ export const en = {
   noticeRegistered: "Your account is ready. Sign in to go on.",
   noticePasswordChanged: "Your password was changed. Sign in with the new one.",
   noticeSignedOut: "You signed out.",
+  noticeProviderRefused: "That did not work. Try again, or sign in another way.",
+  noticeProviderCancelled: "The sign-in was not finished at the provider.",
+
+  or: "or",
+  continueWith: (provider: string) => `Continue with ${provider}`,
+  comingBackTitle: "Signing you in",
 
   pageNotFoundTitle: "Page not found",
   pageNotFound: "There is nothing at this address.",

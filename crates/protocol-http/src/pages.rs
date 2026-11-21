@@ -31,6 +31,10 @@ pub const PAGE_PATHS: &[&str] = &[
     "/account/reset-password",
 ];
 
+/// The page an identity provider sends a person back to. It is the one
+/// page whose path has a part that varies: the provider's alias.
+pub const PROVIDER_CALLBACK_PAGE: &str = "/account/providers/{alias}/callback";
+
 /// Where the files of the hosted pages are served, outside any tenant.
 pub const PAGE_ASSETS_PATH: &str = "/auth-ui/assets";
 
@@ -70,6 +74,8 @@ pub struct Pages {
     index: Arc<str>,
     assets: PathBuf,
     paths: &'static [&'static str],
+    /// Pages whose path has a part that varies, beside the fixed ones.
+    varying: &'static [&'static str],
     assets_path: &'static str,
 }
 
@@ -82,7 +88,12 @@ impl Pages {
     /// Returns an error naming the directory if `index.html` cannot be
     /// read from it.
     pub fn load(directory: &Path) -> io::Result<Self> {
-        Self::read(directory, PAGE_PATHS, PAGE_ASSETS_PATH)
+        Self::read(
+            directory,
+            PAGE_PATHS,
+            &[PROVIDER_CALLBACK_PAGE],
+            PAGE_ASSETS_PATH,
+        )
     }
 
     /// Reads the admin console from `directory`, as [`Pages::load`] reads
@@ -93,12 +104,13 @@ impl Pages {
     /// Returns an error naming the directory if `index.html` cannot be
     /// read from it.
     pub fn load_console(directory: &Path) -> io::Result<Self> {
-        Self::read(directory, CONSOLE_PATHS, CONSOLE_ASSETS_PATH)
+        Self::read(directory, CONSOLE_PATHS, &[], CONSOLE_ASSETS_PATH)
     }
 
     fn read(
         directory: &Path,
         paths: &'static [&'static str],
+        varying: &'static [&'static str],
         assets_path: &'static str,
     ) -> io::Result<Self> {
         let index = std::fs::read_to_string(directory.join("index.html")).map_err(|error| {
@@ -114,6 +126,7 @@ impl Pages {
             index: index.into(),
             assets: directory.join("assets"),
             paths,
+            varying,
             assets_path,
         })
     }
@@ -121,7 +134,7 @@ impl Pages {
     /// The routes of the pages, to be mounted under `/t/{slug}`.
     pub fn page_routes(&self) -> Router {
         let mut router = Router::new();
-        for path in self.paths {
+        for path in self.paths.iter().chain(self.varying) {
             router = router.route(path, get(page));
         }
         router.with_state(self.index.clone())

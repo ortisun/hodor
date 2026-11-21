@@ -26,7 +26,7 @@ pub use health::{Health, ReadinessCheck, ops_router};
 pub use interaction::{InteractionState, interaction_routes};
 pub use pages::{
     CONSOLE_ASSETS_PATH, CONSOLE_PATHS, PAGE_ASSETS_PATH, PAGE_PATHS,
-    PAGES_CONTENT_SECURITY_POLICY, Pages,
+    PAGES_CONTENT_SECURITY_POLICY, PROVIDER_CALLBACK_PAGE, Pages,
 };
 pub use problem::Problem;
 pub use request::ClientAddress;
