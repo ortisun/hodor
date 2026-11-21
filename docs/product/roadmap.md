@@ -35,6 +35,10 @@ Phases 3, 4 and 5 depend only on Phase 2 and can run in parallel once there are 
 | **8 Ecosystem** | Others can build on Hodor | WebAssembly plugin runtime, software development kits, developer portal, Terraform provider, command-line tool completeness, Model Context Protocol authorization profile | A third-party plugin runs under limits; Terraform manages a full tenant |
 | **9 Production readiness** | Safe to run as critical infrastructure | Cloud key management service and Vault providers, high availability and disaster recovery drills, hardening, load and chaos campaigns, full conformance, Helm chart general availability, external pentest | non-functional requirement targets met and published; **General availability** |
 
+## Order of work after Milestone 1
+
+At the project owner's request, signing in with external identities is built before Phase 2: the social logins and OpenID Connect federation of Phase 3, and LDAP sign-in and the service provider side of SAML from Phase 6. This is [Milestone 2](epics.md#milestone-2-signing-in-with-external-identities), and [Decision 0017](../decisions/0017-external-identities-before-oauth.md) records why it is possible and what it pulls forward. The phases above keep their numbers; Phase 2 follows Milestone 2.
+
 ## Console delivery
 
 The consoles trail their APIs by one phase so that the API is settled first.

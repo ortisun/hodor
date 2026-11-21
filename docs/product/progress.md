@@ -134,6 +134,35 @@ These are recorded here so they are not forgotten; each is picked up by the issu
 | SQL is checked at run time, not at compile time (`sqlx::query!` with the offline cache is not set up). Every query is exercised by an integration test instead | A dedicated issue, not yet scheduled |
 | Continuous integration actions are pinned by tag, not by commit SHA | Hardening pass (threat Threat-General-15) |
 
+## Milestone 2: Signing in with external identities
+
+Planned in [the epics](epics.md#milestone-2-signing-in-with-external-identities); built before Phase 2 at the project owner's request ([Decision 0017](../decisions/0017-external-identities-before-oauth.md)).
+
+| Slice | Done | Total |
+|---|---|---|
+| H — What external identities stand on | 0 | 3 |
+| I — OpenID Connect and the social logins | 0 | 6 |
+| J — LDAP | 0 | 2 |
+| K — SAML service provider | 0 | 4 |
+
+| Issue | Status | What exists |
+|---|---|---|
+| Issue-35 Secrets at rest | Not started | — |
+| Issue-36 Outbound HTTP | Not started | — |
+| Issue-37 A sign-in completed by one external step | Not started | — |
+| Issue-38 Federation context | Not started | — |
+| Issue-39 OpenID Connect relying party | Not started | — |
+| Issue-40 Federated sign-in over HTTP | Not started | — |
+| Issue-41 Managing providers | Not started | — |
+| Issue-42 The pages | Not started | — |
+| Issue-43 Connectors | Not started | — |
+| Issue-44 LDAP sign-in | Not started | — |
+| Issue-45 LDAP in the pages and the administration interface | Not started | — |
+| Issue-46 The SAML spike | Not started | — |
+| Issue-47 The SAML attack corpus | Not started | — |
+| Issue-48 SAML service provider | Not started | — |
+| Issue-49 SAML in the pages, the administration interface and the demonstration | Not started | — |
+
 ## Design system
 
 Specified in [the design system](../design/design-system.md) and [the control plane](../design/control-plane.md), outside the milestone plan; the React components are built with the admin console (Epic 12).

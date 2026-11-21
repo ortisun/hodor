@@ -144,6 +144,53 @@ Slices B, C, D and the first half of F are independent after A and can be done i
 
 OAuth and OpenID Connect, key management, groups and organizations, multi-factor authentication, federation, Redis, Open Policy Agent, admin and account consoles, custom domains, flow editing.
 
+## Milestone 2: Signing in with external identities
+
+**Goal**: a person signs in to a tenant with an account they already have somewhere else — a social login or any OpenID Connect provider, an LDAP directory, or a SAML identity provider — and ends with the same Hodor session as with a password. No account can be taken over by way of an external identity.
+
+Built before Phase 2 at the project owner's request; [Decision 0017](../decisions/0017-external-identities-before-oauth.md) says what that pulls forward and what stays out.
+
+**Demo script**: add an OpenID Connect provider to a tenant with the command-line tool; sign in through it and be created on first sign-in; sign in again and be recognized; show that an external identity with the email address of an existing local account is not let into that account; show that the provider of one tenant does nothing in another; sign in through an LDAP directory; sign in through a SAML identity provider; show a tampered SAML response refused.
+
+### Slice H — What external identities stand on
+
+| Identifier | Issue | Acceptance | Depends on |
+|---|---|---|---|
+| Issue-35 | Secrets at rest: a `SecretBox` port in `kernel`; an authenticated-encryption adapter keyed from configuration, every ciphertext bound to its tenant and purpose and carrying the identifier of its key | A ciphertext opens only under its own tenant and purpose; a second configured key opens old ciphertexts while new ones use the first; a flipped bit is refused | — |
+| Issue-36 | Outbound HTTP: an `HttpClient` port in `kernel` and `adapters-http`, the one guarded implementation: HTTPS only, the resolved address checked against private, loopback, link-local and metadata ranges and then used for the connection, no redirects, limits on size and time | Requests to each forbidden range are refused, including through a host name that resolves there and through a redirect; an oversized or slow answer is cut | — |
+| Issue-37 | A sign-in completed by one external step: a flow may offer an alternative to its first steps; an authenticator may identify and prove in one step | The built-in flow still passes its suite; a flow with an external alternative completes with either path and never with half of each | — |
+
+### Slice I — OpenID Connect and the social logins
+
+| Identifier | Issue | Acceptance | Depends on |
+|---|---|---|---|
+| Issue-38 | `federation` context: the identity provider with its encrypted secret, the link between a user and an external identity, storage under row-level security, contract suite | A secret is never read back; a link is found by provider and external subject only; tenant isolation cases pass | Issue-35 |
+| Issue-39 | OpenID Connect relying party: discovery, key set with caching and refresh on an unknown key, ID token validation (signature, issuer, audience, authorized party, expiry, nonce), PKCE | Every invalid token of the test corpus is refused for the right reason, against a provider run by the test | Issue-36, Issue-38 |
+| Issue-40 | Federated sign-in over HTTP: start and callback routes, the state of one trip bound to the browser and the sign-in, creation on first sign-in, the rules against takeover | A whole sign-in against the test provider; a replayed or foreign callback is refused; an external identity never enters an existing account by its email address alone | Issue-37, Issue-39 |
+| Issue-41 | Managing providers: administration interface and command-line tool | A provider is created, changed, disabled and listed; its secret is write-only | Issue-38 |
+| Issue-42 | The pages: the providers a tenant offers on the sign-in page; the way back from a provider | Browser tests against a provider in the Compose stack, with the policy, accessibility and keyboard checks | Issue-40, Issue-41 |
+| Issue-43 | Connectors: Google and Microsoft (OpenID Connect, issuer pinned to allowed tenants), GitHub (OAuth 2.0 with the email interface), Apple (form post, client secret as a signed token) | Each connector's quirks are tested against recorded answers; none is verified against the real provider in continuous integration | Issue-40 |
+
+### Slice J — LDAP
+
+| Identifier | Issue | Acceptance | Depends on |
+|---|---|---|---|
+| Issue-44 | LDAP sign-in: a directory as an identity provider; search then bind over LDAPS, attribute mapping, creation on first sign-in, lockout as for passwords | Sign-in against a directory run by the test; a wrong password, an unknown person and an empty password are refused alike; a filter cannot be injected through the identifier | Issue-38, Issue-40 |
+| Issue-45 | LDAP in the pages and in the administration interface | Browser test against a directory in the Compose stack | Issue-44 |
+
+### Slice K — SAML service provider
+
+| Identifier | Issue | Acceptance | Depends on |
+|---|---|---|---|
+| Issue-46 | The spike of [Decision 0014](../decisions/0014-saml-deferred-with-spike.md): compare the ways to verify XML signatures, and decide | A decision record with the comparison and the choice | — |
+| Issue-47 | The SAML attack corpus and the interoperability samples, before the feature code | The corpus exists as tests that fail for lack of an implementation | Issue-46 |
+| Issue-48 | SAML service provider: metadata, the request, the assertion consumer, attribute mapping | The whole corpus is refused, each for the right reason; samples from common identity providers are accepted | Issue-40, Issue-47 |
+| Issue-49 | SAML in the pages, the administration interface and the demonstration | Browser test against an identity provider in the Compose stack; the demonstration of the milestone passes | Issue-42, Issue-45, Issue-48 |
+
+### Explicitly not in Milestone 2
+
+Hodor as a SAML identity provider, synchronizing users and groups from LDAP, SCIM, routing by email domain, linking and unlinking from an account page, mapping external groups to roles, single logout, and everything of Phase 2.
+
 ## Later epics at story level
 
 **Epic 7 Keys** — key set and version model with states; local provider with envelope encryption; scheduled rotation job with advisory lock; JWKS publication with overlap; revoke; admin API.
