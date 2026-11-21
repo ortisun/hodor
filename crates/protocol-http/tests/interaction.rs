@@ -974,3 +974,267 @@ async fn account_requests_from_another_site_or_of_the_wrong_shape_are_refused() 
     assert!(malformed.status.is_client_error());
     assert!(world.templates().is_empty());
 }
+
+impl Browser {
+    /// Asks who is signed in, which also hands the browser the CSRF token
+    /// of its session.
+    async fn whoami(&mut self, world: &World) -> Reply {
+        self.session(world, "acme").await
+    }
+
+    async fn delete(&mut self, world: &World, path: &str) -> Reply {
+        self.send(
+            world,
+            Method::DELETE,
+            &format!("/t/acme/interaction/{path}"),
+            None,
+        )
+        .await
+    }
+
+    async fn listed(&mut self, world: &World) -> Vec<serde_json::Value> {
+        let reply = self
+            .send(world, Method::GET, "/t/acme/interaction/sessions", None)
+            .await;
+        assert_eq!(reply.status, StatusCode::OK);
+        reply.body["sessions"].as_array().expect("sessions").clone()
+    }
+}
+
+/// A browser signed in as Ana, holding the CSRF token of its session.
+async fn signed_in_browser(world: &World) -> Browser {
+    let mut browser = Browser::default();
+    assert!(browser.signs_in(world, "ana@example.com", PASSWORD).await);
+    assert_eq!(browser.whoami(world).await.status, StatusCode::OK);
+    browser
+}
+
+#[tokio::test]
+async fn signing_out_ends_the_session_on_the_server_and_removes_the_cookie() {
+    let world = world().await;
+    let mut browser = signed_in_browser(&world).await;
+    // A copy of the cookie made before signing out, as a thief would hold.
+    let mut copy = browser.clone();
+
+    let reply = browser.delete(&world, "session").await;
+
+    assert_eq!(reply.status, StatusCode::NO_CONTENT);
+    let cleared = reply.set_cookies();
+    assert_eq!(cleared.len(), 1);
+    assert!(
+        cleared[0].starts_with("__Secure-hodor_session=;"),
+        "{cleared:?}"
+    );
+    assert!(cleared[0].contains("Max-Age=0") && cleared[0].contains("Path=/t/acme"));
+    assert!(!browser.cookies.contains_key("__Secure-hodor_session"));
+    // The session is over, not merely forgotten: the copy stops working.
+    let after = copy.whoami(&world).await;
+    assert_eq!(after.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(after.code(), "session.not_authenticated");
+}
+
+#[tokio::test]
+async fn signing_out_ends_one_session_and_leaves_the_others() {
+    let world = world().await;
+    let mut laptop = signed_in_browser(&world).await;
+    let mut phone = signed_in_browser(&world).await;
+
+    assert_eq!(
+        laptop.delete(&world, "session").await.status,
+        StatusCode::NO_CONTENT
+    );
+
+    assert_eq!(phone.whoami(&world).await.status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn a_person_sees_their_own_sessions_and_which_one_is_this() {
+    let world = world().await;
+    let mut laptop = signed_in_browser(&world).await;
+    world.clock.advance(Duration::minutes(5));
+    let mut phone = signed_in_browser(&world).await;
+
+    let listed = phone.listed(&world).await;
+
+    assert_eq!(listed.len(), 2);
+    // Newest first, and only the asking browser's is marked current.
+    assert_eq!(listed[0]["current"], true);
+    assert_eq!(listed[1]["current"], false);
+    assert_eq!(
+        listed[1]["session_id"],
+        laptop.whoami(&world).await.body["session_id"]
+    );
+    for session in &listed {
+        for field in ["started_at", "last_activity_at", "expires_at"] {
+            assert!(session[field].is_string(), "{field}");
+        }
+    }
+    // No token, of this session or of the other, is in the list.
+    let shown = serde_json::Value::Array(listed).to_string();
+    for browser in [&laptop, &phone] {
+        assert!(!shown.contains(&browser.cookies["__Secure-hodor_session"]));
+    }
+}
+
+#[tokio::test]
+async fn a_person_ends_another_of_their_sessions_and_it_stops_working() {
+    let world = world().await;
+    let mut laptop = signed_in_browser(&world).await;
+    let mut phone = signed_in_browser(&world).await;
+    let phone_session = phone.whoami(&world).await.body["session_id"]
+        .as_str()
+        .expect("identifier")
+        .to_owned();
+
+    let reply = laptop
+        .delete(&world, &format!("sessions/{phone_session}"))
+        .await;
+
+    assert_eq!(reply.status, StatusCode::NO_CONTENT);
+    assert!(reply.set_cookies().is_empty(), "the laptop stays signed in");
+    assert_eq!(phone.whoami(&world).await.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(laptop.whoami(&world).await.status, StatusCode::OK);
+    assert_eq!(laptop.listed(&world).await.len(), 1);
+
+    // Ending it again, ending one that never existed and ending something
+    // that is not an identifier are answered alike.
+    for target in [
+        phone_session.as_str(),
+        "0193f1c9-0000-7000-8000-000000000000",
+        "not-an-identifier",
+    ] {
+        let reply = laptop.delete(&world, &format!("sessions/{target}")).await;
+        assert_eq!(reply.status, StatusCode::NOT_FOUND, "{target}");
+        assert_eq!(reply.code(), "session.not_found");
+    }
+}
+
+#[tokio::test]
+async fn ending_the_current_session_by_its_identifier_is_signing_out() {
+    let world = world().await;
+    let mut browser = signed_in_browser(&world).await;
+    let current = browser.whoami(&world).await.body["session_id"]
+        .as_str()
+        .expect("identifier")
+        .to_owned();
+    let mut copy = browser.clone();
+
+    let reply = browser.delete(&world, &format!("sessions/{current}")).await;
+
+    assert_eq!(reply.status, StatusCode::NO_CONTENT);
+    assert_eq!(reply.set_cookies().len(), 1);
+    assert_eq!(copy.whoami(&world).await.status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn a_person_ends_every_session_but_this_one() {
+    let world = world().await;
+    let mut phone = signed_in_browser(&world).await;
+    let mut tablet = signed_in_browser(&world).await;
+    let mut laptop = signed_in_browser(&world).await;
+
+    let reply = laptop.delete(&world, "sessions").await;
+
+    assert_eq!(reply.status, StatusCode::OK);
+    assert_eq!(reply.body, serde_json::json!({ "ended": 2 }));
+    assert_eq!(phone.whoami(&world).await.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(tablet.whoami(&world).await.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(laptop.whoami(&world).await.status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn one_person_cannot_end_or_see_the_sessions_of_another() {
+    let world = world().await;
+    let mut ana = signed_in_browser(&world).await;
+    let ana_session = ana.whoami(&world).await.body["session_id"]
+        .as_str()
+        .expect("identifier")
+        .to_owned();
+    // Another person of the same tenant, registered through their mailbox.
+    let mut bia = Browser::default();
+    bia.post(
+        &world,
+        "registration",
+        serde_json::json!({ "email": "bia@example.com" }),
+    )
+    .await;
+    bia.post(
+        &world,
+        "registration/complete",
+        serde_json::json!({ "token": world.newest_token(), "password": "a long passphrase for bia" }),
+    )
+    .await;
+    let mut bia = Browser::default();
+    assert!(
+        bia.signs_in(&world, "bia@example.com", "a long passphrase for bia")
+            .await
+    );
+    bia.whoami(&world).await;
+
+    let listed = bia.listed(&world).await;
+    assert_eq!(listed.len(), 1);
+    assert_ne!(listed[0]["session_id"], ana_session.as_str());
+
+    let reply = bia.delete(&world, &format!("sessions/{ana_session}")).await;
+    assert_eq!(reply.status, StatusCode::NOT_FOUND);
+    assert_eq!(reply.code(), "session.not_found");
+    bia.delete(&world, "sessions").await;
+    assert_eq!(ana.whoami(&world).await.status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn changing_requests_need_the_session_csrf_token_and_the_same_origin() {
+    let world = world().await;
+    let mut browser = signed_in_browser(&world).await;
+    let second = signed_in_browser(&world).await;
+
+    for path in [
+        "session",
+        "sessions",
+        "sessions/0193f1c9-0000-7000-8000-000000000000",
+    ] {
+        // Without the token, and with the token of another session.
+        for token in [None, second.csrf_token.clone()] {
+            let mut forged = browser.clone();
+            forged.csrf_token = token;
+            let reply = forged.delete(&world, path).await;
+            assert_eq!(reply.status, StatusCode::FORBIDDEN, "{path}");
+            assert_eq!(reply.code(), "request.csrf_token_invalid");
+        }
+        let mut elsewhere = browser.clone();
+        elsewhere.origin = Some("https://evil.example");
+        let reply = elsewhere.delete(&world, path).await;
+        assert_eq!(reply.status, StatusCode::FORBIDDEN, "{path}");
+        assert_eq!(reply.code(), "request.cross_origin");
+    }
+
+    // Nothing was ended.
+    assert_eq!(browser.listed(&world).await.len(), 2);
+}
+
+#[tokio::test]
+async fn the_routes_of_a_signed_in_person_refuse_everyone_else_in_one_way() {
+    let world = world().await;
+    let mut nobody = Browser::default();
+    for (method, path) in [
+        (Method::GET, "session"),
+        (Method::DELETE, "session"),
+        (Method::GET, "sessions"),
+        (Method::DELETE, "sessions"),
+        (
+            Method::DELETE,
+            "sessions/0193f1c9-0000-7000-8000-000000000000",
+        ),
+    ] {
+        let reply = nobody
+            .send(
+                &world,
+                method.clone(),
+                &format!("/t/acme/interaction/{path}"),
+                None,
+            )
+            .await;
+        assert_eq!(reply.status, StatusCode::UNAUTHORIZED, "{method} {path}");
+        assert_eq!(reply.code(), "session.not_authenticated");
+    }
+}

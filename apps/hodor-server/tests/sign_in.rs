@@ -239,3 +239,60 @@ async fn the_running_server_refuses_forged_and_excessive_requests() {
         .expect("seconds");
     assert!((1..=60).contains(&wait), "{wait}");
 }
+
+#[tokio::test]
+async fn a_person_signs_out_of_the_running_server() {
+    let database = TestDatabase::start().await;
+    tenant_with_ana(&database, "acme").await;
+    let server = start_server(&database).await;
+    let mut laptop = Browser::new(&server);
+    let mut phone = Browser::new(&server);
+    for browser in [&mut laptop, &mut phone] {
+        let (_, body) = browser.sign_in("acme", "ana@example.com", PASSWORD).await;
+        assert_eq!(body["status"], "completed");
+        // Asking who is signed in hands the browser its session's CSRF token.
+        let (status, _) = browser
+            .send(Method::GET, "/t/acme/interaction/session", None)
+            .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+    let stolen = laptop.cookies["__Secure-hodor_session"].clone();
+
+    // The person sees both sessions from either browser.
+    let (status, body) = laptop
+        .send(Method::GET, "/t/acme/interaction/sessions", None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["sessions"].as_array().map(Vec::len), Some(2));
+
+    let (status, _) = laptop
+        .send(Method::DELETE, "/t/acme/interaction/session", None)
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert!(!laptop.cookies.contains_key("__Secure-hodor_session"));
+
+    // The session is ended on the server: a copy of its token made before
+    // signing out is refused on the next request.
+    let response = laptop
+        .client
+        .get(format!("{}/t/acme/interaction/session", server.base))
+        .header(COOKIE, format!("__Secure-hodor_session={stolen}"))
+        .send()
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    // The other browser is still signed in, and the database says why the
+    // first session ended.
+    let (status, body) = phone
+        .send(Method::GET, "/t/acme/interaction/sessions", None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["sessions"].as_array().map(Vec::len), Some(1));
+    let reasons: Vec<Option<String>> =
+        sqlx::query_scalar("SELECT revocation_reason FROM session.session ORDER BY started_at, id")
+            .fetch_all(database.owner())
+            .await
+            .expect("read");
+    assert_eq!(reasons, [Some("sign_out".to_owned()), None]);
+}

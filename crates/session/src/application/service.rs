@@ -174,6 +174,40 @@ impl SessionService {
         Ok(())
     }
 
+    /// Ends a session only if it belongs to the given user and is active.
+    /// This is what a person uses on their own sessions.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NotFound` if the tenant has no such session, if it is
+    /// another user's, or if it has already ended. The three are not told
+    /// apart, so that one person cannot learn about another's sessions.
+    pub async fn revoke_for_user(
+        &self,
+        tenant: &TenantContext,
+        user_id: UserId,
+        id: SessionId,
+        reason: &str,
+        caller: Caller,
+    ) -> Result<(), DomainError> {
+        let not_found =
+            || DomainError::not_found("session.not_found", "the session does not exist");
+        let now = self.clock.now();
+        let mut uow = self.units_of_work.begin(tenant).await?;
+        let mut session = self
+            .sessions
+            .get(uow.as_mut(), id)
+            .await?
+            .filter(|session| {
+                session.user_id() == user_id && session.state_at(now) == SessionState::Active
+            })
+            .ok_or_else(not_found)?;
+        let event = session.revoke(reason, now).ok_or_else(not_found)?;
+        self.sessions.update(uow.as_mut(), &session).await?;
+        self.record(uow.as_mut(), caller, &event)?;
+        uow.commit().await
+    }
+
     /// Ends all of a user's active sessions, optionally keeping one.
     /// Returns how many were ended.
     ///

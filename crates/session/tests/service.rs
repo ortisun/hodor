@@ -239,3 +239,52 @@ async fn replacing_the_token_keeps_the_session_and_retires_the_old_token() {
     assert_eq!(world.find(old.expose()).await, None);
     assert_eq!(world.find(new.expose()).await, Some(session.id()));
 }
+
+#[tokio::test]
+async fn a_person_can_end_only_their_own_active_sessions() {
+    let world = world();
+    let (session, token) = world.start().await;
+    let (other, other_token) = world.start().await;
+    let stranger = UserId::generate();
+    let end = |user: UserId, id: SessionId| {
+        let world = &world;
+        async move {
+            world
+                .service
+                .revoke_for_user(&world.tenant, user, id, "sign_out", Caller::system())
+                .await
+        }
+    };
+
+    // Someone else's session, and one that does not exist, look the same.
+    for (user, id) in [
+        (stranger, session.id()),
+        (world.user, SessionId::generate()),
+    ] {
+        let error = end(user, id).await.expect_err("refused");
+        assert_eq!(error.code(), "session.not_found");
+    }
+    assert!(world.find(token.expose()).await.is_some());
+
+    end(world.user, session.id()).await.expect("ended");
+    assert!(world.find(token.expose()).await.is_none());
+    assert!(world.find(other_token.expose()).await.is_some());
+    assert_eq!(
+        world
+            .units_of_work
+            .committed_event_types()
+            .last()
+            .map(String::as_str),
+        Some("session.revoked")
+    );
+
+    // A session that has already ended is not found either, whether it
+    // was ended on purpose or expired.
+    let error = end(world.user, session.id())
+        .await
+        .expect_err("already ended");
+    assert_eq!(error.code(), "session.not_found");
+    world.clock.advance(Duration::hours(13));
+    let error = end(world.user, other.id()).await.expect_err("expired");
+    assert_eq!(error.code(), "session.not_found");
+}
