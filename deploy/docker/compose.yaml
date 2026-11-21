@@ -109,6 +109,27 @@ services:
       timeout: 2s
       retries: 30
 
+  # A SAML identity provider for development. It lets anyone sign in as
+  # anyone, and signs with a key written in the repository. Only the
+  # browser talks to it.
+  saml-provider:
+    image: node:24-bookworm-slim
+    command: ["node", "/saml-provider/saml-provider.mjs"]
+    user: node
+    environment:
+      PORT: "9500"
+      ENTITY_ID: urn:hodor:development-saml-provider
+      BROWSER_URL: http://localhost:${HODOR_SAML_PROVIDER_PORT:-9500}
+    volumes:
+      - ../dev-saml-provider:/saml-provider:ro
+    ports:
+      - "127.0.0.1:${HODOR_SAML_PROVIDER_PORT:-9500}:9500"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:9500/health').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
   # An LDAP directory for development, with one person in it: dora,
   # whose password is written in deploy/dev-directory/people.ldif.
   # Reachable from inside the stack only.
@@ -144,7 +165,7 @@ services:
       # The development provider is at a private address, over plain
       # HTTP. This is the setting that allows it; never set it anywhere
       # real.
-      HODOR_OUTBOUND_DEVELOPMENT_HOSTS: provider:9400,localhost:${HODOR_PROVIDER_PORT:-9400},directory:389
+      HODOR_OUTBOUND_DEVELOPMENT_HOSTS: provider:9400,localhost:${HODOR_PROVIDER_PORT:-9400},directory:389,localhost:${HODOR_SAML_PROVIDER_PORT:-9500}
       # The development directory, the one directory this stack may use.
       HODOR_DIRECTORY_HOSTS: directory:389
       HODOR_LOG_FORMAT: pretty

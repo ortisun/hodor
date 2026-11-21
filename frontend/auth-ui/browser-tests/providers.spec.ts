@@ -105,10 +105,19 @@ test("the code a provider sent does not stay in the address or work a second tim
 test("a person reaches the provider and comes back with the keyboard alone", async ({ page }) => {
   await page.goto(at("sign-in"));
   await expect(page.getByLabel(en.identifierLabel, { exact: true })).toBeFocused();
-  // The field, the button that continues, then the provider.
+  // The field, the button that continues, then the providers in the
+  // order they are offered, the development provider among them.
   await page.keyboard.press("Tab");
-  await page.keyboard.press("Tab");
-  await expect(page.getByRole("button", { name: en.continueWith(PROVIDER_NAME) })).toBeFocused();
+  await expect(page.getByRole("button", { name: en.continue, exact: true })).toBeFocused();
+  const provider = page.getByRole("button", { name: en.continueWith(PROVIDER_NAME) });
+  const offered = await page.getByRole("button", { name: /^Continue with / }).count();
+  for (let pressed = 0; pressed < offered; pressed += 1) {
+    await page.keyboard.press("Tab");
+    if (await provider.evaluate((button) => button === document.activeElement)) {
+      break;
+    }
+  }
+  await expect(provider).toBeFocused();
   await page.keyboard.press("Enter");
 
   await expect(page.getByRole("heading", { name: PROVIDER_NAME })).toBeVisible();

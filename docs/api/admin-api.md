@@ -198,6 +198,20 @@ A provider of the kind `ldap`, a [directory](../architecture/contexts/federation
 
 For a directory, `issuer` is its address (`ldaps://host`), `client_id` is the name Hodor binds with to search, and `client_secret` is that name's password.
 
+A provider of the kind `saml`, a [SAML identity provider](../architecture/contexts/federation.md#signing-in-through-a-saml-identity-provider), also has `saml`, and `metadata_address`; every other kind has them `null`:
+
+```json
+"saml": {
+  "single_sign_on_address": "https://login.example.com/sso/saml",
+  "certificate": "-----BEGIN CERTIFICATE-----\n…\n-----END CERTIFICATE-----",
+  "email_attribute": "email",
+  "name_attribute": "name"
+},
+"metadata_address": "https://auth.example.com/t/acme/interaction/sign-in/providers/corp/saml/metadata"
+```
+
+For a SAML provider, `issuer` is the identity provider's entity identifier, `client_id` is empty and there is no client secret. `metadata_address` is what to give the identity provider: Hodor's entity identifier and where responses are posted. `callback_address` is `null`.
+
 **The client secret is never part of an answer.** It is given when a provider is added and when the secret is replaced, and after that no operation returns it.
 
 `POST /identity-providers` with:
@@ -214,13 +228,13 @@ For a directory, `issuer` is its address (`ldaps://host`), `client_id` is the na
 }
 ```
 
-`kind` is `openid_connect` unless given; the others are `github`, for which `issuer` may be left out, and `ldap`, which needs `directory` with at least `base` and `filter`. The attribute names are `entryUUID`, `mail` and `cn` unless given. A directory whose host and port are not on the installation's list is refused with `403` and `federation.directory_not_allowed`. `scopes`, `creates_users` and `trusts_email` are optional. The answer is `201` with the provider, enabled.
+`kind` is `openid_connect` unless given; the others are `github`, for which `issuer` may be left out, `ldap`, which needs `directory` with at least `base` and `filter`, and `saml`, which needs `saml` with at least `single_sign_on_address` and `certificate` and takes neither `client_id` nor `client_secret`. The attribute names are `entryUUID`, `mail` and `cn` for a directory, `email` and `name` for a SAML provider, unless given. A certificate that cannot be used is refused with `422` and `federation.saml_invalid`; the problem's `detail` names the reason, such as `key_too_short`. A directory whose host and port are not on the installation's list is refused with `403` and `federation.directory_not_allowed`. `scopes`, `creates_users` and `trusts_email` are optional. The answer is `201` with the provider, enabled.
 
 `trusts_email` is a statement about the provider that is easy to get wrong; read [what it means](../architecture/contexts/federation.md#when-a-provider-does-not-say-whether-it-vouches) before setting it.
 
-`PATCH /identity-providers/{provider_id}` takes any of `display_name`, `issuer`, `client_id`, `scopes`, `creates_users`, `trusts_email` and, for a directory, `directory` with any of its fields; what is left out stays as it is. Neither the alias nor the kind can be changed: the alias is part of the callback address, and another kind is another provider. The answer is `200` with the provider.
+`PATCH /identity-providers/{provider_id}` takes any of `display_name`, `issuer`, `client_id`, `scopes`, `creates_users`, `trusts_email`, for a directory `directory` with any of its fields, and for a SAML provider `saml` with any of its fields, such as a new `certificate` when the identity provider changes its keys; what is left out stays as it is. Neither the alias nor the kind can be changed: the alias is part of the callback address, and another kind is another provider. The answer is `200` with the provider.
 
-`PUT /identity-providers/{provider_id}/client-secret` with `{ "client_secret": "…" }` answers `204`.
+`PUT /identity-providers/{provider_id}/client-secret` with `{ "client_secret": "…" }` answers `204`. A SAML provider has no secret: `422` with `federation.client_secret_invalid`.
 
 `POST /identity-providers/{provider_id}:disable` and `:enable` take no body and answer `200` with the provider. A disabled provider is not offered on the sign-in page and signs nobody in; the people it let in keep their accounts and their links.
 

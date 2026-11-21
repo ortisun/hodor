@@ -356,7 +356,32 @@ describe("identity providers on the sign-in page", () => {
 });
 
 describe("the page a provider sends people back to", () => {
-  const answer = { code: "the-code", state: "the-state", error: null };
+  const answer = { code: "the-code", state: "the-state", error: null, binding: null, receipt: null };
+  const saml = { code: null, state: "the-state", error: null, binding: "saml" as const, receipt: "the-receipt" };
+
+  it("presents the state and the receipt of a SAML response, and no code", async () => {
+    const { props, sent, go } = page({
+      "GET /sign-in": [pending("identifier")],
+      "POST /sign-in/providers/corp/callback": [json(200, { status: "completed" })],
+    });
+    render(<ComingBackPage {...props} provider="corp" answer={saml} />);
+    await waitFor(() => expect(go).toHaveBeenCalledWith("account"));
+    expect(sent.at(-1)).toMatchObject({
+      path: "/sign-in/providers/corp/callback",
+      body: { state: "the-state", receipt: "the-receipt" },
+    });
+    expect(sent.at(-1)?.body).not.toHaveProperty("code");
+  });
+
+  it("asks the server nothing for a SAML answer without a receipt, and says it did not work", async () => {
+    for (const without of [{ ...saml, receipt: null }, { ...saml, state: null }]) {
+      const { props, sent: requests, go } = page({});
+      render(<ComingBackPage {...props} provider="corp" answer={without} />);
+      await waitFor(() => expect(go).toHaveBeenCalledWith("sign-in", "provider-refused"));
+      expect(requests).toEqual([]);
+      cleanup();
+    }
+  });
 
   it("presents what the provider sent and goes on to the account", async () => {
     const { props, sent, go } = page({
@@ -386,9 +411,9 @@ describe("the page a provider sends people back to", () => {
 
   it("asks the server nothing when the provider sent no code", async () => {
     for (const sent of [
-      { code: null, state: "the-state", error: "access_denied" },
-      { code: "the-code", state: null, error: null },
-      { code: "the-code", state: "the-state", error: "server_error" },
+      { ...answer, code: null, error: "access_denied" },
+      { ...answer, state: null },
+      { ...answer, error: "server_error" },
     ]) {
       const { props, sent: requests, go } = page({});
       render(<ComingBackPage {...props} provider="google" answer={sent} />);

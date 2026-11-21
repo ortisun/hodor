@@ -80,6 +80,7 @@ docker compose -f deploy/docker/compose.yaml up --build --wait
 | `worker` | `hodor-worker`, writing the audit log and delivering email | internal only |
 | `mail` | A mail server for development. It accepts every message and delivers none: what Hodor sends can be read in its web page | <http://localhost:8025> |
 | `provider` | [The development identity provider](#the-development-identity-provider), which lets anyone sign in as anyone | <http://localhost:9400> |
+| `saml-provider` | [The development SAML identity provider](#the-development-saml-identity-provider), which lets anyone sign in as anyone too | <http://localhost:9500> |
 | `directory` | [The development directory](#the-development-directory), OpenLDAP with one person in it | internal only |
 | `victoriametrics` | Metrics backend; the server and the worker push to it over OTLP | <http://localhost:8428/vmui> |
 | `victoriatraces` | Traces backend; the server and the worker push to it over OTLP | <http://localhost:10428/select/vmui> |
@@ -87,7 +88,7 @@ docker compose -f deploy/docker/compose.yaml up --build --wait
 If one of those ports is taken on your machine, choose others:
 
 ```bash
-HODOR_HTTP_PORT=18080 HODOR_OPS_PORT=19090 HODOR_VM_PORT=18428 HODOR_TRACES_PORT=20428 HODOR_MAIL_PORT=18025 HODOR_PROVIDER_PORT=19400 docker compose -f deploy/docker/compose.yaml up --build --wait
+HODOR_HTTP_PORT=18080 HODOR_OPS_PORT=19090 HODOR_VM_PORT=18428 HODOR_TRACES_PORT=20428 HODOR_MAIL_PORT=18025 HODOR_PROVIDER_PORT=19400 HODOR_SAML_PROVIDER_PORT=19500 docker compose -f deploy/docker/compose.yaml up --build --wait
 ```
 
 Set the same variables for every later `docker compose` command on that stack. The commands on this page pass `--no-deps` to `run`, so that running the command-line tool never restarts a service of the stack.
@@ -167,7 +168,7 @@ The worker connects to the database twice, with different roles: as a member of 
 | `tenant create`, `tenant create-system`, `tenant list`, `tenant suspend`, `tenant reactivate` | `HODOR_DATABASE_URL` (required) | Manage tenants as a member of `hodor_app`. See [the tenant context](../architecture/contexts/tenant.md#command-line-tool) |
 | `admin bootstrap --tenant <slug> --email <address>` | `HODOR_DATABASE_URL` (required) | Makes a user an administrator of a tenant, creating the user if needed, and prints an access token for [the administration interface](../api/admin-api.md#the-first-administrator) |
 | `audit verify --tenant <slug>` | `HODOR_DATABASE_URL` (required) | Checks a tenant's whole chain of audit records and exits non-zero if a record was changed, removed or inserted. See [the audit context](../architecture/contexts/audit.md#verifying) |
-| `provider add`, `provider list`, `provider disable`, `provider enable` | `HODOR_DATABASE_URL` and `HODOR_SECRET_KEYS` (required); `HODOR_DIRECTORY_HOSTS` for a directory | Manage a tenant's [identity providers](../architecture/contexts/federation.md#identity-providers). `provider add` reads the client secret from `HODOR_PROVIDER_CLIENT_SECRET`, never from an argument, so that it does not show in the list of processes or in the history of a shell |
+| `provider add`, `provider list`, `provider disable`, `provider enable` | `HODOR_DATABASE_URL` and `HODOR_SECRET_KEYS` (required); `HODOR_DIRECTORY_HOSTS` for a directory | Manage a tenant's [identity providers](../architecture/contexts/federation.md#identity-providers). `provider add` reads the client secret from `HODOR_PROVIDER_CLIENT_SECRET`, never from an argument, so that it does not show in the list of processes or in the history of a shell. A SAML provider (`--kind saml`) has no secret; it takes `--sign-on-address`, `--certificate` with the certificate's PEM, which is not secret, and optionally `--email-attribute` and `--name-attribute`. `provider list` shows the metadata address of a SAML provider, to give the identity provider |
 | `secrets generate-key` | — | Prints a new key for `HODOR_SECRET_KEYS`. See [secrets at rest](../security/secrets-at-rest.md#keys) |
 | `probe` | — | Requests a health endpoint (`--addr`, `--path`) and exits non-zero unless it answers 200. Used by container health checks, since the image has no shell |
 
@@ -220,6 +221,18 @@ docker compose -f deploy/docker/compose.yaml run --rm --no-deps --entrypoint /us
 ```
 
 The sign-in page then offers "Continue with Company directory". The Compose file names the directory in `HODOR_DIRECTORY_HOSTS` and, since it answers in the clear, in `HODOR_OUTBOUND_DEVELOPMENT_HOSTS`; neither belongs anywhere real.
+
+### The development SAML identity provider
+
+The stack has a SAML identity provider of its own as well, `deploy/dev-saml-provider/saml-provider.mjs`, one file for Node.js with no dependencies. Like the other, **it lets anyone sign in as anyone**. It signs its responses with a key that is written in the repository, beside its certificate, and so is good for nothing but development. It takes the audience, the destination and the request to answer from each request Hodor sends it, so it works with any tenant, alias and port. Only the browser talks to it, at `localhost:9500`, or the port in `HODOR_SAML_PROVIDER_PORT`; the single sign-on address given to Hodor names that port.
+
+Add it to a tenant:
+
+```bash
+docker compose -f deploy/docker/compose.yaml run --rm --no-deps --entrypoint /usr/local/bin/hodor-cli -e HODOR_DATABASE_URL=postgres://hodor_server:dev-server@postgres:5432/hodor server provider add --tenant acme --alias corp --kind saml --name "Development SAML provider" --issuer urn:hodor:development-saml-provider --sign-on-address http://localhost:9500/sso --certificate "$(cat deploy/dev-saml-provider/certificate.pem)" --trust-email
+```
+
+The sign-in page then offers "Continue with Development SAML provider". The Compose file names `localhost:9500` in `HODOR_OUTBOUND_DEVELOPMENT_HOSTS`, which lets its single sign-on address be plain HTTP; that does not belong anywhere real either. Hodor's metadata for it is at <http://localhost:8080/t/acme/interaction/sign-in/providers/corp/saml/metadata>.
 
 ### The first administrator
 

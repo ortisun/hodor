@@ -223,3 +223,81 @@ async fn an_operator_adds_a_directory_on_the_list_and_no_other() {
     // Nobody leaves for a directory: there is no address to register.
     assert_eq!(said, "created company enabled ldaps://ldap.example.com -");
 }
+
+#[tokio::test]
+async fn an_operator_adds_a_saml_provider_without_a_secret() {
+    let database = TestDatabase::start().await;
+    let tool = Tool {
+        database: &database,
+        keys: format!("test:{}", SecretKeys::generate(&OsRandom).expose()),
+    };
+    tool.run(
+        &["tenant", "create", "--slug", "acme", "--name", "Acme"],
+        None,
+    );
+    // The development SAML provider's certificate, which the stack uses.
+    let certificate = include_str!("../../../deploy/dev-saml-provider/certificate.pem");
+    let added = tool.run(
+        &[
+            "provider",
+            "add",
+            "--tenant",
+            "acme",
+            "--alias",
+            "corp",
+            "--kind",
+            "saml",
+            "--name",
+            "Corp",
+            "--issuer",
+            "urn:hodor:development-saml-provider",
+            "--sign-on-address",
+            "https://idp.corp.example/sso",
+            "--certificate",
+            certificate,
+            "--trust-email",
+        ],
+        None,
+    );
+    assert!(added.status.success(), "{added:?}");
+    let metadata = "https://auth.example/t/acme/interaction/sign-in/providers/corp/saml/metadata";
+    assert_eq!(
+        text(&added.stdout),
+        format!(
+            "created corp enabled urn:hodor:development-saml-provider {metadata}\n\
+             give this metadata to the identity provider: {metadata}"
+        )
+    );
+    let listed = tool.run(&["provider", "list", "--tenant", "acme"], None);
+    assert_eq!(
+        text(&listed.stdout),
+        format!("corp enabled urn:hodor:development-saml-provider {metadata}")
+    );
+
+    let refused = tool.run(
+        &[
+            "provider",
+            "add",
+            "--tenant",
+            "acme",
+            "--alias",
+            "broken",
+            "--kind",
+            "saml",
+            "--name",
+            "Broken",
+            "--issuer",
+            "urn:broken",
+            "--sign-on-address",
+            "https://idp.corp.example/sso",
+            "--certificate",
+            "not a certificate",
+        ],
+        None,
+    );
+    assert!(!refused.status.success());
+    assert!(
+        text(&refused.stderr).contains("federation.saml_invalid"),
+        "{refused:?}"
+    );
+}

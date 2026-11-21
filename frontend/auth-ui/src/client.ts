@@ -208,9 +208,17 @@ export class Client {
   }
 
   /** Finishes the sign-in with what the provider sent back. */
-  async finishWithProvider(alias: string, code: string, state: string): Promise<SignInAnswer> {
+  /**
+   * Finishes with what came back: a code from an OpenID Connect provider,
+   * or the receipt Hodor gave the browser that carried a SAML response.
+   */
+  async finishWithProvider(
+    alias: string,
+    state: string,
+    proof: { code: string } | { receipt: string },
+  ): Promise<SignInAnswer> {
     return this.#signIn(
-      await this.#send("POST", `/sign-in/providers/${encodeURIComponent(alias)}/callback`, { code, state }),
+      await this.#send("POST", `/sign-in/providers/${encodeURIComponent(alias)}/callback`, { ...proof, state }),
     );
   }
 

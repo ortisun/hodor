@@ -150,7 +150,17 @@ describe("the client for the interaction interface", () => {
     const { client, sent } = scripted({
       "POST /sign-in/providers/google/callback": [json(200, { status: "completed" })],
     });
-    expect((await client.finishWithProvider("google", "the-code", "the-state")).status).toBe("completed");
+    expect((await client.finishWithProvider("google", "the-state", { code: "the-code" })).status).toBe("completed");
     expect(sent[0]?.body).toEqual({ code: "the-code", state: "the-state" });
+  });
+
+  it("finishes a SAML sign-in with the receipt and no code", async () => {
+    const { client, sent } = scripted({
+      "POST /sign-in/providers/corp/callback": [json(200, { status: "completed" })],
+    });
+    expect((await client.finishWithProvider("corp", "the-state", { receipt: "the-receipt" })).status).toBe(
+      "completed",
+    );
+    expect(sent[0]?.body).toEqual({ receipt: "the-receipt", state: "the-state" });
   });
 });

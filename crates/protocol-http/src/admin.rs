@@ -30,7 +30,8 @@ use hodor_authorization::api::{AuthorizationService, Permission};
 use hodor_credential::api::AccessTokenService;
 use hodor_federation::api::{
     ChangeProvider, CreateProvider, DirectorySettings, FederationService, IdentityProvider,
-    ProviderId, ProviderKind, ProviderSettings, ProviderStatus, callback_address,
+    ProviderId, ProviderKind, ProviderSettings, ProviderStatus, SamlSettings, callback_address,
+    saml_metadata_address,
 };
 use hodor_identity::api::{CreateUser, IdentifierKind, IdentityService, Profile, User, UserKind};
 use hodor_kernel::{
@@ -866,6 +867,8 @@ struct ProviderBody {
     status: &'static str,
     callback_address: Option<String>,
     directory: Option<DirectoryBody>,
+    saml: Option<SamlBody>,
+    metadata_address: Option<String>,
     created_at: String,
     updated_at: String,
 }
@@ -886,8 +889,7 @@ fn provider_body(provider: &IdentityProvider, public_url: &str, slug: &str) -> P
         trusts_email: state.settings.trusts_email,
         status: state.status.as_str(),
         // Nobody leaves for a directory, so nobody comes back from one. A
-        // SAML provider is given Hodor's metadata instead, which the
-        // administration interface shows with Issue-49.
+        // SAML provider is given Hodor's metadata instead.
         callback_address: (!matches!(state.kind, ProviderKind::Ldap | ProviderKind::Saml))
             .then(|| callback_address(public_url, slug, state.alias.as_str())),
         directory: state
@@ -901,6 +903,14 @@ fn provider_body(provider: &IdentityProvider, public_url: &str, slug: &str) -> P
                 email_attribute: directory.email_attribute.clone(),
                 name_attribute: directory.name_attribute.clone(),
             }),
+        saml: state.settings.saml.as_ref().map(|saml| SamlBody {
+            single_sign_on_address: saml.single_sign_on_address.clone(),
+            certificate: saml.certificate.clone(),
+            email_attribute: saml.email_attribute.clone(),
+            name_attribute: saml.name_attribute.clone(),
+        }),
+        metadata_address: (state.kind == ProviderKind::Saml)
+            .then(|| saml_metadata_address(public_url, slug, state.alias.as_str())),
         created_at: written(state.created_at),
         updated_at: written(state.updated_at),
     }
@@ -941,6 +951,40 @@ impl DirectoryInput {
     }
 }
 
+/// What only a SAML identity provider has, as an administrator reads it.
+#[derive(Debug, Serialize)]
+struct SamlBody {
+    single_sign_on_address: String,
+    certificate: String,
+    email_attribute: String,
+    name_attribute: String,
+}
+
+/// A SAML identity provider's settings as given: what is left out is the
+/// usual, or, in a change, what it was.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SamlInput {
+    single_sign_on_address: Option<String>,
+    certificate: Option<String>,
+    email_attribute: Option<String>,
+    name_attribute: Option<String>,
+}
+
+impl SamlInput {
+    /// These settings laid over `on`.
+    fn over(self, on: SamlSettings) -> SamlSettings {
+        SamlSettings {
+            single_sign_on_address: self
+                .single_sign_on_address
+                .unwrap_or(on.single_sign_on_address),
+            certificate: self.certificate.unwrap_or(on.certificate),
+            email_attribute: self.email_attribute.unwrap_or(on.email_attribute),
+            name_attribute: self.name_attribute.unwrap_or(on.name_attribute),
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct ProvidersBody {
     items: Vec<ProviderBody>,
@@ -954,12 +998,17 @@ struct NewProviderBody {
     kind: Option<String>,
     display_name: String,
     issuer: Option<String>,
+    /// None for a SAML provider.
+    #[serde(default)]
     client_id: String,
+    /// None for a SAML provider.
+    #[serde(default)]
     client_secret: String,
     scopes: Option<Vec<String>>,
     creates_users: Option<bool>,
     trusts_email: Option<bool>,
     directory: Option<DirectoryInput>,
+    saml: Option<SamlInput>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -972,6 +1021,7 @@ struct ProviderChangesBody {
     creates_users: Option<bool>,
     trusts_email: Option<bool>,
     directory: Option<DirectoryInput>,
+    saml: Option<SamlInput>,
 }
 
 /// No `Debug`: this holds a client secret until it is sealed.
@@ -1039,10 +1089,11 @@ async fn create_provider(
                 None | Some("openid_connect") => ProviderKind::OpenIdConnect,
                 Some("github") => ProviderKind::GitHub,
                 Some("ldap") => ProviderKind::Ldap,
+                Some("saml") => ProviderKind::Saml,
                 Some(_) => {
                     return Err(failed(DomainError::invalid(
                         "federation.kind_invalid",
-                        "an identity provider is of the kind `openid_connect`, `github` or `ldap`",
+                        "an identity provider is of the kind `openid_connect`, `github`, `ldap` or `saml`",
                     )));
                 }
             };
@@ -1055,7 +1106,11 @@ async fn create_provider(
                 alias: new.alias,
                 kind,
                 settings: ProviderSettings {
-                    saml: None,
+                    // Given for a SAML provider, laid over the usual
+                    // attribute names; for any other kind it is refused.
+                    saml: new
+                        .saml
+                        .map(|given| given.over(SamlSettings::new("", ""))),
                     display_name: new.display_name,
                     issuer,
                     client_id: new.client_id,
@@ -1126,9 +1181,11 @@ async fn change_provider(
             let current = federation.provider(&tenant, id).await.map_err(failed)?;
             let now = current.snapshot().settings.clone();
             let settings = ProviderSettings {
-                // Not changed through this interface yet (Issue-49); what is
-                // stored stays as it is.
-                saml: now.saml,
+                saml: match (changes.saml, now.saml) {
+                    (Some(given), Some(was)) => Some(given.over(was)),
+                    (Some(given), None) => Some(given.over(SamlSettings::new("", ""))),
+                    (None, was) => was,
+                },
                 display_name: changes.display_name.unwrap_or(now.display_name),
                 issuer: changes.issuer.unwrap_or(now.issuer),
                 client_id: changes.client_id.unwrap_or(now.client_id),
