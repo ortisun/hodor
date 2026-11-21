@@ -30,6 +30,28 @@ pub struct AuthenticatorTraits {
     pub method: Option<&'static str>,
 }
 
+/// What was submitted to an alternative: named values that only its
+/// authenticator understands, such as the code an identity provider sent
+/// back. Every value is treated as a secret.
+#[derive(Debug)]
+pub struct ExternalInput {
+    /// The key of the alternative this is for.
+    pub step: String,
+    /// The values, by name.
+    pub fields: Vec<(String, Secret<String>)>,
+}
+
+impl ExternalInput {
+    /// The value of a field, if it was submitted.
+    #[must_use]
+    pub fn field(&self, name: &str) -> Option<&Secret<String>> {
+        self.fields
+            .iter()
+            .find(|(field, _)| field == name)
+            .map(|(_, value)| value)
+    }
+}
+
 /// What a person submitted for a step.
 #[derive(Debug)]
 pub enum StepInput {
@@ -37,15 +59,18 @@ pub enum StepInput {
     Identifier(String),
     /// The password, as typed.
     Password(Secret<String>),
+    /// What an alternative needs, in its own terms.
+    External(ExternalInput),
 }
 
 impl StepInput {
     /// The key of the step this input is for.
     #[must_use]
-    pub const fn step_key(&self) -> &'static str {
+    pub fn step_key(&self) -> &str {
         match self {
             Self::Identifier(_) => "identifier",
             Self::Password(_) => "password",
+            Self::External(input) => &input.step,
         }
     }
 }
@@ -67,6 +92,12 @@ pub enum StepOutcome {
     /// The step proved the candidate's identity by this authenticator's
     /// factor.
     Proven,
+    /// The step established who is signing in and proved it, at once.
+    /// Only an alternative may answer this.
+    Authenticated {
+        /// The user who signed in.
+        user: UserId,
+    },
     /// The step was not satisfied. No reason is given, on purpose.
     Rejected,
 }

@@ -192,7 +192,8 @@ impl AuthenticationService {
     ) -> Result<SignIn, DomainError> {
         let mut transaction = self.load(tenant, id, secret).await?;
         let now = self.clock.now();
-        let step = input.step_key();
+        let step = input.step_key().to_owned();
+        let step = step.as_str();
         let progress = self
             .engine
             .submit(tenant, &self.flow, &mut transaction, &input, now)
@@ -245,7 +246,7 @@ impl AuthenticationService {
         &self,
         tenant: &TenantContext,
         mut transaction: AuthTransaction,
-        last_step: &'static str,
+        last_step: &str,
     ) -> Result<SignIn, DomainError> {
         let now = self.clock.now();
         // The last check, made at the moment of completion: the user must
