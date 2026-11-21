@@ -49,7 +49,7 @@ npm run theme-check && npm run lint && npm run typecheck && npm test && npm run 
 
 ### Running the browser tests
 
-The browser tests drive Chromium against a running stack: they register, read the message in the development mail server, sign in and sign out, as a person would. Start [the development stack](#running-the-development-stack), create the tenant `acme` with open registration ([creating your first tenant](#creating-your-first-tenant)), then, from `frontend/auth-ui`:
+The browser tests drive Chromium against a running stack: they register, read the message in the development mail server, sign in and sign out, as a person would. Start [the development stack](#running-the-development-stack), create the tenant `acme` with open registration ([creating your first tenant](#creating-your-first-tenant)), add [the development identity provider](#the-development-identity-provider) to it, then, from `frontend/auth-ui`:
 
 ```bash
 npx playwright install chromium
@@ -59,7 +59,7 @@ npx playwright install chromium
 npm run browser-tests
 ```
 
-`HODOR_URL`, `HODOR_MAIL_URL` and `HODOR_TENANT` point the tests at a stack on other ports or at another tenant; they default to `http://localhost:8080`, `http://localhost:8025` and `acme`. The tests create new people on every run and remove nothing.
+`HODOR_URL`, `HODOR_MAIL_URL`, `HODOR_TENANT` and `HODOR_PROVIDER` point the tests at a stack on other ports, at another tenant or at a provider under another alias; they default to `http://localhost:8080`, `http://localhost:8025`, `acme` and `development`. The tests create new people on every run and remove nothing.
 
 Every run asks for about ten links, and a tenant limits how many may be asked for from one address: fifty in fifteen minutes by default, with waits that grow. After several runs in a row the tests stop before they start and say so. Wait, or create another tenant with open registration and name it in `HODOR_TENANT`.
 
@@ -79,13 +79,14 @@ docker compose -f deploy/docker/compose.yaml up --build --wait
 | `server` | `hodor-server`, with the hosted pages | <http://localhost:8080>, health on <http://localhost:9090/readyz> |
 | `worker` | `hodor-worker`, writing the audit log and delivering email | internal only |
 | `mail` | A mail server for development. It accepts every message and delivers none: what Hodor sends can be read in its web page | <http://localhost:8025> |
+| `provider` | [The development identity provider](#the-development-identity-provider), which lets anyone sign in as anyone | <http://localhost:9400> |
 | `victoriametrics` | Metrics backend; the server and the worker push to it over OTLP | <http://localhost:8428/vmui> |
 | `victoriatraces` | Traces backend; the server and the worker push to it over OTLP | <http://localhost:10428/select/vmui> |
 
 If one of those ports is taken on your machine, choose others:
 
 ```bash
-HODOR_HTTP_PORT=18080 HODOR_OPS_PORT=19090 HODOR_VM_PORT=18428 HODOR_TRACES_PORT=20428 HODOR_MAIL_PORT=18025 docker compose -f deploy/docker/compose.yaml up --build --wait
+HODOR_HTTP_PORT=18080 HODOR_OPS_PORT=19090 HODOR_VM_PORT=18428 HODOR_TRACES_PORT=20428 HODOR_MAIL_PORT=18025 HODOR_PROVIDER_PORT=19400 docker compose -f deploy/docker/compose.yaml up --build --wait
 ```
 
 Set the same variables for every later `docker compose` command on that stack. The commands on this page pass `--no-deps` to `run`, so that running the command-line tool never restarts a service of the stack.
@@ -128,6 +129,8 @@ Every setting is a command-line flag with an environment variable of the same me
 | `HODOR_OTLP_METRICS_ENDPOINT` | unset | Full URL of the OTLP/HTTP metrics endpoint. For VictoriaMetrics: `http://<host>:8428/opentelemetry/v1/metrics` |
 | `HODOR_SHUTDOWN_DRAIN_SECONDS` | `5` | How long to keep serving after a stop signal while readiness fails |
 | `HODOR_PUBLIC_URL` | `http://localhost:8080` | The address people reach this installation at, without a path. Links in messages start with it |
+| `HODOR_SECRET_KEYS` | unset | The keys that keep secrets [encrypted at rest](../security/secrets-at-rest.md#keys). Unset: no identity provider can be used, and none is offered |
+| `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` | empty | Hosts with ports, separated by commas, that [outbound requests](../security/outbound-http.md#the-exception-for-development) may reach at a private address and over plain HTTP. Never set it anywhere real |
 | `HODOR_PAGES_DIRECTORY` | unset; the image sets `/usr/share/hodor/auth-ui` | The directory holding the built [hosted pages](../architecture/hosted-pages.md#how-the-pages-are-served). Unset: no pages are served. Set to a directory without `index.html`: the server does not start |
 | `HODOR_PASSWORD_HASH_MEMORY_KIBIBYTES` | `19456` | Memory one password hash uses. Raising it makes every password harder to guess offline; existing passwords are re-hashed as their owners sign in |
 | `HODOR_PASSWORD_HASH_PASSES` | `2` | Passes over that memory |
@@ -161,6 +164,8 @@ The worker connects to the database twice, with different roles: as a member of 
 | `tenant create`, `tenant create-system`, `tenant list`, `tenant suspend`, `tenant reactivate` | `HODOR_DATABASE_URL` (required) | Manage tenants as a member of `hodor_app`. See [the tenant context](../architecture/contexts/tenant.md#command-line-tool) |
 | `admin bootstrap --tenant <slug> --email <address>` | `HODOR_DATABASE_URL` (required) | Makes a user an administrator of a tenant, creating the user if needed, and prints an access token for [the administration interface](../api/admin-api.md#the-first-administrator) |
 | `audit verify --tenant <slug>` | `HODOR_DATABASE_URL` (required) | Checks a tenant's whole chain of audit records and exits non-zero if a record was changed, removed or inserted. See [the audit context](../architecture/contexts/audit.md#verifying) |
+| `provider add`, `provider list`, `provider disable`, `provider enable` | `HODOR_DATABASE_URL` and `HODOR_SECRET_KEYS` (required) | Manage a tenant's [identity providers](../architecture/contexts/federation.md#identity-providers). `provider add` reads the client secret from `HODOR_PROVIDER_CLIENT_SECRET`, never from an argument, so that it does not show in the list of processes or in the history of a shell |
+| `secrets generate-key` | — | Prints a new key for `HODOR_SECRET_KEYS`. See [secrets at rest](../security/secrets-at-rest.md#keys) |
 | `probe` | — | Requests a health endpoint (`--addr`, `--path`) and exits non-zero unless it answers 200. Used by container health checks, since the image has no shell |
 
 ### Creating your first tenant
@@ -181,6 +186,25 @@ The tenant's pages are then at <http://localhost:8080/t/acme/account>. `--open-r
 4. Sign in with the address and the password.
 
 The same can be done without a browser, with the requests of [the interaction interface](../api/interaction-api.md#registering-and-recovering-a-password).
+
+### The development identity provider
+
+The stack has an identity provider of its own, `deploy/dev-provider/provider.mjs`: one file for Node.js with no dependencies. It speaks enough OpenID Connect for Hodor to sign people in through it, and **it lets anyone sign in as anyone**: its sign-in page asks who you would like to be, and whether it should vouch for the address. It is there to try signing in through a provider and to test it, and has no other use.
+
+Add it to a tenant:
+
+```bash
+docker compose -f deploy/docker/compose.yaml run --rm --no-deps --entrypoint /usr/local/bin/hodor-cli -e HODOR_DATABASE_URL=postgres://hodor_server:dev-server@postgres:5432/hodor -e HODOR_PROVIDER_CLIENT_SECRET=development-client-secret server provider add --tenant acme --alias development --name "Development provider" --issuer http://provider:9400 --client-id hodor
+```
+
+The sign-in page of the tenant, <http://localhost:8080/t/acme/account/sign-in>, then offers "Continue with Development provider".
+
+Two things in the Compose file make this work, and neither belongs anywhere real:
+
+- `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` names the provider, which is at a private address over plain HTTP. Without it Hodor [refuses to call it](../security/outbound-http.md#the-exception-for-development) and refuses its issuer.
+- `HODOR_SECRET_KEYS` holds a key written in the repository.
+
+Hodor reaches the provider as `provider:9400`; a browser reaches it as `localhost:9400`. That is why the provider is told both addresses.
 
 ### The first administrator
 

@@ -2,6 +2,8 @@
 
 Status: Proposed
 
+> The use of `aws-lc-rs` for authenticated encryption and signatures, which departs from a literal "RustCrypto only" reading of the specification, was approved by the project owner on 2026-11-21, when secrets at rest were built. The rest of this record is still to be reviewed.
+
 ## Context
 
 The specification asks for the "audited RustCrypto ecosystem". RustCrypto is a collection of crates with uneven audit coverage, not a single audited library. In particular, the pure-Rust RSA implementation has had a published timing side-channel advisory, and RSA signing (RS256) is unavoidable for OpenID Connect interoperability. The choice of primitives must be made per algorithm, on evidence, and re-verified when implementation starts.
@@ -13,7 +15,7 @@ The specification asks for the "audited RustCrypto ecosystem". RustCrypto is a c
 - **Signatures, authenticated encryption, TLS**: `aws-lc-rs` (through `rustls` for TLS), which offers constant-time RSA and ECDSA and a FIPS-validated build option.
 - **Hashing and HMAC**: SHA-2 from the same library.
 - **Algorithms offered**: ES256 (default), RS256 and PS256 (interoperability), EdDSA (optional). `none`, HS* for identifier and access tokens, and RSA PKCS#1 v1.5 encryption are not offered.
-- **Secrets at rest**: AES-256-GCM with a per-tenant data key, wrapped by the `KeyProvider`; ciphertext carries the key version.
+- **Secrets at rest**: AES-256-GCM with a per-tenant data key, wrapped by the `KeyProvider`; ciphertext carries the key version. Until the key provider exists, the keys come from configuration and the tenant is bound into each ciphertext instead; see [secrets at rest](../security/secrets-at-rest.md).
 - **Keys**: generated and held by the `KeyProvider`. The local provider stores private keys wrapped under a root key; key management service providers either wrap keys (envelope mode, local signing) or sign remotely (keys never leave the key management service). Envelope mode is the default because remote signing adds a network call to every token.
 - **Randomness**: the operating system's cryptographically secure random number generator only.
 - Every cryptographic dependency is pinned, tracked by `cargo deny` advisories and reviewed on upgrade. The advisory status of each candidate is checked again at adoption time.

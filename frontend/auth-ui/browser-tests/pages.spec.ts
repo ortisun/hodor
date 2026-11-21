@@ -1,6 +1,17 @@
 import { expect } from "@playwright/test";
 import { ptBR } from "../src/messages/pt-BR";
-import { at, en, expectAccessible, messageTo, newAddress, PASSWORD, register, signIn, test } from "./support";
+import {
+  PASSWORD,
+  PROVIDER_NAME,
+  at,
+  en,
+  expectAccessible,
+  messageTo,
+  newAddress,
+  register,
+  signIn,
+  test,
+} from "./support";
 
 test("a person registers, reads the message, signs in and signs out", async ({ page }) => {
   const address = newAddress();
@@ -149,14 +160,16 @@ test("a person signs in and out with the keyboard alone", async ({ page }) => {
   const identifier = page.getByLabel(en.identifierLabel, { exact: true });
   await expect(identifier).toBeFocused();
   await page.keyboard.press("Tab");
-  await expect(page.getByRole("button", { name: en.continue })).toBeFocused();
+  await expect(page.getByRole("button", { name: en.continue, exact: true })).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(page.getByRole("button", { name: en.continueWith(PROVIDER_NAME) })).toBeFocused();
   await page.keyboard.press("Tab");
   await expect(page.getByRole("link", { name: en.forgotPassword })).toBeFocused();
   await page.keyboard.press("Tab");
   await expect(page.getByRole("link", { name: en.register })).toBeFocused();
-  await page.keyboard.press("Shift+Tab");
-  await page.keyboard.press("Shift+Tab");
-  await page.keyboard.press("Shift+Tab");
+  for (let step = 0; step < 4; step += 1) {
+    await page.keyboard.press("Shift+Tab");
+  }
   await expect(identifier).toBeFocused();
 
   await page.keyboard.type(address);

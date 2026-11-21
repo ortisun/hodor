@@ -240,6 +240,24 @@ impl AuthTransaction {
         self.state.current_step += 1;
     }
 
+    /// Records an alternative that established who is signing in and
+    /// proved it: nothing of the flow's `steps` remains to be done.
+    pub(crate) fn record_authenticated(
+        &mut self,
+        user: UserId,
+        method: Option<&str>,
+        steps: usize,
+    ) {
+        self.state.identified = true;
+        self.state.candidate = Some(user);
+        if let Some(method) = method
+            && !self.state.satisfied_methods.iter().any(|m| m == method)
+        {
+            self.state.satisfied_methods.push(method.to_owned());
+        }
+        self.state.current_step = steps;
+    }
+
     /// Records a rejected step. The transaction does not move on, and
     /// fails once it has tolerated enough. Returns how many more
     /// rejections it tolerates.

@@ -131,6 +131,8 @@ These are recorded here so they are not forgotten; each is picked up by the issu
 | The mail adapter was tested against a mail server without encryption or a password; the encrypted and authenticated paths rely on the mail library | Before the first production deployment |
 | The trace of a request has one span, the request itself: database calls are not traced. The demonstration receives the trace; no test in `cargo test` does | First issue that adds a traced database call |
 | The guarded outbound client is not tested over TLS against a server with a real certificate: the tests reach their servers through the development exception | Hardening pass |
+| That RSA keys shorter than 2048 bits are refused when checking an ID token rests on the parameters of the cryptography library; no test presents such a key | Hardening pass |
+| A person who registered with a password and later tries a provider with the same address is refused and told only that it did not work | Linking, in the account console |
 | The demonstration needs Python 3 on the machine that runs it | Accepted: it uses only the standard library |
 | SQL is checked at run time, not at compile time (`sqlx::query!` with the offline cache is not set up). Every query is exercised by an integration test instead | A dedicated issue, not yet scheduled |
 | Continuous integration actions are pinned by tag, not by commit SHA | Hardening pass (threat Threat-General-15) |
@@ -141,21 +143,21 @@ Planned in [the epics](epics.md#milestone-2-signing-in-with-external-identities)
 
 | Slice | Done | Total |
 |---|---|---|
-| H — What external identities stand on | 1 | 3 |
-| I — OpenID Connect and the social logins | 0 | 6 |
+| H — What external identities stand on | 3 | 3 |
+| I — OpenID Connect and the social logins | 5 | 6 |
 | J — LDAP | 0 | 2 |
 | K — SAML service provider | 0 | 4 |
 
 | Issue | Status | What exists |
 |---|---|---|
-| Issue-35 Secrets at rest | Not started | — |
+| Issue-35 Secrets at rest | Done | The `SecretBox` port in `hodor-kernel` and its implementation in `hodor-adapters-crypto`: AES-256-GCM from `aws-lc-rs`, keys from `HODOR_SECRET_KEYS`, every sealed secret bound to its tenant and purpose and naming the key that sealed it, so that a key is changed by putting a new one first. `hodor-cli secrets generate-key` prints a key. Nothing uses the port yet; no binary reads the setting until the federation context does. Specified in [secrets at rest](../security/secrets-at-rest.md) |
 | Issue-36 Outbound HTTP | Done | The `HttpClient` port in `hodor-kernel` and `hodor-adapters-http`, its one implementation: HTTPS only, no name and password in an address, every address a name resolves to must be public and is the one connected to, numeric spellings checked the same way, no redirects, no proxy, limits on time and on the bytes received. One exception, a list of development hosts, empty by default. Tested against servers on this machine, which are refused in eleven spellings and reached only through the exception. Nothing uses the port yet. Specified in [outbound HTTP](../security/outbound-http.md) |
-| Issue-37 A sign-in completed by one external step | Not started | — |
-| Issue-38 Federation context | Not started | — |
-| Issue-39 OpenID Connect relying party | Not started | — |
-| Issue-40 Federated sign-in over HTTP | Not started | — |
-| Issue-41 Managing providers | Not started | — |
-| Issue-42 The pages | Not started | — |
+| Issue-37 A sign-in completed by one external step | Done | A flow may list alternatives: steps that, satisfied at the very start, complete the sign-in in place of all its steps. An alternative is performed by an authenticator that establishes who is signing in and proves it at once, is accepted only while no step has been satisfied, and shares the sign-in's tolerance for rejections. An authenticator that answers in a way its place in the flow does not allow is a defect and advances nothing. The built-in flow has no alternative yet. Specified in [the authentication context](../architecture/contexts/authentication.md#alternatives) |
+| Issue-38 Federation context | Done | `hodor-federation` crate: identity providers with their rules (an alias that never changes, an issuer kept exactly as given, a client secret sealed and never read back, at most 20 a tenant) and links between an external identity and a user, found by provider and subject and by nothing else. `federation.identity_provider` and `federation.external_identity` under row-level security; one contract suite passed by the stores in memory and on PostgreSQL. On PostgreSQL: the secret is nowhere in the database in the clear, eight links of one identity made at once leave one, and a link is stored with whatever else its unit of work does or not at all. No interface reaches it yet. Specified in [the federation context](../architecture/contexts/federation.md) |
+| Issue-39 OpenID Connect relying party | Done | `OpenIdClient` in `hodor-federation`: reads a provider's description and keys through the guarded outbound client and keeps them for an hour, starts an authorization request with `state`, `nonce` and a PKCE verifier of 256 random bits each, exchanges the code, and checks the ID token (shape, algorithm, key, signature, issuer, audience, time, nonce, subject) before believing anything in it. The `SignatureVerifier` port in the kernel, implemented with `aws-lc-rs` for `RS256`, `PS256` and `ES256`. Tested against a provider that publishes real keys and signs real tokens: about sixty invalid tokens and descriptions are each refused for the reason the specification gives. Nothing calls it yet. Specified in [the federation context](../architecture/contexts/federation.md#asking-an-openid-connect-provider-who-somebody-is) |
+| Issue-40 Federated sign-in over HTTP | Done | A person signs in to a tenant through an OpenID Connect provider and ends with the same session as with a password. What Hodor keeps while the person is away, a pending authorization, belongs to one sign-in of one browser and is used once; the state it must come back with is kept only as a hash. A person nobody knows is created on first sign-in, with the address the provider vouches for, together with the link, in one unit of work. An external identity is never let into an existing account by its email address. Why a sign-in was refused is recorded as `federation.sign_in_refused` and told to nobody. `hodor-server` offers providers when it has keys to keep secrets with. Seventeen scenarios over HTTP against a provider that signs real tokens. The pages do not offer providers yet, and there is no interface to add one. Specified in [the federation context](../architecture/contexts/federation.md#signing-in-through-a-provider) |
+| Issue-41 Managing providers | Done | Seven operations of the administration interface under two new permissions, `identity-providers:read` and `identity-providers:write`: add, list, read, change, replace the client secret, disable, enable. An answer has no field for the client secret and gives the callback address to register at the provider. The same in the command-line tool: `hodor-cli provider add`, `list`, `disable`, `enable`, which reads the secret from the environment and never from an argument. Auditors may read providers and change none. Specified in [the administration interface](../api/admin-api.md#identity-providers) |
+| Issue-42 The pages | Done | The sign-in page lists the tenant's identity providers, and a new page, `/account/providers/{alias}/callback`, takes what a provider sent back out of the address and presents it to the server. A development identity provider, one file for Node.js, is part of the Compose stack; a plain HTTP issuer is accepted for it because its host is on the list of development hosts, and for no other. Six browser tests sign in through it against the image: created on the first visit, recognized on the second, refused when the address belongs to an existing account, refused when the provider does not vouch for the address, told so on cancelling, and with the keyboard alone. This is the first time a whole sign-in through a provider ran on PostgreSQL and in the running server. Specified in [the hosted pages](../architecture/hosted-pages.md#signing-in-through-an-identity-provider) |
 | Issue-43 Connectors | Not started | — |
 | Issue-44 LDAP sign-in | Not started | — |
 | Issue-45 LDAP in the pages and the administration interface | Not started | — |
@@ -188,6 +190,7 @@ Defects that reached `develop` and were fixed later, kept here so that the recor
 | Defect | Introduced | Found by | Fixed |
 |---|---|---|---|
 | Locking an attempt counter could fail with an internal error when a successful sign-in cleared the same counter at the same moment. The store created the row and then locked it in two statements, and the clear could delete it in between | Issue-22 | A full-suite run, in which the test that submits one sign-in eight times at once failed intermittently | Issue-24: one statement now creates, locks and returns the row; a test runs both operations against each other |
+| A test of the federation stores failed about one run in five: it wrote the sealed client secret out as text in an encoding that has no zero byte, and a sealed secret is random bytes | Issue-38 | A run of the suite while building Issue-40 | Issue-40: the bytes are written out with an encoding that accepts any byte |
 
 ## Where the implementation departs from the design
 

@@ -21,7 +21,7 @@ pub mod api {
     pub use crate::application::service::{AuthenticationService, SignIn, StartedSignIn};
     pub use crate::domain::attempt::{AttemptCounter, AttemptSubject, LockoutRules};
     pub use crate::domain::authenticator::{
-        Authenticator, AuthenticatorTraits, Factor, StepInput, StepOutcome,
+        Authenticator, AuthenticatorTraits, ExternalInput, Factor, StepInput, StepOutcome,
     };
     pub use crate::domain::engine::{FlowEngine, Progress};
     pub use crate::domain::event::AuthenticationEvent;

@@ -16,6 +16,7 @@ All paths are relative to the tenant: `https://{host}/t/{slug}`.
 | `/account/recover` | Asks for a link to choose a new password | `POST /interaction/recovery` |
 | `/account/reset-password` | Arrives from the link in the message, chooses a new password | `POST /interaction/recovery/complete` |
 | `/account` | Sees that they are signed in, and signs out | `GET` and `DELETE /interaction/session` |
+| `/account/providers/{alias}/callback` | Arrives back from an identity provider | The sign-in routes, to [finish](../api/interaction-api.md#signing-in-through-an-identity-provider) |
 
 `/account` sends a person who is not signed in to `/account/sign-in`, and `/account/sign-in` sends a person who is already signed in to `/account`.
 
@@ -43,6 +44,20 @@ The page is a renderer for the answer of the interaction interface:
 - A `rejected` answer shows the same form again with one message, "that did not work", whatever the reason. The page has no way of knowing the reason and does not try.
 - "Use another address" on the password step abandons the sign-in and starts a new one.
 - A sign-in that expired while the person was typing is started again, and the page says so.
+
+### Signing in through an identity provider
+
+When the tenant [offers identity providers](contexts/federation.md#signing-in-through-a-provider), the sign-in page lists them under the first form, each as a button, "Continue with" and the provider's name. They are shown only while the sign-in is at its first step: a provider is chosen at the start or not at all.
+
+Choosing one asks the server for the address at the provider and sends the browser there. The page refuses to go anywhere that is not an HTTP or HTTPS address.
+
+The provider sends the person back to `/account/providers/{alias}/callback`. That page:
+
+- reads the code and the state from its address once and takes them out of the address at the same moment, so that the code does not stay in the browser's history;
+- presents them to the server, from Hodor's own origin, and goes on to the account page when the person is signed in;
+- sends the person back to the sign-in page otherwise, with one message, "that did not work", or "the sign-in was not finished at the provider" when the provider sent no code. It asks the server nothing in that second case.
+
+The page decides nothing and shows nothing of what the provider sent.
 
 ### Registering and recovering
 
@@ -101,7 +116,7 @@ The application is built into a directory of static files: one `index.html` and 
 
 | Request | Answer |
 |---|---|
-| `GET /t/{slug}/account` and the pages listed above | `index.html`, the same for every tenant and every page. The application reads the tenant and the page from the address |
+| `GET /t/{slug}/account` and the pages listed above, the one a provider sends people back to included, whatever its alias | `index.html`, the same for every tenant and every page. The application reads the tenant and the page from the address |
 | `GET /auth-ui/assets/{file}` | A file of the application: a script, a style sheet, a font or an image |
 
 - The tenant is resolved as for every route under `/t/{slug}`: a tenant that does not exist or is suspended gets the same answer as on any other route, not a page.
@@ -179,7 +194,7 @@ npm run browser-tests
 | Tests of the server binary | The real `hodor-server` serves the pages of the directory it is given, serves none without the setting, and refuses to start with a directory that has no application | `cargo test`, with a directory made by the test |
 | Browser tests | A person registers, reads the message, chooses a password, signs in and signs out; recovers a password; is refused with a wrong password; signs in with the keyboard alone. No page reports a Content Security Policy violation, a script error or an accessibility violation | Playwright with Chromium against the Compose stack, in continuous integration |
 
-The browser tests read the messages from the development mail server of the Compose stack, as a person would read their mailbox.
+The browser tests read the messages from the development mail server of the Compose stack, as a person would read their mailbox, and sign in through [the development identity provider](../development/local-setup.md#the-development-identity-provider) of the same stack: created on the first visit, recognized on the second, refused when the address belongs to an account that exists, and told so when the person cancels.
 
 ## Not built yet
 

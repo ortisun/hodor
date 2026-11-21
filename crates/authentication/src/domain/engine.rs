@@ -107,6 +107,27 @@ impl FlowEngine {
                 "the steps do not reach the flow's minimum assurance",
             ));
         }
+        for alternative in &flow.alternatives {
+            if !keys.insert(alternative.key.as_str()) {
+                return Err(invalid_flow(format!(
+                    "the step key `{}` appears twice",
+                    alternative.key
+                )));
+            }
+            let traits = self.authenticator(alternative)?.traits();
+            let Some(factor) = traits.factor.filter(|_| traits.identifies) else {
+                return Err(invalid_flow(format!(
+                    "the alternative `{}` must both establish who is signing in and prove it",
+                    alternative.key
+                )));
+            };
+            if assurance_of(&BTreeSet::from([factor])) < Some(flow.minimum_assurance) {
+                return Err(invalid_flow(format!(
+                    "the alternative `{}` does not reach the flow's minimum assurance",
+                    alternative.key
+                )));
+            }
+        }
         Ok(())
     }
 
@@ -128,29 +149,44 @@ impl FlowEngine {
         now: Timestamp,
     ) -> Result<Progress, DomainError> {
         transaction.require_in_progress(now)?;
-        let step = flow
-            .steps
-            .get(transaction.snapshot().current_step)
-            .ok_or_else(|| {
-                DomainError::conflict(
+        let current = flow.steps.get(transaction.snapshot().current_step);
+        // An alternative is accepted only while no step has been satisfied.
+        let alternative = (transaction.snapshot().current_step == 0)
+            .then(|| {
+                flow.alternatives
+                    .iter()
+                    .find(|alternative| alternative.key == input.step_key())
+            })
+            .flatten();
+        let (step, is_alternative) = match (alternative, current) {
+            (Some(alternative), _) => (alternative, true),
+            (None, Some(step)) if step.key == input.step_key() => (step, false),
+            (None, Some(step)) => {
+                return Err(DomainError::invalid(
+                    "authentication.unexpected_step",
+                    format!("this sign-in is waiting for the `{}` step", step.key),
+                ));
+            }
+            (None, None) => {
+                return Err(DomainError::conflict(
                     "authentication.no_step_pending",
                     "every step of this sign-in is already satisfied",
-                )
-            })?;
-        if step.key != input.step_key() {
-            return Err(DomainError::invalid(
-                "authentication.unexpected_step",
-                format!("this sign-in is waiting for the `{}` step", step.key),
-            ));
-        }
+                ));
+            }
+        };
 
         let authenticator = self.authenticator(step)?;
+        let misbehaved = || {
+            DomainError::internal(
+                "authentication.authenticator_misbehaved",
+                "the sign-in could not continue",
+            )
+            .with_detail(format!(
+                "the authenticator `{}` answered in a way its place in the flow does not allow",
+                step.authenticator
+            ))
+        };
         match authenticator.perform(tenant, transaction, input).await? {
-            StepOutcome::Identified {
-                candidate,
-                identifier_key,
-            } => transaction.record_identified(candidate, identifier_key),
-            StepOutcome::Proven => transaction.record_satisfied(authenticator.traits().method),
             StepOutcome::Rejected => {
                 let attempts_left = transaction.record_rejection();
                 return Ok(
@@ -161,6 +197,18 @@ impl FlowEngine {
                     },
                 );
             }
+            StepOutcome::Authenticated { user } if is_alternative => transaction
+                .record_authenticated(user, authenticator.traits().method, flow.steps.len()),
+            StepOutcome::Identified {
+                candidate,
+                identifier_key,
+            } if !is_alternative => transaction.record_identified(candidate, identifier_key),
+            StepOutcome::Proven if !is_alternative => {
+                transaction.record_satisfied(authenticator.traits().method);
+            }
+            StepOutcome::Authenticated { .. }
+            | StepOutcome::Identified { .. }
+            | StepOutcome::Proven => return Err(misbehaved()),
         }
         Ok(match flow.steps.get(transaction.snapshot().current_step) {
             Some(next) => Progress::Next {

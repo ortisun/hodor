@@ -16,8 +16,10 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Extension, Json, Router};
 use hodor_authentication::api::{
-    AccountRequest, AccountService, AuthenticationService, SignIn, StepInput, TransactionId,
+    AccountRequest, AccountService, AuthenticationService, ExternalInput, SignIn, StepInput,
+    TransactionId,
 };
+use hodor_federation::api::{EXTERNAL_STEP, ExternalSignIn};
 use hodor_kernel::{
     Actor, Caller, Clock, CorrelationId, Digest, DomainError, Secret, TenantContext,
 };
@@ -41,6 +43,9 @@ pub struct InteractionState {
     pub accounts: AccountService,
     /// The session use cases.
     pub sessions: SessionService,
+    /// Signing in through an identity provider. `None` when this
+    /// installation is not set up for it: no provider is offered then.
+    pub external: Option<ExternalSignIn>,
     /// For deriving the CSRF token from a sign-in's secret.
     pub digest: Arc<dyn Digest>,
     /// For telling the browser how long the session cookie may live.
@@ -65,6 +70,12 @@ pub fn interaction_routes(state: InteractionState) -> Router {
         )
         .route("/sign-in/steps/identifier", post(submit_identifier))
         .route("/sign-in/steps/password", post(submit_password))
+        .route("/sign-in/providers", get(offered_providers))
+        .route("/sign-in/providers/{alias}", post(choose_provider))
+        .route(
+            "/sign-in/providers/{alias}/callback",
+            post(finish_with_provider),
+        )
         .route("/session", get(current_session).delete(sign_out))
         .route("/sessions", get(list_sessions).delete(end_other_sessions))
         .route("/sessions/{session_id}", delete(end_session))
@@ -86,6 +97,31 @@ struct SignInBody {
     attempts_left: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     csrf_token: Option<String>,
+}
+
+/// A provider as the sign-in page shows it.
+#[derive(Debug, Serialize)]
+struct OfferedBody {
+    alias: String,
+    display_name: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ProvidersBody {
+    providers: Vec<OfferedBody>,
+}
+
+/// Where to send the browser.
+#[derive(Debug, Serialize)]
+struct RedirectBody {
+    redirect: String,
+}
+
+/// No `Debug`: this holds what a provider sent back until it is used.
+#[derive(Deserialize)]
+struct CallbackBody {
+    code: String,
+    state: String,
 }
 
 #[derive(Deserialize)]
@@ -461,6 +497,112 @@ async fn submit_password(
     Json(body): Json<PasswordBody>,
 ) -> Response {
     let input = StepInput::Password(Secret::from(body.password));
+    submit(&state, &tenant, &slug, &headers, input).await
+}
+
+fn provider_not_found() -> Response {
+    problem(
+        StatusCode::NOT_FOUND,
+        "federation.provider_not_found",
+        "there is no such identity provider",
+    )
+}
+
+/// The alias in the path, if it is there.
+fn alias_of(parameters: &RawPathParams) -> Option<String> {
+    parameters
+        .iter()
+        .find(|(name, _)| *name == "alias")
+        .map(|(_, value)| value.to_owned())
+}
+
+async fn offered_providers(
+    State(state): State<InteractionState>,
+    Extension(tenant): Extension<TenantContext>,
+) -> Response {
+    let Some(external) = &state.external else {
+        return Json(ProvidersBody {
+            providers: Vec::new(),
+        })
+        .into_response();
+    };
+    match external.offered(&tenant).await {
+        Ok(offered) => Json(ProvidersBody {
+            providers: offered
+                .into_iter()
+                .map(|provider| OfferedBody {
+                    alias: provider.alias,
+                    display_name: provider.display_name,
+                })
+                .collect(),
+        })
+        .into_response(),
+        Err(error) => Problem::from(error).into_response(),
+    }
+}
+
+async fn choose_provider(
+    State(state): State<InteractionState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(TenantSlug(slug)): Extension<TenantSlug>,
+    parameters: RawPathParams,
+    headers: HeaderMap,
+) -> Response {
+    let Some(handle) = handle(&headers) else {
+        return no_sign_in();
+    };
+    if !csrf_is_valid(&headers, state.digest.as_ref(), &handle) {
+        return problem(
+            StatusCode::FORBIDDEN,
+            "request.csrf_token_invalid",
+            "the request is missing its CSRF token, or the token is wrong",
+        );
+    }
+    let (Some(external), Some(alias)) = (&state.external, alias_of(&parameters)) else {
+        return provider_not_found();
+    };
+    // A pending authorization is made only for a sign-in that is this browser's and is
+    // still in progress.
+    match state
+        .authentication
+        .describe(&tenant, handle.id, handle.secret.expose())
+        .await
+    {
+        Ok(SignIn::Pending { .. } | SignIn::Rejected { .. }) => {}
+        Ok(_) => {
+            return Problem::from(DomainError::conflict(
+                "authentication.transaction_not_active",
+                "this sign-in is no longer in progress; start again",
+            ))
+            .into_response();
+        }
+        Err(error) => return Problem::from(error).into_response(),
+    }
+    match external.begin(&tenant, &slug, handle.id, &alias).await {
+        Ok(redirect) => Json(RedirectBody { redirect }).into_response(),
+        Err(error) => Problem::from(error).into_response(),
+    }
+}
+
+async fn finish_with_provider(
+    State(state): State<InteractionState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(TenantSlug(slug)): Extension<TenantSlug>,
+    parameters: RawPathParams,
+    headers: HeaderMap,
+    Json(body): Json<CallbackBody>,
+) -> Response {
+    let (Some(_), Some(alias)) = (&state.external, alias_of(&parameters)) else {
+        return provider_not_found();
+    };
+    let input = StepInput::External(ExternalInput {
+        step: EXTERNAL_STEP.to_owned(),
+        fields: vec![
+            ("provider".to_owned(), Secret::from(alias)),
+            ("code".to_owned(), Secret::from(body.code)),
+            ("state".to_owned(), Secret::from(body.state)),
+        ],
+    });
     submit(&state, &tenant, &slug, &headers, input).await
 }
 

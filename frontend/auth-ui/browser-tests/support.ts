@@ -5,9 +5,12 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test as base, type Page } from "@playwright/test";
 import { randomUUID } from "node:crypto";
 import { en } from "../src/messages/en";
-import { MAIL, TENANT } from "./stack";
+import { MAIL, PROVIDER, TENANT } from "./stack";
 
-export { en, TENANT };
+export { en, PROVIDER, TENANT };
+
+/** What the development provider is called on the sign-in page. */
+export const PROVIDER_NAME = "Development provider";
 
 export const PASSWORD = "correct horse battery staple";
 
@@ -129,7 +132,32 @@ export async function signIn(page: Page, identifier: string, password: string): 
     await page.goto(at("sign-in"));
   }
   await page.getByLabel(en.identifierLabel, { exact: true }).fill(identifier);
-  await page.getByRole("button", { name: en.continue }).click();
+  await page.getByRole("button", { name: en.continue, exact: true }).click();
   await page.getByLabel(en.passwordLabel, { exact: true }).fill(password);
   await page.getByRole("button", { name: en.signIn, exact: true }).click();
+}
+
+/** Who a person says they are at the development provider. */
+export interface Identity {
+  subject: string;
+  email: string;
+  /** Whether the provider vouches for the address. */
+  vouched?: boolean;
+}
+
+/**
+ * From the sign-in page, leaves for the development provider, says who
+ * the person is there, and comes back.
+ */
+export async function signInThroughProvider(page: Page, identity: Identity): Promise<void> {
+  if (!page.url().includes(at("sign-in"))) {
+    await page.goto(at("sign-in"));
+  }
+  await page.getByRole("button", { name: en.continueWith(PROVIDER_NAME) }).click();
+  // The provider's own page, on its own origin.
+  await expect(page.getByRole("heading", { name: PROVIDER_NAME })).toBeVisible();
+  await page.getByLabel("Subject").fill(identity.subject);
+  await page.getByLabel("Email address").fill(identity.email);
+  await page.getByLabel("The provider vouches for this address").setChecked(identity.vouched ?? true);
+  await page.getByRole("button", { name: "Sign in" }).click();
 }

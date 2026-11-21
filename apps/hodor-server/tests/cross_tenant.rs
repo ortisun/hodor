@@ -426,7 +426,8 @@ async fn an_administrators_token_is_refused_by_every_operation_of_another_tenant
             // wrong.
             let path = template
                 .replace("{user_id}", &globex.ana.to_string())
-                .replace("{session_id}", &globex.ana.to_string());
+                .replace("{session_id}", &globex.ana.to_string())
+                .replace("{provider_id}", &globex.ana.to_string());
             let method: Method = method.to_uppercase().parse().expect("method");
             let (status, body) = world
                 .admin(
@@ -445,7 +446,7 @@ async fn an_administrators_token_is_refused_by_every_operation_of_another_tenant
             tried += 1;
         }
     }
-    assert_eq!(tried, 7, "every documented operation was tried");
+    assert_eq!(tried, 14, "every documented operation was tried");
 
     // The token is good where it belongs, and nothing happened in Globex:
     // it has its two users, both active.
