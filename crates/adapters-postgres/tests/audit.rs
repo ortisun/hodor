@@ -257,3 +257,79 @@ async fn records_removed_from_the_end_are_found_through_the_chain_head() {
     assert_eq!(verification.records, 6);
     assert_eq!(verification.broken, Some((8, ChainBreak::HeadMismatch)));
 }
+
+#[tokio::test]
+async fn a_chain_head_that_was_moved_is_found_whichever_way_it_was_moved() {
+    let database = TestDatabase::start().await;
+    let tenant = TenantContext::assume(TenantId::generate());
+    announce(&database, &tenant, 8).await;
+    deliver_everything(&database).await;
+    let audit = service(&database);
+
+    // Moved back to an earlier record, to pass the newest ones off as if
+    // they had never been recorded. Every record is still read.
+    sqlx::query(
+        "UPDATE audit.chain_head SET sequence = 5,
+             hash = (SELECT hash FROM audit.record WHERE sequence = 5)",
+    )
+    .execute(database.owner())
+    .await
+    .expect("forced change");
+    let verification = audit.verify(&tenant).await.expect("verify");
+    assert_eq!(verification.records, 8);
+    assert_eq!(verification.broken, Some((5, ChainBreak::HeadMismatch)));
+
+    // Moved past the last record.
+    sqlx::query("UPDATE audit.chain_head SET sequence = 11")
+        .execute(database.owner())
+        .await
+        .expect("forced change");
+    let verification = audit.verify(&tenant).await.expect("verify");
+    assert_eq!(verification.records, 8);
+    assert_eq!(verification.broken, Some((11, ChainBreak::HeadMismatch)));
+
+    // A head for a tenant that has no records at all.
+    let empty = TenantContext::assume(TenantId::generate());
+    sqlx::query("INSERT INTO audit.chain_head (tenant_id, sequence, hash) VALUES ($1, 3, $2)")
+        .bind(empty.tenant_id().as_uuid())
+        .bind([7_u8; 32].as_slice())
+        .execute(database.owner())
+        .await
+        .expect("forced change");
+    let verification = audit.verify(&empty).await.expect("verify");
+    assert_eq!(verification.records, 0);
+    assert_eq!(verification.broken, Some((3, ChainBreak::HeadMismatch)));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn verifying_while_records_are_appended_never_reports_a_break() {
+    let database = TestDatabase::start().await;
+    let tenant = TenantContext::assume(TenantId::generate());
+    announce(&database, &tenant, 200).await;
+    let audit = service(&database);
+
+    let appending = {
+        let dispatcher = dispatcher(&database);
+        tokio::spawn(async move {
+            while dispatcher
+                .dispatch_batch(10)
+                .await
+                .expect("dispatch")
+                .delivered
+                > 0
+            {}
+        })
+    };
+    let mut checks = 0;
+    while !appending.is_finished() {
+        let verification = audit.verify(&tenant).await.expect("verify");
+        assert!(verification.is_intact(), "{verification:?}");
+        checks += 1;
+    }
+    appending.await.expect("appending");
+
+    let verification = audit.verify(&tenant).await.expect("verify");
+    assert_eq!(verification.records, 200);
+    assert!(verification.is_intact());
+    assert!(checks > 0, "the chain was verified while it grew");
+}

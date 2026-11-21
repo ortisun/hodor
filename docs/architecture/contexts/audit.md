@@ -89,7 +89,7 @@ To append, the worker locks the tenant's chain head, which holds the last sequen
 
 ### Verifying
 
-Verifying reads a tenant's records in order and recomputes every hash. It reports how many records were checked and, if the chain is broken, the sequence of the first record that does not fit and why: its contents do not match its hash, its previous hash does not match the record before it, or its sequence is not the next one. It also checks that the chain head agrees with the last record.
+Verifying reads a tenant's records in order and recomputes every hash. It reports how many records were checked and, if the chain is broken, the sequence of the first record that does not fit and why: its contents do not match its hash, its previous hash does not match the record before it, or its sequence is not the next one. It reads every record the tenant has, not only those up to the chain head, and then checks that the head agrees with the last one: a head moved back to hide the newest records is found, as is a head pointing past them.
 
 ```
 hodor-cli audit verify --tenant acme

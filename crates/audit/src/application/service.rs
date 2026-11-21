@@ -92,9 +92,10 @@ impl AuditService {
 
     /// Checks the tenant's whole chain and reports the first break.
     ///
-    /// The chain is read inside one unit of work. Records appended while
-    /// it runs may or may not be included; either way what is reported is
-    /// a chain that existed.
+    /// Every record the tenant has is read, not only those up to the
+    /// chain head, and the head must then agree with the last one. A head
+    /// moved back to hide the newest records is found that way, as is a
+    /// head pointing past them.
     ///
     /// # Errors
     ///
@@ -102,26 +103,38 @@ impl AuditService {
     /// it is the answer.
     pub async fn verify(&self, tenant: &TenantContext) -> Result<Verification, DomainError> {
         let mut uow = self.units_of_work.begin(tenant).await?;
-        // The head is read first: records appended afterwards are simply
-        // not checked this time.
-        let head = self.log.head(uow.as_mut()).await?;
         let mut verifier = Verifier::new(tenant.tenant_id(), self.digest.as_ref());
-        while !verifier.is_broken() && verifier.checked() < head.sequence {
-            let page = self
-                .log
-                .list(uow.as_mut(), verifier.checked(), VERIFY_PAGE)
-                .await?;
-            if page.is_empty() {
-                break;
+        // Set once the head was seen ahead of the last record read.
+        let mut expecting_more = false;
+        loop {
+            let before = verifier.checked();
+            // Read on until there are no more records or one does not fit.
+            while !verifier.is_broken() {
+                let page = self
+                    .log
+                    .list(uow.as_mut(), verifier.checked(), VERIFY_PAGE)
+                    .await?;
+                if page.is_empty() {
+                    break;
+                }
+                for record in &page {
+                    verifier.check(record);
+                }
             }
-            for record in page
-                .iter()
-                .filter(|record| record.sequence <= head.sequence)
-            {
-                verifier.check(record);
+            let head = self.log.head(uow.as_mut()).await?;
+            let read_something = verifier.checked() > before;
+            // A head ahead of the last record read means one of two
+            // things. Records were appended while this ran: reading on
+            // finds them. Or the head points at records that are not
+            // there: reading on finds nothing, and the head is reported
+            // as not agreeing with the last record.
+            let head_is_ahead = head.sequence > verifier.checked();
+            let told_of_more_and_found_none = expecting_more && !read_something;
+            if verifier.is_broken() || !head_is_ahead || told_of_more_and_found_none {
+                return Ok(verifier.finish(&head));
             }
+            expecting_more = true;
         }
-        Ok(verifier.finish(&head))
     }
 }
 
