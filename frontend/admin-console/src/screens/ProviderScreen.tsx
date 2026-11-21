@@ -1,3 +1,4 @@
+import { Banner } from "@astryxdesign/core/Banner";
 import { BreadcrumbItem, Breadcrumbs } from "@astryxdesign/core/Breadcrumbs";
 import { Button } from "@astryxdesign/core/Button";
 import { Card } from "@astryxdesign/core/Card";
@@ -62,6 +63,8 @@ export function ProviderScreen({ id, client, me, text, go, path, say }: ScreenPr
 
   const provider = loading.value;
   const mayChange = may(me.permissions, "changeProvider");
+  // The form is the one of OpenID Connect providers; the other kinds are changed elsewhere for now.
+  const formFits = provider.kind === "openid_connect";
   const enabled = provider.status === "enabled";
 
   return (
@@ -72,8 +75,8 @@ export function ProviderScreen({ id, client, me, text, go, path, say }: ScreenPr
       actions={
         mayChange ? (
           <>
-            <Button label={text.changeSettings} onClick={() => setOpen("change")} />
-            <Button label={text.replaceSecret} onClick={() => setOpen("secret")} />
+            {formFits ? <Button label={text.changeSettings} onClick={() => setOpen("change")} /> : null}
+            {formFits ? <Button label={text.replaceSecret} onClick={() => setOpen("secret")} /> : null}
             {enabled ? (
               <Button variant="destructive" label={text.disableProvider} onClick={() => setOpen("disable")} />
             ) : (
@@ -83,15 +86,35 @@ export function ProviderScreen({ id, client, me, text, go, path, say }: ScreenPr
         ) : null
       }
     >
-      <Card>
-        <VStack gap={2} hAlign="start">
-          <Heading level={2}>{text.callbackAddress}</Heading>
-          <Identifier value={provider.callbackAddress} whole text={text} />
-          <Text type="supporting" color="secondary">
-            {text.callbackAddressHint}
-          </Text>
-        </VStack>
-      </Card>
+      {mayChange && !formFits ? <Banner status="info" title={text.managedElsewhere} /> : null}
+
+      {provider.callbackAddress !== null ? (
+        <Card>
+          <VStack gap={2} hAlign="start">
+            <Heading level={2}>{text.callbackAddress}</Heading>
+            <Identifier value={provider.callbackAddress} whole text={text} />
+            <Text type="supporting" color="secondary">
+              {text.callbackAddressHint}
+            </Text>
+          </VStack>
+        </Card>
+      ) : null}
+
+      {provider.directory !== null ? (
+        <Card>
+          <VStack gap={3}>
+            <Heading level={2}>{text.directorySearch}</Heading>
+            <MetadataList>
+              <MetadataListItem label={text.directoryBase}>
+                <span className="console-mono console-wrap">{provider.directory.base}</span>
+              </MetadataListItem>
+              <MetadataListItem label={text.directoryFilter}>
+                <span className="console-mono console-wrap">{provider.directory.filter}</span>
+              </MetadataListItem>
+            </MetadataList>
+          </VStack>
+        </Card>
+      ) : null}
 
       <Card>
         <VStack gap={3}>
@@ -113,6 +136,9 @@ export function ProviderScreen({ id, client, me, text, go, path, say }: ScreenPr
             </MetadataListItem>
             <MetadataListItem label={text.columnCreatesUsers}>
               {provider.createsUsers ? text.createsUsersOn(provider.displayName) : text.createsUsersOff(provider.displayName)}
+            </MetadataListItem>
+            <MetadataListItem label={text.trustsEmailLabel}>
+              {provider.trustsEmail ? text.trustsEmailYes : text.trustsEmailNo}
             </MetadataListItem>
             <MetadataListItem label={text.created}>{moment(provider.createdAt, text)}</MetadataListItem>
             <MetadataListItem label={text.changed}>{moment(provider.updatedAt, text)}</MetadataListItem>

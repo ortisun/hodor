@@ -89,9 +89,13 @@ export interface Provider {
   clientId: string;
   scopes: string[];
   createsUsers: boolean;
+  /** Whether the provider vouches for the addresses it gives. */
+  trustsEmail: boolean;
   status: string;
-  /** The address to register at the provider, where it sends people back to. */
-  callbackAddress: string;
+  /** The address to register at the provider, where it sends people back to; `null` for a directory. */
+  callbackAddress: string | null;
+  /** Where a directory searches; `null` for every other kind. */
+  directory: { base: string; filter: string } | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -196,6 +200,14 @@ function auditRecord(body: Fields): AuditRecord {
   };
 }
 
+function directoryOf(value: unknown): { base: string; filter: string } | null {
+  if (typeof value !== "object" || value === null) {
+    return null;
+  }
+  const found = fields(value);
+  return { base: required(found["base"]), filter: required(found["filter"]) };
+}
+
 function provider(body: Fields): Provider {
   return {
     id: required(body["id"]),
@@ -206,8 +218,10 @@ function provider(body: Fields): Provider {
     clientId: required(body["client_id"]),
     scopes: strings(body["scopes"]),
     createsUsers: body["creates_users"] === true,
+    trustsEmail: body["trusts_email"] === true,
     status: required(body["status"]),
-    callbackAddress: required(body["callback_address"]),
+    callbackAddress: text(body["callback_address"]),
+    directory: directoryOf(body["directory"]),
     createdAt: required(body["created_at"]),
     updatedAt: required(body["updated_at"]),
   };

@@ -48,6 +48,8 @@ The console opens in the dark mode and remembers the person's choice in the brow
 | `/identity-providers` | Identity providers: a table ordered by alias, with status and whether each creates users; add a provider | `identity-providers:read`; `identity-providers:write` to add |
 | `/identity-providers/{provider_id}` | One provider: the callback address to register at the provider, its settings; change them, replace the client secret, disable or enable it | `identity-providers:read`; `identity-providers:write` for the actions |
 
+The console adds OpenID Connect providers, and changes their settings and secrets. Providers of the other kinds, GitHub and directories, are listed and shown, and are disabled and enabled from the console; adding them, and changing their settings or secret, is done through the [administration interface](../api/admin-api.md#identity-providers) for now, because the fields of the form mean other things for them. A directory has no callback address, and its screen shows where it searches instead.
+
 An action the person may not take is not offered. The server checks every request regardless.
 
 ### The dangerous action ladder
@@ -117,6 +119,7 @@ The console is used in production with these known gaps. Each is a requirement o
 | An idle timeout of 15 minutes for administrators (Requirement-Console-01). The 12-hour limit is built; the idle limit is the tenant's | Activity on the account pages and in the console is one session's activity today | Phase 2 |
 | Recent authentication for sensitive actions (Requirement-Console-03) | There is no step-up yet | Phase 2 |
 | Phishing-resistant sign-in for administrators (Requirement-Console-05) | Passkeys are Phase 4. Until then an administrator signs in with a password | Phase 4 |
+| Adding GitHub providers and directories, and changing their settings or secret, from the console | The form is the one of OpenID Connect providers | Next |
 | Security posture, live activity, applications, signing keys, policies | The server has no such resources yet | The phase of each |
 | Reactivating, changing or removing a user; filtering and searching the tables | The administration interface does not have them | Phase 2 |
 | Giving and taking roles | No route exists; roles are given with `hodor-cli` | Phase 2 |

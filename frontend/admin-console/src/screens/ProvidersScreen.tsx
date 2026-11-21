@@ -70,8 +70,8 @@ export function ProvidersScreen({ client, me, text, go, path, say }: ScreenProps
             },
             {
               key: "issuer",
-              header: text.columnIssuer,
-              renderCell: ({ provider }) => <Text color="secondary">{provider.issuer}</Text>,
+              header: text.kindLabel,
+              renderCell: ({ provider }) => <Text color="secondary">{named(text.providerKinds, provider.kind)}</Text>,
             },
             {
               key: "status",

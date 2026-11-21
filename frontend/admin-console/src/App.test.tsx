@@ -278,4 +278,37 @@ describe("the identity providers", () => {
     expect(await screen.findByText(en.createsUsersOff("Google"))).toBeTruthy();
     expect(sent.at(-1)?.body).toEqual({ creates_users: false });
   });
+
+  it("show a directory, which has no callback address, and leave its settings to the administration interface", async () => {
+    const DIRECTORY = "0193f1c2-0000-7000-8000-00000000000b";
+    const directory = providerBody({
+      id: DIRECTORY,
+      alias: "company",
+      kind: "ldap",
+      display_name: "Company",
+      issuer: "ldaps://directory.example",
+      client_id: "cn=hodor,dc=example,dc=com",
+      scopes: [],
+      callback_address: null,
+      directory: { base: "ou=people,dc=example,dc=com", filter: "(uid={identifier})" },
+    });
+    const { user, go } = show("/t/acme/console/identity-providers", {
+      "GET /console/api/me": [json(200, meBody())],
+      "GET /console/api/identity-providers": [json(200, { items: [providerBody(), directory] })],
+    });
+    expect(await screen.findByText(en.providerKinds["ldap"] ?? "")).toBeTruthy();
+    await user.click(screen.getByRole("link", { name: "Company" }));
+    expect(go).toHaveBeenCalledWith({ name: "provider", id: DIRECTORY });
+    cleanup();
+
+    show(`/t/acme/console/identity-providers/${DIRECTORY}`, {
+      "GET /console/api/me": [json(200, meBody())],
+      [`GET /console/api/identity-providers/${DIRECTORY}`]: [json(200, directory)],
+    });
+    expect(await screen.findByText("(uid={identifier})")).toBeTruthy();
+    expect(screen.queryByText(en.callbackAddress)).toBeNull();
+    expect(screen.getByText(en.managedElsewhere)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: en.changeSettings })).toBeNull();
+    expect(screen.getByRole("button", { name: en.disableProvider })).toBeTruthy();
+  });
 });

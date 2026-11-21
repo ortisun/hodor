@@ -158,7 +158,18 @@ export const en = {
   createsUsersYes: "Get an account",
   createsUsersNo: "Turned away",
   providerStatus: { enabled: "Enabled", disabled: "Disabled" } as Record<string, string>,
-  providerKinds: { openid_connect: "OpenID Connect" } as Record<string, string>,
+  providerKinds: { openid_connect: "OpenID Connect", github: "GitHub", ldap: "Directory (LDAP)" } as Record<
+    string,
+    string
+  >,
+  trustsEmailLabel: "Addresses it gives",
+  trustsEmailYes: "Taken as verified",
+  trustsEmailNo: "Verified only when it says so",
+  directorySearch: "Where it searches",
+  directoryBase: "Base",
+  directoryFilter: "Filter",
+  managedElsewhere:
+    "Settings and the secret of this kind of provider are changed through the administration interface for now.",
   backToProviders: "Back to identity providers",
   providerTitle: "Identity provider",
   providerNotFound: "This identity provider does not exist in this tenant.",
