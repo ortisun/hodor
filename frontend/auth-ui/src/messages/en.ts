@@ -67,6 +67,8 @@ export const en = {
   or: "or",
   continueWith: (provider: string) => `Continue with ${provider}`,
   comingBackTitle: "Signing you in",
+  directoryIdentifierLabel: (directory: string) => `Username at ${directory}`,
+  otherWays: "Other ways to sign in",
 
   pageNotFoundTitle: "Page not found",
   pageNotFound: "There is nothing at this address.",

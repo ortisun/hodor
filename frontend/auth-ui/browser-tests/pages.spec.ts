@@ -2,7 +2,6 @@ import { expect } from "@playwright/test";
 import { ptBR } from "../src/messages/pt-BR";
 import {
   PASSWORD,
-  PROVIDER_NAME,
   at,
   en,
   expectAccessible,
@@ -160,13 +159,19 @@ test("a person signs in and out with the keyboard alone", async ({ page }) => {
   await expect(identifier).toBeFocused();
   await page.keyboard.press("Tab");
   await expect(page.getByRole("button", { name: en.continue, exact: true })).toBeFocused();
-  await page.keyboard.press("Tab");
-  await expect(page.getByRole("button", { name: en.continueWith(PROVIDER_NAME) })).toBeFocused();
+  // Then every way to sign in that the tenant offers, in the order shown.
+  const offered = page.getByRole("button", { name: /^Continue with / });
+  const ways = await offered.count();
+  expect(ways).toBeGreaterThan(0);
+  for (let way = 0; way < ways; way += 1) {
+    await page.keyboard.press("Tab");
+    await expect(offered.nth(way)).toBeFocused();
+  }
   await page.keyboard.press("Tab");
   await expect(page.getByRole("link", { name: en.forgotPassword })).toBeFocused();
   await page.keyboard.press("Tab");
   await expect(page.getByRole("link", { name: en.register })).toBeFocused();
-  for (let step = 0; step < 4; step += 1) {
+  for (let step = 0; step < ways + 3; step += 1) {
     await page.keyboard.press("Shift+Tab");
   }
   await expect(identifier).toBeFocused();

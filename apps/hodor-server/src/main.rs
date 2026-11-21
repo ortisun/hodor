@@ -515,7 +515,8 @@ fn administration(config: &Config, database: &Database) -> Result<AdminState, Do
                 Arc::new(SecretKeys::parse(&Secret::from(setting.clone()))?),
                 clock.clone(),
             )
-            .allowing_development_hosts(&development_hosts(config)),
+            .allowing_development_hosts(&development_hosts(config))
+            .allowing_directory_hosts(&directory_hosts(config)),
         ),
         None => None,
     };

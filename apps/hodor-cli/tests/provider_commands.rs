@@ -165,3 +165,61 @@ async fn what_cannot_be_done_is_refused_with_its_reason() {
         "{without_keys:?}"
     );
 }
+
+#[tokio::test]
+async fn an_operator_adds_a_directory_on_the_list_and_no_other() {
+    let database = TestDatabase::start().await;
+    let tool = Tool {
+        database: &database,
+        keys: format!("test:{}", SecretKeys::generate(&OsRandom).expose()),
+    };
+    tool.run(
+        &["tenant", "create", "--slug", "acme", "--name", "Acme"],
+        None,
+    );
+    let add = |issuer: &'static str| {
+        [
+            "provider",
+            "add",
+            "--tenant",
+            "acme",
+            "--alias",
+            "company",
+            "--kind",
+            "ldap",
+            "--name",
+            "Company",
+            "--issuer",
+            issuer,
+            "--client-id",
+            "cn=hodor,ou=services,dc=example,dc=com",
+            "--base",
+            "ou=people,dc=example,dc=com",
+            "--filter",
+            "(uid={identifier})",
+        ]
+    };
+    let run = |arguments: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_hodor-cli"))
+            .args(arguments)
+            .env("HODOR_DATABASE_URL", database.app_url())
+            .env("HODOR_SECRET_KEYS", &tool.keys)
+            .env("HODOR_DIRECTORY_HOSTS", "ldap.example.com:636")
+            .env("HODOR_PROVIDER_CLIENT_SECRET", "the bind password")
+            .output()
+            .expect("the command-line tool should run")
+    };
+
+    let refused = run(&add("ldaps://ldap.elsewhere.example"));
+    assert!(!refused.status.success());
+    assert!(
+        text(&refused.stderr).contains("federation.directory_not_allowed"),
+        "{refused:?}"
+    );
+
+    let added = run(&add("ldaps://ldap.example.com"));
+    assert!(added.status.success(), "{added:?}");
+    let said = text(&added.stdout);
+    // Nobody leaves for a directory: there is no address to register.
+    assert_eq!(said, "created company enabled ldaps://ldap.example.com -");
+}

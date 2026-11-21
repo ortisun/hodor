@@ -20,8 +20,8 @@ use hodor_audit::api::{AuditRecord, AuditService};
 use hodor_authorization::api::{AuthorizationService, Permission};
 use hodor_credential::api::AccessTokenService;
 use hodor_federation::api::{
-    ChangeProvider, CreateProvider, FederationService, IdentityProvider, ProviderId, ProviderKind,
-    ProviderSettings, ProviderStatus, callback_address,
+    ChangeProvider, CreateProvider, DirectorySettings, FederationService, IdentityProvider,
+    ProviderId, ProviderKind, ProviderSettings, ProviderStatus, callback_address,
 };
 use hodor_identity::api::{CreateUser, IdentifierKind, IdentityService, Profile, User, UserKind};
 use hodor_kernel::{
@@ -650,7 +650,8 @@ struct ProviderBody {
     creates_users: bool,
     trusts_email: bool,
     status: &'static str,
-    callback_address: String,
+    callback_address: Option<String>,
+    directory: Option<DirectoryBody>,
     created_at: String,
     updated_at: String,
 }
@@ -670,9 +671,57 @@ fn provider_body(provider: &IdentityProvider, public_url: &str, slug: &str) -> P
         creates_users: state.settings.creates_users,
         trusts_email: state.settings.trusts_email,
         status: state.status.as_str(),
-        callback_address: callback_address(public_url, slug, state.alias.as_str()),
+        // Nobody leaves for a directory, so nobody comes back from one.
+        callback_address: (state.kind != ProviderKind::Ldap)
+            .then(|| callback_address(public_url, slug, state.alias.as_str())),
+        directory: state
+            .settings
+            .directory
+            .as_ref()
+            .map(|directory| DirectoryBody {
+                base: directory.base.clone(),
+                filter: directory.filter.clone(),
+                subject_attribute: directory.subject_attribute.clone(),
+                email_attribute: directory.email_attribute.clone(),
+                name_attribute: directory.name_attribute.clone(),
+            }),
         created_at: written(state.created_at),
         updated_at: written(state.updated_at),
+    }
+}
+
+/// What only a directory has, as an administrator reads and writes it.
+#[derive(Debug, Serialize)]
+struct DirectoryBody {
+    base: String,
+    filter: String,
+    subject_attribute: String,
+    email_attribute: String,
+    name_attribute: String,
+}
+
+/// A directory's settings as given: what is left out is the usual, or,
+/// in a change, what it was.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DirectoryInput {
+    base: Option<String>,
+    filter: Option<String>,
+    subject_attribute: Option<String>,
+    email_attribute: Option<String>,
+    name_attribute: Option<String>,
+}
+
+impl DirectoryInput {
+    /// These settings laid over `on`.
+    fn over(self, on: DirectorySettings) -> DirectorySettings {
+        DirectorySettings {
+            base: self.base.unwrap_or(on.base),
+            filter: self.filter.unwrap_or(on.filter),
+            subject_attribute: self.subject_attribute.unwrap_or(on.subject_attribute),
+            email_attribute: self.email_attribute.unwrap_or(on.email_attribute),
+            name_attribute: self.name_attribute.unwrap_or(on.name_attribute),
+        }
     }
 }
 
@@ -694,6 +743,7 @@ struct NewProviderBody {
     scopes: Option<Vec<String>>,
     creates_users: Option<bool>,
     trusts_email: Option<bool>,
+    directory: Option<DirectoryInput>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -705,6 +755,7 @@ struct ProviderChangesBody {
     scopes: Option<Vec<String>>,
     creates_users: Option<bool>,
     trusts_email: Option<bool>,
+    directory: Option<DirectoryInput>,
 }
 
 /// No `Debug`: this holds a client secret until it is sealed.
@@ -771,10 +822,11 @@ async fn create_provider(
             let kind = match new.kind.as_deref() {
                 None | Some("openid_connect") => ProviderKind::OpenIdConnect,
                 Some("github") => ProviderKind::GitHub,
+                Some("ldap") => ProviderKind::Ldap,
                 Some(_) => {
                     return Err(failed(DomainError::invalid(
                         "federation.kind_invalid",
-                        "an identity provider is of the kind `openid_connect` or `github`",
+                        "an identity provider is of the kind `openid_connect`, `github` or `ldap`",
                     )));
                 }
             };
@@ -795,7 +847,11 @@ async fn create_provider(
                         .unwrap_or_else(|| ProviderSettings::default_scopes_for(kind)),
                     creates_users: new.creates_users.unwrap_or(true),
                     trusts_email: new.trusts_email.unwrap_or(false),
-                    directory: None,
+                    // Given for a directory, laid over the usual names;
+                    // for any other kind it is refused when given.
+                    directory: new
+                        .directory
+                        .map(|given| given.over(DirectorySettings::new("", ""))),
                 },
                 client_secret: Secret::from(new.client_secret),
             };
@@ -859,8 +915,11 @@ async fn change_provider(
                 scopes: changes.scopes.unwrap_or(now.scopes),
                 creates_users: changes.creates_users.unwrap_or(now.creates_users),
                 trusts_email: changes.trusts_email.unwrap_or(now.trusts_email),
-                // A directory's own settings are not changed here.
-                directory: now.directory,
+                directory: match (changes.directory, now.directory) {
+                    (Some(given), Some(was)) => Some(given.over(was)),
+                    (Some(given), None) => Some(given.over(DirectorySettings::new("", ""))),
+                    (None, was) => was,
+                },
             };
             let provider = federation
                 .change_provider(&tenant, ChangeProvider { id, settings }, caller)
