@@ -67,6 +67,13 @@ It needs `HODOR_DATABASE_URL`, like the tenant commands.
 | `GET /users/{user_id}/sessions` | `sessions:read` | List a user's active sessions |
 | `DELETE /sessions/{session_id}` | `sessions:revoke` | End a session |
 | `GET /audit-records` | `audit:read` | Read the audit log |
+| `GET /identity-providers` | `identity-providers:read` | List the tenant's identity providers |
+| `POST /identity-providers` | `identity-providers:write` | Add an identity provider |
+| `GET /identity-providers/{provider_id}` | `identity-providers:read` | Read one identity provider |
+| `PATCH /identity-providers/{provider_id}` | `identity-providers:write` | Change an identity provider's settings |
+| `PUT /identity-providers/{provider_id}/client-secret` | `identity-providers:write` | Replace its client secret |
+| `POST /identity-providers/{provider_id}:disable` | `identity-providers:write` | Stop it from signing people in |
+| `POST /identity-providers/{provider_id}:enable` | `identity-providers:write` | Let it sign people in again |
 
 ### A user
 
@@ -150,6 +157,66 @@ An address that already has an account is refused with `409` and `identity.ident
 The cursor is the sequence of the last record returned. Hashes are written in hexadecimal, so that a reader can check the chain for themselves.
 
 What an administrator does through this interface is itself recorded: the actor of those records is the token's user.
+
+### Identity providers
+
+The rules behind these operations are in [the federation context](../architecture/contexts/federation.md#identity-providers).
+
+An identity provider:
+
+```json
+{
+  "id": "0193f1c2-…",
+  "alias": "google",
+  "kind": "openid_connect",
+  "display_name": "Google",
+  "issuer": "https://accounts.google.com",
+  "client_id": "1234.apps.googleusercontent.com",
+  "scopes": ["openid", "email", "profile"],
+  "creates_users": true,
+  "status": "enabled",
+  "callback_address": "https://auth.example.com/t/acme/account/providers/google/callback",
+  "created_at": "2026-11-21T14:03:11Z",
+  "updated_at": "2026-11-21T14:03:11Z"
+}
+```
+
+`callback_address` is the address to register at the provider as the place it sends people back to.
+
+**The client secret is never part of an answer.** It is given when a provider is added and when the secret is replaced, and after that no operation returns it.
+
+`POST /identity-providers` with:
+
+```json
+{
+  "alias": "google",
+  "display_name": "Google",
+  "issuer": "https://accounts.google.com",
+  "client_id": "1234.apps.googleusercontent.com",
+  "client_secret": "…",
+  "scopes": ["openid", "email", "profile"],
+  "creates_users": true
+}
+```
+
+`scopes` and `creates_users` are optional. The answer is `201` with the provider, enabled.
+
+`PATCH /identity-providers/{provider_id}` takes any of `display_name`, `issuer`, `client_id`, `scopes` and `creates_users`; what is left out stays as it is. The alias cannot be changed: it is part of the callback address. The answer is `200` with the provider.
+
+`PUT /identity-providers/{provider_id}/client-secret` with `{ "client_secret": "…" }` answers `204`.
+
+`POST /identity-providers/{provider_id}:disable` and `:enable` take no body and answer `200` with the provider. A disabled provider is not offered on the sign-in page and signs nobody in; the people it let in keep their accounts and their links.
+
+`GET /identity-providers` answers `{ "items": [ … ] }`, ordered by alias. A tenant has at most 20, so the list has no pages.
+
+| Situation | Status | Code |
+|---|---|---|
+| A value breaks its rule | `422` | The federation context's code, such as `federation.issuer_invalid` |
+| The alias is taken | `409` | `federation.alias_taken` |
+| The tenant already has 20 providers | `409` | `federation.too_many_providers` |
+| No such provider in this tenant | `404` | `federation.provider_not_found` |
+| Someone else changed the provider at the same moment | `409` | `federation.provider_modified_concurrently` |
+| The server has no keys to keep secrets with (`HODOR_SECRET_KEYS`) | `503` | `federation.not_configured` |
 
 ## Not built yet
 

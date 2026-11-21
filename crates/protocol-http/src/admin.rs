@@ -8,19 +8,25 @@
 //! is why bodies and queries are read only after the check.
 
 use crate::problem::Problem;
+use crate::tenant::TenantSlug;
 use axum::body::Bytes;
 use axum::extract::{RawPathParams, RawQuery, State};
 use axum::http::StatusCode;
 use axum::http::header::{self, HeaderMap, HeaderValue};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get};
+use axum::routing::{delete, get, put};
 use axum::{Extension, Json, Router};
 use hodor_audit::api::{AuditRecord, AuditService};
 use hodor_authorization::api::{AuthorizationService, Permission};
 use hodor_credential::api::AccessTokenService;
+use hodor_federation::api::{
+    ChangeProvider, CreateProvider, FederationService, IdentityProvider, ProviderId, ProviderKind,
+    ProviderSettings, ProviderStatus, callback_address,
+};
 use hodor_identity::api::{CreateUser, IdentifierKind, IdentityService, Profile, User, UserKind};
 use hodor_kernel::{
-    Actor, Caller, CorrelationId, Cursor, DomainError, Page, PageRequest, TenantContext, UserId,
+    Actor, Caller, CorrelationId, Cursor, DomainError, Page, PageRequest, Secret, TenantContext,
+    UserId,
 };
 use hodor_session::api::{Session, SessionId, SessionService};
 use serde::de::DeserializeOwned;
@@ -46,6 +52,41 @@ pub const ADMIN_OPERATIONS: &[(&str, &str, Permission)] = &[
         Permission::SessionsRevoke,
     ),
     ("GET", "/audit-records", Permission::AuditRead),
+    (
+        "GET",
+        "/identity-providers",
+        Permission::IdentityProvidersRead,
+    ),
+    (
+        "POST",
+        "/identity-providers",
+        Permission::IdentityProvidersWrite,
+    ),
+    (
+        "GET",
+        "/identity-providers/{provider_id}",
+        Permission::IdentityProvidersRead,
+    ),
+    (
+        "PATCH",
+        "/identity-providers/{provider_id}",
+        Permission::IdentityProvidersWrite,
+    ),
+    (
+        "PUT",
+        "/identity-providers/{provider_id}/client-secret",
+        Permission::IdentityProvidersWrite,
+    ),
+    (
+        "POST",
+        "/identity-providers/{provider_id}:disable",
+        Permission::IdentityProvidersWrite,
+    ),
+    (
+        "POST",
+        "/identity-providers/{provider_id}:enable",
+        Permission::IdentityProvidersWrite,
+    ),
 ];
 
 /// What the administration handlers need.
@@ -61,6 +102,11 @@ pub struct AdminState {
     pub sessions: SessionService,
     /// The audit log.
     pub audit: AuditService,
+    /// The identity providers. `None` when this installation has no keys
+    /// to keep their secrets with.
+    pub federation: Option<FederationService>,
+    /// The address people reach this installation at, without a path.
+    pub public_url: String,
 }
 
 impl std::fmt::Debug for AdminState {
@@ -81,6 +127,21 @@ pub fn admin_routes(state: AdminState) -> Router {
         .route("/users/{user}/sessions", get(list_user_sessions))
         .route("/sessions/{session}", delete(revoke_session))
         .route("/audit-records", get(list_audit_records))
+        .route(
+            "/identity-providers",
+            get(list_providers).post(create_provider),
+        )
+        // The two actions arrive here as well, as part of the last segment.
+        .route(
+            "/identity-providers/{provider}",
+            get(get_provider)
+                .patch(change_provider)
+                .post(provider_action),
+        )
+        .route(
+            "/identity-providers/{provider}/client-secret",
+            put(change_provider_secret),
+        )
         .with_state(state)
 }
 
@@ -572,6 +633,291 @@ async fn list_audit_records(
             let records = state.audit.page(&tenant, &page).await.map_err(failed)?;
             let body: PageBody<AuditRecordBody> = records.map(AuditRecordBody::from).into();
             Ok(Json(body).into_response())
+        }
+        .await,
+    )
+}
+
+#[derive(Debug, Serialize)]
+struct ProviderBody {
+    id: String,
+    alias: String,
+    kind: &'static str,
+    display_name: String,
+    issuer: String,
+    client_id: String,
+    scopes: Vec<String>,
+    creates_users: bool,
+    status: &'static str,
+    callback_address: String,
+    created_at: String,
+    updated_at: String,
+}
+
+/// A provider as an administrator reads it. There is no field for the
+/// client secret, so there is no way for one to be written out.
+fn provider_body(provider: &IdentityProvider, public_url: &str, slug: &str) -> ProviderBody {
+    let state = provider.snapshot();
+    ProviderBody {
+        id: state.id.to_string(),
+        alias: state.alias.as_str().to_owned(),
+        kind: state.kind.as_str(),
+        display_name: state.settings.display_name.clone(),
+        issuer: state.settings.issuer.clone(),
+        client_id: state.settings.client_id.clone(),
+        scopes: state.settings.scopes.clone(),
+        creates_users: state.settings.creates_users,
+        status: state.status.as_str(),
+        callback_address: callback_address(public_url, slug, state.alias.as_str()),
+        created_at: written(state.created_at),
+        updated_at: written(state.updated_at),
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct ProvidersBody {
+    items: Vec<ProviderBody>,
+}
+
+/// No `Debug`: this holds a client secret until it is sealed.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NewProviderBody {
+    alias: String,
+    display_name: String,
+    issuer: String,
+    client_id: String,
+    client_secret: String,
+    scopes: Option<Vec<String>>,
+    creates_users: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProviderChangesBody {
+    display_name: Option<String>,
+    issuer: Option<String>,
+    client_id: Option<String>,
+    scopes: Option<Vec<String>>,
+    creates_users: Option<bool>,
+}
+
+/// No `Debug`: this holds a client secret until it is sealed.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ClientSecretBody {
+    client_secret: String,
+}
+
+fn provider_not_found() -> Box<Response> {
+    failed(DomainError::not_found(
+        "federation.provider_not_found",
+        "there is no such identity provider",
+    ))
+}
+
+/// The federation use cases, or the answer of an installation that has
+/// no keys to keep secrets with.
+fn federation(state: &AdminState) -> Result<&FederationService, Box<Response>> {
+    state.federation.as_ref().ok_or_else(|| {
+        problem(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "federation.not_configured",
+            "this installation is not set up to keep the secrets of identity providers",
+        )
+    })
+}
+
+async fn list_providers(
+    State(state): State<AdminState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(TenantSlug(slug)): Extension<TenantSlug>,
+    headers: HeaderMap,
+) -> Response {
+    respond(
+        async {
+            authorize(&state, &tenant, &headers, "GET", "/identity-providers").await?;
+            let providers = federation(&state)?
+                .providers(&tenant)
+                .await
+                .map_err(failed)?;
+            let items = providers
+                .iter()
+                .map(|provider| provider_body(provider, &state.public_url, &slug))
+                .collect();
+            Ok(Json(ProvidersBody { items }).into_response())
+        }
+        .await,
+    )
+}
+
+async fn create_provider(
+    State(state): State<AdminState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(TenantSlug(slug)): Extension<TenantSlug>,
+    headers: HeaderMap,
+    bytes: Bytes,
+) -> Response {
+    respond(
+        async {
+            let caller =
+                authorize(&state, &tenant, &headers, "POST", "/identity-providers").await?;
+            let new: NewProviderBody = body(&bytes)?;
+            let command = CreateProvider {
+                alias: new.alias,
+                kind: ProviderKind::OpenIdConnect,
+                settings: ProviderSettings {
+                    display_name: new.display_name,
+                    issuer: new.issuer,
+                    client_id: new.client_id,
+                    scopes: new.scopes.unwrap_or_else(ProviderSettings::default_scopes),
+                    creates_users: new.creates_users.unwrap_or(true),
+                },
+                client_secret: Secret::from(new.client_secret),
+            };
+            let provider = federation(&state)?
+                .create_provider(&tenant, command, caller)
+                .await
+                .map_err(failed)?;
+            let body = provider_body(&provider, &state.public_url, &slug);
+            Ok((StatusCode::CREATED, Json(body)).into_response())
+        }
+        .await,
+    )
+}
+
+async fn get_provider(
+    State(state): State<AdminState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(TenantSlug(slug)): Extension<TenantSlug>,
+    headers: HeaderMap,
+    parameters: RawPathParams,
+) -> Response {
+    respond(
+        async {
+            let operation = "/identity-providers/{provider_id}";
+            authorize(&state, &tenant, &headers, "GET", operation).await?;
+            let id: ProviderId =
+                parameter(&parameters, "provider").ok_or_else(provider_not_found)?;
+            let provider = federation(&state)?
+                .provider(&tenant, id)
+                .await
+                .map_err(failed)?;
+            Ok(Json(provider_body(&provider, &state.public_url, &slug)).into_response())
+        }
+        .await,
+    )
+}
+
+async fn change_provider(
+    State(state): State<AdminState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(TenantSlug(slug)): Extension<TenantSlug>,
+    headers: HeaderMap,
+    parameters: RawPathParams,
+    bytes: Bytes,
+) -> Response {
+    respond(
+        async {
+            let operation = "/identity-providers/{provider_id}";
+            let caller = authorize(&state, &tenant, &headers, "PATCH", operation).await?;
+            let id: ProviderId =
+                parameter(&parameters, "provider").ok_or_else(provider_not_found)?;
+            let changes: ProviderChangesBody = body(&bytes)?;
+            let federation = federation(&state)?;
+            // What is left out stays as it is.
+            let current = federation.provider(&tenant, id).await.map_err(failed)?;
+            let now = current.snapshot().settings.clone();
+            let settings = ProviderSettings {
+                display_name: changes.display_name.unwrap_or(now.display_name),
+                issuer: changes.issuer.unwrap_or(now.issuer),
+                client_id: changes.client_id.unwrap_or(now.client_id),
+                scopes: changes.scopes.unwrap_or(now.scopes),
+                creates_users: changes.creates_users.unwrap_or(now.creates_users),
+            };
+            let provider = federation
+                .change_provider(&tenant, ChangeProvider { id, settings }, caller)
+                .await
+                .map_err(failed)?;
+            Ok(Json(provider_body(&provider, &state.public_url, &slug)).into_response())
+        }
+        .await,
+    )
+}
+
+async fn change_provider_secret(
+    State(state): State<AdminState>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+    parameters: RawPathParams,
+    bytes: Bytes,
+) -> Response {
+    respond(
+        async {
+            let operation = "/identity-providers/{provider_id}/client-secret";
+            let caller = authorize(&state, &tenant, &headers, "PUT", operation).await?;
+            let id: ProviderId =
+                parameter(&parameters, "provider").ok_or_else(provider_not_found)?;
+            let new: ClientSecretBody = body(&bytes)?;
+            federation(&state)?
+                .change_provider_secret(&tenant, id, &Secret::from(new.client_secret), caller)
+                .await
+                .map_err(failed)?;
+            Ok(StatusCode::NO_CONTENT.into_response())
+        }
+        .await,
+    )
+}
+
+/// `POST /identity-providers/{provider_id}:disable` and `:enable`. The
+/// action is part of the last segment of the path.
+async fn provider_action(
+    State(state): State<AdminState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(TenantSlug(slug)): Extension<TenantSlug>,
+    headers: HeaderMap,
+    parameters: RawPathParams,
+) -> Response {
+    respond(
+        async {
+            let segment: String =
+                parameter(&parameters, "provider").ok_or_else(provider_not_found)?;
+            let (id, status, operation) = if let Some(id) = segment.strip_suffix(":disable") {
+                (
+                    id,
+                    ProviderStatus::Disabled,
+                    "/identity-providers/{provider_id}:disable",
+                )
+            } else if let Some(id) = segment.strip_suffix(":enable") {
+                (
+                    id,
+                    ProviderStatus::Enabled,
+                    "/identity-providers/{provider_id}:enable",
+                )
+            } else {
+                // Checked like the others before it is answered, so that
+                // a caller without a token learns nothing about paths.
+                authorize(
+                    &state,
+                    &tenant,
+                    &headers,
+                    "POST",
+                    "/identity-providers/{provider_id}:disable",
+                )
+                .await?;
+                return Err(problem(
+                    StatusCode::NOT_FOUND,
+                    "route.not_found",
+                    "there is no such action on an identity provider",
+                ));
+            };
+            let caller = authorize(&state, &tenant, &headers, "POST", operation).await?;
+            let id: ProviderId = id.parse().map_err(|_| provider_not_found())?;
+            let provider = federation(&state)?
+                .set_provider_status(&tenant, id, status, caller)
+                .await
+                .map_err(failed)?;
+            Ok(Json(provider_body(&provider, &state.public_url, &slug)).into_response())
         }
         .await,
     )

@@ -15,6 +15,8 @@ A permission names something that can be done: a kind of resource and an action 
 | `sessions:read` | Seeing a user's sessions |
 | `sessions:revoke` | Ending a session |
 | `audit:read` | Reading the audit log |
+| `identity-providers:read` | Seeing the tenant's identity providers, without their secrets |
+| `identity-providers:write` | Adding, changing, enabling and disabling identity providers, and replacing their secrets |
 
 ## Roles
 
@@ -23,7 +25,7 @@ A role is a named set of permissions. In this version the roles are fixed: they 
 | Role | Permissions | Meant for |
 |---|---|---|
 | `tenant_administrator` | All of the above | The people who run a tenant |
-| `tenant_auditor` | `users:read`, `sessions:read`, `audit:read` | People who must be able to see everything and change nothing |
+| `tenant_auditor` | `users:read`, `sessions:read`, `audit:read`, `identity-providers:read` | People who must be able to see everything and change nothing |
 
 A user holds a role in one tenant. Holding a role in one tenant means nothing in another: an assignment is a row of its tenant, like everything else.
 

@@ -57,6 +57,17 @@ impl Refusal {
     }
 }
 
+/// The page a provider sends people back to: the address to register at
+/// the provider. `public_url` is the address people reach this
+/// installation at, without a path.
+#[must_use]
+pub fn callback_address(public_url: &str, tenant_slug: &str, alias: &str) -> String {
+    format!(
+        "{}/t/{tenant_slug}/account/providers/{alias}/callback",
+        public_url.trim_end_matches('/')
+    )
+}
+
 /// The use cases of signing in through a provider.
 #[derive(Clone)]
 pub struct ExternalSignIn {
@@ -133,10 +144,7 @@ impl ExternalSignIn {
     /// at the provider.
     #[must_use]
     pub fn callback_address(&self, tenant_slug: &str, alias: &str) -> String {
-        format!(
-            "{}/t/{tenant_slug}/account/providers/{alias}/callback",
-            self.public_url
-        )
+        callback_address(&self.public_url, tenant_slug, alias)
     }
 
     /// An enabled provider of the tenant, by alias. A disabled one is

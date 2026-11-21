@@ -1243,6 +1243,7 @@ dependencies = [
  "hodor-audit",
  "hodor-authorization",
  "hodor-credential",
+ "hodor-federation",
  "hodor-identity",
  "hodor-kernel",
  "hodor-tenant",
