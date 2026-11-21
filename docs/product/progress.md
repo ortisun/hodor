@@ -73,6 +73,13 @@ Specified in [the credential context](../architecture/contexts/credential.md).
 | Issue-24 Interaction interface | Done | A browser signs in over HTTP: the interaction routes, a sign-in tied to the browser that started it, the sign-in and session cookies, CSRF and origin checks, all served by `hodor-server`. A test signs in to the real binary against PostgreSQL. Specified in [the interaction interface](../api/interaction-api.md) |
 | Issue-25, Issue-26 | Not started | — |
 
+### Slice F — Audit, notification, administration
+
+| Issue | Status | What exists |
+|---|---|---|
+| Issue-27 Notification | In progress | Specified in [the notification context](../architecture/contexts/notification.md). Done ahead of Issue-25, which needs it |
+| Issue-28 to Issue-30 | Not started | — |
+
 ### Known gaps in what is done
 
 These are recorded here so they are not forgotten; each is picked up by the issue named.

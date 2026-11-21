@@ -12,6 +12,7 @@ The specification proposes 26 crates. This design has 24: four merges and two ad
 | `consent` | module of `oauth` | Small aggregate with no other consumer |
 | — | `keys` (new) | Rotation and JWKS are domain rules; `adapters-kms` only implements the port |
 | — | `adapters-http` (new) | The single SSRF-protected outbound HTTP client, used by federation, Open Policy Agent, webhooks and JWKS fetching |
+| — | `adapters-smtp` (new) | Delivers email for the notification context. A separate crate so that the mail library and its dependencies stay out of every binary that sends no mail |
 
 ```text
 hodor/
@@ -46,6 +47,7 @@ hodor/
 │   ├── adapters-crypto/
 │   ├── adapters-kms/
 │   ├── adapters-http/          # Phase 3
+│   ├── adapters-smtp/
 │   └── observability/
 ├── frontend/{admin-console,account-console,auth-ui}/
 ├── migrations/
@@ -88,6 +90,7 @@ flowchart BT
     crypto["adapters-crypto"] --> credential & keys & oauth
     adaptersKeyService["adapters-kms"] --> keys
     adaptersHttp["adapters-http"] --> kernel
+    adaptersSmtp["adapters-smtp"] --> notification
 
     protocolHttp["protocol-http"] --> tenant & identity & credential & session & authentication & federation & oauth & authorization & audit & keys
 
