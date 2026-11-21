@@ -17,6 +17,7 @@ hodor-authentication.workspace = true
 hodor-credential.workspace = true
 hodor-identity.workspace = true
 hodor-kernel.workspace = true
+hodor-notification.workspace = true
 hodor-session.workspace = true
 hodor-tenant.workspace = true
 serde_json.workspace = true
@@ -32,6 +33,7 @@ tokio = { workspace = true, optional = true }
 hodor-adapters-crypto.workspace = true
 hodor-authentication = { workspace = true, features = ["testing"] }
 hodor-session = { workspace = true, features = ["testing"] }
+hodor-notification = { workspace = true, features = ["testing"] }
 hodor-credential = { workspace = true, features = ["testing"] }
 hodor-identity = { workspace = true, features = ["testing"] }
 hodor-tenant = { workspace = true, features = ["testing"] }

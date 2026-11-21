@@ -25,6 +25,8 @@ allow = [
     "ISC",
     "Unicode-3.0",
     "Zlib",
+    # Asks for nothing, not even attribution. Used by the mail library.
+    "0BSD",
 ]
 confidence-threshold = 0.9
 
