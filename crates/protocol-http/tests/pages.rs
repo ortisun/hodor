@@ -6,8 +6,8 @@ use axum::body::Body;
 use axum::http::{HeaderMap, Method, Request, StatusCode, header};
 use hodor_kernel::{DomainError, TenantContext, TenantId};
 use hodor_protocol_http::{
-    Limits, PAGE_PATHS, PAGES_CONTENT_SECURITY_POLICY, Pages, ResolvedTenant, TenantResolver,
-    TenantStatus, public_router,
+    CONSOLE_ASSETS_PATH, CONSOLE_PATHS, Limits, PAGE_PATHS, PAGES_CONTENT_SECURITY_POLICY, Pages,
+    ResolvedTenant, TenantResolver, TenantStatus, public_router,
 };
 use http_body_util::BodyExt as _;
 use std::path::{Path, PathBuf};
@@ -356,4 +356,50 @@ fn a_directory_without_the_application_is_refused_by_name() {
         error.to_string().contains("/nonexistent/hodor-pages"),
         "{error}"
     );
+}
+
+/// The admin console is served as the hosted pages are, at its own
+/// addresses, and the two applications stay apart.
+#[tokio::test]
+async fn the_console_is_another_application_at_its_own_addresses() {
+    let built = Built::new();
+    let pages = Pages::load(&built.directory()).expect("pages");
+    let console_built = Built::new();
+    std::fs::write(
+        console_built.directory().join("index.html"),
+        "<p>console</p>",
+    )
+    .expect("index");
+    let console = Pages::load_console(&console_built.directory()).expect("console");
+    let router = public_router(
+        Arc::new(Tenants),
+        pages.page_routes().merge(console.page_routes()),
+        pages.asset_routes().merge(console.asset_routes()),
+        Limits::default(),
+    );
+
+    for path in CONSOLE_PATHS {
+        let path = path
+            .replace("{user}", "0193f1c2-0000-7000-8000-000000000001")
+            .replace("{provider}", "0193f1c2-0000-7000-8000-000000000002");
+        let reply = get(&router, &format!("/t/acme{path}")).await;
+        assert_eq!(reply.status, StatusCode::OK, "{path}");
+        assert_eq!(reply.body, "<p>console</p>", "{path}");
+        assert_eq!(
+            reply.header(header::CONTENT_SECURITY_POLICY),
+            PAGES_CONTENT_SECURITY_POLICY,
+            "{path}"
+        );
+        assert_eq!(reply.header(header::CACHE_CONTROL), "no-cache", "{path}");
+    }
+
+    // A screen the console does not have is not found, and the hosted
+    // pages still answer with their own application.
+    let reply = get(&router, "/t/acme/console/keys").await;
+    assert_eq!(reply.status, StatusCode::NOT_FOUND);
+    assert_eq!(get(&router, "/t/acme/account/sign-in").await.body, INDEX);
+
+    let file = get(&router, &format!("{CONSOLE_ASSETS_PATH}/index-abc123.js")).await;
+    assert_eq!(file.status, StatusCode::OK);
+    assert_eq!(file.body, SCRIPT);
 }

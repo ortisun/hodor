@@ -27,7 +27,7 @@ A request is answered only if all of these hold, checked in this order:
 
 The check comes before anything else. A request that is refused learns nothing about what it asked for: not whether a user exists, not whether a body was valid.
 
-There are no cookies on this interface, so there is nothing for another site to forge and no CSRF token.
+There are no cookies on this interface, so there is nothing for another site to forge and no CSRF token. The [admin console](../architecture/admin-console.md) reaches the same routes through the [console interface](console-interface.md), which recognizes a person by their session.
 
 ### The first administrator
 

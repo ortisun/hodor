@@ -33,9 +33,9 @@ use hodor_kernel::{DomainError, Secret, SystemClock, TenantContext};
 use hodor_notification::api::Notifier;
 use hodor_observability::{LogFormat, Telemetry};
 use hodor_protocol_http::{
-    AdminState, Health, InteractionState, Limits, Pages, ReadinessCheck, ResolvedTenant,
-    TenantResolver, TenantStatus as HttpTenantStatus, admin_routes, interaction_routes, ops_router,
-    public_router, serve,
+    AdminState, ConsoleState, Health, InteractionState, Limits, Pages, ReadinessCheck,
+    ResolvedTenant, TenantResolver, TenantStatus as HttpTenantStatus, admin_routes, console_routes,
+    interaction_routes, ops_router, public_router, serve,
 };
 use hodor_session::api::SessionService;
 use hodor_tenant::api::{TenantDirectory as _, TenantService, TenantStatus};
@@ -109,6 +109,11 @@ struct Config {
     /// `assets`). Unset: no pages are served.
     #[arg(long, env = "HODOR_PAGES_DIRECTORY")]
     pages_directory: Option<PathBuf>,
+
+    /// Directory holding the built admin console (`index.html` and
+    /// `assets`). Unset: no console page is served.
+    #[arg(long, env = "HODOR_CONSOLE_DIRECTORY")]
+    console_directory: Option<PathBuf>,
 
     /// The keys that keep secrets encrypted at rest: `identifier:key`
     /// pairs separated by commas, the first one sealing. Unset: no
@@ -237,6 +242,14 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
         .nest(
             "/api/v1/admin",
             admin_routes(administration(&config, &database)?),
+        )
+        .nest(
+            "/console/api",
+            console_routes(ConsoleState {
+                administration: administration(&config, &database)?,
+                digest: Arc::new(Sha256Digest),
+                clock: Arc::new(SystemClock),
+            }),
         );
     let mut site_routes = axum::Router::new();
     match &config.pages_directory {
@@ -247,6 +260,15 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
             tracing::info!(directory = %directory.display(), "serving the hosted pages");
         }
         None => tracing::warn!("HODOR_PAGES_DIRECTORY is not set: no pages are served"),
+    }
+    match &config.console_directory {
+        Some(directory) => {
+            let console = Pages::load_console(directory)?;
+            tenant_routes = tenant_routes.merge(console.page_routes());
+            site_routes = site_routes.merge(console.asset_routes());
+            tracing::info!(directory = %directory.display(), "serving the admin console");
+        }
+        None => tracing::warn!("HODOR_CONSOLE_DIRECTORY is not set: no console is served"),
     }
     let public = public_router(
         Arc::new(DirectoryResolver(PgTenantDirectory::new(database.clone()))),

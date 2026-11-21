@@ -1,0 +1,116 @@
+/*
+ * What the console draws that Astryx does not have, and the layout of a
+ * screen. Only tokens of the theme are used.
+ */
+
+body {
+  margin: 0;
+  background: var(--color-background-body);
+  color: var(--color-text-primary);
+  font-family: var(--font-family-body);
+}
+
+.console-page {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: var(--spacing-6);
+}
+
+.console-center {
+  display: grid;
+  place-items: center;
+  min-height: 100dvh;
+  padding: var(--spacing-6);
+}
+
+.console-notice {
+  width: 100%;
+  max-width: 30rem;
+}
+
+.console-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--spacing-4);
+  align-items: start;
+}
+
+@media (max-width: 64rem) {
+  .console-split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.console-mono,
+.console-identifier,
+.console-code {
+  font-family: "IBM Plex Mono", var(--font-family-code);
+  font-size: 0.92em;
+}
+
+/* A name that is read whole or not at all, such as the action of an audit record. */
+.console-whole {
+  white-space: nowrap;
+}
+
+.console-wrap {
+  overflow-wrap: anywhere;
+}
+
+.console-identifier {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-1);
+}
+
+.console-code {
+  margin: 0;
+  padding: var(--spacing-3);
+  overflow-x: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-element);
+  background: var(--color-background-muted);
+}
+
+/* ---------- The dangerous action ladder ---------- */
+
+.console-ladder {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-2);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+.console-ladder__steps {
+  display: inline-flex;
+  gap: 3px;
+}
+
+.console-ladder__step {
+  width: 0.5rem;
+  height: 0.75rem;
+  border-radius: 2px;
+  background: var(--color-border-emphasized);
+}
+
+.console-ladder__step--on {
+  background: var(--color-error);
+}
+
+.console-facts {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.console-fact {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--spacing-4);
+  padding: var(--spacing-2) 0;
+}
+
+.console-fact + .console-fact {
+  border-top: 1px solid var(--color-border);
+}
