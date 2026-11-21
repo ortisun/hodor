@@ -72,7 +72,15 @@ The credentials in the Compose file and in `deploy/docker/postgres-init.sql` are
 
 ### What works today
 
-The server starts, connects to the database, answers its health endpoints and resolves tenants: a path under `/t/{slug}` is routed to the tenant with that slug. No tenant has any routes of its own yet, so the answer for an existing tenant is still `404`, with the code `route.not_found` rather than `tenant.not_found`. See [progress](../product/progress.md) for what has been built.
+A person can sign in. With the stack running and a tenant created (see [creating your first tenant](#creating-your-first-tenant)), `hodor-server` serves [the interaction interface](../api/interaction-api.md) under `/t/{slug}/interaction`: a sign-in with a login identifier and a password ends with a session cookie.
+
+What is still missing around it:
+
+- There are no pages. The interface is JSON only; the hosted pages come with Issue-31.
+- There is no command to create a user or set a password yet, so a fresh stack has nobody to sign in. Registration comes with Issue-25 and the bootstrap administrator with Issue-30.
+- The session cookie is marked `Secure`. Browsers accept that on `http://localhost`; over plain HTTP on any other host name they do not.
+
+See [progress](../product/progress.md) for the full picture.
 
 ## Configuration
 
@@ -91,6 +99,11 @@ Every setting is a command-line flag with an environment variable of the same me
 | `HODOR_OTLP_TRACES_ENDPOINT` | unset | Full URL of the OTLP/HTTP traces endpoint; unset disables export |
 | `HODOR_OTLP_METRICS_ENDPOINT` | unset | Full URL of the OTLP/HTTP metrics endpoint. For VictoriaMetrics: `http://<host>:8428/opentelemetry/v1/metrics` |
 | `HODOR_SHUTDOWN_DRAIN_SECONDS` | `5` | How long to keep serving after a stop signal while readiness fails |
+| `HODOR_PASSWORD_HASH_MEMORY_KIBIBYTES` | `19456` | Memory one password hash uses. Raising it makes every password harder to guess offline; existing passwords are re-hashed as their owners sign in |
+| `HODOR_PASSWORD_HASH_PASSES` | `2` | Passes over that memory |
+| `HODOR_PASSWORD_HASH_LANES` | `1` | Lanes computed in parallel within one hash |
+| `HODOR_PASSWORD_HASH_CONCURRENCY` | one per processor core | Password hashes computed at the same time. The memory the server needs for hashing is this number times the memory of one hash |
+| `HODOR_PASSWORD_HASH_QUEUE` | four times the concurrency | Requests allowed to wait for a hash. One more is answered "busy, try again" |
 
 ### `hodor-worker`
 

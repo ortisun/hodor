@@ -60,7 +60,7 @@ flowchart TB
 | Shutdown | On SIGTERM: fail readiness, wait for the load balancer, drain in-flight requests, stop; workers finish or release the current job |
 | Network policy | Ingress to `:8080` only from the gateway; `:9090` only from monitoring; Open Policy Agent reachable only on localhost; egress restricted to database, Redis, key management service, collector and an egress proxy for identity providers and webhooks |
 | Pod security | Non-root, no privilege escalation, all capabilities dropped, read-only filesystem, seccomp default |
-| Resources | Memory limit sized for Argon2 concurrency: the hashing semaphore times the memory cost must fit under the limit |
+| Resources | Memory limit sized for password hashing: `HODOR_PASSWORD_HASH_CONCURRENCY` times `HODOR_PASSWORD_HASH_MEMORY_KIBIBYTES` must fit under the limit, with room for the rest of the server. With the defaults on 4 cores that is 4 × 19 MiB |
 
 ## The worker
 
