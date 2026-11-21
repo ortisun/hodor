@@ -295,6 +295,12 @@ impl AccountService {
             .set_password(tenant, user.id(), new, false, caller)
             .await?;
 
+        // A person who asked several times and then finished starts again
+        // from nothing.
+        self.guard
+            .succeeded(tenant, self.asking_key("registration", &email))
+            .await?;
+
         let mut uow = self.units_of_work.begin(tenant).await?;
         self.record(
             uow.as_mut(),
@@ -442,6 +448,10 @@ impl AccountService {
                 .await?;
         }
 
+        self.guard
+            .succeeded(tenant, self.asking_key("recovery", email))
+            .await?;
+
         let now = self.clock.now();
         let mut uow = self.units_of_work.begin(tenant).await?;
         let variables = [("tenant_name", settings.display_name.clone())];
@@ -479,20 +489,27 @@ impl AccountService {
     ) -> Result<(), DomainError> {
         // Different spellings of one address share a count. Something that
         // is not an address is counted by what was typed.
-        let counted = NormalizedIdentifier::parse(IdentifierKind::Email, request.email)
-            .map_or_else(
-                |_| format!("{scope}:malformed:{}", request.email.trim().to_lowercase()),
-                |email| format!("{scope}:{}", email.normalized()),
-            );
+        let key = NormalizedIdentifier::parse(IdentifierKind::Email, request.email).map_or_else(
+            |_| {
+                let counted = format!("{scope}:malformed:{}", request.email.trim().to_lowercase());
+                self.digest.sha256(counted.as_bytes())
+            },
+            |email| self.asking_key(scope, email.normalized()),
+        );
         self.guard
             .admit(
                 tenant,
                 &lockout_rules(settings),
-                self.digest.sha256(counted.as_bytes()),
+                key,
                 request.address,
                 caller,
             )
             .await
+    }
+
+    /// What requests about a normalized address are counted by.
+    fn asking_key(&self, scope: &str, email: &str) -> [u8; 32] {
+        self.digest.sha256(format!("{scope}:{email}").as_bytes())
     }
 
     fn hash_of(&self, token: &str) -> Result<VerificationTokenHash, DomainError> {

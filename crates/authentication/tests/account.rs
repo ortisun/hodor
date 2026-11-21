@@ -729,3 +729,27 @@ async fn nothing_announced_contains_an_address_a_token_or_a_password() {
         assert!(!announced.contains(secret), "{announced}");
     }
 }
+
+#[tokio::test]
+async fn finishing_clears_the_count_of_how_often_the_address_was_asked_about() {
+    let world = world().await;
+    world.register("ana@example.com").await;
+    for _ in 0..5 {
+        world
+            .ask_to_recover("ana@example.com")
+            .await
+            .expect("admitted");
+    }
+    assert!(world.ask_to_recover("ana@example.com").await.is_err());
+
+    // The newest link still works, and using it clears the count.
+    world
+        .reset(&token_in(&world.last_message()), NEW_PASSWORD)
+        .await
+        .expect("reset");
+
+    world
+        .ask_to_recover("ana@example.com")
+        .await
+        .expect("counted from nothing again");
+}
