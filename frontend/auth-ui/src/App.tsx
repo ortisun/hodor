@@ -7,6 +7,7 @@ import { ComingBackPage } from "./pages/ComingBackPage";
 import { FinishPage } from "./pages/FinishPage";
 import { SignInPage } from "./pages/SignInPage";
 import { Frame } from "./parts/Frame";
+import { PageLink, Ways, Words } from "./parts/Words";
 
 export interface AppProps {
   place: Place;
@@ -46,12 +47,12 @@ export function App({ place, client, text, notice, token, go, leave, providerAns
     default:
       return (
         <Frame tenant={tenant} title={text.pageNotFoundTitle} text={text}>
-          <p className="auth-text">{text.pageNotFound}</p>
-          <ul className="auth-links">
+          <Words>{text.pageNotFound}</Words>
+          <Ways>
             <li>
-              <a href={pathOf(tenant, "sign-in")}>{text.goToSignIn}</a>
+              <PageLink href={pathOf(tenant, "sign-in")}>{text.goToSignIn}</PageLink>
             </li>
-          </ul>
+          </Ways>
         </Frame>
       );
   }

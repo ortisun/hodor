@@ -44,7 +44,7 @@ Start with the [critical review](architecture/critical-review.md): it lists wher
 | 27 | Decision records | [decisions/](decisions/README.md) |
 | 28 | Product Roadmap | [product/roadmap.md](product/roadmap.md) |
 | 29 | Epics and Development Issues | [product/epics.md](product/epics.md) |
-| — | Design system: foundations, components and security interaction patterns | [design/design-system.md](design/design-system.md) |
+| — | Design system: Astryx, the Hodor theme and the security interaction patterns | [design/design-system.md](design/design-system.md) |
 | — | The control plane: admin console information architecture and self-protection | [design/control-plane.md](design/control-plane.md) |
 | — | Competitive analysis: features and consoles compared with comparable products | [product/competitive-analysis.md](product/competitive-analysis.md) |
 | — | Critical architecture review | [architecture/critical-review.md](architecture/critical-review.md) |

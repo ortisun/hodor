@@ -1,6 +1,6 @@
 # Decision 0016: One token-based design system for the three frontends, with security patterns built in
 
-Status: Proposed
+Status: Proposed. [Decision 0018](0018-astryx-component-foundation.md) changes how the design system is built: its foundations and components come from Astryx, and the hand-written style sheets are removed. Everything else on this page stands.
 
 ## Context
 
