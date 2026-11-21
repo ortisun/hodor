@@ -45,6 +45,8 @@ Start with the [critical review](architecture/critical-review.md): it lists wher
 | 29 | Epics and Development Issues | [product/epics.md](product/epics.md) |
 | — | Design system: Astryx, the Hodor theme and the security interaction patterns | [design/design-system.md](design/design-system.md) |
 | — | The control plane: admin console information architecture and self-protection | [design/control-plane.md](design/control-plane.md) |
+| — | The admin console: what is built of the control plane, and how | [architecture/admin-console.md](architecture/admin-console.md) |
+| — | The console interface: what the admin console calls | [api/console-interface.md](api/console-interface.md) |
 | — | Competitive analysis: features and consoles compared with comparable products | [product/competitive-analysis.md](product/competitive-analysis.md) |
 | — | Critical architecture review | [architecture/critical-review.md](architecture/critical-review.md) |
 | — | First milestone | [product/epics.md](product/epics.md#milestone-1-walking-skeleton) |

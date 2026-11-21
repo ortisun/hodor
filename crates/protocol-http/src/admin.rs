@@ -1,12 +1,21 @@
 //! The administration interface: users, sessions and the audit log of a
 //! tenant, for the people who run it.
 //!
-//! Specified in `docs/api/admin-api.md`. Every request is checked before
+//! The same routes are served twice. The administration interface, for
+//! programs, knows who is asking by an access token; the console
+//! interface, for the admin console, by the person's session. The
+//! handlers and the table of permissions are the same for both.
+//!
+//! Specified in `docs/api/admin-api.md` and `docs/api/console-interface.md`.
+//! Every request is checked before
 //! anything else: the access token, whether its user may sign in, and
 //! whether the user holds a role with the permission the route needs. A
 //! request that is refused learns nothing about what it asked for, which
 //! is why bodies and queries are read only after the check.
 
+use crate::interaction::{
+    CSRF_HEADER, SESSION_COOKIE, cookie, csrf_token, refuse_other_origins, same,
+};
 use crate::problem::Problem;
 use axum::body::Bytes;
 use axum::extract::{RawPathParams, RawQuery, State};
@@ -14,17 +23,19 @@ use axum::http::StatusCode;
 use axum::http::header::{self, HeaderMap, HeaderValue};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get};
-use axum::{Extension, Json, Router};
+use axum::{Extension, Json, Router, middleware};
 use hodor_audit::api::{AuditRecord, AuditService};
 use hodor_authorization::api::{AuthorizationService, Permission};
 use hodor_credential::api::AccessTokenService;
 use hodor_identity::api::{CreateUser, IdentifierKind, IdentityService, Profile, User, UserKind};
 use hodor_kernel::{
-    Actor, Caller, CorrelationId, Cursor, DomainError, Page, PageRequest, TenantContext, UserId,
+    Actor, Caller, Clock, CorrelationId, Cursor, Digest, DomainError, Page, PageRequest,
+    TenantContext, UserId,
 };
 use hodor_session::api::{Session, SessionId, SessionService};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use time::format_description::well_known::Rfc3339;
 
 /// The OpenAPI document of the interface, as served at `/openapi.json`.
@@ -63,17 +74,59 @@ pub struct AdminState {
     pub audit: AuditService,
 }
 
+/// What the console interface needs on top of the administration
+/// interface: it recognizes a person by their session.
+#[derive(Clone)]
+pub struct ConsoleState {
+    /// Everything the shared handlers need.
+    pub administration: AdminState,
+    /// For deriving the CSRF token from a session's token.
+    pub digest: Arc<dyn Digest>,
+    /// For telling how old a sign-in is.
+    pub clock: Arc<dyn Clock>,
+}
+
+impl std::fmt::Debug for ConsoleState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConsoleState").finish_non_exhaustive()
+    }
+}
+
+/// How long after a sign-in the console interface still answers for it,
+/// whatever the tenant allows its users.
+pub const CONSOLE_SESSION_HOURS: i64 = 12;
+
+/// How the console interface knows who is asking.
+#[derive(Clone)]
+struct BySession {
+    digest: Arc<dyn Digest>,
+    clock: Arc<dyn Clock>,
+}
+
+/// The state of the handlers: the same for both interfaces, with the way
+/// the console interface recognizes a person when it is the one mounted.
+#[derive(Clone)]
+struct Shared {
+    administration: AdminState,
+    by_session: Option<BySession>,
+}
+
+impl std::ops::Deref for Shared {
+    type Target = AdminState;
+
+    fn deref(&self) -> &AdminState {
+        &self.administration
+    }
+}
+
 impl std::fmt::Debug for AdminState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AdminState").finish_non_exhaustive()
     }
 }
 
-/// The routes of the administration interface, to be mounted under a
-/// tenant at `/api/v1/admin`.
-pub fn admin_routes(state: AdminState) -> Router {
+fn shared_routes() -> Router<Shared> {
     Router::new()
-        .route("/openapi.json", get(openapi))
         .route("/users", get(list_users).post(create_user))
         // `POST /users/{user_id}:suspend` arrives here as well: the action
         // is part of the last segment.
@@ -81,7 +134,34 @@ pub fn admin_routes(state: AdminState) -> Router {
         .route("/users/{user}/sessions", get(list_user_sessions))
         .route("/sessions/{session}", delete(revoke_session))
         .route("/audit-records", get(list_audit_records))
-        .with_state(state)
+}
+
+/// The routes of the administration interface, to be mounted under a
+/// tenant at `/api/v1/admin`.
+pub fn admin_routes(state: AdminState) -> Router {
+    shared_routes()
+        .route("/openapi.json", get(openapi))
+        .with_state(Shared {
+            administration: state,
+            by_session: None,
+        })
+}
+
+/// The routes of the console interface, to be mounted under a tenant at
+/// `/console/api`: those of the administration interface, and `/me`.
+pub fn console_routes(state: ConsoleState) -> Router {
+    shared_routes()
+        .route("/me", get(me))
+        // Cookies are sent by the browser whoever asks, so a request that
+        // changes something must come from this origin.
+        .layer(middleware::from_fn(refuse_other_origins))
+        .with_state(Shared {
+            administration: state.administration,
+            by_session: Some(BySession {
+                digest: state.digest,
+                clock: state.clock,
+            }),
+        })
 }
 
 async fn openapi() -> Response {
@@ -140,28 +220,21 @@ fn bearer(headers: &HeaderMap) -> Option<&str> {
 /// what a route needs is written in one place. An operation that is not in
 /// the table is refused.
 async fn authorize(
-    state: &AdminState,
+    state: &Shared,
     tenant: &TenantContext,
     headers: &HeaderMap,
     method: &str,
     path: &str,
 ) -> Result<Caller, Box<Response>> {
-    let token = bearer(headers).ok_or_else(not_authenticated)?;
-    let token = state
-        .tokens
-        .authenticate(tenant, token)
-        .await
-        .map_err(failed)?
-        .ok_or_else(not_authenticated)?;
-    let user_id = token.user_id();
-    match state.identity.get(tenant, user_id).await {
-        Ok(user) if user.may_sign_in() => {}
-        Ok(_) => return Err(not_authenticated()),
-        Err(error) if error.code() == "identity.user_not_found" => {
-            return Err(not_authenticated());
+    let user_id = match &state.by_session {
+        None => by_token(state, tenant, headers).await?,
+        Some(by_session) => {
+            let person = by_session
+                .recognize(state, tenant, headers, method != "GET")
+                .await?;
+            person.session.user_id()
         }
-        Err(error) => return Err(failed(error)),
-    }
+    };
     let permission = ADMIN_OPERATIONS
         .iter()
         .find(|(m, p, _)| *m == method && *p == path)
@@ -179,6 +252,100 @@ async fn authorize(
         actor: Actor::User(user_id),
         correlation_id: CorrelationId::generate(),
     })
+}
+
+/// Who an access token belongs to, if it is good and its user may sign in.
+async fn by_token(
+    state: &AdminState,
+    tenant: &TenantContext,
+    headers: &HeaderMap,
+) -> Result<UserId, Box<Response>> {
+    let token = bearer(headers).ok_or_else(not_authenticated)?;
+    let token = state
+        .tokens
+        .authenticate(tenant, token)
+        .await
+        .map_err(failed)?
+        .ok_or_else(not_authenticated)?;
+    let user_id = token.user_id();
+    match state.identity.get(tenant, user_id).await {
+        Ok(user) if user.may_sign_in() => Ok(user_id),
+        Ok(_) => Err(not_authenticated()),
+        Err(error) if error.code() == "identity.user_not_found" => Err(not_authenticated()),
+        Err(error) => Err(failed(error)),
+    }
+}
+
+/// One answer whatever the reason: no session, an unknown, expired or
+/// ended one, a sign-in too old for the console, or a user who may not
+/// sign in.
+fn console_not_authenticated() -> Box<Response> {
+    problem(
+        StatusCode::UNAUTHORIZED,
+        "console.not_authenticated",
+        "sign in to use the console",
+    )
+}
+
+/// A person the console interface recognized by their session.
+struct Person {
+    session: Session,
+    user: User,
+    csrf_token: String,
+    /// When the console stops answering for this sign-in.
+    console_until: time::OffsetDateTime,
+}
+
+impl BySession {
+    /// Says who a request comes from, by its session cookie. A request
+    /// that changes something must also carry the session's CSRF token.
+    async fn recognize(
+        &self,
+        state: &AdminState,
+        tenant: &TenantContext,
+        headers: &HeaderMap,
+        changes_something: bool,
+    ) -> Result<Person, Box<Response>> {
+        let token = cookie(headers, SESSION_COOKIE).ok_or_else(console_not_authenticated)?;
+        let session = state
+            .sessions
+            .find_by_token(tenant, token)
+            .await
+            .map_err(failed)?
+            .ok_or_else(console_not_authenticated)?;
+        let limit = session.snapshot().signed_in_at + time::Duration::hours(CONSOLE_SESSION_HOURS);
+        if self.clock.now() >= limit {
+            return Err(console_not_authenticated());
+        }
+        let user = match state.identity.get(tenant, session.user_id()).await {
+            Ok(user) if user.may_sign_in() => user,
+            Ok(_) => return Err(console_not_authenticated()),
+            Err(error) if error.code() == "identity.user_not_found" => {
+                return Err(console_not_authenticated());
+            }
+            Err(error) => return Err(failed(error)),
+        };
+        let csrf_token = csrf_token(self.digest.as_ref(), token);
+        if changes_something {
+            let presented = headers
+                .get(CSRF_HEADER)
+                .and_then(|value| value.to_str().ok());
+            if !presented.is_some_and(|presented| same(presented, &csrf_token)) {
+                return Err(problem(
+                    StatusCode::FORBIDDEN,
+                    "request.csrf_token_invalid",
+                    "the request is missing its CSRF token, or the token is wrong",
+                ));
+            }
+        }
+        let console_until = limit.min(session.expires_at());
+        Ok(Person {
+            session,
+            user,
+            csrf_token,
+            console_until,
+        })
+    }
 }
 
 fn invalid_body() -> Box<Response> {
@@ -377,6 +544,54 @@ struct SuspensionBody {
     reason: String,
 }
 
+#[derive(Debug, Serialize)]
+struct MeBody {
+    user: UserBody,
+    roles: Vec<&'static str>,
+    permissions: Vec<&'static str>,
+    signed_in_at: String,
+    console_until: String,
+    csrf_token: String,
+}
+
+/// `GET /me`, on the console interface only: who the person is and what
+/// they may do. It needs a session and no permission, so that the console
+/// can tell a person without a role that they have no access.
+async fn me(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+) -> Response {
+    respond(
+        async {
+            let by_session = state.by_session.as_ref().ok_or_else(forbidden)?;
+            let person = by_session
+                .recognize(&state, &tenant, &headers, false)
+                .await?;
+            let roles = state
+                .authorization
+                .roles_of(&tenant, person.user.id())
+                .await
+                .map_err(failed)?;
+            let permissions = Permission::ALL
+                .into_iter()
+                .filter(|permission| roles.iter().any(|role| role.allows(*permission)))
+                .map(Permission::as_str)
+                .collect();
+            Ok(Json(MeBody {
+                user: UserBody::from(&person.user),
+                roles: roles.iter().map(|role| role.as_str()).collect(),
+                permissions,
+                signed_in_at: written(person.session.snapshot().signed_in_at),
+                console_until: written(person.console_until),
+                csrf_token: person.csrf_token,
+            })
+            .into_response())
+        }
+        .await,
+    )
+}
+
 /// Turns the two-step shape of every handler, check and then act, into
 /// one response.
 fn respond(result: Result<Response, Box<Response>>) -> Response {
@@ -384,7 +599,7 @@ fn respond(result: Result<Response, Box<Response>>) -> Response {
 }
 
 async fn create_user(
-    State(state): State<AdminState>,
+    State(state): State<Shared>,
     Extension(tenant): Extension<TenantContext>,
     headers: HeaderMap,
     bytes: Bytes,
@@ -417,7 +632,7 @@ async fn create_user(
 }
 
 async fn list_users(
-    State(state): State<AdminState>,
+    State(state): State<Shared>,
     Extension(tenant): Extension<TenantContext>,
     headers: HeaderMap,
     RawQuery(query): RawQuery,
@@ -435,7 +650,7 @@ async fn list_users(
 }
 
 async fn get_user(
-    State(state): State<AdminState>,
+    State(state): State<Shared>,
     Extension(tenant): Extension<TenantContext>,
     headers: HeaderMap,
     parameters: RawPathParams,
@@ -454,7 +669,7 @@ async fn get_user(
 /// `POST /users/{user_id}:suspend`. The action is part of the last
 /// segment of the path; no other action exists yet.
 async fn user_action(
-    State(state): State<AdminState>,
+    State(state): State<Shared>,
     Extension(tenant): Extension<TenantContext>,
     headers: HeaderMap,
     parameters: RawPathParams,
@@ -492,7 +707,7 @@ async fn user_action(
 }
 
 async fn list_user_sessions(
-    State(state): State<AdminState>,
+    State(state): State<Shared>,
     Extension(tenant): Extension<TenantContext>,
     headers: HeaderMap,
     parameters: RawPathParams,
@@ -526,7 +741,7 @@ async fn list_user_sessions(
 }
 
 async fn revoke_session(
-    State(state): State<AdminState>,
+    State(state): State<Shared>,
     Extension(tenant): Extension<TenantContext>,
     headers: HeaderMap,
     parameters: RawPathParams,
@@ -560,7 +775,7 @@ async fn revoke_session(
 }
 
 async fn list_audit_records(
-    State(state): State<AdminState>,
+    State(state): State<Shared>,
     Extension(tenant): Extension<TenantContext>,
     headers: HeaderMap,
     RawQuery(query): RawQuery,

@@ -164,6 +164,21 @@ Planned in [the epics](epics.md#milestone-2-signing-in-with-external-identities)
 | Issue-48 SAML service provider | Not started | — |
 | Issue-49 SAML in the pages, the administration interface and the demonstration | Not started | — |
 
+## Admin console
+
+The first part of Epic 12, built ahead of Phase 2 on what the server can answer today ([Decision 0019](../decisions/0019-console-on-the-hodor-session.md)). What it lacks is listed in [the admin console](../architecture/admin-console.md#what-is-not-built-yet).
+
+| Piece | Status | What exists |
+|---|---|---|
+| Console interface | Done | `/t/{slug}/console/api`: the routes of the administration interface, recognized by the person's session, with the CSRF token, the origin check and a 12-hour limit on the sign-in, and `GET /me`. 11 tests over HTTP |
+| Frame | Done | Scope bar with tenant, roles and the end of the console session; navigation by permission; command palette; light and dark modes; English and Brazilian Portuguese |
+| Users | Done | The list a page at a time, create, one user with identifiers and sessions, suspend (level 2), end a session (level 1) |
+| Audit records | Done | The list a page at a time, and one record whole with its hashes |
+| Serving | Done | `HODOR_CONSOLE_DIRECTORY`; built into the image; same Content Security Policy as the hosted pages |
+| Checked by hand | Done once | Against the development stack in Chromium: signed in, listed users, created and suspended one, read the audit log, with no refusal by the policy |
+| Browser tests against a running stack | Not started | — |
+| Sign-in by OpenID Connect, idle timeout for administrators, step-up, the other screens | Not started | Phase 2 and later |
+
 ## Design system
 
 Specified in [the design system](../design/design-system.md) and [the control plane](../design/control-plane.md), outside the milestone plan. Its foundations and components are Astryx's ([Decision 0018](../decisions/0018-astryx-component-foundation.md)); Hodor's own components, the security interaction patterns, are built with the admin console (Epic 12).
@@ -177,7 +192,7 @@ Specified in [the design system](../design/design-system.md) and [the control pl
 | Earlier static design system | Removed | The hand-written `tokens.css`, `components.css` and `shell.css` are deleted |
 | Showcase | Done, on Astryx | A small application in `frontend/design-system/showcase/`, built on Astryx with the Hodor theme: the security posture screen with working level 2 and level 3 confirmations, step-up, secret reveal and command palette, plus a gallery of foundations and components. Sample data, no server |
 | Fonts | Done for the hosted pages | IBM Plex Sans is bundled with `auth-ui` from the `@fontsource/ibm-plex-sans` package and served by `hodor-server`. The showcase bundles its fonts the same way |
-| Hodor's components (the security patterns) and action catalog | Not started | Epic 12 |
+| Hodor's components (the security patterns) and action catalog | Started | The confirmations of the dangerous action ladder, the identifier and the action catalog exist in the [admin console](../architecture/admin-console.md); the rest arrives with the screens that need it |
 | A smaller style sheet for the hosted pages | Not started | Only the components in use, built with `@astryxdesign/build` |
 | Contrast checks of the theme | Not started | Planned with Hodor's components. The hosted pages are measured by the accessibility checker of the browser tests, which found and fixed one pair: text on the accent in the light theme |
 

@@ -294,10 +294,10 @@ The frontends conform to Web Content Accessibility Guidelines 2.2 level AA (Requ
 |---|---|---|
 | Foundations and components | The packages `@astryxdesign/core` and `@astryxdesign/cli`, at one exact version | Astryx: the compiled style sheets `reset.css` and `astryx.css`, and the React components |
 | The Hodor theme | `frontend/auth-ui/src/themes/hodor/` | `hodorTheme.ts` is the source, written by hand. `npm run theme` compiles it into `hodor.css` and `hodor.js` beside it, which are committed and are what a frontend loads |
-| Hodor's own components | Built with the admin console (Epic 12) | The security interaction patterns of [section 6](#6-security-interaction-patterns) |
+| Hodor's own components | `frontend/admin-console/src/parts/` | The security interaction patterns of [section 6](#6-security-interaction-patterns), built as the [admin console](../architecture/admin-console.md) needs them: so far the confirmations of the dangerous action ladder and the identifier |
 | The showcase | `frontend/design-system/showcase/` | A small application, never shipped, built on Astryx with the Hodor theme: the security posture screen of the control plane with working confirmations of the dangerous action ladder, step-up, secret reveal and command palette, and a gallery of the foundations and components. It is where Hodor's own components are first drawn, before the admin console builds them for real |
 
-The theme lives with the hosted pages because they are the only frontend built so far; the showcase reads it from there. It moves to a place of its own, shared by the three frontends, when the second one is started.
+The theme lives with the hosted pages, where it was first built; the admin console and the showcase read the compiled theme from there. Moving it to a place of its own, shared by the frontends, is not done yet.
 
 The showcase is run from its folder with `npm ci` and `npm run dev`. It opens in the dark mode, the default of the admin console, and switches to the light one from its top bar.
 

@@ -1,0 +1,148 @@
+// The copy of the console in English. Words are written in full, buttons
+// are verbs that name the result (docs/design/design-system.md, section 9).
+
+export const en = {
+  locale: "en",
+
+  product: "Hodor",
+  console: "Admin console",
+  loading: "Loading…",
+  scope: "Scope",
+  navigation: "Main",
+  tenant: "Tenant",
+
+  // Who may be here
+  noAccessTitle: "This account has no access to the console",
+  noAccess: (tenant: string) =>
+    `You are signed in, and your account holds no role in the tenant ${tenant}. Ask an administrator of the tenant for one.`,
+  goToAccount: "Go to your account",
+  notFoundTitle: "This screen does not exist",
+  notFound: "The address names no screen of the console.",
+  goToStart: "Go to the start of the console",
+
+  // Frame
+  roles: { tenant_administrator: "Tenant administrator", tenant_auditor: "Tenant auditor" } as Record<string, string>,
+  sessionUntil: (time: string) => `Console session until ${time}`,
+  sessionUntilHint: "The console asks you to sign in again 12 hours after you signed in.",
+  searchOrRun: "Search or run a command",
+  paletteHint: "Go to a screen, or paste a user identifier",
+  goTo: (screen: string) => `Go to ${screen}`,
+  openUser: (id: string) => `Open user ${id}`,
+  switchToLight: "Switch to light mode",
+  switchToDark: "Switch to dark mode",
+  signOut: "Sign out",
+  signedInAs: (name: string) => `Signed in as ${name}`,
+
+  // Navigation
+  directory: "Directory",
+  users: "Users",
+  audit: "Audit",
+  auditRecords: "Audit records",
+
+  // Failures
+  unreachable: "The server could not be reached. Check your connection and try again.",
+  forbidden: "Your account may not do this.",
+  somethingWrong: "Something went wrong. Try again.",
+  requestIdentifier: (id: string) => `Request ${id}`,
+  tryAgain: "Try again",
+  loadMore: "Load more",
+
+  // Users
+  usersLead: "The people and programs of this tenant, oldest first.",
+  createUser: "Create user",
+  noUsers: "No users yet",
+  noUsersHint: "People appear here when they register or when an administrator creates them.",
+  columnUser: "User",
+  columnStatus: "Status",
+  columnIdentifiers: "Identifiers",
+  columnCreated: "Created",
+  unnamed: "No name",
+  status: {
+    active: "Active",
+    suspended: "Suspended",
+    pending: "Pending",
+    deactivated: "Deactivated",
+    deleted: "Deleted",
+  } as Record<string, string>,
+  kinds: { human: "Person", service_account: "Service account", agent: "Agent" } as Record<string, string>,
+  verified: "Verified",
+  notVerified: "Not verified",
+  primary: "Primary",
+
+  createUserTitle: "Create a user",
+  createUserLead:
+    "The user is created without a password. They choose one by recovering it on the sign-in page, which also verifies the address.",
+  emailLabel: "Email address",
+  displayNameLabel: "Name",
+  optional: "optional",
+  cancel: "Cancel",
+  userCreated: (address: string) => `User ${address} created.`,
+  identifierTaken: "This address already has an account in this tenant.",
+  emailInvalid: "This is not an email address the server accepts.",
+
+  // One user
+  userTitle: "User",
+  userNotFound: "This user does not exist in this tenant.",
+  backToUsers: "Back to users",
+  profile: "Profile",
+  identifierLabel: "Identifier",
+  kind: "Kind",
+  language: "Language",
+  created: "Created",
+  changed: "Last changed",
+  suspendedBecause: (reason: string) => `Suspended: ${reason}`,
+  copyIdentifier: "Copy identifier",
+  copied: "Copied",
+  identifiers: "Identifiers",
+  sessions: "Active sessions",
+  noSessions: "No active sessions",
+  noSessionsHint: "This user is not signed in anywhere.",
+  columnDevice: "Device",
+  columnAddress: "Address",
+  columnStarted: "Signed in",
+  columnLastActivity: "Last activity",
+  unknownDevice: "Unknown device",
+  endSession: "End session",
+
+  suspendUser: "Suspend user",
+  suspendTitle: (who: string) => `Suspend ${who}`,
+  suspendConsequenceSignIn: "Can sign in",
+  suspendConsequenceSignInValue: "No longer",
+  suspendConsequenceSessions: "Active sessions ended",
+  suspendConsequenceUndo: "Can be undone from the console",
+  suspendConsequenceUndoValue: "Not yet",
+  reasonLabel: "Reason",
+  reasonHint: "Recorded in the audit log with your name.",
+  userSuspended: (who: string) => `${who} suspended.`,
+  notActive: "This user is not active, so there is nothing to suspend.",
+
+  endSessionTitle: "End this session",
+  endSessionLead: (device: string) => `${device} must sign in again. Other sessions of the user are not touched.`,
+  sessionEnded: "Session ended.",
+
+  // Ladder
+  level: (level: number) => `Level ${level}`,
+  levelFriction: ["no confirmation", "confirm the consequence", "type to confirm"] as readonly string[],
+  typeToConfirm: (name: string) => `Type ${name} to confirm`,
+
+  // Audit
+  auditLead: "Everything that happened in this tenant, in the order it was recorded, oldest first.",
+  noRecords: "No audit records yet",
+  noRecordsHint: "Records appear a moment after something happens.",
+  columnSequence: "Number",
+  columnAction: "Action",
+  columnActor: "Actor",
+  columnOccurred: "Happened",
+  actorSystem: "Hodor",
+  actorAnonymous: "Nobody signed in",
+  viewRecord: "View record",
+  recordTitle: (sequence: number) => `Audit record ${sequence}`,
+  recorded: "Recorded",
+  correlation: "Correlation",
+  details: "Details",
+  previousHash: "Hash of the record before",
+  hash: "Hash of this record",
+  close: "Close",
+};
+
+export type Messages = typeof en;

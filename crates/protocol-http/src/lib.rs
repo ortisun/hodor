@@ -18,10 +18,16 @@ mod request;
 mod server;
 mod tenant;
 
-pub use admin::{ADMIN_OPENAPI, ADMIN_OPERATIONS, AdminState, admin_routes};
+pub use admin::{
+    ADMIN_OPENAPI, ADMIN_OPERATIONS, AdminState, CONSOLE_SESSION_HOURS, ConsoleState, admin_routes,
+    console_routes,
+};
 pub use health::{Health, ReadinessCheck, ops_router};
 pub use interaction::{InteractionState, interaction_routes};
-pub use pages::{PAGE_ASSETS_PATH, PAGE_PATHS, PAGES_CONTENT_SECURITY_POLICY, Pages};
+pub use pages::{
+    CONSOLE_ASSETS_PATH, CONSOLE_PATHS, PAGE_ASSETS_PATH, PAGE_PATHS,
+    PAGES_CONTENT_SECURITY_POLICY, Pages,
+};
 pub use problem::Problem;
 pub use request::ClientAddress;
 pub use server::{Limits, public_router, serve};

@@ -129,6 +129,7 @@ Every setting is a command-line flag with an environment variable of the same me
 | `HODOR_SHUTDOWN_DRAIN_SECONDS` | `5` | How long to keep serving after a stop signal while readiness fails |
 | `HODOR_PUBLIC_URL` | `http://localhost:8080` | The address people reach this installation at, without a path. Links in messages start with it |
 | `HODOR_PAGES_DIRECTORY` | unset; the image sets `/usr/share/hodor/auth-ui` | The directory holding the built [hosted pages](../architecture/hosted-pages.md#how-the-pages-are-served). Unset: no pages are served. Set to a directory without `index.html`: the server does not start |
+| `HODOR_CONSOLE_DIRECTORY` | unset; the image sets `/usr/share/hodor/admin-console` | The directory holding the built [admin console](../architecture/admin-console.md#how-it-is-served). Unset: no console page is served; the console interface is still answered. Set to a directory without `index.html`: the server does not start |
 | `HODOR_PASSWORD_HASH_MEMORY_KIBIBYTES` | `19456` | Memory one password hash uses. Raising it makes every password harder to guess offline; existing passwords are re-hashed as their owners sign in |
 | `HODOR_PASSWORD_HASH_PASSES` | `2` | Passes over that memory |
 | `HODOR_PASSWORD_HASH_LANES` | `1` | Lanes computed in parallel within one hash |

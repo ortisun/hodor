@@ -1,0 +1,86 @@
+// What the unit tests share: a server that answers from a script, and
+// the things it answers with.
+
+import { Client } from "./client";
+
+export interface Sent {
+  method: string;
+  /** The path under the tenant, such as `/console/api/users?limit=50`. */
+  path: string;
+  body: unknown;
+  csrfToken: string | null;
+}
+
+type Answer = Response | (() => Response);
+
+export function json(status: number, body: unknown): Response {
+  return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+}
+
+/** A problem document, as the server writes them. */
+export function problem(status: number, code: string): Response {
+  return json(status, { type: `urn:hodor:error:${code}`, status, code, detail: "from the server", request_id: "request-1" });
+}
+
+export function empty(status: number): Response {
+  return new Response(null, { status });
+}
+
+/**
+ * A client of the tenant `acme` whose requests are answered from `script`:
+ * for each `METHOD path`, the answers to give, in order. A request with no
+ * answer left fails the test.
+ */
+export function scripted(script: Record<string, Answer[]>) {
+  const sent: Sent[] = [];
+  const fetch: typeof globalThis.fetch = async (input, init) => {
+    const url = typeof input === "string" ? input : input.toString();
+    const method = init?.method ?? "GET";
+    const path = url.replace("/t/acme", "");
+    sent.push({
+      method,
+      path,
+      body: typeof init?.body === "string" ? JSON.parse(init.body) : null,
+      csrfToken: new Headers(init?.headers).get("X-CSRF-Token"),
+    });
+    const answer = script[`${method} ${path}`]?.shift();
+    if (answer === undefined) {
+      throw new Error(`unexpected request: ${method} ${path}`);
+    }
+    return typeof answer === "function" ? answer() : answer;
+  };
+  return { client: new Client("acme", fetch), sent };
+}
+
+export const ANA = "0193f1c2-0000-7000-8000-000000000001";
+export const BIA = "0193f1c2-0000-7000-8000-000000000002";
+
+/** A user, as the console interface writes one. */
+export function userBody(id: string, email: string, more: Record<string, unknown> = {}) {
+  return {
+    id,
+    kind: "human",
+    status: "active",
+    status_reason: null,
+    display_name: null,
+    locale: null,
+    identifiers: [{ id: `${id.slice(0, -1)}f`, kind: "email", value: email, verified: true, primary: true }],
+    created_at: "2026-11-20T14:03:11Z",
+    updated_at: "2026-11-20T14:03:11Z",
+    ...more,
+  };
+}
+
+const EVERYTHING = ["audit:read", "sessions:read", "sessions:revoke", "users:read", "users:write"];
+
+/** The answer of `/me` for Ana, an administrator unless told otherwise. */
+export function meBody(permissions: string[] = EVERYTHING, roles: string[] = ["tenant_administrator"]) {
+  return {
+    user: userBody(ANA, "ana@example.com"),
+    roles,
+    permissions,
+    signed_in_at: "2026-11-21T14:03:11Z",
+    console_until: "2026-11-22T02:03:11Z",
+    csrf_token: "token-of-the-session",
+  };
+}

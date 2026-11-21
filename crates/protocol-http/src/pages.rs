@@ -1,5 +1,6 @@
-//! The hosted pages: one application of static files, built elsewhere and
-//! served from a directory. See `docs/architecture/hosted-pages.md`.
+//! Applications of static files, built elsewhere and served from a
+//! directory: the hosted pages (`docs/architecture/hosted-pages.md`) and
+//! the admin console (`docs/architecture/admin-console.md`).
 //!
 //! The same `index.html` answers for every page of every tenant; the
 //! application reads the tenant and the page from the address. Its other
@@ -30,8 +31,20 @@ pub const PAGE_PATHS: &[&str] = &[
     "/account/reset-password",
 ];
 
-/// Where the files of the application are served, outside any tenant.
+/// Where the files of the hosted pages are served, outside any tenant.
 pub const PAGE_ASSETS_PATH: &str = "/auth-ui/assets";
+
+/// The paths, under `/t/{slug}`, that are answered with the admin console.
+/// Each is a screen the console has.
+pub const CONSOLE_PATHS: &[&str] = &[
+    "/console",
+    "/console/users",
+    "/console/users/{user}",
+    "/console/audit",
+];
+
+/// Where the files of the admin console are served, outside any tenant.
+pub const CONSOLE_ASSETS_PATH: &str = "/admin-console/assets";
 
 /// The policy sent with the page. Everything the page loads comes from
 /// files served by this server; no inline script or style, no `eval`, and
@@ -56,17 +69,38 @@ const ASSET_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
 pub struct Pages {
     index: Arc<str>,
     assets: PathBuf,
+    paths: &'static [&'static str],
+    assets_path: &'static str,
 }
 
 impl Pages {
-    /// Reads the application from `directory`: its `index.html`, kept in
-    /// memory, and the place of its other files, `assets`.
+    /// Reads the hosted pages from `directory`: their `index.html`, kept
+    /// in memory, and the place of their other files, `assets`.
     ///
     /// # Errors
     ///
     /// Returns an error naming the directory if `index.html` cannot be
     /// read from it.
     pub fn load(directory: &Path) -> io::Result<Self> {
+        Self::read(directory, PAGE_PATHS, PAGE_ASSETS_PATH)
+    }
+
+    /// Reads the admin console from `directory`, as [`Pages::load`] reads
+    /// the hosted pages.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error naming the directory if `index.html` cannot be
+    /// read from it.
+    pub fn load_console(directory: &Path) -> io::Result<Self> {
+        Self::read(directory, CONSOLE_PATHS, CONSOLE_ASSETS_PATH)
+    }
+
+    fn read(
+        directory: &Path,
+        paths: &'static [&'static str],
+        assets_path: &'static str,
+    ) -> io::Result<Self> {
         let index = std::fs::read_to_string(directory.join("index.html")).map_err(|error| {
             io::Error::new(
                 error.kind(),
@@ -79,13 +113,15 @@ impl Pages {
         Ok(Self {
             index: index.into(),
             assets: directory.join("assets"),
+            paths,
+            assets_path,
         })
     }
 
     /// The routes of the pages, to be mounted under `/t/{slug}`.
     pub fn page_routes(&self) -> Router {
         let mut router = Router::new();
-        for path in PAGE_PATHS {
+        for path in self.paths {
             router = router.route(path, get(page));
         }
         router.with_state(self.index.clone())
@@ -97,7 +133,7 @@ impl Pages {
         // its own; `ServeDir` refuses paths that climb out of it.
         let files = ServeDir::new(&self.assets).append_index_html_on_directories(false);
         Router::new()
-            .nest_service(PAGE_ASSETS_PATH, files)
+            .nest_service(self.assets_path, files)
             .layer(middleware::from_fn(asset_answer))
     }
 }

@@ -27,8 +27,8 @@ use std::sync::Arc;
 use time::format_description::well_known::Rfc3339;
 
 const SIGN_IN_COOKIE: &str = "__Secure-hodor_signin";
-const SESSION_COOKIE: &str = "__Secure-hodor_session";
-const CSRF_HEADER: HeaderName = HeaderName::from_static("x-csrf-token");
+pub(crate) const SESSION_COOKIE: &str = "__Secure-hodor_session";
+pub(crate) const CSRF_HEADER: HeaderName = HeaderName::from_static("x-csrf-token");
 /// A sign-in lasts ten minutes; so does its cookie.
 const SIGN_IN_COOKIE_SECONDS: i64 = 600;
 
@@ -181,7 +181,7 @@ fn no_sign_in() -> Response {
     .into_response()
 }
 
-fn cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+pub(crate) fn cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     headers
         .get_all(header::COOKIE)
         .iter()
@@ -200,7 +200,7 @@ fn handle(headers: &HeaderMap) -> Option<Handle> {
     })
 }
 
-fn csrf_token(digest: &dyn Digest, secret: &str) -> String {
+pub(crate) fn csrf_token(digest: &dyn Digest, secret: &str) -> String {
     let mut input = b"csrf:".to_vec();
     input.extend_from_slice(secret.as_bytes());
     digest
@@ -212,7 +212,7 @@ fn csrf_token(digest: &dyn Digest, secret: &str) -> String {
 
 /// Compares without stopping at the first difference, so that the time
 /// taken does not reveal how much of a guess was right.
-fn same(a: &str, b: &str) -> bool {
+pub(crate) fn same(a: &str, b: &str) -> bool {
     a.len() == b.len()
         && a.bytes()
             .zip(b.bytes())
@@ -321,7 +321,7 @@ fn respond(
 /// Browsers send `Origin` on such requests. When it is present it must be
 /// this server's own; when it is absent the request did not come from a
 /// page of another site, and the other protections apply.
-async fn refuse_other_origins(request: Request, next: Next) -> Response {
+pub(crate) async fn refuse_other_origins(request: Request, next: Next) -> Response {
     let changes_something = !matches!(
         *request.method(),
         Method::GET | Method::HEAD | Method::OPTIONS
