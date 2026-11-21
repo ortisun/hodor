@@ -299,7 +299,10 @@ async fn a_directory_comes_back_with_its_own_settings() {
         .await
         .expect("a directory");
     let read = service.provider(&tenant, created.id()).await.expect("read");
-    assert_eq!(read, created);
+    // Compared field by field: the database keeps times to the
+    // microsecond, and some clocks give nanoseconds.
+    assert_eq!(read.snapshot().kind, ProviderKind::Ldap);
+    assert_eq!(read.snapshot().settings, created.snapshot().settings);
     assert_eq!(read.snapshot().settings.directory, Some(settings));
 
     // A directory without its settings, or another kind with them, is
