@@ -269,6 +269,7 @@ fn provider(alias: &str, issuer: &str) -> IdentityProvider {
             creates_users: true,
         },
         SealedSecret::from_stored(vec![0, 159, 146, 150, 255]),
+        &[],
         Timestamp::UNIX_EPOCH,
     )
     .expect("provider")

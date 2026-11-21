@@ -47,6 +47,7 @@ A stack on one machine has an identity provider at a private address, over plain
 - A request to exactly that host and port is made without the address check and may use plain HTTP. Every other rule still applies.
 - The list is empty by default. A server started with a non-empty list says so in its log at startup, at the warning level, naming every host.
 - It must be empty anywhere real. It is the one setting that turns the protection off for a destination.
+- The same list is what lets an identity provider have a plain HTTP issuer and plain HTTP endpoints: only when their host and port are on it. Everywhere else an issuer that is not HTTPS is refused when the provider is added, whatever the list says about other hosts.
 
 ## Errors
 

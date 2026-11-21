@@ -385,6 +385,17 @@ fn interaction(config: &Config, database: &Database) -> Result<InteractionState,
     })
 }
 
+/// The hosts that may be reached at a private address and over plain
+/// HTTP: empty anywhere real.
+fn development_hosts(config: &Config) -> Vec<String> {
+    config
+        .outbound_development_hosts
+        .iter()
+        .map(|host| host.trim().to_owned())
+        .filter(|host| !host.is_empty())
+        .collect()
+}
+
 /// Builds what signing in through an identity provider needs, if this
 /// installation has keys to keep secrets with.
 fn external_sign_in(
@@ -400,13 +411,9 @@ fn external_sign_in(
     let units = || Arc::new(database.clone());
     let clock = Arc::new(SystemClock);
     let digest = Arc::new(Sha256Digest);
+    let development_hosts = development_hosts(config);
     let http = Arc::new(GuardedHttpClient::new(OutboundPolicy {
-        development_hosts: config
-            .outbound_development_hosts
-            .iter()
-            .map(|host| host.trim().to_owned())
-            .filter(|host| !host.is_empty())
-            .collect(),
+        development_hosts: development_hosts.clone(),
         ..OutboundPolicy::default()
     })?);
     let federation = FederationService::new(
@@ -415,14 +422,16 @@ fn external_sign_in(
         Arc::new(PgLinkStore),
         secrets.clone(),
         clock.clone(),
-    );
+    )
+    .allowing_development_hosts(&development_hosts);
     let openid = OpenIdClient::new(
         http,
         Arc::new(AwsLcVerifier),
         digest.clone(),
         Arc::new(OsRandom),
         clock.clone(),
-    );
+    )
+    .allowing_development_hosts(&development_hosts);
     Ok(Some(ExternalSignIn::new(
         federation,
         openid,
@@ -445,13 +454,16 @@ fn administration(config: &Config, database: &Database) -> Result<AdminState, Do
     // Without keys to keep secrets with there are no identity providers
     // to manage; the routes say so.
     let federation = match &config.secret_keys {
-        Some(setting) => Some(FederationService::new(
-            units(),
-            Arc::new(PgProviderStore),
-            Arc::new(PgLinkStore),
-            Arc::new(SecretKeys::parse(&Secret::from(setting.clone()))?),
-            clock.clone(),
-        )),
+        Some(setting) => Some(
+            FederationService::new(
+                units(),
+                Arc::new(PgProviderStore),
+                Arc::new(PgLinkStore),
+                Arc::new(SecretKeys::parse(&Secret::from(setting.clone()))?),
+                clock.clone(),
+            )
+            .allowing_development_hosts(&development_hosts(config)),
+        ),
         None => None,
     };
     Ok(AdminState {

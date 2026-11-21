@@ -4,6 +4,8 @@
 export const SERVER = process.env["HODOR_URL"] ?? "http://localhost:8080";
 export const MAIL = process.env["HODOR_MAIL_URL"] ?? "http://localhost:8025";
 export const TENANT = process.env["HODOR_TENANT"] ?? "acme";
+/** The alias of the development identity provider in that tenant. */
+export const PROVIDER = process.env["HODOR_PROVIDER"] ?? "development";
 
 const HELP = `
 The browser tests need the development stack and a tenant that accepts registrations:
@@ -13,7 +15,15 @@ The browser tests need the development stack and a tenant that accepts registrat
     -e HODOR_DATABASE_URL=postgres://hodor_server:dev-server@postgres:5432/hodor \\
     server tenant create --slug ${TENANT} --name "Acme" --open-registration
 
-Set HODOR_URL, HODOR_MAIL_URL or HODOR_TENANT if yours are elsewhere.`;
+and the development identity provider added to that tenant:
+
+  docker compose -f deploy/docker/compose.yaml run --rm --no-deps --entrypoint /usr/local/bin/hodor-cli \\
+    -e HODOR_DATABASE_URL=postgres://hodor_server:dev-server@postgres:5432/hodor \\
+    -e HODOR_PROVIDER_CLIENT_SECRET=development-client-secret \\
+    server provider add --tenant ${TENANT} --alias ${PROVIDER} --name "Development provider" \\
+    --issuer http://provider:9400 --client-id hodor
+
+Set HODOR_URL, HODOR_MAIL_URL, HODOR_TENANT or HODOR_PROVIDER if yours are elsewhere.`;
 
 export default async function checkTheStack(): Promise<void> {
   const page = `${SERVER}/t/${TENANT}/account/sign-in`;
@@ -30,6 +40,13 @@ export default async function checkTheStack(): Promise<void> {
   }
   if (answers[1] !== 200) {
     throw new Error(`The development mail server at ${MAIL} did not answer.${HELP}`);
+  }
+  const offered = await fetch(`${SERVER}/t/${TENANT}/interaction/sign-in/providers`).then(
+    (response) => response.json() as Promise<{ providers: { alias: string }[] }>,
+    () => ({ providers: [] }),
+  );
+  if (!offered.providers.some((provider) => provider.alias === PROVIDER)) {
+    throw new Error(`The tenant ${TENANT} does not offer the identity provider ${PROVIDER}.${HELP}`);
   }
 
   // Asking for links is limited by the address the requests come from,

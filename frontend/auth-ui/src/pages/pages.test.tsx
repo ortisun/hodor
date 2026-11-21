@@ -6,6 +6,7 @@ import { en } from "../messages/en";
 import { empty, json, problem, scripted } from "../testing";
 import { AccountPage } from "./AccountPage";
 import { AskPage } from "./AskPage";
+import { ComingBackPage } from "./ComingBackPage";
 import { FinishPage } from "./FinishPage";
 import { SignInPage } from "./SignInPage";
 
@@ -21,8 +22,9 @@ const pending = (step: string) => json(200, { status: "pending", step, csrf_toke
 function page(script: Parameters<typeof scripted>[0]) {
   const { client, sent } = scripted(script);
   const go = vi.fn();
-  const props = { tenant: "acme", client, text: en, go, path: (name: PageName) => pathOf("acme", name) };
-  return { props, sent, go, user: userEvent.setup() };
+  const leave = vi.fn();
+  const props = { tenant: "acme", client, text: en, go, leave, path: (name: PageName) => pathOf("acme", name) };
+  return { props, sent, go, leave, user: userEvent.setup() };
 }
 
 describe("the sign-in page", () => {
@@ -280,5 +282,125 @@ describe("the sign-in page when the server cannot be reached", () => {
 
     await user.click(screen.getByRole("button", { name: en.startAgain }));
     expect(await screen.findByLabelText(en.identifierLabel)).toBeTruthy();
+  });
+});
+
+describe("identity providers on the sign-in page", () => {
+  const offered = () => json(200, { providers: [{ alias: "google", display_name: "Google" }] });
+
+  it("offers the providers of the tenant and leaves for the one chosen", async () => {
+    const { props, sent, leave, user } = page({
+      "GET /sign-in/providers": [offered],
+      "GET /session": [nobody],
+      "GET /sign-in": [pending("identifier")],
+      "POST /sign-in/providers/google": [json(200, { redirect: "https://accounts.example.com/authorize?state=s" })],
+    });
+    render(<SignInPage {...props} notice={null} />);
+
+    await user.click(await screen.findByRole("button", { name: en.continueWith("Google") }));
+
+    await waitFor(() => expect(leave).toHaveBeenCalledWith("https://accounts.example.com/authorize?state=s"));
+    expect(sent.at(-1)).toMatchObject({ method: "POST", path: "/sign-in/providers/google", csrfToken: "token" });
+  });
+
+  it("offers none once the sign-in is past its first step, and none when the tenant has none", async () => {
+    const past = page({
+      "GET /sign-in/providers": [offered],
+      "GET /session": [nobody],
+      "GET /sign-in": [pending("password")],
+    });
+    render(<SignInPage {...past.props} notice={null} />);
+    await screen.findByLabelText(en.passwordLabel);
+    expect(screen.queryByRole("button", { name: en.continueWith("Google") })).toBeNull();
+    cleanup();
+
+    const none = page({
+      "GET /sign-in/providers": [json(200, { providers: [] })],
+      "GET /session": [nobody],
+      "GET /sign-in": [pending("identifier")],
+    });
+    render(<SignInPage {...none.props} notice={null} />);
+    await screen.findByLabelText(en.identifierLabel);
+    expect(screen.queryByText(en.or)).toBeNull();
+  });
+
+  it("says so, and stays, when the provider cannot be used", async () => {
+    const { props, leave, user } = page({
+      "GET /sign-in/providers": [offered],
+      "GET /session": [nobody],
+      "GET /sign-in": [pending("identifier")],
+      "POST /sign-in/providers/google": [problem(503, "federation.provider_unavailable")],
+    });
+    render(<SignInPage {...props} notice={null} />);
+    await user.click(await screen.findByRole("button", { name: en.continueWith("Google") }));
+
+    expect((await screen.findByRole("alert")).textContent).toContain(en.somethingWentWrong);
+    expect(leave).not.toHaveBeenCalled();
+    expect(screen.getByLabelText(en.identifierLabel)).toBeTruthy();
+  });
+
+  it("tells a person who came back refused, as bad news", async () => {
+    const { props } = page({ "GET /session": [nobody], "GET /sign-in": [pending("identifier")] });
+    render(<SignInPage {...props} notice="provider-refused" />);
+    expect((await screen.findByRole("alert")).textContent).toBe(en.noticeProviderRefused);
+  });
+});
+
+describe("the page a provider sends people back to", () => {
+  const answer = { code: "the-code", state: "the-state", error: null };
+
+  it("presents what the provider sent and goes on to the account", async () => {
+    const { props, sent, go } = page({
+      "GET /sign-in": [pending("identifier")],
+      "POST /sign-in/providers/google/callback": [json(200, { status: "completed" })],
+    });
+    render(<ComingBackPage {...props} provider="google" answer={answer} />);
+
+    await waitFor(() => expect(go).toHaveBeenCalledWith("account"));
+    expect(sent.at(-1)).toMatchObject({
+      path: "/sign-in/providers/google/callback",
+      body: { code: "the-code", state: "the-state" },
+      csrfToken: "token",
+    });
+  });
+
+  it("goes back to sign in, saying it did not work, when the server refuses", async () => {
+    const { props, go } = page({
+      "GET /sign-in": [pending("identifier")],
+      "POST /sign-in/providers/google/callback": [
+        json(200, { status: "rejected", step: "identifier", attempts_left: 4, csrf_token: "token" }),
+      ],
+    });
+    render(<ComingBackPage {...props} provider="google" answer={answer} />);
+    await waitFor(() => expect(go).toHaveBeenCalledWith("sign-in", "provider-refused"));
+  });
+
+  it("asks the server nothing when the provider sent no code", async () => {
+    for (const sent of [
+      { code: null, state: "the-state", error: "access_denied" },
+      { code: "the-code", state: null, error: null },
+      { code: "the-code", state: "the-state", error: "server_error" },
+    ]) {
+      const { props, sent: requests, go } = page({});
+      render(<ComingBackPage {...props} provider="google" answer={sent} />);
+      await waitFor(() => expect(go).toHaveBeenCalledWith("sign-in", "provider-cancelled"));
+      expect(requests).toEqual([]);
+      cleanup();
+    }
+  });
+
+  it("goes back to sign in when this browser has no sign-in to finish", async () => {
+    const { props, sent, go } = page({ "GET /sign-in": [noSignIn] });
+    render(<ComingBackPage {...props} provider="google" answer={answer} />);
+    await waitFor(() => expect(go).toHaveBeenCalledWith("sign-in", "provider-refused"));
+    expect(sent.map((request) => request.path)).toEqual(["/sign-in"]);
+  });
+
+  it("says so, and offers the way back, when the server cannot be reached", async () => {
+    const { props, go } = page({ "GET /sign-in": [unreachable] });
+    render(<ComingBackPage {...props} provider="google" answer={answer} />);
+    expect((await screen.findByRole("alert")).textContent).toBe(en.unreachable);
+    expect(screen.getByRole("link", { name: en.backToSignIn })).toBeTruthy();
+    expect(go).not.toHaveBeenCalled();
   });
 });

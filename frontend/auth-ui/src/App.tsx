@@ -1,8 +1,9 @@
-import { type NoticeName, type PageName, pathOf, type Place } from "./address";
+import { type NoticeName, type PageName, pathOf, type Place, type ProviderAnswer } from "./address";
 import type { Client } from "./client";
 import type { Messages } from "./messages";
 import { AccountPage } from "./pages/AccountPage";
 import { AskPage } from "./pages/AskPage";
+import { ComingBackPage } from "./pages/ComingBackPage";
 import { FinishPage } from "./pages/FinishPage";
 import { SignInPage } from "./pages/SignInPage";
 import { Frame } from "./parts/Frame";
@@ -16,12 +17,16 @@ export interface AppProps {
   /** The token of a link from a message, when the address carries one. */
   token: string | null;
   go: (page: PageName, notice?: NoticeName) => void;
+  /** Sends the browser to another site: an identity provider. */
+  leave: (url: string) => void;
+  /** What an identity provider put in the address, on the page it sends people back to. */
+  providerAnswer: ProviderAnswer;
 }
 
 /** Shows the page the address names. */
-export function App({ place, client, text, notice, token, go }: AppProps) {
+export function App({ place, client, text, notice, token, go, leave, providerAnswer }: AppProps) {
   const { tenant } = place;
-  const page = { tenant, client, text, go, path: (name: PageName) => pathOf(tenant, name) };
+  const page = { tenant, client, text, go, leave, path: (name: PageName) => pathOf(tenant, name) };
 
   switch (place.page) {
     case "sign-in":
@@ -36,6 +41,8 @@ export function App({ place, client, text, notice, token, go }: AppProps) {
       return <FinishPage {...page} purpose="recovery" token={token} />;
     case "account":
       return <AccountPage {...page} />;
+    case "provider-callback":
+      return <ComingBackPage {...page} provider={place.provider ?? ""} answer={providerAnswer} />;
     default:
       return (
         <Frame tenant={tenant} title={text.pageNotFoundTitle} text={text}>

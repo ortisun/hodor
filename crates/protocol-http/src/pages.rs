@@ -30,6 +30,10 @@ pub const PAGE_PATHS: &[&str] = &[
     "/account/reset-password",
 ];
 
+/// The page an identity provider sends a person back to. It is the one
+/// page whose path has a part that varies: the provider's alias.
+pub const PROVIDER_CALLBACK_PAGE: &str = "/account/providers/{alias}/callback";
+
 /// Where the files of the application are served, outside any tenant.
 pub const PAGE_ASSETS_PATH: &str = "/auth-ui/assets";
 
@@ -88,7 +92,9 @@ impl Pages {
         for path in PAGE_PATHS {
             router = router.route(path, get(page));
         }
-        router.with_state(self.index.clone())
+        router
+            .route(PROVIDER_CALLBACK_PAGE, get(page))
+            .with_state(self.index.clone())
     }
 
     /// The routes of the application's files, to be mounted at the root.

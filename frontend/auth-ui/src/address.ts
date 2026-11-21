@@ -13,20 +13,34 @@ export const PAGES = [
 export type PageName = (typeof PAGES)[number];
 
 /** Something to tell the person on the page they are sent to. */
-export const NOTICES = ["registered", "password-changed", "signed-out"] as const;
+export const NOTICES = [
+  "registered",
+  "password-changed",
+  "signed-out",
+  "provider-refused",
+  "provider-cancelled",
+] as const;
 
 export type NoticeName = (typeof NOTICES)[number];
 
 export interface Place {
   tenant: string;
   /** `null` when the address is under `/account` but names no page. */
-  page: PageName | null;
+  page: PageName | "provider-callback" | null;
+  /** The alias of the identity provider, on the page it sends people back to. */
+  provider?: string;
 }
+
+const CALLBACK = /^\/t\/([a-z0-9][a-z0-9-]{1,62})\/account\/providers\/([a-z0-9][a-z0-9-]{1,31})\/callback\/?$/;
 
 const PATH = /^\/t\/([a-z0-9][a-z0-9-]{1,62})\/account(?:\/([a-z-]+))?\/?$/;
 
 /** Reads the tenant and the page from a path such as `/t/acme/account/sign-in`. */
 export function placeOf(pathname: string): Place | null {
+  const back = CALLBACK.exec(pathname);
+  if (back?.[1] !== undefined && back[2] !== undefined) {
+    return { tenant: back[1], page: "provider-callback", provider: back[2] };
+  }
   const match = PATH.exec(pathname);
   if (!match) {
     return null;
@@ -61,4 +75,17 @@ export function noticeOf(search: string): NoticeName | null {
 export function tokenOf(hash: string): string | null {
   const token = new URLSearchParams(hash.replace(/^#/, "")).get("token");
   return token && /^[0-9a-f]{16,128}$/.test(token) ? token : null;
+}
+
+/** What an identity provider put in the address when it sent the person back. */
+export interface ProviderAnswer {
+  code: string | null;
+  state: string | null;
+  /** The provider's own word for why it sent no code, such as `access_denied`. */
+  error: string | null;
+}
+
+export function providerAnswerOf(search: string): ProviderAnswer {
+  const query = new URLSearchParams(search);
+  return { code: query.get("code"), state: query.get("state"), error: query.get("error") };
 }

@@ -112,4 +112,40 @@ describe("the client for the interaction interface", () => {
     });
     await expect(client.abandonSignIn()).resolves.toBeUndefined();
   });
+
+  it("lists the providers a tenant offers, skipping what it cannot read", async () => {
+    const { client } = scripted({
+      "GET /sign-in/providers": [
+        json(200, {
+          providers: [{ alias: "google", display_name: "Google" }, { alias: 7 }, "nonsense", { alias: "x" }],
+        }),
+      ],
+    });
+    expect(await client.providers()).toEqual([{ alias: "google", displayName: "Google" }]);
+  });
+
+  it("chooses a provider with the token of the sign-in and answers where to go", async () => {
+    const { client, sent } = scripted({
+      "POST /sign-in": [json(201, { status: "pending", step: "identifier", csrf_token: "token" })],
+      "POST /sign-in/providers/google": [json(200, { redirect: "https://accounts.example.com/authorize?x=1" })],
+    });
+    await client.startSignIn();
+    expect(await client.chooseProvider("google")).toBe("https://accounts.example.com/authorize?x=1");
+    expect(sent[1]?.csrfToken).toBe("token");
+  });
+
+  it("refuses to be sent anywhere that is not an address of the web", async () => {
+    for (const redirect of ["javascript:alert(1)", "data:text/html,x", "/relative", "", 42]) {
+      const { client } = scripted({ "POST /sign-in/providers/google": [json(200, { redirect })] });
+      await expect(client.chooseProvider("google"), String(redirect)).rejects.toBeInstanceOf(Failure);
+    }
+  });
+
+  it("finishes with what the provider sent back", async () => {
+    const { client, sent } = scripted({
+      "POST /sign-in/providers/google/callback": [json(200, { status: "completed" })],
+    });
+    expect((await client.finishWithProvider("google", "the-code", "the-state")).status).toBe("completed");
+    expect(sent[0]?.body).toEqual({ code: "the-code", state: "the-state" });
+  });
 });

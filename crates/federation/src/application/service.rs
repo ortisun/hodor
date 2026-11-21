@@ -47,6 +47,9 @@ pub struct FederationService {
     links: Arc<dyn LinkStore>,
     secrets: Arc<dyn SecretBox>,
     clock: Arc<dyn Clock>,
+    /// Hosts with ports whose issuer may be plain HTTP. Empty anywhere
+    /// real.
+    development_hosts: Arc<[String]>,
 }
 
 impl std::fmt::Debug for FederationService {
@@ -78,7 +81,17 @@ impl FederationService {
             links,
             secrets,
             clock,
+            development_hosts: Arc::from(Vec::new()),
         }
+    }
+
+    /// The same use cases, accepting a plain HTTP issuer at these hosts,
+    /// each written as `host:port`. For a development stack on one
+    /// machine.
+    #[must_use]
+    pub fn allowing_development_hosts(mut self, hosts: &[String]) -> Self {
+        self.development_hosts = Arc::from(hosts.to_vec());
+        self
     }
 
     fn seal(
@@ -111,10 +124,16 @@ impl FederationService {
         caller: Caller,
     ) -> Result<IdentityProvider, DomainError> {
         let alias = Alias::parse(&command.alias)?;
-        let settings = command.settings.checked()?;
+        let settings = command.settings.checked_allowing(&self.development_hosts)?;
         let sealed = self.seal(tenant, &command.client_secret)?;
-        let provider =
-            IdentityProvider::create(alias, command.kind, settings, sealed, self.clock.now())?;
+        let provider = IdentityProvider::create(
+            alias,
+            command.kind,
+            settings,
+            sealed,
+            &self.development_hosts,
+            self.clock.now(),
+        )?;
 
         let mut uow = self.units_of_work.begin(tenant).await?;
         if self.providers.list(uow.as_mut()).await?.len() >= MAX_PROVIDERS {
@@ -172,9 +191,10 @@ impl FederationService {
         caller: Caller,
     ) -> Result<IdentityProvider, DomainError> {
         let now = self.clock.now();
+        let development_hosts = self.development_hosts.clone();
         self.change_with(tenant, command.id, caller, |provider| {
             Ok(provider
-                .change(command.settings, now)?
+                .change(command.settings, &development_hosts, now)?
                 .then(|| FederationEvent::ProviderChanged {
                     provider_id: provider.id(),
                     alias: provider.alias().as_str().to_owned(),
