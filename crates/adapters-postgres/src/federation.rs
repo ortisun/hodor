@@ -5,7 +5,7 @@
 use crate::uow::{connection, database_error};
 use hodor_authentication::api::TransactionId;
 use hodor_federation::api::{
-    Alias, ExternalIdentity, IdentityProvider, LinkStore, PendingAuthorization,
+    Alias, DirectorySettings, ExternalIdentity, IdentityProvider, LinkStore, PendingAuthorization,
     PendingAuthorizationStore, ProviderId, ProviderKind, ProviderSettings, ProviderSnapshot,
     ProviderStatus, ProviderStore, Subject,
 };
@@ -42,6 +42,19 @@ fn provider_from(row: &PgRow) -> Result<IdentityProvider, DomainError> {
             scopes: row.try_get("scopes").map_err(get)?,
             creates_users: row.try_get("creates_users").map_err(get)?,
             trusts_email: row.try_get("trusts_email").map_err(get)?,
+            directory: match row
+                .try_get::<Option<String>, _>("directory_base")
+                .map_err(get)?
+            {
+                Some(base) => Some(DirectorySettings {
+                    base,
+                    filter: row.try_get("directory_filter").map_err(get)?,
+                    subject_attribute: row.try_get("directory_subject_attribute").map_err(get)?,
+                    email_attribute: row.try_get("directory_email_attribute").map_err(get)?,
+                    name_attribute: row.try_get("directory_name_attribute").map_err(get)?,
+                }),
+                None => None,
+            },
         },
         client_secret: SealedSecret::from_stored(row.try_get("client_secret").map_err(get)?),
         status: ProviderStatus::from_stored(&status)?,
@@ -79,8 +92,11 @@ impl ProviderStore for PgProviderStore {
         let inserted = sqlx::query(
             "INSERT INTO federation.identity_provider
                  (tenant_id, id, alias, kind, display_name, issuer, client_id, client_secret,
-                  scopes, creates_users, trusts_email, status, created_at, updated_at, version)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 0)",
+                  scopes, creates_users, trusts_email, status, created_at, updated_at, version,
+                    directory_base, directory_filter, directory_subject_attribute,
+                    directory_email_attribute, directory_name_attribute)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 0,
+                     $15, $16, $17, $18, $19)",
         )
         .bind(tenant.as_uuid())
         .bind(state.id.as_uuid())
@@ -96,6 +112,29 @@ impl ProviderStore for PgProviderStore {
         .bind(state.status.as_str())
         .bind(state.created_at)
         .bind(state.updated_at)
+        .bind(state.settings.directory.as_ref().map(|d| d.base.clone()))
+        .bind(state.settings.directory.as_ref().map(|d| d.filter.clone()))
+        .bind(
+            state
+                .settings
+                .directory
+                .as_ref()
+                .map(|d| d.subject_attribute.clone()),
+        )
+        .bind(
+            state
+                .settings
+                .directory
+                .as_ref()
+                .map(|d| d.email_attribute.clone()),
+        )
+        .bind(
+            state
+                .settings
+                .directory
+                .as_ref()
+                .map(|d| d.name_attribute.clone()),
+        )
         .execute(connection(uow)?)
         .await;
         match inserted {
@@ -124,7 +163,10 @@ impl ProviderStore for PgProviderStore {
             "UPDATE federation.identity_provider
              SET display_name = $3, issuer = $4, client_id = $5, client_secret = $6,
                  scopes = $7, creates_users = $8, trusts_email = $9, status = $10,
-                 updated_at = $11, version = version + 1
+                 updated_at = $11, version = version + 1,
+                 directory_base = $13, directory_filter = $14,
+                 directory_subject_attribute = $15, directory_email_attribute = $16,
+                 directory_name_attribute = $17
              WHERE tenant_id = $1 AND id = $2 AND version = $12",
         )
         .bind(tenant.as_uuid())
@@ -139,6 +181,29 @@ impl ProviderStore for PgProviderStore {
         .bind(state.status.as_str())
         .bind(state.updated_at)
         .bind(version)
+        .bind(state.settings.directory.as_ref().map(|d| d.base.clone()))
+        .bind(state.settings.directory.as_ref().map(|d| d.filter.clone()))
+        .bind(
+            state
+                .settings
+                .directory
+                .as_ref()
+                .map(|d| d.subject_attribute.clone()),
+        )
+        .bind(
+            state
+                .settings
+                .directory
+                .as_ref()
+                .map(|d| d.email_attribute.clone()),
+        )
+        .bind(
+            state
+                .settings
+                .directory
+                .as_ref()
+                .map(|d| d.name_attribute.clone()),
+        )
         .execute(connection(uow)?)
         .await
         .map_err(|e| database_error(&e))?;
@@ -160,7 +225,9 @@ impl ProviderStore for PgProviderStore {
         let tenant = uow.tenant().tenant_id();
         sqlx::query(
             "SELECT id, alias, kind, display_name, issuer, client_id, client_secret,
-                    scopes, creates_users, trusts_email, status, created_at, updated_at, version
+                    scopes, creates_users, trusts_email, status, created_at, updated_at, version,
+                    directory_base, directory_filter, directory_subject_attribute,
+                    directory_email_attribute, directory_name_attribute
              FROM federation.identity_provider
              WHERE tenant_id = $1 AND id = $2",
         )
@@ -182,7 +249,9 @@ impl ProviderStore for PgProviderStore {
         let tenant = uow.tenant().tenant_id();
         sqlx::query(
             "SELECT id, alias, kind, display_name, issuer, client_id, client_secret,
-                    scopes, creates_users, trusts_email, status, created_at, updated_at, version
+                    scopes, creates_users, trusts_email, status, created_at, updated_at, version,
+                    directory_base, directory_filter, directory_subject_attribute,
+                    directory_email_attribute, directory_name_attribute
              FROM federation.identity_provider
              WHERE tenant_id = $1 AND alias = $2",
         )
@@ -200,7 +269,9 @@ impl ProviderStore for PgProviderStore {
         let tenant = uow.tenant().tenant_id();
         sqlx::query(
             "SELECT id, alias, kind, display_name, issuer, client_id, client_secret,
-                    scopes, creates_users, trusts_email, status, created_at, updated_at, version
+                    scopes, creates_users, trusts_email, status, created_at, updated_at, version,
+                    directory_base, directory_filter, directory_subject_attribute,
+                    directory_email_attribute, directory_name_attribute
              FROM federation.identity_provider
              WHERE tenant_id = $1 ORDER BY alias COLLATE \"C\"",
         )

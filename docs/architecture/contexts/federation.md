@@ -20,7 +20,7 @@ A tenant has its own identity providers. Nothing about a provider is shared betw
 |---|---|
 | Identifier | Generated; never changes |
 | Alias | The name of the provider in addresses, such as `google`. 2 to 32 lowercase letters, digits and hyphens, starting with a letter or digit. Unique in the tenant. **Never changes**: it is part of the address registered at the provider, where answers are sent back |
-| Kind | `openid_connect` or `github`. Never changes. Further kinds come with their issues |
+| Kind | `openid_connect`, `github` or `ldap`. Never changes. Further kinds come with their issues |
 | Display name | What a person reads on the sign-in page, such as "Google". 1 to 64 characters |
 | Issuer | The address that identifies the provider, such as `https://accounts.google.com`. HTTPS, no query and no fragment, at most 512 characters. Plain HTTP is accepted only for a host and port on the installation's list of [development hosts](../../security/outbound-http.md#the-exception-for-development), which is empty anywhere real. Compared exactly, character by character, with what the provider says about itself |
 | Client identifier | Who Hodor is to the provider. 1 to 255 characters |
@@ -163,6 +163,44 @@ The issuer is `https://github.com` unless another is given, for an installation 
 
 There is no nonce and no ID token to check: what stands in their place is that the answer comes from GitHub's interface over TLS, asked with a token GitHub issued for this code a moment ago. The state, the pending authorization and every rule about who the person is are the same as for OpenID Connect.
 
+## Signing in through a directory
+
+A provider of the kind `ldap` is a directory: the organization's own list of people, reached over LDAP. Nobody leaves for anywhere. The person types what the directory knows them by and their password there, on Hodor's page, and Hodor asks the directory.
+
+A directory uses the parts of a provider this way, and adds its own:
+
+| Part | For a directory |
+|---|---|
+| Issuer | The directory's address: `ldaps://host` or `ldaps://host:port`. Nothing after the host. Plain `ldap://` only at a [development host](../../security/outbound-http.md#the-exception-for-development) |
+| Client identifier | The name Hodor itself binds with to search: a distinguished name such as `cn=hodor,ou=services,dc=example,dc=com` |
+| Client secret | The password of that name. Sealed for the purpose `federation.client_secret`, like every other |
+| Scopes | None |
+| Base | Where people are searched for, such as `ou=people,dc=example,dc=com` |
+| Filter | How a person is found, with `{identifier}` where what they typed goes: `(uid={identifier})`, or `(sAMAccountName={identifier})` for Active Directory. It must contain `{identifier}` exactly once and be a filter in parentheses |
+| Subject attribute | The attribute that never changes for a person: `entryUUID` unless said otherwise; `objectGUID` for Active Directory. A value that is not text is written in hexadecimal |
+| Email attribute, name attribute | `mail` and `cn` unless said otherwise |
+
+### Which directories may be used
+
+Directories live on private networks, so the rule that keeps [outbound HTTP](../../security/outbound-http.md) to public addresses cannot apply to them. Without another rule, an administrator of any tenant could make the server open connections to any host and port of the network it runs in.
+
+The rule is a list kept by whoever operates the installation: `HODOR_DIRECTORY_HOSTS`, hosts with their ports, such as `ldap.example.com:636`. A directory provider can be added, and is only ever connected to, when its host and port are on the list. The list is empty unless set, and then no directory can be used.
+
+### Asking the directory
+
+1. **An empty password is refused before the directory is asked.** A directory treats a name with an empty password as an anonymous bind and answers that it succeeded. This is the oldest way into systems that use LDAP.
+2. **The attempt is counted** against what the person typed and against their address, with the tenant's [lockout policy](authentication.md#protection-against-guessing), before the directory is asked. While a lockout is in force nothing is asked.
+3. Hodor binds as itself and searches under the base with the filter. **What the person typed is escaped before it goes into the filter**, so that `*`, parentheses and backslashes are characters to look for and nothing else.
+4. **Exactly one entry must be found.** None, or more than one, is a refusal.
+5. Hodor binds as that entry with the password the person typed. The directory deciding that the password is right is the proof.
+6. The entry's subject attribute is the subject of the external identity. From here on everything is [as for any provider](#who-the-person-is): the link is found by provider and subject, a person nobody knows is created if the provider creates users, and an existing account is never opened because of an email address.
+
+An address from a directory counts as vouched for only if the provider is set to [trust email](#when-a-provider-does-not-say-whether-it-vouches): a directory does not say, and whether its `mail` attribute can be relied on is for the administrator to state.
+
+Every refusal is answered in the same words: no such person, several, a wrong password, an empty one, an account the directory has disabled. The reason is recorded as `federation.sign_in_refused`.
+
+The connection is made for one sign-in and closed. Its time is limited to ten seconds.
+
 ## Recipes
 
 What to enter for the providers people ask for first. None of these is checked against the real provider in continuous integration; each was built from the provider's documentation.
@@ -173,6 +211,8 @@ What to enter for the providers people ask for first. None of these is checked a
 | Microsoft Entra ID, one organization | `openid_connect` | `https://login.microsoftonline.com/{tenant identifier}/v2.0` | Use the organization's own tenant identifier, never `common` or `organizations`: with those any Microsoft account of any organization would be let in (Threat-Federation-06), and Hodor refuses them because the provider's description names another issuer. Does not say whether it vouches; set **trusts email** if the organization hands out the addresses |
 | GitHub | `github` | leave empty | |
 | Keycloak, one realm | `openid_connect` | `https://{host}/realms/{realm}` | |
+| OpenLDAP | `ldap` | `ldaps://{host}` | Filter `(uid={identifier})`, subject attribute `entryUUID` |
+| Active Directory | `ldap` | `ldaps://{host}` | Filter `(sAMAccountName={identifier})`, subject attribute `objectGUID` |
 
 In each, the address to register at the provider is the provider's callback address, which the administration interface and the command-line tool show.
 
@@ -275,6 +315,8 @@ No event carries a secret. No event carries a subject either: it identifies a pe
 | `federation.identity_already_linked` | Conflict | The external identity already belongs to a user |
 | `federation.link_not_found` | Not found | There is no such link |
 | `federation.provider_unavailable` | Unavailable | The provider did not answer, or answered something that cannot be used: no description, a description for another issuer, no keys |
+| `federation.directory_invalid` | Invalid | A directory's base, filter or attribute name breaks its rule |
+| `federation.directory_not_allowed` | Forbidden | The directory's host and port are not on the installation's list |
 | `federation.identity_not_verified` | Unauthenticated | The provider's answer does not establish who the person is: the code was refused, or the ID token failed a check |
 
 ## Ports
@@ -287,6 +329,8 @@ No event carries a secret. No event carries a subject either: it identifies a pe
 | `SecretBox`, from the kernel | Seals and opens client secrets and PKCE verifiers |
 | `HttpClient`, from the kernel | Every request to a provider |
 | `SignatureVerifier`, from the kernel | Checks the signature of an ID token. Hodor implements no cryptography of its own |
+| `DirectoryClient` | Searches a directory and binds to it. Implemented by `hodor-adapters-ldap` |
+| `LockoutPolicy` | The tenant's rules for counting attempts, which belong to the tenant context |
 
 Each store has an implementation in memory, behind the crate's `testing` feature, and one on PostgreSQL. Both pass the same contract suite, which includes the tenant isolation cases.
 
@@ -334,7 +378,11 @@ All tables are under [forced row-level security](../multi-tenancy.md#isolation-b
 |---|---|
 | Apple. Its client secret is a token Hodor must sign with a private key, and its answer arrives as a form posted by another site. Both wait for keys that Hodor holds and signs with | With the key domain, Phase 2 |
 | Microsoft accounts of any organization (`common`, `organizations`), which need the issuer checked against a list of allowed tenants | When asked for |
-| Directories; SAML | Issue-44, Issue-48 |
+| Directories on the pages and in the administration interface | Issue-45 |
+| A directory's own certificate authority. The connection trusts what the operating system trusts | When a directory with a private authority is to be used |
+| Reusing connections to a directory between sign-ins | When the volume calls for it |
+| Synchronizing people and groups from a directory | Phase 6 |
+| SAML | Issue-48 |
 | Signature algorithms beyond `RS256`, `PS256` and `ES256`; encrypted ID tokens; the UserInfo endpoint | When a provider that needs them is to be supported |
 | A cache of provider descriptions and keys shared between server instances. Each instance keeps its own | With Redis, when instances are many |
 | What happens to the sessions of a provider's users when it is disabled (Threat-Federation-10). Today disabling stops new sign-ins only | With the consoles |

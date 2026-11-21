@@ -8,14 +8,17 @@
 
 use crate::application::github::GitHubClient;
 use crate::application::openid::{OpenIdClient, VerifiedIdentity};
-use crate::application::ports::PendingAuthorizationStore;
+use crate::application::ports::{
+    DirectoryAnswer, DirectoryClient, DirectoryQuery, LockoutPolicy, PendingAuthorizationStore,
+};
 use crate::application::service::FederationService;
 use crate::domain::event::FederationEvent;
+use crate::domain::link::Subject;
 use crate::domain::pending_authorization::PendingAuthorization;
-use crate::domain::provider::{IdentityProvider, ProviderId, ProviderKind};
+use crate::domain::provider::{IDENTIFIER_PLACE, IdentityProvider, ProviderId, ProviderKind};
 use hodor_authentication::api::{
-    AuthTransaction, Authenticator, AuthenticatorTraits, ExternalInput, Factor, StepInput,
-    StepOutcome, TransactionId,
+    AttemptGuard, AuthTransaction, Authenticator, AuthenticatorTraits, ExternalInput, Factor,
+    StepInput, StepOutcome, TransactionId,
 };
 use hodor_identity::api::{CreateUser, IdentifierKind, IdentityService, Profile, UserKind};
 use hodor_kernel::{
@@ -39,6 +42,9 @@ pub struct OfferedProvider {
     pub alias: String,
     /// What a person reads.
     pub display_name: String,
+    /// How a person signs in through it: by leaving for it, or, for a
+    /// directory, by typing an identifier and a password here.
+    pub kind: ProviderKind,
 }
 
 /// Why a sign-in through a provider was refused: recorded, never shown.
@@ -82,6 +88,17 @@ pub struct ExternalSignIn {
     digest: Arc<dyn Digest>,
     clock: Arc<dyn Clock>,
     public_url: String,
+    /// What signing in through a directory needs; `None` when this
+    /// installation uses no directory.
+    directories: Option<Directories>,
+}
+
+/// What signing in through a directory needs.
+#[derive(Clone)]
+struct Directories {
+    client: Arc<dyn DirectoryClient>,
+    guard: AttemptGuard,
+    policy: Arc<dyn LockoutPolicy>,
 }
 
 impl std::fmt::Debug for ExternalSignIn {
@@ -118,7 +135,25 @@ impl ExternalSignIn {
             digest,
             clock,
             public_url: public_url.trim_end_matches('/').to_owned(),
+            directories: None,
         }
+    }
+
+    /// The same use cases, able to sign people in through directories:
+    /// with the client that asks them, and what counts attempts.
+    #[must_use]
+    pub fn with_directories(
+        mut self,
+        client: Arc<dyn DirectoryClient>,
+        guard: AttemptGuard,
+        policy: Arc<dyn LockoutPolicy>,
+    ) -> Self {
+        self.directories = Some(Directories {
+            client,
+            guard,
+            policy,
+        });
+        self
     }
 
     /// The providers the tenant offers on its sign-in page: the enabled
@@ -140,6 +175,7 @@ impl ExternalSignIn {
             .map(|provider| OfferedProvider {
                 alias: provider.alias().as_str().to_owned(),
                 display_name: provider.snapshot().settings.display_name.clone(),
+                kind: provider.snapshot().kind,
             })
             .collect())
     }
@@ -190,6 +226,13 @@ impl ExternalSignIn {
         let request = match provider.snapshot().kind {
             ProviderKind::OpenIdConnect => self.openid.begin(&provider, &redirect_uri).await?,
             ProviderKind::GitHub => self.github.begin(&provider, &redirect_uri),
+            // Nobody leaves for a directory.
+            ProviderKind::Ldap => {
+                return Err(DomainError::not_found(
+                    "federation.provider_not_found",
+                    "there is no such identity provider",
+                ));
+            }
         };
 
         let verifier = Secret::new(request.code_verifier.expose().clone().into_bytes());
@@ -275,6 +318,8 @@ impl ExternalSignIn {
                     )
                     .await
             }
+            // A directory has no pending authorization to finish.
+            ProviderKind::Ldap => return refuse("another_kind"),
             ProviderKind::GitHub => {
                 self.github
                     .finish(
@@ -299,6 +344,117 @@ impl ExternalSignIn {
         };
 
         self.resolve(tenant, &provider, identity).await
+    }
+
+    /// Signs a person in through a directory, with what they typed.
+    /// Answers the user who signed in, or why nobody did.
+    async fn finish_with_directory(
+        &self,
+        tenant: &TenantContext,
+        transaction: &AuthTransaction,
+        input: &ExternalInput,
+    ) -> Result<Result<UserId, Refusal>, DomainError> {
+        let (Some(alias), Some(identifier), Some(password)) = (
+            input.field("provider"),
+            input.field("identifier"),
+            input.field("password"),
+        ) else {
+            return Ok(Err(Refusal::new(None, "answer_incomplete")));
+        };
+        let provider = match self.enabled(tenant, alias.expose()).await {
+            Ok(provider) => provider,
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                return Ok(Err(Refusal::new(None, "provider_not_offered")));
+            }
+            Err(error) => return Err(error),
+        };
+        let refuse = |reason| Ok(Err(Refusal::new(Some(provider.id()), reason)));
+        let state = provider.snapshot();
+        let (Some(directories), Some(directory), ProviderKind::Ldap) =
+            (&self.directories, &state.settings.directory, state.kind)
+        else {
+            return refuse("another_kind");
+        };
+
+        // What the person typed, as the directory will be asked for it.
+        let typed = identifier.expose().trim();
+        if typed.is_empty() || typed.chars().count() > 255 || typed.chars().any(char::is_control) {
+            return refuse("identifier_not_usable");
+        }
+
+        // The attempt is counted before the directory is asked. While a
+        // lockout is in force this returns "too many attempts" and
+        // nothing is asked.
+        let key = self
+            .digest
+            .sha256(format!("directory:{}:{}", provider.id(), typed.to_lowercase()).as_bytes());
+        let rules = directories.policy.rules(tenant).await?;
+        let address = transaction.snapshot().client.address.as_deref();
+        directories
+            .guard
+            .admit(tenant, &rules, key, address, Caller::system())
+            .await?;
+
+        // A directory takes a name with an empty password for an
+        // anonymous bind and says it succeeded.
+        if password.expose().is_empty() {
+            return refuse("empty_password");
+        }
+
+        let query = DirectoryQuery {
+            address: state.settings.issuer.clone(),
+            bind_name: state.settings.client_id.clone(),
+            bind_password: self.federation.client_secret(tenant, &provider)?,
+            base: directory.base.clone(),
+            filter: directory
+                .filter
+                .replace(IDENTIFIER_PLACE, &escaped_for_filter(typed)),
+            attributes: vec![
+                directory.subject_attribute.clone(),
+                directory.email_attribute.clone(),
+                directory.name_attribute.clone(),
+            ],
+        };
+        let entry = match directories.client.verify(&query, password).await? {
+            DirectoryAnswer::Verified(entry) => entry,
+            DirectoryAnswer::Refused(reason) => return refuse(reason),
+        };
+
+        // A value that is not text is written in hexadecimal.
+        let Some(subject) = entry
+            .first(&directory.subject_attribute)
+            .filter(|value| !value.is_empty())
+            .map(|value| match std::str::from_utf8(value) {
+                Ok(text) if !text.chars().any(char::is_control) => text.to_owned(),
+                _ => value.iter().map(|byte| format!("{byte:02x}")).collect(),
+            })
+            .and_then(|value| Subject::parse(&value).ok())
+        else {
+            return refuse("no_subject");
+        };
+        let text = |attribute: &str, longest: usize| {
+            entry
+                .first(attribute)
+                .and_then(|value| std::str::from_utf8(value).ok())
+                .map(str::trim)
+                .filter(|value| !value.is_empty() && value.chars().count() <= longest)
+                .map(str::to_owned)
+        };
+        let identity = VerifiedIdentity {
+            subject,
+            email: text(&directory.email_attribute, 254),
+            // A directory does not say. Whether its addresses can be
+            // relied on is the provider's setting.
+            email_verified: false,
+            name: text(&directory.name_attribute, 200),
+            locale: None,
+        };
+
+        let resolved = self.resolve(tenant, &provider, identity).await?;
+        if resolved.is_ok() {
+            directories.guard.succeeded(tenant, key).await?;
+        }
+        Ok(resolved)
     }
 
     /// Who an external identity is in this tenant: the user it is linked
@@ -461,12 +617,66 @@ impl Authenticator for ExternalIdentityAuthenticator {
         let StepInput::External(input) = input else {
             return Ok(StepOutcome::Rejected);
         };
-        match self.sign_in.finish(tenant, transaction.id(), input).await? {
+        // A password among what was submitted means a directory: nobody
+        // left, so there is no pending authorization to finish.
+        let finished = if input.field("password").is_some() {
+            self.sign_in
+                .finish_with_directory(tenant, transaction, input)
+                .await?
+        } else {
+            self.sign_in.finish(tenant, transaction.id(), input).await?
+        };
+        match finished {
             Ok(user) => Ok(StepOutcome::Authenticated { user }),
             Err(refusal) => {
                 self.sign_in.record_refusal(tenant, refusal).await?;
                 Ok(StepOutcome::Rejected)
             }
         }
+    }
+}
+
+/// What a person typed, made safe to put into a directory's filter: the
+/// characters that mean something in a filter become characters to look
+/// for (RFC 4515, section 3).
+fn escaped_for_filter(typed: &str) -> String {
+    let mut escaped = String::with_capacity(typed.len());
+    for character in typed.chars() {
+        match character {
+            '\\' => escaped.push_str("\\5c"),
+            '*' => escaped.push_str("\\2a"),
+            '(' => escaped.push_str("\\28"),
+            ')' => escaped.push_str("\\29"),
+            '\0' => escaped.push_str("\\00"),
+            other => escaped.push(other),
+        }
+    }
+    escaped
+}
+
+#[cfg(test)]
+mod tests {
+    use super::escaped_for_filter;
+
+    #[test]
+    fn what_means_something_in_a_filter_becomes_a_character_to_look_for() {
+        assert_eq!(escaped_for_filter("ana"), "ana");
+        assert_eq!(
+            escaped_for_filter("ana.silva@example.com"),
+            "ana.silva@example.com"
+        );
+        assert_eq!(escaped_for_filter("*"), "\\2a");
+        assert_eq!(
+            escaped_for_filter("ana)(uid=*"),
+            "ana\\29\\28uid=\\2a",
+            "a filter cannot be closed and another opened"
+        );
+        assert_eq!(escaped_for_filter("a\\b"), "a\\5cb");
+        assert_eq!(escaped_for_filter("a\0b"), "a\\00b");
+        assert_eq!(
+            escaped_for_filter("joão"),
+            "joão",
+            "other letters are themselves"
+        );
     }
 }

@@ -45,6 +45,7 @@ fn settings() -> ProviderSettings {
         scopes: ProviderSettings::default_scopes(),
         creates_users: true,
         trusts_email: false,
+        directory: None,
     }
 }
 

@@ -49,6 +49,10 @@ A stack on one machine has an identity provider at a private address, over plain
 - It must be empty anywhere real. It is the one setting that turns the protection off for a destination.
 - The same list is what lets an identity provider have a plain HTTP issuer and plain HTTP endpoints: only when their host and port are on it. Everywhere else an issuer that is not HTTPS is refused when the provider is added, whatever the list says about other hosts.
 
+## What does not go through this client
+
+Connections to [LDAP directories](../architecture/contexts/federation.md#which-directories-may-be-used). Directories live on private networks, so the rule about public addresses cannot hold for them; they have a rule of their own, a list of allowed hosts kept by whoever operates the installation.
+
 ## Errors
 
 | Code | When |
