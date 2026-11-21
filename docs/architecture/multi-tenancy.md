@@ -112,3 +112,23 @@ Tenant isolation is part of the definition of done, so it is tested mechanically
 - **Schema lint**: a test inspects the catalog and fails if a table lacks `tenant_id`, row-level security or a composite foreign key, unless it is on the short platform allow-list.
 - **API fuzz**: replay each authenticated request of tenant A against tenant B's URL prefix and assert rejection.
 - **Token cross-use**: tokens, codes, sessions and refresh tokens issued by A are rejected at B.
+
+### The cross-tenant suite
+
+The last two are one suite, run against the real server and a real database with every other test, in `apps/hodor-server/tests/cross_tenant.rs`. It sets up two tenants that are as alike as two tenants can be: a person with the same email address and the same password in each, and an administrator in each.
+
+Every case has the same shape. First something is shown to work in the tenant it belongs to, so that a refusal later cannot be a mistake in the request. Then the very same thing is presented to the other tenant, which must refuse it. Last, both tenants are checked to be as they were.
+
+| What is presented to the other tenant | Its answer |
+|---|---|
+| A session cookie, on every route for a signed-in person | Not authenticated |
+| A sign-in in progress: its cookie and CSRF token, on every step | No such sign-in; it continues where it belongs |
+| An administrator's access token, on every operation in the OpenAPI document | Not authenticated |
+| A registration link's token and a recovery link's token | The link does not work; it still works where it belongs |
+| The identifier of a user or of a session, asked for by the other tenant's own administrator | No such user, no such session |
+
+It also checks what must not be shared: one tenant's list of users and audit log name nothing of the other's, and locking a person out by failed attempts in one tenant does not lock out the person with the same address in the other.
+
+In a browser, a cookie of one tenant is not even sent to another: cookies are limited to the tenant's path. The suite sends them anyway, because the server must not rely on the browser.
+
+What the suite cannot cover yet is listed with the progress of the work: OAuth tokens and codes do not exist yet, and the pages are not built.

@@ -83,6 +83,14 @@ Specified in [the credential context](../architecture/contexts/credential.md).
 | Issue-29 Administration interface | Done | The first routes of the administration interface, served by `hodor-server`: create, list, read and suspend users; list and end a user's sessions; read the audit log. `hodor-authorization` crate with two fixed roles and the check; access tokens in the credential context, stored only as hashes; an OpenAPI document served by the interface. Every operation in the document is tried without a token, with ten kinds of token that are not good, with a role that lacks the permission and with another tenant's token. A test does an administrator's work on the real binary against PostgreSQL and finds it in the audit log under their name. Specified in [the administration interface](../api/admin-api.md), [the authorization context](../architecture/contexts/authorization.md) and [access tokens](../architecture/contexts/credential.md#access-tokens) |
 | Issue-30 Bootstrap administrator | Done | `hodor-cli admin bootstrap` makes a user an administrator of a tenant, creating the user if needed, and prints an access token once. Run as the real binary against PostgreSQL: the token and the role work in their tenant and in no other, a second run issues another token for the same user, and a user who may not sign in gets none. Specified in [the administration interface](../api/admin-api.md#the-first-administrator) |
 
+### Slice G — Hosted user interface and acceptance
+
+| Issue | Status | What exists |
+|---|---|---|
+| Issue-31 Hosted pages | Not started | — |
+| Issue-32 Cross-tenant suite | Done | Seven cases on the real `hodor-server` against PostgreSQL, with two tenants that share a person's email address and password: a session cookie, a sign-in in progress, an administrator's access token on every operation of the OpenAPI document, registration and recovery links, and the identifiers of users and sessions are each shown to work in their own tenant and then refused by the other; lists of users and audit logs name nothing of the other tenant; a lockout in one does not reach the other. Runs with every other test in continuous integration. Done ahead of Issue-31: it tests the server, which must not rely on what a browser would or would not send. Specified in [multi-tenancy](../architecture/multi-tenancy.md#the-cross-tenant-suite) |
+| Issue-33 Demonstration and quick-start | Not started | — |
+
 ### Checked by hand on the development stack
 
 Some things are covered by tests in halves and were also tried whole, on the Compose stack, on 2026-11-21:
@@ -103,6 +111,7 @@ These are recorded here so they are not forgotten; each is picked up by the issu
 | Records removed from the end of a tenant's audit chain, or a chain rewritten whole, are noticed only through the chain head, which lives in the same database | Exporting the latest hash regularly, later in Phase 1 |
 | Audit records do not carry the address a request came from or the application that made it, and events caused by people who are not signed in are recorded as anonymous | When events carry them: with OAuth clients in Phase 2 |
 | Rows of expired and revoked sessions are never removed | A cleanup job, later in Phase 1 |
+| The cross-tenant suite does not cover OAuth tokens and codes, which do not exist yet, or the pages in a browser | Phase 2 for OAuth; Issue-31 for the pages |
 | Roles are given only by the bootstrap command and cannot be taken away; access tokens cannot be listed or revoked through any interface | Phase 2, with OAuth and the rest of the administration interface |
 | Listing users reads each user with a query of its own | When a tenant's user list is slow |
 | The links in messages lead to pages that do not exist yet. Until they do, the token must be copied from the link into a request by hand | Issue-31 |
