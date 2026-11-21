@@ -31,6 +31,7 @@ Start with the [critical review](architecture/critical-review.md): it lists wher
 | 20 | Multi-tenant Isolation Strategy | [architecture/multi-tenancy.md](architecture/multi-tenancy.md) |
 | 21 | Threat Model | [security/threat-model.md](security/threat-model.md) |
 | — | Outbound HTTP: the one guarded way out to addresses other people chose | [security/outbound-http.md](security/outbound-http.md) |
+| — | The SAML attack corpus: every response a SAML service provider must refuse | [security/saml-attack-corpus.md](security/saml-attack-corpus.md) |
 | — | Secrets at rest: how the secrets Hodor must read back are kept encrypted, and how keys are changed | [security/secrets-at-rest.md](security/secrets-at-rest.md) |
 | 22 | Database Model | [architecture/database.md](architecture/database.md) |
 | 23 | API Specifications | [api/api-spec.md](api/api-spec.md) |

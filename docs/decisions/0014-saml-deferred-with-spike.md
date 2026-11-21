@@ -2,7 +2,7 @@
 
 Status: Proposed
 
-> [Decision 0017](0017-external-identities-before-oauth.md) moves the service provider side of SAML into Milestone 2. Everything else on this page stands: the spike comes first, the attack corpus is written before the feature code, and the external review remains a condition for production.
+> [Decision 0017](0017-external-identities-before-oauth.md) moves the service provider side of SAML into Milestone 2. The spike's outcome is [Decision 0019](0019-saml-signature-verification.md). Everything else on this page stands: the spike comes first, the attack corpus is written before the feature code, and the external review remains a condition for production.
 
 ## Context
 

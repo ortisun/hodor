@@ -2,6 +2,8 @@
 
 Status: Proposed
 
+> SAML signatures are verified with the RustCrypto provider of `xml-sec`, for verification only: see [Decision 0019](0019-saml-signature-verification.md).
+>
 > The use of `aws-lc-rs` for authenticated encryption and signatures, which departs from a literal "RustCrypto only" reading of the specification, was approved by the project owner on 2026-11-21, when secrets at rest were built. The rest of this record is still to be reviewed.
 
 ## Context
