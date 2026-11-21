@@ -83,6 +83,14 @@ Specified in [the credential context](../architecture/contexts/credential.md).
 | Issue-29 Administration interface | Done | The first routes of the administration interface, served by `hodor-server`: create, list, read and suspend users; list and end a user's sessions; read the audit log. `hodor-authorization` crate with two fixed roles and the check; access tokens in the credential context, stored only as hashes; an OpenAPI document served by the interface. Every operation in the document is tried without a token, with ten kinds of token that are not good, with a role that lacks the permission and with another tenant's token. A test does an administrator's work on the real binary against PostgreSQL and finds it in the audit log under their name. Specified in [the administration interface](../api/admin-api.md), [the authorization context](../architecture/contexts/authorization.md) and [access tokens](../architecture/contexts/credential.md#access-tokens) |
 | Issue-30 Bootstrap administrator | Done | `hodor-cli admin bootstrap` makes a user an administrator of a tenant, creating the user if needed, and prints an access token once. Run as the real binary against PostgreSQL: the token and the role work in their tenant and in no other, a second run issues another token for the same user, and a user who may not sign in gets none. Specified in [the administration interface](../api/admin-api.md#the-first-administrator) |
 
+### Slice G — Hosted user interface and acceptance
+
+| Issue | Status | What exists |
+|---|---|---|
+| Issue-31 Hosted pages | Not started | — |
+| Issue-32 Cross-tenant suite | In progress | Specified in [multi-tenancy](../architecture/multi-tenancy.md#the-cross-tenant-suite). Done ahead of Issue-31: it tests the server, which must not rely on what a browser would or would not send |
+| Issue-33 Demonstration and quick-start | Not started | — |
+
 ### Checked by hand on the development stack
 
 Some things are covered by tests in halves and were also tried whole, on the Compose stack, on 2026-11-21:
