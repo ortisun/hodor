@@ -4,7 +4,7 @@
 
 | Artifact | Contents |
 |---|---|
-| `hodor` image | One image with the three binaries: `hodor-server` (the entrypoint), `hodor-worker` and `hodor-cli`, run by overriding the command. The built static assets of the frontends are added when they exist. Distroless, non-root, `linux/amd64` and `linux/arm64` |
+| `hodor` image | One image with the three binaries: `hodor-server` (the entrypoint), `hodor-worker` and `hodor-cli`, run by overriding the command. It also holds [the hosted pages](../architecture/hosted-pages.md#how-the-pages-are-served), built into `/usr/share/hodor/auth-ui`, which `HODOR_PAGES_DIRECTORY` points at. The consoles are added when they exist. Distroless, non-root, `linux/amd64` and `linux/arm64` |
 | `hodor-policy-tools` image | The `opa` binary for the Rego validation job (Phase 5) |
 | Helm chart | Deployments, services, ingress, migration job, network policies, PodDisruptionBudgets, horizontal pod autoscaler, optional Open Policy Agent sidecar and Redis |
 | Software bill of materials and signatures | CycloneDX software bill of materials and a signature per image |

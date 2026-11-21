@@ -1,0 +1,115 @@
+/*
+ * Layout of the hosted pages. Everything else comes from the design
+ * system; only its semantic tokens are used here.
+ * No inline styles anywhere: the Content Security Policy allows none.
+ */
+
+.auth-page {
+  display: grid;
+  place-items: start center;
+  min-height: 100vh;
+  min-height: 100dvh;
+  padding: var(--space-12) var(--space-4) var(--space-8);
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 26rem;
+}
+
+.auth-card__body {
+  display: grid;
+  gap: var(--space-5);
+  padding: var(--space-8) var(--space-6);
+}
+
+.auth-card__heading {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.auth-card__title {
+  font-size: var(--text-2xl);
+  line-height: var(--leading-2xl);
+}
+
+/* The heading takes focus when a page opens, to be announced; it is not a control. */
+.auth-card__title:focus,
+.auth-card__title:focus-visible {
+  outline: none;
+}
+
+.auth-form {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.auth-form .input,
+.auth-form .button {
+  min-height: var(--control-large);
+  font-size: var(--text-lg);
+}
+
+.auth-wide {
+  width: 100%;
+}
+
+.auth-text {
+  margin: 0;
+}
+
+.auth-links {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* Inside text, a link is told apart by more than its color. */
+.auth-page a {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.auth-check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--target-minimum);
+  font-size: var(--text-sm);
+  color: var(--color-text);
+}
+
+.auth-check input {
+  width: 1rem;
+  height: 1rem;
+  margin: 0;
+  accent-color: var(--color-accent);
+}
+
+.auth-field-error {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-danger-text);
+}
+
+/* The alerts of these pages carry text only: one column. */
+.auth-page .alert {
+  grid-template-columns: 1fr;
+  color: var(--color-text-strong);
+}
+
+.auth-page .alert p {
+  margin: 0;
+}
+
+@media (max-width: 30rem) {
+  .auth-page {
+    padding-top: var(--space-6);
+  }
+
+  .auth-card__body {
+    padding: var(--space-6) var(--space-4);
+  }
+}

@@ -1,6 +1,6 @@
 # The interaction interface
 
-The interaction interface is how a browser signs in. It is what the hosted sign-in pages call; nothing else should. It exposes the [authentication context](../architecture/contexts/authentication.md) as a small state machine over HTTP: the pages ask which step comes next and submit what the person typed, and never decide anything themselves.
+The interaction interface is how a browser signs in. It is what [the hosted pages](../architecture/hosted-pages.md) call; nothing else should. It exposes the [authentication context](../architecture/contexts/authentication.md) as a small state machine over HTTP: the pages ask which step comes next and submit what the person typed, and never decide anything themselves.
 
 All paths are relative to the tenant: `https://{host}/t/{slug}`. Requests and responses are JSON. Errors are problem documents, as everywhere ([conventions](api-spec.md#conventions-for-the-json-apis)).
 
@@ -230,7 +230,6 @@ The address recorded for a sign-in, and used to limit attempts, is the address o
 
 | Item | Planned in |
 |---|---|
-| The pages themselves | Issue-31 |
 | Trusting a forwarded client address from named proxies | Before any deployment behind a load balancer |
 | Limiting requests per address on these paths, beyond the attempt limits of the password step | Later in Phase 1 |
 | The `__Host-` cookie variant for a tenant's own host | Phase 3 |

@@ -44,10 +44,13 @@ async fn route_not_found() -> impl IntoResponse {
 /// Builds the router for the public listener.
 ///
 /// `tenant_routes` are mounted under `/t/{slug}` and run with the resolved
-/// tenant's `TenantContext` as a request extension.
+/// tenant's `TenantContext` as a request extension. `site_routes` are
+/// mounted at the root and belong to no tenant: they must serve nothing
+/// that differs from one tenant to another.
 pub fn public_router(
     resolver: Arc<dyn TenantResolver>,
     tenant_routes: Router,
+    site_routes: Router,
     limits: Limits,
 ) -> Router {
     let tenant_routes = tenant_routes
@@ -56,6 +59,7 @@ pub fn public_router(
 
     Router::new()
         .nest("/t/{tenant}", tenant_routes)
+        .merge(site_routes)
         .fallback(route_not_found)
         .layer(DefaultBodyLimit::max(limits.max_body_bytes))
         .layer(RequestBodyLimitLayer::new(limits.max_body_bytes))

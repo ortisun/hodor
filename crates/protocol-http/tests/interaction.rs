@@ -223,6 +223,7 @@ async fn world() -> World {
             globex,
         }),
         Router::new().nest("/interaction", interaction_routes(state)),
+        Router::new(),
         Limits::default(),
     );
     World {
