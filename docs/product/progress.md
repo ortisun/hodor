@@ -77,7 +77,7 @@ Specified in [the credential context](../architecture/contexts/credential.md).
 
 | Issue | Status | What exists |
 |---|---|---|
-| Issue-27 Notification | In progress | Specified in [the notification context](../architecture/contexts/notification.md). Done ahead of Issue-25, which needs it |
+| Issue-27 Notification | Done | `hodor-notification` crate: messages queued in the transaction of the change that causes them, built-in templates in English and Brazilian Portuguese, retries with growing waits, expiry, and contents erased once a message is no longer pending; `notification.message` under row-level security; one contract suite passed by the in-memory queue and by PostgreSQL. `hodor-adapters-smtp` delivers to a mail server and is tested against a real one in a container. `hodor-worker` delivers queued messages; the development stack has a mail server whose web page shows what was sent. Nothing queues a message yet: that starts with Issue-25. Specified in [the notification context](../architecture/contexts/notification.md) |
 | Issue-28 to Issue-30 | Not started | — |
 
 ### Known gaps in what is done
@@ -93,7 +93,10 @@ These are recorded here so they are not forgotten; each is picked up by the issu
 | Rows of expired and revoked sessions are never removed | A cleanup job, later in Phase 1 |
 | A fresh installation has nobody to sign in: there is no command or page to create a user or set a password | Issue-25 (registration), Issue-30 (bootstrap administrator) |
 | The address used to limit attempts is the connection's, so behind a load balancer everyone shares one limit | Before any deployment behind a load balancer |
-| No event handlers are registered | Issue-27 (email), Issue-28 (audit) |
+| No event handlers are registered | Issue-28 (audit) |
+| Records of messages that were sent, failed or expired are never removed | A cleanup job, later in Phase 1 |
+| The worker opens a new connection to the mail server for every message | When the volume of mail calls for it |
+| The mail adapter was tested against a mail server without encryption or a password; the encrypted and authenticated paths rely on the mail library | Before the first production deployment |
 | Traces are exported but no test receives them | First issue that adds a traced database call |
 | SQL is checked at run time, not at compile time (`sqlx::query!` with the offline cache is not set up). Every query is exercised by an integration test instead | A dedicated issue, not yet scheduled |
 | Continuous integration actions are pinned by tag, not by commit SHA | Hardening pass (threat Threat-General-15) |
@@ -130,4 +133,5 @@ Each departure is reflected in the page that specifies the topic. They are colle
 | TLS trust for the database client | Not specified | Operating system trust store, not bundled roots | [local setup](../development/local-setup.md) and `Cargo.toml` |
 | Outbox delivery | A handler registry with per-handler idempotency | Delivery is atomic per event: all handlers for an event commit together with the "delivered" mark | [Decision 0003](../decisions/0003-context-communication.md) |
 | `UnitOfWork` | Port named, shape open | A trait object that adapters downcast to reach their transaction | [overview](../architecture/overview.md#cross-cutting-concerns) |
+| Email delivery | An event handler in the worker that reacts to events of other contexts | A queue of its own: the context that wants a message sent puts it in the queue inside its own transaction, and the worker delivers from the queue. An event must never carry a link that is as good as a token, and the queue can erase a message's contents once it is sent | [the notification context](../architecture/contexts/notification.md#how-a-message-gets-sent) |
 | Tenant lookup for HTTP | Middleware in `protocol-http` | Same, through a `TenantResolver` trait that the composition root implements, so `protocol-http` depends on no adapter | [overview](../architecture/overview.md#cross-cutting-concerns) |

@@ -56,7 +56,7 @@ hodor/
 └── tests/{architecture,integration,security,conformance,performance}/
 ```
 
-A crate is created only when the phase that uses it starts. Milestone 1 creates `kernel`, `tenant`, `identity`, `credential`, `session`, `authentication`, `audit`, `notification`, `protocol-http`, `adapters-postgres`, `adapters-crypto`, `observability` and the three apps.
+A crate is created only when the phase that uses it starts. Milestone 1 creates `kernel`, `tenant`, `identity`, `credential`, `session`, `authentication`, `audit`, `notification`, `protocol-http`, `adapters-postgres`, `adapters-crypto`, `adapters-smtp`, `observability` and the three apps.
 
 ## Dependency graph
 
@@ -95,7 +95,7 @@ flowchart BT
     protocolHttp["protocol-http"] --> tenant & identity & credential & session & authentication & federation & oauth & authorization & audit & keys
 
     server["hodor-server"] --> protocolHttp & adaptersPostgres & redis & crypto & adaptersKeyService & adaptersHttp & authorizationNative & authorizationPolicyAgent & observability
-    worker["hodor-worker"] --> adaptersPostgres & redis & crypto & adaptersKeyService & adaptersHttp & authorizationPolicyAgent & observability & notification & audit
+    worker["hodor-worker"] --> adaptersPostgres & adaptersSmtp & redis & crypto & adaptersKeyService & adaptersHttp & authorizationPolicyAgent & observability & notification & audit
     commandLineTool["hodor-cli"] --> adaptersPostgres & crypto
 ```
 

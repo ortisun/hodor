@@ -1,11 +1,16 @@
 //! Background jobs composition root.
 //!
-//! Today the worker has one job: delivering outbox events to their
-//! handlers. See `docs/operations/deployment.md`, "The worker".
+//! The worker has two jobs: delivering outbox events to their handlers,
+//! and delivering queued messages to the mail server. See
+//! `docs/operations/deployment.md`, "The worker".
 
 use clap::{Parser, ValueEnum};
-use hodor_adapters_postgres::{Database, OutboxDispatcher, PgPool, connect_pool, ping_pool};
-use hodor_kernel::Secret;
+use hodor_adapters_postgres::{
+    Database, OutboxDispatcher, PgMessageQueue, PgPendingMessages, PgPool, connect_pool, ping_pool,
+};
+use hodor_adapters_smtp::SmtpSender;
+use hodor_kernel::{Secret, SystemClock};
+use hodor_notification::api::DeliveryService;
 use hodor_observability::{LogFormat, Telemetry};
 use hodor_protocol_http::{Health, ReadinessCheck, ops_router, serve};
 use opentelemetry::KeyValue;
@@ -55,6 +60,24 @@ struct Config {
     /// Pause between passes when there is nothing to deliver.
     #[arg(long, env = "HODOR_OUTBOX_POLL_INTERVAL_MS", default_value_t = 500)]
     outbox_poll_interval_ms: u64,
+
+    /// Where to send mail, such as `smtps://user:password@host:465`.
+    /// Unset: no mail is delivered and messages wait.
+    #[arg(long, env = "HODOR_SMTP_URL", hide_env_values = true)]
+    smtp_url: Option<String>,
+
+    /// The address messages are sent from, such as
+    /// `Hodor <no-reply@example.com>`. Required with the mail server.
+    #[arg(long, env = "HODOR_MAIL_FROM", requires = "smtp_url")]
+    mail_from: Option<String>,
+
+    /// Most messages handled per pass.
+    #[arg(long, env = "HODOR_MAIL_BATCH_SIZE", default_value_t = 50)]
+    mail_batch_size: u32,
+
+    /// Pause between passes when there is no message to deliver.
+    #[arg(long, env = "HODOR_MAIL_POLL_INTERVAL_MS", default_value_t = 1000)]
+    mail_poll_interval_ms: u64,
 
     /// Log rendering.
     #[arg(long, env = "HODOR_LOG_FORMAT", value_enum, default_value = "json")]
@@ -124,6 +147,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 }
 
 async fn run(config: Config) -> Result<(), Box<dyn Error>> {
+    // Checked before anything is connected, so that a mistake in the mail
+    // settings is reported at once.
+    let mail_sender = mail_sender(config.smtp_url, config.mail_from.as_deref())?;
+
     let database = Database::connect(
         &Secret::from(config.database_url),
         config.database_max_connections,
@@ -146,7 +173,20 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
         }),
     ]);
 
-    // No handlers are registered yet; audit and notification add theirs.
+    let delivery = mail_sender.map(|sender| {
+        DeliveryService::new(
+            Arc::new(database.clone()),
+            Arc::new(PgMessageQueue),
+            Arc::new(PgPendingMessages::new(platform.clone())),
+            Arc::new(sender),
+            Arc::new(SystemClock),
+        )
+    });
+    if delivery.is_none() {
+        tracing::warn!("HODOR_SMTP_URL is not set: no mail is delivered and messages wait");
+    }
+
+    // No handlers are registered yet; audit adds its own.
     let dispatcher = OutboxDispatcher::new(platform, database, Vec::new());
 
     let ops_listener = TcpListener::bind(config.ops_addr).await?;
@@ -167,17 +207,99 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
         wait_for(stopped.clone()),
     ));
 
-    dispatch_loop(
-        &dispatcher,
-        config.outbox_batch_size,
-        Duration::from_millis(config.outbox_poll_interval_ms),
-        stopped,
-    )
-    .await;
+    tokio::join!(
+        dispatch_loop(
+            &dispatcher,
+            config.outbox_batch_size,
+            Duration::from_millis(config.outbox_poll_interval_ms),
+            stopped.clone(),
+        ),
+        delivery_loop(
+            delivery.as_ref(),
+            config.mail_batch_size,
+            Duration::from_millis(config.mail_poll_interval_ms),
+            stopped,
+        ),
+    );
 
     ops_server.await??;
     tracing::info!("hodor-worker stopped");
     Ok(())
+}
+
+/// Sets up the mail server, if one is configured.
+fn mail_sender(
+    smtp_url: Option<String>,
+    mail_from: Option<&str>,
+) -> Result<Option<SmtpSender>, Box<dyn Error>> {
+    let Some(url) = smtp_url else {
+        return Ok(None);
+    };
+    let from = mail_from.ok_or("HODOR_MAIL_FROM is required when HODOR_SMTP_URL is set")?;
+    Ok(Some(SmtpSender::new(&Secret::from(url), from)?))
+}
+
+/// Delivers queued messages until asked to stop. Without a mail server
+/// there is nothing to do.
+///
+/// Paced like [`dispatch_loop`]: a pass that did work is followed by
+/// another at once, unless every message in it is now waiting to be tried
+/// again; an empty pass and a storage error are followed by a pause.
+async fn delivery_loop(
+    delivery: Option<&DeliveryService>,
+    batch_size: u32,
+    poll_interval: Duration,
+    mut stopped: watch::Receiver<bool>,
+) {
+    let Some(delivery) = delivery else {
+        return;
+    };
+    let meter = opentelemetry::global::meter("hodor.worker");
+    let messages: Counter<u64> = meter
+        .u64_counter("hodor.notification.messages")
+        .with_description("Messages handled, by outcome")
+        .build();
+    let passes: Counter<u64> = meter
+        .u64_counter("hodor.notification.passes")
+        .with_description("Message delivery passes, by outcome")
+        .build();
+
+    while !*stopped.borrow() {
+        let pause = match delivery.deliver_pending(batch_size).await {
+            Ok(report) => {
+                passes.add(1, &[KeyValue::new("outcome", "ok")]);
+                for (outcome, count) in [
+                    ("sent", report.sent),
+                    ("retrying", report.retrying),
+                    ("failed", report.failed),
+                    ("expired", report.expired),
+                ] {
+                    messages.add(count as u64, &[KeyValue::new("outcome", outcome)]);
+                }
+                if report.retrying + report.failed > 0 {
+                    tracing::warn!(
+                        retrying = report.retrying,
+                        failed = report.failed,
+                        "message deliveries failed"
+                    );
+                }
+                // Messages waiting for their next try are not due, so a
+                // pass that only failed would otherwise spin.
+                (report.sent + report.expired == 0).then_some(poll_interval)
+            }
+            Err(error) => {
+                passes.add(1, &[KeyValue::new("outcome", "error")]);
+                tracing::warn!(code = error.code(), detail = ?error.detail(), "message delivery pass failed");
+                Some(poll_interval.max(MIN_ERROR_PAUSE))
+            }
+        };
+        if let Some(pause) = pause {
+            tokio::select! {
+                () = tokio::time::sleep(pause) => {}
+                _ = stopped.changed() => {}
+            }
+        }
+    }
 }
 
 /// Delivers outbox events until asked to stop.

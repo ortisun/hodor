@@ -1,0 +1,23 @@
+[package]
+name = "hodor-adapters-smtp"
+description = "Mail adapter: hands the notification context's messages to a mail server."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+hodor-kernel.workspace = true
+hodor-notification.workspace = true
+lettre.workspace = true
+
+[dev-dependencies]
+reqwest = { workspace = true }
+serde_json.workspace = true
+testcontainers.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true
