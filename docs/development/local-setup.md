@@ -73,7 +73,7 @@ The credentials in the Compose file and in `deploy/docker/postgres-init.sql` are
 
 ### What works today
 
-A person can register, sign in and recover a forgotten password. With the stack running and a tenant created with open registration (see [creating your first tenant](#creating-your-first-tenant)), `hodor-server` serves [the interaction interface](../api/interaction-api.md) under `/t/{slug}/interaction`, and the worker delivers the messages to the development mail server, where they can be read at <http://localhost:8025>.
+A person can register, sign in, see and end their sessions, sign out, and recover a forgotten password. With the stack running and a tenant created with open registration (see [creating your first tenant](#creating-your-first-tenant)), `hodor-server` serves [the interaction interface](../api/interaction-api.md) under `/t/{slug}/interaction`, and the worker delivers the messages to the development mail server, where they can be read at <http://localhost:8025>.
 
 What is still missing around it:
 

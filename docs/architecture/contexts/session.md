@@ -68,6 +68,7 @@ Rules:
 | Find by token | Returns the active session a token belongs to, and records the activity. A token that is malformed, unknown, expired or revoked finds nothing, and all four look the same to the caller |
 | List a user's sessions | Returns the user's active sessions, newest first, for the account pages and for administrators |
 | Revoke session | Ends one session, with a reason |
+| Revoke one of a user's sessions | Ends a session only if it belongs to the given user and is active; otherwise it reports that there is no such session, without saying which was the case. This is what a person uses on their own sessions |
 | Revoke a user's sessions | Ends all of a user's active sessions, optionally keeping one: used when a password changes, where the session that made the change survives |
 | Replace token | Gives a session a new token |
 
@@ -115,7 +116,6 @@ Rows of expired and revoked sessions stay until a cleanup job removes them; that
 
 | Item | Planned in |
 |---|---|
-| The browser cookie that carries the token | Issue-24, with the interaction API |
 | Removing old rows | Later in Phase 1 |
 | Raising a session's assurance after a stronger sign-in | Phase 4 |
 | Sessions of individual applications, and signing them out | Phase 2 |

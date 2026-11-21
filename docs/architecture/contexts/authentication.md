@@ -328,7 +328,6 @@ All three are tenant tables under row-level security.
 | Item | Planned in |
 |---|---|
 | The pages of a sign-in | Issue-31 |
-| Signing out | Issue-26 |
 | Editing flows; alternative, conditional and optional steps; simulation | Phase 4 |
 | Further authenticators, risk signals, recognizing a user's own device | Phases 3 and 4 |
 | Making a user choose a new password when the current one is marked as temporary. The mark is stored and returned by the credential context, but sign-in does not act on it yet | With the administration interface, Issue-29, which is what sets the mark |

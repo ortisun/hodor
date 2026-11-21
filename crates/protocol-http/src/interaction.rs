@@ -8,12 +8,12 @@
 use crate::problem::Problem;
 use crate::request::ClientAddress;
 use crate::tenant::TenantSlug;
-use axum::extract::{Request, State};
+use axum::extract::{RawPathParams, Request, State};
 use axum::http::header::{self, HeaderMap, HeaderName, HeaderValue};
 use axum::http::{Method, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Extension, Json, Router};
 use hodor_authentication::api::{
     AccountRequest, AccountService, AuthenticationService, SignIn, StepInput, TransactionId,
@@ -21,7 +21,7 @@ use hodor_authentication::api::{
 use hodor_kernel::{
     Actor, Caller, Clock, CorrelationId, Digest, DomainError, Secret, TenantContext,
 };
-use hodor_session::api::{ClientInfo, Session, SessionService, SessionToken};
+use hodor_session::api::{ClientInfo, Session, SessionId, SessionService, SessionToken};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use time::format_description::well_known::Rfc3339;
@@ -65,7 +65,9 @@ pub fn interaction_routes(state: InteractionState) -> Router {
         )
         .route("/sign-in/steps/identifier", post(submit_identifier))
         .route("/sign-in/steps/password", post(submit_password))
-        .route("/session", get(current_session))
+        .route("/session", get(current_session).delete(sign_out))
+        .route("/sessions", get(list_sessions).delete(end_other_sessions))
+        .route("/sessions/{session_id}", delete(end_session))
         .route("/registration", post(request_registration))
         .route("/registration/complete", post(complete_registration))
         .route("/recovery", post(request_recovery))
@@ -133,6 +135,29 @@ struct SessionBody {
     assurance: &'static str,
     methods: Vec<String>,
     expires_at: String,
+    csrf_token: String,
+}
+
+/// One of a person's sessions, as they see it in their own list.
+#[derive(Debug, Serialize)]
+struct ListedSession {
+    session_id: String,
+    current: bool,
+    started_at: String,
+    last_activity_at: String,
+    expires_at: String,
+    address: Option<String>,
+    description: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct SessionsBody {
+    sessions: Vec<ListedSession>,
+}
+
+#[derive(Debug, Serialize)]
+struct EndedBody {
+    ended: usize,
 }
 
 /// The sign-in a browser is in the middle of, as its cookie names it.
@@ -469,17 +494,93 @@ async fn cancel_sign_in(
     }
 }
 
-fn session_body(session: &Session) -> SessionBody {
+fn written(moment: time::OffsetDateTime) -> String {
+    moment.format(&Rfc3339).unwrap_or_default()
+}
+
+fn session_body(session: &Session, csrf_token: String) -> SessionBody {
     let state = session.snapshot();
-    let text = |moment: time::OffsetDateTime| moment.format(&Rfc3339).unwrap_or_default();
     SessionBody {
         user_id: state.user_id.to_string(),
         session_id: state.id.to_string(),
-        signed_in_at: text(state.signed_in_at),
+        signed_in_at: written(state.signed_in_at),
         assurance: state.assurance.as_str(),
         methods: state.methods.clone(),
-        expires_at: text(session.expires_at()),
+        expires_at: written(session.expires_at()),
+        csrf_token,
     }
+}
+
+/// One answer whatever the reason: no cookie, an unknown token, an expired
+/// or a revoked session.
+fn not_authenticated() -> Response {
+    problem(
+        StatusCode::UNAUTHORIZED,
+        "session.not_authenticated",
+        "there is no valid session",
+    )
+}
+
+/// The person a request comes from, by their session cookie.
+struct SignedIn {
+    session: Session,
+    /// The CSRF token that belongs to the session, derived from its token.
+    csrf_token: String,
+}
+
+impl SignedIn {
+    fn caller(&self) -> Caller {
+        Caller {
+            actor: Actor::User(self.session.user_id()),
+            correlation_id: CorrelationId::generate(),
+        }
+    }
+}
+
+async fn signed_in(
+    state: &InteractionState,
+    tenant: &TenantContext,
+    headers: &HeaderMap,
+) -> Result<SignedIn, Box<Response>> {
+    let token = cookie(headers, SESSION_COOKIE).ok_or_else(|| Box::new(not_authenticated()))?;
+    match state.sessions.find_by_token(tenant, token).await {
+        Ok(Some(session)) => Ok(SignedIn {
+            session,
+            csrf_token: csrf_token(state.digest.as_ref(), token),
+        }),
+        Ok(None) => Err(Box::new(not_authenticated())),
+        Err(error) => Err(Box::new(Problem::from(error).into_response())),
+    }
+}
+
+/// The signed-in person, for a request that changes something: it must
+/// also carry the session's CSRF token.
+async fn signed_in_to_change(
+    state: &InteractionState,
+    tenant: &TenantContext,
+    headers: &HeaderMap,
+) -> Result<SignedIn, Box<Response>> {
+    let person = signed_in(state, tenant, headers).await?;
+    let presented = headers
+        .get(CSRF_HEADER)
+        .and_then(|value| value.to_str().ok());
+    if presented.is_some_and(|presented| same(presented, &person.csrf_token)) {
+        Ok(person)
+    } else {
+        Err(Box::new(problem(
+            StatusCode::FORBIDDEN,
+            "request.csrf_token_invalid",
+            "the request is missing its CSRF token, or the token is wrong",
+        )))
+    }
+}
+
+/// Tells the browser to forget the session cookie.
+fn forget_session(response: &mut Response, slug: &str) {
+    set_cookie(
+        response,
+        &format!("{SESSION_COOKIE}=; Path=/t/{slug}; Max-Age=0; HttpOnly; Secure; SameSite=Lax"),
+    );
 }
 
 async fn current_session(
@@ -487,21 +588,145 @@ async fn current_session(
     Extension(tenant): Extension<TenantContext>,
     headers: HeaderMap,
 ) -> Response {
-    let not_authenticated = || {
-        // One answer whatever the reason: no cookie, an unknown token, an
-        // expired or a revoked session.
-        problem(
-            StatusCode::UNAUTHORIZED,
-            "session.not_authenticated",
-            "there is no valid session",
+    match signed_in(&state, &tenant, &headers).await {
+        Ok(person) => (
+            StatusCode::OK,
+            Json(session_body(&person.session, person.csrf_token)),
         )
+            .into_response(),
+        Err(response) => *response,
+    }
+}
+
+async fn sign_out(
+    State(state): State<InteractionState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(TenantSlug(slug)): Extension<TenantSlug>,
+    headers: HeaderMap,
+) -> Response {
+    let person = match signed_in_to_change(&state, &tenant, &headers).await {
+        Ok(person) => person,
+        Err(response) => return *response,
     };
-    let Some(token) = cookie(&headers, SESSION_COOKIE) else {
-        return not_authenticated();
+    let ended = state
+        .sessions
+        .revoke(&tenant, person.session.id(), "sign_out", person.caller())
+        .await;
+    match ended {
+        Ok(()) => {
+            let mut response = StatusCode::NO_CONTENT.into_response();
+            forget_session(&mut response, &slug);
+            response
+        }
+        Err(error) => Problem::from(error).into_response(),
+    }
+}
+
+async fn list_sessions(
+    State(state): State<InteractionState>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+) -> Response {
+    let person = match signed_in(&state, &tenant, &headers).await {
+        Ok(person) => person,
+        Err(response) => return *response,
     };
-    match state.sessions.find_by_token(&tenant, token).await {
-        Ok(Some(session)) => (StatusCode::OK, Json(session_body(&session))).into_response(),
-        Ok(None) => not_authenticated(),
+    let listed = state
+        .sessions
+        .list_for_user(&tenant, person.session.user_id())
+        .await;
+    match listed {
+        Ok(sessions) => {
+            let sessions = sessions
+                .iter()
+                .map(|session| {
+                    let stored = session.snapshot();
+                    ListedSession {
+                        session_id: stored.id.to_string(),
+                        current: stored.id == person.session.id(),
+                        started_at: written(stored.started_at),
+                        last_activity_at: written(stored.last_activity_at),
+                        expires_at: written(session.expires_at()),
+                        address: stored.client.address.clone(),
+                        description: stored.client.description.clone(),
+                    }
+                })
+                .collect();
+            (StatusCode::OK, Json(SessionsBody { sessions })).into_response()
+        }
+        Err(error) => Problem::from(error).into_response(),
+    }
+}
+
+async fn end_session(
+    State(state): State<InteractionState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(TenantSlug(slug)): Extension<TenantSlug>,
+    parameters: RawPathParams,
+    headers: HeaderMap,
+) -> Response {
+    let person = match signed_in_to_change(&state, &tenant, &headers).await {
+        Ok(person) => person,
+        Err(response) => return *response,
+    };
+    let not_found = || {
+        Problem::from(DomainError::not_found(
+            "session.not_found",
+            "the session does not exist",
+        ))
+        .into_response()
+    };
+    // Something that is not an identifier names no session.
+    let Some(id) = parameters
+        .iter()
+        .find(|(name, _)| *name == "session_id")
+        .and_then(|(_, value)| value.parse::<SessionId>().ok())
+    else {
+        return not_found();
+    };
+    let ended = state
+        .sessions
+        .revoke_for_user(
+            &tenant,
+            person.session.user_id(),
+            id,
+            "ended_by_user",
+            person.caller(),
+        )
+        .await;
+    match ended {
+        Ok(()) => {
+            let mut response = StatusCode::NO_CONTENT.into_response();
+            if id == person.session.id() {
+                forget_session(&mut response, &slug);
+            }
+            response
+        }
+        Err(error) => Problem::from(error).into_response(),
+    }
+}
+
+async fn end_other_sessions(
+    State(state): State<InteractionState>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+) -> Response {
+    let person = match signed_in_to_change(&state, &tenant, &headers).await {
+        Ok(person) => person,
+        Err(response) => return *response,
+    };
+    let ended = state
+        .sessions
+        .revoke_all_for_user(
+            &tenant,
+            person.session.user_id(),
+            Some(person.session.id()),
+            "ended_by_user",
+            person.caller(),
+        )
+        .await;
+    match ended {
+        Ok(ended) => (StatusCode::OK, Json(EndedBody { ended })).into_response(),
         Err(error) => Problem::from(error).into_response(),
     }
 }

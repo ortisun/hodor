@@ -15,7 +15,7 @@ All paths are relative to the tenant: `https://{host}/t/{slug}`. Requests and re
 | `DELETE /interaction/sign-in` | Abandon the sign-in |
 | `GET /interaction/session` | Say who is signed in |
 
-Registration and password recovery have [their own section](#registering-and-recovering-a-password).
+Signing out and the person's sessions are under [the session](#routes-for-a-signed-in-person). Registration and password recovery have [their own section](#registering-and-recovering-a-password).
 
 ### What a sign-in response looks like
 
@@ -123,6 +123,18 @@ The cookie holds nothing but the token. Whether the session is still valid is de
 
 On a host that serves several tenants by path, cookies are separated by `Path`, which is a convenience and not a security boundary between tenants; see [multi-tenancy](../architecture/multi-tenancy.md#shared-host-caveat). On a tenant's own host the cookies use the stricter `__Host-` prefix. That variant comes with custom domains in Phase 3.
 
+### Routes for a signed-in person
+
+| Method and path | Purpose |
+|---|---|
+| `GET /interaction/session` | Say who is signed in |
+| `DELETE /interaction/session` | Sign out of this browser |
+| `GET /interaction/sessions` | List the person's sessions |
+| `DELETE /interaction/sessions/{session_id}` | End one of the person's sessions |
+| `DELETE /interaction/sessions` | End all of the person's sessions except this one |
+
+Every one of them needs a valid session cookie. Without one the answer is `401` with `session.not_authenticated`, whatever the reason: no cookie, an unknown token, an expired or a revoked session.
+
 ### `GET /interaction/session`
 
 Answers who is signed in:
@@ -134,11 +146,54 @@ Answers who is signed in:
   "signed_in_at": "2026-11-20T14:03:11Z",
   "assurance": "single_factor",
   "methods": ["password"],
-  "expires_at": "2026-11-20T14:33:11Z"
+  "expires_at": "2026-11-20T14:33:11Z",
+  "csrf_token": "5b1e…"
 }
 ```
 
-`expires_at` is when the session ends if it is not used again. Without a valid session the answer is `401` with the code `session.not_authenticated`, whatever the reason: no cookie, an unknown token, an expired or a revoked session.
+`expires_at` is the moment the session ends if it is not used again. `csrf_token` is the value to send back in the `X-CSRF-Token` header of the requests below that change something.
+
+### Signing out
+
+`DELETE /interaction/session` ends the session this browser holds and removes the session cookie. The answer is `204`.
+
+The session is ended on the server, not merely forgotten by the browser: a copy of the token made earlier stops working at the same moment. The next request with it gets `401`.
+
+Signing out ends one session. The person's sessions in other browsers continue.
+
+### Listing sessions
+
+`GET /interaction/sessions` answers with the person's active sessions, newest first:
+
+```json
+{
+  "sessions": [
+    {
+      "session_id": "0193f1c9-…",
+      "current": true,
+      "started_at": "2026-11-20T14:03:11Z",
+      "last_activity_at": "2026-11-20T14:20:00Z",
+      "expires_at": "2026-11-20T14:50:00Z",
+      "address": "203.0.113.9",
+      "description": "Mozilla/5.0 …"
+    }
+  ]
+}
+```
+
+`current` marks the session of the browser that asks. `address` and `description` are what was seen when the session started, so that the person can recognize their own devices and notice one that is not theirs. A session's token never appears, in this list or anywhere else.
+
+### Ending other sessions
+
+`DELETE /interaction/sessions/{session_id}` ends one session of the person: `204`. A session that is not theirs, does not exist or has already ended is answered with `404` and `session.not_found`, all three in the same way, so that one person cannot learn about another's sessions. Ending the current session this way is the same as signing out, and removes the cookie.
+
+`DELETE /interaction/sessions` ends every session of the person except the current one: `200` with `{ "ended": 2 }`.
+
+### Protection for these requests
+
+The three `DELETE` requests change something, so each must carry the CSRF token from `GET /interaction/session` in the `X-CSRF-Token` header. The token is derived from the session token, and only a page from this origin can read it. A request without it, or with a wrong one, is refused with `403` and `request.csrf_token_invalid`, and changes nothing. The origin check applies as everywhere.
+
+The session cookie is `SameSite=Lax`, which already keeps a browser from attaching it to a `DELETE` another site starts. The token is a second, independent measure.
 
 ## Registering and recovering a password
 
@@ -176,7 +231,6 @@ The address recorded for a sign-in, and used to limit attempts, is the address o
 | Item | Planned in |
 |---|---|
 | The pages themselves | Issue-31 |
-| Signing out, listing one's sessions | Issue-26 |
 | Trusting a forwarded client address from named proxies | Before any deployment behind a load balancer |
 | Limiting requests per address on these paths, beyond the attempt limits of the password step | Later in Phase 1 |
 | The `__Host-` cookie variant for a tenant's own host | Phase 3 |
