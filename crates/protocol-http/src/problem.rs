@@ -25,6 +25,10 @@ pub struct Problem {
     /// Identifier to quote when reporting the problem.
     #[serde(skip_serializing_if = "Option::is_none")]
     request_id: Option<String>,
+    /// Seconds the caller should wait before trying again; sent as the
+    /// `Retry-After` header rather than in the body.
+    #[serde(skip)]
+    retry_after_seconds: Option<u64>,
 }
 
 impl Problem {
@@ -39,6 +43,7 @@ impl Problem {
             detail: detail.into(),
             code,
             request_id: None,
+            retry_after_seconds: None,
         }
     }
 
@@ -78,7 +83,9 @@ impl From<DomainError> for Problem {
         } else {
             error.message()
         };
-        Self::new(status, error.code(), detail)
+        let mut problem = Self::new(status, error.code(), detail);
+        problem.retry_after_seconds = error.retry_after_seconds();
+        problem
     }
 }
 
@@ -92,6 +99,11 @@ impl IntoResponse for Problem {
             header::CONTENT_TYPE,
             HeaderValue::from_static("application/problem+json"),
         );
+        if let Some(seconds) = self.retry_after_seconds {
+            response
+                .headers_mut()
+                .insert(header::RETRY_AFTER, HeaderValue::from(seconds));
+        }
         response
     }
 }

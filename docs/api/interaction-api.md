@@ -99,6 +99,8 @@ A page on another site must not be able to make a person's browser act on their 
 
 Bodies must be JSON, which a plain cross-site form cannot send.
 
+Starting a sign-in is the one changing request that carries no CSRF token, since there is no sign-in yet to derive one from. It is covered by the origin check, and a forged start does no harm: it gives the browser a fresh sign-in that nobody has typed anything into.
+
 ## The session
 
 When a sign-in completes, the response sets the session cookie and the browser is signed in to the tenant.
