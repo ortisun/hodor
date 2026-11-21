@@ -1,4 +1,4 @@
-# Decision 0019: Until Hodor issues tokens, the admin console rides the administrator's Hodor session
+# Decision 0020: Until Hodor issues tokens, the admin console rides the administrator's Hodor session
 
 Status: Accepted (requested by the project owner)
 

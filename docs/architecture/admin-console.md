@@ -1,6 +1,6 @@
 # The admin console
 
-The admin console is where the people who run a tenant do it from a browser: see its users, create and suspend them, end their sessions, connect the identity providers people sign in with, and read the audit log. It is the first part of [the control plane](../design/control-plane.md), built on what the server can answer today ([Decision 0019](../decisions/0019-console-on-the-hodor-session.md)).
+The admin console is where the people who run a tenant do it from a browser: see its users, create and suspend them, end their sessions, connect the identity providers people sign in with, and read the audit log. It is the first part of [the control plane](../design/control-plane.md), built on what the server can answer today ([Decision 0020](../decisions/0020-console-on-the-hodor-session.md)).
 
 It is an application of static files, `admin-console`, served by `hodor-server` on the tenant's origin, built from the components of the [design system](../design/design-system.md). It talks only to the [console interface](../api/console-interface.md).
 
@@ -115,7 +115,7 @@ The console is used in production with these known gaps. Each is a requirement o
 
 | Missing | Why | Arrives with |
 |---|---|---|
-| Sign-in by OpenID Connect, with the tokens kept by the server | Hodor issues no tokens yet ([Decision 0019](../decisions/0019-console-on-the-hodor-session.md)) | Phase 2 |
+| Sign-in by OpenID Connect, with the tokens kept by the server | Hodor issues no tokens yet ([Decision 0020](../decisions/0020-console-on-the-hodor-session.md)) | Phase 2 |
 | An idle timeout of 15 minutes for administrators (Requirement-Console-01). The 12-hour limit is built; the idle limit is the tenant's | Activity on the account pages and in the console is one session's activity today | Phase 2 |
 | Recent authentication for sensitive actions (Requirement-Console-03) | There is no step-up yet | Phase 2 |
 | Phishing-resistant sign-in for administrators (Requirement-Console-05) | Passkeys are Phase 4. Until then an administrator signs in with a password | Phase 4 |

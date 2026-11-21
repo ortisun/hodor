@@ -4,7 +4,7 @@ The admin console is Hodor's control plane: the place where tenant administrator
 
 This page is the whole design. What is built of it today, and how, is in [the admin console](../architecture/admin-console.md).
 
-The console is an ordinary OpenID Connect client of Hodor behind a backend-for-frontend, and it uses only the public Admin API ([Decision 0011](../decisions/0011-frontends-bff.md)). Until Hodor issues tokens, the backend-for-frontend recognizes the administrator by their Hodor session instead ([Decision 0019](../decisions/0019-console-on-the-hodor-session.md)). Anything the console can do, an API client or the Terraform provider can do. The console adds no capability; it adds visibility and safety.
+The console is an ordinary OpenID Connect client of Hodor behind a backend-for-frontend, and it uses only the public Admin API ([Decision 0011](../decisions/0011-frontends-bff.md)). Until Hodor issues tokens, the backend-for-frontend recognizes the administrator by their Hodor session instead ([Decision 0020](../decisions/0020-console-on-the-hodor-session.md)). Anything the console can do, an API client or the Terraform provider can do. The console adds no capability; it adds visibility and safety.
 
 ## 1. Goals
 

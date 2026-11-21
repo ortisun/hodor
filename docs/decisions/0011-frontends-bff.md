@@ -21,7 +21,7 @@ There are three React applications. The hosted login user interface handles cred
 - The static files are not compiled into the binary. They are built into a directory of the image, and `hodor-server` is told where it is. Building and testing the Rust workspace therefore needs no Node.js.
 - The Content Security Policy carries `require-trusted-types-for 'script'` with no policy allowed at all, which is stricter than "Trusted Types": the pages have no way to turn text into markup.
 
-The admin console exists since [Decision 0019](0019-console-on-the-hodor-session.md), which gives the backend-for-frontend a first form: it recognizes the administrator by their Hodor session, because Hodor issues no tokens yet. The account console does not exist yet.
+The admin console exists since [Decision 0020](0020-console-on-the-hodor-session.md), which gives the backend-for-frontend a first form: it recognizes the administrator by their Hodor session, because Hodor issues no tokens yet. The account console does not exist yet.
 
 ## Consequences
 

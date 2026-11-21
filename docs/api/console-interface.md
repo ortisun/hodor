@@ -1,6 +1,6 @@
 # The console interface
 
-The console interface is what the [admin console](../architecture/admin-console.md) calls. It is the backend-for-frontend of [Decision 0011](../decisions/0011-frontends-bff.md), in the form [Decision 0019](../decisions/0019-console-on-the-hodor-session.md) gives it until Hodor issues tokens. It is for that one application: programs use the [administration interface](admin-api.md).
+The console interface is what the [admin console](../architecture/admin-console.md) calls. It is the backend-for-frontend of [Decision 0011](../decisions/0011-frontends-bff.md), in the form [Decision 0020](../decisions/0020-console-on-the-hodor-session.md) gives it until Hodor issues tokens. It is for that one application: programs use the [administration interface](admin-api.md).
 
 All paths are relative to the tenant: `https://{host}/t/{slug}/console/api`. Requests and responses are JSON and follow the [conventions for the JSON APIs](api-spec.md#conventions-for-the-json-apis). Errors are problem documents.
 
