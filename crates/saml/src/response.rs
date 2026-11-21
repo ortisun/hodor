@@ -34,6 +34,17 @@ pub const MAX_RESPONSE_BYTES: usize = 256 * 1024;
 /// with room for the line breaks some identity providers write.
 pub const MAX_POSTED_BYTES: usize = 384 * 1024;
 
+/// The most nodes a response may have. Real ones have about a hundred.
+const MAX_NODES: usize = 4096;
+
+/// The deepest a response may nest. Real ones nest about eight deep.
+const MAX_DEPTH: usize = 64;
+
+/// The most namespace prefixes bound at once. Parsing work grows with the
+/// number of elements times the prefixes in scope, so without this bound a
+/// response within the size limit costs seconds to parse.
+const MAX_NAMESPACES_IN_SCOPE: usize = 32;
+
 /// How far apart two clocks may be.
 const CLOCK_TOLERANCE: Duration = Duration::minutes(1);
 
@@ -166,16 +177,9 @@ pub fn check_response(posted: &str, expected: &Expected<'_>) -> Result<Assertion
     let provider = RustCryptoProvider;
     #[expect(
         clippy::expect_used,
-        reason = "the profile and its context are fixed, and a test compiles them"
+        reason = "the profile, its limits and its context are fixed, and a test compiles them"
     )]
-    let policies = PolicyCompiler::new(PolicyProfile::SecureSaml, &provider, None)
-        .and_then(|compiler| {
-            compiler.compile(&PolicyCompileContext {
-                external_resources: false,
-                target_evidence: true,
-            })
-        })
-        .expect("the SAML profile of xml-sec compiles");
+    let policies = compile_profile(&provider).expect("the SAML profile of xml-sec compiles");
     let security = XmlSecurity::new(&policies, &provider).map_err(|_| Reason::Malformed)?;
 
     // Step 2: one parse, by both parsers, that everything after reads.
@@ -219,6 +223,27 @@ pub fn check_response(posted: &str, expected: &Expected<'_>) -> Result<Assertion
     document.with_view(|view| read(view, &plan, expected))
 }
 
+/// The `SecureSaml` profile of `xml-sec`, restricted to the limits above.
+fn compile_profile(
+    provider: &RustCryptoProvider,
+) -> Result<xml_sec::policy::CompiledPolicies, xml_sec::policy::PolicyViolation> {
+    let compiler = PolicyCompiler::new(PolicyProfile::SecureSaml, provider, None)?;
+    let mut limits = compiler.policies().clone();
+    if let Some(verification) = limits.verification.as_mut() {
+        let resources = &mut verification.resources;
+        resources.max_xml_nodes = resources.max_xml_nodes.min(MAX_NODES);
+        resources.max_xml_depth = resources.max_xml_depth.min(MAX_DEPTH);
+        resources.max_xml_namespace_bindings = resources
+            .max_xml_namespace_bindings
+            .min(MAX_NAMESPACES_IN_SCOPE);
+        resources.max_xml_document_bytes = resources.max_xml_document_bytes.min(MAX_RESPONSE_BYTES);
+    }
+    compiler.restrict(&limits)?.compile(&PolicyCompileContext {
+        external_resources: false,
+        target_evidence: true,
+    })
+}
+
 /// What the inspection established, for the verification and the reading.
 struct Plan {
     signed: NodeIdentity,
@@ -248,7 +273,12 @@ fn parse_refusal(error: XmlSecError) -> Refusal {
             Reason::DocumentType
         }
         XmlSecError::Document(XmlDocumentError::DocumentTooDeep { .. }) => Reason::Depth,
-        XmlSecError::Document(XmlDocumentError::DocumentTooLarge { .. }) => Reason::Size,
+        XmlSecError::Document(
+            XmlDocumentError::DocumentTooLarge { .. }
+            | XmlDocumentError::Parse(
+                ParseError::NodesLimitReached | ParseError::NamespaceBindingLimitReached { .. },
+            ),
+        ) => Reason::Size,
         _ => Reason::Malformed,
     }
     .into()
@@ -352,11 +382,12 @@ fn inspect(view: DocumentView<'_>, expected: &Expected<'_>) -> Result<Plan, Refu
         _ => return Err(Reason::Wrapping.into()),
     };
 
-    // Step 7: the signed element has an identifier that nothing else has.
-    let Some(signed_id) = signed.attribute("ID") else {
+    // Step 7: the signed element has an identifier that nothing else has,
+    // written so that it can only be read one way.
+    let Some(signed_id) = signed.attribute("ID").filter(|id| is_plain_name(id)) else {
         return Err(Reason::Reference.into());
     };
-    let Some(assertion_id) = assertion.attribute("ID") else {
+    let Some(assertion_id) = assertion.attribute("ID").filter(|id| is_plain_name(id)) else {
         return Err(Reason::Structure.into());
     };
     if carriers(view, signed_id) > 1 || carriers(view, assertion_id) > 1 {
@@ -709,15 +740,27 @@ fn carriers(view: DocumentView<'_>, value: &str) -> usize {
             element
                 .attributes()
                 .filter(|attribute| {
-                    let identifier = match attribute.namespace() {
-                        None => matches!(attribute.name(), "ID" | "Id" | "id"),
-                        Some(namespace) => namespace == XML && attribute.name() == "id",
-                    };
+                    // Every spelling xml-sec treats as an identifier, in any
+                    // namespace, and `xml:id`.
+                    let identifier = matches!(attribute.name(), "ID" | "Id" | "id")
+                        || (attribute.namespace() == Some(XML) && attribute.name() == "id");
                     identifier && attribute.value() == value
                 })
                 .count()
         })
         .sum()
+}
+
+/// Whether an identifier is a plain name: a letter or an underscore, then
+/// letters, digits, underscores, hyphens and periods. A reference to it then
+/// means the same to Hodor and to `xml-sec`, which would otherwise decode
+/// percent escapes in it.
+fn is_plain_name(id: &str) -> bool {
+    let mut characters = id.chars();
+    characters
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
+        && characters.all(|rest| rest.is_ascii_alphanumeric() || matches!(rest, '_' | '-' | '.'))
 }
 
 /// The element of the tree an identity names.
@@ -739,13 +782,7 @@ mod tests {
     #[test]
     fn the_profile_compiles() {
         let provider = RustCryptoProvider;
-        let compiled =
-            PolicyCompiler::new(PolicyProfile::SecureSaml, &provider, None).and_then(|compiler| {
-                compiler.compile(&PolicyCompileContext {
-                    external_resources: false,
-                    target_evidence: true,
-                })
-            });
+        let compiled = compile_profile(&provider);
         assert!(compiled.is_ok(), "{compiled:?}");
     }
 
@@ -753,6 +790,16 @@ mod tests {
     fn a_posted_value_beyond_the_limit_is_refused_before_decoding() {
         let posted = "A".repeat(MAX_POSTED_BYTES + 1);
         assert_eq!(decode(&posted), Err(Reason::Size.into()));
+    }
+
+    #[test]
+    fn plain_names_only() {
+        assert!(is_plain_name("_assertion-9c2e"));
+        assert!(is_plain_name("id.1"));
+        assert!(!is_plain_name("%5Fresponse"));
+        assert!(!is_plain_name("xpointer(id('a'))"));
+        assert!(!is_plain_name("1abc"));
+        assert!(!is_plain_name(""));
     }
 
     #[test]

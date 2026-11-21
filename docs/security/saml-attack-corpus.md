@@ -29,6 +29,8 @@ The family behind most SAML bypasses: the signature is checked on one element, a
 | `wrapping-response-signature` | The response is signed, not the assertion; an unsigned forged assertion is put in the signed response's place and the original moved elsewhere | Two assertions | `wrapping` |
 | `two-signatures` | A second signature, by another key, is added on the assertion | Exactly one signature | `wrapping` |
 | `duplicate-id` | A second element carries the `ID` the reference names | Duplicate identifiers | `duplicate_identifier` |
+| `id-in-another-namespace` | A second element carries the same value in an `ID` attribute of another namespace, which `xml-sec` also takes as an identifier | Duplicate identifiers | `duplicate_identifier` |
+| `percent-encoded-identifier` | The signed assertion's `ID` is `%5Fresponse-4f1d`; `xml-sec` decodes the reference `#%5Fresponse-4f1d` and finds the response | Only plain names are identifiers | `reference` |
 | `id-attribute-case` | The signed assertion carries `id` instead of `ID` | The reference resolves to no element that Hodor reads | `reference` |
 | `reference-empty-uri` | The reference's `URI` is empty, which means the whole document | The reference must name the signed element | `reference` |
 | `reference-xpointer` | The reference uses an `xpointer` expression | Only a plain `#ID` reference is accepted | `reference` |
@@ -41,6 +43,8 @@ The family behind most SAML bypasses: the signature is checked on one element, a
 | `processing-instruction` | A processing instruction inside the assertion | No processing instructions anywhere | `processing_instruction` |
 | `oversized` | The response is larger than 256 kibibytes | Size | `size` |
 | `deeply-nested` | Elements nested 1,000 deep | Depth | `depth` |
+| `namespace-flood` | Twenty nested elements that each declare four prefixes, around two thousand empty elements, all within the size limit | Too many namespace prefixes in scope: parsing work grows with elements times prefixes | `size` |
+| `node-flood` | Ten thousand empty elements, within the size limit | Too many nodes | `size` |
 | `not-base64` | The posted value is not base64 | Not a response | `malformed` |
 
 One case is not refused, and its test says why:

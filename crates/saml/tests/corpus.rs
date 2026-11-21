@@ -457,6 +457,59 @@ fn deeply_nested() {
 }
 
 #[test]
+fn namespace_flood() {
+    // Parsing work grows with elements times prefixes in scope: within the
+    // size limit this cost seconds before the limit on prefixes.
+    let xml = signed(&good());
+    let mut opening = String::new();
+    for level in 0..20 {
+        opening.push_str(&format!(
+            r#"<x:e xmlns:a{level}="urn:a" xmlns:b{level}="urn:b" xmlns:c{level}="urn:c" xmlns:x="urn:x">"#
+        ));
+    }
+    let flood = format!("{opening}{}{}", "<x:a/>".repeat(2000), "</x:e>".repeat(20));
+    let xml = after_response_issuer(
+        &xml,
+        &format!("<samlp:Extensions>{flood}</samlp:Extensions>"),
+    );
+    assert_eq!(refused(&xml), Reason::Size);
+}
+
+#[test]
+fn node_flood() {
+    let xml = signed(&good());
+    let flood = r#"<x:a xmlns:x="urn:x"/>"#.repeat(10_000);
+    let xml = after_response_issuer(
+        &xml,
+        &format!("<samlp:Extensions>{flood}</samlp:Extensions>"),
+    );
+    assert_eq!(refused(&xml), Reason::Size);
+}
+
+#[test]
+fn percent_encoded_identifier() {
+    // xml-sec decodes percent escapes in a reference: `#%5Fresponse-4f1d`
+    // would name the response, while Hodor reads it as naming the assertion.
+    let draft = ResponseDraft {
+        assertion_id: "%5Fresponse-4f1d".to_owned(),
+        ..good()
+    };
+    assert_eq!(refused(&signed(&draft)), Reason::Reference);
+}
+
+#[test]
+fn id_in_another_namespace() {
+    let xml = signed(&good());
+    let xml = after_response_issuer(
+        &xml,
+        &format!(
+            r#"<samlp:Extensions><x:Decoy xmlns:x="urn:decoy" x:ID="{ASSERTION_ID}"/></samlp:Extensions>"#
+        ),
+    );
+    assert_eq!(refused(&xml), Reason::DuplicateIdentifier);
+}
+
+#[test]
 fn not_base64() {
     let service_provider = service_provider();
     let key = identity_provider().key();

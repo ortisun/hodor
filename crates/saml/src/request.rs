@@ -71,12 +71,16 @@ impl AuthenticationRequest<'_> {
             .append_pair("SAMLRequest", &STANDARD.encode(compressed))
             .append_pair("RelayState", relay_state)
             .finish();
-        let separator = if self.single_sign_on_address.contains('?') {
-            '&'
-        } else {
-            '?'
-        };
-        format!("{}{separator}{query}", self.single_sign_on_address)
+        // A fragment is never sent to a server: the query goes before it.
+        let (address, fragment) = self.single_sign_on_address.split_once('#').map_or(
+            (self.single_sign_on_address, None),
+            |(address, fragment)| (address, Some(fragment)),
+        );
+        let separator = if address.contains('?') { '&' } else { '?' };
+        match fragment {
+            Some(fragment) => format!("{address}{separator}{query}#{fragment}"),
+            None => format!("{address}{separator}{query}"),
+        }
     }
 }
 
@@ -126,6 +130,23 @@ mod tests {
         assert!(xml.contains(r#"IssueInstant="1970-01-01T00:00:00Z""#));
         assert!(xml.contains(r#"AssertionConsumerServiceURL="https://hodor.example/saml""#));
         assert!(xml.contains("<saml:Issuer>https://hodor.example/metadata</saml:Issuer>"));
+    }
+
+    #[test]
+    fn the_request_goes_before_a_fragment() {
+        let service_provider = service_provider();
+        let request = AuthenticationRequest {
+            id: "_0123",
+            service_provider: &service_provider,
+            single_sign_on_address: "https://idp.example/sso#start",
+            issue_instant: OffsetDateTime::UNIX_EPOCH,
+        };
+        let address = request.redirect_address("s");
+        assert!(
+            address.starts_with("https://idp.example/sso?SAMLRequest="),
+            "{address}"
+        );
+        assert!(address.ends_with("&RelayState=s#start"), "{address}");
     }
 
     #[test]

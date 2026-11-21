@@ -250,16 +250,16 @@ The checks are made by the crate `hodor-saml`, in this order. Each failed check 
 | Order | Check | Reason |
 |---|---|---|
 | 1 | The response is valid base64 of UTF-8 text, at most 256 kibibytes | `size`, `malformed` |
-| 2 | It is XML that both parsers of `xml-sec` read the same way, with no document type declaration and at most 256 elements deep. Everything after this reads that one parsed tree | `malformed`, `document_type`, `depth` |
+| 2 | It is XML that both parsers of `xml-sec` read the same way, with no document type declaration, at most 64 elements deep, at most 4,096 nodes and at most 32 namespace prefixes in scope at once. Real responses have about a hundred nodes; without the last limit, the work of parsing grows with elements times prefixes and a response within the size costs seconds. Everything after this reads that one parsed tree | `malformed`, `document_type`, `depth`, `size` |
 | 3 | No processing instruction and no comment anywhere | `processing_instruction`, `comment` |
 | 4 | The root is a `Response` in the SAML protocol namespace, version 2.0; nothing in it is encrypted; its status is `Success`. The status is read before the signature is checked, only ever to refuse | `structure`, `encrypted`, `status` |
 | 5 | **Exactly one `Assertion` in the whole document**, and it is a child of the response. None at all is `structure` | `wrapping`, `structure` |
 | 6 | **Exactly one `Signature` in the whole document**, a child of the assertion or of the response, holding only `SignedInfo`, `SignatureValue` and `KeyInfo` | `unsigned`, `wrapping` |
-| 7 | The element signed carries an `ID`, and no other element of the document carries that value as an identifier, whatever the spelling of the attribute | `reference`, `duplicate_identifier` |
+| 7 | The element signed carries an `ID` that is a plain name (a letter or an underscore, then letters, digits, underscores, hyphens and periods), so that it means the same to Hodor and to `xml-sec`, which decodes percent escapes in a reference. No other element carries that value as an identifier, whatever the spelling or the namespace of the attribute | `reference`, `duplicate_identifier` |
 | 8 | The signature has exactly one reference, and its `URI` is `#` and that `ID` | `reference` |
 | 9 | Its transforms are the enveloped signature and exclusive canonicalization, the second optional, and nothing else; canonicalization is exclusive, without comments | `transform` |
 | 10 | Its digest is SHA-256; its algorithm is `rsa-sha256`, `rsa-pss-sha256` with SHA-256 throughout, or `ecdsa-sha256`, and matches the certificate's key | `algorithm` |
-| 11 | `xml-sec` verifies the signature with the certificate's key, and never with a key the response carries. The evidence it returns must say that the element of step 7 is the one signed, and, when the response is what was signed, that the assertion is inside what it covers | `signature`, `digest` |
+| 11 | `xml-sec` verifies the signature with the certificate's key, and never with a key the response carries. The evidence it returns must say that the element of step 7 is covered by the reference, which names that element alone by step 7 and 8, and, when the response is what was signed, that the assertion is inside what it covers | `signature`, `digest` |
 | 12 | The assertion holds, in the SAML assertion namespace, one `Issuer`, one `Subject` with one `NameID`, one `Conditions` and an `AuthnStatement`, and besides them only attribute statements and the signature | `structure` |
 | 13 | The response's `Destination` is the assertion consumer address; its `InResponseTo` is the request's identifier. A response without `InResponseTo`, which nobody asked for, is refused (Threat-SAML-09) | `destination`, `request`, `unsolicited` |
 | 14 | The `Issuer` of the assertion, and of the response when it has one, is the provider's | `issuer` |
