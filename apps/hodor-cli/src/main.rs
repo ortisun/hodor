@@ -1,7 +1,12 @@
-//! Operations tool: migrations, bootstrap and tenant management.
+//! Operations tool: migrations, tenant management and checking the audit
+//! log.
 
 use clap::{Parser, Subcommand};
-use hodor_adapters_postgres::{Database, PgPool, PgTenantDirectory, PgTenantRepository};
+use hodor_adapters_crypto::Sha256Digest;
+use hodor_adapters_postgres::{
+    Database, PgAuditLog, PgPool, PgTenantDirectory, PgTenantRepository,
+};
+use hodor_audit::api::AuditService;
 use hodor_kernel::{Actor, CorrelationId, DomainError, Secret, SystemClock, TenantContext};
 use hodor_tenant::api::{Caller, CreateTenant, DirectoryEntry, TenantService};
 use std::error::Error;
@@ -46,6 +51,20 @@ enum Command {
         command: TenantCommand,
     },
 
+    /// Check the audit log.
+    Audit {
+        /// Connection URL of the application role.
+        #[arg(
+            long,
+            env = "HODOR_DATABASE_URL",
+            hide_env_values = true,
+            global = true
+        )]
+        database_url: Option<String>,
+        #[command(subcommand)]
+        command: AuditCommand,
+    },
+
     /// Check a health endpoint and exit non-zero unless it answers 200.
     ///
     /// For container health checks: the runtime image has no shell or HTTP
@@ -57,6 +76,17 @@ enum Command {
         /// Path to request.
         #[arg(long, default_value = "/readyz")]
         path: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum AuditCommand {
+    /// Check a tenant's whole chain of audit records and exit non-zero if
+    /// a record was changed, removed or inserted.
+    Verify {
+        /// The tenant's slug.
+        #[arg(long)]
+        tenant: String,
     },
 }
 
@@ -194,6 +224,42 @@ async fn run_tenant(
     }
 }
 
+/// Checks a tenant's chain of audit records. The outer error is a failure
+/// to check; the inner one is a chain that is broken.
+async fn verify_audit(
+    database: &Database,
+    slug: &str,
+) -> Result<Result<String, String>, DomainError> {
+    let tenants = TenantService::new(
+        Arc::new(database.clone()),
+        Arc::new(PgTenantRepository),
+        Arc::new(PgTenantDirectory::new(database.clone())),
+        Arc::new(SystemClock),
+    );
+    let entry = tenants.find_by_slug(slug).await?.ok_or_else(|| {
+        DomainError::not_found("tenant.not_found", "there is no tenant with this slug")
+    })?;
+    let audit = AuditService::new(
+        Arc::new(database.clone()),
+        Arc::new(PgAuditLog),
+        Arc::new(Sha256Digest),
+        Arc::new(SystemClock),
+    );
+    // The command-line tool is one of the places allowed to establish a
+    // tenant context: the operator names the tenant.
+    let verification = audit
+        .verify(&TenantContext::assume(entry.tenant_id))
+        .await?;
+    Ok(match verification.broken {
+        None => Ok(format!("intact: {} records", verification.records)),
+        Some((sequence, problem)) => Err(format!(
+            "the audit chain of {slug} is broken at record {sequence}: {}; {} records before it are in order",
+            problem.description(),
+            verification.records
+        )),
+    })
+}
+
 /// Performs a minimal HTTP/1.1 GET and reports whether the status is 200.
 fn probe(addr: SocketAddr, path: &str) -> Result<bool, std::io::Error> {
     let timeout = Duration::from_secs(3);
@@ -236,6 +302,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     return Err(format!("{}: {}", error.code(), error.message()).into());
                 }
             }
+        }
+        Command::Audit {
+            database_url,
+            command: AuditCommand::Verify { tenant },
+        } => {
+            let url = database_url.ok_or("HODOR_DATABASE_URL or --database-url is required")?;
+            let database = Database::connect(&Secret::from(url), 2).await?;
+            let output = verify_audit(&database, &tenant)
+                .await
+                .map_err(|error| format!("{}: {}", error.code(), error.message()))??;
+            writeln!(std::io::stdout(), "{output}")?;
         }
         Command::Probe { addr, path } => {
             if !probe(addr, &path)? {

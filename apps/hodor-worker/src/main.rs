@@ -1,14 +1,18 @@
 //! Background jobs composition root.
 //!
 //! The worker has two jobs: delivering outbox events to their handlers,
-//! and delivering queued messages to the mail server. See
+//! of which the audit log is the first, and delivering queued messages to
+//! the mail server. See
 //! `docs/operations/deployment.md`, "The worker".
 
 use clap::{Parser, ValueEnum};
+use hodor_adapters_crypto::Sha256Digest;
 use hodor_adapters_postgres::{
-    Database, OutboxDispatcher, PgMessageQueue, PgPendingMessages, PgPool, connect_pool, ping_pool,
+    Database, OutboxDispatcher, PgAuditLog, PgMessageQueue, PgPendingMessages, PgPool,
+    connect_pool, ping_pool,
 };
 use hodor_adapters_smtp::SmtpSender;
+use hodor_audit::api::{AuditHandler, AuditService};
 use hodor_kernel::{Secret, SystemClock};
 use hodor_notification::api::DeliveryService;
 use hodor_observability::{LogFormat, Telemetry};
@@ -186,8 +190,16 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
         tracing::warn!("HODOR_SMTP_URL is not set: no mail is delivered and messages wait");
     }
 
-    // No handlers are registered yet; audit adds its own.
-    let dispatcher = OutboxDispatcher::new(platform, database, Vec::new());
+    // Every event becomes an audit record, in the transaction that marks
+    // the event delivered.
+    let audit = AuditService::new(
+        Arc::new(database.clone()),
+        Arc::new(PgAuditLog),
+        Arc::new(Sha256Digest),
+        Arc::new(SystemClock),
+    );
+    let dispatcher =
+        OutboxDispatcher::new(platform, database, vec![Arc::new(AuditHandler::new(audit))]);
 
     let ops_listener = TcpListener::bind(config.ops_addr).await?;
     tracing::info!(ops = %ops_listener.local_addr()?, "hodor-worker started");

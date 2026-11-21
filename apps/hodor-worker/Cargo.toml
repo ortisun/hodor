@@ -10,8 +10,10 @@ repository.workspace = true
 [dependencies]
 async-trait.workspace = true
 clap.workspace = true
+hodor-adapters-crypto.workspace = true
 hodor-adapters-postgres.workspace = true
 hodor-adapters-smtp.workspace = true
+hodor-audit.workspace = true
 hodor-kernel.workspace = true
 hodor-notification.workspace = true
 hodor-observability.workspace = true

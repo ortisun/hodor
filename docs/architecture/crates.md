@@ -85,7 +85,7 @@ flowchart BT
     authorizationPolicyAgent["authorization-opa"] --> authorization
     plugin["plugin-runtime"] --> authentication & oauth & kernel
 
-    adaptersPostgres["adapters-postgres"] --> tenant & identity & credential & session & keys & authentication & federation & oauth & authorization & audit
+    adaptersPostgres["adapters-postgres"] --> tenant & identity & credential & session & keys & authentication & federation & oauth & authorization & audit & notification
     redis["adapters-redis"] --> session & authentication & oauth & authorization
     crypto["adapters-crypto"] --> credential & keys & oauth
     adaptersKeyService["adapters-kms"] --> keys

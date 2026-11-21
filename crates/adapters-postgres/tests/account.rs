@@ -354,3 +354,121 @@ async fn a_recovery_link_used_many_times_at_once_sets_one_password() {
     .expect("count");
     assert_eq!(changes, 1, "and the owner is told once");
 }
+
+#[tokio::test]
+async fn everything_that_happened_is_in_the_audit_log_and_no_secret_is() {
+    use hodor_adapters_postgres::{OutboxDispatcher, PgAuditLog};
+    use hodor_audit::api::{AuditHandler, AuditService};
+
+    let database = TestDatabase::start().await;
+    let world = world(&database).await;
+    const CANARY: &str = "canary passphrase 7f3a9c";
+    const SECOND_CANARY: &str = "second canary passphrase 51be0d";
+
+    world
+        .accounts
+        .request_registration(
+            &world.tenant,
+            request("canary.person@example.com"),
+            Caller::system(),
+        )
+        .await
+        .expect("asked");
+    let registration = newest_token(&database).await;
+    world
+        .accounts
+        .complete_registration(
+            &world.tenant,
+            &registration,
+            &Secret::from(CANARY.to_owned()),
+            Some("Canary Person".to_owned()),
+            Caller::system(),
+        )
+        .await
+        .expect("registered");
+    world
+        .accounts
+        .request_recovery(
+            &world.tenant,
+            request("canary.person@example.com"),
+            Caller::system(),
+        )
+        .await
+        .expect("asked");
+    let recovery = newest_token(&database).await;
+    world
+        .accounts
+        .reset_password(
+            &world.tenant,
+            &recovery,
+            &Secret::from(SECOND_CANARY.to_owned()),
+            Caller::system(),
+        )
+        .await
+        .expect("reset");
+
+    // The worker's part: every event becomes a record.
+    let audit = AuditService::new(
+        Arc::new(database.app().clone()),
+        Arc::new(PgAuditLog),
+        Arc::new(Sha256Digest),
+        Arc::new(SystemClock),
+    );
+    let dispatcher = OutboxDispatcher::new(
+        database.platform().clone(),
+        database.app().clone(),
+        vec![Arc::new(AuditHandler::new(audit.clone()))],
+    );
+    while dispatcher
+        .dispatch_batch(100)
+        .await
+        .expect("dispatch")
+        .delivered
+        > 0
+    {}
+
+    let verification = audit.verify(&world.tenant).await.expect("verify");
+    assert!(verification.is_intact(), "{verification:?}");
+    let actions: Vec<String> = sqlx::query_scalar(
+        "SELECT action FROM audit.record WHERE tenant_id = $1 ORDER BY sequence",
+    )
+    .bind(world.tenant.tenant_id().as_uuid())
+    .fetch_all(database.owner())
+    .await
+    .expect("read");
+    assert_eq!(verification.records, actions.len() as u64);
+    for expected in [
+        "tenant.created",
+        "identity.user_created",
+        "identity.identifier_verified",
+        "credential.password_set",
+        "authentication.registration_completed",
+        "authentication.recovery_requested",
+        "authentication.password_reset",
+    ] {
+        assert!(
+            actions.iter().any(|action| action == expected),
+            "{expected} is missing from {actions:?}"
+        );
+    }
+
+    // Nothing a person typed or was sent is in any record.
+    let everything: String =
+        sqlx::query_scalar("SELECT string_agg(to_jsonb(r)::text, '\n') FROM audit.record r")
+            .fetch_one(database.owner())
+            .await
+            .expect("read");
+    for secret in [
+        CANARY,
+        SECOND_CANARY,
+        registration.as_str(),
+        recovery.as_str(),
+        "canary.person@example.com",
+        "Canary Person",
+    ] {
+        assert!(
+            !everything.contains(secret),
+            "`{secret}` is in the audit log"
+        );
+    }
+}
