@@ -12,7 +12,7 @@ Last updated: 2026-11-20.
 | B — Tenancy | 3 | 3 |
 | C — Identity | 3 | 3 |
 | D — Password credential | 3 | 3 |
-| E — Authentication and session | 4 | 7 |
+| E — Authentication and session | 5 | 7 |
 | F — Audit, notification, admin | 0 | 4 |
 | G — Hosted user interface and acceptance | 0 | 3 |
 
@@ -70,7 +70,7 @@ Specified in [the credential context](../architecture/contexts/credential.md).
 | Issue-21 Authentication flow engine | Done | `hodor-authentication` crate: flows as data with the built-in flow, validation of a flow, the transaction that records a sign-in in progress, the `Authenticator` extension point and the engine. No real authenticators or storage yet. Specified in [the authentication context](../architecture/contexts/authentication.md) |
 | Issue-22 Authenticators and lockout | Done | The identifier and password authenticators over the identity, credential and tenant contexts; the attempt guard with growing lockouts on identifiers and addresses; `authentication.attempt_counter` under row-level security |
 | Issue-23 Completing a sign-in | Done | `AuthenticationService`: start, submit a step, describe, cancel; a completed sign-in starts a session exactly once; `authentication.transaction` under row-level security. A test signs a person in with nothing faked: PostgreSQL, Argon2id, SHA-256 and the operating system's random source |
-| Issue-24 Interaction interface | In progress | Specified in [the interaction interface](../api/interaction-api.md). Built: a sign-in is tied to the browser that started it; the routes, the cookies and the protections against forged requests in the HTTP layer. Not yet wired into `hodor-server`, so the binary still serves none of it |
+| Issue-24 Interaction interface | Done | A browser signs in over HTTP: the interaction routes, a sign-in tied to the browser that started it, the sign-in and session cookies, CSRF and origin checks, all served by `hodor-server`. A test signs in to the real binary against PostgreSQL. Specified in [the interaction interface](../api/interaction-api.md) |
 | Issue-25, Issue-26 | Not started | — |
 
 ### Known gaps in what is done
@@ -84,7 +84,8 @@ These are recorded here so they are not forgotten; each is picked up by the issu
 | The system tenant is not created automatically by the development stack | Issue-30, with the bootstrap administrator |
 | The Argon2id hasher was not checked against a hash produced by another implementation; it relies on the library's own conformance | When a second implementation is at hand, for example password import |
 | Rows of expired and revoked sessions are never removed | A cleanup job, later in Phase 1 |
-| Sign-in works through the use cases only: there is no HTTP interface, no cookie and no page, and the binaries do not wire it | Issue-24 |
+| A fresh installation has nobody to sign in: there is no command or page to create a user or set a password | Issue-25 (registration), Issue-30 (bootstrap administrator) |
+| The address used to limit attempts is the connection's, so behind a load balancer everyone shares one limit | Before any deployment behind a load balancer |
 | No event handlers are registered | Issue-27 (email), Issue-28 (audit) |
 | Traces are exported but no test receives them | First issue that adds a traced database call |
 | SQL is checked at run time, not at compile time (`sqlx::query!` with the offline cache is not set up). Every query is exercised by an integration test instead | A dedicated issue, not yet scheduled |

@@ -5,14 +5,27 @@
 //! trait objects and runs the listeners until asked to stop.
 
 use clap::{Parser, ValueEnum};
-use hodor_adapters_postgres::{Database, PgTenantDirectory};
-use hodor_kernel::{DomainError, Secret, TenantContext};
+use hodor_adapters_crypto::{
+    Argon2Parameters, Argon2idHasher, HashingLimits, OsRandom, Sha256Digest,
+};
+use hodor_adapters_postgres::{
+    Database, PgAttemptStore, PgPasswordStore, PgSessionStore, PgTenantDirectory,
+    PgTenantRepository, PgTransactionStore, PgUserRepository,
+};
+use hodor_authentication::api::{
+    AttemptGuard, AuthFlow, AuthenticationService, FlowEngine, IdentifierAuthenticator,
+    PasswordAuthenticator,
+};
+use hodor_credential::api::CredentialService;
+use hodor_identity::api::IdentityService;
+use hodor_kernel::{DomainError, Secret, SystemClock, TenantContext};
 use hodor_observability::{LogFormat, Telemetry};
 use hodor_protocol_http::{
-    Health, Limits, ReadinessCheck, ResolvedTenant, TenantResolver,
-    TenantStatus as HttpTenantStatus, ops_router, public_router, serve,
+    Health, InteractionState, Limits, ReadinessCheck, ResolvedTenant, TenantResolver,
+    TenantStatus as HttpTenantStatus, interaction_routes, ops_router, public_router, serve,
 };
-use hodor_tenant::api::{TenantDirectory as _, TenantStatus};
+use hodor_session::api::SessionService;
+use hodor_tenant::api::{TenantDirectory as _, TenantService, TenantStatus};
 use std::error::Error;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -68,6 +81,28 @@ struct Config {
     /// so the load balancer can take the instance out of rotation.
     #[arg(long, env = "HODOR_SHUTDOWN_DRAIN_SECONDS", default_value_t = 5)]
     shutdown_drain_seconds: u64,
+
+    /// Memory one password hash uses, in kibibytes.
+    #[arg(long, env = "HODOR_PASSWORD_HASH_MEMORY_KIBIBYTES", default_value_t = 19 * 1024)]
+    password_hash_memory_kibibytes: u32,
+
+    /// Passes over that memory.
+    #[arg(long, env = "HODOR_PASSWORD_HASH_PASSES", default_value_t = 2)]
+    password_hash_passes: u32,
+
+    /// Lanes computed in parallel within one hash.
+    #[arg(long, env = "HODOR_PASSWORD_HASH_LANES", default_value_t = 1)]
+    password_hash_lanes: u32,
+
+    /// Password hashes computed at the same time. Defaults to one per
+    /// processor core.
+    #[arg(long, env = "HODOR_PASSWORD_HASH_CONCURRENCY")]
+    password_hash_concurrency: Option<usize>,
+
+    /// Requests allowed to wait for a hash. Defaults to four times the
+    /// concurrency.
+    #[arg(long, env = "HODOR_PASSWORD_HASH_QUEUE")]
+    password_hash_queue: Option<usize>,
 }
 
 /// Resolves tenants through the directory, answering by status as
@@ -143,15 +178,18 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 async fn run(config: Config) -> Result<(), Box<dyn Error>> {
     let database = Database::connect(
-        &Secret::from(config.database_url),
+        &Secret::from(config.database_url.clone()),
         config.database_max_connections,
     )
     .await?;
     let health = Health::new(vec![Arc::new(DatabaseCheck(database.clone()))]);
 
     let public = public_router(
-        Arc::new(DirectoryResolver(PgTenantDirectory::new(database))),
-        axum::Router::new(),
+        Arc::new(DirectoryResolver(PgTenantDirectory::new(database.clone()))),
+        axum::Router::new().nest(
+            "/interaction",
+            interaction_routes(interaction(&config, &database)?),
+        ),
         Limits::default(),
     );
     let ops = ops_router(health.clone());
@@ -185,6 +223,84 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
     ops_result?;
     tracing::info!("hodor-server stopped");
     Ok(())
+}
+
+/// Builds everything a sign-in needs. This is the composition root: the
+/// one place that knows which adapter stands behind each port.
+fn interaction(config: &Config, database: &Database) -> Result<InteractionState, DomainError> {
+    let units = || Arc::new(database.clone());
+    let clock = Arc::new(SystemClock);
+    let digest = Arc::new(Sha256Digest);
+    let random = Arc::new(OsRandom);
+
+    let defaults = HashingLimits::for_this_machine();
+    let concurrent = config
+        .password_hash_concurrency
+        .unwrap_or(defaults.concurrent);
+    let hasher = Arc::new(Argon2idHasher::new(
+        Argon2Parameters {
+            memory_kibibytes: config.password_hash_memory_kibibytes,
+            passes: config.password_hash_passes,
+            lanes: config.password_hash_lanes,
+        },
+        HashingLimits {
+            concurrent,
+            queued: config.password_hash_queue.unwrap_or(concurrent * 4),
+        },
+        random.clone(),
+    )?);
+
+    let tenants = TenantService::new(
+        units(),
+        Arc::new(PgTenantRepository),
+        Arc::new(PgTenantDirectory::new(database.clone())),
+        clock.clone(),
+    );
+    let identity = IdentityService::new(units(), Arc::new(PgUserRepository), clock.clone());
+    let credentials =
+        CredentialService::new(units(), Arc::new(PgPasswordStore), hasher, clock.clone());
+    let sessions = SessionService::new(
+        units(),
+        Arc::new(PgSessionStore),
+        digest.clone(),
+        random.clone(),
+        clock.clone(),
+    );
+    let guard = AttemptGuard::new(
+        units(),
+        Arc::new(PgAttemptStore),
+        digest.clone(),
+        clock.clone(),
+    );
+    let engine = FlowEngine::new()
+        .with(Arc::new(IdentifierAuthenticator::new(
+            identity.clone(),
+            digest.clone(),
+        )))
+        .with(Arc::new(PasswordAuthenticator::new(
+            credentials,
+            identity.clone(),
+            tenants.clone(),
+            guard,
+        )));
+    let authentication = AuthenticationService::new(
+        units(),
+        Arc::new(PgTransactionStore),
+        engine,
+        AuthFlow::built_in(),
+        identity,
+        sessions.clone(),
+        tenants,
+        digest.clone(),
+        random,
+        clock.clone(),
+    )?;
+    Ok(InteractionState {
+        authentication,
+        sessions,
+        digest,
+        clock,
+    })
 }
 
 async fn wait_for(mut stopped: watch::Receiver<bool>) {
