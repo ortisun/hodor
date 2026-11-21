@@ -25,6 +25,7 @@ hodor-kernel = { path = "crates/kernel" }
 hodor-notification = { path = "crates/notification" }
 hodor-observability = { path = "crates/observability" }
 hodor-protocol-http = { path = "crates/protocol-http" }
+hodor-saml = { path = "crates/saml" }
 hodor-session = { path = "crates/session" }
 hodor-tenant = { path = "crates/tenant" }
 
@@ -44,11 +45,13 @@ opentelemetry-otlp = { version = "0.33", default-features = false, features = [
     "metrics",
 ] }
 opentelemetry_sdk = "0.33"
+rcgen = { version = "0.13", default-features = false, features = ["aws_lc_rs", "pem"] }
 reqwest = { version = "0.13", default-features = false }
 form_urlencoded = "1"
 getrandom = "0.4"
 http-body-util = "0.1"
 ldap3 = { version = "0.12", default-features = false, features = ["tls-rustls-aws-lc-rs"] }
+miniz_oxide = "0.9"
 lettre = { version = "0.11", default-features = false, features = [
     "builder",
     "smtp-transport",
@@ -79,6 +82,14 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.7", features = ["fs", "limit", "timeout"] }
 time = { version = "0.3", features = ["serde", "formatting", "parsing"] }
+# Only hodor-saml may depend on an XML library (Decision 0019). Signing,
+# encryption, XSLT and legacy algorithms are not compiled.
+xml-sec = { version = "0.6", default-features = false, features = [
+    "std",
+    "xmldsig",
+    "xml-backend-differential",
+] }
+x509-parser = "0.18"
 uuid = { version = "1", features = ["v7", "serde"] }
 zeroize = "1"
 

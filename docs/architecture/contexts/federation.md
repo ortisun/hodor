@@ -8,7 +8,7 @@ It is built in steps ([Milestone 2](../../product/epics.md#milestone-2-signing-i
 
 | Word | Meaning |
 |---|---|
-| Identity provider | Something outside Hodor that knows people and can vouch for them: an OpenID Connect provider such as a social login, later a directory or a SAML identity provider |
+| Identity provider | Something outside Hodor that knows people and can vouch for them: an OpenID Connect provider such as a social login, a directory or a SAML identity provider |
 | External identity | One person as one identity provider knows them: the provider and the provider's own, unchanging identifier for the person, its **subject** |
 | Link | The record that an external identity belongs to a user of the tenant |
 
@@ -20,7 +20,7 @@ A tenant has its own identity providers. Nothing about a provider is shared betw
 |---|---|
 | Identifier | Generated; never changes |
 | Alias | The name of the provider in addresses, such as `google`. 2 to 32 lowercase letters, digits and hyphens, starting with a letter or digit. Unique in the tenant. **Never changes**: it is part of the address registered at the provider, where answers are sent back |
-| Kind | `openid_connect`, `github` or `ldap`. Never changes. Further kinds come with their issues |
+| Kind | `openid_connect`, `github` or `ldap`. Never changes. `saml` comes with Issue-48 |
 | Display name | What a person reads on the sign-in page, such as "Google". 1 to 64 characters |
 | Issuer | The address that identifies the provider, such as `https://accounts.google.com`. HTTPS, no query and no fragment, at most 512 characters. Plain HTTP is accepted only for a host and port on the installation's list of [development hosts](../../security/outbound-http.md#the-exception-for-development), which is empty anywhere real. Compared exactly, character by character, with what the provider says about itself |
 | Client identifier | Who Hodor is to the provider. 1 to 255 characters |
@@ -201,6 +201,88 @@ Every refusal is answered in the same words: no such person, several, a wrong pa
 
 The connection is made for one sign-in and closed. Its time is limited to ten seconds.
 
+## Signing in through a SAML identity provider
+
+> Built in steps. The checks of a response, the crate `hodor-saml`, exist. The provider kind, the routes and the pages come with Issue-48 and Issue-49; until then this section is the design they follow.
+
+A provider of the kind `saml` is an organization's SAML identity provider: Microsoft Entra ID, Okta, Active Directory Federation Services, Keycloak, Shibboleth. Hodor is the **service provider**: it sends the person there with a request, and receives a signed answer, a **response**, through the person's browser. How the signature is checked is [Decision 0019](../../decisions/0019-saml-signature-verification.md); what must be refused is the [attack corpus](../../security/saml-attack-corpus.md).
+
+A SAML provider uses the parts of a provider this way, and adds its own:
+
+| Part | For a SAML provider |
+|---|---|
+| Issuer | The identity provider's entity identifier, as its metadata gives it, such as `https://sts.windows.net/{tenant identifier}/` or `http://www.okta.com/{identifier}`. Any absolute address or `urn:` name, at most 512 characters. It names the provider and is never fetched, so plain `http:` is allowed here. Compared exactly with the `Issuer` of every response |
+| Client identifier, client secret, scopes | None |
+| Single sign-on address | Where the person is sent with the request: the identity provider's `SingleSignOnService` for the HTTP-Redirect binding. HTTPS; plain HTTP only at a [development host](../../security/outbound-http.md#the-exception-for-development) |
+| Certificate | The identity provider's signing certificate, in PEM, from its metadata. Its key is the only key a response is checked with. An RSA key of 2048 bits at least, or an elliptic curve key on P-256. The certificate's dates and issuer are not checked: it is a way of writing down a key, as SAML uses it |
+| Email attribute, name attribute | The names of the attributes that carry the person's address and name. `email` and `name` unless said otherwise; the [recipes](#recipes) give the names each identity provider uses |
+
+Hodor, for each SAML provider, has:
+
+| What | Value |
+|---|---|
+| Entity identifier, which is also the address of the metadata | `{public address}/t/{slug}/interaction/sign-in/providers/{alias}/saml/metadata` |
+| Assertion consumer address, where responses are received | `{public address}/t/{slug}/interaction/sign-in/providers/{alias}/saml`, HTTP-POST binding |
+
+Both are built from the alias, which never changes, so that a response made for one provider is never checked against another (Threat-Federation-04). The metadata is what an administrator gives the identity provider.
+
+### Sending the person
+
+When the person chooses a SAML provider, Hodor keeps a [pending authorization](#the-pending-authorization) as for any provider: the hash of a random state, and in place of the nonce the identifier of the request. There is no PKCE verifier. The address returned is the single sign-on address with:
+
+- `SAMLRequest`: an `AuthnRequest` with that identifier, Hodor's entity identifier as its `Issuer`, the assertion consumer address and the HTTP-POST binding, compressed and encoded as the HTTP-Redirect binding says. It is not signed: nothing in it needs protecting, and identity providers do not require it;
+- `RelayState`: the state. An opaque random value, never an address (Threat-SAML-08).
+
+### When the response arrives
+
+The identity provider makes the person's browser post the response to the assertion consumer address, from the identity provider's site. The cookie that ties a sign-in to its browser is not sent on such a request, so this is not where the sign-in is finished:
+
+1. The assertion consumer address accepts `SAMLResponse` and `RelayState`, form-encoded, at most 384 kibibytes. It is the one route of the interaction interface that accepts a request started by another site.
+2. It finds the pending authorization of that provider whose state hashes to the `RelayState`, and keeps the response with it, unread. A second response for the same pending authorization is ignored: the first one wins.
+3. Whatever it found, it answers `303 See Other` to `/t/{slug}/account/providers/{alias}/callback?state={RelayState}&binding=saml`. It says nothing else: an unknown state and a known one look the same.
+
+The page at that address finishes as it does for OpenID Connect, from Hodor's own origin with the cookie: the state is presented, the pending authorization is taken once, and only then is the kept response read and checked. The response is checked against the request of **this browser's** sign-in, which is what stops a response obtained by someone else from being finished in a victim's browser (Threat-Federation-03).
+
+### Checking the response
+
+The checks are made by the crate `hodor-saml`, in this order. Each failed check is a refusal with its own reason, recorded as `federation.sign_in_refused`; the person is told only that it did not work. What is read before step 11 is only ever used to refuse, never to let anyone in.
+
+| Order | Check | Reason |
+|---|---|---|
+| 1 | The response is valid base64 of UTF-8 text, at most 256 kibibytes | `size`, `malformed` |
+| 2 | It is XML that both parsers of `xml-sec` read the same way, with no document type declaration, at most 64 elements deep, at most 4,096 nodes and at most 32 namespace prefixes in scope at once. Real responses have about a hundred nodes; without the last limit, the work of parsing grows with elements times prefixes and a response within the size costs seconds. Everything after this reads that one parsed tree | `malformed`, `document_type`, `depth`, `size` |
+| 3 | No processing instruction and no comment anywhere | `processing_instruction`, `comment` |
+| 4 | The root is a `Response` in the SAML protocol namespace, version 2.0; nothing in it is encrypted; its status is `Success`. The status is read before the signature is checked, only ever to refuse | `structure`, `encrypted`, `status` |
+| 5 | **Exactly one `Assertion` in the whole document**, and it is a child of the response. None at all is `structure` | `wrapping`, `structure` |
+| 6 | **Exactly one `Signature` in the whole document**, a child of the assertion or of the response, holding only `SignedInfo`, `SignatureValue` and `KeyInfo` | `unsigned`, `wrapping` |
+| 7 | The element signed carries an `ID` that is a plain name (a letter or an underscore, then letters, digits, underscores, hyphens and periods), so that it means the same to Hodor and to `xml-sec`, which decodes percent escapes in a reference. No other element carries that value as an identifier, whatever the spelling or the namespace of the attribute | `reference`, `duplicate_identifier` |
+| 8 | The signature has exactly one reference, and its `URI` is `#` and that `ID` | `reference` |
+| 9 | Its transforms are the enveloped signature and exclusive canonicalization, the second optional, and nothing else; canonicalization is exclusive, without comments | `transform` |
+| 10 | Its digest is SHA-256; its algorithm is `rsa-sha256`, `rsa-pss-sha256` with SHA-256 throughout, or `ecdsa-sha256`, and matches the certificate's key | `algorithm` |
+| 11 | `xml-sec` verifies the signature with the certificate's key, and never with a key the response carries. The evidence it returns must say that the element of step 7 is covered by the reference, which names that element alone by step 7 and 8, and, when the response is what was signed, that the assertion is inside what it covers | `signature`, `digest` |
+| 12 | The assertion holds, in the SAML assertion namespace, one `Issuer`, one `Subject` with one `NameID`, one `Conditions` and an `AuthnStatement`, and besides them only attribute statements and the signature | `structure` |
+| 13 | The response's `Destination` is the assertion consumer address; its `InResponseTo` is the request's identifier. A response without `InResponseTo`, which nobody asked for, is refused (Threat-SAML-09) | `destination`, `request`, `unsolicited` |
+| 14 | The `Issuer` of the assertion, and of the response when it has one, is the provider's | `issuer` |
+| 15 | A `SubjectConfirmation` with the bearer method, whose data names the assertion consumer address as `Recipient`, the request as `InResponseTo`, and a `NotOnOrAfter` that has not passed | `confirmation`, `recipient`, `request`, `time` |
+| 16 | `NotBefore` and `NotOnOrAfter` of the conditions respected when present, and an `AudienceRestriction` naming Hodor's entity identifier; every audience restriction present must name it | `time`, `audience` |
+| 17 | The `NameID` has a value, in a format other than `transient` | `subject` |
+
+Times are compared with one minute of tolerance for clocks that differ.
+
+Everything Hodor uses afterwards is read from the assertion found in step 5, which is the element the signature was checked on or is inside it: the `NameID`, the attributes, the session index. Text is read as the parser read it, once.
+
+### What Hodor takes from the response
+
+| From | Becomes |
+|---|---|
+| `NameID` | The subject of the external identity. An identity provider should be set to send a persistent identifier: an email address changes, a `transient` one changes every time |
+| The email attribute | The address, taken as vouched for only if the provider is set to [trust email](#when-a-provider-does-not-say-whether-it-vouches): SAML has no way of saying |
+| The name attribute | The name |
+
+From there everything is [as for any provider](#who-the-person-is).
+
+A request is answered once: the pending authorization that holds its identifier is taken before the response is read. The same response presented again, in the same browser or another, finds no request to answer (Threat-SAML-03).
+
 ## Recipes
 
 What to enter for the providers people ask for first. None of these is checked against the real provider in continuous integration; each was built from the provider's documentation.
@@ -213,8 +295,13 @@ What to enter for the providers people ask for first. None of these is checked a
 | Keycloak, one realm | `openid_connect` | `https://{host}/realms/{realm}` | |
 | OpenLDAP | `ldap` | `ldaps://{host}` | Filter `(uid={identifier})`, subject attribute `entryUUID` |
 | Active Directory | `ldap` | `ldaps://{host}` | Filter `(sAMAccountName={identifier})`, subject attribute `objectGUID` |
+| Microsoft Entra ID, SAML | `saml` | `https://sts.windows.net/{tenant identifier}/` | Email attribute `http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress`, name attribute `http://schemas.microsoft.com/identity/claims/displayname`. Set the name identifier to a persistent one, not the address |
+| Okta, SAML | `saml` | `http://www.okta.com/{identifier}`, as Okta shows it | Add attribute statements named `email` and `name`. Okta signs both the response and the assertion unless told otherwise; set the response to unsigned, since Hodor accepts exactly one signature |
+| Active Directory Federation Services | `saml` | `http://{host}/adfs/services/trust` | Email attribute `http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress`, name attribute `http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name` |
+| Keycloak, SAML | `saml` | `https://{host}/realms/{realm}` | Turn on signed assertions; add mappers for `email` and `name` |
+| Shibboleth | `saml` | The identity provider's entity identifier | Email attribute `urn:oid:0.9.2342.19200300.100.1.3`, name attribute `urn:oid:2.16.840.1.113730.3.1.241` |
 
-In each, the address to register at the provider is the provider's callback address, which the administration interface and the command-line tool show.
+In each, the address to register at the provider is the provider's callback address, which the administration interface and the command-line tool show. For a SAML provider it is Hodor's metadata address instead, which carries the assertion consumer address.
 
 ## Signing in through a provider
 
@@ -332,6 +419,8 @@ No event carries a secret. No event carries a subject either: it identifies a pe
 | `DirectoryClient` | Searches a directory and binds to it. Implemented by `hodor-adapters-ldap` |
 | `LockoutPolicy` | The tenant's rules for counting attempts, which belong to the tenant context |
 
+The checks of a SAML response are not behind a port: they are computation on text, with no input or output, in the crate `hodor-saml`, the only crate allowed to depend on an XML library.
+
 Each store has an implementation in memory, behind the crate's `testing` feature, and one on PostgreSQL. Both pass the same contract suite, which includes the tenant isolation cases.
 
 ## Storage
@@ -382,7 +471,9 @@ All tables are under [forced row-level security](../multi-tenancy.md#isolation-b
 | A directory's own certificate authority. The connection trusts what the operating system trusts | When a directory with a private authority is to be used |
 | Reusing connections to a directory between sign-ins | When the volume calls for it |
 | Synchronizing people and groups from a directory | Phase 6 |
-| SAML | Issue-48 |
+| SAML providers: the kind, the assertion consumer address, the metadata, the pending authorization of a SAML sign-in | Issue-48 |
+| SAML on the pages, in the administration interface and the command-line tool, in the demonstration | Issue-49 |
+| Signed requests, encrypted assertions, single logout, responses nobody asked for, several certificates for one provider during a change of keys | When an identity provider that needs them is to be supported |
 | Signature algorithms beyond `RS256`, `PS256` and `ES256`; encrypted ID tokens; the UserInfo endpoint | When a provider that needs them is to be supported |
 | A cache of provider descriptions and keys shared between server instances. Each instance keeps its own | With Redis, when instances are many |
 | What happens to the sessions of a provider's users when it is disabled (Threat-Federation-10). Today disabling stops new sign-ins only | With the consoles |

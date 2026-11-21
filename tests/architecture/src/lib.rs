@@ -90,20 +90,17 @@ const RULES: &[Rule] = &[
             "hodor-tenant",
         ],
     ),
-    context(
-        "hodor-saml",
-        &[
-            "hodor-kernel",
-            "hodor-identity",
-            "hodor-session",
-            "hodor-keys",
-        ],
-    ),
+    context("hodor-saml", &["hodor-kernel"]),
     context("hodor-provisioning", &["hodor-kernel", "hodor-identity"]),
     // Layer 3: context extensions.
     context(
         "hodor-federation",
-        &["hodor-kernel", "hodor-authentication", "hodor-identity"],
+        &[
+            "hodor-kernel",
+            "hodor-authentication",
+            "hodor-identity",
+            "hodor-saml",
+        ],
     ),
     context(
         "hodor-authorization-native",
@@ -191,6 +188,23 @@ const INFRASTRUCTURE: &[&str] = &[
     "axum", "hyper", "redis", "reqwest", "sqlx", "tokio", "tower",
 ];
 
+/// XML libraries. Only `hodor-saml` may depend on one (Decision 0019): one
+/// crate, one parser, one place where XML is read.
+const XML: &[&str] = &[
+    "xml-sec",
+    "roxmltree",
+    "quick-xml",
+    "xml-rs",
+    "xmltree",
+    "sxd-document",
+    "libxml",
+    "xmlsec",
+    "samael",
+];
+
+/// The one crate allowed to depend on an XML library.
+const XML_CRATE: &str = "hodor-saml";
+
 /// A workspace crate and its direct normal and build dependencies.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CrateDeps {
@@ -223,6 +237,12 @@ fn violations(workspace: &[CrateDeps]) -> Vec<String> {
             } else if rule.infrastructure_free && INFRASTRUCTURE.contains(&dep.as_str()) {
                 found.push(format!(
                     "`{}` is domain or application code and must not depend on `{dep}`",
+                    krate.name
+                ));
+            }
+            if XML.contains(&dep.as_str()) && krate.name != XML_CRATE {
+                found.push(format!(
+                    "`{}` must not depend on the XML library `{dep}`; only `{XML_CRATE}` reads XML",
                     krate.name
                 ));
             }
@@ -325,6 +345,17 @@ mod tests {
             krate("hodor-protocol-http", &["hodor-adapters-postgres"]),
         ];
         assert_eq!(violations(&workspace).len(), 1);
+    }
+
+    #[test]
+    fn only_the_saml_crate_reads_xml() {
+        let workspace = [
+            krate("hodor-saml", &["xml-sec"]),
+            krate("hodor-adapters-http", &["hodor-kernel", "quick-xml"]),
+        ];
+        let found = violations(&workspace);
+        assert_eq!(found.len(), 1);
+        assert!(found[0].contains("`quick-xml`"), "{found:?}");
     }
 
     #[test]
