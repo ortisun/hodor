@@ -103,6 +103,16 @@ enum Command {
         /// has them.
         #[arg(long, env = "HODOR_SECRET_KEYS", hide_env_values = true, global = true)]
         secret_keys: Option<String>,
+        /// Hosts with their ports whose issuer may be plain HTTP,
+        /// separated by commas, as the server has them. For a development
+        /// stack; never set it anywhere real.
+        #[arg(
+            long,
+            env = "HODOR_OUTBOUND_DEVELOPMENT_HOSTS",
+            value_delimiter = ',',
+            global = true
+        )]
+        development_hosts: Vec<String>,
         /// The address people reach this installation at, without a path.
         #[arg(
             long,
@@ -386,6 +396,7 @@ fn provider_line(provider: &IdentityProvider, public_url: &str, slug: &str) -> S
 async fn run_provider(
     database: &Database,
     secret_keys: Option<String>,
+    development_hosts: &[String],
     public_url: &str,
     command: ProviderCommand,
 ) -> Result<String, DomainError> {
@@ -409,7 +420,8 @@ async fn run_provider(
         Arc::new(PgLinkStore),
         Arc::new(SecretKeys::parse(&Secret::from(setting))?),
         clock,
-    );
+    )
+    .allowing_development_hosts(development_hosts);
     let slug = match &command {
         ProviderCommand::Add { tenant, .. }
         | ProviderCommand::List { tenant }
@@ -679,14 +691,21 @@ async fn main() -> Result<(), Box<dyn Error>> {
         Command::Provider {
             database_url,
             secret_keys,
+            development_hosts,
             public_url,
             command,
         } => {
             let url = database_url.ok_or("HODOR_DATABASE_URL or --database-url is required")?;
             let database = Database::connect(&Secret::from(url), 2).await?;
-            let output = run_provider(&database, secret_keys, &public_url, command)
-                .await
-                .map_err(|error| format!("{}: {}", error.code(), error.message()))?;
+            let output = run_provider(
+                &database,
+                secret_keys,
+                &development_hosts,
+                &public_url,
+                command,
+            )
+            .await
+            .map_err(|error| format!("{}: {}", error.code(), error.message()))?;
             if !output.is_empty() {
                 writeln!(std::io::stdout(), "{output}")?;
             }

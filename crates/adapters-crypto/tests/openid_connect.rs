@@ -47,6 +47,7 @@ fn configured(issuer: &str) -> IdentityProvider {
             creates_users: true,
         },
         SealedSecret::from_stored(vec![1]),
+        &[],
         Timestamp::UNIX_EPOCH,
     )
     .expect("provider")
@@ -899,5 +900,49 @@ async fn one_provider_is_never_checked_with_the_keys_of_another() {
             .sign_in(|_, nonce| other_key.token(&header("RS256", "rsa-1"), &claims(nonce)))
             .await,
         "does not verify",
+    );
+}
+
+#[tokio::test]
+async fn plain_http_endpoints_are_used_only_at_a_development_host() {
+    let world = world();
+    world.provider.describe(json!({
+        "issuer": ISSUER,
+        // Where the browser is sent: the provider as the person's machine sees it.
+        "authorization_endpoint": "http://localhost:9000/authorize",
+        "token_endpoint": format!("{ISSUER}/token"),
+        "jwks_uri": format!("{ISSUER}/keys"),
+    }));
+    unavailable(
+        world.client.begin(&world.configured, REDIRECT).await,
+        "no usable `authorization_endpoint`",
+    );
+
+    let allowing = world
+        .client
+        .clone()
+        .allowing_development_hosts(&["localhost:9000".to_owned()]);
+    let request = allowing
+        .begin(&world.configured, REDIRECT)
+        .await
+        .expect("a development host");
+    assert!(request.url.starts_with("http://localhost:9000/authorize?"));
+
+    // Another port of the same host is not the development host. Asked of
+    // a client that has not kept the description yet.
+    let fresh = self::world();
+    fresh.provider.describe(json!({
+        "issuer": ISSUER,
+        "authorization_endpoint": "http://localhost:9000/authorize",
+        "token_endpoint": format!("{ISSUER}/token"),
+        "jwks_uri": format!("{ISSUER}/keys"),
+    }));
+    let other = fresh
+        .client
+        .clone()
+        .allowing_development_hosts(&["localhost:9001".to_owned()]);
+    unavailable(
+        other.begin(&fresh.configured, REDIRECT).await,
+        "no usable `authorization_endpoint`",
     );
 }

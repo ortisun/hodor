@@ -30,6 +30,12 @@ export interface SignInAnswer {
   attemptsLeft: number | null;
 }
 
+/** An identity provider as the sign-in page shows it. */
+export interface OfferedProvider {
+  alias: string;
+  displayName: string;
+}
+
 /** Who is signed in. */
 export interface Session {
   userId: string;
@@ -160,6 +166,42 @@ export class Client {
       }
       throw failure;
     }
+  }
+
+  /** The identity providers the tenant offers. */
+  async providers(): Promise<OfferedProvider[]> {
+    const reply = await this.#send("GET", "/sign-in/providers");
+    const listed = reply.body["providers"];
+    if (!Array.isArray(listed)) {
+      return [];
+    }
+    return listed.flatMap((entry: unknown) => {
+      const fields = typeof entry === "object" && entry !== null ? (entry as Record<string, unknown>) : {};
+      const alias = text(fields["alias"]);
+      const displayName = text(fields["display_name"]);
+      return alias !== null && displayName !== null ? [{ alias, displayName }] : [];
+    });
+  }
+
+  /**
+   * Chooses a provider for the current sign-in. Answers the address at
+   * the provider to send the browser to.
+   */
+  async chooseProvider(alias: string): Promise<string> {
+    const reply = await this.#send("POST", `/sign-in/providers/${encodeURIComponent(alias)}`);
+    const redirect = text(reply.body["redirect"]);
+    // Only ever an address of the web: never a script or a file.
+    if (redirect === null || !/^https?:\/\//.test(redirect)) {
+      throw new Failure(null, reply.status);
+    }
+    return redirect;
+  }
+
+  /** Finishes the sign-in with what the provider sent back. */
+  async finishWithProvider(alias: string, code: string, state: string): Promise<SignInAnswer> {
+    return this.#signIn(
+      await this.#send("POST", `/sign-in/providers/${encodeURIComponent(alias)}/callback`, { code, state }),
+    );
   }
 
   async startSignIn(): Promise<SignInAnswer> {

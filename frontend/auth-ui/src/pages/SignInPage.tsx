@@ -1,6 +1,6 @@
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 import type { NoticeName } from "../address";
-import type { Client, Failure, SignInAnswer } from "../client";
+import type { Client, Failure, OfferedProvider, SignInAnswer } from "../client";
 import { describe, type Messages } from "../messages";
 import { Field, PasswordField } from "../parts/Field";
 import { Frame } from "../parts/Frame";
@@ -55,14 +55,19 @@ async function findOut(client: Client, afresh: boolean): Promise<Found> {
   }
 }
 
-function noticeText(notice: NoticeName | null, text: Messages): string | null {
+/** What the page before had to say, and whether it is good news. */
+function noticeText(notice: NoticeName | null, text: Messages): { kind: "success" | "danger"; said: string } | null {
   switch (notice) {
     case "registered":
-      return text.noticeRegistered;
+      return { kind: "success", said: text.noticeRegistered };
     case "password-changed":
-      return text.noticePasswordChanged;
+      return { kind: "success", said: text.noticePasswordChanged };
     case "signed-out":
-      return text.noticeSignedOut;
+      return { kind: "success", said: text.noticeSignedOut };
+    case "provider-refused":
+      return { kind: "danger", said: text.noticeProviderRefused };
+    case "provider-cancelled":
+      return { kind: "danger", said: text.noticeProviderCancelled };
     default:
       return null;
   }
@@ -76,13 +81,14 @@ interface SignInPageProps extends PageProps {
  * Signing in. The page shows the form for the step the server names and
  * sends back what was typed; it decides nothing.
  */
-export function SignInPage({ tenant, client, text, go, path, notice }: SignInPageProps) {
+export function SignInPage({ tenant, client, text, go, leave, path, notice }: SignInPageProps) {
   const [view, setView] = useState<View>({ kind: "loading" });
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<Failure | null>(null);
   const [expired, setExpired] = useState(false);
   const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
+  const [providers, setProviders] = useState<OfferedProvider[]>([]);
 
   const show = useCallback(
     (answer: SignInAnswer) => {
@@ -120,6 +126,15 @@ export function SignInPage({ tenant, client, text, go, path, notice }: SignInPag
 
   useEffect(() => {
     let current = true;
+    // A tenant that offers none, or a list that cannot be had, shows none.
+    client.providers().then(
+      (offered) => {
+        if (current) {
+          setProviders(offered);
+        }
+      },
+      () => undefined,
+    );
     void findOut(client, false).then((found) => {
       if (current) {
         apply(found);
@@ -180,6 +195,28 @@ export function SignInPage({ tenant, client, text, go, path, notice }: SignInPag
     }
   }
 
+  async function leaveFor(provider: OfferedProvider) {
+    if (busy) {
+      return;
+    }
+    setBusy(true);
+    setFailure(null);
+    setExpired(false);
+    try {
+      leave(await client.chooseProvider(provider.alias));
+    } catch (thrown) {
+      const failed = asFailure(thrown);
+      if (GONE.includes(failed.code ?? "")) {
+        setExpired(true);
+        await open(true);
+      } else {
+        setFailure(failed);
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function submit(event: FormEvent, request: () => Promise<SignInAnswer>) {
     event.preventDefault();
     void send(request);
@@ -189,7 +226,7 @@ export function SignInPage({ tenant, client, text, go, path, notice }: SignInPag
 
   return (
     <Frame tenant={tenant} title={text.signInTitle} text={text}>
-      {told !== null && view.kind !== "stopped" ? <Notice kind="success">{told}</Notice> : null}
+      {told !== null && view.kind !== "stopped" ? <Notice kind={told.kind}>{told.said}</Notice> : null}
       {expired ? <Notice kind="info">{text.signInExpired}</Notice> : null}
       {failure !== null ? <Notice kind="danger">{describe(failure, text)}</Notice> : null}
 
@@ -246,6 +283,26 @@ export function SignInPage({ tenant, client, text, go, path, notice }: SignInPag
           />
           <Submit label={text.continue} busy={busy} text={text} />
         </form>
+      ) : null}
+
+      {view.kind === "step" && view.step === "identifier" && providers.length > 0 ? (
+        <>
+          <p className="auth-divider">{text.or}</p>
+          <ul className="auth-providers">
+            {providers.map((provider) => (
+              <li key={provider.alias}>
+                <button
+                  type="button"
+                  className="button auth-wide"
+                  aria-disabled={busy}
+                  onClick={() => void leaveFor(provider)}
+                >
+                  {text.continueWith(provider.displayName)}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </>
       ) : null}
 
       {view.kind === "step" && view.step === "password" ? (

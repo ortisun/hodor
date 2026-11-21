@@ -22,7 +22,7 @@ A tenant has its own identity providers. Nothing about a provider is shared betw
 | Alias | The name of the provider in addresses, such as `google`. 2 to 32 lowercase letters, digits and hyphens, starting with a letter or digit. Unique in the tenant. **Never changes**: it is part of the address registered at the provider, where answers are sent back |
 | Kind | `openid_connect`. Further kinds come with their issues |
 | Display name | What a person reads on the sign-in page, such as "Google". 1 to 64 characters |
-| Issuer | The address that identifies the provider, such as `https://accounts.google.com`. HTTPS, no query and no fragment, at most 512 characters. Compared exactly, character by character, with what the provider says about itself |
+| Issuer | The address that identifies the provider, such as `https://accounts.google.com`. HTTPS, no query and no fragment, at most 512 characters. Plain HTTP is accepted only for a host and port on the installation's list of [development hosts](../../security/outbound-http.md#the-exception-for-development), which is empty anywhere real. Compared exactly, character by character, with what the provider says about itself |
 | Client identifier | Who Hodor is to the provider. 1 to 255 characters |
 | Client secret | What Hodor proves that with. [Kept encrypted](../../security/secrets-at-rest.md), for the purpose `federation.client_secret`. Written, never read back: no operation, interface or event returns it |
 | Scopes | What Hodor asks the provider for. Always includes `openid`; `openid email profile` unless said otherwise. At most 16 |
@@ -91,7 +91,7 @@ Hodor reads the provider's own description of itself at `{issuer}/.well-known/op
 | Rule | Why |
 |---|---|
 | The `issuer` in the description must be the configured issuer, character for character | A description served from the right address that names another issuer is a provider claiming to be someone else (Threat-Federation-04) |
-| It must name where to send people, where to exchange a code, and where its keys are, each an HTTPS address | Nothing is guessed, and nothing is fetched in the clear |
+| It must name where to send people, where to exchange a code, and where its keys are, each an HTTPS address, or a plain HTTP one at a development host | Nothing is guessed, and nothing is fetched in the clear outside a development stack |
 | The description and the keys are kept in memory for an hour | A sign-in must not depend on two extra requests every time |
 | When a token names a key Hodor does not have, the keys are fetched again, at most once a minute for one provider | Providers change keys; a flood of tokens naming keys that do not exist must not become a flood of requests |
 
