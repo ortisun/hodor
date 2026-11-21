@@ -2,14 +2,18 @@
 //! administrator and checking the audit log.
 
 use clap::{Parser, Subcommand};
-use hodor_adapters_crypto::{OsRandom, Sha256Digest};
+use hodor_adapters_crypto::{OsRandom, SecretKeys, Sha256Digest};
 use hodor_adapters_postgres::{
-    Database, PgAccessTokenStore, PgAuditLog, PgPool, PgRoleAssignmentStore, PgTenantDirectory,
-    PgTenantRepository, PgUserRepository,
+    Database, PgAccessTokenStore, PgAuditLog, PgLinkStore, PgPool, PgProviderStore,
+    PgRoleAssignmentStore, PgTenantDirectory, PgTenantRepository, PgUserRepository,
 };
 use hodor_audit::api::AuditService;
 use hodor_authorization::api::{AuthorizationService, Role};
 use hodor_credential::api::AccessTokenService;
+use hodor_federation::api::{
+    CreateProvider, FederationService, IdentityProvider, ProviderKind, ProviderSettings,
+    ProviderStatus, callback_address,
+};
 use hodor_identity::api::{
     CreateUser, IdentifierKind, IdentityService, NormalizedIdentifier, Profile, UserKind,
 };
@@ -85,6 +89,38 @@ enum Command {
         command: AuditCommand,
     },
 
+    /// Manage a tenant's identity providers.
+    Provider {
+        /// Connection URL of the application role.
+        #[arg(
+            long,
+            env = "HODOR_DATABASE_URL",
+            hide_env_values = true,
+            global = true
+        )]
+        database_url: Option<String>,
+        /// The keys that keep secrets encrypted at rest, as the server
+        /// has them.
+        #[arg(long, env = "HODOR_SECRET_KEYS", hide_env_values = true, global = true)]
+        secret_keys: Option<String>,
+        /// The address people reach this installation at, without a path.
+        #[arg(
+            long,
+            env = "HODOR_PUBLIC_URL",
+            default_value = "http://localhost:8080",
+            global = true
+        )]
+        public_url: String,
+        #[command(subcommand)]
+        command: ProviderCommand,
+    },
+
+    /// Work with the keys that keep secrets encrypted at rest.
+    Secrets {
+        #[command(subcommand)]
+        command: SecretsCommand,
+    },
+
     /// Check a health endpoint and exit non-zero unless it answers 200.
     ///
     /// For container health checks: the runtime image has no shell or HTTP
@@ -117,6 +153,73 @@ enum AdminCommand {
         #[arg(long, default_value_t = 60)]
         token_minutes: u32,
     },
+}
+
+#[derive(Subcommand)]
+enum ProviderCommand {
+    /// Add an OpenID Connect provider to a tenant, enabled.
+    ///
+    /// The client secret is read from the environment variable
+    /// `HODOR_PROVIDER_CLIENT_SECRET`, never from an argument, so that it
+    /// shows neither in the list of processes nor in a shell's history.
+    Add {
+        /// The tenant's slug.
+        #[arg(long)]
+        tenant: String,
+        /// The provider's name in addresses, such as `google`. It never
+        /// changes.
+        #[arg(long)]
+        alias: String,
+        /// What a person reads on the sign-in page.
+        #[arg(long)]
+        name: String,
+        /// The address that identifies the provider.
+        #[arg(long)]
+        issuer: String,
+        /// Who Hodor is to the provider.
+        #[arg(long)]
+        client_id: String,
+        /// What to ask the provider for. May be given several times;
+        /// `openid email profile` unless given.
+        #[arg(long = "scope")]
+        scopes: Vec<String>,
+        /// Do not create a person nobody knows yet on first sign-in.
+        #[arg(long)]
+        no_create_users: bool,
+    },
+    /// List a tenant's providers.
+    List {
+        /// The tenant's slug.
+        #[arg(long)]
+        tenant: String,
+    },
+    /// Stop a provider from signing people in.
+    Disable {
+        /// The tenant's slug.
+        #[arg(long)]
+        tenant: String,
+        /// The provider's alias.
+        #[arg(long)]
+        alias: String,
+    },
+    /// Let a provider sign people in again.
+    Enable {
+        /// The tenant's slug.
+        #[arg(long)]
+        tenant: String,
+        /// The provider's alias.
+        #[arg(long)]
+        alias: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum SecretsCommand {
+    /// Print a new key for `HODOR_SECRET_KEYS`: 32 random bytes in Base64.
+    ///
+    /// The key is printed once and stored nowhere. Give it an identifier
+    /// and put the pair first in the setting.
+    GenerateKey,
 }
 
 #[derive(Subcommand)]
@@ -266,6 +369,126 @@ async fn run_tenant(
 
 /// Makes a user an administrator of a tenant and issues an access token
 /// for them. See `docs/api/admin-api.md`, "The first administrator".
+/// One line about a provider: its alias, status, issuer and the address
+/// to register at the provider.
+fn provider_line(provider: &IdentityProvider, public_url: &str, slug: &str) -> String {
+    let state = provider.snapshot();
+    format!(
+        "{} {} {} {}",
+        state.alias.as_str(),
+        state.status.as_str(),
+        state.settings.issuer,
+        callback_address(public_url, slug, state.alias.as_str())
+    )
+}
+
+/// Runs a provider command against a tenant named by its slug.
+async fn run_provider(
+    database: &Database,
+    secret_keys: Option<String>,
+    public_url: &str,
+    command: ProviderCommand,
+) -> Result<String, DomainError> {
+    let setting = secret_keys.ok_or_else(|| {
+        DomainError::invalid(
+            "secret.keys_missing",
+            "HODOR_SECRET_KEYS or --secret-keys is required: provider secrets are kept encrypted",
+        )
+    })?;
+    let units = || Arc::new(database.clone());
+    let clock = Arc::new(SystemClock);
+    let tenants = TenantService::new(
+        units(),
+        Arc::new(PgTenantRepository),
+        Arc::new(PgTenantDirectory::new(database.clone())),
+        clock.clone(),
+    );
+    let federation = FederationService::new(
+        units(),
+        Arc::new(PgProviderStore),
+        Arc::new(PgLinkStore),
+        Arc::new(SecretKeys::parse(&Secret::from(setting))?),
+        clock,
+    );
+    let slug = match &command {
+        ProviderCommand::Add { tenant, .. }
+        | ProviderCommand::List { tenant }
+        | ProviderCommand::Disable { tenant, .. }
+        | ProviderCommand::Enable { tenant, .. } => tenant.clone(),
+    };
+    let entry = existing(&tenants, &slug).await?;
+    // The command-line tool is one of the places allowed to establish a
+    // tenant context: the operator names the tenant.
+    let tenant = TenantContext::assume(entry.tenant_id);
+
+    match command {
+        ProviderCommand::Add {
+            alias,
+            name,
+            issuer,
+            client_id,
+            scopes,
+            no_create_users,
+            ..
+        } => {
+            let client_secret = std::env::var("HODOR_PROVIDER_CLIENT_SECRET").map_err(|_| {
+                DomainError::invalid(
+                    "federation.client_secret_invalid",
+                    "the client secret is read from HODOR_PROVIDER_CLIENT_SECRET, which is not set",
+                )
+            })?;
+            let provider = federation
+                .create_provider(
+                    &tenant,
+                    CreateProvider {
+                        alias,
+                        kind: ProviderKind::OpenIdConnect,
+                        settings: ProviderSettings {
+                            display_name: name,
+                            issuer,
+                            client_id,
+                            scopes: if scopes.is_empty() {
+                                ProviderSettings::default_scopes()
+                            } else {
+                                scopes
+                            },
+                            creates_users: !no_create_users,
+                        },
+                        client_secret: Secret::from(client_secret),
+                    },
+                    caller(),
+                )
+                .await?;
+            Ok(format!(
+                "created {}\nregister this address at the provider: {}",
+                provider_line(&provider, public_url, &slug),
+                callback_address(public_url, &slug, provider.alias().as_str())
+            ))
+        }
+        ProviderCommand::List { .. } => Ok(federation
+            .providers(&tenant)
+            .await?
+            .iter()
+            .map(|provider| provider_line(provider, public_url, &slug))
+            .collect::<Vec<_>>()
+            .join("\n")),
+        ProviderCommand::Disable { alias, .. } => {
+            let provider = federation.provider_by_alias(&tenant, &alias).await?;
+            let provider = federation
+                .set_provider_status(&tenant, provider.id(), ProviderStatus::Disabled, caller())
+                .await?;
+            Ok(provider_line(&provider, public_url, &slug))
+        }
+        ProviderCommand::Enable { alias, .. } => {
+            let provider = federation.provider_by_alias(&tenant, &alias).await?;
+            let provider = federation
+                .set_provider_status(&tenant, provider.id(), ProviderStatus::Enabled, caller())
+                .await?;
+            Ok(provider_line(&provider, public_url, &slug))
+        }
+    }
+}
+
 async fn bootstrap_administrator(
     database: &Database,
     slug: &str,
@@ -452,6 +675,27 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .await
                 .map_err(|error| format!("{}: {}", error.code(), error.message()))??;
             writeln!(std::io::stdout(), "{output}")?;
+        }
+        Command::Provider {
+            database_url,
+            secret_keys,
+            public_url,
+            command,
+        } => {
+            let url = database_url.ok_or("HODOR_DATABASE_URL or --database-url is required")?;
+            let database = Database::connect(&Secret::from(url), 2).await?;
+            let output = run_provider(&database, secret_keys, &public_url, command)
+                .await
+                .map_err(|error| format!("{}: {}", error.code(), error.message()))?;
+            if !output.is_empty() {
+                writeln!(std::io::stdout(), "{output}")?;
+            }
+        }
+        Command::Secrets {
+            command: SecretsCommand::GenerateKey,
+        } => {
+            let key = SecretKeys::generate(&OsRandom);
+            writeln!(std::io::stdout(), "{}", key.expose())?;
         }
         Command::Probe { addr, path } => {
             if !probe(addr, &path)? {

@@ -15,16 +15,22 @@ pub enum Permission {
     SessionsRevoke,
     /// Reading the audit log.
     AuditRead,
+    /// Seeing identity providers, without their secrets.
+    IdentityProvidersRead,
+    /// Adding and changing identity providers.
+    IdentityProvidersWrite,
 }
 
 impl Permission {
     /// Every permission.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 7] = [
         Self::UsersRead,
         Self::UsersWrite,
         Self::SessionsRead,
         Self::SessionsRevoke,
         Self::AuditRead,
+        Self::IdentityProvidersRead,
+        Self::IdentityProvidersWrite,
     ];
 
     /// The permission written as `resource:action`.
@@ -36,6 +42,8 @@ impl Permission {
             Self::SessionsRead => "sessions:read",
             Self::SessionsRevoke => "sessions:revoke",
             Self::AuditRead => "audit:read",
+            Self::IdentityProvidersRead => "identity-providers:read",
+            Self::IdentityProvidersWrite => "identity-providers:write",
         }
     }
 
@@ -93,6 +101,7 @@ impl Role {
                 Permission::UsersRead,
                 Permission::SessionsRead,
                 Permission::AuditRead,
+                Permission::IdentityProvidersRead,
             ],
         }
     }

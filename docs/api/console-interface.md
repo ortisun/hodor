@@ -34,7 +34,7 @@ A request that is refused learns nothing about what it asked for, as on the admi
 {
   "user": { "id": "0193f1c2-…", "display_name": "Ana Silva", "identifiers": [ … ] },
   "roles": ["tenant_administrator"],
-  "permissions": ["audit:read", "sessions:read", "sessions:revoke", "users:read", "users:write"],
+  "permissions": ["users:read", "users:write", "sessions:read", "sessions:revoke", "audit:read", "…"],
   "signed_in_at": "2026-11-21T14:03:11Z",
   "console_until": "2026-11-22T02:03:11Z",
   "csrf_token": "9a41…"
@@ -56,6 +56,13 @@ Every route of the [administration interface](admin-api.md#routes) exists here a
 | `GET /users/{user_id}/sessions` | `sessions:read` |
 | `DELETE /sessions/{session_id}` | `sessions:revoke` |
 | `GET /audit-records` | `audit:read` |
+| `GET /identity-providers` | `identity-providers:read` |
+| `POST /identity-providers` | `identity-providers:write` |
+| `GET /identity-providers/{provider_id}` | `identity-providers:read` |
+| `PATCH /identity-providers/{provider_id}` | `identity-providers:write` |
+| `PUT /identity-providers/{provider_id}/client-secret` | `identity-providers:write` |
+| `POST /identity-providers/{provider_id}:disable` | `identity-providers:write` |
+| `POST /identity-providers/{provider_id}:enable` | `identity-providers:write` |
 
 The two interfaces are answered by the same handlers and the same table of permissions; a route added to one is added to the other. The OpenAPI document is not served here: this interface has one client, which ships with the server.
 

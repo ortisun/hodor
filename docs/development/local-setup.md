@@ -128,6 +128,8 @@ Every setting is a command-line flag with an environment variable of the same me
 | `HODOR_OTLP_METRICS_ENDPOINT` | unset | Full URL of the OTLP/HTTP metrics endpoint. For VictoriaMetrics: `http://<host>:8428/opentelemetry/v1/metrics` |
 | `HODOR_SHUTDOWN_DRAIN_SECONDS` | `5` | How long to keep serving after a stop signal while readiness fails |
 | `HODOR_PUBLIC_URL` | `http://localhost:8080` | The address people reach this installation at, without a path. Links in messages start with it |
+| `HODOR_SECRET_KEYS` | unset | The keys that keep secrets [encrypted at rest](../security/secrets-at-rest.md#keys). Unset: no identity provider can be used, and none is offered |
+| `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` | empty | Hosts with ports, separated by commas, that [outbound requests](../security/outbound-http.md#the-exception-for-development) may reach at a private address and over plain HTTP. Never set it anywhere real |
 | `HODOR_PAGES_DIRECTORY` | unset; the image sets `/usr/share/hodor/auth-ui` | The directory holding the built [hosted pages](../architecture/hosted-pages.md#how-the-pages-are-served). Unset: no pages are served. Set to a directory without `index.html`: the server does not start |
 | `HODOR_CONSOLE_DIRECTORY` | unset; the image sets `/usr/share/hodor/admin-console` | The directory holding the built [admin console](../architecture/admin-console.md#how-it-is-served). Unset: no console page is served; the console interface is still answered. Set to a directory without `index.html`: the server does not start |
 | `HODOR_PASSWORD_HASH_MEMORY_KIBIBYTES` | `19456` | Memory one password hash uses. Raising it makes every password harder to guess offline; existing passwords are re-hashed as their owners sign in |
@@ -162,6 +164,8 @@ The worker connects to the database twice, with different roles: as a member of 
 | `tenant create`, `tenant create-system`, `tenant list`, `tenant suspend`, `tenant reactivate` | `HODOR_DATABASE_URL` (required) | Manage tenants as a member of `hodor_app`. See [the tenant context](../architecture/contexts/tenant.md#command-line-tool) |
 | `admin bootstrap --tenant <slug> --email <address>` | `HODOR_DATABASE_URL` (required) | Makes a user an administrator of a tenant, creating the user if needed, and prints an access token for [the administration interface](../api/admin-api.md#the-first-administrator) |
 | `audit verify --tenant <slug>` | `HODOR_DATABASE_URL` (required) | Checks a tenant's whole chain of audit records and exits non-zero if a record was changed, removed or inserted. See [the audit context](../architecture/contexts/audit.md#verifying) |
+| `provider add`, `provider list`, `provider disable`, `provider enable` | `HODOR_DATABASE_URL` and `HODOR_SECRET_KEYS` (required) | Manage a tenant's [identity providers](../architecture/contexts/federation.md#identity-providers). `provider add` reads the client secret from `HODOR_PROVIDER_CLIENT_SECRET`, never from an argument, so that it does not show in the list of processes or in the history of a shell |
+| `secrets generate-key` | — | Prints a new key for `HODOR_SECRET_KEYS`. See [secrets at rest](../security/secrets-at-rest.md#keys) |
 | `probe` | — | Requests a health endpoint (`--addr`, `--path`) and exits non-zero unless it answers 200. Used by container health checks, since the image has no shell |
 
 ### Creating your first tenant

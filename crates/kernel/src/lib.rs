@@ -11,7 +11,9 @@ pub mod http;
 pub mod id;
 pub mod page;
 pub mod random;
+pub mod sealing;
 pub mod secret;
+pub mod signature;
 pub mod tenant;
 pub mod uow;
 
@@ -22,7 +24,9 @@ pub use http::{HttpClient, HttpMethod, HttpRequest, HttpResponse};
 pub use id::{CorrelationId, EventId, ParseIdError, TenantId, UserId};
 pub use page::{Cursor, Page, PageRequest};
 pub use random::{Digest, RandomSource};
+pub use sealing::{SealedSecret, SecretBox};
 pub use secret::Secret;
+pub use signature::{PublicKey, SignatureAlgorithm, SignatureVerifier};
 pub use tenant::TenantContext;
 pub use uow::{UnitOfWork, UnitOfWorkFactory};
 

@@ -24,7 +24,8 @@ An **authenticator** performs one step. It receives what the person submitted an
 |---|---|---|---|
 | `identifier` | Takes what the person typed as their login identifier and remembers who, if anyone, it belongs to | Who is trying to sign in | Milestone 1 |
 | `password` | Checks the password of the person named by the identifier step | One factor: something the person knows | Milestone 1 |
-| One-time password, passkey, external identity provider, and others | — | — | Later phases |
+| An external identity provider, a directory | Takes what came back from somewhere else that knows the person, checks it, and answers who the person is | Who is signing in and one factor, in a single step | Milestone 2, in the federation context |
+| One-time password, passkey and others | — | — | Later phases |
 
 Each step has a requirement. Milestone 1 has one kind:
 
@@ -32,7 +33,21 @@ Each step has a requirement. Milestone 1 has one kind:
 |---|---|
 | Required | The step must be satisfied for the flow to continue |
 
-Alternative, conditional and optional steps are added in Phase 4 as further kinds of requirement on the same list; the engine and the stored form do not change shape.
+Conditional and optional steps are added in Phase 4 as further kinds of requirement on the same list; the engine and the stored form do not change shape.
+
+### Alternatives
+
+A flow may also list **alternatives**: steps that, satisfied at the very start of a sign-in, complete it in place of all its steps. This is how a person signs in with an external identity instead of an identifier and a password.
+
+| Rule | Why |
+|---|---|
+| An alternative is performed by an authenticator that establishes who is signing in **and** proves it, in one step | There is no earlier step to have named the person, and none after it to prove anything |
+| An alternative is accepted only while no step of the flow has been satisfied | A sign-in is completed by its steps or by one alternative, never by part of each. A person who typed an identifier and then wants an external identity starts a new sign-in |
+| A rejected alternative counts as a rejection of the sign-in, like a rejected step | The same tolerance applies whichever way is tried |
+| After a rejected alternative the sign-in is waiting for the step it was waiting for before | The alternative was a way around the steps, not one of them; the person is back where they were |
+| An authenticator answers only in the way its kind allows: a step never answers as an alternative, an alternative never as a step | An authenticator that breaks this is a defect, and the sign-in does not advance |
+
+What a person submits to an alternative is a set of named values that only its authenticator understands, every one of them treated as a secret: the code an identity provider sent back, a password for a directory.
 
 ### The built-in flow
 
@@ -50,7 +65,8 @@ A flow is checked before it can be used. It is valid when:
 - it has at least one step, and no step key appears twice;
 - every step names an authenticator the engine knows;
 - a step that establishes who is signing in comes before every step that proves it;
-- the factors established by its required steps reach its minimum assurance.
+- the factors established by its required steps reach its minimum assurance;
+- every alternative has a key no step or other alternative has, names an authenticator the engine knows that both establishes who is signing in and proves it, and reaches the minimum assurance by itself.
 
 An invalid flow is rejected as a whole. The engine never runs one.
 

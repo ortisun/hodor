@@ -6,12 +6,15 @@
 
 use clap::{Parser, ValueEnum};
 use hodor_adapters_crypto::{
-    Argon2Parameters, Argon2idHasher, HashingLimits, OsRandom, Sha256Digest,
+    Argon2Parameters, Argon2idHasher, AwsLcVerifier, HashingLimits, OsRandom, SecretKeys,
+    Sha256Digest,
 };
+use hodor_adapters_http::{GuardedHttpClient, OutboundPolicy};
 use hodor_adapters_postgres::{
-    Database, PgAccessTokenStore, PgAttemptStore, PgAuditLog, PgMessageQueue, PgPasswordStore,
-    PgRoleAssignmentStore, PgSessionStore, PgTenantDirectory, PgTenantRepository,
-    PgTransactionStore, PgUserRepository, PgVerificationTokenStore,
+    Database, PgAccessTokenStore, PgAttemptStore, PgAuditLog, PgLinkStore, PgMessageQueue,
+    PgPasswordStore, PgPendingAuthorizationStore, PgProviderStore, PgRoleAssignmentStore,
+    PgSessionStore, PgTenantDirectory, PgTenantRepository, PgTransactionStore, PgUserRepository,
+    PgVerificationTokenStore,
 };
 use hodor_audit::api::AuditService;
 use hodor_authentication::api::{
@@ -20,6 +23,9 @@ use hodor_authentication::api::{
 };
 use hodor_authorization::api::AuthorizationService;
 use hodor_credential::api::{AccessTokenService, CredentialService};
+use hodor_federation::api::{
+    EXTERNAL_STEP, ExternalIdentityAuthenticator, ExternalSignIn, FederationService, OpenIdClient,
+};
 use hodor_identity::api::IdentityService;
 use hodor_kernel::{DomainError, Secret, SystemClock, TenantContext};
 use hodor_notification::api::Notifier;
@@ -106,6 +112,18 @@ struct Config {
     /// `assets`). Unset: no console page is served.
     #[arg(long, env = "HODOR_CONSOLE_DIRECTORY")]
     console_directory: Option<PathBuf>,
+
+    /// The keys that keep secrets encrypted at rest: `identifier:key`
+    /// pairs separated by commas, the first one sealing. Unset: no
+    /// identity provider can be used.
+    #[arg(long, env = "HODOR_SECRET_KEYS", hide_env_values = true)]
+    secret_keys: Option<String>,
+
+    /// Hosts with their ports that outbound requests may reach without
+    /// the address check and over plain HTTP, separated by commas. For a
+    /// development stack on one machine; never set it anywhere real.
+    #[arg(long, env = "HODOR_OUTBOUND_DEVELOPMENT_HOSTS", value_delimiter = ',')]
+    outbound_development_hosts: Vec<String>,
 
     /// Memory one password hash uses, in kibibytes.
     #[arg(long, env = "HODOR_PASSWORD_HASH_MEMORY_KIBIBYTES", default_value_t = 19 * 1024)]
@@ -214,11 +232,14 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
             "/interaction",
             interaction_routes(interaction(&config, &database)?),
         )
-        .nest("/api/v1/admin", admin_routes(administration(&database)))
+        .nest(
+            "/api/v1/admin",
+            admin_routes(administration(&config, &database)?),
+        )
         .nest(
             "/console/api",
             console_routes(ConsoleState {
-                administration: administration(&database),
+                administration: administration(&config, &database)?,
                 digest: Arc::new(Sha256Digest),
                 clock: Arc::new(SystemClock),
             }),
@@ -328,7 +349,7 @@ fn interaction(config: &Config, database: &Database) -> Result<InteractionState,
         digest.clone(),
         clock.clone(),
     );
-    let engine = FlowEngine::new()
+    let mut engine = FlowEngine::new()
         .with(Arc::new(IdentifierAuthenticator::new(
             identity.clone(),
             digest.clone(),
@@ -339,6 +360,16 @@ fn interaction(config: &Config, database: &Database) -> Result<InteractionState,
             tenants.clone(),
             guard.clone(),
         )));
+    // Signing in through an identity provider is an alternative of the
+    // flow, offered only by an installation that can keep secrets.
+    let mut flow = AuthFlow::built_in();
+    let external = external_sign_in(config, database, &identity)?;
+    if let Some(external) = &external {
+        engine = engine.with(Arc::new(ExternalIdentityAuthenticator::new(
+            external.clone(),
+        )));
+        flow = flow.with_alternative(EXTERNAL_STEP, EXTERNAL_STEP);
+    }
     // The server only queues messages; the worker delivers them.
     let accounts = AccountService::new(
         units(),
@@ -358,7 +389,7 @@ fn interaction(config: &Config, database: &Database) -> Result<InteractionState,
         units(),
         Arc::new(PgTransactionStore),
         engine,
-        AuthFlow::built_in(),
+        flow,
         identity,
         sessions.clone(),
         tenants,
@@ -370,18 +401,82 @@ fn interaction(config: &Config, database: &Database) -> Result<InteractionState,
         authentication,
         accounts,
         sessions,
+        external,
         digest,
         clock,
     })
 }
 
+/// Builds what signing in through an identity provider needs, if this
+/// installation has keys to keep secrets with.
+fn external_sign_in(
+    config: &Config,
+    database: &Database,
+    identity: &IdentityService,
+) -> Result<Option<ExternalSignIn>, DomainError> {
+    let Some(setting) = &config.secret_keys else {
+        tracing::warn!("HODOR_SECRET_KEYS is not set: no identity provider can be used");
+        return Ok(None);
+    };
+    let secrets = Arc::new(SecretKeys::parse(&Secret::from(setting.clone()))?);
+    let units = || Arc::new(database.clone());
+    let clock = Arc::new(SystemClock);
+    let digest = Arc::new(Sha256Digest);
+    let http = Arc::new(GuardedHttpClient::new(OutboundPolicy {
+        development_hosts: config
+            .outbound_development_hosts
+            .iter()
+            .map(|host| host.trim().to_owned())
+            .filter(|host| !host.is_empty())
+            .collect(),
+        ..OutboundPolicy::default()
+    })?);
+    let federation = FederationService::new(
+        units(),
+        Arc::new(PgProviderStore),
+        Arc::new(PgLinkStore),
+        secrets.clone(),
+        clock.clone(),
+    );
+    let openid = OpenIdClient::new(
+        http,
+        Arc::new(AwsLcVerifier),
+        digest.clone(),
+        Arc::new(OsRandom),
+        clock.clone(),
+    );
+    Ok(Some(ExternalSignIn::new(
+        federation,
+        openid,
+        identity.clone(),
+        Arc::new(PgPendingAuthorizationStore),
+        units(),
+        secrets,
+        digest,
+        clock,
+        &config.public_url,
+    )))
+}
+
 /// Builds everything the administration interface needs.
-fn administration(database: &Database) -> AdminState {
+fn administration(config: &Config, database: &Database) -> Result<AdminState, DomainError> {
     let units = || Arc::new(database.clone());
     let clock = Arc::new(SystemClock);
     let digest = Arc::new(Sha256Digest);
     let random = Arc::new(OsRandom);
-    AdminState {
+    // Without keys to keep secrets with there are no identity providers
+    // to manage; the routes say so.
+    let federation = match &config.secret_keys {
+        Some(setting) => Some(FederationService::new(
+            units(),
+            Arc::new(PgProviderStore),
+            Arc::new(PgLinkStore),
+            Arc::new(SecretKeys::parse(&Secret::from(setting.clone()))?),
+            clock.clone(),
+        )),
+        None => None,
+    };
+    Ok(AdminState {
         tokens: AccessTokenService::new(
             units(),
             Arc::new(PgAccessTokenStore),
@@ -404,7 +499,9 @@ fn administration(database: &Database) -> AdminState {
         ),
         // The server reads the audit log; the worker writes it.
         audit: AuditService::new(units(), Arc::new(PgAuditLog), digest, clock),
-    }
+        federation,
+        public_url: config.public_url.clone(),
+    })
 }
 
 async fn wait_for(mut stopped: watch::Receiver<bool>) {

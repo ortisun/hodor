@@ -147,13 +147,13 @@ sequenceDiagram
 
     Browser->>Server: POST /interaction/{id}/steps/idp {provider_id}
     Authentication->>Federation: ExternalIdpAuthenticator.begin(transaction, provider)
-    Federation->>Federation: create FederationState {state, nonce, code_verifier}, bound to the transaction
+    Federation->>Federation: create PendingAuthorization {state, nonce, code_verifier}, bound to the transaction
     Server-->>Browser: 200 {redirect: Identity provider authorize URL with state, nonce, code_challenge}
     Browser->>ExternalProvider: GET authorize
     ExternalProvider-->>Browser: 302 /t/acme/federation/callback/{provider}?code&state
     Browser->>Server: GET callback
     Server->>Federation: HandleCallback(code, state, browser cookie)
-    Federation->>Federation: load FederationState by state, check it belongs to this browser, consume it
+    Federation->>Federation: load PendingAuthorization by state, check it belongs to this browser, consume it
     Federation->>ExternalProvider: POST token {code, code_verifier, client auth}
     ExternalProvider-->>Federation: {id_token, access_token}
     Federation->>ExternalProvider: GET JWKS (cached, SSRF-safe client)
@@ -196,7 +196,7 @@ sequenceDiagram
         Browser->>Server: POST /account/identities/link {provider_id}
         Server->>Authentication: require recent authentication (step-up if auth_time is old)
         Server->>Federation: BeginLink(user, provider)
-        Federation->>Federation: create LinkRequest + FederationState(purpose = link, user)
+        Federation->>Federation: create LinkRequest + PendingAuthorization(purpose = link, user)
         Browser->>ExternalProvider: authorize
         ExternalProvider-->>Browser: callback with code
         Browser->>Server: GET callback
@@ -250,7 +250,7 @@ stateDiagram-v2
 Rules:
 
 - Sessions, access tokens and refresh tokens have independent lifetimes. A refresh token issued with `offline_access` survives session end; one without it is revoked with the session.
-- Rotation tolerates one benign retry: the immediately previous generation is accepted for a few seconds and returns the same successor, so a client that lost the response does not trip reuse detection.
+- Rotation tolerates one benign retry: the immediately previous generation is accepted for a few seconds and returns the same successor, so a client that lost the response does not pending authorization reuse detection.
 - Sender-constrained tokens (DPoP, mTLS) carry `cnf`; bearer refresh tokens for public clients are always rotated.
 - Signing keys rotate on a schedule. A key leaves the JWKS only after every token it signed has expired.
 

@@ -16,6 +16,7 @@ async-trait.workspace = true
 hodor-audit.workspace = true
 hodor-authentication.workspace = true
 hodor-authorization.workspace = true
+hodor-federation.workspace = true
 hodor-credential.workspace = true
 hodor-identity.workspace = true
 hodor-kernel.workspace = true
@@ -36,6 +37,7 @@ hodor-adapters-crypto.workspace = true
 hodor-audit = { workspace = true, features = ["testing"] }
 hodor-authentication = { workspace = true, features = ["testing"] }
 hodor-authorization = { workspace = true, features = ["testing"] }
+hodor-federation = { workspace = true, features = ["testing"] }
 hodor-session = { workspace = true, features = ["testing"] }
 hodor-notification = { workspace = true, features = ["testing"] }
 hodor-credential = { workspace = true, features = ["testing"] }

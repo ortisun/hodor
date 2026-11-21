@@ -109,7 +109,8 @@ The console is used in production with these known gaps. Each is a requirement o
 | An idle timeout of 15 minutes for administrators (Requirement-Console-01). The 12-hour limit is built; the idle limit is the tenant's | Activity on the account pages and in the console is one session's activity today | Phase 2 |
 | Recent authentication for sensitive actions (Requirement-Console-03) | There is no step-up yet | Phase 2 |
 | Phishing-resistant sign-in for administrators (Requirement-Console-05) | Passkeys are Phase 4. Until then an administrator signs in with a password | Phase 4 |
-| Security posture, live activity, applications, signing keys, identity providers, policies | The server has no such resources yet | The phase of each |
+| A screen for identity providers | The console interface answers for them since the administration interface does; the console has no screen yet, so they are managed through the administration interface | Next |
+| Security posture, live activity, applications, signing keys, policies | The server has no such resources yet | The phase of each |
 | Reactivating, changing or removing a user; filtering and searching the tables | The administration interface does not have them | Phase 2 |
 | Giving and taking roles | No route exists; roles are given with `hodor-cli` | Phase 2 |
 | Conflict detection between two administrators (Requirement-Console-09) | No `ETag` yet | Phase 2 |

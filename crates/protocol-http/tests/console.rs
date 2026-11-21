@@ -111,6 +111,9 @@ fn world() -> World {
         identity: identity.clone(),
         sessions: sessions.clone(),
         audit,
+        // Identity providers are tested in `admin.rs`; here they are not configured.
+        federation: None,
+        public_url: "https://auth.example".to_owned(),
     };
     let router = public_router(
         Arc::new(Tenants {

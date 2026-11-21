@@ -1,8 +1,8 @@
 //! The flow engine, driven with stand-in authenticators.
 
 use hodor_authentication::api::{
-    AuthFlow, AuthTransaction, Authenticator, AuthenticatorTraits, Factor, FlowEngine, FlowStep,
-    Progress, Requirement, StepInput, StepOutcome, TransactionState,
+    AuthFlow, AuthTransaction, Authenticator, AuthenticatorTraits, ExternalInput, Factor,
+    FlowEngine, FlowStep, Progress, Requirement, StepInput, StepOutcome, TransactionState,
 };
 use hodor_kernel::{DomainError, ErrorKind, Secret, TenantContext, TenantId, Timestamp, UserId};
 use hodor_session::api::{Assurance, ClientInfo};
@@ -190,6 +190,7 @@ fn flow(steps: Vec<FlowStep>, minimum_assurance: Assurance) -> AuthFlow {
         name: "under-test".to_owned(),
         version: 1,
         steps,
+        alternatives: Vec::new(),
         minimum_assurance,
     }
 }
@@ -592,4 +593,278 @@ proptest! {
             }
         }
     }
+}
+
+/// Stands for somewhere else that knows people: it recognizes whoever
+/// brings the word "ana" and answers in the way it is told to.
+struct Outside {
+    ana: UserId,
+    answers_as: &'static str,
+}
+
+#[async_trait::async_trait]
+impl Authenticator for Outside {
+    fn kind(&self) -> &'static str {
+        "outside"
+    }
+
+    fn traits(&self) -> AuthenticatorTraits {
+        AuthenticatorTraits {
+            identifies: true,
+            factor: Some(Factor::Possession),
+            method: Some("outside"),
+        }
+    }
+
+    async fn perform(
+        &self,
+        _tenant: &TenantContext,
+        _transaction: &AuthTransaction,
+        input: &StepInput,
+    ) -> Result<StepOutcome, DomainError> {
+        let StepInput::External(input) = input else {
+            return Ok(StepOutcome::Rejected);
+        };
+        let recognized = input
+            .field("word")
+            .is_some_and(|word| word.expose() == "ana");
+        Ok(match (recognized, self.answers_as) {
+            (false, _) => StepOutcome::Rejected,
+            (true, "proven") => StepOutcome::Proven,
+            (true, "identified") => StepOutcome::Identified {
+                candidate: Some(self.ana),
+                identifier_key: [1; 32],
+            },
+            (true, _) => StepOutcome::Authenticated { user: self.ana },
+        })
+    }
+}
+
+fn outside(word: &str) -> StepInput {
+    StepInput::External(ExternalInput {
+        step: "outside".to_owned(),
+        fields: vec![("word".to_owned(), Secret::from(word.to_owned()))],
+    })
+}
+
+/// The built-in flow with one alternative, "outside".
+fn world_with_alternative(answers_as: &'static str) -> World {
+    let mut world = world();
+    world.engine = world.engine.with(Arc::new(Outside {
+        ana: world.ana,
+        answers_as,
+    }));
+    world.flow = AuthFlow::built_in().with_alternative("outside", "outside");
+    world
+}
+
+#[test]
+fn the_validity_rules_of_alternatives_are_enforced() {
+    let world = world_with_alternative("authenticated");
+    world.engine.validate(&world.flow).expect("valid");
+
+    let broken = |flow: AuthFlow, expected: &str| {
+        let error = world.engine.validate(&flow).expect_err(expected);
+        assert_eq!(error.code(), "authentication.flow_invalid");
+        assert!(format!("{error:?}").contains(expected), "{error:?}");
+    };
+    broken(
+        AuthFlow::built_in().with_alternative("password", "outside"),
+        "appears twice",
+    );
+    broken(
+        AuthFlow::built_in()
+            .with_alternative("outside", "outside")
+            .with_alternative("outside", "outside"),
+        "appears twice",
+    );
+    broken(
+        AuthFlow::built_in().with_alternative("elsewhere", "nobody-knows"),
+        "unknown authenticator",
+    );
+    // One that only names the person, and one that only proves.
+    broken(
+        AuthFlow::built_in().with_alternative("other", "identifier"),
+        "must both establish who is signing in and prove it",
+    );
+    broken(
+        AuthFlow::built_in().with_alternative("other", "pin"),
+        "must both establish who is signing in and prove it",
+    );
+    // One factor does not reach a flow that asks for two.
+    let mut demanding = AuthFlow::built_in().with_alternative("outside", "outside");
+    demanding.steps.push(step("security-key", "security-key"));
+    demanding.minimum_assurance = Assurance::MultiFactor;
+    broken(demanding, "does not reach the flow's minimum assurance");
+}
+
+#[tokio::test]
+async fn an_alternative_completes_the_sign_in_in_place_of_every_step() {
+    let world = world_with_alternative("authenticated");
+    let mut transaction = world.begin();
+
+    let progress = world
+        .submit(&mut transaction, outside("ana"), START)
+        .await
+        .expect("submit");
+
+    assert_eq!(progress, Progress::ReadyToComplete);
+    assert!(transaction.all_steps_satisfied(&world.flow));
+    assert_eq!(transaction.snapshot().satisfied_methods, ["outside"]);
+    assert_eq!(
+        world.engine.assurance(&transaction),
+        Some(Assurance::SingleFactor)
+    );
+    let user = transaction.complete(&world.flow, START).expect("complete");
+    assert_eq!(user, world.ana);
+}
+
+#[tokio::test]
+async fn the_steps_still_complete_a_flow_that_has_an_alternative() {
+    let world = world_with_alternative("authenticated");
+    let mut transaction = world.begin();
+    world
+        .submit(&mut transaction, identifier("ana"), START)
+        .await
+        .expect("identifier");
+    let progress = world
+        .submit(&mut transaction, password("right"), START)
+        .await
+        .expect("password");
+    assert_eq!(progress, Progress::ReadyToComplete);
+    assert_eq!(transaction.snapshot().satisfied_methods, ["password"]);
+}
+
+#[tokio::test]
+async fn an_alternative_is_refused_once_a_step_has_been_satisfied() {
+    let world = world_with_alternative("authenticated");
+    let mut transaction = world.begin();
+    world
+        .submit(&mut transaction, identifier("somebody else"), START)
+        .await
+        .expect("identifier");
+    let before = transaction.clone();
+
+    // Half of each: an identifier naming one person, then the outside
+    // world vouching for another.
+    let error = world
+        .submit(&mut transaction, outside("ana"), START)
+        .await
+        .expect_err("too late for the alternative");
+
+    assert_eq!(error.code(), "authentication.unexpected_step");
+    assert_eq!(transaction, before, "nothing changed");
+    assert!(transaction.complete(&world.flow, START).is_err());
+}
+
+#[tokio::test]
+async fn nothing_can_be_added_after_an_alternative() {
+    let world = world_with_alternative("authenticated");
+    let mut transaction = world.begin();
+    world
+        .submit(&mut transaction, outside("ana"), START)
+        .await
+        .expect("submit");
+    let before = transaction.clone();
+
+    for input in [
+        identifier("somebody else"),
+        password("right"),
+        outside("ana"),
+    ] {
+        let error = world
+            .submit(&mut transaction, input, START)
+            .await
+            .expect_err("nothing is pending");
+        assert_eq!(error.code(), "authentication.no_step_pending");
+    }
+    assert_eq!(transaction, before);
+}
+
+#[tokio::test]
+async fn a_rejected_alternative_counts_like_a_rejected_step() {
+    let world = world_with_alternative("authenticated");
+    let mut transaction = world.begin();
+
+    let progress = world
+        .submit(&mut transaction, outside("a stranger"), START)
+        .await
+        .expect("submit");
+    assert_eq!(progress, Progress::Rejected { attempts_left: 4 });
+    assert_eq!(transaction.candidate(), None);
+
+    // Either way is still open, and the tolerance is shared.
+    world
+        .submit(&mut transaction, identifier("ana"), START)
+        .await
+        .expect("identifier");
+    for left in (1..4).rev() {
+        let progress = world
+            .submit(&mut transaction, password("wrong"), START)
+            .await
+            .expect("password");
+        assert_eq!(
+            progress,
+            Progress::Rejected {
+                attempts_left: left
+            }
+        );
+    }
+    let progress = world
+        .submit(&mut transaction, password("wrong"), START)
+        .await
+        .expect("password");
+    assert_eq!(progress, Progress::Failed);
+    assert_eq!(transaction.state_at(START), TransactionState::Failed);
+}
+
+#[tokio::test]
+async fn an_alternative_that_answers_like_a_step_does_not_advance_the_sign_in() {
+    for answers_as in ["proven", "identified"] {
+        let world = world_with_alternative(answers_as);
+        let mut transaction = world.begin();
+        let before = transaction.clone();
+
+        let error = world
+            .submit(&mut transaction, outside("ana"), START)
+            .await
+            .expect_err("a defect, not a sign-in");
+
+        assert_eq!(error.code(), "authentication.authenticator_misbehaved");
+        assert_eq!(error.kind(), ErrorKind::Internal);
+        assert_eq!(transaction, before, "{answers_as}");
+    }
+}
+
+#[tokio::test]
+async fn a_step_that_answers_like_an_alternative_does_not_advance_the_sign_in() {
+    // The same authenticator, placed as the first step of a flow. Such a
+    // flow does not pass validation; the engine holds even if one ran.
+    let mut world = world_with_alternative("authenticated");
+    world.flow = flow(
+        vec![step("outside", "outside"), step("password", "password")],
+        Assurance::SingleFactor,
+    );
+    assert!(world.engine.validate(&world.flow).is_err());
+    let mut transaction = world.begin();
+    let before = transaction.clone();
+
+    let error = world
+        .submit(&mut transaction, outside("ana"), START)
+        .await
+        .expect_err("a defect, not a sign-in");
+
+    assert_eq!(error.code(), "authentication.authenticator_misbehaved");
+    assert_eq!(transaction, before);
+}
+
+#[tokio::test]
+async fn a_flow_without_alternatives_accepts_none() {
+    let world = world();
+    let mut transaction = world.begin();
+    let error = world
+        .submit(&mut transaction, outside("ana"), START)
+        .await
+        .expect_err("the built-in flow has no alternative");
+    assert_eq!(error.code(), "authentication.unexpected_step");
 }
