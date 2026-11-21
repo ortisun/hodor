@@ -2,7 +2,7 @@
 
 Format: context, decision, consequences, alternatives considered. A decision record is immutable once accepted; a change of mind is a new decision record that supersedes the old one.
 
-All records below are **Proposed**: they become Accepted when the design review signs them off.
+All records below are **Proposed** unless marked otherwise: they become Accepted when the design review signs them off.
 
 | # | Decision |
 |---|---|
@@ -22,3 +22,4 @@ All records below are **Proposed**: they become Accepted when the design review 
 | [0014](0014-saml-deferred-with-spike.md) | SAML is deferred to Phase 6 and gated by a security spike |
 | [0015](0015-observability-stack.md) | OpenTelemetry for instrumentation, VictoriaMetrics for metrics (Accepted) |
 | [0016](0016-design-system.md) | One token-based design system for the three frontends, with security patterns built in |
+| [0017](0017-external-identities-before-oauth.md) | Signing in with external identities comes before OAuth (Accepted) |

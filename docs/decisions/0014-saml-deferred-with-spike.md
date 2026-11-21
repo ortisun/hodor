@@ -2,6 +2,8 @@
 
 Status: Proposed
 
+> [Decision 0017](0017-external-identities-before-oauth.md) moves the service provider side of SAML into Milestone 2. Everything else on this page stands: the spike comes first, the attack corpus is written before the feature code, and the external review remains a condition for production.
+
 ## Context
 
 SAML 2.0 (identity provider and service provider) is required for enterprise federation. Its security rests on XML Signature and canonicalization, the source of a long line of authentication bypasses (signature wrapping, comment injection, entity expansion). The Rust ecosystem's options for XML Signature are few; the best-known SAML crate relies on C libraries for signature handling. A wrong choice here is a critical vulnerability, not a bug.
