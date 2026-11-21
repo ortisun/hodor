@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { Failure } from "./client";
-import { ANA, empty, json, meBody, problem, scripted, userBody } from "./testing";
+import { ANA, empty, GOOGLE, json, meBody, problem, providerBody, scripted, userBody } from "./testing";
 
 describe("the client of the console interface", () => {
   it("says nobody is there when the server knows no session", async () => {
@@ -77,5 +77,43 @@ describe("the client of the console interface", () => {
   it("does not make up what an answer lacks", async () => {
     const { client } = scripted({ [`GET /console/api/users/${ANA}`]: [json(200, { id: ANA })] });
     expect(await client.getUser(ANA).catch((thrown: unknown) => thrown)).toBeInstanceOf(Failure);
+  });
+
+  it("adds a provider with its secret, and changes only what was changed", async () => {
+    const { client, sent } = scripted({
+      "GET /console/api/me": [json(200, meBody())],
+      "POST /console/api/identity-providers": [json(201, providerBody())],
+      [`PATCH /console/api/identity-providers/${GOOGLE}`]: [json(200, providerBody({ creates_users: false }))],
+      [`PUT /console/api/identity-providers/${GOOGLE}/client-secret`]: [empty(204)],
+      [`POST /console/api/identity-providers/${GOOGLE}:disable`]: [json(200, providerBody({ status: "disabled" }))],
+    });
+    await client.me();
+    const added = await client.addProvider({
+      alias: " google ",
+      displayName: "Google",
+      issuer: "https://accounts.google.com",
+      clientId: "1234",
+      clientSecret: "the secret",
+      scopes: ["openid", "email"],
+      createsUsers: true,
+    });
+    expect(added.callbackAddress).toContain("/providers/google/callback");
+    expect(added.scopes).toEqual(["openid", "email", "profile"]);
+    await client.changeProvider(GOOGLE, { createsUsers: false });
+    await client.replaceClientSecret(GOOGLE, "another secret");
+    expect((await client.disableProvider(GOOGLE)).status).toBe("disabled");
+
+    expect(sent[1]?.body).toEqual({
+      alias: "google",
+      display_name: "Google",
+      issuer: "https://accounts.google.com",
+      client_id: "1234",
+      client_secret: "the secret",
+      scopes: ["openid", "email"],
+      creates_users: true,
+    });
+    expect(sent[2]?.body).toEqual({ creates_users: false });
+    expect(sent[3]?.body).toEqual({ client_secret: "another secret" });
+    expect(sent.slice(1).every((request) => request.csrfToken === "token-of-the-session")).toBe(true);
   });
 });

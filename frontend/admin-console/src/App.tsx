@@ -17,13 +17,15 @@ import { useToast } from "@astryxdesign/core/Toast";
 import { TopNav, TopNavHeading } from "@astryxdesign/core/TopNav";
 import { VStack } from "@astryxdesign/core/VStack";
 import { useHotkeys } from "@astryxdesign/core/hooks";
-import { Clock, DoorOpen, FileText, LogOut, type LucideIcon, Moon, Search, Sun, Users } from "lucide-react";
+import { Clock, DoorOpen, FileText, Link2, LogOut, type LucideIcon, Moon, Search, Sun, Users } from "lucide-react";
 import { type MouseEvent, type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import { accountPath, isIdentifier, pathOf, type Place, type Screen, signInPath } from "./address";
 import type { Client, Me, Permission } from "./client";
 import { moment, named, type Messages } from "./messages";
 import { asFailure, Failed, type Loading, Waiting } from "./parts/Loaded";
 import { AuditScreen } from "./screens/AuditScreen";
+import { ProviderScreen } from "./screens/ProviderScreen";
+import { ProvidersScreen } from "./screens/ProvidersScreen";
 import { nameOf } from "./screens/UsersScreen";
 import { UserScreen } from "./screens/UserScreen";
 import { UsersScreen } from "./screens/UsersScreen";
@@ -54,6 +56,17 @@ const SECTIONS: { title: (text: Messages) => string; entries: Entry[] }[] = [
   {
     title: (text) => text.directory,
     entries: [{ screen: { name: "users" }, label: (text) => text.users, icon: Users, needs: "users:read" }],
+  },
+  {
+    title: (text) => text.access,
+    entries: [
+      {
+        screen: { name: "providers" },
+        label: (text) => text.providers,
+        icon: Link2,
+        needs: "identity-providers:read",
+      },
+    ],
   },
   {
     title: (text) => text.audit,
@@ -291,7 +304,9 @@ function Frame({ place, client, text, mode, changeMode, go, leave, me }: AppProp
                       icon={entry.icon}
                       href={path(entry.screen)}
                       isSelected={
-                        screen?.name === entry.screen.name || (screen?.name === "user" && entry.screen.name === "users")
+                        screen?.name === entry.screen.name ||
+                        (screen?.name === "user" && entry.screen.name === "users") ||
+                        (screen?.name === "provider" && entry.screen.name === "providers")
                       }
                       onClick={(event) => open(event, entry.screen)}
                     />
@@ -305,6 +320,10 @@ function Frame({ place, client, text, mode, changeMode, go, leave, me }: AppProp
         {screen?.name === "users" && allowed("users:read") ? <UsersScreen {...props} /> : null}
         {screen?.name === "user" && allowed("users:read") ? <UserScreen key={screen.id} id={screen.id} {...props} /> : null}
         {screen?.name === "audit" && allowed("audit:read") ? <AuditScreen {...props} /> : null}
+        {screen?.name === "providers" && allowed("identity-providers:read") ? <ProvidersScreen {...props} /> : null}
+        {screen?.name === "provider" && allowed("identity-providers:read") ? (
+          <ProviderScreen key={screen.id} id={screen.id} {...props} />
+        ) : null}
         {screen === null || (screen.name !== "home" && !allowed(needsOf(screen))) ? (
           <div className="console-page">
             <VStack gap={3} hAlign="start">
@@ -333,5 +352,13 @@ function Frame({ place, client, text, mode, changeMode, go, leave, me }: AppProp
 
 /** What a person needs to open a screen. A screen they may not open is, to them, not there. */
 function needsOf(screen: Screen): Permission {
-  return screen.name === "audit" ? "audit:read" : "users:read";
+  switch (screen.name) {
+    case "audit":
+      return "audit:read";
+    case "providers":
+    case "provider":
+      return "identity-providers:read";
+    default:
+      return "users:read";
+  }
 }

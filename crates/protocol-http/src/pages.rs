@@ -45,6 +45,8 @@ pub const CONSOLE_PATHS: &[&str] = &[
     "/console/users",
     "/console/users/{user}",
     "/console/audit",
+    "/console/identity-providers",
+    "/console/identity-providers/{provider}",
 ];
 
 /// Where the files of the admin console are served, outside any tenant.

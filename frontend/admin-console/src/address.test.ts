@@ -10,6 +10,11 @@ describe("placeOf", () => {
     expect(placeOf("/t/acme/console/users")).toEqual({ tenant: "acme", screen: { name: "users" } });
     expect(placeOf(`/t/acme/console/users/${ID}`)).toEqual({ tenant: "acme", screen: { name: "user", id: ID } });
     expect(placeOf("/t/acme/console/audit")).toEqual({ tenant: "acme", screen: { name: "audit" } });
+    expect(placeOf("/t/acme/console/identity-providers")).toEqual({ tenant: "acme", screen: { name: "providers" } });
+    expect(placeOf(`/t/acme/console/identity-providers/${ID}`)).toEqual({
+      tenant: "acme",
+      screen: { name: "provider", id: ID },
+    });
   });
 
   it("names no screen for an address of the console that has none", () => {
@@ -27,7 +32,15 @@ describe("placeOf", () => {
 
 describe("pathOf", () => {
   it("writes the address placeOf reads", () => {
-    for (const screen of [{ name: "home" }, { name: "users" }, { name: "user", id: ID }, { name: "audit" }] as const) {
+    const screens = [
+      { name: "home" },
+      { name: "users" },
+      { name: "user", id: ID },
+      { name: "audit" },
+      { name: "providers" },
+      { name: "provider", id: ID },
+    ] as const;
+    for (const screen of screens) {
       expect(placeOf(pathOf("acme", screen))).toEqual({ tenant: "acme", screen });
     }
   });

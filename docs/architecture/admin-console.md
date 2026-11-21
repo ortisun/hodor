@@ -1,6 +1,6 @@
 # The admin console
 
-The admin console is where the people who run a tenant do it from a browser: see its users, create and suspend them, end their sessions, and read the audit log. It is the first part of [the control plane](../design/control-plane.md), built on what the server can answer today ([Decision 0019](../decisions/0019-console-on-the-hodor-session.md)).
+The admin console is where the people who run a tenant do it from a browser: see its users, create and suspend them, end their sessions, connect the identity providers people sign in with, and read the audit log. It is the first part of [the control plane](../design/control-plane.md), built on what the server can answer today ([Decision 0019](../decisions/0019-console-on-the-hodor-session.md)).
 
 It is an application of static files, `admin-console`, served by `hodor-server` on the tenant's origin, built from the components of the [design system](../design/design-system.md). It talks only to the [console interface](../api/console-interface.md).
 
@@ -45,6 +45,8 @@ The console opens in the dark mode and remembers the person's choice in the brow
 | `/users` | Users: a table, oldest first, with status and identifiers, loaded a page at a time; create a user | `users:read`; `users:write` to create |
 | `/users/{user_id}` | One user: profile, identifiers with their verification, active sessions; suspend the user; end a session | `users:read`; `sessions:read` for the sessions; `users:write` and `sessions:revoke` for the actions |
 | `/audit` | Audit records: a table, a page at a time, with a panel showing the whole record and its hashes | `audit:read` |
+| `/identity-providers` | Identity providers: a table ordered by alias, with status and whether each creates users; add a provider | `identity-providers:read`; `identity-providers:write` to add |
+| `/identity-providers/{provider_id}` | One provider: the callback address to register at the provider, its settings; change them, replace the client secret, disable or enable it | `identity-providers:read`; `identity-providers:write` for the actions |
 
 An action the person may not take is not offered. The server checks every request regardless.
 
@@ -57,12 +59,18 @@ Each action has one level, written once in the console's action catalog (`src/ac
 | Create a user | 0 | None: a form |
 | End one session | 1 | A dialog that names the consequence |
 | Suspend a user | 2 | The reason, which the server requires, and the user's address typed in full |
+| Add an identity provider | 1 | The form says who will be able to sign in, and whether they get an account, before its button |
+| Change an identity provider's settings | 1 | The form, with the same sentence when people it lets in will be created |
+| Replace an identity provider's client secret | 1 | A dialog that says sign-ins use the new secret at once |
+| Enable an identity provider | 1 | A dialog that says it will be offered on the sign-in page |
+| Disable an identity provider | 2 | The alias typed in full: nobody signs in through it until it is enabled again |
 
 The dialog says what will happen in words the reader can check, never puts the destructive button first or focused, and does not act on Enter. After the action a toast confirms it; the audit record it produced is on the audit screen.
 
 ### What the console never does
 
 - It never shows or sets a password. A new user chooses one by recovering it.
+- It never shows a client secret. A secret is typed into a field that hides it, sent once, and forgotten by the page; the provider's screen says only that one is set.
 - It never holds a token: there is none to hold.
 - It never shows data it did not get from the server.
 
@@ -109,7 +117,6 @@ The console is used in production with these known gaps. Each is a requirement o
 | An idle timeout of 15 minutes for administrators (Requirement-Console-01). The 12-hour limit is built; the idle limit is the tenant's | Activity on the account pages and in the console is one session's activity today | Phase 2 |
 | Recent authentication for sensitive actions (Requirement-Console-03) | There is no step-up yet | Phase 2 |
 | Phishing-resistant sign-in for administrators (Requirement-Console-05) | Passkeys are Phase 4. Until then an administrator signs in with a password | Phase 4 |
-| A screen for identity providers | The console interface answers for them since the administration interface does; the console has no screen yet, so they are managed through the administration interface | Next |
 | Security posture, live activity, applications, signing keys, policies | The server has no such resources yet | The phase of each |
 | Reactivating, changing or removing a user; filtering and searching the tables | The administration interface does not have them | Phase 2 |
 | Giving and taking roles | No route exists; roles are given with `hodor-cli` | Phase 2 |

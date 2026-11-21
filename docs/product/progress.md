@@ -176,8 +176,9 @@ The first part of Epic 12, built ahead of Phase 2 on what the server can answer 
 | Frame | Done | Scope bar with tenant, roles and the end of the console session; navigation by permission; command palette; light and dark modes; English and Brazilian Portuguese |
 | Users | Done | The list a page at a time, create, one user with identifiers and sessions, suspend (level 2), end a session (level 1) |
 | Audit records | Done | The list a page at a time, and one record whole with its hashes |
+| Identity providers | Done | The list, add, one provider with its callback address and settings, change, replace the secret (level 1), disable (level 2) and enable |
 | Serving | Done | `HODOR_CONSOLE_DIRECTORY`; built into the image; same Content Security Policy as the hosted pages |
-| Checked by hand | Done once | Against the development stack in Chromium: signed in, listed users, created and suspended one, read the audit log, with no refusal by the policy |
+| Checked by hand | Done | Against the development stack in Chromium: signed in, listed users, created and suspended one, read the audit log; added the development identity provider, replaced its client secret, signed in through it on the hosted pages, and saw the console turn away the person it created, who holds no role. No style was refused by the policy |
 | Browser tests against a running stack | Not started | — |
 | Sign-in by OpenID Connect, idle timeout for administrators, step-up, the other screens | Not started | Phase 2 and later |
 

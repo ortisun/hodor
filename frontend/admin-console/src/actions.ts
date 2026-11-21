@@ -19,6 +19,16 @@ export const ACTIONS = {
   endSession: { level: 1, permission: "sessions:revoke" },
   /** A person can no longer sign in, and every session of theirs ends. */
   suspendUser: { level: 2, permission: "users:write" },
+  /** People with an account at the provider can sign in, and may be created. */
+  addProvider: { level: 1, permission: "identity-providers:write" },
+  /** Changes who the provider lets in, or whether they are created. */
+  changeProvider: { level: 1, permission: "identity-providers:write" },
+  /** Sign-ins use the new secret at once. */
+  replaceClientSecret: { level: 1, permission: "identity-providers:write" },
+  /** The provider is offered on the sign-in page again. */
+  enableProvider: { level: 1, permission: "identity-providers:write" },
+  /** Nobody signs in through the provider until it is enabled again. */
+  disableProvider: { level: 2, permission: "identity-providers:write" },
 } as const satisfies Record<string, Action>;
 
 export type ActionName = keyof typeof ACTIONS;

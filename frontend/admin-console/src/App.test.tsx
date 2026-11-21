@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { placeOf, type Screen } from "./address";
 import { App } from "./App";
 import { en } from "./messages/en";
-import { ANA, BIA, json, meBody, problem, scripted, userBody } from "./testing";
+import { ANA, BIA, GOOGLE, json, meBody, problem, providerBody, scripted, userBody } from "./testing";
 
 afterEach(cleanup);
 
@@ -194,5 +194,88 @@ describe("the audit screen", () => {
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByText("c07e")).toBeTruthy();
     expect(within(dialog).getByText(/left the company/)).toBeTruthy();
+  });
+});
+
+describe("the identity providers", () => {
+  it("are listed, each a link to its page, and an auditor may not add one", async () => {
+    show("/t/acme/console/identity-providers", {
+      "GET /console/api/me": [json(200, meBody(["identity-providers:read"], ["tenant_auditor"]))],
+      "GET /console/api/identity-providers": [json(200, { items: [providerBody()] })],
+    });
+    const google = await screen.findByRole("link", { name: "Google" });
+    expect(google.getAttribute("href")).toBe(`/t/acme/console/identity-providers/${GOOGLE}`);
+    expect(screen.getByText(en.createsUsersYes)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: en.addProvider })).toBeNull();
+  });
+
+  it("are added with a form that says who will be let in before its button", async () => {
+    const { sent, go, user } = show("/t/acme/console/identity-providers", {
+      "GET /console/api/me": [json(200, meBody())],
+      "GET /console/api/identity-providers": [json(200, { items: [] })],
+      "POST /console/api/identity-providers": [problem(409, "federation.alias_taken"), json(201, providerBody())],
+    });
+    expect(await screen.findByText(en.noProviders)).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: en.addProvider }));
+    const dialog = await screen.findByRole("dialog");
+    const add = within(dialog).getByRole("button", { name: en.addProvider });
+    expect(add.getAttribute("aria-disabled")).toBe("true");
+
+    await user.type(within(dialog).getByLabelText(en.aliasLabel), "google");
+    await user.type(within(dialog).getByLabelText(en.providerNameLabel), "Google");
+    await user.type(within(dialog).getByLabelText(en.issuerLabel), "https://accounts.google.com");
+    await user.type(within(dialog).getByLabelText(en.clientIdLabel), "1234");
+    const secret = within(dialog).getByLabelText(en.clientSecretLabel);
+    expect(secret.getAttribute("type")).toBe("password");
+    await user.type(secret, "the secret");
+    expect(within(dialog).getByText(en.createsUsersOn("Google"))).toBeTruthy();
+
+    await user.click(add);
+    expect(await within(dialog).findByText(en.aliasTaken)).toBeTruthy();
+    await user.click(add);
+    await waitFor(() => expect(go).toHaveBeenCalledWith({ name: "provider", id: GOOGLE }));
+    expect(sent.at(-1)?.body).toMatchObject({ alias: "google", scopes: ["openid", "email", "profile"], creates_users: true });
+  });
+
+  it("show the callback address and never a client secret", async () => {
+    show(`/t/acme/console/identity-providers/${GOOGLE}`, {
+      "GET /console/api/me": [json(200, meBody())],
+      [`GET /console/api/identity-providers/${GOOGLE}`]: [json(200, providerBody())],
+    });
+    expect(await screen.findByText("https://auth.example/t/acme/account/providers/google/callback")).toBeTruthy();
+    expect(screen.getByText(en.clientSecretSet)).toBeTruthy();
+  });
+
+  it("are disabled only with the alias typed in full", async () => {
+    const { sent, user } = show(`/t/acme/console/identity-providers/${GOOGLE}`, {
+      "GET /console/api/me": [json(200, meBody())],
+      [`GET /console/api/identity-providers/${GOOGLE}`]: [json(200, providerBody())],
+      [`POST /console/api/identity-providers/${GOOGLE}:disable`]: [json(200, providerBody({ status: "disabled" }))],
+    });
+    await user.click(await screen.findByRole("button", { name: en.disableProvider }));
+    const dialog = await screen.findByRole("dialog");
+    const confirm = within(dialog).getByRole("button", { name: en.disableProvider });
+    expect(confirm.getAttribute("aria-disabled")).toBe("true");
+    await user.type(within(dialog).getByLabelText(en.typeToConfirm("google")), "google");
+    await user.click(confirm);
+    expect(await screen.findByRole("button", { name: en.enableProvider })).toBeTruthy();
+    expect(sent.at(-1)?.path).toBe(`/console/api/identity-providers/${GOOGLE}:disable`);
+  });
+
+  it("send only what was changed, and nothing when nothing was", async () => {
+    const { sent, user } = show(`/t/acme/console/identity-providers/${GOOGLE}`, {
+      "GET /console/api/me": [json(200, meBody())],
+      [`GET /console/api/identity-providers/${GOOGLE}`]: [json(200, providerBody())],
+      [`PATCH /console/api/identity-providers/${GOOGLE}`]: [json(200, providerBody({ creates_users: false }))],
+    });
+    await user.click(await screen.findByRole("button", { name: en.changeSettings }));
+    const dialog = await screen.findByRole("dialog");
+    const save = within(dialog).getByRole("button", { name: en.saveSettings });
+    expect(save.getAttribute("aria-disabled")).toBe("true");
+    await user.click(within(dialog).getByLabelText(en.createsUsersLabel));
+    expect(within(dialog).getByText(en.createsUsersOff("Google"))).toBeTruthy();
+    await user.click(save);
+    expect(await screen.findByText(en.createsUsersOff("Google"))).toBeTruthy();
+    expect(sent.at(-1)?.body).toEqual({ creates_users: false });
   });
 });

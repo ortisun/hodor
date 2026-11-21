@@ -19,7 +19,14 @@ export class Failure {
   }
 }
 
-export type Permission = "users:read" | "users:write" | "sessions:read" | "sessions:revoke" | "audit:read";
+export type Permission =
+  | "users:read"
+  | "users:write"
+  | "sessions:read"
+  | "sessions:revoke"
+  | "audit:read"
+  | "identity-providers:read"
+  | "identity-providers:write";
 
 export interface Identifier {
   id: string;
@@ -70,6 +77,43 @@ export interface AuditRecord {
   details: Record<string, unknown>;
   previousHash: string;
   hash: string;
+}
+
+/** An identity provider. Its client secret is never part of it: the server never gives it back. */
+export interface Provider {
+  id: string;
+  alias: string;
+  kind: string;
+  displayName: string;
+  issuer: string;
+  clientId: string;
+  scopes: string[];
+  createsUsers: boolean;
+  status: string;
+  /** The address to register at the provider, where it sends people back to. */
+  callbackAddress: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** What an administrator gives to add a provider. */
+export interface NewProvider {
+  alias: string;
+  displayName: string;
+  issuer: string;
+  clientId: string;
+  clientSecret: string;
+  scopes: string[];
+  createsUsers: boolean;
+}
+
+/** What an administrator may change of a provider; what is left out stays as it is. */
+export interface ProviderChange {
+  displayName?: string;
+  issuer?: string;
+  clientId?: string;
+  scopes?: string[];
+  createsUsers?: boolean;
 }
 
 export interface Page<T> {
@@ -149,6 +193,23 @@ function auditRecord(body: Fields): AuditRecord {
     details: fields(body["details"]),
     previousHash: required(body["previous_hash"]),
     hash: required(body["hash"]),
+  };
+}
+
+function provider(body: Fields): Provider {
+  return {
+    id: required(body["id"]),
+    alias: required(body["alias"]),
+    kind: required(body["kind"]),
+    displayName: required(body["display_name"]),
+    issuer: required(body["issuer"]),
+    clientId: required(body["client_id"]),
+    scopes: strings(body["scopes"]),
+    createsUsers: body["creates_users"] === true,
+    status: required(body["status"]),
+    callbackAddress: required(body["callback_address"]),
+    createdAt: required(body["created_at"]),
+    updatedAt: required(body["updated_at"]),
   };
 }
 
@@ -262,6 +323,53 @@ export class Client {
 
   async endSession(sessionId: string): Promise<void> {
     await this.#send("DELETE", `/sessions/${encodeURIComponent(sessionId)}`);
+  }
+
+  async listProviders(): Promise<Provider[]> {
+    return list((await this.#send("GET", "/identity-providers"))["items"]).map(provider);
+  }
+
+  async getProvider(id: string): Promise<Provider> {
+    return provider(await this.#send("GET", `/identity-providers/${encodeURIComponent(id)}`));
+  }
+
+  async addProvider(added: NewProvider): Promise<Provider> {
+    return provider(
+      await this.#send("POST", "/identity-providers", {
+        alias: added.alias.trim(),
+        display_name: added.displayName.trim(),
+        issuer: added.issuer.trim(),
+        client_id: added.clientId.trim(),
+        client_secret: added.clientSecret,
+        scopes: added.scopes,
+        creates_users: added.createsUsers,
+      }),
+    );
+  }
+
+  async changeProvider(id: string, change: ProviderChange): Promise<Provider> {
+    const body: Fields = {};
+    if (change.displayName !== undefined) body["display_name"] = change.displayName.trim();
+    if (change.issuer !== undefined) body["issuer"] = change.issuer.trim();
+    if (change.clientId !== undefined) body["client_id"] = change.clientId.trim();
+    if (change.scopes !== undefined) body["scopes"] = change.scopes;
+    if (change.createsUsers !== undefined) body["creates_users"] = change.createsUsers;
+    return provider(await this.#send("PATCH", `/identity-providers/${encodeURIComponent(id)}`, body));
+  }
+
+  /** Sends a new client secret, once. The page keeps no copy of it. */
+  async replaceClientSecret(id: string, clientSecret: string): Promise<void> {
+    await this.#send("PUT", `/identity-providers/${encodeURIComponent(id)}/client-secret`, {
+      client_secret: clientSecret,
+    });
+  }
+
+  async disableProvider(id: string): Promise<Provider> {
+    return provider(await this.#send("POST", `/identity-providers/${encodeURIComponent(id)}:disable`));
+  }
+
+  async enableProvider(id: string): Promise<Provider> {
+    return provider(await this.#send("POST", `/identity-providers/${encodeURIComponent(id)}:enable`));
   }
 
   async listAuditRecords(cursor: string | null = null): Promise<Page<AuditRecord>> {

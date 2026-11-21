@@ -71,7 +71,36 @@ export function userBody(id: string, email: string, more: Record<string, unknown
   };
 }
 
-const EVERYTHING = ["audit:read", "sessions:read", "sessions:revoke", "users:read", "users:write"];
+const EVERYTHING = [
+  "users:read",
+  "users:write",
+  "sessions:read",
+  "sessions:revoke",
+  "audit:read",
+  "identity-providers:read",
+  "identity-providers:write",
+];
+
+export const GOOGLE = "0193f1c2-0000-7000-8000-00000000000a";
+
+/** An identity provider, as the console interface writes one. */
+export function providerBody(more: Record<string, unknown> = {}) {
+  return {
+    id: GOOGLE,
+    alias: "google",
+    kind: "openid_connect",
+    display_name: "Google",
+    issuer: "https://accounts.google.com",
+    client_id: "1234.apps.googleusercontent.com",
+    scopes: ["openid", "email", "profile"],
+    creates_users: true,
+    status: "enabled",
+    callback_address: "https://auth.example/t/acme/account/providers/google/callback",
+    created_at: "2026-11-21T14:03:11Z",
+    updated_at: "2026-11-21T14:03:11Z",
+    ...more,
+  };
+}
 
 /** The answer of `/me` for Ana, an administrator unless told otherwise. */
 export function meBody(permissions: string[] = EVERYTHING, roles: string[] = ["tenant_administrator"]) {

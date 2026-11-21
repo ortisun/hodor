@@ -42,7 +42,20 @@ export function describe(failure: Failure, text: Messages): string {
       return text.userNotFound;
     case "identity.invalid_transition":
       return text.notActive;
+    case "federation.provider_not_found":
+      return text.providerNotFound;
+    case "federation.alias_taken":
+      return text.aliasTaken;
+    case "federation.too_many_providers":
+      return text.tooManyProviders;
+    case "federation.not_configured":
+      return text.providersNotConfigured;
+    case "federation.provider_modified_concurrently":
+      return text.modifiedConcurrently;
     default:
+      if (failure.code !== null && text.valueInvalid[failure.code] !== undefined) {
+        return text.valueInvalid[failure.code] ?? text.somethingWrong;
+      }
       return failure.requestId === null
         ? text.somethingWrong
         : `${text.somethingWrong} ${text.requestIdentifier(failure.requestId)}`;

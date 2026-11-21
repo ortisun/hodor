@@ -47,6 +47,8 @@ interface ConfirmProps {
   typed?: string;
   /** Whether what else the dialog asks for has been given. */
   ready?: boolean;
+  /** Whether the action takes something away. An action that only gives, such as enabling, is not. */
+  isDestructive?: boolean;
   /** Does it. A failure it throws is shown in the dialog, which stays open. */
   onConfirm: () => Promise<void>;
   onClose: () => void;
@@ -66,6 +68,7 @@ export function Confirm({
   confirmLabel,
   typed,
   ready = true,
+  isDestructive = true,
   onConfirm,
   onClose,
   text,
@@ -117,7 +120,7 @@ export function Confirm({
           <HStack gap={2} justify="end">
             <Button label={text.cancel} onClick={onClose} />
             <Button
-              variant="destructive"
+              variant={isDestructive ? "destructive" : "primary"}
               label={confirmLabel}
               isDisabled={!allowed}
               isLoading={busy}

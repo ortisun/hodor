@@ -379,7 +379,9 @@ async fn the_console_is_another_application_at_its_own_addresses() {
     );
 
     for path in CONSOLE_PATHS {
-        let path = path.replace("{user}", "0193f1c2-0000-7000-8000-000000000001");
+        let path = path
+            .replace("{user}", "0193f1c2-0000-7000-8000-000000000001")
+            .replace("{provider}", "0193f1c2-0000-7000-8000-000000000002");
         let reply = get(&router, &format!("/t/acme{path}")).await;
         assert_eq!(reply.status, StatusCode::OK, "{path}");
         assert_eq!(reply.body, "<p>console</p>", "{path}");

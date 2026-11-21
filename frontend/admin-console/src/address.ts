@@ -6,7 +6,9 @@ export type Screen =
   | { name: "home" }
   | { name: "users" }
   | { name: "user"; id: string }
-  | { name: "audit" };
+  | { name: "audit" }
+  | { name: "providers" }
+  | { name: "provider"; id: string };
 
 export interface Place {
   tenant: string;
@@ -46,6 +48,12 @@ function screenOf(rest: string[]): Screen | null {
   if (first === "audit" && second === undefined) {
     return { name: "audit" };
   }
+  if (first === "identity-providers" && second === undefined) {
+    return { name: "providers" };
+  }
+  if (first === "identity-providers" && second !== undefined && more.length === 0 && isIdentifier(second)) {
+    return { name: "provider", id: second.toLowerCase() };
+  }
   return null;
 }
 
@@ -61,6 +69,10 @@ export function pathOf(tenant: string, screen: Screen): string {
       return `${base}/users/${screen.id}`;
     case "audit":
       return `${base}/audit`;
+    case "providers":
+      return `${base}/identity-providers`;
+    case "provider":
+      return `${base}/identity-providers/${screen.id}`;
   }
 }
 
