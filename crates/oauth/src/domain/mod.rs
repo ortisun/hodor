@@ -1,6 +1,7 @@
 //! The aggregates of the OAuth context and the rules they keep.
 
 pub(crate) mod application;
+pub(crate) mod authorization;
 pub(crate) mod client;
 pub(crate) mod event;
 pub(crate) mod key;

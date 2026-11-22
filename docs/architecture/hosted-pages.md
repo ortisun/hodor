@@ -20,6 +20,8 @@ All paths are relative to the tenant: `https://{host}/t/{slug}`.
 
 `/account` sends a person who is not signed in to `/account/sign-in`, and `/account/sign-in` sends a person who is already signed in to `/account`.
 
+**Signing in for an application.** When an application sends a person to Hodor's [authorization endpoint](contexts/oauth.md#signing-in-and-coming-back) and they must sign in, the server sends them to `/account/sign-in?continue=authorization`. With `continue=authorization` in its address the sign-in page starts a sign-in even when someone is signed in already, since the application asked for a new one. When a sign-in completes, by any way, the identity providers' page that the person comes back to included, and the answer carries `continue`, the page goes there instead of to the account page. The page goes only to an address that starts with `/t/{slug}/oauth2/` of its own tenant; anything else is ignored and the account page is shown.
+
 Any other path under `/account` is answered with `404` by the server.
 
 ### Signing in
@@ -207,7 +209,6 @@ The browser tests read the messages from the development mail server of the Comp
 |---|---|
 | The tenant's name, logo and colors on the pages. The pages show the tenant's slug | With tenant branding, Phase 3 |
 | Hiding the link to register when the tenant does not accept registrations. The page says so after the person asks | With a public description of the tenant, Phase 2 |
-| Returning to the application that sent the person to sign in | With OAuth, Phase 2 |
 | The person's sessions on the account page | The account console, Phase 2 |
 | A choice of language on the page, and a remembered theme | The account console, Phase 2 |
 | Browsers other than Chromium in the browser tests | Hardening pass |

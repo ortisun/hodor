@@ -2,10 +2,11 @@
 //! identifiers, names and audiences; never a secret or its hash.
 
 use crate::domain::application::ApplicationId;
+use crate::domain::authorization::GrantId;
 use crate::domain::client::ClientId;
 use crate::domain::resource_server::ResourceServerId;
 use crate::domain::secret::ClientSecretId;
-use hodor_kernel::{DomainEvent, Timestamp};
+use hodor_kernel::{DomainEvent, Timestamp, UserId};
 use serde::Serialize;
 
 /// An event of the OAuth context.
@@ -109,6 +110,25 @@ pub enum OauthEvent {
         /// Its audience.
         audience: String,
     },
+    /// An authorization code was issued. Never carries the code or its
+    /// hash.
+    AuthorizationCodeIssued {
+        /// The client it was issued to.
+        client_id: ClientId,
+        /// The grant it was issued under.
+        grant_id: GrantId,
+        /// The person who signed in.
+        user_id: UserId,
+    },
+    /// A grant was revoked, and everything issued from it with it.
+    GrantRevoked {
+        /// The grant.
+        grant_id: GrantId,
+        /// Its client.
+        client_id: ClientId,
+        /// Why, such as `code_reused`.
+        reason: &'static str,
+    },
 }
 
 impl DomainEvent for OauthEvent {
@@ -128,6 +148,8 @@ impl DomainEvent for OauthEvent {
             Self::ClientKeyRemoved { .. } => "oauth.client_key_removed",
             Self::ResourceServerCreated { .. } => "oauth.resource_server_created",
             Self::ResourceServerChanged { .. } => "oauth.resource_server_changed",
+            Self::AuthorizationCodeIssued { .. } => "oauth.authorization_code_issued",
+            Self::GrantRevoked { .. } => "oauth.grant_revoked",
         }
     }
 }

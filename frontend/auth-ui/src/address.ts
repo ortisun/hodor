@@ -69,6 +69,14 @@ export function noticeOf(search: string): NoticeName | null {
 }
 
 /**
+ * Whether the address says that an application's request waits for this
+ * sign-in, so that the person signs in even when they are signed in already.
+ */
+export function continuesAuthorization(search: string): boolean {
+  return new URLSearchParams(search).get("continue") === "authorization";
+}
+
+/**
  * The token of a link from a message. It comes after `#`, which a browser
  * never sends to a server.
  */

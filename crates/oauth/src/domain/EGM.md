@@ -28,7 +28,18 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
 - `resource_server.rs`: `ResourceServerId`; `Audience::parse`;
   `ScopeDefinition`; `ResourceServerSettings`; `ResourceServer` with
   `create`, `change`, `defines`; `OPENID_SCOPES`.
-- `event.rs`: `OauthEvent`, fourteen variants, each named `oauth.*`.
+- `authorization.rs`: the authorization endpoint. `AuthorizationParameters`
+  (pairs as received, empty values dropped); `check_request(parameters,
+  client, application, servers)`, the checks of the specification in their
+  order, answering `NotRedirectable(code)` until the client and its
+  redirect address are trusted and `Redirect(AuthorizationError)` after;
+  `AuthorizationRequest` (serializable, stored while the person signs in)
+  with `decide` and `satisfied_after_sign_in`; `PendingAuthorization`
+  (`hold`, `belongs_to`, `is_live_at`); `Grant` (`make`, `revoke`);
+  `AuthorizationCode` (`issue`, `check_redemption`); `CodeHash`
+  (`of_presented` answers `None` for a value without the shape of a code);
+  `s256_challenge`. Its cases are in `authorization/tests.rs`.
+- `event.rs`: `OauthEvent`, sixteen variants, each named `oauth.*`.
 - `text.rs`: the rules of names and of scopes (`is_scope`).
 
 ## Invariants
@@ -43,8 +54,13 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   overlap ends; every other secret is dropped, so at most two work.
 - Leaving a secret method drops the secrets, and leaving `private_key_jwt`
   drops the keys.
-- Events carry identifiers, names, audiences and `kid`s; never a secret or
-  its hash.
+- Events carry identifiers, names, audiences and `kid`s; never a secret, a
+  code or their hashes.
+- Nothing is sent to a redirect address before the client, its
+  application and the address are known: `client_id` must name the client
+  passed in, both must be enabled, the client must have the authorization
+  code grant, and the address must equal a registered one byte for byte.
+- A code challenge is S256 only; a code without one refuses a verifier.
 
 ## Verification
 

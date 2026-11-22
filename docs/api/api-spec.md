@@ -45,12 +45,15 @@ OAuth endpoints follow their RFCs instead: form-encoded requests and the `error`
 
 ## OAuth 2.x and OpenID Connect
 
+The paths are relative to the tenant, `https://{host}/t/{slug}`, whose issuer is `{HODOR_PUBLIC_URL}/t/{slug}`. The authorization endpoint is specified in [the OAuth context](../architecture/contexts/oauth.md#authorization-endpoint).
+
 | Method and path | Purpose | Standard |
 |---|---|---|
 | `GET /.well-known/openid-configuration` | Provider metadata | OpenID Connect Discovery |
 | `GET /.well-known/oauth-authorization-server` | Authorization server metadata | RFC 8414 |
 | `GET /oauth2/jwks` | Public signing keys | RFC 7517 |
 | `GET, POST /oauth2/authorize` | Authorization endpoint | RFC 6749, OpenID Connect Core |
+| `GET /oauth2/authorize/resume` | Where the hosted pages send the browser after a sign-in, to go on with the pending authorization request ([the OAuth context](../architecture/contexts/oauth.md#signing-in-and-coming-back)) | — |
 | `POST /oauth2/par` | Pushed authorization request | RFC 9126 |
 | `POST /oauth2/token` | Token endpoint: `authorization_code`, `refresh_token`, `client_credentials`, `urn:ietf:params:oauth:grant-type:device_code`, `…:token-exchange`, `…:jwt-bearer` | RFC 6749, 8628, 8693, 7523 |
 | `POST /oauth2/revoke` | Revocation | RFC 7009 |

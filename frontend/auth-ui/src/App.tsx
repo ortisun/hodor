@@ -22,16 +22,18 @@ export interface AppProps {
   leave: (url: string) => void;
   /** What an identity provider put in the address, on the page it sends people back to. */
   providerAnswer: ProviderAnswer;
+  /** An application's request waits for a new sign-in. */
+  signInAgain?: boolean;
 }
 
 /** Shows the page the address names. */
-export function App({ place, client, text, notice, token, go, leave, providerAnswer }: AppProps) {
+export function App({ place, client, text, notice, token, go, leave, providerAnswer, signInAgain = false }: AppProps) {
   const { tenant } = place;
   const page = { tenant, client, text, go, leave, path: (name: PageName) => pathOf(tenant, name) };
 
   switch (place.page) {
     case "sign-in":
-      return <SignInPage {...page} notice={notice} />;
+      return <SignInPage {...page} notice={notice} signInAgain={signInAgain} />;
     case "register":
       return <AskPage {...page} purpose="registration" />;
     case "recover":

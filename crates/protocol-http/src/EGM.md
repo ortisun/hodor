@@ -27,6 +27,7 @@ the set of re-exports in `lib.rs`.
 | `Problem` | `problem.rs` | Error response body, `application/problem+json`. `Problem::new(status, code, detail)`, `status()`, `impl From<DomainError>`, `impl IntoResponse`. |
 | `ClientAddress(pub Option<IpAddr>)` | `request.rs` | The address of the connection, inserted as a request extension. |
 | `interaction_routes(state)`, `InteractionState` | `interaction.rs` | The interaction interface: browser sign-in, sessions, registration and password recovery. |
+| `authorization_routes(state)`, `AuthorizationState` | `authorize.rs` | The OAuth authorization endpoint: checks a request, issues a code to a signed-in browser or keeps the request while the person signs in. `AuthorizationState { authorization: AuthorizationCodeService, sessions, public_url }`. |
 | `admin_routes(state)`, `AdminState` | `admin.rs` | The administration interface, authenticated by bearer access token. |
 | `console_routes(state)`, `ConsoleState` | `admin.rs` | The same handlers for the admin console, authenticated by session cookie, plus `/me`. |
 | `ADMIN_OPENAPI` | `admin.rs` | `include_str!("../openapi/admin-v1.json")`, served at `/openapi.json`. |
@@ -91,6 +92,24 @@ routes and the whole router.
 | POST | `/recovery/complete` | `reset_password` |
 | POST | `/sign-in/providers/{alias}/saml` | `receive_saml_response` (SAML assertion consumer; outside the origin check) |
 | GET | `/sign-in/providers/{alias}/saml/metadata` | `saml_metadata` (`application/samlmetadata+xml`) |
+
+`authorization_routes` (`authorize.rs`), documented mount point
+`/t/{slug}/oauth2`:
+
+| Method | Path | Handler |
+| --- | --- | --- |
+| GET | `/authorize` | `authorize_by_query` |
+| POST | `/authorize` | `authorize_by_form` (only `application/x-www-form-urlencoded`; otherwise the page `oauth.authorization_form_expected`) |
+| GET | `/authorize/resume` | `resume` (takes the pending request of the `__Secure-hodor_authorization` cookie once, and removes the cookie) |
+
+A request whose client or redirect address is not trusted gets Hodor's own
+HTML page with status `400` and the reason's code (`error_page`); every
+other answer is a `302`. The issuer sent as `iss` is
+`{public_url}/t/{slug}`. The cookie `__Secure-hodor_authorization` is
+`Path=/t/{slug}`, `SameSite=Strict`, ten minutes; a completed sign-in of
+the interaction interface adds `"continue":
+"/t/{slug}/oauth2/authorize/resume"` to its answer while the browser
+holds it (`authorize::waiting`).
 
 Administration and console handlers, shared by both routers
 (`admin.rs:shared_routes`):

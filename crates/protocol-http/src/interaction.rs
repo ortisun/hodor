@@ -113,6 +113,10 @@ struct SignInBody {
     attempts_left: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     csrf_token: Option<String>,
+    /// Where the pages go after a completed sign-in, when an
+    /// authorization request of this browser waits for it.
+    #[serde(rename = "continue", skip_serializing_if = "Option::is_none")]
+    continue_to: Option<String>,
 }
 
 /// A provider as the sign-in page shows it.
@@ -311,7 +315,7 @@ fn csrf_is_valid(headers: &HeaderMap, digest: &dyn Digest, handle: &Handle) -> b
         .is_some_and(|presented| same(presented, &csrf_token(digest, handle.secret.expose())))
 }
 
-fn set_cookie(response: &mut Response, value: &str) {
+pub(crate) fn set_cookie(response: &mut Response, value: &str) {
     if let Ok(value) = HeaderValue::from_str(value) {
         response.headers_mut().append(header::SET_COOKIE, value);
     }
@@ -335,6 +339,7 @@ fn session_cookie(slug: &str, token: &SessionToken, max_age: i64) -> String {
 fn respond(
     state: &InteractionState,
     slug: &str,
+    headers: &HeaderMap,
     secret: &str,
     status: StatusCode,
     outcome: SignIn,
@@ -348,6 +353,7 @@ fn respond(
                 step: Some(step),
                 attempts_left: None,
                 csrf_token: token(),
+                continue_to: None,
             }),
         )
             .into_response(),
@@ -362,6 +368,7 @@ fn respond(
                 step: Some(step),
                 attempts_left: Some(attempts_left),
                 csrf_token: token(),
+                continue_to: None,
             }),
         )
             .into_response(),
@@ -373,6 +380,7 @@ fn respond(
                     step: None,
                     attempts_left: None,
                     csrf_token: None,
+                    continue_to: None,
                 }),
             )
                 .into_response();
@@ -390,6 +398,7 @@ fn respond(
                     step: None,
                     attempts_left: None,
                     csrf_token: None,
+                    continue_to: crate::authorize::waiting(headers, slug),
                 }),
             )
                 .into_response();
@@ -457,6 +466,7 @@ async fn start_sign_in(
             step: Some(started.step),
             attempts_left: None,
             csrf_token: Some(csrf_token(state.digest.as_ref(), secret)),
+            continue_to: None,
         }),
     )
         .into_response();
@@ -485,6 +495,7 @@ async fn describe_sign_in(
         Ok(outcome) => respond(
             &state,
             &slug,
+            &headers,
             handle.secret.expose(),
             StatusCode::OK,
             outcome,
@@ -515,7 +526,14 @@ async fn submit(
         .submit(tenant, handle.id, handle.secret.expose(), input)
         .await
     {
-        Ok(outcome) => respond(state, slug, handle.secret.expose(), StatusCode::OK, outcome),
+        Ok(outcome) => respond(
+            state,
+            slug,
+            headers,
+            handle.secret.expose(),
+            StatusCode::OK,
+            outcome,
+        ),
         Err(error) => Problem::from(error).into_response(),
     }
 }

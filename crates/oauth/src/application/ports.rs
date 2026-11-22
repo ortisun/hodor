@@ -2,9 +2,12 @@
 //! the tenant the unit of work is bound to.
 
 use crate::domain::application::{Application, ApplicationId};
+use crate::domain::authorization::{
+    AuthorizationCode, CodeHash, Grant, GrantId, PendingAuthorization, PendingAuthorizationId,
+};
 use crate::domain::client::{Client, ClientId};
 use crate::domain::resource_server::{Audience, ResourceServer, ResourceServerId};
-use hodor_kernel::{DomainError, UnitOfWork};
+use hodor_kernel::{DomainError, Timestamp, UnitOfWork};
 
 /// Stores applications.
 #[async_trait::async_trait]
@@ -151,4 +154,112 @@ pub trait ResourceServerStore: Send + Sync {
     ///
     /// Returns an error if storage fails.
     async fn list(&self, uow: &mut dyn UnitOfWork) -> Result<Vec<ResourceServer>, DomainError>;
+}
+
+/// Stores the requests that wait for their person to sign in.
+#[async_trait::async_trait]
+pub trait AuthorizationRequestStore: Send + Sync {
+    /// Stores a pending request.
+    ///
+    /// # Errors
+    ///
+    /// Returns `oauth.client_not_found` if the tenant has no such client.
+    async fn insert(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        pending: &PendingAuthorization,
+    ) -> Result<(), DomainError>;
+
+    /// The pending request with this identifier, if the tenant has it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn get(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: PendingAuthorizationId,
+    ) -> Result<Option<PendingAuthorization>, DomainError>;
+
+    /// Removes the pending request with this identifier. Returns whether
+    /// this call removed it, so that of two resumptions at the same moment
+    /// exactly one goes on.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn remove(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: PendingAuthorizationId,
+    ) -> Result<bool, DomainError>;
+}
+
+/// Stores grants.
+#[async_trait::async_trait]
+pub trait GrantStore: Send + Sync {
+    /// Stores a new grant.
+    ///
+    /// # Errors
+    ///
+    /// Returns `oauth.client_not_found` if the tenant has no such client.
+    async fn insert(&self, uow: &mut dyn UnitOfWork, grant: &Grant) -> Result<(), DomainError>;
+
+    /// The grant with this identifier, if the tenant has it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn get(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: GrantId,
+    ) -> Result<Option<Grant>, DomainError>;
+
+    /// Stores a grant's status, when it was revoked and why.
+    ///
+    /// # Errors
+    ///
+    /// Returns `oauth.grant_not_found` if the tenant has no such grant.
+    async fn update(&self, uow: &mut dyn UnitOfWork, grant: &Grant) -> Result<(), DomainError>;
+}
+
+/// Stores authorization codes, by the hash of the code.
+#[async_trait::async_trait]
+pub trait AuthorizationCodeStore: Send + Sync {
+    /// Stores a new code.
+    ///
+    /// # Errors
+    ///
+    /// Returns `oauth.grant_not_found` if the tenant has no such grant.
+    async fn insert(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        code: &AuthorizationCode,
+    ) -> Result<(), DomainError>;
+
+    /// The code with this hash, if the tenant has it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn find(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        hash: &CodeHash,
+    ) -> Result<Option<AuthorizationCode>, DomainError>;
+
+    /// Marks the code redeemed at `at`, only if it was not redeemed
+    /// before. Returns whether this call was the one that redeemed it, so
+    /// that of two redemptions at the same moment exactly one wins.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn redeem(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        hash: &CodeHash,
+        at: Timestamp,
+    ) -> Result<bool, DomainError>;
 }

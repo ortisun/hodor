@@ -4,7 +4,7 @@ The `oauth` context makes Hodor an OAuth 2.x authorization server and an OpenID 
 
 It does not sign anyone in. When a request needs a person, it hands the request to the `authentication` context and takes the session that comes back. The two contexts do not depend on each other: the HTTP layer joins them ([crates.md](../crates.md)).
 
-This page specifies what Issue-53 builds: applications, clients and resource servers, and the rules they keep. The endpoints, the tokens and consent are added by Issue-55 to Issue-62, under the headings at the end of this page.
+This page specifies what Issue-53 builds: applications, clients and resource servers, and the rules they keep; and what Issue-55 builds: the authorization endpoint, grants and authorization codes. The other endpoints, the tokens and consent are added by Issue-56 to Issue-62, under the headings at the end of this page.
 
 ## Applications
 
@@ -217,7 +217,136 @@ A revoked or replaced secret is deleted: there is nothing to keep about a secret
 
 ## Authorization endpoint
 
-Issue-55.
+Issue-55. The authorization endpoint is where a client sends a person's browser to ask for an authorization code ([RFC 6749](https://www.rfc-editor.org/rfc/rfc6749#section-4.1)). It is at `/t/{slug}/oauth2/authorize` and answers `GET` with the parameters in the query, and `POST` with them in a form (`application/x-www-form-urlencoded`); a `POST` with another body is answered with Hodor's own page, `oauth.authorization_form_expected`. A browser does not send the session cookie with a form another site posts (the cookie is `SameSite=Lax`), so a request by `POST` always has the person sign in. Its sequence is [sequence 2](../../protocols/sequences.md#2-oauth-20-authorization-code-with-pkce).
+
+The **issuer** of the tenant is `{HODOR_PUBLIC_URL}/t/{slug}`, without a slash at the end. Every successful answer and every error sent back to a client carries it as `iss` ([RFC 9207](https://www.rfc-editor.org/rfc/rfc9207)), so that a client talking to several servers knows which one answered. Discovery (Issue-59) advertises the same value.
+
+### Checking the request
+
+Nothing is shown and nothing is stored until the request has been checked. The checks are made in this order, and the first that fails decides the answer.
+
+**First, whether the request may be answered at its redirect address at all.** Until the client and its redirect address are known to be genuine, an error is never sent to the address the request names, because that address could be anyone's ([RFC 6749, section 4.1.2.1](https://www.rfc-editor.org/rfc/rfc6749#section-4.1.2.1)). These failures are answered with a page of Hodor's own, status `400`, that says the request cannot be answered and names the reason by its code:
+
+| Failure | Code |
+|---|---|
+| `client_id` missing, given twice, or not the identifier of a client of this tenant | `oauth.authorization_client_unknown` |
+| The client or its application is disabled | `oauth.authorization_client_unknown` |
+| The client may not use the authorization code (it has no redirect address) | `oauth.authorization_client_unknown` |
+| `redirect_uri` missing or given twice | `oauth.authorization_redirect_uri_missing` |
+| `redirect_uri` is not, character for character, one of the client's redirect addresses | `oauth.authorization_redirect_uri_unregistered` |
+
+`redirect_uri` is required even when the client has only one redirect address. OpenID Connect requires it, and requiring it always leaves one rule instead of two.
+
+A client of another tenant is unknown here: the client is looked up only in the tenant the address names.
+
+**Then, everything else, answered at the redirect address.** From here on, an error is sent back by redirecting the browser to the redirect address with `error`, `error_description`, `state` when the request had one, and `iss`:
+
+| Failure | `error` |
+|---|---|
+| A parameter other than `resource` is given more than once | `invalid_request` |
+| `request` is given: request objects are not supported | `request_not_supported` |
+| `request_uri` is given: request objects are not supported | `request_uri_not_supported` |
+| `response_mode` is given and is not `query` | `invalid_request` |
+| `response_type` is missing | `invalid_request` |
+| `response_type` is anything but `code` | `unsupported_response_type` |
+| `code_challenge` is missing for a client that requires PKCE (every public client, and a confidential one unless an administrator turned it off) | `invalid_request` |
+| `code_challenge_method` is missing or is not `S256`. `plain` is refused: a challenge without a method means `plain` ([RFC 7636](https://www.rfc-editor.org/rfc/rfc7636#section-4.3)) | `invalid_request` |
+| `code_challenge` is not 43 characters of base64url without padding, the length of a SHA-256 digest | `invalid_request` |
+| `state` or `nonce` is longer than 1024 characters or holds characters outside printable ASCII | `invalid_request` |
+| `prompt` holds a value other than `none`, `login`, `consent` and `select_account`, or `none` with another | `invalid_request` |
+| `max_age` is not a whole number of seconds from 0 to 31 536 000 | `invalid_request` |
+| `login_hint`, `ui_locales` or `acr_values` is longer than 255 characters | `invalid_request` |
+| `scope` is missing or empty, holds a scope the client may not ask for, or a scope that neither OpenID Connect nor a resource server of the request defines | `invalid_scope` |
+| More than 10 `resource` values; a `resource` that is not an absolute address without a fragment; or one that is not the audience of a resource server of this tenant ([RFC 8707](https://www.rfc-editor.org/rfc/rfc8707)) | `invalid_target` |
+| The client belongs to an application that is not first party | `access_denied` |
+
+**The resource servers of a request.** When the request names resources, they are the resource servers whose audiences it names, and every scope that is not one of OpenID Connect's must be defined by one of them. When it names none, they are the resource servers of the tenant that define the scopes asked for. The resource servers become the audiences of the tokens issued from the code (Issue-56).
+
+**Only first-party applications until consent exists.** Consent is Issue-62. Until then, a person would be giving a third-party application access to their account without being asked, so the clients of an application that is not first party are refused with `access_denied`. The administrator of a tenant decides which applications are first party.
+
+Parameters this issue does not use are kept with the request for the issues that do: `nonce` (Issue-59), `acr_values` (Issue-69), `login_hint` and `ui_locales` (Issue-59). Parameters the endpoint does not know are ignored, as RFC 6749 requires.
+
+### Whether the person must sign in
+
+A checked request needs a person signed in to the tenant. The session cookie of the browser is looked up as for every route of the tenant, and the request decides whether that session is enough:
+
+| Situation | What happens |
+|---|---|
+| No valid session, and `prompt` holds `none` | Error `login_required` at the redirect address |
+| A valid session older than `max_age`, and `prompt` holds `none` | Error `login_required` |
+| A valid session, `prompt` neither `login` nor `select_account`, and not older than `max_age` when it is given | A code is issued at once |
+| No valid session; or `prompt` holds `login` or `select_account`; or the session is older than `max_age` | The person signs in, then the request goes on |
+
+`select_account` is treated as `login`: a browser holds one session per tenant, so the only way to choose another account is to sign in as it. `consent` asks for nothing more until consent exists.
+
+### Signing in and coming back
+
+When the person must sign in, the request is kept and the browser is sent to the hosted pages.
+
+1. The checked request is stored as a **pending authorization request**, for ten minutes, the life of a sign-in. It is bound to the browser exactly as a sign-in is: Hodor makes a random secret of 256 bits, stores only its SHA-256 hash with the request, and gives the browser the request's identifier and the secret in a cookie.
+2. The browser is redirected to `/t/{slug}/account/sign-in?continue=authorization`. That address tells the sign-in page to start a sign-in even when the browser is signed in already, since the request asked for a new one.
+3. The person signs in with any way the tenant offers, an identity provider included. When the sign-in completes, the interaction interface sees the cookie and adds `"continue": "/t/{slug}/oauth2/authorize/resume"` to its answer ([the interaction interface](../../api/interaction-api.md#what-a-sign-in-response-looks-like)). The page goes there instead of to the account page.
+4. `GET /t/{slug}/oauth2/authorize/resume` reads the cookie, takes the pending request, which can therefore be resumed once, and removes the cookie. Without the cookie, with a wrong secret or after ten minutes, it answers with Hodor's own error page, `oauth.authorization_request_not_found`.
+5. The session is checked again against the request. A request that asked for a new sign-in (`prompt=login` or `select_account`, or `max_age` that the old session did not meet) needs a session that signed in after the request arrived. When the session is enough, a code is issued; when it is not, because the person did not sign in again, the answer is `access_denied` at the redirect address.
+
+The cookie:
+
+| Attribute | Value | Why |
+|---|---|---|
+| Name | `__Secure-hodor_authorization` | |
+| Value | The pending request's identifier and its secret | |
+| `HttpOnly`, `Secure` | Yes | As for the other cookies |
+| `SameSite` | `Strict` | It is only ever needed by requests Hodor's own pages make |
+| `Path` | `/t/{slug}` | Sent to the interaction interface, which adds `continue`, and to the resume address |
+| `Max-Age` | 600 seconds | |
+
+A browser has one pending authorization request per tenant at a time: a new one replaces the cookie of the one before, which then cannot be resumed.
+
+### The authorization code
+
+When the person is signed in and the session is enough, a **grant** and an **authorization code** are made.
+
+- **The grant** records that this person let this client act for them, with the scopes and audiences of the request and the session it was made in. It is what the refresh tokens of Issue-57 belong to, and it can be revoked; revoking it ends whatever was issued from it.
+- **The code** is 32 random bytes from the operating system, written as base64url without padding. Hodor keeps only its SHA-256 hash ([Decision 0004](../../decisions/0004-token-formats.md)), with the grant, the client, the redirect address, the code challenge, the scopes, the audiences, the `nonce`, the session, the user, when they signed in and with which methods. It lives **60 seconds**.
+- The browser is redirected to the redirect address with `code`, `state` when the request had one, and `iss`. The redirect address keeps its own query, and the parameters are added after it.
+
+Every answer of the endpoint, a redirect included, carries `Cache-Control: no-store`, so that no code or error is kept by a cache.
+
+### Redeeming a code
+
+The token endpoint (Issue-56) redeems a code. The rules are the context's, so that the token endpoint only translates them:
+
+- the code is found by the hash of what was presented; an unknown code, a code of another tenant and a code past its 60 seconds are all refused alike;
+- it must be presented by the client it was issued to, with the same redirect address;
+- with a code challenge, the verifier must be 43 to 128 characters of `A`–`Z`, `a`–`z`, `0`–`9`, `-`, `.`, `_` and `~`, and the base64url of its SHA-256 must equal the challenge; without one, a verifier is refused, so that a client cannot be made to skip PKCE by an attacker who removed the challenge ([RFC 9700](https://www.rfc-editor.org/rfc/rfc9700#section-2.1.1));
+- **a code is redeemed once.** Marking it redeemed is one conditional change in storage, so two redemptions at the same moment cannot both win. **A second redemption, by anyone, revokes the grant**, and with it everything issued from it ([RFC 6749, section 4.1.2](https://www.rfc-editor.org/rfc/rfc6749#section-4.1.2)).
+
+A refusal of any kind is one answer to the client, `invalid_grant`; the reason is in Hodor's own logs and events only.
+
+### Events
+
+| Event type | When |
+|---|---|
+| `oauth.authorization_code_issued` | A code was issued; carries the client, the grant and the user, never the code or its hash |
+| `oauth.grant_revoked` | A grant was revoked; carries the grant, the client and the reason, such as `code_reused` |
+
+### Ports
+
+| Port | Purpose |
+|---|---|
+| `AuthorizationRequestStore` | Store a pending authorization request; load one by its identifier; remove it only if it is still there, so that it is resumed once |
+| `GrantStore` | Store a grant; load one; store its revocation |
+| `AuthorizationCodeStore` | Store a code; find one by its hash; mark it redeemed only if it was not |
+
+### Storage
+
+| Table | Holds |
+|---|---|
+| `oauth.authorization_request` | `tenant_id`, `id`, `secret_hash` (32 bytes), `client_id`, the checked request as `request` (`jsonb`), `received_at`, `expires_at` |
+| `oauth.authorization_grant` | `tenant_id`, `id`, `client_id`, `user_id`, `session_id`, `scopes`, `audiences`, `status` (`active` or `revoked`), `created_at`, `revoked_at`, `revocation_reason` |
+| `oauth.authorization_code` | `tenant_id`, `code_hash` (32 bytes, the key), `grant_id`, `client_id`, `redirect_uri`, `scopes`, `audiences`, `code_challenge`, `nonce`, `session_id`, `user_id`, `signed_in_at`, `methods`, `issued_at`, `expires_at`, `redeemed_at` |
+
+All three are tenant tables under row-level security. The request and the code reference their client, and the code its grant, with the tenant in the reference. A pending request and a code hold the hash of a secret, never the secret.
 
 ## Token endpoint and client authentication
 
@@ -240,7 +369,13 @@ Issue-62.
 | Item | Planned in |
 |---|---|
 | Managing applications, clients and resource servers through the administration interface, the command-line tool and the console | Issue-54 |
-| Every endpoint | Issue-55 to Issue-60 |
+| The token endpoint, which redeems codes | Issue-56 |
+| The other endpoints | Issue-57 to Issue-60 |
+| Asking a person for consent; until then only clients of first-party applications are answered | Issue-62 |
+| Enforcing `acr_values` | Issue-69 |
+| Limits on requests to the authorization endpoint per address | With the other limits per address, before any deployment behind a load balancer |
+| Removing expired pending requests, codes and revoked grants | A cleanup job, with the other expired rows |
+| Request objects (`request`, `request_uri`) and pushed authorization requests | Phase 4, after 0.2.0 |
 | Pairwise subject identifiers, claim mappers per client | Phase 2, after 0.2.0 ([Decision 0023](../../decisions/0023-what-0.2.0-holds.md)) |
 | Opaque access tokens chosen per client | Not planned for 0.2.0 |
 | Accepting any port for a loopback redirect address, which RFC 8252 suggests | Not planned: exact equality is kept |

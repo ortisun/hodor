@@ -68,8 +68,8 @@ sequenceDiagram
     Note over OAuth: Invalid client or redirect_uri: render an error page, never redirect
     OAuth->>Session: GetSession(cookie)
     alt no session, or acr / max_age / prompt not satisfied
-        Server-->>Browser: 302 to auth-ui with interaction_id
-        Note over Browser,Server: Sequence 1 runs, then the browser returns to /authorize/resume
+        Server-->>Browser: 302 to /account/sign-in?continue=authorization, with the cookie of the pending request
+        Note over Browser,Server: Sequence 1 runs; its answer says continue, and the browser goes to /oauth2/authorize/resume
     end
     alt consent missing for requested scopes
         Server-->>Browser: 302 to consent screen

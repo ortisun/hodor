@@ -11,6 +11,7 @@ import "./auth-ui.css";
 import { Theme } from "@astryxdesign/core/theme";
 import { createRoot } from "react-dom/client";
 import {
+  continuesAuthorization,
   type NoticeName,
   noticeOf,
   type PageName,
@@ -57,6 +58,7 @@ if (root !== null && place !== null) {
         go={go}
         leave={(url) => window.location.assign(url)}
         providerAnswer={providerAnswer}
+        signInAgain={continuesAuthorization(window.location.search)}
       />
     </Theme>,
   );

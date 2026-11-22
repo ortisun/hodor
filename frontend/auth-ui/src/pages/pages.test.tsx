@@ -108,6 +108,32 @@ describe("the sign-in page", () => {
     await waitFor(() => expect(go).toHaveBeenCalledWith("account"));
   });
 
+  it("goes on to the application's request when the sign-in says so", async () => {
+    const { props, go, leave, user } = page({
+      "GET /session": [nobody],
+      "GET /sign-in": [pending("password")],
+      "POST /sign-in/steps/password": [json(200, { status: "completed", continue: "/t/acme/oauth2/authorize/resume" })],
+    });
+    render(<SignInPage {...props} notice={null} />);
+    await user.type(await screen.findByLabelText(en.passwordLabel), "correct horse{Enter}");
+    await waitFor(() => expect(leave).toHaveBeenCalledWith("/t/acme/oauth2/authorize/resume"));
+    expect(go).not.toHaveBeenCalled();
+  });
+
+  it("signs a person in again when an application asked for it, even when signed in", async () => {
+    const { props, go, sent } = page({
+      "GET /session": [
+        json(200, { user_id: "u", session_id: "s", signed_in_at: "2026-11-20T14:03:11Z", expires_at: "2026-11-20T15:03:11Z" }),
+      ],
+      "GET /sign-in": [noSignIn],
+      "POST /sign-in": [pending("identifier")],
+    });
+    render(<SignInPage {...props} notice={null} signInAgain />);
+    expect(await screen.findByLabelText(en.identifierLabel)).toBeTruthy();
+    expect(go).not.toHaveBeenCalled();
+    expect(sent.map((request) => `${request.method} ${request.path}`)).not.toContain("GET /session");
+  });
+
   it("shows a rejection with one message and an empty password field", async () => {
     const { props, user } = page({
       "GET /session": [nobody],
@@ -433,6 +459,18 @@ describe("the page a provider sends people back to", () => {
       body: { code: "the-code", state: "the-state" },
       csrfToken: "token",
     });
+  });
+
+  it("goes on to the application's request after a provider, when the sign-in says so", async () => {
+    const { props, go, leave } = page({
+      "GET /sign-in": [pending("identifier")],
+      "POST /sign-in/providers/google/callback": [
+        json(200, { status: "completed", continue: "/t/acme/oauth2/authorize/resume" }),
+      ],
+    });
+    render(<ComingBackPage {...props} provider="google" answer={answer} />);
+    await waitFor(() => expect(leave).toHaveBeenCalledWith("/t/acme/oauth2/authorize/resume"));
+    expect(go).not.toHaveBeenCalled();
   });
 
   it("goes back to sign in, saying it did not work, when the server refuses", async () => {

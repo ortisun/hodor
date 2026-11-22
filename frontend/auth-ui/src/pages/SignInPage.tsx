@@ -35,10 +35,12 @@ type Found =
 /**
  * Finds out where things stand: somebody is signed in, a sign-in is in
  * progress, or one is started. With `afresh`, starts one without asking.
+ * With `signInAgain`, an application asked for a new sign-in: whoever is
+ * signed in already does not count.
  */
-async function findOut(client: Client, afresh: boolean): Promise<Found> {
+async function findOut(client: Client, afresh: boolean, signInAgain: boolean): Promise<Found> {
   try {
-    if (!afresh && (await client.session()) !== null) {
+    if (!afresh && !signInAgain && (await client.session()) !== null) {
       return { kind: "signed-in" };
     }
     let current: SignInAnswer | null = null;
@@ -77,13 +79,15 @@ function noticeText(notice: NoticeName | null, text: Messages): { kind: "success
 
 interface SignInPageProps extends PageProps {
   notice: NoticeName | null;
+  /** An application's request waits for this sign-in: sign in even when signed in. */
+  signInAgain?: boolean;
 }
 
 /**
  * Signing in. The page shows the form for the step the server names and
  * sends back what was typed; it decides nothing.
  */
-export function SignInPage({ tenant, client, text, go, leave, path, notice }: SignInPageProps) {
+export function SignInPage({ tenant, client, text, go, leave, path, notice, signInAgain = false }: SignInPageProps) {
   const [view, setView] = useState<View>({ kind: "loading" });
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<Failure | null>(null);
@@ -98,7 +102,11 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice }: Si
   const show = useCallback(
     (answer: SignInAnswer) => {
       if (answer.status === "completed") {
-        go("account");
+        if (answer.continueTo === undefined) {
+          go("account");
+        } else {
+          leave(answer.continueTo);
+        }
         return;
       }
       if (answer.status === "failed") {
@@ -113,7 +121,7 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice }: Si
         shown: before.kind === "step" ? before.shown + 1 : 0,
       }));
     },
-    [go],
+    [go, leave],
   );
 
   const apply = useCallback(
@@ -140,7 +148,7 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice }: Si
       },
       () => undefined,
     );
-    void findOut(client, false).then((found) => {
+    void findOut(client, false, signInAgain).then((found) => {
       if (current) {
         apply(found);
       }
@@ -148,9 +156,9 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice }: Si
     return () => {
       current = false;
     };
-  }, [client, apply]);
+  }, [client, apply, signInAgain]);
 
-  const open = async (afresh: boolean) => apply(await findOut(client, afresh));
+  const open = async (afresh: boolean) => apply(await findOut(client, afresh, signInAgain));
 
   async function send(request: () => Promise<SignInAnswer>) {
     if (busy) {
