@@ -62,6 +62,7 @@ Start with the [critical review](architecture/critical-review.md): it lists wher
 |---|---|
 | [development/conventions.md](development/conventions.md) | The rules: documentation first, how docs are written and organized, commits, branches, pull requests, definition of done |
 | [development/local-setup.md](development/local-setup.md) | How to build, run the checks and start Hodor locally; configuration reference |
+| [development/test-environments.md](development/test-environments.md) | Two seeded test environments on one machine: the stack in Docker, and Hodor installed by its chart on a Kubernetes cluster in Docker |
 | [development/documentation-site.md](development/documentation-site.md) | How these pages become the site at <https://ortisun.github.io/hodor/>, how to see it locally, and how it is published |
 | [product/progress.md](product/progress.md) | What has been built so far, known gaps, and where the implementation departs from the design |
 

@@ -134,6 +134,7 @@ nav:
   - Get started:
       - Quick-start: operations/quick-start.md
       - Local setup: development/local-setup.md
+      - Test environments: development/test-environments.md
       - Install with Docker: operations/install-with-docker.md
       - Install on Kubernetes: operations/install-on-kubernetes.md
       - Deployment: operations/deployment.md

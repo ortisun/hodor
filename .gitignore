@@ -10,3 +10,6 @@
 # The documentation site: its Python environment and what `mkdocs build` writes.
 /site/.venv
 /site/build
+
+# What the test environments start and keep on this machine.
+deploy/test-environment/.local/

@@ -33,5 +33,6 @@ The [progress](docs/product/progress.md) page lists every known gap.
 - **A Compose stack for development** with a development OpenID Connect provider, an LDAP directory and a SAML identity provider, all of which let anyone sign in as anyone; **installation packages** for Docker and Kubernetes.
 - **Two demonstrations**, one per milestone, run in continuous integration against the image.
 - **The documentation site**, published from `docs/` at <https://ortisun.github.io/hodor/>.
+- **Two test environments** on one machine, each seeded with a tenant, a person and an administrator: the stack in Docker with the three development providers, and Hodor installed by its chart on a Kubernetes cluster in Docker.
 
 [Unreleased]: https://github.com/ortisun/hodor/compare/32b616a...develop
