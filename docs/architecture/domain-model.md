@@ -311,7 +311,7 @@ Invariants: redirect URIs are compared by exact equality; a public client has no
 
 ### `keys`
 
-A `KeySet` (per tenant and use: `sig`, `enc`, `data`) contains `KeyVersion`s with states `pending → active → retiring → retired → revoked`. Only one version is `active` per algorithm; a `retiring` version stays in the JWKS until the longest-lived token it signed has expired.
+A `KeySet` (per tenant and use: `sig`, `enc`, `data`) contains `KeyVersion`s with states `pending → active → retiring → retired`, and `revoked` from any of them. Only one version is `active` per algorithm; a `retiring` version stays in the JWKS until the longest-lived token it signed has expired. A version's key is made and used by a `KeyProvider` and is never read by the context. Specified in [the keys context](contexts/keys.md).
 
 ### `authorization`
 

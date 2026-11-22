@@ -22,6 +22,7 @@ hodor-credential = { path = "crates/credential" }
 hodor-federation = { path = "crates/federation" }
 hodor-identity = { path = "crates/identity" }
 hodor-kernel = { path = "crates/kernel" }
+hodor-keys = { path = "crates/keys" }
 hodor-notification = { path = "crates/notification" }
 hodor-observability = { path = "crates/observability" }
 hodor-protocol-http = { path = "crates/protocol-http" }
