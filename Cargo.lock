@@ -1687,6 +1687,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "hodor-authorization-opa"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "hodor-adapters-crypto",
+ "hodor-adapters-http",
+ "hodor-authorization",
+ "hodor-kernel",
+ "serde_json",
+ "testcontainers",
+ "time",
+ "tokio",
+]
+
+[[package]]
 name = "hodor-cli"
 version = "0.1.0"
 dependencies = [
@@ -1887,6 +1902,7 @@ dependencies = [
  "hodor-audit",
  "hodor-authentication",
  "hodor-authorization",
+ "hodor-authorization-opa",
  "hodor-credential",
  "hodor-federation",
  "hodor-identity",

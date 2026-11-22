@@ -70,11 +70,11 @@ pub struct GuardedHttpClient {
     policy: OutboundPolicy,
 }
 
-fn failure(kind: ErrorKind, code: &'static str, message: &'static str) -> DomainError {
+pub(crate) fn failure(kind: ErrorKind, code: &'static str, message: &'static str) -> DomainError {
     DomainError::new(kind, code, message)
 }
 
-fn url_invalid() -> DomainError {
+pub(crate) fn url_invalid() -> DomainError {
     failure(
         ErrorKind::Invalid,
         "http.url_invalid",
@@ -95,6 +95,14 @@ fn unreachable() -> DomainError {
         ErrorKind::Unavailable,
         "http.unreachable",
         "the address did not answer",
+    )
+}
+
+fn timed_out() -> DomainError {
+    failure(
+        ErrorKind::Unavailable,
+        "http.timed_out",
+        "the address did not answer in time",
     )
 }
 
@@ -200,61 +208,82 @@ impl HttpClient for GuardedHttpClient {
     async fn send(&self, request: HttpRequest) -> Result<HttpResponse, DomainError> {
         let url = Url::parse(&request.url).map_err(|_| url_invalid())?;
         let client = self.client_for(&url)?;
+        exchange(client, url, request, &self.policy).await
+    }
+}
 
-        let mut call = match request.method {
-            HttpMethod::Get => client.get(url),
-            HttpMethod::Post => client.post(url),
-        };
-        for (name, value) in &request.headers {
-            call = call.header(name, value);
-        }
-        if let Some(body) = request.body {
-            call = call.body(body);
-        }
+/// Sends `request` to `url` with `client` and reads the answer within the
+/// limits of `policy`. Shared by both clients of this crate.
+pub(crate) async fn exchange(
+    client: &Client,
+    url: Url,
+    request: HttpRequest,
+    policy: &OutboundPolicy,
+) -> Result<HttpResponse, DomainError> {
+    let mut call = match request.method {
+        HttpMethod::Get => client.get(url),
+        HttpMethod::Post => client.post(url),
+    };
+    // The shorter of the client's limit and the request's own.
+    let limit = request
+        .time_limit
+        .map_or(policy.timeout, |own| own.min(policy.timeout));
+    call = call.timeout(limit);
+    for (name, value) in &request.headers {
+        call = call.header(name, value);
+    }
+    if let Some(body) = request.body {
+        call = call.body(body);
+    }
 
-        let mut response = call.send().await.map_err(|error| {
-            if was_forbidden(&error) {
-                return forbidden();
+    let mut response = call.send().await.map_err(|error| {
+        if was_forbidden(&error) {
+            return forbidden();
+        }
+        if error.is_builder() {
+            return url_invalid();
+        }
+        if error.is_timeout() {
+            return timed_out();
+        }
+        tracing::warn!(error = %error.without_url(), "outbound request failed");
+        unreachable()
+    })?;
+
+    let status = response.status().as_u16();
+    let headers = response
+        .headers()
+        .iter()
+        .filter_map(|(name, value)| {
+            Some((name.as_str().to_owned(), value.to_str().ok()?.to_owned()))
+        })
+        .collect();
+
+    // The limit is on what arrives, whatever length was announced.
+    let most = policy.max_response_bytes;
+    let mut body = Vec::new();
+    loop {
+        let chunk = response.chunk().await.map_err(|error| {
+            if error.is_timeout() {
+                return timed_out();
             }
-            if error.is_builder() {
-                return url_invalid();
-            }
-            tracing::warn!(error = %error.without_url(), "outbound request failed");
+            tracing::warn!(error = %error.without_url(), "outbound response cut short");
             unreachable()
         })?;
-
-        let status = response.status().as_u16();
-        let headers = response
-            .headers()
-            .iter()
-            .filter_map(|(name, value)| {
-                Some((name.as_str().to_owned(), value.to_str().ok()?.to_owned()))
-            })
-            .collect();
-
-        // The limit is on what arrives, whatever length was announced.
-        let limit = self.policy.max_response_bytes;
-        let mut body = Vec::new();
-        loop {
-            let chunk = response.chunk().await.map_err(|error| {
-                tracing::warn!(error = %error.without_url(), "outbound response cut short");
-                unreachable()
-            })?;
-            let Some(chunk) = chunk else { break };
-            if body.len() + chunk.len() > limit {
-                return Err(failure(
-                    ErrorKind::Unavailable,
-                    "http.response_too_large",
-                    "the answer was too large",
-                ));
-            }
-            body.extend_from_slice(&chunk);
+        let Some(chunk) = chunk else { break };
+        if body.len() + chunk.len() > most {
+            return Err(failure(
+                ErrorKind::Unavailable,
+                "http.response_too_large",
+                "the answer was too large",
+            ));
         }
-
-        Ok(HttpResponse {
-            status,
-            headers,
-            body,
-        })
+        body.extend_from_slice(&chunk);
     }
+
+    Ok(HttpResponse {
+        status,
+        headers,
+        body,
+    })
 }

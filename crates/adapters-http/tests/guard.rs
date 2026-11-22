@@ -235,8 +235,29 @@ async fn a_slow_answer_is_given_up_on() {
         )))
         .await
         .expect_err("too slow");
-    assert_eq!(error.code(), "http.unreachable");
+    assert_eq!(error.code(), "http.timed_out");
     assert!(started.elapsed() < Duration::from_secs(3));
+}
+
+#[tokio::test]
+async fn a_request_may_have_a_shorter_limit_of_its_own() {
+    let server = serve(OK, Duration::from_millis(400)).await;
+    let client = client(&[format!("127.0.0.1:{}", server.port)]);
+    let address = format!("http://127.0.0.1:{}/", server.port);
+
+    let started = std::time::Instant::now();
+    let error = client
+        .send(HttpRequest::get(&address).within(Duration::from_millis(100)))
+        .await
+        .expect_err("too slow for its own limit");
+    assert_eq!(error.code(), "http.timed_out");
+    assert!(started.elapsed() < Duration::from_millis(350));
+
+    // A longer limit of its own does not lift the client's.
+    let error = client
+        .send(HttpRequest::get(&address).within(Duration::from_secs(60)))
+        .await;
+    assert!(error.is_ok(), "the client's 600 milliseconds still hold");
 }
 
 #[tokio::test]

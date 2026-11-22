@@ -4,11 +4,18 @@
 
 The outbound HTTP adapter crate (package `hodor-adapters-http`). Its manifest describes it as "the one guarded way out to addresses that other people chose" (`Cargo.toml` `description`).
 
-It implements the kernel port `HttpClient` (see [the kernel contract](../kernel/EGM.md)): `impl HttpClient for GuardedHttpClient` (`src/client.rs:199`).
+It implements the kernel port `HttpClient` (see [the kernel contract](../kernel/EGM.md)) twice:
+
+- `impl HttpClient for GuardedHttpClient` (`src/client.rs`), for addresses other people chose;
+- `impl HttpClient for ServiceHttpClient` (`src/service.rs`), for the services the operator configured (Open Policy Agent).
 
 ## Subdirectories & Boundaries
 
-- `src`: [./src/EGM.md](./src/EGM.md) - `GuardedHttpClient`, `OutboundPolicy` and `is_public`. The client refuses addresses that are not public, pins connections to the addresses it checked, follows no redirects and caps the size of response bodies. Its side effects are name lookups and outbound HTTP requests.
+- `src`: [./src/EGM.md](./src/EGM.md) - `GuardedHttpClient`, `ServiceHttpClient`, `OutboundPolicy` and `is_public`.
+  - The guarded client refuses addresses that are not public and pins connections to the addresses it checked.
+  - The service client calls only its configured origins.
+  - Both follow no redirects and cap the time of a request and the size of response bodies.
+  - Their side effects are name lookups and outbound HTTP requests.
 - `tests`: integration tests (not documented here).
 
 ## Workspace Dependencies
