@@ -212,6 +212,7 @@ nav:
       - decisions/0020-console-on-the-hodor-session.md
       - decisions/0021-documentation-site.md
       - decisions/0022-installation-packages.md
+      - decisions/0023-what-0.2.0-holds.md
   - Contributing:
       - development/conventions.md
       - development/documentation-site.md

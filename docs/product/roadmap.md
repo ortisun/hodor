@@ -39,6 +39,8 @@ Phases 3, 4 and 5 depend only on Phase 2 and can run in parallel once there are 
 
 At the project owner's request, signing in with external identities is built before Phase 2: the social logins and OpenID Connect federation of Phase 3, and LDAP sign-in and the service provider side of SAML from Phase 6. This is [Milestone 2](epics.md#milestone-2-signing-in-with-external-identities), and [Decision 0017](../decisions/0017-external-identities-before-oauth.md) records why it is possible and what it pulls forward. The phases above keep their numbers; Phase 2 follows Milestone 2.
 
+0.2.0 waits for three parts the project owner asked for: the OAuth server and OpenID Provider, strong authentication with step-up, and the authorization engine with Open Policy Agent. They are Milestones 3, 4 and 5 in [the epics](epics.md#milestone-3-applications-ask-hodor-who-someone-is): all of Phase 2 save three requirements marked Expected, and the parts of Phases 4 and 5 that make each feature whole. [Decision 0023](../decisions/0023-what-0.2.0-holds.md) says what each milestone leaves to its phase.
+
 ## Console delivery
 
 The consoles trail their APIs by one phase so that the API is settled first.
