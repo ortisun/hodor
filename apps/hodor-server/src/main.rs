@@ -13,10 +13,10 @@ use hodor_adapters_http::{GuardedHttpClient, OutboundPolicy};
 use hodor_adapters_ldap::LdapDirectoryClient;
 use hodor_adapters_postgres::{
     Database, PgAccessTokenStore, PgApplicationStore, PgAttemptStore, PgAuditLog,
-    PgAuthorizationCodeStore, PgAuthorizationRequestStore, PgClientStore, PgGrantStore,
-    PgKeyStore, PgLinkStore, PgMessageQueue, PgPasswordStore, PgPendingAuthorizationStore,
-    PgProviderStore, PgResourceServerStore, PgRoleAssignmentStore, PgSessionStore,
-    PgTenantDirectory, PgTenantRepository, PgTotpStore, PgTransactionStore, PgUserRepository,
+    PgAuthorizationCodeStore, PgAuthorizationRequestStore, PgClientStore, PgGrantStore, PgKeyStore,
+    PgLinkStore, PgMessageQueue, PgPasswordStore, PgPendingAuthorizationStore, PgProviderStore,
+    PgResourceServerStore, PgRoleAssignmentStore, PgSessionStore, PgTenantDirectory,
+    PgTenantRepository, PgTotpStore, PgTransactionStore, PgUserRepository,
     PgVerificationTokenStore,
 };
 use hodor_audit::api::AuditService;
