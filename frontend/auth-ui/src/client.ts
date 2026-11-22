@@ -28,6 +28,12 @@ export interface SignInAnswer {
   /** The step to ask for next, when the sign-in goes on. */
   step: string | null;
   attemptsLeft: number | null;
+  /**
+   * Where to go once the sign-in completed, when an application's request
+   * waits for it: an address of Hodor's own authorization endpoint of this
+   * tenant, and nothing else.
+   */
+  continueTo?: string;
 }
 
 /** An identity provider as the sign-in page shows it. */
@@ -63,10 +69,13 @@ export class Client {
   /** The token to send back with requests that change something. */
   #csrfToken: string | null = null;
   readonly #base: string;
+  /** The only addresses a completed sign-in may continue to. */
+  readonly #continues: string;
   readonly #fetch: Fetch;
 
   constructor(tenant: string, fetch: Fetch = (...input) => globalThis.fetch(...input)) {
     this.#base = `/t/${tenant}/interaction`;
+    this.#continues = `/t/${tenant}/oauth2/`;
     this.#fetch = fetch;
   }
 
@@ -124,11 +133,21 @@ export class Client {
       this.#csrfToken = null;
     }
     const left = reply.body["attempts_left"];
-    return {
+    const answer: SignInAnswer = {
       status,
       step: text(reply.body["step"]),
       attemptsLeft: typeof left === "number" ? left : null,
     };
+    const next = text(reply.body["continue"]);
+    if (status === "completed" && next !== null && this.#isOwnAuthorization(next)) {
+      answer.continueTo = next;
+    }
+    return answer;
+  }
+
+  /** Whether `path` is an address of this tenant's authorization endpoint, on this origin. */
+  #isOwnAuthorization(path: string): boolean {
+    return path.startsWith(this.#continues) && /^[A-Za-z0-9/_-]+$/.test(path) && !path.includes("//");
   }
 
   /** Who is signed in; `null` when nobody is. */

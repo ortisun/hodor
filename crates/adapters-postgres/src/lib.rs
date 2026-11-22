@@ -17,6 +17,7 @@ mod keys;
 mod migrate;
 mod notification;
 mod oauth;
+mod oauth_authorization;
 mod outbox;
 mod session;
 mod tenant;
@@ -36,6 +37,9 @@ pub use keys::PgKeyStore;
 pub use migrate::migrate;
 pub use notification::{PgMessageQueue, PgPendingMessages};
 pub use oauth::{PgApplicationStore, PgClientStore, PgResourceServerStore};
+pub use oauth_authorization::{
+    PgAuthorizationCodeStore, PgAuthorizationRequestStore, PgGrantStore,
+};
 pub use outbox::{DispatchReport, OutboxDispatcher};
 pub use session::PgSessionStore;
 pub use sqlx::migrate::MigrateError;

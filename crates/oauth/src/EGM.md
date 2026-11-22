@@ -9,9 +9,18 @@ follows is `docs/architecture/contexts/oauth.md`.
 ## Interface
 
 - `api` re-exports:
-  - Ports: `ApplicationStore`, `ClientStore`, `ResourceServerStore`.
-  - Service: `ApplicationService`, `ApplicationPorts`, `CreateClient`,
-    `RotateSecret`, `CreateResourceServer`.
+  - Ports: `ApplicationStore`, `ClientStore`, `ResourceServerStore`,
+    `AuthorizationRequestStore`, `GrantStore`, `AuthorizationCodeStore`.
+  - Services: `ApplicationService`, `ApplicationPorts`, `CreateClient`,
+    `RotateSecret`, `CreateResourceServer`; `AuthorizationCodeService`,
+    `AuthorizationCodePorts`, `ResumedRequest`, `RedeemedCode`.
+  - The authorization endpoint's domain: `AuthorizationParameters`,
+    `check_request`, `AuthorizationRequest`, `AuthorizationRefusal`,
+    `AuthorizationError`, `SignedInPerson`, `SessionDecision`,
+    `PendingAuthorization`, `PendingAuthorizationId`, `BrowserSecret`,
+    `Grant`, `GrantId`, `GrantStatus`, `AuthorizationCode`, `CodeHash`,
+    `CodeValue`, `CodePresentation`, `CodeRefusal`, `s256_challenge`, and
+    `CODE_LIFETIME`, `PENDING_LIFETIME`, `MAX_RESOURCES`.
   - Event: `OauthEvent`.
   - Domain: `Application`, `ApplicationId`, `ApplicationSettings`,
     `ApplicationSnapshot`, `Status`, `Client`, `ClientId`, `ClientType`,
@@ -31,6 +40,11 @@ follows is `docs/architecture/contexts/oauth.md`.
     bytes, for tests only.
   - `Ports<'a> { units_of_work, applications, clients, resource_servers }`
     and `run_contract(ports)`: the contract every store passes.
+  - `testing/authorization.rs`: `InMemoryAuthorizationRequests::new(&clients)`,
+    `InMemoryGrants::new(&clients)`,
+    `InMemoryAuthorizationCodes::new(&grants)`, which refuse a row whose
+    client or grant the tenant does not have; `AuthorizationStorePorts` and
+    `run_authorization_contract(ports)`.
 - Subdirectories:
   - [application](./application/EGM.md): the ports and the use cases.
   - [domain](./domain/EGM.md): the aggregates and their rules.
@@ -45,6 +59,12 @@ follows is `docs/architecture/contexts/oauth.md`.
   an audience is found by exact equality and is unique in a tenant
   (`oauth.audience_taken`); and that an application has at most one
   resource server (`oauth.application_has_resource_server`).
+- The authorization contract requires that a pending request, a grant and
+  a code load back whole; that none is seen, removed or redeemed from
+  another tenant; that a pending request is removed once and a code
+  redeemed once (the second call answers `false`); and that a row cannot
+  name a client (`oauth.client_not_found`) or grant
+  (`oauth.grant_not_found`) of another tenant.
 
 ## Side Effects
 

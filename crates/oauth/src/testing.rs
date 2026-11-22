@@ -14,6 +14,12 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 use time::Duration;
 
+mod authorization;
+pub use authorization::{
+    AuthorizationStorePorts, InMemoryAuthorizationCodes, InMemoryAuthorizationRequests,
+    InMemoryGrants, run_authorization_contract,
+};
+
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -109,6 +115,10 @@ impl InMemoryClients {
             applications: applications.clone(),
             rows: Arc::default(),
         }
+    }
+
+    fn exists(&self, tenant: TenantId, id: ClientId) -> bool {
+        lock(&self.rows).contains_key(&(tenant, id))
     }
 }
 

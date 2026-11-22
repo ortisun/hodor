@@ -10,6 +10,7 @@
 //! composition root implements.
 
 mod admin;
+mod authorize;
 mod health;
 mod interaction;
 mod pages;
@@ -22,6 +23,7 @@ pub use admin::{
     ADMIN_OPENAPI, ADMIN_OPERATIONS, AdminState, CONSOLE_SESSION_HOURS, ConsoleState, admin_routes,
     console_routes,
 };
+pub use authorize::{AuthorizationState, authorization_routes};
 pub use health::{Health, ReadinessCheck, ops_router};
 pub use interaction::{InteractionState, interaction_routes};
 pub use pages::{

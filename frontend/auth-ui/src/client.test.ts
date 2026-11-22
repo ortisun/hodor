@@ -23,6 +23,33 @@ describe("the client for the interaction interface", () => {
     expect(sent[2]?.body).toEqual({ password: "a password" });
   });
 
+  it("continues a completed sign-in only to this tenant's authorization endpoint", async () => {
+    const answers = [
+      "/t/acme/oauth2/authorize/resume",
+      "https://attacker.example/t/acme/oauth2/authorize/resume",
+      "//attacker.example/t/acme/oauth2/",
+      "/t/globex/oauth2/authorize/resume",
+      "/t/acme/account",
+      "/t/acme/oauth2/authorize/resume?next=https://attacker.example",
+    ].map((next) => json(200, { status: "completed", continue: next }));
+    const count = answers.length;
+    const { client } = scripted({ "POST /sign-in/steps/password": answers });
+    const followed = [];
+    for (let index = 0; index < count; index += 1) {
+      followed.push((await client.submitPassword("a password")).continueTo ?? null);
+    }
+    expect(followed).toEqual(["/t/acme/oauth2/authorize/resume", null, null, null, null, null]);
+  });
+
+  it("continues nowhere from a sign-in that did not complete", async () => {
+    const { client } = scripted({
+      "POST /sign-in/steps/password": [
+        json(200, { status: "rejected", step: "password", attempts_left: 3, csrf_token: "t", continue: "/t/acme/oauth2/authorize/resume" }),
+      ],
+    });
+    expect((await client.submitPassword("a password")).continueTo).toBeUndefined();
+  });
+
   it("reads a rejection as an answer, not as a failure", async () => {
     const { client } = scripted({
       "POST /sign-in/steps/password": [

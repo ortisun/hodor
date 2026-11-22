@@ -1,7 +1,10 @@
 //! The stores of the OAuth context on PostgreSQL.
 
 use hodor_adapters_postgres::testing::TestDatabase;
-use hodor_adapters_postgres::{PgApplicationStore, PgClientStore, PgResourceServerStore};
+use hodor_adapters_postgres::{
+    PgApplicationStore, PgAuthorizationCodeStore, PgAuthorizationRequestStore, PgClientStore,
+    PgGrantStore, PgResourceServerStore,
+};
 use hodor_kernel::clock::testing::FixedClock;
 use hodor_kernel::random::testing::FakeDigest;
 use hodor_kernel::{Caller, TenantContext, TenantId, Timestamp};
@@ -9,7 +12,9 @@ use hodor_oauth::api::{
     ApplicationPorts, ApplicationService, ApplicationSettings, ClientSettings, ClientType,
     CreateClient, GrantType, RotateSecret,
 };
-use hodor_oauth::testing::{DistinctRandom, Ports, run_contract};
+use hodor_oauth::testing::{
+    AuthorizationStorePorts, DistinctRandom, Ports, run_authorization_contract, run_contract,
+};
 use std::sync::Arc;
 use time::Duration;
 
@@ -21,6 +26,20 @@ async fn the_postgres_stores_pass_the_contract() {
         applications: &PgApplicationStore,
         clients: &PgClientStore,
         resource_servers: &PgResourceServerStore,
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn the_postgres_authorization_stores_pass_the_contract() {
+    let database = TestDatabase::start().await;
+    run_authorization_contract(AuthorizationStorePorts {
+        units_of_work: database.app(),
+        applications: &PgApplicationStore,
+        clients: &PgClientStore,
+        requests: &PgAuthorizationRequestStore,
+        grants: &PgGrantStore,
+        codes: &PgAuthorizationCodeStore,
     })
     .await;
 }
@@ -150,4 +169,137 @@ async fn the_database_refuses_a_public_client_with_a_method_or_without_pkce() {
         leaked.is_err(),
         "a private key is refused by the database too"
     );
+}
+
+#[tokio::test]
+async fn of_two_redemptions_at_the_same_moment_one_wins_and_the_grant_is_revoked() {
+    use hodor_kernel::UserId;
+    use hodor_oauth::api::{
+        AuthorizationCodePorts, AuthorizationCodeService, AuthorizationParameters,
+        CodePresentation, GrantStatus, GrantStore as _, SignedInPerson, s256_challenge,
+    };
+    use hodor_session::api::SessionId;
+
+    let database = TestDatabase::start().await;
+    let now = Timestamp::UNIX_EPOCH + Duration::days(20_000);
+    let clock = Arc::new(FixedClock::at(now));
+    let units = Arc::new(database.app().clone());
+    let applications = ApplicationService::new(ApplicationPorts {
+        units_of_work: units.clone(),
+        applications: Arc::new(PgApplicationStore),
+        clients: Arc::new(PgClientStore),
+        resource_servers: Arc::new(PgResourceServerStore),
+        digest: Arc::new(FakeDigest),
+        random: Arc::new(DistinctRandom),
+        clock: clock.clone(),
+    });
+    let service = AuthorizationCodeService::new(AuthorizationCodePorts {
+        units_of_work: units.clone(),
+        applications: Arc::new(PgApplicationStore),
+        clients: Arc::new(PgClientStore),
+        resource_servers: Arc::new(PgResourceServerStore),
+        requests: Arc::new(PgAuthorizationRequestStore),
+        grants: Arc::new(PgGrantStore),
+        codes: Arc::new(PgAuthorizationCodeStore),
+        digest: Arc::new(FakeDigest),
+        random: Arc::new(DistinctRandom),
+        clock: clock.clone(),
+    });
+    let tenant = TenantContext::assume(TenantId::generate());
+    let application = applications
+        .create_application(
+            &tenant,
+            ApplicationSettings {
+                name: "Payroll".to_owned(),
+                first_party: true,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("application");
+    let mut settings = ClientSettings::new(
+        "Payroll mobile",
+        ClientType::Public,
+        vec![GrantType::AuthorizationCode],
+        vec!["com.example.payroll:/callback".to_owned()],
+    );
+    settings.allowed_scopes = vec!["openid".to_owned()];
+    let (client, _) = applications
+        .create_client(
+            &tenant,
+            CreateClient {
+                application_id: application.id(),
+                client_type: ClientType::Public,
+                settings,
+                secret_lifetime: None,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("client");
+    let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+    let parameters = AuthorizationParameters::from_pairs(
+        [
+            ("response_type", "code".to_owned()),
+            ("client_id", client.id().to_string()),
+            ("redirect_uri", "com.example.payroll:/callback".to_owned()),
+            ("scope", "openid".to_owned()),
+            ("code_challenge", s256_challenge(verifier, &FakeDigest)),
+            ("code_challenge_method", "S256".to_owned()),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_owned(), v)),
+    );
+    let request = service
+        .check(&tenant, &parameters)
+        .await
+        .expect("storage")
+        .expect("accepted");
+    let code = service
+        .issue_code(
+            &tenant,
+            &request,
+            &SignedInPerson {
+                user_id: UserId::generate(),
+                session_id: SessionId::generate(),
+                signed_in_at: now,
+                methods: vec!["password".to_owned()],
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("issued");
+    let presentation = CodePresentation {
+        client_id: client.id(),
+        redirect_uri: Some("com.example.payroll:/callback"),
+        verifier: Some(verifier),
+    };
+    let (first, second) = tokio::join!(
+        service.redeem_code(&tenant, code.expose(), presentation, Caller::system()),
+        service.redeem_code(&tenant, code.expose(), presentation, Caller::system()),
+    );
+    let (won, lost) = match (first, second) {
+        (Ok(won), Err(lost)) | (Err(lost), Ok(won)) => (won, lost),
+        (first, second) => panic!("exactly one should win: {first:?} {second:?}"),
+    };
+    assert_eq!(lost.detail(), Some("already_redeemed"));
+
+    let mut uow = hodor_kernel::UnitOfWorkFactory::begin(database.app(), &tenant)
+        .await
+        .expect("begin");
+    let grant = PgGrantStore
+        .get(uow.as_mut(), won.code.grant_id)
+        .await
+        .expect("get")
+        .expect("found");
+    assert_eq!(grant.status, GrantStatus::Revoked);
+
+    // The code is in the database only as its hash.
+    let everything: String = sqlx::query_scalar(
+        "SELECT string_agg(to_jsonb(t)::text, '') FROM oauth.authorization_code t",
+    )
+    .fetch_one(database.owner())
+    .await
+    .expect("dump");
+    assert!(!everything.contains(code.expose()));
 }

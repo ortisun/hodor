@@ -98,6 +98,73 @@ impl Browser {
         }
     }
 
+    /// A browser that does not follow redirects, so that a test sees where
+    /// each answer sends it.
+    pub(crate) fn not_following(server: &Server) -> Self {
+        Self {
+            client: Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .expect("client"),
+            ..Self::new(server)
+        }
+    }
+
+    fn keep_cookies(&mut self, response: &Response) {
+        for cookie in response.headers().get_all(SET_COOKIE) {
+            let cookie = cookie.to_str().expect("ascii");
+            let (name, value) = cookie
+                .split(';')
+                .next()
+                .and_then(|pair| pair.split_once('='))
+                .expect("name=value");
+            if cookie.contains("Max-Age=0") {
+                self.cookies.remove(name);
+            } else {
+                self.cookies.insert(name.to_owned(), value.to_owned());
+            }
+        }
+    }
+
+    /// Sends a request as a browser navigates: with its cookies, and a
+    /// form body when one is given. Answers the status, where it sends the
+    /// browser if anywhere, and the body as text.
+    pub(crate) async fn navigate(
+        &mut self,
+        method: Method,
+        path: &str,
+        form: Option<&str>,
+    ) -> (StatusCode, Option<String>, String) {
+        let url = if path.starts_with("http") {
+            path.to_owned()
+        } else {
+            format!("{}{path}", self.base)
+        };
+        let mut request = self.client.request(method, url);
+        if !self.cookies.is_empty() {
+            let cookies: Vec<String> = self
+                .cookies
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect();
+            request = request.header(COOKIE, cookies.join("; "));
+        }
+        if let Some(form) = form {
+            request = request
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(form.to_owned());
+        }
+        let response: Response = request.send().await.expect("response");
+        self.keep_cookies(&response);
+        let status = response.status();
+        let location = response
+            .headers()
+            .get("location")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        (status, location, response.text().await.unwrap_or_default())
+    }
+
     pub(crate) async fn send(
         &mut self,
         method: Method,

@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 async-trait.workspace = true
 axum.workspace = true
+form_urlencoded.workspace = true
 hodor-audit.workspace = true
 hodor-authentication.workspace = true
 hodor-authorization.workspace = true
@@ -17,6 +18,7 @@ hodor-credential.workspace = true
 hodor-federation.workspace = true
 hodor-identity.workspace = true
 hodor-kernel.workspace = true
+hodor-oauth.workspace = true
 hodor-session.workspace = true
 http-body-util.workspace = true
 serde.workspace = true
@@ -27,7 +29,6 @@ time.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-form_urlencoded.workspace = true
 hodor-adapters-crypto = { workspace = true, features = ["testing"] }
 hodor-adapters-ldap = { workspace = true, features = ["testing"] }
 hodor-federation = { workspace = true, features = ["testing"] }

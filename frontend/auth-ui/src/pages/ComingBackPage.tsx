@@ -19,7 +19,7 @@ interface ComingBackPageProps extends PageProps {
  * what arrived in its address to the server, from Hodor's own origin, and
  * goes on to wherever the answer leads. It decides nothing.
  */
-export function ComingBackPage({ tenant, client, text, go, path, provider, answer }: ComingBackPageProps) {
+export function ComingBackPage({ tenant, client, text, go, leave, path, provider, answer }: ComingBackPageProps) {
   const [failure, setFailure] = useState<Failure | null>(null);
   const { code, state, error, binding, receipt } = answer;
 
@@ -47,9 +47,11 @@ export function ComingBackPage({ tenant, client, text, go, path, provider, answe
         return () => go("sign-in", "provider-refused");
       }
       const result = await client.finishWithProvider(provider, state, proof);
-      return result.status === "completed"
-        ? () => go("account")
-        : () => go("sign-in", "provider-refused");
+      if (result.status !== "completed") {
+        return () => go("sign-in", "provider-refused");
+      }
+      const next = result.continueTo;
+      return next === undefined ? () => go("account") : () => leave(next);
     };
     finish().then(
       (next) => {
@@ -74,7 +76,7 @@ export function ComingBackPage({ tenant, client, text, go, path, provider, answe
     return () => {
       current = false;
     };
-  }, [client, go, provider, code, state, error, binding, receipt]);
+  }, [client, go, leave, provider, code, state, error, binding, receipt]);
 
   return (
     <Frame tenant={tenant} title={text.comingBackTitle} text={text}>

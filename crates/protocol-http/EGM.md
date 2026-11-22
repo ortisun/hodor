@@ -5,7 +5,7 @@
 Crate `hodor-protocol-http` (`Cargo.toml` description: "HTTP layer:
 routing, tenant resolution, error mapping, security headers and health
 endpoints."). It holds the `axum` routers for the public listener (tenant
-resolution, the interaction, administration and console interfaces, and the
+resolution, the interaction, authorization, administration and console interfaces, and the
 static hosted pages and admin console) and for the operations listener
 (health endpoints).
 
@@ -31,16 +31,16 @@ From `[dependencies]` in `Cargo.toml`:
 
 - Domain crates: `hodor-audit`, `hodor-authentication`,
   `hodor-authorization`, `hodor-credential`, `hodor-federation`,
-  `hodor-identity`, `hodor-session`.
+  `hodor-identity`, `hodor-oauth`, `hodor-session`.
 - `hodor-kernel` (`TenantContext`, `DomainError`, `Caller`, `Digest`,
   `Clock`, `CorrelationId`).
-- Third party: `async-trait`, `axum`, `http-body-util`, `serde`,
+- Third party: `async-trait`, `axum`, `form_urlencoded`, `http-body-util`, `serde`,
   `serde_json`, `tokio`, `tower-http`, `time`, `tracing`.
 
 Development only (`[dev-dependencies]`): `hodor-adapters-crypto` and
 `hodor-adapters-ldap` (both with `testing`), the `testing` feature of the
 domain crates, `hodor-notification`, `hodor-tenant` and `hodor-saml`, plus
-`form_urlencoded`, `miniz_oxide`, `base64`, `tower` and `tokio` with
+`miniz_oxide`, `base64`, `tower` and `tokio` with
 `io-util` and `test-util`.
 
 ## Invariants

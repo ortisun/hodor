@@ -36,13 +36,14 @@ Every response about a sign-in has the same shape:
 | `step` | When `pending` or `rejected` | The step the pages should ask for next |
 | `attempts_left` | When `rejected` | How many more rejections this sign-in tolerates |
 | `csrf_token` | When `pending` or `rejected` | The value to send back in the `X-CSRF-Token` header |
+| `continue` | When `completed`, and the browser holds a pending [authorization request](../architecture/contexts/oauth.md#signing-in-and-coming-back) of this tenant | The address of Hodor's own to go to next, `/t/{slug}/oauth2/authorize/resume`, instead of the account page |
 
 | Status | HTTP status | What the pages do |
 |---|---|---|
 | `pending` | `200`, or `201` when the sign-in was just started | Show the form for `step` |
 | `rejected` | `200` | Show the same form again with a generic "that did not work" message |
 | `failed` | `200` | The sign-in is over; offer to start again |
-| `completed` | `200` | The person is signed in; the session cookie has been set |
+| `completed` | `200` | The person is signed in; the session cookie has been set. The pages go to `continue` when the answer has it, and to the account page otherwise |
 
 A rejection is a normal answer, not an error: the request was understood and the sign-in simply did not advance. Nothing in it says why, and it is the same whether the password was wrong, the identifier belongs to nobody, or the user may not sign in. For the `totp` step it is the same whether the code was wrong, already used or not six digits.
 

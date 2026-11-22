@@ -12,10 +12,12 @@ use hodor_adapters_crypto::{
 use hodor_adapters_http::{GuardedHttpClient, OutboundPolicy};
 use hodor_adapters_ldap::LdapDirectoryClient;
 use hodor_adapters_postgres::{
-    Database, PgAccessTokenStore, PgAttemptStore, PgAuditLog, PgLinkStore, PgMessageQueue,
-    PgPasswordStore, PgPendingAuthorizationStore, PgProviderStore, PgRoleAssignmentStore,
-    PgSessionStore, PgTenantDirectory, PgTenantRepository, PgTotpStore, PgTransactionStore,
-    PgUserRepository, PgVerificationTokenStore,
+    Database, PgAccessTokenStore, PgApplicationStore, PgAttemptStore, PgAuditLog,
+    PgAuthorizationCodeStore, PgAuthorizationRequestStore, PgClientStore, PgGrantStore,
+    PgLinkStore, PgMessageQueue, PgPasswordStore, PgPendingAuthorizationStore, PgProviderStore,
+    PgResourceServerStore, PgRoleAssignmentStore, PgSessionStore, PgTenantDirectory,
+    PgTenantRepository, PgTotpStore, PgTransactionStore, PgUserRepository,
+    PgVerificationTokenStore,
 };
 use hodor_audit::api::AuditService;
 use hodor_authentication::api::{
@@ -31,11 +33,12 @@ use hodor_federation::api::{
 use hodor_identity::api::IdentityService;
 use hodor_kernel::{DomainError, Secret, SystemClock, TenantContext};
 use hodor_notification::api::Notifier;
+use hodor_oauth::api::{AuthorizationCodePorts, AuthorizationCodeService};
 use hodor_observability::{LogFormat, Telemetry};
 use hodor_protocol_http::{
-    AdminState, ConsoleState, Health, InteractionState, Limits, Pages, ReadinessCheck,
-    ResolvedTenant, TenantResolver, TenantStatus as HttpTenantStatus, admin_routes, console_routes,
-    interaction_routes, ops_router, public_router, serve,
+    AdminState, AuthorizationState, ConsoleState, Health, InteractionState, Limits, Pages,
+    ReadinessCheck, ResolvedTenant, TenantResolver, TenantStatus as HttpTenantStatus, admin_routes,
+    authorization_routes, console_routes, interaction_routes, ops_router, public_router, serve,
 };
 use hodor_session::api::SessionService;
 use hodor_tenant::api::{TenantDirectory as _, TenantService, TenantStatus};
@@ -240,6 +243,10 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
             interaction_routes(interaction(&config, &database)?),
         )
         .nest(
+            "/oauth2",
+            authorization_routes(authorization(&config, &database)),
+        )
+        .nest(
             "/api/v1/admin",
             admin_routes(administration(&config, &database)?),
         )
@@ -425,6 +432,30 @@ fn interaction(config: &Config, database: &Database) -> Result<InteractionState,
         digest,
         clock,
     })
+}
+
+/// Builds everything the authorization endpoint needs.
+fn authorization(config: &Config, database: &Database) -> AuthorizationState {
+    let units = Arc::new(database.clone());
+    let clock = Arc::new(SystemClock);
+    let digest = Arc::new(Sha256Digest);
+    let random = Arc::new(OsRandom);
+    AuthorizationState {
+        authorization: AuthorizationCodeService::new(AuthorizationCodePorts {
+            units_of_work: units.clone(),
+            applications: Arc::new(PgApplicationStore),
+            clients: Arc::new(PgClientStore),
+            resource_servers: Arc::new(PgResourceServerStore),
+            requests: Arc::new(PgAuthorizationRequestStore),
+            grants: Arc::new(PgGrantStore),
+            codes: Arc::new(PgAuthorizationCodeStore),
+            digest: digest.clone(),
+            random: random.clone(),
+            clock: clock.clone(),
+        }),
+        sessions: SessionService::new(units, Arc::new(PgSessionStore), digest, random, clock),
+        public_url: config.public_url.clone(),
+    }
 }
 
 /// The hosts that may be reached at a private address and over plain
