@@ -26,7 +26,7 @@ use reqwest::{Client, Method, StatusCode};
 use std::sync::Arc;
 
 mod support;
-use support::{Browser, MEMORY_KIBIBYTES, PASSES, Server, start_server};
+use support::{Browser, MEMORY_KIBIBYTES, PASSES, Server, start_server, start_server_with};
 
 const EMAIL: &str = "ana@example.com";
 const PASSWORD: &str = "correct horse battery staple";
@@ -167,10 +167,18 @@ struct World {
 }
 
 async fn world() -> World {
+    world_with(&[]).await
+}
+
+async fn world_with(settings: &[(&str, &str)]) -> World {
     let database = TestDatabase::start().await;
     let acme = create_tenant(&database, "acme").await;
     let globex = create_tenant(&database, "globex").await;
-    let server = start_server(&database).await;
+    let server = if settings.is_empty() {
+        start_server(&database).await
+    } else {
+        start_server_with(&database, settings).await
+    };
     World {
         database,
         server,
@@ -427,7 +435,9 @@ async fn an_administrators_token_is_refused_by_every_operation_of_another_tenant
             let path = template
                 .replace("{user_id}", &globex.ana.to_string())
                 .replace("{session_id}", &globex.ana.to_string())
-                .replace("{provider_id}", &globex.ana.to_string());
+                .replace("{provider_id}", &globex.ana.to_string())
+                .replace("{key_set}", "sig")
+                .replace("{version_id}", &globex.ana.to_string());
             let method: Method = method.to_uppercase().parse().expect("method");
             let (status, body) = world
                 .admin(
@@ -446,7 +456,7 @@ async fn an_administrators_token_is_refused_by_every_operation_of_another_tenant
             tried += 1;
         }
     }
-    assert_eq!(tried, 14, "every documented operation was tried");
+    assert_eq!(tried, 17, "every documented operation was tried");
 
     // The token is good where it belongs, and nothing happened in Globex:
     // it has its two users, both active.
@@ -700,4 +710,70 @@ async fn one_tenants_users_and_audit_log_name_nothing_of_another() {
             );
         }
     }
+}
+
+/// A root key for tests only, written here in the clear.
+const ROOT_KEY: &str = "test:gV8TjmTiZoYOlhsN4OdTTiWMwWa1t/o5RPNGCdbBNro=";
+
+#[tokio::test]
+async fn a_tenants_key_set_names_none_of_another_tenants_keys() {
+    let world = world_with(&[("HODOR_SECRET_KEYS", ROOT_KEY)]).await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    let key_set = |tenant: &Tenant| {
+        let url = format!("{}/t/{}/oauth2/jwks", world.server.base, tenant.slug);
+        async move {
+            let response = Client::new().get(url).send().await.expect("response");
+            assert_eq!(response.status(), StatusCode::OK);
+            let body: serde_json::Value = response.json().await.expect("JSON");
+            body["keys"]
+                .as_array()
+                .expect("keys")
+                .iter()
+                .map(|key| key["kid"].as_str().expect("kid").to_owned())
+                .collect::<Vec<_>>()
+        }
+    };
+    assert!(key_set(acme).await.is_empty());
+
+    let mut made = Vec::new();
+    for tenant in [acme, globex] {
+        let (status, version) = world
+            .admin(
+                tenant,
+                &tenant.administrator_token,
+                Method::POST,
+                "/keys/sig:rotate",
+                None,
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{version}");
+        made.push(version["id"].as_str().expect("id").to_owned());
+    }
+    assert_eq!(key_set(acme).await, vec![made[0].clone()]);
+    assert_eq!(key_set(globex).await, vec![made[1].clone()]);
+
+    // Acme's administrator cannot rotate or revoke Globex's keys, and a
+    // version of Acme's is not found in Globex.
+    let (status, _) = world
+        .admin(
+            globex,
+            &acme.administrator_token,
+            Method::POST,
+            &format!("/keys/sig/versions/{}:revoke", made[1]),
+            Some(serde_json::json!({ "reason": "not mine" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, body) = world
+        .admin(
+            globex,
+            &globex.administrator_token,
+            Method::POST,
+            &format!("/keys/sig/versions/{}:revoke", made[0]),
+            Some(serde_json::json!({ "reason": "not ours" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["code"], "keys.version_not_found");
+    assert_eq!(key_set(acme).await, vec![made[0].clone()]);
 }
