@@ -31,13 +31,17 @@ about. The domain is pure; time is passed in. All modules are `pub(crate)` in
 
 ### `settings.rs`
 
-- `TenantSettings { password, session, lockout, registration }` with
-  `validate()`; `Default`, `Serialize`, `Deserialize`.
+- `TenantSettings { password, session, lockout, registration, authentication }` with
+  `validate()`; `Default`, `Serialize`, `Deserialize`. `authentication` is
+  `#[serde(default)]`, so settings stored before it existed still read.
 - `PasswordPolicy { min_length, max_length, history_depth, reject_breached }`.
 - `SessionPolicy { idle_timeout_seconds, absolute_timeout_seconds }` with
   `idle_timeout()` and `absolute_timeout()` as `time::Duration`.
 - `LockoutPolicy { max_failures, window_seconds, first_lockout_seconds, longest_lockout_seconds }`.
 - `RegistrationPolicy { Closed (default), Open }`, serialized in snake case.
+- `AuthenticationPolicy { second_factor }` and
+  `SecondFactorPolicy { NotRequired (default), Required }`, serialized in snake
+  case. Read by the authentication context when a sign-in advances and completes.
 
 ### `event.rs`
 

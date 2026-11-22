@@ -3,11 +3,12 @@
 
 use hodor_authentication::api::{
     AttemptGuard, AuthFlow, AuthTransaction, AuthenticationService, Authenticator,
-    AuthenticatorTraits, Factor, FlowEngine, IdentifierAuthenticator, PasswordAuthenticator,
-    SignIn, StepInput, StepOutcome, TransactionId,
+    AuthenticatorTraits, Condition, ExternalInput, Factor, FlowEngine, IdentifierAuthenticator,
+    PasswordAuthenticator, Requirement, SignIn, StepInput, StepOutcome, TransactionId,
 };
 use hodor_authentication::testing::{
-    InMemoryAttempts, InMemoryTransactions, TransactionPorts, run_transaction_contract,
+    InMemoryAttempts, InMemoryTransactions, TestSecondFactor, TransactionPorts,
+    run_transaction_contract,
 };
 use hodor_credential::api::{CredentialService, NewPassword, PasswordRules};
 use hodor_credential::testing::{FakeHasher, InMemoryPasswords};
@@ -19,7 +20,7 @@ use hodor_kernel::uow::testing::InMemoryUnitOfWorkFactory;
 use hodor_kernel::{Caller, DomainError, Secret, TenantContext, TenantId, Timestamp, UserId};
 use hodor_session::api::{Assurance, ClientInfo, SessionService};
 use hodor_session::testing::{InMemorySessions, SequentialRandom};
-use hodor_tenant::api::{CreateTenant, TenantService};
+use hodor_tenant::api::{CreateTenant, SecondFactorPolicy, TenantService};
 use hodor_tenant::testing::InMemoryTenants;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -62,13 +63,25 @@ struct World {
     clock: Arc<FixedClock>,
     units_of_work: InMemoryUnitOfWorkFactory,
     tenant: TenantContext,
+    tenants: TenantService,
     ana: UserId,
+    /// The stand-in second factor, which the flow names only when asked.
+    second_factor: TestSecondFactor,
     /// The secret of each sign-in started here, as the browser's cookie
     /// would hold it.
     secrets: Mutex<HashMap<TransactionId, String>>,
 }
 
 async fn world_with(lenient_password_step: bool) -> World {
+    world_with_flow(lenient_password_step, None).await
+}
+
+/// The built-in flow, followed by the stand-in second factor required in
+/// the given way when there is one.
+async fn world_with_flow(
+    lenient_password_step: bool,
+    second_factor_step: Option<Requirement>,
+) -> World {
     let units_of_work = InMemoryUnitOfWorkFactory::default();
     let clock = Arc::new(FixedClock::at(Timestamp::UNIX_EPOCH));
     let digest = Arc::new(FakeDigest);
@@ -112,17 +125,25 @@ async fn world_with(lenient_password_step: bool) -> World {
             guard,
         ))
     };
+    let second_factor = TestSecondFactor::default();
     let engine = FlowEngine::new()
         .with(Arc::new(IdentifierAuthenticator::new(
             identity.clone(),
             digest,
         )))
-        .with(password_step);
+        .with(password_step)
+        .with(Arc::new(second_factor.clone()));
+    let flow = match second_factor_step {
+        Some(requirement) => {
+            AuthFlow::built_in().with_step("second-factor", TestSecondFactor::KIND, requirement)
+        }
+        None => AuthFlow::built_in(),
+    };
     let service = AuthenticationService::new(
         factory(),
         Arc::new(InMemoryTransactions::default()),
         engine,
-        AuthFlow::built_in(),
+        flow,
         identity.clone(),
         sessions.clone(),
         tenants.clone(),
@@ -182,7 +203,9 @@ async fn world_with(lenient_password_step: bool) -> World {
         clock,
         units_of_work,
         tenant,
+        tenants,
         ana,
+        second_factor,
         secrets: Mutex::new(HashMap::new()),
     }
 }
@@ -240,6 +263,36 @@ impl World {
                 StepInput::Password(Secret::from(typed.to_owned())),
             )
             .await
+    }
+
+    async fn second_factor(&self, id: TransactionId, code: &str) -> Result<SignIn, DomainError> {
+        self.service
+            .submit(
+                &self.tenant,
+                id,
+                &self.secret(id),
+                StepInput::External(ExternalInput {
+                    step: "second-factor".to_owned(),
+                    fields: vec![("code".to_owned(), Secret::from(code.to_owned()))],
+                }),
+            )
+            .await
+    }
+
+    async fn require_second_factor(&self, policy: SecondFactorPolicy) {
+        let mut settings = self
+            .tenants
+            .get(&self.tenant)
+            .await
+            .expect("tenant")
+            .snapshot()
+            .settings
+            .clone();
+        settings.authentication.second_factor = policy;
+        self.tenants
+            .change_settings(&self.tenant, settings, Caller::system())
+            .await
+            .expect("settings changed");
     }
 
     fn events_since(&self, count: usize) -> Vec<String> {
@@ -602,4 +655,127 @@ async fn a_sign_in_can_be_continued_only_with_its_secret() {
         world.password(id, PASSWORD).await.expect("password"),
         SignIn::Completed { .. }
     ));
+}
+
+const WHEN_NOT_REACHED: Requirement = Requirement::Conditional(Condition::AssuranceNotReached);
+
+fn pending_step(sign_in: &SignIn) -> &str {
+    match sign_in {
+        SignIn::Pending { step, .. } | SignIn::Rejected { step, .. } => step,
+        other => panic!("not waiting for a step: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn with_the_policy_on_the_built_in_flow_completes_no_sign_in() {
+    let world = world().await;
+    world
+        .require_second_factor(SecondFactorPolicy::Required)
+        .await;
+    let id = world.start().await;
+    world.identifier(id, "ana@example.com").await;
+    let events = world.units_of_work.committed_event_types().len();
+    let outcome = world.password(id, PASSWORD).await.expect("answered");
+    assert!(
+        matches!(outcome, SignIn::Failed),
+        "one factor is not enough: {outcome:?}"
+    );
+    assert_eq!(world.events_since(events), ["authentication.failed"]);
+    let sessions = world
+        .sessions
+        .list_for_user(&world.tenant, world.ana)
+        .await
+        .expect("sessions");
+    assert!(sessions.is_empty(), "no session started");
+}
+
+#[tokio::test]
+async fn with_the_policy_off_a_second_factor_on_the_condition_is_not_asked() {
+    let world = world_with_flow(false, Some(WHEN_NOT_REACHED)).await;
+    world.second_factor.enroll(world.ana);
+    let id = world.start().await;
+    world.identifier(id, "ana@example.com").await;
+    let outcome = world.password(id, PASSWORD).await.expect("answered");
+    let SignIn::Completed { session, .. } = outcome else {
+        panic!("one factor is enough with the policy off: {outcome:?}");
+    };
+    assert_eq!(session.snapshot().assurance, Assurance::SingleFactor);
+}
+
+#[tokio::test]
+async fn with_the_policy_on_the_second_factor_is_asked_and_the_session_is_multi_factor() {
+    let world = world_with_flow(false, Some(WHEN_NOT_REACHED)).await;
+    world.second_factor.enroll(world.ana);
+    world
+        .require_second_factor(SecondFactorPolicy::Required)
+        .await;
+    let id = world.start().await;
+    world.identifier(id, "ana@example.com").await;
+    let after_password = world.password(id, PASSWORD).await.expect("answered");
+    assert_eq!(pending_step(&after_password), "second-factor");
+    let wrong = world.second_factor(id, "000000").await.expect("answered");
+    assert_eq!(pending_step(&wrong), "second-factor");
+    assert!(matches!(wrong, SignIn::Rejected { .. }));
+    let outcome = world
+        .second_factor(id, TestSecondFactor::CODE)
+        .await
+        .expect("answered");
+    let SignIn::Completed { session, .. } = outcome else {
+        panic!("two factors complete the sign-in: {outcome:?}");
+    };
+    assert_eq!(session.snapshot().assurance, Assurance::MultiFactor);
+    assert_eq!(
+        session.snapshot().methods,
+        ["password", TestSecondFactor::METHOD]
+    );
+}
+
+#[tokio::test]
+async fn with_the_policy_on_a_person_without_a_second_factor_cannot_sign_in() {
+    let world = world_with_flow(false, Some(WHEN_NOT_REACHED)).await;
+    world
+        .require_second_factor(SecondFactorPolicy::Required)
+        .await;
+    let id = world.start().await;
+    world.identifier(id, "ana@example.com").await;
+    let outcome = world.password(id, PASSWORD).await.expect("answered");
+    assert!(matches!(outcome, SignIn::Failed), "{outcome:?}");
+}
+
+#[tokio::test]
+async fn an_optional_second_factor_is_asked_of_whoever_enrolled_even_with_the_policy_off() {
+    let world = world_with_flow(false, Some(Requirement::Optional)).await;
+    world.second_factor.enroll(world.ana);
+    let id = world.start().await;
+    world.identifier(id, "ana@example.com").await;
+    let after_password = world.password(id, PASSWORD).await.expect("answered");
+    assert_eq!(pending_step(&after_password), "second-factor");
+    let outcome = world
+        .second_factor(id, TestSecondFactor::CODE)
+        .await
+        .expect("answered");
+    assert!(matches!(outcome, SignIn::Completed { .. }), "{outcome:?}");
+}
+
+#[tokio::test]
+async fn the_policy_turned_on_during_a_sign_in_applies_at_its_completion() {
+    let world = world().await;
+    let id = world.start().await;
+    world.identifier(id, "ana@example.com").await;
+    world
+        .require_second_factor(SecondFactorPolicy::Required)
+        .await;
+    let outcome = world.password(id, PASSWORD).await.expect("answered");
+    assert!(matches!(outcome, SignIn::Failed), "{outcome:?}");
+
+    world
+        .require_second_factor(SecondFactorPolicy::NotRequired)
+        .await;
+    let id = world.start().await;
+    world.identifier(id, "ana@example.com").await;
+    let outcome = world.password(id, PASSWORD).await.expect("answered");
+    assert!(
+        matches!(outcome, SignIn::Completed { .. }),
+        "with the policy off again nothing has changed: {outcome:?}"
+    );
 }

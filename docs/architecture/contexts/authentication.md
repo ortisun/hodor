@@ -4,7 +4,7 @@ The `authentication` context decides whether someone has proved who they are. It
 
 It owns no users, credentials or sessions. It asks the `identity` context who a login identifier belongs to, asks the `credential` context whether a secret is right, and asks the `session` context to start a session. What it owns is the procedure: which steps, in which order, with which protections.
 
-This page specifies the part built in Milestone 1: signing in with a login identifier and a password. The same mechanism carries every later method.
+This page specifies signing in with a login identifier and a password (Milestone 1), with an external identity (Milestone 2), and the steps a flow may require only sometimes, which carry the second factors of Milestone 4. The same mechanism carries every later method.
 
 ## Flows
 
@@ -27,22 +27,54 @@ An **authenticator** performs one step. It receives what the person submitted an
 | An external identity provider, a directory | Takes what came back from somewhere else that knows the person, checks it, and answers who the person is | Who is signing in and one factor, in a single step | Milestone 2, in the federation context |
 | One-time password, passkey and others | — | — | Later phases |
 
-Each step has a requirement. Milestone 1 has one kind:
+Each step has a requirement:
 
 | Requirement | Meaning |
 |---|---|
 | Required | The step must be satisfied for the flow to continue |
+| Optional | The step is performed when the person has the means for it, such as an authenticator application they enrolled, and passed over when they do not |
+| Conditional | The step is performed when its condition holds at the moment the sign-in reaches it, and passed over when it does not. A conditional step whose condition holds is also passed over when the person has no means for it |
 
-Conditional and optional steps are added in Phase 4 as further kinds of requirement on the same list; the engine and the stored form do not change shape.
+A step that is performed is satisfied in the same way whatever its requirement: it must be satisfied for the flow to continue, and a rejection counts like any other.
+
+Conditions are a small closed set, not a language ([Decision 0013](../../decisions/0013-auth-flow-as-data.md)):
+
+| Condition | Holds when |
+|---|---|
+| Assurance not reached | The methods satisfied so far do not reach the assurance the sign-in must reach (see [what a sign-in must reach](#what-a-sign-in-must-reach)) |
+
+Rules for the steps that are not required:
+
+| Rule | Why |
+|---|---|
+| A person never declines a step that is performed. There is no way to skip it from the pages or the interaction interface | Whoever holds a stolen password would decline the second factor |
+| Whether a step is passed over is decided by the server, when the sign-in reaches the step, from what is known then | The browser never decides what is asked |
+| Every step that is not required comes after every required step | A step that may be passed over happens once the person is identified and has proved a first factor, so asking whether they have the means for it reveals nothing to someone who has not |
+| Whether the person has the means for a step is asked of the step's authenticator. An authenticator that has nothing to enroll, such as the password, always has the means | Only the authenticator knows what the person enrolled |
+
+Further conditions, such as the assurance an application asks for and risk signals, are added to the same set by later issues.
+
+### What a sign-in must reach
+
+A sign-in must reach an **assurance**: single factor or multi-factor. Two factors of the same kind, such as two passwords, are still one.
+
+| Source | Assurance it requires |
+|---|---|
+| The flow's minimum assurance | Whatever the flow says; single factor for the built-in flow |
+| The tenant's [second factor policy](tenant.md#authentication-policy), when it requires a second factor | Multi-factor |
+
+The highest of them is what the sign-in must reach. It is checked when the sign-in completes, whatever steps were performed or passed over: a sign-in whose satisfied methods do not reach it fails, and no session starts. With the policy on, no sign-in completes with one factor, including a sign-in through an alternative.
+
+The tenant's policy is read again on every step and at completion, so a change to it applies to sign-ins already in progress.
 
 ### Alternatives
 
-A flow may also list **alternatives**: steps that, satisfied at the very start of a sign-in, complete it in place of all its steps. This is how a person signs in with an external identity instead of an identifier and a password.
+A flow may also list **alternatives**: steps that, satisfied at the very start of a sign-in, take the place of all its required steps. The optional and conditional steps after them still apply. This is how a person signs in with an external identity instead of an identifier and a password, and how a second factor can still be asked of them.
 
 | Rule | Why |
 |---|---|
 | An alternative is performed by an authenticator that establishes who is signing in **and** proves it, in one step | There is no earlier step to have named the person, and none after it to prove anything |
-| An alternative is accepted only while no step of the flow has been satisfied | A sign-in is completed by its steps or by one alternative, never by part of each. A person who typed an identifier and then wants an external identity starts a new sign-in |
+| An alternative is accepted only while no step of the flow has been satisfied | The required steps are satisfied by themselves or by one alternative, never by part of each. A person who typed an identifier and then wants an external identity starts a new sign-in |
 | A rejected alternative counts as a rejection of the sign-in, like a rejected step | The same tolerance applies whichever way is tried |
 | After a rejected alternative the sign-in is waiting for the step it was waiting for before | The alternative was a way around the steps, not one of them; the person is back where they were |
 | An authenticator answers only in the way its kind allows: a step never answers as an alternative, an alternative never as a step | An authenticator that breaks this is a defect, and the sign-in does not advance |
@@ -66,6 +98,8 @@ A flow is checked before it can be used. It is valid when:
 - every step names an authenticator the engine knows;
 - a step that establishes who is signing in comes before every step that proves it;
 - the factors established by its required steps reach its minimum assurance;
+- every step that establishes who is signing in is required;
+- every step that is not required comes after every required step, and proves a factor;
 - every alternative has a key no step or other alternative has, names an authenticator the engine knows that both establishes who is signing in and proves it, and reaches the minimum assurance by itself.
 
 An invalid flow is rejected as a whole. The engine never runs one.
@@ -79,10 +113,10 @@ Each execution of a flow is a **transaction**: the server-side record of how far
 | Identifier | Refers to the transaction |
 | Binding | The hash of a secret given only to the browser that started the sign-in. Every later operation must present the secret; without it the transaction is treated as if it did not exist |
 | Flow name and version | What is being executed |
-| Current step | The next step to be satisfied |
+| Current step | The next step to be satisfied. Steps passed over are behind it |
 | Candidate | Who is trying to sign in, once the identifier step has run. Empty when the identifier belongs to nobody, which the person signing in must not be able to tell |
 | Identifier key | A digest of the normalized identifier typed, used to count attempts. The identifier itself is not kept |
-| Satisfied methods | Which methods have been satisfied so far |
+| Satisfied methods | Which methods have been satisfied so far. They are passed on to the session, which is where the `amr` of a token will come from |
 | Rejections | How many times a step was rejected in this transaction |
 | Expires at | Ten minutes after the start |
 | Client | The address and browser description, passed on to the session |
@@ -103,6 +137,7 @@ stateDiagram-v2
 Rules:
 
 - A transaction advances only through its current step. Input for any other step is refused.
+- When a step is satisfied, the steps after it that are to be passed over are passed over at once, so the current step is always one that is performed.
 - A rejected step does not advance the transaction. After five rejections the transaction fails and a new one must be started.
 - A transaction expires ten minutes after it starts, whatever its progress.
 - A transaction completes exactly once. Completion is what starts the session; if two requests try to complete the same transaction, one wins and the other is refused.
@@ -143,9 +178,10 @@ A lockout can be used to keep a real user out by failing on purpose. That is the
 When the last step is satisfied:
 
 1. The candidate is loaded again and must be allowed to sign in. This is the last check, made at the moment of completion.
-2. The transaction is marked completed. Only one request can do this.
-3. A session is started for the user, with the methods that were satisfied, the assurance they amount to, the tenant's session timeouts and the client details.
-4. `authentication.succeeded` is recorded.
+2. The satisfied methods must reach [what the sign-in must reach](#what-a-sign-in-must-reach), with the tenant's policy as it is now. If they do not, the sign-in fails as in step 1: `authentication.failed` is recorded and no session starts.
+3. The transaction is marked completed. Only one request can do this.
+4. A session is started for the user, with the methods that were satisfied, the assurance they amount to, the tenant's session timeouts and the client details.
+5. `authentication.succeeded` is recorded.
 
 The session token is returned to the caller, which hands it to the browser. Nothing else about the session leaves the server.
 
@@ -343,7 +379,12 @@ All three are tenant tables under row-level security.
 
 | Item | Planned in |
 |---|---|
-| Editing flows; alternative, conditional and optional steps; simulation | Phase 4 |
+| Editing flows and simulating them | Phase 4 |
+| A second factor in the built-in flow. Until one exists, a tenant whose policy requires a second factor refuses every sign-in | Issue-65, TOTP |
+| Setting the tenant's second factor policy from the command-line tool, the administration interface or the console. Today it is a setting of the tenant context only, so that nobody can turn it on before a second factor exists | Issue-65 and Issue-70 |
+| Enrolling a second factor during a sign-in, for a person whose tenant requires one and who has none. Today their sign-in fails at completion | Issue-70 |
+| Offering a choice between several second factors at one step. Today each is its own step, and a person enrolled in two would be asked for both, unless they are conditional on the assurance not being reached | Issue-67, WebAuthn |
+| A reason in `authentication.failed` that tells a missing second factor from a rejected step | With the step-up of Issue-69 |
 | Further authenticators, risk signals, recognizing a user's own device | Phases 3 and 4 |
 | Making a user choose a new password when the current one is marked as temporary. The mark is stored and returned by the credential context, but sign-in does not act on it yet | With the administration interface, Issue-29, which is what sets the mark |
 | Signing the person in at the end of registration or recovery. Today the person signs in with the password just chosen | With the account console, Phase 2 |

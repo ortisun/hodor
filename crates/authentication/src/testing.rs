@@ -1,9 +1,10 @@
 //! In-memory stores and the contracts every implementation of them passes.
 
 use crate::api::{
-    AttemptCounter, AttemptStore, AttemptSubject, AuthFlow, AuthTransaction, LockoutRules,
-    TokenPurpose, TransactionId, TransactionStore, VerificationSecret, VerificationToken,
-    VerificationTokenHash, VerificationTokenId, VerificationTokenStore,
+    AttemptCounter, AttemptStore, AttemptSubject, AuthFlow, AuthTransaction, Authenticator,
+    AuthenticatorTraits, Factor, LockoutRules, StepInput, StepOutcome, TokenPurpose, TransactionId,
+    TransactionStore, VerificationSecret, VerificationToken, VerificationTokenHash,
+    VerificationTokenId, VerificationTokenStore,
 };
 use hodor_kernel::random::testing::FakeDigest;
 use hodor_kernel::{
@@ -12,8 +13,80 @@ use hodor_kernel::{
 use hodor_kernel::{RandomSource, UserId};
 use hodor_session::api::ClientInfo;
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 use time::Duration;
+
+/// A stand-in second factor, until real ones exist: something the person
+/// has, which only the people enrolled in it have the means for. It is
+/// satisfied by the field `code` holding [`TestSecondFactor::CODE`].
+#[derive(Debug, Clone, Default)]
+pub struct TestSecondFactor {
+    enrolled: Arc<Mutex<BTreeSet<UserId>>>,
+}
+
+impl TestSecondFactor {
+    /// The kind flows name it by.
+    pub const KIND: &'static str = "test-second-factor";
+    /// The method recorded for a satisfied step.
+    pub const METHOD: &'static str = "test-second-factor";
+    /// The one code it accepts.
+    pub const CODE: &'static str = "246810";
+
+    /// Gives a person the means for this factor.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the lock is poisoned.
+    pub fn enroll(&self, user: UserId) {
+        self.enrolled.lock().expect("enrolled").insert(user);
+    }
+
+    fn is_enrolled(&self, user: Option<UserId>) -> bool {
+        user.is_some_and(|user| self.enrolled.lock().expect("enrolled").contains(&user))
+    }
+}
+
+#[async_trait::async_trait]
+impl Authenticator for TestSecondFactor {
+    fn kind(&self) -> &'static str {
+        Self::KIND
+    }
+
+    fn traits(&self) -> AuthenticatorTraits {
+        AuthenticatorTraits {
+            identifies: false,
+            factor: Some(Factor::Possession),
+            method: Some(Self::METHOD),
+        }
+    }
+
+    async fn perform(
+        &self,
+        _tenant: &TenantContext,
+        transaction: &AuthTransaction,
+        input: &StepInput,
+    ) -> Result<StepOutcome, DomainError> {
+        let right = matches!(
+            input,
+            StepInput::External(external)
+                if external.field("code").is_some_and(|code| code.expose() == Self::CODE)
+        );
+        Ok(if right && self.is_enrolled(transaction.candidate()) {
+            StepOutcome::Proven
+        } else {
+            StepOutcome::Rejected
+        })
+    }
+
+    async fn has_means(
+        &self,
+        _tenant: &TenantContext,
+        transaction: &AuthTransaction,
+    ) -> Result<bool, DomainError> {
+        Ok(self.is_enrolled(transaction.candidate()))
+    }
+}
 
 /// Attempt counters kept in memory. It does not serialize concurrent
 /// access; tests that need that run against PostgreSQL.

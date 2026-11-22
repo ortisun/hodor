@@ -14,7 +14,7 @@ use hodor_kernel::{
 use hodor_session::api::{
     Assurance, ClientInfo, Session, SessionService, SessionTimeouts, SessionToken, StartSession,
 };
-use hodor_tenant::api::TenantService;
+use hodor_tenant::api::{SecondFactorPolicy, TenantService};
 use std::sync::Arc;
 use time::Duration;
 
@@ -194,9 +194,10 @@ impl AuthenticationService {
         let now = self.clock.now();
         let step = input.step_key().to_owned();
         let step = step.as_str();
+        let demanded = self.demanded(tenant).await?;
         let progress = self
             .engine
-            .submit(tenant, &self.flow, &mut transaction, &input, now)
+            .submit(tenant, &self.flow, &mut transaction, &input, demanded, now)
             .await?;
 
         match progress {
@@ -257,7 +258,16 @@ impl AuthenticationService {
             Some(user_id) => self.may_sign_in(tenant, user_id).await?,
             None => false,
         };
-        let assurance = self.engine.assurance(&transaction);
+        // What the sign-in must reach is read again: the tenant's policy
+        // as it is now, whatever it was at earlier steps.
+        let must_reach = self
+            .flow
+            .minimum_assurance
+            .max(self.demanded(tenant).await?);
+        let assurance = self
+            .engine
+            .assurance(&transaction)
+            .filter(|reached| *reached >= must_reach);
         let (Some(assurance), true) = (assurance, allowed) else {
             transaction.cancel();
             self.store(
@@ -320,6 +330,23 @@ impl AuthenticationService {
             client: transaction.snapshot().client.clone(),
         };
         self.sessions.start(tenant, command, Caller::system()).await
+    }
+
+    /// The assurance the tenant's policy demands of every sign-in, beyond
+    /// the flow's own minimum.
+    async fn demanded(&self, tenant: &TenantContext) -> Result<Assurance, DomainError> {
+        let policy = self
+            .tenants
+            .get(tenant)
+            .await?
+            .snapshot()
+            .settings
+            .authentication
+            .second_factor;
+        Ok(match policy {
+            SecondFactorPolicy::NotRequired => Assurance::SingleFactor,
+            SecondFactorPolicy::Required => Assurance::MultiFactor,
+        })
     }
 
     async fn may_sign_in(

@@ -240,8 +240,13 @@ impl AuthTransaction {
         self.state.current_step += 1;
     }
 
+    /// Records that the current step is passed over and moves on.
+    pub(crate) fn record_passed_over(&mut self) {
+        self.state.current_step += 1;
+    }
+
     /// Records an alternative that established who is signing in and
-    /// proved it: nothing of the flow's `steps` remains to be done.
+    /// proved it: the flow's first `steps`, its required ones, are done.
     pub(crate) fn record_authenticated(
         &mut self,
         user: UserId,

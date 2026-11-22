@@ -25,7 +25,7 @@ pub mod api {
     };
     pub use crate::domain::engine::{FlowEngine, Progress};
     pub use crate::domain::event::AuthenticationEvent;
-    pub use crate::domain::flow::{AuthFlow, FlowStep, Requirement};
+    pub use crate::domain::flow::{AuthFlow, Condition, FlowStep, Requirement};
     pub use crate::domain::transaction::{
         AuthTransaction, TransactionId, TransactionSnapshot, TransactionState, TransactionStatus,
     };

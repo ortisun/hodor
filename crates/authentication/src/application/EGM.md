@@ -52,7 +52,10 @@ the tenant the unit of work is bound to.
   - `describe(tenant, id, secret) -> SignIn`: says which step a sign-in is
     waiting for.
   - `submit(tenant, id, secret, input: StepInput) -> SignIn`: runs the current
-    step with what was submitted.
+    step with what was submitted. Reads the tenant's second factor policy on
+    every step and again at completion: when it is `Required`, the sign-in
+    must reach `Assurance::MultiFactor` or it ends as `SignIn::Failed` with
+    `authentication.failed` and no session (`service.rs:demanded`).
   - `cancel(tenant, id, secret)`: ends a sign-in; ending one that has already
     ended changes nothing.
 - `SignIn` (`service.rs:SignIn`): `Pending { transaction_id, step }`,
