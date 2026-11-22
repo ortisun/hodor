@@ -21,7 +21,7 @@ name: hodor-install
 
 # What every Hodor container shares: the image, and a container that can change nothing of itself.
 x-hodor: &hodor
-  image: ${HODOR_IMAGE:?Set HODOR_IMAGE in .env to the Hodor image, such as hodor:1.0.0}
+  image: ${HODOR_IMAGE:?Set HODOR_IMAGE in .env to the Hodor image, such as hodor:0.1.0}
   read_only: true
   cap_drop: [ALL]
   security_opt: ["no-new-privileges:true"]

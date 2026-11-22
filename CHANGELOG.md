@@ -4,17 +4,13 @@ Every release of Hodor, newest first. The rules for versions and releases are in
 
 ## [Unreleased]
 
-### Added
+## [0.1.0] - 2026-11-22
 
-- **Two test environments** on one machine, each seeded with a tenant, a person and an administrator: the stack in Docker with the three development providers, and Hodor installed by its chart on a Kubernetes cluster in Docker.
+The first release, a pre-release: the walking skeleton of [Milestone 1](docs/product/epics.md#milestone-1-walking-skeleton) and signing in with external identities, [Milestone 2](docs/product/epics.md#milestone-2-signing-in-with-external-identities). Hodor lets people into a tenant; it does not yet let applications ask Hodor who someone is.
 
-## [1.0.0] - 2026-11-22
+0.2.0 comes when three more parts are built: the OAuth 2.x authorization server and OpenID Provider, multi-factor authentication with passkeys and step-up, and the authorization engine with Open Policy Agent. These same contents were first published as `v1.0.0` by mistake, before those parts; that tag and release were withdrawn the same day, before any image or chart was published.
 
-The first release: the walking skeleton of [Milestone 1](docs/product/epics.md#milestone-1-walking-skeleton) and signing in with external identities, [Milestone 2](docs/product/epics.md#milestone-2-signing-in-with-external-identities). Hodor lets people into a tenant; it does not yet let applications ask Hodor who someone is.
-
-The owner chose to release this as 1.0.0, a full release, before the three parts the plan had waited for: the OAuth 2.x authorization server and OpenID Provider, multi-factor authentication with passkeys and step-up, and the authorization engine with Open Policy Agent. The number is not the stage the [product requirements](docs/product/product-requirements.md#9-release-criteria) call general availability: by those criteria Hodor has not reached Alpha.
-
-**1.0.0 is not ready to hold real accounts.** What stands in the way:
+**0.1.0 is not ready to hold real accounts.** What stands in the way:
 
 - the development stack's passwords and keys are written in the repository, and it speaks plain HTTP: see [before anything real](docs/operations/quick-start.md#before-anything-real);
 - behind a load balancer every person shares one limit of attempts, since a forwarded address is not trusted yet;
@@ -40,8 +36,9 @@ The [progress](docs/product/progress.md) page lists every known gap.
 - **One guarded client for outbound requests**: public addresses only, no redirects, limits on size and time.
 - **Telemetry** over OpenTelemetry: traces to VictoriaTraces, metrics to VictoriaMetrics.
 - **A Compose stack for development** with a development OpenID Connect provider, an LDAP directory and a SAML identity provider, all of which let anyone sign in as anyone; **installation packages** for Docker and Kubernetes.
+- **Two test environments** on one machine, each seeded with a tenant, a person and an administrator: the stack in Docker with the three development providers, and Hodor installed by its chart on a Kubernetes cluster in Docker.
 - **Two demonstrations**, one per milestone, run in continuous integration against the image.
 - **The documentation site**, published from `docs/` at <https://ortisun.github.io/hodor/>.
 
-[Unreleased]: https://github.com/ortisun/hodor/compare/v1.0.0...develop
-[1.0.0]: https://github.com/ortisun/hodor/releases/tag/v1.0.0
+[Unreleased]: https://github.com/ortisun/hodor/compare/v0.1.0...develop
+[0.1.0]: https://github.com/ortisun/hodor/releases/tag/v0.1.0
