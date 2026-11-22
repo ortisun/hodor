@@ -104,6 +104,9 @@ fn setting() -> Setting {
     }
 }
 
+/// Parameters as name and value pairs.
+type Pairs = Vec<(String, String)>;
+
 const CHALLENGE: &str = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
 
 fn good(client: &Client) -> Vec<(String, String)> {
@@ -264,7 +267,7 @@ fn nothing_is_sent_to_an_address_that_is_not_trusted() {
 fn every_malformed_request_is_refused_for_its_own_reason() {
     let setting = setting();
     let base = good(&setting.client);
-    let cases: Vec<(&str, Vec<(String, String)>, &str)> = vec![
+    let cases: Vec<(&str, Pairs, &str)> = vec![
         (
             "no response type",
             with(base.clone(), "response_type", None),

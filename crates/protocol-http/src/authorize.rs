@@ -138,7 +138,7 @@ async fn signed_in(
     state: &AuthorizationState,
     tenant: &TenantContext,
     headers: &HeaderMap,
-) -> Result<Option<SignedInPerson>, Response> {
+) -> Result<Option<SignedInPerson>, Box<Response>> {
     let Some(token) = cookie(headers, SESSION_COOKIE) else {
         return Ok(None);
     };
@@ -153,7 +153,7 @@ async fn signed_in(
             }))
         }
         Ok(None) => Ok(None),
-        Err(error) => Err(Problem::from(error).into_response()),
+        Err(error) => Err(Box::new(Problem::from(error).into_response())),
     }
 }
 
@@ -209,7 +209,7 @@ async fn authorize(
     };
     let person = match signed_in(state, tenant, headers).await {
         Ok(person) => person,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     match (
         request.decide(person.as_ref(), state.authorization.now()),
@@ -312,7 +312,7 @@ async fn resume(
     };
     let person = match signed_in(&state, &tenant, &headers).await {
         Ok(person) => person,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let now = state.authorization.now();
     let mut response = match person {

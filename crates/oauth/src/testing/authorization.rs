@@ -140,11 +140,14 @@ impl GrantStore for InMemoryGrants {
     }
 }
 
+/// The codes of every tenant, by tenant and hash.
+type CodeRows = BTreeMap<(TenantId, [u8; 32]), AuthorizationCode>;
+
 /// Codes kept in memory, by tenant and hash.
 #[derive(Debug, Clone)]
 pub struct InMemoryAuthorizationCodes {
     grants: InMemoryGrants,
-    rows: Arc<Mutex<BTreeMap<(TenantId, [u8; 32]), AuthorizationCode>>>,
+    rows: Arc<Mutex<CodeRows>>,
 }
 
 impl InMemoryAuthorizationCodes {
