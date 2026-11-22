@@ -211,6 +211,18 @@ Specified in [the design system](../design/design-system.md) and [the control pl
 | A smaller style sheet for the hosted pages | Not started | Only the components in use, built with `@astryxdesign/build` |
 | Contrast checks of the theme | Not started | Planned with Hodor's components. The hosted pages are measured by the accessibility checker of the browser tests, which found and fixed one pair: text on the accent in the light theme |
 
+## Documentation site
+
+The pages of `docs/` published as a website, outside the milestone plan, at the owner's request. Specified in [the documentation site](../development/documentation-site.md) and [Decision 0021](../decisions/0021-documentation-site.md).
+
+| Piece | Status | What exists |
+|---|---|---|
+| The site | Done | MkDocs with the Material theme, built from `docs/` where the pages are, with search, tabs, light and dark modes and drawn Mermaid diagrams. A home page, and the OpenAPI document of the administration interface shown with Swagger UI. Tools pinned with their hashes |
+| Examples | Done | [A tenant and its first administrator](../examples/first-tenant-and-administrator.md), [signing in through identity providers](../examples/signing-in-through-identity-providers.md), [calling the administration interface](../examples/administration-interface.md). Every command run as written against the development stack; the sign-ins through OpenID Connect, the directory and SAML done in Chromium. The GitHub sign-in stops at GitHub's page, since the stack has no stand-in for it |
+| Checks | Done | Every pull request that touches the pages builds the site with `--strict`: a page missing from the navigation, a broken link or an anchor that leads nowhere fails it |
+| Publishing | Waiting for the owner | The workflow publishes from `develop` once GitHub Pages is turned on with GitHub Actions as its source, and `develop` may deploy to the `github-pages` environment |
+| Moving to Zensical | Not started | Material for MkDocs reaches its end of life on May 5, 2027. [Decision 0021](../decisions/0021-documentation-site.md#consequences) says when the site moves |
+
 ## Defects found after merging
 
 Defects that reached `develop` and were fixed later, kept here so that the record of what went wrong is not lost.
