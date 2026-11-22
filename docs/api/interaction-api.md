@@ -113,7 +113,7 @@ The answer has the shape of every sign-in response. Attempts are limited as for 
 
 For a provider of the kind `saml`, choosing it answers with the identity provider's single sign-on address carrying the request, as for any provider. The identity provider then makes the browser post its response, from its own site, to `POST /interaction/sign-in/providers/{alias}/saml`, form-encoded with `SAMLResponse` and `RelayState`. That route [is different](../architecture/contexts/federation.md#when-the-response-arrives):
 
-- It is the one changing request that comes from another site: it needs no cookie, no CSRF token, and its `Origin` is not checked. It changes nothing but the pending authorization whose state hashes to `RelayState`, and only once: it keeps the response there, unread, if none was kept before, with the hash of a new random **receipt**.
+- It is the one changing request that comes from another site: it needs no cookie, no CSRF token, and its `Origin` is not checked. It changes nothing but the pending authorization whose state hashes to `RelayState`, and only once: it [checks the response](../architecture/contexts/federation.md#checking-the-response) against that pending authorization's request, and keeps only the answer there (who the person is, or why the response was refused) with the hash of a new random **receipt**, if no answer was kept before. The response itself is not stored. A body that is not base64, or a relay state no pending authorization has, is not checked at all.
 - Its body is at most 768 kibibytes, form-encoded; the response in it at most 384.
 - It answers `303 See Other` to `/t/{slug}/account/providers/{alias}/callback?binding=saml&state={RelayState}&receipt={receipt}`, whether or not a pending authorization was found, and without `state` and `receipt` when the relay state is not a plain token of at most 80 characters. An alias that is not an alias is `404`, as is any alias when the server has no keys to keep secrets with; a failure of storage is `500`.
 
@@ -123,7 +123,7 @@ The page then finishes as for any provider, with `POST /interaction/sign-in/prov
 { "state": "…", "receipt": "…" }
 ```
 
-Only then is the response read and checked, against the request of this browser's sign-in. The receipt shows that the browser finishing is the one that carried the response: see [why](../architecture/contexts/federation.md#when-the-response-arrives).
+Only then is the answer used: the person is signed in, or the reason it was refused is recorded. The receipt shows that the browser finishing is the one that carried the response: see [why](../architecture/contexts/federation.md#when-the-response-arrives).
 
 `GET /interaction/sign-in/providers/{alias}/saml/metadata` needs no sign-in and answers with Hodor's metadata for that provider, `application/samlmetadata+xml`, for an administrator to give the identity provider. A provider of another kind, or none, is `404`.
 
