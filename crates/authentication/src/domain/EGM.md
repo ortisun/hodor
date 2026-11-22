@@ -29,7 +29,8 @@ reach other crates only through `hodor_authentication::api` in `../lib.rs`.
   (performed when the condition holds and `has_means` says yes);
   `is_required()`.
 - `Condition` (`flow.rs:Condition`): `AssuranceNotReached`, which holds while
-  the satisfied methods are below the assurance the sign-in must reach.
+  the satisfied methods are below the assurance the sign-in must reach, and
+  `MultiFactorNotReached`, which holds while they are below multi-factor.
 
 ### Engine (`engine.rs`)
 
@@ -40,7 +41,10 @@ reach other crates only through `hodor_authentication::api` in `../lib.rs`.
   (`demanded` is the assurance the tenant's policy asks beyond the flow's
   minimum; after a satisfied step the steps to be passed over are passed over,
   and an error leaves the transaction unchanged),
-  `assurance(transaction) -> Option<Assurance>`.
+  `challenge(tenant, flow, transaction, step, now)` (the current step's, or
+  an alternative's while `current_step` is 0),
+  `assurance(transaction) -> Option<Assurance>` (counts `factor` and
+  `second_factor` of every satisfied method).
 - Validity rules added for steps that are not required: they come after every
   required step, never establish who is signing in, and prove a factor; only
   required steps count towards the minimum assurance.
@@ -58,7 +62,9 @@ reach other crates only through `hodor_authentication::api` in `../lib.rs`.
   it asked; the default answers `None`.
 - `StepChallenge { challenge: [u8; 32], options: serde_json::Value }`: what the
   engine keeps in the transaction, and what the browser needs.
-- `AuthenticatorTraits { identifies, factor, method }`.
+- `AuthenticatorTraits { identifies, factor, second_factor, method }`;
+  `second_factor` is a second kind of evidence the same step provides, as a
+  passkey's user verification does.
 - `Factor`: `Knowledge`, `Possession`, `Inherence`.
 - `StepInput`: `Identifier(String)`, `Password(Secret<String>)`,
   `Totp(Secret<String>)`, `RecoveryCode(Secret<String>)`,

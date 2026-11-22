@@ -21,8 +21,15 @@ address.
   `client.providers()` and `findOut`: `client.session()` (someone signed in
   means `go("account")`), then `client.currentSignIn()`, else
   `client.startSignIn()`. It renders the form for the step the server names:
-  - `identifier` - `client.submitIdentifier`, plus one `Action` per offered
-    provider (`text.continueWith(displayName)`). A provider with
+  - `identifier` - `client.submitIdentifier`, with
+    `autocomplete="username webauthn"`; in a browser with WebAuthn, an
+    `Action` `text.signInWithPasskey` that asks `client.passkeyOptions()`, then
+    the authenticator, and sends the answer with `client.submitPasskey`
+    (no answer shows `text.passkeyNoAnswer` and sends nothing); where
+    `conditionalMediationAvailable()`, a conditional request that offers the
+    browser's passkeys in the field, aborted when the step is left, the
+    identifier is submitted or the button is pressed; plus one `Action` per
+    offered provider (`text.continueWith(displayName)`). A provider with
     `isDirectory` shows a username and password form here that calls
     `client.signInWithDirectory(alias, identifier, password)`; any other
     calls `client.chooseProvider(alias)` and passes the answer to `leave`.

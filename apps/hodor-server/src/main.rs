@@ -22,8 +22,9 @@ use hodor_adapters_postgres::{
 };
 use hodor_audit::api::AuditService;
 use hodor_authentication::api::{
-    AccountService, AttemptGuard, AuthFlow, AuthenticationService, FactorService, FlowEngine,
-    IdentifierAuthenticator, LockoutRules, PasswordAuthenticator, RecoveryCodeAuthenticator,
+    AccountService, AttemptGuard, AuthFlow, AuthenticationService, Condition, FactorService,
+    FlowEngine, IdentifierAuthenticator, LockoutRules, PasskeyAuthenticator, PasswordAuthenticator,
+    RecoveryCodeAuthenticator,
     Requirement, TotpAuthenticator, WebAuthnAuthenticator,
 };
 use hodor_authorization::api::{AuthorizationService, EngineRegistry, NativeEngine};
@@ -446,19 +447,29 @@ fn interaction(config: &Config, database: &Database) -> Result<InteractionState,
             ),
             tenants.clone(),
             guard.clone(),
+        )))
+        .with(Arc::new(PasskeyAuthenticator::new(
+            webauthn.clone(),
+            identity.clone(),
+            tenants.clone(),
+            guard.clone(),
         )));
     // A person who registered a security key is asked for it after the
-    // first factor. Signing in through an identity provider is an
-    // alternative of the flow, and a code of an authenticator application
-    // one more step, both offered only by an installation that can keep
-    // secrets. A recovery code stands in for either second factor.
+    // first factor, unless the sign-in is multi-factor already. A passkey
+    // is an alternative of the flow, which is multi-factor by itself.
+    // Signing in through an identity provider is another alternative, and
+    // a code of an authenticator application one more step, both offered
+    // only by an installation that can keep secrets. A recovery code
+    // stands in for either second factor.
+    let second_factor = Requirement::Conditional(Condition::MultiFactorNotReached);
     let mut flow = AuthFlow::built_in()
         .with_step(
             WebAuthnAuthenticator::KIND,
             WebAuthnAuthenticator::KIND,
-            Requirement::Optional,
+            second_factor,
         )
-        .with_substitute(WebAuthnAuthenticator::KIND, RecoveryCodeAuthenticator::KIND);
+        .with_substitute(WebAuthnAuthenticator::KIND, RecoveryCodeAuthenticator::KIND)
+        .with_alternative(PasskeyAuthenticator::KIND, PasskeyAuthenticator::KIND);
     if let Some(totp) = totp_service(config, database, random.clone())? {
         engine = engine.with(Arc::new(TotpAuthenticator::new(
             totp,
@@ -466,11 +477,7 @@ fn interaction(config: &Config, database: &Database) -> Result<InteractionState,
             guard.clone(),
         )));
         flow = flow
-            .with_step(
-                TotpAuthenticator::KIND,
-                TotpAuthenticator::KIND,
-                Requirement::Optional,
-            )
+            .with_step(TotpAuthenticator::KIND, TotpAuthenticator::KIND, second_factor)
             .with_substitute(TotpAuthenticator::KIND, RecoveryCodeAuthenticator::KIND);
     }
     let external = external_sign_in(config, database, &identity, &tenants, &guard)?;
@@ -495,7 +502,7 @@ fn interaction(config: &Config, database: &Database) -> Result<InteractionState,
         clock.clone(),
         &config.public_url,
     );
-    let factors = FactorService::new(identity.clone(), webauthn);
+    let factors = FactorService::new(identity.clone(), tenants.clone(), webauthn);
     let authentication = AuthenticationService::new(
         units(),
         Arc::new(PgTransactionStore),

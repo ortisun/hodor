@@ -263,16 +263,30 @@ export class Client {
 
   /** The challenge of the WebAuthn step, in the options the interface gives. */
   async webAuthnOptions(): Promise<Record<string, unknown>> {
-    const reply = await this.#send("POST", "/sign-in/steps/webauthn/options");
+    return this.#publicKey("/sign-in/steps/webauthn/options");
+  }
+
+  async submitWebAuthn(answer: WebAuthnAnswer): Promise<SignInAnswer> {
+    return this.#signIn(await this.#send("POST", "/sign-in/steps/webauthn", answer));
+  }
+
+  /** The challenge of signing in with a passkey, while the sign-in waits for the identifier. */
+  async passkeyOptions(): Promise<Record<string, unknown>> {
+    return this.#publicKey("/sign-in/steps/passkey/options");
+  }
+
+  /** Sends what a passkey answered, in place of the identifier and the password. */
+  async submitPasskey(answer: WebAuthnAnswer): Promise<SignInAnswer> {
+    return this.#signIn(await this.#send("POST", "/sign-in/steps/passkey", answer));
+  }
+
+  async #publicKey(path: string): Promise<Record<string, unknown>> {
+    const reply = await this.#send("POST", path);
     const options = reply.body["public_key"];
     if (typeof options !== "object" || options === null) {
       throw new Failure(null, reply.status);
     }
     return options as Record<string, unknown>;
-  }
-
-  async submitWebAuthn(answer: WebAuthnAnswer): Promise<SignInAnswer> {
-    return this.#signIn(await this.#send("POST", "/sign-in/steps/webauthn", answer));
   }
 
   /** Sends one of the person's recovery codes, in place of their security key or the code of their application. */

@@ -26,6 +26,10 @@ pub struct AuthenticatorTraits {
     pub identifies: bool,
     /// The kind of evidence the step provides, if it proves anything.
     pub factor: Option<Factor>,
+    /// A second kind of evidence the same step provides, if any: a passkey
+    /// is something the person has, unlocked by something they know or
+    /// are.
+    pub second_factor: Option<Factor>,
     /// The name recorded in the session for a satisfied step, if any.
     pub method: Option<&'static str>,
 }

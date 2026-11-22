@@ -35,6 +35,8 @@ export const en = {
   useSecurityKey: "Use the security key",
   securityKeyNoAnswer: "The security key did not answer. Try again.",
   securityKeyUnavailable: "This browser cannot use security keys. Sign in from another browser.",
+  signInWithPasskey: "Sign in with a passkey",
+  passkeyNoAnswer: "The passkey did not answer. Try again, or type your email address or username.",
 
   registerTitle: "Create an account",
   registerLead: "Give your email address. A message will bring you a link to finish.",

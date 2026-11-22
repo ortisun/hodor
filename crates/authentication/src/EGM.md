@@ -17,7 +17,7 @@ The modules `application` and `domain` are private (`mod application;`,
 
 - Application: `AccountRequest`, `AccountService`, `IdentifierAuthenticator`,
   `PasswordAuthenticator`, `TotpAuthenticator`, `WebAuthnAuthenticator`,
-  `RecoveryCodeAuthenticator`, `FactorService`, `StepChallenge`, `AttemptGuard`, the port
+  `RecoveryCodeAuthenticator`, `PasskeyAuthenticator`, `FactorService`, `StepChallenge`, `AttemptGuard`, the port
   traits `AttemptStore`,
   `TransactionStore`, `VerificationTokenStore`, and `AuthenticationService`,
   `SignIn`, `StartedSignIn`.

@@ -260,6 +260,7 @@ async fn world() -> World {
         sessions,
         factors: hodor_authentication::api::FactorService::new(
             identity.clone(),
+            tenants.clone(),
             webauthn_service(units_of_work.clone(), clock.clone()),
         ),
         external: None,

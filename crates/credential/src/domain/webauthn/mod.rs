@@ -44,6 +44,7 @@ const MIN_RSA_MODULUS_BYTES: usize = 256;
 const KNOWN_TRANSPORTS: [&str; 6] = ["usb", "nfc", "ble", "internal", "hybrid", "smart-card"];
 
 const FLAG_USER_PRESENT: u8 = 0x01;
+const FLAG_USER_VERIFIED: u8 = 0x04;
 const FLAG_BACKUP_ELIGIBLE: u8 = 0x08;
 const FLAG_BACKED_UP: u8 = 0x10;
 const FLAG_ATTESTED_CREDENTIAL: u8 = 0x40;
@@ -287,6 +288,9 @@ pub struct PendingRegistrationSnapshot {
     pub user_id: UserId,
     /// The challenge the authenticator must sign.
     pub challenge: Challenge,
+    /// Whether a passkey was asked for: discoverable, with the person
+    /// verified by the authenticator.
+    pub passkey: bool,
     /// When it was asked for.
     pub created_at: Timestamp,
     /// When it can no longer be finished.
@@ -300,14 +304,21 @@ pub struct PendingRegistration {
 }
 
 impl PendingRegistration {
-    /// A new registration for a user, with a fresh challenge.
+    /// A new registration for a user, with a fresh challenge: of a
+    /// passkey when `passkey`, of a security key otherwise.
     #[must_use]
-    pub fn begin(user_id: UserId, random: &dyn RandomSource, now: Timestamp) -> Self {
+    pub fn begin(
+        user_id: UserId,
+        passkey: bool,
+        random: &dyn RandomSource,
+        now: Timestamp,
+    ) -> Self {
         Self {
             state: PendingRegistrationSnapshot {
                 id: WebAuthnRegistrationId::generate(),
                 user_id,
                 challenge: Challenge::generate(random),
+                passkey,
                 created_at: now,
                 expires_at: now + CEREMONY_LIFETIME,
             },
@@ -477,9 +488,19 @@ pub(crate) fn creation_options(
             .iter()
             .map(WebAuthnCredential::descriptor)
             .collect(),
-        authenticator_selection: AuthenticatorSelection {
-            resident_key: "preferred",
-            user_verification: "discouraged",
+        // A security key is a second factor: the key, not a fingerprint
+        // or a PIN on it. A passkey signs in alone, so it must be kept by
+        // the authenticator and unlocked by the person.
+        authenticator_selection: if pending.state.passkey {
+            AuthenticatorSelection {
+                resident_key: "required",
+                user_verification: "required",
+            }
+        } else {
+            AuthenticatorSelection {
+                resident_key: "preferred",
+                user_verification: "discouraged",
+            }
         },
         attestation: "none",
         extensions: CreationExtensions { cred_props: true },
@@ -501,6 +522,22 @@ pub(crate) fn request_options(
             .map(WebAuthnCredential::descriptor)
             .collect(),
         user_verification: "discouraged",
+        timeout: TIMEOUT_MILLISECONDS,
+    }
+}
+
+/// The options of a challenge any passkey may answer: no credential is
+/// named, since nobody is identified yet, and the person must be verified.
+#[must_use]
+pub(crate) fn passkey_request_options(
+    relying_party: &RelyingParty,
+    challenge: &Challenge,
+) -> RequestOptions {
+    RequestOptions {
+        challenge: challenge.encoded(),
+        rp_id: relying_party.id.clone(),
+        allow_credentials: Vec::new(),
+        user_verification: "required",
         timeout: TIMEOUT_MILLISECONDS,
     }
 }
@@ -614,8 +651,13 @@ pub(crate) enum Refusal {
     UnacceptableKey,
     /// The credential is not the user's.
     UnknownCredential,
-    /// The user handle is not the user's.
+    /// The user handle is not the user's, or is missing where it is needed.
     WrongUser,
+    /// The authenticator did not verify the person where it had to.
+    UserNotVerified,
+    /// The browser says the credential is not discoverable, where a
+    /// passkey was asked for.
+    NotDiscoverable,
     /// The signature does not verify.
     BadSignature,
 }
@@ -638,6 +680,8 @@ impl Refusal {
             Self::UnacceptableKey => "unacceptable_key",
             Self::UnknownCredential => "unknown_credential",
             Self::WrongUser => "wrong_user",
+            Self::UserNotVerified => "user_not_verified",
+            Self::NotDiscoverable => "not_discoverable",
             Self::BadSignature => "bad_signature",
         }
     }
@@ -903,6 +947,14 @@ pub(crate) fn check_registration(
         .ok_or(Refusal::AttestationUnreadable)?;
     let data = AuthenticatorData::read(authenticator_data)?;
     data.check_common(relying_party, digest)?;
+    if pending.state.passkey {
+        if !data.has(FLAG_USER_VERIFIED) {
+            return Err(Refusal::UserNotVerified);
+        }
+        if response.discoverable == Some(false) {
+            return Err(Refusal::NotDiscoverable);
+        }
+    }
     let attested = data
         .attested
         .clone()
@@ -936,7 +988,13 @@ pub(crate) fn check_registration(
             sign_count: data.sign_count,
             backup_eligible: data.has(FLAG_BACKUP_ELIGIBLE),
             backed_up: data.has(FLAG_BACKED_UP),
-            discoverable: response.discoverable,
+            // A passkey was asked for as discoverable, which the
+            // authenticator must honour or refuse to make it.
+            discoverable: if pending.state.passkey {
+                Some(true)
+            } else {
+                response.discoverable
+            },
             transports,
             name,
             created_at: now,
@@ -962,14 +1020,25 @@ pub(crate) enum AssertionCheck {
     Refused(Refusal),
 }
 
+/// What an answer is checked for beyond the checks every answer passes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AssertionKind {
+    /// A second factor: the person was identified before.
+    SecondFactor,
+    /// A passkey signing the person in alone: the user handle is needed,
+    /// since it is what names the person, and so is user verification.
+    Passkey,
+}
+
 /// Checks an answer to `challenge` by `credential`, which the caller found
-/// among the user's by the identifier the answer names.
+/// by the identifier the answer names.
 #[must_use]
 pub(crate) fn check_assertion(
     relying_party: &RelyingParty,
     challenge: &Challenge,
     credential: &WebAuthnCredential,
     response: &AssertionResponse,
+    kind: AssertionKind,
     digest: &dyn Digest,
     verifier: &dyn SignatureVerifier,
 ) -> AssertionCheck {
@@ -978,6 +1047,7 @@ pub(crate) fn check_assertion(
         challenge,
         credential,
         response,
+        kind,
         digest,
         verifier,
     ) {
@@ -991,6 +1061,7 @@ fn verify_assertion(
     challenge: &Challenge,
     credential: &WebAuthnCredential,
     response: &AssertionResponse,
+    kind: AssertionKind,
     digest: &dyn Digest,
     verifier: &dyn SignatureVerifier,
 ) -> Result<AssertionCheck, Refusal> {
@@ -998,12 +1069,13 @@ fn verify_assertion(
     if response.credential_id != stored.credential_id {
         return Err(Refusal::UnknownCredential);
     }
-    if response
-        .user_handle
-        .as_ref()
-        .is_some_and(|handle| *handle != user_handle(stored.user_id))
-    {
-        return Err(Refusal::WrongUser);
+    let handle_needed = kind == AssertionKind::Passkey;
+    match &response.user_handle {
+        Some(handle) if *handle != user_handle(stored.user_id) => {
+            return Err(Refusal::WrongUser);
+        }
+        None if handle_needed => return Err(Refusal::WrongUser),
+        _ => {}
     }
     check_client_data(
         &response.client_data,
@@ -1018,6 +1090,9 @@ fn verify_assertion(
     }
     if data.has(FLAG_BACKUP_ELIGIBLE) != stored.backup_eligible {
         return Err(Refusal::BackupFlagsInconsistent);
+    }
+    if kind == AssertionKind::Passkey && !data.has(FLAG_USER_VERIFIED) {
+        return Err(Refusal::UserNotVerified);
     }
     let (algorithm, key) = read_key(&stored.public_key)?;
     let signature = match algorithm {

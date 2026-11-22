@@ -37,6 +37,8 @@ export const ptBR: Messages = {
   useSecurityKey: "Usar a chave de segurança",
   securityKeyNoAnswer: "A chave de segurança não respondeu. Tente de novo.",
   securityKeyUnavailable: "Este navegador não consegue usar chaves de segurança. Entre por outro navegador.",
+  signInWithPasskey: "Entrar com uma chave de acesso",
+  passkeyNoAnswer: "A chave de acesso não respondeu. Tente de novo, ou digite seu e-mail ou nome de usuário.",
 
   registerTitle: "Criar uma conta",
   registerLead: "Informe seu endereço de email. Uma mensagem vai levar um link para você terminar.",

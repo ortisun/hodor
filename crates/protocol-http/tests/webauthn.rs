@@ -1,14 +1,17 @@
 //! WebAuthn over the interaction interface: a signed-in person registers a
-//! key, and then signs in with a password and the key. The contexts run on
-//! their in-memory ports; the key is a real one, in software.
+//! key, and then signs in with a password and the key; or registers a
+//! passkey, and signs in with it alone. The contexts run on their
+//! in-memory ports; the keys are real ones, in software.
 
 use axum::Router;
 use axum::body::Body;
+use axum::extract::ConnectInfo;
 use axum::http::{HeaderMap, Method, Request, StatusCode, header};
 use hodor_adapters_crypto::testing::webauthn::SoftwareAuthenticator;
 use hodor_authentication::api::{
-    AccountService, AttemptGuard, AuthFlow, AuthenticationService, FactorService, FlowEngine,
-    IdentifierAuthenticator, PasswordAuthenticator, RecoveryCodeAuthenticator, Requirement,
+    AccountService, AttemptGuard, AuthFlow, AuthenticationService, Condition, FactorService,
+    FlowEngine, IdentifierAuthenticator, PasskeyAuthenticator, PasswordAuthenticator,
+    RecoveryCodeAuthenticator, Requirement,
     WebAuthnAuthenticator,
 };
 use hodor_authentication::testing::{
@@ -30,10 +33,12 @@ use hodor_protocol_http::{
 };
 use hodor_session::api::SessionService;
 use hodor_session::testing::{InMemorySessions, SequentialRandom};
+use hodor_tenant::api::SecondFactorPolicy;
 use hodor_tenant::api::{CreateTenant, TenantService};
 use hodor_tenant::testing::InMemoryTenants;
 use http_body_util::BodyExt as _;
 use std::collections::BTreeMap;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use tower::ServiceExt as _;
 
@@ -64,7 +69,10 @@ struct World {
     router: Router,
     /// Recovery codes; nobody has any unless a test makes them.
     recovery_codes: RecoveryCodeService,
+    identity: IdentityService,
+    tenants: TenantService,
     acme: TenantContext,
+    globex: TenantContext,
     ana: hodor_kernel::UserId,
 }
 
@@ -113,7 +121,13 @@ async fn world() -> World {
             tenants.clone(),
             guard.clone(),
         )))
-        .with(Arc::new(WebAuthnAuthenticator::new(webauthn.clone())));
+        .with(Arc::new(WebAuthnAuthenticator::new(webauthn.clone())))
+        .with(Arc::new(PasskeyAuthenticator::new(
+            webauthn.clone(),
+            identity.clone(),
+            tenants.clone(),
+            guard.clone(),
+        )));
     let recovery_codes = RecoveryCodeService::new(
         units(),
         Arc::new(InMemoryRecoveryCodes::default()),
@@ -145,13 +159,15 @@ async fn world() -> World {
         units(),
         Arc::new(InMemoryTransactions::default()),
         engine,
+        // As the server runs it.
         AuthFlow::built_in()
             .with_step(
                 WebAuthnAuthenticator::KIND,
                 WebAuthnAuthenticator::KIND,
-                Requirement::Optional,
+                Requirement::Conditional(Condition::MultiFactorNotReached),
             )
-            .with_substitute(WebAuthnAuthenticator::KIND, RecoveryCodeAuthenticator::KIND),
+            .with_substitute(WebAuthnAuthenticator::KIND, RecoveryCodeAuthenticator::KIND)
+            .with_alternative(PasskeyAuthenticator::KIND, PasskeyAuthenticator::KIND),
         identity.clone(),
         sessions.clone(),
         tenants.clone(),
@@ -167,7 +183,7 @@ async fn world() -> World {
             .create(
                 CreateTenant {
                     slug: slug.to_owned(),
-                    display_name: slug.to_owned(),
+                    display_name: slug.to_uppercase(),
                     // Acme accepts registrations; Globex does not.
                     open_registration: slug == "acme",
                     system: false,
@@ -186,7 +202,10 @@ async fn world() -> World {
             CreateUser {
                 kind: UserKind::Human,
                 identifiers: vec![(IdentifierKind::Email, "ana@example.com".to_owned())],
-                profile: Profile::default(),
+                profile: Profile {
+                    display_name: Some("Ana Lima".to_owned()),
+                    ..Profile::default()
+                },
                 confirmed: true,
             },
             Caller::system(),
@@ -213,7 +232,7 @@ async fn world() -> World {
         authentication,
         accounts,
         sessions,
-        factors: FactorService::new(identity.clone(), webauthn),
+        factors: FactorService::new(identity.clone(), tenants.clone(), webauthn),
         external: None,
         digest,
         clock: clock.clone(),
@@ -221,7 +240,7 @@ async fn world() -> World {
     let router = public_router(
         Arc::new(Tenants {
             acme: acme.clone(),
-            globex,
+            globex: globex.clone(),
         }),
         Router::new().nest("/interaction", interaction_routes(state)),
         Router::new(),
@@ -230,7 +249,10 @@ async fn world() -> World {
     World {
         router,
         recovery_codes,
+        identity,
+        tenants,
         acme,
+        globex,
         ana,
     }
 }
@@ -262,6 +284,8 @@ struct Browser {
     cookies: BTreeMap<String, String>,
     csrf_token: Option<String>,
     origin: Option<&'static str>,
+    /// The address the connection comes from, when a test needs one.
+    address: Option<SocketAddr>,
 }
 
 impl Browser {
@@ -305,13 +329,16 @@ impl Browser {
         if let Some(origin) = self.origin {
             request = request.header(header::ORIGIN, origin);
         }
-        let request = match body {
+        let mut request = match body {
             Some(body) => request
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(body.to_string())),
             None => request.body(Body::empty()),
         }
         .expect("request");
+        if let Some(address) = self.address {
+            request.extensions_mut().insert(ConnectInfo(address));
+        }
 
         let response = world
             .router
@@ -614,6 +641,362 @@ async fn a_key_registered_in_one_tenant_is_not_offered_in_another() {
         )
         .await;
     assert_eq!(refused.code(), "authentication.unexpected_step");
+}
+
+impl Browser {
+    async fn register_passkey(&mut self, world: &World, key: &SoftwareAuthenticator) -> Reply {
+        let begun = self
+            .send(
+                world,
+                Method::POST,
+                "/t/acme/interaction/webauthn/registrations",
+                Some(serde_json::json!({ "passkey": true })),
+            )
+            .await;
+        assert_eq!(begun.status, StatusCode::CREATED, "{:?}", begun.body);
+        let id = begun.body["registration_id"]
+            .as_str()
+            .expect("an identifier")
+            .to_owned();
+        let body = key.register(&begun.body["public_key"]);
+        self.send(
+            world,
+            Method::POST,
+            &format!("/t/acme/interaction/webauthn/registrations/{id}"),
+            Some(body),
+        )
+        .await
+    }
+
+    async fn passkey_options(&mut self, world: &World, tenant: &str) -> Reply {
+        self.send(
+            world,
+            Method::POST,
+            &format!("/t/{tenant}/interaction/sign-in/steps/passkey/options"),
+            None,
+        )
+        .await
+    }
+
+    async fn passkey_answer(
+        &mut self,
+        world: &World,
+        tenant: &str,
+        body: serde_json::Value,
+    ) -> Reply {
+        self.send(
+            world,
+            Method::POST,
+            &format!("/t/{tenant}/interaction/sign-in/steps/passkey"),
+            Some(body),
+        )
+        .await
+    }
+
+    /// A new sign-in in this browser, answered by `key` at once.
+    async fn sign_in_with_passkey(
+        &mut self,
+        world: &World,
+        tenant: &str,
+        key: &SoftwareAuthenticator,
+    ) -> Reply {
+        self.send(
+            world,
+            Method::POST,
+            &format!("/t/{tenant}/interaction/sign-in"),
+            None,
+        )
+        .await;
+        let options = self.passkey_options(world, tenant).await;
+        assert_eq!(options.status, StatusCode::OK, "{:?}", options.body);
+        let answer = key.answer(&options.body["public_key"]);
+        self.passkey_answer(world, tenant, answer).await
+    }
+}
+
+/// A passkey that holds a user handle, for a user of no tenant here.
+fn unregistered_passkey() -> SoftwareAuthenticator {
+    let passkey = SoftwareAuthenticator::passkey(ORIGIN);
+    let _registration = passkey.register(&serde_json::json!({
+        "challenge": "AA", "rp": { "id": "auth.example" }, "user": { "id": "AAAAAAAAAAAAAAAAAAAAAA" }
+    }));
+    passkey
+}
+
+async fn registered_passkey(world: &World) -> SoftwareAuthenticator {
+    let mut browser = Browser::signed_in_with_password(world).await;
+    let key = SoftwareAuthenticator::passkey(ORIGIN);
+    let registered = browser.register_passkey(world, &key).await;
+    assert_eq!(
+        registered.status,
+        StatusCode::CREATED,
+        "{:?}",
+        registered.body
+    );
+    assert_eq!(registered.body["name"], "Software passkey");
+    key
+}
+
+#[tokio::test]
+async fn a_passkey_is_asked_for_as_discoverable_and_names_the_tenant() {
+    let world = world().await;
+    let mut browser = Browser::signed_in_with_password(&world).await;
+    let begun = browser
+        .send(
+            &world,
+            Method::POST,
+            "/t/acme/interaction/webauthn/registrations",
+            Some(serde_json::json!({ "passkey": true })),
+        )
+        .await;
+    assert_eq!(begun.status, StatusCode::CREATED, "{:?}", begun.body);
+    let options = &begun.body["public_key"];
+    assert_eq!(
+        options["authenticatorSelection"],
+        serde_json::json!({ "residentKey": "required", "userVerification": "required" })
+    );
+    assert_eq!(options["user"]["displayName"], "Ana Lima (ACME)");
+    assert_eq!(options["user"]["name"], "ana@example.com");
+
+    // No body, or a passkey not asked for, is a security key.
+    let key = browser
+        .send(
+            &world,
+            Method::POST,
+            "/t/acme/interaction/webauthn/registrations",
+            Some(serde_json::json!({ "passkey": false })),
+        )
+        .await;
+    assert_eq!(
+        key.body["public_key"]["authenticatorSelection"]["residentKey"],
+        "preferred"
+    );
+    assert_eq!(key.body["public_key"]["user"]["displayName"], "Ana Lima");
+    let refused = browser
+        .send(
+            &world,
+            Method::POST,
+            "/t/acme/interaction/webauthn/registrations",
+            Some(serde_json::json!({ "passkey": "yes" })),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn a_passkey_registration_needs_the_person_verified() {
+    let world = world().await;
+    let mut browser = Browser::signed_in_with_password(&world).await;
+    let unlocked_by_nobody = SoftwareAuthenticator::new(ORIGIN);
+    let refused = browser.register_passkey(&world, &unlocked_by_nobody).await;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(refused.code(), "credential.webauthn_registration_refused");
+}
+
+#[tokio::test]
+async fn a_person_signs_in_with_a_passkey_alone() {
+    let world = world().await;
+    let key = registered_passkey(&world).await;
+
+    let mut browser = Browser::default();
+    let started = browser.start(&world).await;
+    assert_eq!(started.body["step"], "identifier");
+    let options = browser.passkey_options(&world, "acme").await;
+    assert_eq!(options.status, StatusCode::OK, "{:?}", options.body);
+    let public_key = &options.body["public_key"];
+    assert_eq!(public_key["rpId"], "auth.example");
+    assert_eq!(public_key["allowCredentials"], serde_json::json!([]));
+    assert_eq!(public_key["userVerification"], "required");
+
+    let done = browser
+        .passkey_answer(&world, "acme", key.answer(public_key))
+        .await;
+    assert_eq!(done.body["status"], "completed", "{:?}", done.body);
+    let session = browser.session(&world, "acme").await;
+    assert_eq!(session.body["assurance"], "multi_factor");
+    assert_eq!(session.body["methods"], serde_json::json!(["passkey"]));
+}
+
+#[tokio::test]
+async fn a_passkey_satisfies_a_policy_that_requires_a_second_factor() {
+    let world = world().await;
+    let key = registered_passkey(&world).await;
+    let mut settings = world
+        .tenants
+        .get(&world.acme)
+        .await
+        .expect("tenant")
+        .snapshot()
+        .settings
+        .clone();
+    settings.authentication.second_factor = SecondFactorPolicy::Required;
+    world
+        .tenants
+        .change_settings(&world.acme, settings, Caller::system())
+        .await
+        .expect("settings");
+
+    let mut browser = Browser::default();
+    let done = browser.sign_in_with_passkey(&world, "acme", &key).await;
+    assert_eq!(done.body["status"], "completed", "{:?}", done.body);
+}
+
+#[tokio::test]
+async fn a_password_sign_in_still_asks_for_the_key_and_takes_the_passkey_for_it() {
+    let world = world().await;
+    let key = registered_passkey(&world).await;
+    let mut browser = Browser::default();
+    browser.up_to_the_key(&world).await;
+    let options = browser.options(&world).await.body["public_key"].clone();
+    assert_eq!(options["allowCredentials"][0]["id"], key.credential_id());
+    let done = browser.answer(&world, key.answer(&options)).await;
+    assert_eq!(done.body["status"], "completed", "{:?}", done.body);
+    let session = browser.session(&world, "acme").await;
+    assert_eq!(
+        session.body["methods"],
+        serde_json::json!(["password", "webauthn"])
+    );
+}
+
+#[tokio::test]
+async fn a_passkey_answer_that_does_not_hold_is_a_rejection() {
+    let world = world().await;
+    let key = registered_passkey(&world).await;
+    let mut browser = Browser::default();
+    browser.start(&world).await;
+
+    let rejected = |reply: &Reply| {
+        assert_eq!(
+            (reply.body["status"].as_str(), reply.body["step"].as_str()),
+            (Some("rejected"), Some("identifier")),
+            "{:?}",
+            reply.body
+        );
+    };
+    // Without the user handle, which is what names the person.
+    let options = browser.passkey_options(&world, "acme").await.body["public_key"].clone();
+    let mut answer = key.answer(&options);
+    answer["user_handle"] = serde_json::Value::Null;
+    rejected(&browser.passkey_answer(&world, "acme", answer).await);
+    // Without the person verified.
+    let options = browser.passkey_options(&world, "acme").await.body["public_key"].clone();
+    let unverified = key.without_verification();
+    let mut answer = unverified.answer(&options);
+    answer["user_handle"] = key.answer(&options)["user_handle"].clone();
+    rejected(&browser.passkey_answer(&world, "acme", answer).await);
+    // A passkey nobody registered, and an answer to a used challenge.
+    let options = browser.passkey_options(&world, "acme").await.body["public_key"].clone();
+    let stranger = unregistered_passkey();
+    rejected(
+        &browser
+            .passkey_answer(&world, "acme", stranger.answer(&options))
+            .await,
+    );
+    rejected(
+        &browser
+            .passkey_answer(&world, "acme", key.answer(&options))
+            .await,
+    );
+
+    // The sign-in still waits for the identifier, and a passkey that holds
+    // signs the person in.
+    let done = browser.sign_in_with_passkey(&world, "acme", &key).await;
+    assert_eq!(done.body["status"], "completed", "{:?}", done.body);
+}
+
+#[tokio::test]
+async fn a_passkey_is_taken_only_at_the_start_of_a_sign_in() {
+    let world = world().await;
+    let key = registered_passkey(&world).await;
+    let mut browser = Browser::default();
+    browser.start(&world).await;
+    let options = browser.passkey_options(&world, "acme").await.body["public_key"].clone();
+    browser.identifier(&world, "ana@example.com").await;
+    let refused = browser.passkey_options(&world, "acme").await;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(refused.code(), "authentication.unexpected_step");
+    let refused = browser
+        .passkey_answer(&world, "acme", key.answer(&options))
+        .await;
+    assert_eq!(refused.code(), "authentication.unexpected_step");
+}
+
+#[tokio::test]
+async fn a_passkey_of_one_tenant_is_not_accepted_in_another() {
+    let world = world().await;
+    let key = registered_passkey(&world).await;
+    let mut browser = Browser::default();
+    let refused = browser.sign_in_with_passkey(&world, "globex", &key).await;
+    assert_eq!(refused.body["status"], "rejected", "{:?}", refused.body);
+    assert!(
+        world
+            .identity
+            .find_by_login(&world.globex, "ana@example.com")
+            .await
+            .expect("lookup")
+            .is_none(),
+        "Globex never had Ana"
+    );
+}
+
+#[tokio::test]
+async fn a_passkey_of_a_user_who_may_not_sign_in_is_a_rejection() {
+    let world = world().await;
+    let key = registered_passkey(&world).await;
+    let ana = world
+        .identity
+        .find_by_login(&world.acme, "ana@example.com")
+        .await
+        .expect("lookup")
+        .expect("Ana");
+    world
+        .identity
+        .suspend(&world.acme, ana.id(), "a test", Caller::system())
+        .await
+        .expect("suspended");
+    let mut browser = Browser::default();
+    let refused = browser.sign_in_with_passkey(&world, "acme", &key).await;
+    assert_eq!(refused.body["status"], "rejected", "{:?}", refused.body);
+}
+
+#[tokio::test]
+async fn passkey_answers_are_counted_against_the_address() {
+    let world = world().await;
+    let key = registered_passkey(&world).await;
+    let address: SocketAddr = "203.0.113.7:4000".parse().expect("address");
+    let stranger = unregistered_passkey();
+    // Fifty answers from one address, the address's limit: ten times the
+    // tenant's five, as for passwords.
+    for _ in 0..50 {
+        let mut browser = Browser {
+            address: Some(address),
+            ..Browser::default()
+        };
+        let refused = browser
+            .sign_in_with_passkey(&world, "acme", &stranger)
+            .await;
+        assert_eq!(refused.body["status"], "rejected", "{:?}", refused.body);
+    }
+    // Now even the right passkey waits, from that address.
+    let mut browser = Browser {
+        address: Some(address),
+        ..Browser::default()
+    };
+    let limited = browser.sign_in_with_passkey(&world, "acme", &key).await;
+    assert_eq!(
+        limited.status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "{:?}",
+        limited.body
+    );
+    assert_eq!(limited.code(), "authentication.too_many_attempts");
+    // From another address it is not.
+    let mut elsewhere = Browser {
+        address: Some("198.51.100.2:4000".parse().expect("address")),
+        ..Browser::default()
+    };
+    let done = elsewhere.sign_in_with_passkey(&world, "acme", &key).await;
+    assert_eq!(done.body["status"], "completed", "{:?}", done.body);
 }
 
 /// The WebAuthn use cases on the in-memory store, with real cryptography.

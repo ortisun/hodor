@@ -42,6 +42,7 @@ impl Authenticator for AlwaysProven {
         AuthenticatorTraits {
             identifies: false,
             factor: Some(Factor::Knowledge),
+            second_factor: None,
             method: Some("password"),
         }
     }

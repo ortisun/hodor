@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 use std::sync::Mutex;
 
 const FLAG_USER_PRESENT: u8 = 0x01;
+const FLAG_USER_VERIFIED: u8 = 0x04;
 const FLAG_ATTESTED_CREDENTIAL: u8 = 0x40;
 
 fn encode(bytes: &[u8]) -> String {
@@ -40,13 +41,18 @@ fn cbor_text(value: &str) -> Vec<u8> {
     out
 }
 
-/// A security key in software, holding one credential.
+/// A security key in software, holding one credential. Made with
+/// [`SoftwareAuthenticator::passkey`], it is a passkey: it keeps the user
+/// handle it was registered for, verifies the person and gives the handle
+/// back with every answer.
 pub struct SoftwareAuthenticator {
     document: Vec<u8>,
     key: EcdsaKeyPair,
     credential_id: Vec<u8>,
     origin: String,
     counter: Mutex<u32>,
+    passkey: bool,
+    user_handle: Mutex<Option<String>>,
 }
 
 impl std::fmt::Debug for SoftwareAuthenticator {
@@ -80,6 +86,35 @@ impl SoftwareAuthenticator {
             credential_id,
             origin: origin.to_owned(),
             counter: Mutex::new(0),
+            passkey: false,
+            user_handle: Mutex::new(None),
+        }
+    }
+
+    /// A new passkey, for pages served from `origin`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a key cannot be made.
+    #[must_use]
+    pub fn passkey(origin: &str) -> Self {
+        Self {
+            passkey: true,
+            ..Self::new(origin)
+        }
+    }
+
+    /// The same authenticator, except that it does not verify the person:
+    /// as a passkey whose PIN was not asked for.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the key cannot be read again.
+    #[must_use]
+    pub fn without_verification(&self) -> Self {
+        Self {
+            passkey: false,
+            ..self.at_origin(&self.origin)
         }
     }
 
@@ -98,6 +133,8 @@ impl SoftwareAuthenticator {
             credential_id: self.credential_id.clone(),
             origin: origin.to_owned(),
             counter: Mutex::new(*self.counter.lock().expect("counter") + 100),
+            passkey: self.passkey,
+            user_handle: Mutex::new(self.user_handle.lock().expect("handle").clone()),
         }
     }
 
@@ -135,14 +172,13 @@ impl SoftwareAuthenticator {
 
     fn authenticator_data(&self, rp_id: &str, attested: bool) -> Vec<u8> {
         let mut data = sha256(rp_id.as_bytes()).to_vec();
-        data.push(
-            FLAG_USER_PRESENT
-                | if attested {
-                    FLAG_ATTESTED_CREDENTIAL
-                } else {
-                    0
-                },
-        );
+        let verified = if self.passkey { FLAG_USER_VERIFIED } else { 0 };
+        let attested_flag = if attested {
+            FLAG_ATTESTED_CREDENTIAL
+        } else {
+            0
+        };
+        data.push(FLAG_USER_PRESENT | verified | attested_flag);
         data.extend_from_slice(&self.next_counter().to_be_bytes());
         if attested {
             data.extend_from_slice(&[0; 16]);
@@ -174,6 +210,8 @@ impl SoftwareAuthenticator {
     pub fn register(&self, options: &Value) -> Value {
         let challenge = options["challenge"].as_str().expect("a challenge");
         let rp_id = options["rp"]["id"].as_str().expect("a relying party");
+        *self.user_handle.lock().expect("handle") =
+            options["user"]["id"].as_str().map(str::to_owned);
         let mut object = vec![0xa3];
         object.extend(cbor_text("fmt"));
         object.extend(cbor_text("none"));
@@ -184,9 +222,9 @@ impl SoftwareAuthenticator {
         json!({
             "client_data": encode(&self.client_data("webauthn.create", challenge)),
             "attestation_object": encode(&object),
-            "transports": ["usb"],
-            "discoverable": false,
-            "name": "Software key",
+            "transports": [if self.passkey { "internal" } else { "usb" }],
+            "discoverable": self.passkey,
+            "name": if self.passkey { "Software passkey" } else { "Software key" },
         })
     }
 
@@ -213,7 +251,11 @@ impl SoftwareAuthenticator {
             "client_data": encode(&client_data),
             "authenticator_data": encode(&authenticator_data),
             "signature": encode(signature.as_ref()),
-            "user_handle": null,
+            "user_handle": if self.passkey {
+                self.user_handle.lock().expect("handle").clone()
+            } else {
+                None
+            },
         })
     }
 }

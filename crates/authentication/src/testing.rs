@@ -57,6 +57,7 @@ impl Authenticator for TestSecondFactor {
         AuthenticatorTraits {
             identifies: false,
             factor: Some(Factor::Possession),
+            second_factor: None,
             method: Some(Self::METHOD),
         }
     }

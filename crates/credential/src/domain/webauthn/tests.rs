@@ -180,7 +180,11 @@ impl Authenticator {
 }
 
 fn pending() -> PendingRegistration {
-    PendingRegistration::begin(UserId::generate(), &FakeRandom, NOW)
+    PendingRegistration::begin(UserId::generate(), false, &FakeRandom, NOW)
+}
+
+fn pending_passkey() -> PendingRegistration {
+    PendingRegistration::begin(UserId::generate(), true, &FakeRandom, NOW)
 }
 
 struct FakeRandom;
@@ -215,6 +219,23 @@ fn answer_check(
         challenge,
         credential,
         response,
+        AssertionKind::SecondFactor,
+        &FakeDigest,
+        &FakeVerifier,
+    )
+}
+
+fn passkey_check(
+    credential: &WebAuthnCredential,
+    response: &AssertionResponse,
+    challenge: &Challenge,
+) -> AssertionCheck {
+    check_assertion(
+        &relying_party(),
+        challenge,
+        credential,
+        response,
+        AssertionKind::Passkey,
         &FakeDigest,
         &FakeVerifier,
     )
@@ -637,4 +658,117 @@ fn a_pending_registration_is_good_for_its_user_for_five_minutes() {
     assert!(pending.is_good_for(user, NOW + Duration::seconds(299)));
     assert!(!pending.is_good_for(user, NOW + Duration::minutes(5)));
     assert!(!pending.is_good_for(UserId::generate(), NOW));
+}
+
+#[test]
+fn a_passkey_is_asked_for_as_discoverable_and_verified() {
+    let creation = serde_json::to_value(creation_options(
+        &relying_party(),
+        &pending_passkey(),
+        "ana@example.com",
+        "Ana (Acme)",
+        &[],
+    ))
+    .expect("json");
+    assert_eq!(
+        creation["authenticatorSelection"],
+        serde_json::json!({ "residentKey": "required", "userVerification": "required" })
+    );
+    let security_key = serde_json::to_value(creation_options(
+        &relying_party(),
+        &pending(),
+        "ana@example.com",
+        "Ana",
+        &[],
+    ))
+    .expect("json");
+    assert_eq!(
+        security_key["authenticatorSelection"],
+        serde_json::json!({ "residentKey": "preferred", "userVerification": "discouraged" })
+    );
+    let request =
+        serde_json::to_value(passkey_request_options(&relying_party(), &CHALLENGE)).expect("json");
+    assert_eq!(request["allowCredentials"], serde_json::json!([]));
+    assert_eq!(request["userVerification"], "required");
+    assert_eq!(request["rpId"], "id.example.com");
+}
+
+#[test]
+fn a_passkey_registration_needs_the_person_verified_and_a_discoverable_credential() {
+    let pending = pending_passkey();
+    let unverified = Authenticator::new();
+    assert_eq!(
+        check_registration(
+            &relying_party(),
+            &pending,
+            unverified.register(&pending),
+            &FakeDigest,
+            NOW,
+        ),
+        Err(Refusal::UserNotVerified)
+    );
+    let mut verified = Authenticator::new();
+    verified.flags |= FLAG_USER_VERIFIED;
+    let mut not_kept = verified.register(&pending);
+    not_kept.discoverable = Some(false);
+    assert_eq!(
+        check_registration(&relying_party(), &pending, not_kept, &FakeDigest, NOW),
+        Err(Refusal::NotDiscoverable)
+    );
+    // A browser that does not say is trusted to have honoured the
+    // requirement: it may not make a credential that is not discoverable.
+    let mut unsaid = verified.register(&pending);
+    unsaid.discoverable = None;
+    let credential = check_registration(&relying_party(), &pending, unsaid, &FakeDigest, NOW)
+        .expect("registered");
+    assert_eq!(credential.snapshot().discoverable, Some(true));
+    // A security key needs neither.
+    let pending = self::pending();
+    let mut key = unverified.register(&pending);
+    key.discoverable = Some(false);
+    let credential =
+        check_registration(&relying_party(), &pending, key, &FakeDigest, NOW).expect("a key");
+    assert_eq!(credential.snapshot().discoverable, Some(false));
+}
+
+#[test]
+fn a_passkey_answer_needs_the_user_handle_and_the_person_verified() {
+    let mut authenticator = Authenticator::new();
+    authenticator.flags |= FLAG_USER_VERIFIED;
+    let credential = registered(&authenticator);
+    let user = credential.user_id();
+    authenticator.count = 1;
+    let accepted = authenticator.answer(&CHALLENGE, Some(user));
+    assert!(matches!(
+        passkey_check(&credential, &accepted, &CHALLENGE),
+        AssertionCheck::Verified { sign_count: 1, .. }
+    ));
+    assert_eq!(
+        passkey_check(
+            &credential,
+            &authenticator.answer(&CHALLENGE, None),
+            &CHALLENGE
+        ),
+        AssertionCheck::Refused(Refusal::WrongUser)
+    );
+    assert_eq!(
+        passkey_check(
+            &credential,
+            &authenticator.answer(&CHALLENGE, Some(UserId::generate())),
+            &CHALLENGE
+        ),
+        AssertionCheck::Refused(Refusal::WrongUser)
+    );
+    authenticator.flags = FLAG_USER_PRESENT;
+    let unverified = authenticator.answer(&CHALLENGE, Some(user));
+    assert_eq!(
+        passkey_check(&credential, &unverified, &CHALLENGE),
+        AssertionCheck::Refused(Refusal::UserNotVerified)
+    );
+    // As a second factor, the same answer is enough: the person was
+    // identified before, and the key is what is proved.
+    assert!(matches!(
+        answer_check(&credential, &unverified, &CHALLENGE),
+        AssertionCheck::Verified { .. }
+    ));
 }

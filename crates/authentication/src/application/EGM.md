@@ -86,6 +86,9 @@ the tenant the unit of work is bound to.
   - `new(units_of_work, attempts, digest, clock)`.
   - `admit(tenant, rules, identifier_key, address, caller)`: admits one
     attempt, counting it against the identifier and, when given, the address.
+  - `admit_address(tenant, rules, address, caller)`: admits an attempt that
+    names no identifier, counting it against the address only; without an
+    address nothing is counted.
   - `succeeded(tenant, identifier_key)`: forgets the identifier's count and
     lockout history.
 
@@ -112,13 +115,24 @@ Both implement the `Authenticator` trait from [`../domain/EGM.md`](../domain/EGM
   challenge in the transaction, or with fields that are not base64url;
   `has_means` asks whether the candidate has credentials; `challenge` asks the
   credential context for one.
-- `FactorService` (`factors.rs`): `new(identity, webauthn)`,
+- `PasskeyAuthenticator` (`authenticators.rs:PasskeyAuthenticator`):
+  `kind()` and `KIND` are `"passkey"`, used as an alternative; traits
+  `identifies: true`, `factor: Some(Factor::Possession)`,
+  `second_factor: Some(Factor::Inherence)`, `method: Some("passkey")`.
+  `new(webauthn, identity, tenants, guard)`. Admits the attempt with
+  `AttemptGuard::admit_address` first; answers `Authenticated` with the user
+  `WebAuthnService::verify_passkey` names, and rejects without a challenge,
+  for an answer that is refused, and for a user who may not sign in;
+  `challenge` asks for a passkey challenge, which names no credential.
+- `FactorService` (`factors.rs`): `new(identity, tenants, webauthn)`,
   `begin_webauthn_registration(tenant, user_id)` (names the person by their
-  primary email address, else username, and display name) and
+  primary email address, else username, and display name),
+  `begin_passkey_registration(tenant, user_id)` (the same, with the tenant's
+  display name in brackets after the display name) and
   `finish_webauthn_registration(tenant, user_id, id, response, caller)`.
 - `AuthenticationService::challenge(tenant, id, secret, step) -> Value`: asks
-  the current step for a challenge through `FlowEngine::challenge` and stores
-  the transaction.
+  the current step, or an alternative at the start, for a challenge through
+  `FlowEngine::challenge` and stores the transaction.
 - `RecoveryCodeAuthenticator` (`authenticators.rs:RecoveryCodeAuthenticator`):
   `kind()` is `RecoveryCodeAuthenticator::KIND`, `"recovery_code"`; traits
   `identifies: false`, `factor: Some(Factor::Possession)`,

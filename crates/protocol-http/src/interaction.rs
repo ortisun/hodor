@@ -8,6 +8,7 @@
 use crate::problem::Problem;
 use crate::request::ClientAddress;
 use crate::tenant::TenantSlug;
+use axum::body::Bytes;
 use axum::extract::{RawPathParams, Request, State};
 use axum::http::header::{self, HeaderMap, HeaderName, HeaderValue};
 use axum::http::{Method, StatusCode};
@@ -16,8 +17,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Extension, Json, Router};
 use hodor_authentication::api::{
-    AccountRequest, AccountService, AuthenticationService, ExternalInput, FactorService, SignIn,
-    StepInput, TransactionId, WebAuthnAuthenticator,
+    AccountRequest, AccountService, AuthenticationService, ExternalInput, FactorService,
+    PasskeyAuthenticator, SignIn, StepInput, TransactionId, WebAuthnAuthenticator,
 };
 use hodor_credential::api::{RegistrationResponse, WebAuthnRegistrationId};
 use hodor_federation::api::{Alias, EXTERNAL_STEP, ExternalSignIn};
@@ -77,6 +78,8 @@ pub fn interaction_routes(state: InteractionState) -> Router {
         .route("/sign-in/steps/recovery_code", post(submit_recovery_code))
         .route("/sign-in/steps/webauthn/options", post(webauthn_options))
         .route("/sign-in/steps/webauthn", post(submit_webauthn))
+        .route("/sign-in/steps/passkey/options", post(passkey_options))
+        .route("/sign-in/steps/passkey", post(submit_passkey))
         .route("/sign-in/providers", get(offered_providers))
         .route("/sign-in/providers/{alias}", post(choose_provider))
         .route(
@@ -648,10 +651,30 @@ async fn webauthn_options(
     Extension(tenant): Extension<TenantContext>,
     headers: HeaderMap,
 ) -> Response {
-    let Some(handle) = handle(&headers) else {
+    step_options(&state, &tenant, &headers, WebAuthnAuthenticator::KIND).await
+}
+
+/// The challenge of signing in with a passkey, the alternative that takes
+/// the place of the identifier and the password.
+async fn passkey_options(
+    State(state): State<InteractionState>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+) -> Response {
+    step_options(&state, &tenant, &headers, PasskeyAuthenticator::KIND).await
+}
+
+/// The challenge of `step`, for the sign-in of the browser that asks.
+async fn step_options(
+    state: &InteractionState,
+    tenant: &TenantContext,
+    headers: &HeaderMap,
+    step: &str,
+) -> Response {
+    let Some(handle) = handle(headers) else {
         return no_sign_in();
     };
-    if !csrf_is_valid(&headers, state.digest.as_ref(), &handle) {
+    if !csrf_is_valid(headers, state.digest.as_ref(), &handle) {
         return problem(
             StatusCode::FORBIDDEN,
             "request.csrf_token_invalid",
@@ -660,12 +683,7 @@ async fn webauthn_options(
     }
     match state
         .authentication
-        .challenge(
-            &tenant,
-            handle.id,
-            handle.secret.expose(),
-            WebAuthnAuthenticator::KIND,
-        )
+        .challenge(tenant, handle.id, handle.secret.expose(), step)
         .await
     {
         Ok(options) => Json(PublicKeyBody {
@@ -684,6 +702,23 @@ async fn submit_webauthn(
     headers: HeaderMap,
     Json(body): Json<WebAuthnAnswerBody>,
 ) -> Response {
+    let input = answer_input(WebAuthnAuthenticator::KIND, body);
+    submit(&state, &tenant, &slug, &headers, input).await
+}
+
+async fn submit_passkey(
+    State(state): State<InteractionState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(TenantSlug(slug)): Extension<TenantSlug>,
+    headers: HeaderMap,
+    Json(body): Json<WebAuthnAnswerBody>,
+) -> Response {
+    let input = answer_input(PasskeyAuthenticator::KIND, body);
+    submit(&state, &tenant, &slug, &headers, input).await
+}
+
+/// What an authenticator answered, as the input of `step`.
+fn answer_input(step: &str, body: WebAuthnAnswerBody) -> StepInput {
     let mut fields = vec![
         ("credential_id", body.credential_id),
         ("client_data", body.client_data),
@@ -693,30 +728,59 @@ async fn submit_webauthn(
     if let Some(handle) = body.user_handle {
         fields.push(("user_handle", handle));
     }
-    let input = StepInput::External(ExternalInput {
-        step: WebAuthnAuthenticator::KIND.to_owned(),
+    StepInput::External(ExternalInput {
+        step: step.to_owned(),
         fields: fields
             .into_iter()
             .map(|(name, value)| (name.to_owned(), Secret::from(value)))
             .collect(),
-    });
-    submit(&state, &tenant, &slug, &headers, input).await
+    })
+}
+
+/// What a registration is asked for as. No body is a security key.
+#[derive(Debug, Default, Deserialize)]
+struct BeginWebAuthnBody {
+    #[serde(default)]
+    passkey: bool,
 }
 
 async fn begin_webauthn_registration(
     State(state): State<InteractionState>,
     Extension(tenant): Extension<TenantContext>,
     headers: HeaderMap,
+    body: Bytes,
 ) -> Response {
     let person = match signed_in_to_change(&state, &tenant, &headers).await {
         Ok(person) => person,
         Err(response) => return *response,
     };
-    match state
-        .factors
-        .begin_webauthn_registration(&tenant, person.session.user_id())
-        .await
-    {
+    let asked: BeginWebAuthnBody = if body.is_empty() {
+        BeginWebAuthnBody::default()
+    } else {
+        match serde_json::from_slice(&body) {
+            Ok(asked) => asked,
+            Err(_) => {
+                return problem(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "request.invalid_body",
+                    "the body must be empty or { \"passkey\": true | false }",
+                );
+            }
+        }
+    };
+    let user = person.session.user_id();
+    let begun = if asked.passkey {
+        state
+            .factors
+            .begin_passkey_registration(&tenant, user)
+            .await
+    } else {
+        state
+            .factors
+            .begin_webauthn_registration(&tenant, user)
+            .await
+    };
+    match begun {
         Ok(begun) => (
             StatusCode::CREATED,
             Json(PublicKeyBody {

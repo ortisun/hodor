@@ -802,6 +802,7 @@ impl Authenticator for ExternalIdentityAuthenticator {
             // One factor. Which kind is not known: Hodor does not know
             // how the provider convinced itself.
             factor: Some(Factor::Knowledge),
+            second_factor: None,
             method: Some(EXTERNAL_STEP),
         }
     }

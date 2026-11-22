@@ -37,7 +37,7 @@ The cryptography adapter. Hodor implements no cryptography of its own: this crat
   - the constants `CLIENT_ID` and `CLIENT_SECRET`;
   - `SigningKey`, with `rsa()`, `p256()`, `published(id)` (a JSON Web Key), `sign(algorithm, message)` and `token(header, claims)`;
   - `TestProvider`, an in-memory OpenID Connect provider that serves discovery, keys and token answers through `HttpClient::send` and records every request (`testing.rs`);
-  - `webauthn::SoftwareAuthenticator` (`testing/webauthn.rs`), a security key in software with a real P-256 key: `new(origin)`, `at_origin(origin)` (the same key on another site), `credential_id()`, `set_counter(value)`, `register(options)` and `answer(options)`, which take the options of the interaction interface and give the bodies it takes.
+  - `webauthn::SoftwareAuthenticator` (`testing/webauthn.rs`), a security key in software with a real P-256 key: `new(origin)`, `passkey(origin)` (a passkey: it verifies the person and answers with the user handle it was registered for), `at_origin(origin)` (the same key on another site), `without_verification()` (the same key, not verifying the person), `credential_id()`, `set_counter(value)`, `register(options)` and `answer(options)`, which take the options of the interaction interface and give the bodies it takes.
 
 ## Invariants
 

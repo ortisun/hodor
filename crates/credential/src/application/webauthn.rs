@@ -1,9 +1,10 @@
 //! WebAuthn credentials: the port and the use cases.
 
 use crate::domain::webauthn::{
-    AssertionCheck, AssertionResponse, Challenge, CreationOptions, PendingRegistration,
-    RegistrationResponse, RelyingParty, RequestOptions, WebAuthnCredential, WebAuthnEvent,
-    WebAuthnRegistrationId, check_assertion, check_registration, creation_options, request_options,
+    AssertionCheck, AssertionKind, AssertionResponse, Challenge, CreationOptions,
+    PendingRegistration, RegistrationResponse, RelyingParty, RequestOptions, WebAuthnCredential,
+    WebAuthnEvent, WebAuthnRegistrationId, check_assertion, check_registration, creation_options,
+    passkey_request_options, request_options,
 };
 use hodor_kernel::{
     Caller, Clock, Digest, DomainError, EventEnvelope, EventMetadata, RandomSource,
@@ -60,6 +61,18 @@ pub trait WebAuthnStore: Send + Sync {
         uow: &mut dyn UnitOfWork,
         user_id: UserId,
     ) -> Result<Vec<WebAuthnCredential>, DomainError>;
+
+    /// The tenant's credential with the identifier the authenticator made,
+    /// whoever it belongs to.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn find_by_credential_id(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        credential_id: &[u8],
+    ) -> Result<Option<WebAuthnCredential>, DomainError>;
 
     /// Stores the counter, backup state and last use of a credential, only
     /// if its stored counter is still `previous_count`. Returns whether it
@@ -146,8 +159,8 @@ impl WebAuthnService {
         }
     }
 
-    /// Begins a registration for a user, who is named to the authenticator
-    /// by `name` and `display_name`.
+    /// Begins a registration of a security key for a user, who is named to
+    /// the authenticator by `name` and `display_name`.
     ///
     /// # Errors
     ///
@@ -159,7 +172,35 @@ impl WebAuthnService {
         name: &str,
         display_name: &str,
     ) -> Result<BegunRegistration, DomainError> {
-        let pending = PendingRegistration::begin(user_id, self.random.as_ref(), self.clock.now());
+        self.begin(tenant, user_id, false, name, display_name).await
+    }
+
+    /// Begins a registration of a passkey for a user: a discoverable
+    /// credential, unlocked by the person.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    pub async fn begin_passkey_registration(
+        &self,
+        tenant: &TenantContext,
+        user_id: UserId,
+        name: &str,
+        display_name: &str,
+    ) -> Result<BegunRegistration, DomainError> {
+        self.begin(tenant, user_id, true, name, display_name).await
+    }
+
+    async fn begin(
+        &self,
+        tenant: &TenantContext,
+        user_id: UserId,
+        passkey: bool,
+        name: &str,
+        display_name: &str,
+    ) -> Result<BegunRegistration, DomainError> {
+        let pending =
+            PendingRegistration::begin(user_id, passkey, self.random.as_ref(), self.clock.now());
         let mut uow = self.units_of_work.begin(tenant).await?;
         let existing = self.store.list_for_user(uow.as_mut(), user_id).await?;
         self.store
@@ -257,6 +298,17 @@ impl WebAuthnService {
         })
     }
 
+    /// Makes a challenge that any passkey may answer. Nothing is read: no
+    /// one is identified yet.
+    #[must_use]
+    pub fn passkey_challenge(&self) -> AssertionChallenge {
+        let challenge = Challenge::generate(self.random.as_ref());
+        AssertionChallenge {
+            options: passkey_request_options(&self.relying_party, &challenge),
+            challenge,
+        }
+    }
+
     /// Checks an answer to `challenge` for a user. `true` only if every
     /// check passes; the new counter is then stored.
     ///
@@ -271,18 +323,73 @@ impl WebAuthnService {
         response: &AssertionResponse,
     ) -> Result<bool, DomainError> {
         let credentials = self.list(tenant, user_id).await?;
-        let Some(mut credential) = credentials
+        let Some(credential) = credentials
             .into_iter()
             .find(|credential| credential.snapshot().credential_id == response.credential_id)
         else {
             return Ok(false);
         };
+        self.check_and_record(
+            tenant,
+            credential,
+            challenge,
+            response,
+            AssertionKind::SecondFactor,
+        )
+        .await
+    }
+
+    /// Checks a passkey's answer to `challenge`, and answers the user the
+    /// credential belongs to when every check passes; the new counter is
+    /// then stored. The credential is looked for in `tenant` only.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails. A wrong answer is `None`.
+    pub async fn verify_passkey(
+        &self,
+        tenant: &TenantContext,
+        challenge: &Challenge,
+        response: &AssertionResponse,
+    ) -> Result<Option<UserId>, DomainError> {
+        let mut uow = self.units_of_work.begin(tenant).await?;
+        let found = self
+            .store
+            .find_by_credential_id(uow.as_mut(), &response.credential_id)
+            .await?;
+        drop(uow);
+        let Some(credential) = found else {
+            return Ok(None);
+        };
+        let user_id = credential.user_id();
+        let verified = self
+            .check_and_record(
+                tenant,
+                credential,
+                challenge,
+                response,
+                AssertionKind::Passkey,
+            )
+            .await?;
+        Ok(verified.then_some(user_id))
+    }
+
+    async fn check_and_record(
+        &self,
+        tenant: &TenantContext,
+        mut credential: WebAuthnCredential,
+        challenge: &Challenge,
+        response: &AssertionResponse,
+        kind: AssertionKind,
+    ) -> Result<bool, DomainError> {
+        let user_id = credential.user_id();
         let previous = credential.snapshot().sign_count;
         let check = check_assertion(
             &self.relying_party,
             challenge,
             &credential,
             response,
+            kind,
             self.digest.as_ref(),
             self.verifier.as_ref(),
         );
