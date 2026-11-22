@@ -92,6 +92,51 @@ describe("the sign-in page", () => {
     expect(sent.at(-1)?.body).toEqual({ code: "123 456" });
   });
 
+  it("lets a person who lost their application give a recovery code instead, and go back", async () => {
+    const { props, sent, go, user } = page({
+      "GET /session": [nobody],
+      "GET /sign-in": [noSignIn],
+      "POST /sign-in": [pending("identifier")],
+      "POST /sign-in/steps/identifier": [pending("password")],
+      "POST /sign-in/steps/password": [pending("totp")],
+      "POST /sign-in/steps/recovery_code": [
+        json(200, { status: "rejected", step: "totp", attempts_left: 4, csrf_token: "token" }),
+        json(200, { status: "completed" }),
+      ],
+    });
+    render(<SignInPage {...props} notice={null} />);
+    await user.type(await screen.findByLabelText(en.identifierLabel), "ana@example.com{Enter}");
+    await user.type(await screen.findByLabelText(en.passwordLabel), "correct horse{Enter}");
+    await screen.findByLabelText(en.totpLabel, { exact: false });
+
+    await user.click(screen.getByRole("button", { name: en.useRecoveryCode }));
+    const field = await screen.findByLabelText<HTMLInputElement>(en.recoveryCodeLabel, { exact: false });
+    // Where the focus lands after the switch is checked in a browser
+    // (browser-tests/totp.spec.ts): the simulated click here moves it.
+    expect(field.getAttribute("inputmode")).toBeNull();
+    expect(field.getAttribute("autocapitalize")).toBe("none");
+    expect(screen.getByText(en.recoveryCodeHint)).toBeTruthy();
+    expect(screen.queryByLabelText(en.totpLabel, { exact: false })).toBeNull();
+
+    // Going back shows the code of the application again.
+    await user.click(screen.getByRole("button", { name: en.useAuthenticatorApplication }));
+    await screen.findByLabelText(en.totpLabel, { exact: false });
+    await user.click(screen.getByRole("button", { name: en.useRecoveryCode }));
+
+    await user.type(
+      await screen.findByLabelText(en.recoveryCodeLabel, { exact: false }),
+      "aaaa-aaaa-aaaa-aaaa{Enter}",
+    );
+    const alert = await alertShown();
+    expect(alert.textContent).toBe(`${en.rejected} ${en.attemptsLeft(4)}`);
+    const again = screen.getByLabelText<HTMLInputElement>(en.recoveryCodeLabel, { exact: false });
+    expect(again.value).toBe("");
+    await user.type(again, "7k2m qx9d 4hvn r8ta{Enter}");
+
+    await waitFor(() => expect(go).toHaveBeenCalledWith("account"));
+    expect(sent.at(-1)?.body).toEqual({ code: "7k2m qx9d 4hvn r8ta" });
+  });
+
   it("continues a sign-in that is already in progress", async () => {
     const { props } = page({ "GET /session": [nobody], "GET /sign-in": [pending("password")] });
     render(<SignInPage {...props} notice={null} />);

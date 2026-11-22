@@ -14,6 +14,7 @@ The `application` and `domain` modules are private; other crates use the
 - `lib.rs: pub mod api` re-exports:
   - Access token use cases and port: `AccessTokenService`, `AccessTokenStore`.
   - Authenticator application use cases and ports: `TotpService`, `TotpCheck`, `TotpStore`, `HmacSha1`, and `totp_code_at(mac, secret, moment)`, the code an application shows.
+  - Recovery code use cases and port: `RecoveryCodeService`, `RecoveryCodeCheck`, `RecoveryCodeStore`.
   - Password ports: `PasswordHasher`, `PasswordStore`, `PasswordVerification`.
   - Password use cases: `CredentialService`, `NewPassword`, `PasswordCheck`.
   - Access tokens: `AccessToken`, `AccessTokenEvent`, `AccessTokenHash`, `AccessTokenId`, `AccessTokenSecret`, `AccessTokenSnapshot`.
@@ -21,19 +22,21 @@ The `application` and `domain` modules are private; other crates use the
   - Authenticator applications: `Totp`, `TotpEnrollment`, `TotpEvent`, `TotpId`, `TotpSnapshot`, `TotpStatus`, `ENROLLMENT_LIFETIME`, `STEP_SECONDS`, `TOTP_SEALING_PURPOSE`.
   - WebAuthn use cases and port: `WebAuthnService`, `WebAuthnStore`, `BegunRegistration`, `AssertionChallenge`.
   - WebAuthn: `AssertionResponse`, `Challenge`, `CoseAlgorithm`, `CreationOptions`, `CredentialDescriptor`, `PendingRegistration`, `PendingRegistrationSnapshot`, `RegistrationResponse`, `RelyingParty`, `RequestOptions`, `WebAuthnCredential`, `WebAuthnCredentialId`, `WebAuthnCredentialSnapshot`, `WebAuthnEvent`, `WebAuthnRegistrationId`, `user_handle`.
+  - Recovery codes: `RecoveryCodeEvent`, `RecoveryCodeSet`, `RecoveryCodeSetId`, `RecoveryCodes`, `RECOVERY_CODES_PER_SET` (10), `RECOVERY_CODE_CHARACTERS` (16), and `read_recovery_code(typed)`, the canonical form of what a person typed, or nothing if it is not a code.
 - `lib.rs: pub mod testing` (`testing.rs`): public test support, compiled only under `#[cfg(any(test, feature = "testing"))]`. The `testing` feature turns on `hodor-kernel/testing` (`Cargo.toml`).
   - `InMemoryPasswords`: an in-memory `PasswordStore`.
   - `InMemoryAccessTokens`: an in-memory `AccessTokenStore`.
   - `InMemoryTotps`: an in-memory `TotpStore`. `FakeHmacSha1`: a deterministic stand-in for HMAC-SHA-1, not HMAC. `base32_secret(text)`: the bytes of a Base32 secret, as an application reads it.
   - `TotpPorts<'a> { units_of_work, totps }` and `run_totp_contract(ports)`: the contract every `TotpStore` must pass.
+  - `InMemoryRecoveryCodes`: an in-memory `RecoveryCodeStore`. `RecoveryCodePorts<'a>` and `run_recovery_code_contract(ports)`: the contract every `RecoveryCodeStore` must pass.
   - `FakeHasher`: a `PasswordHasher` for tests, with `raise_parameters()`, `set_overloaded(bool)`, and the counters `hashes()`, `verifications()` and `checks_against_nothing()`.
   - `Ports<'a> { units_of_work, passwords }` and `run_contract(ports)`: the contract every `PasswordStore` must pass.
   - `AccessTokenPorts<'a> { units_of_work, tokens }` and `run_access_token_contract(ports)`: the contract every `AccessTokenStore` must pass. It uses `hodor_kernel::random::testing::FakeDigest`.
   - `InMemoryWebAuthn`: an in-memory `WebAuthnStore`. `stored_credential(user_id, credential_id, created_at)` makes a credential as a store keeps it.
   - `WebAuthnPorts<'a> { units_of_work, store }` and `run_webauthn_contract(ports)`: the contract every `WebAuthnStore` must pass: credentials come back unchanged, oldest first, in their own tenant only; a credential identifier is unique within a tenant (`credential.webauthn_credential_exists`) and free in another; a use is stored only over the counter that was read; a pending registration is taken once, in its own tenant only.
 - Subdirectories:
-  - [application](./application/EGM.md): `CredentialService`, `AccessTokenService`, `TotpService`, `WebAuthnService` and the `PasswordHasher`, `PasswordStore`, `AccessTokenStore`, `TotpStore`, `HmacSha1` and `WebAuthnStore` ports.
-  - [domain](./domain/EGM.md): password rules and records, access tokens, authenticator applications, WebAuthn credentials and their checks, `PasswordEvent`, `AccessTokenEvent`, `TotpEvent` and `WebAuthnEvent`.
+  - [application](./application/EGM.md): `CredentialService`, `AccessTokenService`, `TotpService`, `WebAuthnService`, `RecoveryCodeService` and the `PasswordHasher`, `PasswordStore`, `AccessTokenStore`, `TotpStore`, `HmacSha1`, `WebAuthnStore` and `RecoveryCodeStore` ports.
+  - [domain](./domain/EGM.md): password rules and records, access tokens, authenticator applications, WebAuthn credentials and their checks, recovery codes, `PasswordEvent`, `AccessTokenEvent`, `TotpEvent`, `WebAuthnEvent` and `RecoveryCodeEvent`.
 
 ## Invariants
 

@@ -51,6 +51,14 @@ use cases that drive this model are described in
 - `cbor.rs`: the narrow CBOR reader, `read` and `read_exactly`.
 - `tests.rs`: one test per check, with a simulated authenticator and stand-in signatures.
 
+### `recovery_code.rs`
+
+- `RecoveryCodeSetId`: defined with `hodor_kernel::define_id!`.
+- Constants: `CODES_PER_SET` (10), `CODE_CHARACTERS` (16); crate-private `RANDOM_BYTES` (10), the alphabet `0123456789ABCDEFGHJKMNPQRSTVWXYZ`.
+- `read_code(typed) -> Option<String>`: uppercase, spaces and hyphens taken out, `O` read as `0` and `I` and `L` as `1`; nothing unless sixteen characters of the alphabet remain.
+- `RecoveryCodeSet { id, user_id, code_hashes, created_at }`: what is stored. `RecoveryCodes`: the codes shown once, `codes()` in groups of four separated by hyphens, `len`, `is_empty`; its `Debug` prints no code.
+- `RecoveryCodeEvent`: `Generated { user_id }` (`credential.recovery_codes_generated`), `Used { user_id, unused }` (`credential.recovery_code_used`) and `Removed { user_id }` (`credential.recovery_codes_removed`); none carries a code or a hash.
+
 ### Domain events
 
 The four enums implement `hodor_kernel::DomainEvent` and serialize untagged.

@@ -455,7 +455,11 @@ async fn with_the_policy_on_a_recovery_code_stands_in_for_the_code_of_the_applic
         .await
         .expect("answered");
     assert!(matches!(wrong, SignIn::Rejected { .. }), "{wrong:?}");
-    assert_eq!(step_of(&wrong), "totp", "the sign-in still waits for the step");
+    assert_eq!(
+        step_of(&wrong),
+        "totp",
+        "the sign-in still waits for the step"
+    );
     let outcome = world
         .recovery_code(id, &first(&codes))
         .await

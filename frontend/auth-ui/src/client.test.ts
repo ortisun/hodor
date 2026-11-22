@@ -67,6 +67,18 @@ describe("the client for the interaction interface", () => {
     expect(sent[0]?.body).toEqual({ code: "123456" });
   });
 
+  it("sends a recovery code to its own route", async () => {
+    const { client, sent } = scripted({
+      "POST /sign-in/steps/recovery_code": [json(200, { status: "completed" })],
+    });
+    expect(await client.submitRecoveryCode("7K2M-QX9D-4HVN-R8TA")).toEqual({
+      status: "completed",
+      step: null,
+      attemptsLeft: null,
+    });
+    expect(sent[0]?.body).toEqual({ code: "7K2M-QX9D-4HVN-R8TA" });
+  });
+
   it("says there is no sign-in when the server knows none", async () => {
     const { client } = scripted({
       "GET /sign-in": [problem(404, "authentication.transaction_not_found")],

@@ -38,7 +38,7 @@ pub(crate) fn code_from_bytes(bytes: &[u8; RANDOM_BYTES]) -> String {
         bits += 8;
         while bits >= 5 {
             bits -= 5;
-            if !characters.is_empty() && (characters.len() + 1) % (GROUP + 1) == 0 {
+            if !characters.is_empty() && (characters.len() + 1).is_multiple_of(GROUP + 1) {
                 characters.push('-');
             }
             characters.push(char::from(ALPHABET[((buffer >> bits) & 0x1f) as usize]));

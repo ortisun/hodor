@@ -42,11 +42,14 @@ Commands, as typed, from the clap enums in `main.rs`:
 | `hodor-cli resource-server add` | `--tenant`, `--application`, `--audience`, `--name`, `--scope name=description` (repeatable) | `ApplicationService::create_resource_server`; prints `resource-server <id> <audience>` (`applications.rs:run_resource_server`) |
 | `hodor-cli resource-server list` | `--tenant` | `ApplicationService::resource_servers`; one line `<id> <audience> <name> [<scopes>]` each |
 | `hodor-cli totp enroll` | `--tenant`, `--login`; keys from `HODOR_SECRET_KEYS` | `TotpService::begin_enrollment`, issuer the tenant's display name; prints `secret <Base32>` and `address <otpauth://…>` (`TotpCommand::Enroll`, `run_totp`) |
-| `hodor-cli totp confirm` | `--tenant`, `--login`, `--code` | `TotpService::confirm_enrollment`; prints `confirmed` (`TotpCommand::Confirm`) |
+| `hodor-cli totp confirm` | `--tenant`, `--login`, `--code` | `TotpService::confirm_enrollment`, then `RecoveryCodeService::generate_if_none`; prints `confirmed`, followed by `recovery codes, shown once: 10` and the ten codes when the person had no unused code (`TotpCommand::Confirm`) |
 | `hodor-cli totp remove` | `--tenant`, `--login` | `TotpService::remove`; prints `removed` or `nothing to remove` (`TotpCommand::Remove`) |
 | `hodor-cli keys list` | `--tenant`, `--key-set` (`sig`, `data`; default `sig`) | `KeyService::key_set`, one `key_line` per version (`KeysCommand::List`, `run_keys`) |
 | `hodor-cli keys rotate` | `--tenant`, `--algorithm` (`es256`, `rs256`, `ps256`; default `es256`) | `KeyService::rotate_now` with the overlap of `--key-overlap-hours` (`KeysCommand::Rotate`) |
 | `hodor-cli keys revoke` | `--tenant`, `--version`, `--reason` | `KeyService::revoke` (`KeysCommand::Revoke`) |
+| `hodor-cli recovery-codes generate` | `--tenant`, `--login`; no keys needed | `RecoveryCodeService::generate`: a set in place of any earlier one; prints `recovery codes, shown once: 10` and the ten codes (`RecoveryCodeCommand::Generate`, `run_recovery_codes`) |
+| `hodor-cli recovery-codes count` | `--tenant`, `--login` | `RecoveryCodeService::unused`; prints `unused <count>` (`RecoveryCodeCommand::Count`) |
+| `hodor-cli recovery-codes remove` | `--tenant`, `--login` | `RecoveryCodeService::remove`; prints `removed` or `nothing to remove` (`RecoveryCodeCommand::Remove`) |
 | `hodor-cli secrets generate-key` | none | `hodor_adapters_crypto::SecretKeys::generate(&OsRandom)` (`SecretsCommand::GenerateKey`) |
 | `hodor-cli secrets reseal` | `--tenant` (optional), `HODOR_DATABASE_URL`, `HODOR_SECRET_KEYS` | `hodor_adapters_postgres::reseal_tenant` per tenant of `TenantDirectory::list`, then `TenantSecretBox::refuse_first_format` when nothing was left unreadable; one line per tenant (`SecretsCommand::Reseal`, `run_reseal`) |
 | `hodor-cli probe` | `--addr` (default `127.0.0.1:9090`), `--path` (default `/readyz`) | local `probe`, over `std::net::TcpStream` (`Command::Probe`) |
@@ -133,6 +136,12 @@ the application commands), `run_tenant`, `run_provider`,
   `credential.totp` and record `credential.totp_enrolled` or
   `credential.totp_removed` (`run_totp`). `tenant second-factor` changes the
   tenant's settings.
+- Recovery codes are printed once, when they are made, and stored only as
+  SHA-256 hashes; `recovery-codes generate` and `remove` record
+  `credential.recovery_codes_generated` or `credential.recovery_codes_removed`
+  (`run_recovery_codes`). `totp confirm` makes a set only when the person has
+  no unused code, so confirming a new application keeps the codes already
+  written down.
 - `secrets generate-key` prints a new key once and stores it nowhere; it opens
   no database (`SecretsCommand::GenerateKey`).
 - `secrets reseal` exits with a failure when a secret that needed sealing

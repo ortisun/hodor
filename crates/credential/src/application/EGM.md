@@ -8,7 +8,8 @@ removes passwords. `AccessTokenService` (`access_tokens.rs`) issues,
 authenticates and revokes access tokens. `TotpService` (`totp.rs`) enrolls,
 confirms, checks and removes authenticator applications. `WebAuthnService`
 (`webauthn.rs`) registers WebAuthn credentials and checks answers to
-challenges. They drive the
+challenges. `RecoveryCodeService` (`recovery_codes.rs`) generates, checks,
+counts and removes recovery codes. They drive the
 [domain model](../domain/EGM.md) and reach storage and hashing only through
 port traits. The modules are `pub(crate)` (`mod.rs`); other crates use
 `hodor_credential::api` (`src/lib.rs`).
@@ -42,6 +43,10 @@ bound to.
   - `activate(uow, confirmed)`: puts the pending row in use and removes the user's earlier application in use. `NotFound` `credential.totp_enrollment_not_found` if the row is no longer pending.
   - `use_step(uow, id, step) -> bool`: stores the step only if it is later than the last one used, in one statement.
   - `remove(uow, user_id) -> bool`: removes both rows; answers whether one was in use.
+- `RecoveryCodeStore` (`recovery_codes.rs`). Implemented by `PgRecoveryCodeStore` in `crates/adapters-postgres/src/credential.rs` and by `InMemoryRecoveryCodes` in `src/testing.rs`.
+  - `replace(uow, set)`: stores a set in place of the user's earlier one. `Conflict` `credential.recovery_codes_conflict` when another set was stored for the user at the same moment.
+  - `use_code(uow, user_id, hash) -> bool`: marks the code with this hash used only if it is unused, in one statement.
+  - `unused(uow, user_id) -> u32` and `remove(uow, user_id) -> bool`.
 - `HmacSha1` (`totp.rs`), not async: `mac(key, message) -> [u8; 20]`. Implemented by `AwsLcHmacSha1` in `crates/adapters-crypto/src/hmac.rs` and by `FakeHmacSha1` in `src/testing.rs`.
 
 - `WebAuthnStore` (`webauthn.rs`). Implemented by `PgWebAuthnStore` in `crates/adapters-postgres/src/credential.rs` and by `InMemoryWebAuthn` in `src/testing.rs`.
@@ -68,6 +73,11 @@ bound to.
   - `verify(tenant, user_id: Option<UserId>, code) -> TotpCheck`: `Verified` or `Rejected`; a right code is marked used in the same call.
   - `has_totp(tenant, user_id) -> bool` and `remove(tenant, user_id, caller) -> bool` (records `credential.totp_removed` when one was in use).
 - `totp_code_at(mac, secret, moment) -> String` (`totp.rs`): the six digits an application shows.
+- `RecoveryCodeService::new(units_of_work, store: Arc<dyn RecoveryCodeStore>, digest: Arc<dyn Digest>, random: Arc<dyn RandomSource>, clock)`.
+  - `generate(tenant, user_id, caller) -> RecoveryCodes`: ten codes of 80 random bits in place of any earlier set; returned once; records `credential.recovery_codes_generated`.
+  - `generate_if_none(tenant, user_id, caller) -> Option<RecoveryCodes>`: the same, only when the user has no unused code.
+  - `verify(tenant, user_id: Option<UserId>, typed) -> RecoveryCodeCheck`: `Verified { unused }` or `Rejected`; an accepted code is marked used in the same call and records `credential.recovery_code_used`.
+  - `unused(tenant, user_id) -> u32` and `remove(tenant, user_id, caller) -> bool` (records `credential.recovery_codes_removed` when there was a set).
 - `AccessTokenService::new(units_of_work, tokens: Arc<dyn AccessTokenStore>, digest: Arc<dyn Digest>, random: Arc<dyn RandomSource>, clock)`.
   - `issue(tenant, user_id, description, lifetime: time::Duration, caller) -> (AccessToken, AccessTokenSecret)`: the secret is returned once and is not available again.
   - `authenticate(tenant, presented: &str) -> Option<AccessToken>`.

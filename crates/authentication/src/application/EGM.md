@@ -119,6 +119,13 @@ Both implement the `Authenticator` trait from [`../domain/EGM.md`](../domain/EGM
 - `AuthenticationService::challenge(tenant, id, secret, step) -> Value`: asks
   the current step for a challenge through `FlowEngine::challenge` and stores
   the transaction.
+- `RecoveryCodeAuthenticator` (`authenticators.rs:RecoveryCodeAuthenticator`):
+  `kind()` is `RecoveryCodeAuthenticator::KIND`, `"recovery_code"`; traits
+  `identifies: false`, `factor: Some(Factor::Possession)`,
+  `method: Some("recovery_code")`. `new(codes: RecoveryCodeService, tenants,
+  guard)`. Used as a substitute of the `webauthn` and `totp` steps
+  (`AuthFlow::with_substitute`); `has_means` asks
+  `RecoveryCodeService::unused` for the candidate.
 
 ## Invariants
 
@@ -166,6 +173,10 @@ Both implement the `Authenticator` trait from [`../domain/EGM.md`](../domain/EGM
   lockout rules first (shared with the password by `lockout_rules`), and
   clears the identifier's count when the code is verified
   (`authenticators.rs:TotpAuthenticator::perform`).
+- `RecoveryCodeAuthenticator` takes only `StepInput::RecoveryCode`, and
+  admits and clears the attempt the same way; a wrong, used, earlier or
+  malformed code is the same `StepOutcome::Rejected`
+  (`authenticators.rs:RecoveryCodeAuthenticator::perform`).
 - Registration is refused with `Forbidden` code
   `authentication.registration_closed` unless the tenant's registration
   policy is `RegistrationPolicy::Open`, checked before anything is counted

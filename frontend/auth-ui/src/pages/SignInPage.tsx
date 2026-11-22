@@ -96,6 +96,8 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice, sign
   const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
+  /** Whether the person chose to give a recovery code where the code of their application is asked. */
+  const [recovering, setRecovering] = useState(false);
   const [providers, setProviders] = useState<OfferedProvider[]>([]);
   /** The directory the person chose to sign in through, if any. */
   const [directory, setDirectory] = useState<OfferedProvider | null>(null);
@@ -204,6 +206,7 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice, sign
     setExpired(false);
     setPassword("");
     setCode("");
+    setRecovering(false);
     try {
       await client.abandonSignIn();
       await open(true);
@@ -408,7 +411,33 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice, sign
         </Form>
       ) : null}
 
-      {view.kind === "step" && view.step === "totp" ? (
+      {view.kind === "step" && view.step === "totp" && recovering ? (
+        <Form key={view.shown} onSubmit={(event) => submit(event, () => client.submitRecoveryCode(code))}>
+          {identifier !== "" ? <Words quiet>{text.signingInAs(identifier)}</Words> : null}
+          <Field
+            label={text.recoveryCodeLabel}
+            hint={text.recoveryCodeHint}
+            name="recovery-code"
+            autoComplete="off"
+            autoFocus
+            verbatim
+            value={code}
+            onChange={setCode}
+          />
+          <Submit label={text.signIn} busy={busy} text={text} />
+          <Action
+            variant="ghost"
+            label={text.useAuthenticatorApplication}
+            onClick={() => {
+              setCode("");
+              setRecovering(false);
+            }}
+          />
+          <Action variant="ghost" label={text.useAnotherIdentifier} onClick={() => void startAgain()} />
+        </Form>
+      ) : null}
+
+      {view.kind === "step" && view.step === "totp" && !recovering ? (
         <Form key={view.shown} onSubmit={(event) => submit(event, () => client.submitTotp(code))}>
           {identifier !== "" ? <Words quiet>{text.signingInAs(identifier)}</Words> : null}
           <Field
@@ -423,6 +452,14 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice, sign
             onChange={setCode}
           />
           <Submit label={text.signIn} busy={busy} text={text} />
+          <Action
+            variant="ghost"
+            label={text.useRecoveryCode}
+            onClick={() => {
+              setCode("");
+              setRecovering(true);
+            }}
+          />
           <Action variant="ghost" label={text.useAnotherIdentifier} onClick={() => void startAgain()} />
         </Form>
       ) : null}

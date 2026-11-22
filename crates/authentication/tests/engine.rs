@@ -1423,7 +1423,10 @@ async fn a_rejected_substitute_counts_against_the_step_which_still_waits() {
         .await
         .expect("the step itself still works");
     assert_eq!(done, Progress::ReadyToComplete);
-    assert_eq!(transaction.snapshot().satisfied_methods, ["password", "key"]);
+    assert_eq!(
+        transaction.snapshot().satisfied_methods,
+        ["password", "key"]
+    );
 }
 
 #[tokio::test]

@@ -26,7 +26,8 @@ contexts, which this crate calls through their services. The specification is
   `authentication.registration_completed`,
   `authentication.recovery_requested`, `authentication.password_reset`).
 - Extension point: the `Authenticator` trait, with the built-in
-  `IdentifierAuthenticator`, `PasswordAuthenticator` and `TotpAuthenticator`.
+  `IdentifierAuthenticator`, `PasswordAuthenticator`, `TotpAuthenticator` and
+  `RecoveryCodeAuthenticator`, a substitute of the second factor step.
 
 ### Workspace dependencies (`Cargo.toml`)
 
