@@ -36,7 +36,10 @@ address.
     `autocomplete="off"`, no numeric keyboard and no capitals or corrections,
     sent with `client.submitRecoveryCode`, and "use the code of your
     application instead" to go back; a rejection keeps the recovery code
-    form. "Start again" returns to the code of the application.
+    form. "Start again" returns to the code of the application. After each
+    switch the field shown takes the focus, in a task of its own once the
+    press has been handled (`switches`, `codeField`): `autoFocus` alone
+    leaves it on the button.
   - `webauthn` - a button that asks `client.webAuthnOptions()`, then the
     authenticator through `askAuthenticator`, and sends its answer with
     `client.submitWebAuthn`. When the authenticator gives no answer nothing

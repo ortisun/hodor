@@ -111,8 +111,7 @@ describe("the sign-in page", () => {
 
     await user.click(screen.getByRole("button", { name: en.useRecoveryCode }));
     const field = await screen.findByLabelText<HTMLInputElement>(en.recoveryCodeLabel, { exact: false });
-    // Where the focus lands after the switch is checked in a browser
-    // (browser-tests/totp.spec.ts): the simulated click here moves it.
+    await waitFor(() => expect(document.activeElement).toBe(field));
     expect(field.getAttribute("inputmode")).toBeNull();
     expect(field.getAttribute("autocapitalize")).toBe("none");
     expect(screen.getByText(en.recoveryCodeHint)).toBeTruthy();
@@ -120,7 +119,8 @@ describe("the sign-in page", () => {
 
     // Going back shows the code of the application again.
     await user.click(screen.getByRole("button", { name: en.useAuthenticatorApplication }));
-    await screen.findByLabelText(en.totpLabel, { exact: false });
+    const back = await screen.findByLabelText<HTMLInputElement>(en.totpLabel, { exact: false });
+    await waitFor(() => expect(document.activeElement).toBe(back));
     await user.click(screen.getByRole("button", { name: en.useRecoveryCode }));
 
     await user.type(

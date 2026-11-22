@@ -1,4 +1,4 @@
-import { type FormEvent, useCallback, useEffect, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import type { NoticeName } from "../address";
 import type { Client, Failure, OfferedProvider, SignInAnswer } from "../client";
 import { describe, type Messages } from "../messages";
@@ -98,6 +98,22 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice, sign
   const [code, setCode] = useState("");
   /** Whether the person chose to give a recovery code where the code of their application is asked. */
   const [recovering, setRecovering] = useState(false);
+  /** How many times the person switched between the two; the field shown after a switch takes the focus. */
+  const [switches, setSwitches] = useState(0);
+  const codeField = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    if (switches === 0) {
+      return undefined;
+    }
+    // After the press that switched has been handled whole: the button keeps the focus otherwise.
+    const timer = setTimeout(() => codeField.current?.focus(), 0);
+    return () => clearTimeout(timer);
+  }, [switches]);
+  const switchTo = (recovery: boolean) => {
+    setCode("");
+    setRecovering(recovery);
+    setSwitches((count) => count + 1);
+  };
   const [providers, setProviders] = useState<OfferedProvider[]>([]);
   /** The directory the person chose to sign in through, if any. */
   const [directory, setDirectory] = useState<OfferedProvider | null>(null);
@@ -421,6 +437,7 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice, sign
             autoComplete="off"
             autoFocus
             verbatim
+            inputRef={codeField}
             value={code}
             onChange={setCode}
           />
@@ -428,10 +445,7 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice, sign
           <Action
             variant="ghost"
             label={text.useAuthenticatorApplication}
-            onClick={() => {
-              setCode("");
-              setRecovering(false);
-            }}
+            onClick={() => switchTo(false)}
           />
           <Action variant="ghost" label={text.useAnotherIdentifier} onClick={() => void startAgain()} />
         </Form>
@@ -448,6 +462,7 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice, sign
             inputMode="numeric"
             autoFocus
             verbatim
+            inputRef={codeField}
             value={code}
             onChange={setCode}
           />
@@ -455,10 +470,7 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice, sign
           <Action
             variant="ghost"
             label={text.useRecoveryCode}
-            onClick={() => {
-              setCode("");
-              setRecovering(true);
-            }}
+            onClick={() => switchTo(true)}
           />
           <Action variant="ghost" label={text.useAnotherIdentifier} onClick={() => void startAgain()} />
         </Form>
