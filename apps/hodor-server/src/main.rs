@@ -38,7 +38,9 @@ use hodor_identity::api::IdentityService;
 use hodor_kernel::{DomainError, Secret, SystemClock, TenantContext};
 use hodor_keys::api::{KeyService, RotationPolicy};
 use hodor_notification::api::Notifier;
-use hodor_oauth::api::{AuthorizationCodePorts, AuthorizationCodeService};
+use hodor_oauth::api::{
+    ApplicationPorts, ApplicationService, AuthorizationCodePorts, AuthorizationCodeService,
+};
 use hodor_observability::{LogFormat, Telemetry};
 use hodor_protocol_http::{
     AdminState, AuthorizationState, ConsoleState, Health, InteractionState, Limits, Pages,
@@ -728,6 +730,15 @@ fn administration(config: &Config, database: &Database) -> Result<AdminState, Do
         ),
         None => None,
     };
+    let applications = ApplicationService::new(ApplicationPorts {
+        units_of_work: units(),
+        applications: Arc::new(PgApplicationStore),
+        clients: Arc::new(PgClientStore),
+        resource_servers: Arc::new(PgResourceServerStore),
+        digest: digest.clone(),
+        random: random.clone(),
+        clock: clock.clone(),
+    });
     Ok(AdminState {
         tokens: AccessTokenService::new(
             units(),
@@ -754,6 +765,7 @@ fn administration(config: &Config, database: &Database) -> Result<AdminState, Do
         federation,
         keys: keys(config, database)?,
         key_rotation: key_rotation(config)?,
+        applications,
         public_url: config.public_url.clone(),
     })
 }

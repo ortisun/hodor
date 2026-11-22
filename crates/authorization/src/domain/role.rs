@@ -23,11 +23,17 @@ pub enum Permission {
     KeysRead,
     /// Rotating a signing key and revoking key versions.
     KeysWrite,
+    /// Seeing applications, their clients and resource servers, without
+    /// any secret.
+    ApplicationsRead,
+    /// Registering and changing applications, clients and resource
+    /// servers, and giving clients secrets and keys.
+    ApplicationsWrite,
 }
 
 impl Permission {
     /// Every permission.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 11] = [
         Self::UsersRead,
         Self::UsersWrite,
         Self::SessionsRead,
@@ -37,6 +43,8 @@ impl Permission {
         Self::IdentityProvidersWrite,
         Self::KeysRead,
         Self::KeysWrite,
+        Self::ApplicationsRead,
+        Self::ApplicationsWrite,
     ];
 
     /// The permission written as `resource:action`.
@@ -52,6 +60,8 @@ impl Permission {
             Self::IdentityProvidersWrite => "identity-providers:write",
             Self::KeysRead => "keys:read",
             Self::KeysWrite => "keys:write",
+            Self::ApplicationsRead => "applications:read",
+            Self::ApplicationsWrite => "applications:write",
         }
     }
 
@@ -111,6 +121,7 @@ impl Role {
                 Permission::AuditRead,
                 Permission::IdentityProvidersRead,
                 Permission::KeysRead,
+                Permission::ApplicationsRead,
             ],
         }
     }

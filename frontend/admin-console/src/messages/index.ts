@@ -52,6 +52,24 @@ export function describe(failure: Failure, text: Messages): string {
       return text.providersNotConfigured;
     case "federation.provider_modified_concurrently":
       return text.modifiedConcurrently;
+    case "oauth.application_modified_concurrently":
+    case "oauth.client_modified_concurrently":
+    case "oauth.resource_server_modified_concurrently":
+      return text.changedConcurrently;
+    case "oauth.application_not_found":
+      return text.applicationNotFound;
+    case "oauth.client_not_found":
+      return text.clientNotFound;
+    case "oauth.too_many_applications":
+      return text.tooManyApplications;
+    case "oauth.too_many_clients":
+      return text.tooManyClients;
+    case "oauth.audience_taken":
+      return text.audienceTaken;
+    case "oauth.client_key_taken":
+      return text.keyTaken;
+    case "oauth.client_too_many_keys":
+      return text.tooManyKeys;
     default:
       if (failure.code !== null && text.valueInvalid[failure.code] !== undefined) {
         return text.valueInvalid[failure.code] ?? text.somethingWrong;
@@ -73,4 +91,15 @@ export function moment(written: string, text: Messages): string {
 /** The name of a status, a role or anything else the server names, or the name itself when unknown. */
 export function named(names: Record<string, string>, name: string): string {
   return names[name] ?? name;
+}
+
+/** How long something lives, in the largest whole unit that fits. */
+export function lifetime(seconds: number, text: Messages): string {
+  if (seconds % 86400 === 0) {
+    return text.days(seconds / 86400);
+  }
+  if (seconds % 3600 === 0) {
+    return text.hours(seconds / 3600);
+  }
+  return text.minutes(Math.round(seconds / 60));
 }

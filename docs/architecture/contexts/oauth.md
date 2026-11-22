@@ -133,6 +133,26 @@ A scope name follows the rule of [scopes a client may ask for](#scopes-a-client-
 
 Changes use optimistic locking: a change made from a copy someone else has changed since is refused with a conflict, and nothing is stored.
 
+Administrators reach these use cases through [the administration interface](../../api/admin-api.md#applications-clients-and-resource-servers), the console's applications screens ([the admin console](../admin-console.md#screens)) and `hodor-cli application`, `hodor-cli client` and `hodor-cli resource-server` (Issue-54). They need the permissions `applications:read` and `applications:write` ([the authorization context](authorization.md#permissions)).
+
+### The command-line tool
+
+For an operator who can reach the database, as for tenants and identity providers. The commands need `HODOR_DATABASE_URL` and name the tenant by its slug; what they do is in the audit log with Hodor itself as the actor.
+
+| Command | What it does |
+|---|---|
+| `hodor-cli application add --tenant acme --name Billing [--first-party]` | Registers an application, enabled; third party unless `--first-party` is given. Prints its identifier |
+| `hodor-cli application list --tenant acme` | One line per application: identifier, status, first or third party, name |
+| `hodor-cli application disable --tenant acme --id …`, `enable` | |
+| `hodor-cli client add --tenant acme --application … --name … --type confidential --grant authorization_code --redirect-uri https://… --scope openid` | Creates a client. `--grant`, `--redirect-uri` and `--scope` are given once per value; `--method` chooses the authentication method and `--secret-days` the lifetime of the first secret. Prints the `client_id` and, for a client with a secret method, the secret, once |
+| `hodor-cli client list --tenant acme --application …` | One line per client: `client_id`, status, type, authentication method, name |
+| `hodor-cli client rotate-secret --tenant acme --id … [--lifetime-days 365] [--keep-previous-days 7]` | Gives a client a new secret and prints it, once |
+| `hodor-cli client disable --tenant acme --id …`, `enable` | |
+| `hodor-cli resource-server add --tenant acme --application … --audience https://api.example.com --name … --scope 'invoices:read=Read your invoices'` | Registers the resource server of an application; `--scope` is given once per scope, as its name, `=` and its description |
+| `hodor-cli resource-server list --tenant acme` | One line per resource server: identifier, audience, name, scopes |
+
+Changing a client's settings, ending one secret and managing keys are done through the administration interface or the console.
+
 ### Events
 
 | Event type | When |
@@ -368,7 +388,6 @@ Issue-62.
 
 | Item | Planned in |
 |---|---|
-| Managing applications, clients and resource servers through the administration interface, the command-line tool and the console | Issue-54 |
 | The token endpoint, which redeems codes | Issue-56 |
 | The other endpoints | Issue-57 to Issue-60 |
 | Asking a person for consent; until then only clients of first-party applications are answered | Issue-62 |

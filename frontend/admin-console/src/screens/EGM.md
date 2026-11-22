@@ -3,7 +3,8 @@
 ## Overview
 
 The screens of the administration console: users and one user, identity
-providers and one provider, and the audit log. Each screen loads what it shows
+providers and one provider, applications, one application with its clients and
+resource server, one client, and the audit log. Each screen loads what it shows
 through a method of `../client.ts:Client`, gates every button that changes
 something with `../actions.ts:may`, and sends dangerous actions through
 `../parts/Confirm.tsx:Confirm`. Screens see values, never addresses of the
@@ -40,6 +41,36 @@ console interface.
 - `ProviderForm.tsx:ProviderForm` - the dialog to add a provider or change one;
   `ProviderForm.tsx:scopesOf` splits typed scopes on whitespace, and
   `DEFAULT_SCOPES` is `"openid email profile"`.
+- `ApplicationsScreen.tsx:ApplicationsScreen` - the application table, loaded
+  with `client.listApplications()`; "Register application" (`addApplication`)
+  opens `ApplicationForm`, which calls `client.addApplication(settings)`, then
+  `go` to the new application.
+- `ApplicationForm.tsx:ApplicationForm` - name and first party; says before its
+  button whether people will be asked for consent (`consentSkipped`,
+  `consentAsked`). When changing, it is disabled until something differs.
+- `ApplicationScreen.tsx:ApplicationScreen` - one application, its clients and
+  its resource server, loaded together with `client.getApplication(id)`,
+  `client.listClients(id)` and `client.listResourceServers()` (the one whose
+  `applicationId` is this one). Change (`changeApplication`), disable (`Confirm`
+  with `disableApplication`, the name typed), enable (`enableApplication`),
+  create a client (`ClientForm`, `client.addClient`) and register or change the
+  resource server (`ResourceServerForm`).
+- `ClientForm.tsx:ClientForm` - name, type (only when creating), method (not for
+  a public client), grants (`client_credentials` not offered to a public
+  client), redirect addresses one per line (`linesOf`) and scopes separated by
+  spaces. `submit(type, settings)` returns a promise; a failure it throws is
+  shown and the form stays open.
+- `ResourceServerForm.tsx:ResourceServerForm` - audience (fixed when changing),
+  name and scopes one per line as `name description` (`definedScopesOf`,
+  `writtenScopes`).
+- `ClientScreen.tsx:ClientScreen` - one client, loaded with
+  `client.getClient(id)`: its identifier whole, settings, token lifetimes
+  (`lifetime`), secrets by identifier and expiry, keys for `private_key_jwt`.
+  Change (`ClientForm`, `client.changeClient`), give a new secret (`Confirm`
+  with `rotateSecret`, the name typed, `client.rotateSecret`), end a secret
+  (`revokeSecret`, the name typed), add a key (`KeyForm`, `client.addKey`),
+  remove a key (`removeKey`), disable (`disableClient`, the name typed) and
+  enable (`enableClient`).
 - `AuditScreen.tsx:AuditScreen` - the audit record table, loaded with
   `client.listAuditRecords()`; "load more" passes `nextCursor`; a record opens
   a read-only dialog with its details, previous hash and hash.
@@ -58,6 +89,12 @@ console interface.
   only when `provider.kind` is `openid_connect`; for other kinds a person with
   the change permission sees a banner saying the provider is managed
   elsewhere. Disabling, at level 2, needs the provider alias typed.
+- A client's secret is shown only by `../parts/ShownOnce.tsx:ShownOnce`, right
+  after the answer that made it (creating a client with a secret method, giving
+  a new secret), and is dropped from state when that dialog closes. Creating a
+  client with a secret goes to the client's page only after the dialog closes.
+- `ClientScreen.tsx:KeyForm` refuses text that is not JSON with
+  `text.keyNotJson` without asking the server.
 - `ProviderForm.tsx:ProviderForm` sends, when changing, only the fields that
   differ and is disabled until one does; when adding, alias, display name,
   issuer, client identifier and secret must all be non-empty. The secret field

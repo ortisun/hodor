@@ -70,6 +70,23 @@ struct SignedIn {
     csrf_token: String,
 }
 
+/// The applications use cases on in-memory stores.
+fn applications(
+    units_of_work: &InMemoryUnitOfWorkFactory,
+    clock: Arc<FixedClock>,
+) -> hodor_oauth::api::ApplicationService {
+    let stores = hodor_oauth::testing::InMemoryStores::default();
+    hodor_oauth::api::ApplicationService::new(hodor_oauth::api::ApplicationPorts {
+        units_of_work: Arc::new(units_of_work.clone()),
+        applications: Arc::new(stores.applications),
+        clients: Arc::new(stores.clients),
+        resource_servers: Arc::new(stores.resource_servers),
+        digest: Arc::new(FakeDigest),
+        random: Arc::new(hodor_oauth::testing::DistinctRandom),
+        clock,
+    })
+}
+
 fn world() -> World {
     let units_of_work = InMemoryUnitOfWorkFactory::default();
     let clock = Arc::new(FixedClock::at(Timestamp::UNIX_EPOCH));
@@ -115,6 +132,7 @@ fn world() -> World {
         federation: None,
         keys: None,
         key_rotation: hodor_keys::api::RotationPolicy::DEFAULT,
+        applications: applications(&units_of_work, clock.clone()),
         public_url: "https://auth.example".to_owned(),
     };
     let router = public_router(

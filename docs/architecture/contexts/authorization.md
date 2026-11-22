@@ -22,6 +22,8 @@ A permission names something that can be done: a kind of resource and an action 
 | `identity-providers:write` | Adding, changing, enabling and disabling identity providers, and replacing their secrets |
 | `keys:read` | Listing a tenant's key versions |
 | `keys:write` | Rotating a tenant's signing key and revoking key versions |
+| `applications:read` | Seeing the tenant's applications, their clients and resource servers, without any secret |
+| `applications:write` | Registering and changing applications, clients and resource servers, giving clients secrets and keys, and enabling and disabling them |
 
 ## Roles
 
@@ -30,7 +32,7 @@ A role is a named set of permissions. In this version the roles are fixed: they 
 | Role | Permissions | Meant for |
 |---|---|---|
 | `tenant_administrator` | All of the above | The people who run a tenant |
-| `tenant_auditor` | `users:read`, `sessions:read`, `audit:read`, `identity-providers:read`, `keys:read` | People who must be able to see everything and change nothing |
+| `tenant_auditor` | `users:read`, `sessions:read`, `audit:read`, `identity-providers:read`, `keys:read`, `applications:read` | People who must be able to see everything and change nothing |
 
 A user holds a role in one tenant. Holding a role in one tenant means nothing in another: an assignment is a row of its tenant, like everything else.
 

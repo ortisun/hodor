@@ -21,20 +21,26 @@ person sees from who they are (`Client.me`).
   `accountPath(tenant)`, or the frame (top bar, side navigation filtered by
   permission, command palette on mod+k, and the current screen).
 - `App.tsx:needsOf` - the permission a screen needs: `audit` needs
-  `audit:read`; `providers` and `provider` need `identity-providers:read`; the
+  `audit:read`; `providers` and `provider` need `identity-providers:read`;
+  `applications`, `application` and `client` need `applications:read`; the
   others need `users:read`.
 - `address.ts` - `Screen` (`home`, `users`, `user`, `audit`, `providers`,
-  `provider`), `Place`, `placeOf(pathname)`, `pathOf(tenant, screen)`,
+  `provider`, `applications`, `application`, `client`), `Place`, `placeOf(pathname)`, `pathOf(tenant, screen)`,
   `isIdentifier(text)`, `signInPath(tenant)` (`/t/{tenant}/account/sign-in`)
   and `accountPath(tenant)` (`/t/{tenant}/account`). Console addresses are
   `/t/{tenant}/console`, `.../users`, `.../users/{id}`, `.../audit`,
-  `.../identity-providers` and `.../identity-providers/{id}`.
+  `.../identity-providers`, `.../identity-providers/{id}`, `.../applications`,
+  `.../applications/{id}` and `.../clients/{id}`.
 - `actions.ts:ACTIONS`, `ActionName`, `Level`, `Action`, `may(permissions,
   action)` - `createUser` (level 0, `users:write`); `endSession` (1,
   `sessions:revoke`); `suspendUser` (2, `users:write`); `addProvider`,
   `changeProvider`, `replaceClientSecret`, `enableProvider` (1,
   `identity-providers:write`); `disableProvider` (2,
-  `identity-providers:write`).
+  `identity-providers:write`); `addApplication`, `changeApplication`,
+  `enableApplication`, `addClient`, `changeClient`, `changeResourceServer`,
+  `addKey`, `removeKey`, `enableClient` (1, `applications:write`);
+  `disableApplication`, `rotateSecret`, `revokeSecret`, `disableClient` (2,
+  `applications:write`).
 - `client.ts:Client` - every request goes to `/t/{tenant}/console/api{path}`,
   except sign-out, which uses `/t/{tenant}/interaction{path}`:
 
@@ -55,11 +61,31 @@ person sees from who they are (`Client.me`).
   | `replaceClientSecret(id, secret)` | `PUT /identity-providers/{id}/client-secret` |
   | `disableProvider(id)` | `POST /identity-providers/{id}:disable` |
   | `enableProvider(id)` | `POST /identity-providers/{id}:enable` |
+  | `listApplications()` | `GET /applications` |
+  | `getApplication(id)` | `GET /applications/{id}` |
+  | `addApplication(settings)` | `POST /applications` |
+  | `changeApplication(id, settings)` | `PATCH /applications/{id}` |
+  | `disableApplication(id)`, `enableApplication(id)` | `POST /applications/{id}:disable`, `:enable` |
+  | `listClients(applicationId)` | `GET /applications/{id}/clients` |
+  | `addClient(applicationId, type, settings)` | `POST /applications/{id}/clients`; returns the client and `client_secret` when given |
+  | `getClient(id)` | `GET /clients/{id}` |
+  | `changeClient(id, settings)` | `PATCH /clients/{id}` |
+  | `disableClient(id)`, `enableClient(id)` | `POST /clients/{id}:disable`, `:enable` |
+  | `rotateSecret(id)` | `POST /clients/{id}/secrets` with `{}` |
+  | `revokeSecret(id, secretId)` | `DELETE /clients/{id}/secrets/{secretId}` |
+  | `addKey(id, jwk)` | `POST /clients/{id}/keys` |
+  | `removeKey(id, kid)` | `DELETE /clients/{id}/keys/{kid}`, the `kid` percent-encoded |
+  | `listResourceServers()` | `GET /resource-servers` |
+  | `addResourceServer(applicationId, audience, name, scopes)` | `POST /resource-servers` |
+  | `changeResourceServer(id, name, scopes)` | `PATCH /resource-servers/{id}` |
   | `listAuditRecords(cursor)` | `GET /audit-records?limit=50[&cursor=]` |
 
 - `client.ts` types - `Failure` (`code`, `status`, `requestId`, `signedOut`),
   `Permission`, `Identifier`, `User`, `Me`, `Session`, `AuditRecord`,
-  `Provider`, `NewProvider`, `ProviderChange`, `Page<T>`.
+  `Provider`, `NewProvider`, `ProviderChange`, `Application`,
+  `ApplicationSettings`, `TokenPolicy`, `ApplicationClient` (an OAuth client:
+  the name `Client` is this class), `ClientSettings`, `CreatedClient`,
+  `NewSecret`, `Scope`, `ResourceServer`, `Page<T>`.
 - `hodor-theme.d.ts` - declares the modules `@hodor-theme/hodor.js`
   (`hodorTheme: DefinedTheme`) and `@hodor-theme/hodor.css`; the alias is
   resolved by `../vite.config.ts`.
@@ -71,8 +97,9 @@ person sees from who they are (`Client.me`).
   `hodor-layer-rules` plugin of `../vite.config.ts`.
 - Subdirectories: [messages](./messages/EGM.md) (copy in English and Brazilian
   Portuguese, failure text), [parts](./parts/EGM.md) (confirmation dialog,
-  identifier, loading state), [screens](./screens/EGM.md) (users, one user,
-  identity providers, one provider, audit).
+  identifier, loading state, a secret shown once), [screens](./screens/EGM.md)
+  (users, one user, identity providers, one provider, applications, one
+  application, one client, audit).
 
 ## Invariants
 

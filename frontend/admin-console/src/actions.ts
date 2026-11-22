@@ -29,6 +29,32 @@ export const ACTIONS = {
   enableProvider: { level: 1, permission: "identity-providers:write" },
   /** Nobody signs in through the provider until it is enabled again. */
   disableProvider: { level: 2, permission: "identity-providers:write" },
+  /** A first-party application's people are not asked for consent. */
+  addApplication: { level: 1, permission: "applications:write" },
+  /** Changes its name, or whether people are asked for consent. */
+  changeApplication: { level: 1, permission: "applications:write" },
+  /** Its clients get tokens again. */
+  enableApplication: { level: 1, permission: "applications:write" },
+  /** None of its clients gets a token until it is enabled again. */
+  disableApplication: { level: 2, permission: "applications:write" },
+  /** A client can ask for tokens; one with a secret gets it, shown once. */
+  addClient: { level: 1, permission: "applications:write" },
+  /** Changes where people are sent back to, what it may ask for and how it proves itself. */
+  changeClient: { level: 1, permission: "applications:write" },
+  /** Registers or changes the interface that accepts its tokens. */
+  changeResourceServer: { level: 1, permission: "applications:write" },
+  /** Every older secret but the newest stops at once. */
+  rotateSecret: { level: 2, permission: "applications:write" },
+  /** Whatever still uses the secret stops getting tokens at once. */
+  revokeSecret: { level: 2, permission: "applications:write" },
+  /** Assertions signed with the key are accepted. */
+  addKey: { level: 1, permission: "applications:write" },
+  /** Assertions signed with the key are refused from now on. */
+  removeKey: { level: 1, permission: "applications:write" },
+  /** It gets tokens again. */
+  enableClient: { level: 1, permission: "applications:write" },
+  /** It gets no token until it is enabled again. */
+  disableClient: { level: 2, permission: "applications:write" },
 } as const satisfies Record<string, Action>;
 
 export type ActionName = keyof typeof ACTIONS;

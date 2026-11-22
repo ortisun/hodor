@@ -2,12 +2,15 @@
 
 ## Overview
 
-The operations tool of a Hodor installation, in one file, `main.rs`. It parses
+The operations tool of a Hodor installation: `main.rs`, and
+`applications.rs` for the application, client and resource server commands. It parses
 the command line with clap (`Cli`, `Command`), connects to PostgreSQL and calls
 the services of the domain crates directly. It applies migrations, manages
 tenants, makes the first administrator of a tenant, verifies the audit chain,
 manages identity providers, looks at, rotates and revokes a tenant's keys,
 generates secret keys and probes a health endpoint.
+manages identity providers and applications, generates secret keys and probes
+a health endpoint.
 The tool acts as the system: every mutating call passes `caller()`, which
 returns `Caller { actor: Actor::System, correlation_id: CorrelationId::generate() }`.
 
@@ -29,6 +32,15 @@ Commands, as typed, from the clap enums in `main.rs`:
 | `hodor-cli provider add` | `--tenant`, `--alias`, `--name`, `--kind` (`openid-connect`, `github`, `ldap`, `saml`; default `openid-connect`), `--issuer`, `--client-id`, `--scope` (repeatable), `--no-create-users`, `--base`, `--filter`, `--subject-attribute` (default `entryUUID`), `--email-attribute`, `--name-attribute`, `--sign-on-address`, `--certificate`, `--trust-email`; client secret from `HODOR_PROVIDER_CLIENT_SECRET` | `FederationService::create_provider` (`ProviderCommand::Add`, `run_provider`) |
 | `hodor-cli provider list` | `--tenant` | `FederationService::providers` (`ProviderCommand::List`) |
 | `hodor-cli provider disable` / `enable` | `--tenant`, `--alias` | `FederationService::provider_by_alias`, then `FederationService::set_provider_status` with `ProviderStatus::Disabled` or `ProviderStatus::Enabled` |
+| `hodor-cli application add` | `--tenant`, `--name`, `--first-party` (third party unless given) | `ApplicationService::create_application`; prints `application <id> <name>` (`applications.rs:run_application`) |
+| `hodor-cli application list` | `--tenant` | `ApplicationService::applications`; one line `<id> <status> first-party|third-party <name>` each |
+| `hodor-cli application disable` / `enable` | `--tenant`, `--id` | `ApplicationService::set_application_status`; prints `application <id> <status>` |
+| `hodor-cli client add` | `--tenant`, `--application`, `--name`, `--type`, `--grant` (repeatable, required), `--redirect-uri`, `--scope` (repeatable), `--method`, `--secret-days` (default 365) | `ApplicationService::create_client`; prints `client <id>` and, for a secret method, `secret <value>` and `expires <time>`, once (`applications.rs:run_client`) |
+| `hodor-cli client list` | `--tenant`, `--application` | `ApplicationService::clients`; one line `<id> <status> <type> <method> <name>` each |
+| `hodor-cli client rotate-secret` | `--tenant`, `--id`, `--lifetime-days` (default 365), `--keep-previous-days` (default 7) | `ApplicationService::rotate_client_secret`; prints `secret <value>` and `expires <time>`, once |
+| `hodor-cli client disable` / `enable` | `--tenant`, `--id` | `ApplicationService::set_client_status`; prints `client <id> <status>` |
+| `hodor-cli resource-server add` | `--tenant`, `--application`, `--audience`, `--name`, `--scope name=description` (repeatable) | `ApplicationService::create_resource_server`; prints `resource-server <id> <audience>` (`applications.rs:run_resource_server`) |
+| `hodor-cli resource-server list` | `--tenant` | `ApplicationService::resource_servers`; one line `<id> <audience> <name> [<scopes>]` each |
 | `hodor-cli totp enroll` | `--tenant`, `--login`; keys from `HODOR_SECRET_KEYS` | `TotpService::begin_enrollment`, issuer the tenant's display name; prints `secret <Base32>` and `address <otpauth://…>` (`TotpCommand::Enroll`, `run_totp`) |
 | `hodor-cli totp confirm` | `--tenant`, `--login`, `--code` | `TotpService::confirm_enrollment`; prints `confirmed` (`TotpCommand::Confirm`) |
 | `hodor-cli totp remove` | `--tenant`, `--login` | `TotpService::remove`; prints `removed` or `nothing to remove` (`TotpCommand::Remove`) |
@@ -40,7 +52,8 @@ Commands, as typed, from the clap enums in `main.rs`:
 
 Global flags of the command groups (`Command` in `main.rs`):
 
-- `tenant`, `admin`, `audit` and `provider` take `--database-url` /
+- `tenant`, `admin`, `audit`, `provider`, `application`, `client` and
+  `resource-server` take `--database-url` /
   `HODOR_DATABASE_URL`, the application role, connected with
   `Database::connect(&Secret, 2)`.
 - `keys` takes `--database-url` / `HODOR_DATABASE_URL`, `--secret-keys` /
@@ -56,6 +69,9 @@ Other symbols in `main.rs`: `ProviderKindArg` (maps to `ProviderKind`),
 `caller`, `existing` (tenant lookup by slug), `run_tenant`, `run_provider`,
 `provider_line`, `KeySetArg`, `SigningAlgorithmArg`, `run_keys`, `key_line`,
 `written`, `bootstrap_administrator`, `verify_audit`, `probe`, and
+`caller`, `existing` (tenant lookup by slug), `connect` and `print` (used by
+the application commands), `run_tenant`, `run_provider`,
+`provider_line`, `bootstrap_administrator`, `verify_audit`, `probe`, and
 `main` (`#[tokio::main(flavor = "current_thread")]`).
 
 ## Invariants

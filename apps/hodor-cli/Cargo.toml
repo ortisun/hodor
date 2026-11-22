@@ -18,6 +18,7 @@ hodor-federation.workspace = true
 hodor-identity.workspace = true
 hodor-kernel.workspace = true
 hodor-keys.workspace = true
+hodor-oauth.workspace = true
 hodor-tenant.workspace = true
 time.workspace = true
 tokio.workspace = true
