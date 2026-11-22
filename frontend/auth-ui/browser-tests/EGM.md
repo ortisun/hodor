@@ -91,6 +91,11 @@ watched page and the steps a person repeats.
     refused with a wrong code, and signs in with the next one; the same with
     the keyboard alone. The codes are computed with `node:crypto` as RFC 6238
     says.
+  - `webauthn.spec.ts` (a virtual authenticator of Chromium, added through
+    the DevTools protocol) - a person registers, signs in with a password,
+    registers a key through the interaction interface from a page of
+    Hodor's origin, signs out, and signs in again with the password and the
+    key; the session's methods are `password` and `webauthn`.
 
 ## Invariants
 

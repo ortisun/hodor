@@ -105,6 +105,20 @@ Both implement the `Authenticator` trait from [`../domain/EGM.md`](../domain/EGM
   `factor: Some(Factor::Possession)`, `method: Some("totp")`.
   `new(totp: TotpService, tenants, guard)`. `has_means` asks
   `TotpService::has_totp` for the candidate, and is `false` without one.
+- `WebAuthnAuthenticator` (`authenticators.rs:WebAuthnAuthenticator`):
+  `kind()` and `KIND` are `"webauthn"`; traits `identifies: false`,
+  `factor: Some(Factor::Possession)`, `method: Some("webauthn")`.
+  `new(webauthn: WebAuthnService)`. Rejects without a candidate, without a
+  challenge in the transaction, or with fields that are not base64url;
+  `has_means` asks whether the candidate has credentials; `challenge` asks the
+  credential context for one.
+- `FactorService` (`factors.rs`): `new(identity, webauthn)`,
+  `begin_webauthn_registration(tenant, user_id)` (names the person by their
+  primary email address, else username, and display name) and
+  `finish_webauthn_registration(tenant, user_id, id, response, caller)`.
+- `AuthenticationService::challenge(tenant, id, secret, step) -> Value`: asks
+  the current step for a challenge through `FlowEngine::challenge` and stores
+  the transaction.
 
 ## Invariants
 

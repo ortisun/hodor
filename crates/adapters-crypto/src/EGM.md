@@ -36,7 +36,8 @@ The cryptography adapter. Hodor implements no cryptography of its own: this crat
 - `testing` (public test-support module): compiled only under `#[cfg(any(test, feature = "testing"))]` (`lib.rs:12`). The Cargo feature `testing` pulls in the optional `form_urlencoded` and `serde_json`. It provides:
   - the constants `CLIENT_ID` and `CLIENT_SECRET`;
   - `SigningKey`, with `rsa()`, `p256()`, `published(id)` (a JSON Web Key), `sign(algorithm, message)` and `token(header, claims)`;
-  - `TestProvider`, an in-memory OpenID Connect provider that serves discovery, keys and token answers through `HttpClient::send` and records every request (`testing.rs`).
+  - `TestProvider`, an in-memory OpenID Connect provider that serves discovery, keys and token answers through `HttpClient::send` and records every request (`testing.rs`);
+  - `webauthn::SoftwareAuthenticator` (`testing/webauthn.rs`), a security key in software with a real P-256 key: `new(origin)`, `at_origin(origin)` (the same key on another site), `credential_id()`, `set_counter(value)`, `register(options)` and `answer(options)`, which take the options of the interaction interface and give the bodies it takes.
 
 ## Invariants
 

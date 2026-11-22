@@ -10,6 +10,8 @@ use hodor_authentication::api::{
 };
 use hodor_kernel::{DomainError, Timestamp, UnitOfWork, UserId};
 use hodor_session::api::ClientInfo;
+use sqlx::Row as _;
+use sqlx::postgres::PgRow;
 use sqlx::types::Uuid;
 
 /// [`AttemptStore`] on `authentication.attempt_counter`.
@@ -125,73 +127,48 @@ impl AttemptStore for PgAttemptStore {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PgTransactionStore;
 
-type TransactionRow = (
-    Uuid,
-    String,
-    i32,
-    i32,
-    bool,
-    Option<Uuid>,
-    Option<Vec<u8>>,
-    Vec<String>,
-    i32,
-    String,
-    Timestamp,
-    Timestamp,
-    Option<String>,
-    Option<String>,
-    Vec<u8>,
-    i32,
-);
-
 fn unsigned(value: i32, what: &str) -> Result<u32, DomainError> {
     u32::try_from(value).map_err(|_| corrupted(what))
 }
 
-fn to_transaction(row: TransactionRow) -> Result<AuthTransaction, DomainError> {
-    let (
-        id,
-        flow_name,
-        flow_version,
-        current_step,
-        identified,
-        candidate,
-        identifier_key,
-        satisfied_methods,
-        rejections,
-        status,
-        started_at,
-        expires_at,
-        address,
-        description,
-        binding,
-        version,
-    ) = row;
-    let binding =
-        <[u8; 32]>::try_from(binding).map_err(|_| corrupted("binding is not 32 bytes"))?;
-    let identifier_key = identifier_key
-        .map(|key| {
-            <[u8; 32]>::try_from(key).map_err(|_| corrupted("identifier key is not 32 bytes"))
-        })
-        .transpose()?;
+fn bytes_32(value: Vec<u8>, what: &str) -> Result<[u8; 32], DomainError> {
+    <[u8; 32]>::try_from(value).map_err(|_| corrupted(what))
+}
+
+fn to_transaction(row: &PgRow) -> Result<AuthTransaction, DomainError> {
+    let get = |error: sqlx::Error| database_error(&error);
+    let flow_version: i32 = row.try_get("flow_version").map_err(get)?;
+    let current_step: i32 = row.try_get("current_step").map_err(get)?;
+    let candidate: Option<Uuid> = row.try_get("candidate_user_id").map_err(get)?;
+    let identifier_key: Option<Vec<u8>> = row.try_get("identifier_key").map_err(get)?;
+    let challenge: Option<Vec<u8>> = row.try_get("challenge").map_err(get)?;
+    let rejections: i32 = row.try_get("rejections").map_err(get)?;
+    let status: String = row.try_get("status").map_err(get)?;
+    let binding: Vec<u8> = row.try_get("binding").map_err(get)?;
+    let version: i32 = row.try_get("version").map_err(get)?;
     Ok(AuthTransaction::from_snapshot(TransactionSnapshot {
-        id: TransactionId::from_uuid(id),
-        flow_name,
+        id: TransactionId::from_uuid(row.try_get("id").map_err(get)?),
+        flow_name: row.try_get("flow_name").map_err(get)?,
         flow_version: unsigned(flow_version, "negative flow version")?,
         current_step: usize::try_from(current_step).map_err(|_| corrupted("negative step"))?,
-        identified,
+        identified: row.try_get("identified").map_err(get)?,
         candidate: candidate.map(UserId::from_uuid),
-        identifier_key,
-        satisfied_methods,
+        identifier_key: identifier_key
+            .map(|key| bytes_32(key, "identifier key is not 32 bytes"))
+            .transpose()?,
+        satisfied_methods: row.try_get("satisfied_methods").map_err(get)?,
+        challenge: challenge
+            .map(|challenge| bytes_32(challenge, "challenge is not 32 bytes"))
+            .transpose()?,
         rejections: unsigned(rejections, "negative rejections")?,
         status: TransactionStatus::from_stored(&status)?,
-        started_at,
-        expires_at,
+        started_at: row.try_get("started_at").map_err(get)?,
+        expires_at: row.try_get("expires_at").map_err(get)?,
         client: ClientInfo {
-            address,
-            description,
+            address: row.try_get("client_address").map_err(get)?,
+            description: row.try_get("client_description").map_err(get)?,
         },
-        binding,
+        binding: bytes_32(binding, "binding is not 32 bytes")?,
         version: unsigned(version, "negative version")?,
     }))
 }
@@ -209,8 +186,9 @@ impl TransactionStore for PgTransactionStore {
             "INSERT INTO authentication.transaction
                  (tenant_id, id, flow_name, flow_version, current_step, identified, candidate_user_id,
                   identifier_key, satisfied_methods, rejections, status, started_at, expires_at,
-                  client_address, client_description, binding, version)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)",
+                  client_address, client_description, binding, version, challenge)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
+                     $18)",
         )
         .bind(tenant.as_uuid())
         .bind(state.id.as_uuid())
@@ -229,6 +207,7 @@ impl TransactionStore for PgTransactionStore {
         .bind(&state.client.description)
         .bind(state.binding.as_slice())
         .bind(stored(state.version)?)
+        .bind(state.challenge.map(|challenge| challenge.to_vec()))
         .execute(connection(uow)?)
         .await
         .map_err(|e| database_error(&e))?;
@@ -241,10 +220,10 @@ impl TransactionStore for PgTransactionStore {
         id: TransactionId,
     ) -> Result<Option<AuthTransaction>, DomainError> {
         let tenant = uow.tenant().tenant_id();
-        let row: Option<TransactionRow> = sqlx::query_as(
+        let row: Option<PgRow> = sqlx::query(
             "SELECT id, flow_name, flow_version, current_step, identified, candidate_user_id,
-                    identifier_key, satisfied_methods, rejections, status, started_at, expires_at,
-                    client_address, client_description, binding, version
+                    identifier_key, satisfied_methods, challenge, rejections, status, started_at,
+                    expires_at, client_address, client_description, binding, version
              FROM authentication.transaction
              WHERE tenant_id = $1 AND id = $2",
         )
@@ -253,7 +232,7 @@ impl TransactionStore for PgTransactionStore {
         .fetch_optional(connection(uow)?)
         .await
         .map_err(|e| database_error(&e))?;
-        row.map(to_transaction).transpose()
+        row.as_ref().map(to_transaction).transpose()
     }
 
     async fn update(
@@ -267,7 +246,8 @@ impl TransactionStore for PgTransactionStore {
         let updated = sqlx::query(
             "UPDATE authentication.transaction
              SET current_step = $3, identified = $4, candidate_user_id = $5, identifier_key = $6,
-                 satisfied_methods = $7, rejections = $8, status = $9, version = version + 1
+                 satisfied_methods = $7, rejections = $8, status = $9, challenge = $11,
+                 version = version + 1
              WHERE tenant_id = $1 AND id = $2 AND version = $10",
         )
         .bind(tenant.as_uuid())
@@ -280,6 +260,7 @@ impl TransactionStore for PgTransactionStore {
         .bind(stored(state.rejections)?)
         .bind(state.status.as_str())
         .bind(stored(state.version)?)
+        .bind(state.challenge.map(|challenge| challenge.to_vec()))
         .execute(&mut *connection)
         .await
         .map_err(|e| database_error(&e))?

@@ -238,6 +238,10 @@ async fn world() -> World {
         authentication,
         accounts,
         sessions,
+        factors: hodor_authentication::api::FactorService::new(
+            identity.clone(),
+            webauthn_service(units_of_work.clone(), clock.clone()),
+        ),
         external: None,
         digest,
         clock: clock.clone(),
@@ -1351,4 +1355,21 @@ async fn a_code_sent_before_the_password_is_the_wrong_step() {
             "authentication.unexpected_step"
         )
     );
+}
+
+/// The WebAuthn use cases on the in-memory store, with real cryptography.
+fn webauthn_service(
+    units_of_work: InMemoryUnitOfWorkFactory,
+    clock: Arc<FixedClock>,
+) -> hodor_credential::api::WebAuthnService {
+    hodor_credential::api::WebAuthnService::new(
+        Arc::new(units_of_work),
+        Arc::new(hodor_credential::testing::InMemoryWebAuthn::default()),
+        hodor_credential::api::RelyingParty::from_public_address("https://auth.example")
+            .expect("valid"),
+        Arc::new(hodor_adapters_crypto::Sha256Digest),
+        Arc::new(hodor_adapters_crypto::AwsLcVerifier),
+        Arc::new(hodor_adapters_crypto::OsRandom),
+        clock,
+    )
 }

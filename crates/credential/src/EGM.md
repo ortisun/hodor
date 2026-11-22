@@ -19,6 +19,8 @@ The `application` and `domain` modules are private; other crates use the
   - Access tokens: `AccessToken`, `AccessTokenEvent`, `AccessTokenHash`, `AccessTokenId`, `AccessTokenSecret`, `AccessTokenSnapshot`.
   - Passwords: `PasswordEvent`, `HistoricHash`, `MAX_PASSWORD_BYTES`, `PasswordHash`, `PasswordRecord`, `PasswordRules`, `check_acceptable`.
   - Authenticator applications: `Totp`, `TotpEnrollment`, `TotpEvent`, `TotpId`, `TotpSnapshot`, `TotpStatus`, `ENROLLMENT_LIFETIME`, `STEP_SECONDS`, `TOTP_SEALING_PURPOSE`.
+  - WebAuthn use cases and port: `WebAuthnService`, `WebAuthnStore`, `BegunRegistration`, `AssertionChallenge`.
+  - WebAuthn: `AssertionResponse`, `Challenge`, `CoseAlgorithm`, `CreationOptions`, `CredentialDescriptor`, `PendingRegistration`, `PendingRegistrationSnapshot`, `RegistrationResponse`, `RelyingParty`, `RequestOptions`, `WebAuthnCredential`, `WebAuthnCredentialId`, `WebAuthnCredentialSnapshot`, `WebAuthnEvent`, `WebAuthnRegistrationId`, `user_handle`.
 - `lib.rs: pub mod testing` (`testing.rs`): public test support, compiled only under `#[cfg(any(test, feature = "testing"))]`. The `testing` feature turns on `hodor-kernel/testing` (`Cargo.toml`).
   - `InMemoryPasswords`: an in-memory `PasswordStore`.
   - `InMemoryAccessTokens`: an in-memory `AccessTokenStore`.
@@ -27,9 +29,11 @@ The `application` and `domain` modules are private; other crates use the
   - `FakeHasher`: a `PasswordHasher` for tests, with `raise_parameters()`, `set_overloaded(bool)`, and the counters `hashes()`, `verifications()` and `checks_against_nothing()`.
   - `Ports<'a> { units_of_work, passwords }` and `run_contract(ports)`: the contract every `PasswordStore` must pass.
   - `AccessTokenPorts<'a> { units_of_work, tokens }` and `run_access_token_contract(ports)`: the contract every `AccessTokenStore` must pass. It uses `hodor_kernel::random::testing::FakeDigest`.
+  - `InMemoryWebAuthn`: an in-memory `WebAuthnStore`. `stored_credential(user_id, credential_id, created_at)` makes a credential as a store keeps it.
+  - `WebAuthnPorts<'a> { units_of_work, store }` and `run_webauthn_contract(ports)`: the contract every `WebAuthnStore` must pass: credentials come back unchanged, oldest first, in their own tenant only; a credential identifier is unique within a tenant (`credential.webauthn_credential_exists`) and free in another; a use is stored only over the counter that was read; a pending registration is taken once, in its own tenant only.
 - Subdirectories:
-  - [application](./application/EGM.md): `CredentialService`, `AccessTokenService`, `TotpService` and the `PasswordHasher`, `PasswordStore`, `AccessTokenStore`, `TotpStore` and `HmacSha1` ports.
-  - [domain](./domain/EGM.md): password rules and records, access tokens, authenticator applications, `PasswordEvent`, `AccessTokenEvent` and `TotpEvent`.
+  - [application](./application/EGM.md): `CredentialService`, `AccessTokenService`, `TotpService`, `WebAuthnService` and the `PasswordHasher`, `PasswordStore`, `AccessTokenStore`, `TotpStore`, `HmacSha1` and `WebAuthnStore` ports.
+  - [domain](./domain/EGM.md): password rules and records, access tokens, authenticator applications, WebAuthn credentials and their checks, `PasswordEvent`, `AccessTokenEvent`, `TotpEvent` and `WebAuthnEvent`.
 
 ## Invariants
 

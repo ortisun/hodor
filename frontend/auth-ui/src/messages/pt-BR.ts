@@ -28,6 +28,10 @@ export const ptBR: Messages = {
   startAgain: "Começar de novo",
   signInExpired: "A entrada demorou demais e foi reiniciada.",
   unknownStep: "Esta página não consegue continuar esta entrada.",
+  securityKeyLead: "Use sua chave de segurança, ou a que vem neste dispositivo, para terminar de entrar.",
+  useSecurityKey: "Usar a chave de segurança",
+  securityKeyNoAnswer: "A chave de segurança não respondeu. Tente de novo.",
+  securityKeyUnavailable: "Este navegador não consegue usar chaves de segurança. Entre por outro navegador.",
 
   registerTitle: "Criar uma conta",
   registerLead: "Informe seu endereço de email. Uma mensagem vai levar um link para você terminar.",

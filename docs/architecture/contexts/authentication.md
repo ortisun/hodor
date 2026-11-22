@@ -4,7 +4,7 @@ The `authentication` context decides whether someone has proved who they are. It
 
 It owns no users, credentials or sessions. It asks the `identity` context who a login identifier belongs to, asks the `credential` context whether a secret is right, and asks the `session` context to start a session. What it owns is the procedure: which steps, in which order, with which protections.
 
-This page specifies signing in with a login identifier and a password (Milestone 1), with an external identity (Milestone 2), and the steps a flow may require only sometimes, which carry the second factors of Milestone 4. The same mechanism carries every later method.
+This page specifies signing in with a login identifier and a password (Milestone 1), with an external identity (Milestone 2), and the steps a flow may require only sometimes, which carry the second factors of Milestone 4, starting with WebAuthn. The same mechanism carries every later method.
 
 ## Flows
 
@@ -26,6 +26,7 @@ An **authenticator** performs one step. It receives what the person submitted an
 | `password` | Checks the password of the person named by the identifier step | One factor: something the person knows | Milestone 1 |
 | An external identity provider, a directory | Takes what came back from somewhere else that knows the person, checks it, and answers who the person is | Who is signing in and one factor, in a single step | Milestone 2, in the federation context |
 | `totp` | Checks a code of the candidate's [authenticator application](credential.md#authenticator-applications). The person has the means for it when they have an application in use | One factor: something the person has | Milestone 4 |
+| `webauthn` | Checks the answer of a security key or a platform authenticator to a challenge, with the [credential context](credential.md#checking-a-credential). The person has the means when they registered at least one credential | One factor: something the person has | Milestone 4 |
 | Passkey and others | — | — | Later issues |
 
 Each step has a requirement:
@@ -82,19 +83,36 @@ A flow may also list **alternatives**: steps that, satisfied at the very start o
 
 What a person submits to an alternative is a set of named values that only its authenticator understands, every one of them treated as a secret: the code an identity provider sent back, a password for a directory.
 
+### Steps that need a challenge
+
+Some authenticators can check an answer only to a question they asked: a WebAuthn authenticator signs a challenge Hodor chose. Such a step takes two requests.
+
+1. **Asking for the challenge.** The current step's authenticator makes a challenge and the options the browser needs. The challenge is kept in the transaction; asking again replaces it.
+2. **Submitting.** The answer is checked against the challenge kept in the transaction.
+
+| Rule | Why |
+|---|---|
+| A challenge is asked for only for the current step | Like any input, a question for another step is refused |
+| A challenge is used once. Submitting the step removes it from the transaction, whether the answer is accepted or rejected | An answer that was seen once cannot be sent again |
+| A challenge belongs to one transaction, so to one browser and one tenant | It is stored with the transaction, under its binding |
+| Submitting with no challenge asked for is a rejection, counted like any other | There is nothing the answer can be checked against |
+
+What a person submits to such a step is a set of named values, like the input of an alternative: only the step's authenticator understands them.
+
 ### The built-in flow
 
 | Step | Authenticator | Requirement |
 |---|---|---|
 | 1 | `identifier` | Required |
 | 2 | `password` | Required |
-| 3 | `totp` | Optional |
+| 3 | `webauthn` | Optional |
+| 4 | `totp` | Optional |
 
 Minimum assurance: single factor.
 
-A person who put an authenticator application in use is always asked for a code after the password, whether or not the tenant requires a second factor: they chose a second factor, and a stolen password alone must not let anyone in. A person without one signs in with the password, unless the tenant requires a second factor, in which case the sign-in fails at completion.
+A person who registered a security key is always asked for it after the password, and a person who put an authenticator application in use for a code, whether or not the tenant requires a second factor: they chose a second factor, and a stolen password alone must not let anyone in. A person without one signs in with the password, unless the tenant requires a second factor, in which case the sign-in fails at completion.
 
-The third step needs a place to keep secrets. An installation without `HODOR_SECRET_KEYS` runs the flow without it, and nobody there can have an authenticator application.
+The fourth step needs a place to keep secrets. An installation without `HODOR_SECRET_KEYS` runs the flow without it, and nobody there can have an authenticator application.
 
 ### The authenticator application step
 
@@ -104,7 +122,6 @@ The third step needs a place to keep secrets. An installation without `HODOR_SEC
 | An accepted code clears the identifier's count, as a right password does | The person proved both factors |
 | A rejected code looks the same whatever the reason: a wrong code, a code already used, something that is not six digits | Nothing in the answer helps someone guessing |
 | Five rejections end the sign-in, as for every step | Whoever holds the password starts again, and their attempts keep counting towards the lockout |
-
 ### What makes a flow valid
 
 A flow is checked before it can be used. It is valid when:
@@ -132,6 +149,7 @@ Each execution of a flow is a **transaction**: the server-side record of how far
 | Candidate | Who is trying to sign in, once the identifier step has run. Empty when the identifier belongs to nobody, which the person signing in must not be able to tell |
 | Identifier key | A digest of the normalized identifier typed, used to count attempts. The identifier itself is not kept |
 | Satisfied methods | Which methods have been satisfied so far. They are passed on to the session, which is where the `amr` of a token will come from |
+| Challenge | The challenge the current step asked for, if it needs one. Empty again once the step is submitted |
 | Rejections | How many times a step was rejected in this transaction |
 | Expires at | Ten minutes after the start |
 | Client | The address and browser description, passed on to the session |
@@ -323,6 +341,9 @@ Finishing spans several contexts, each of which commits on its own. The order ab
 | Start sign-in | Creates a transaction for the tenant's flow and returns its identifier, its secret and the first step |
 | Submit step | Runs the current step's authenticator with what was submitted. Returns the next step, a rejection, or completion with a session token |
 | Describe sign-in | Returns the current step of a transaction, so that a page can be shown again after a reload |
+| Challenge for a step | Asks the current step's authenticator for a challenge, keeps it in the transaction and returns the options for the browser |
+| Begin WebAuthn registration | For a signed-in person: asks the credential context for a pending registration, naming the person by their primary login identifier and display name |
+| Finish WebAuthn registration | For a signed-in person: hands what the authenticator answered to the credential context |
 | Cancel sign-in | Ends a transaction |
 | Request registration | Sends a registration link, or a note that the address already has an account |
 | Complete registration | Uses a registration token: creates the user and sets the password |
@@ -336,7 +357,7 @@ Finishing spans several contexts, each of which commits on its own. The order ab
 | `TransactionStore` | Store and load transactions; complete one exactly once |
 | `AttemptStore` | Keep the counts and lockouts for identifiers and addresses |
 | `VerificationTokenStore` | Store tokens; replace the earlier ones of an address or user; find a good one; use one up exactly once |
-| `Authenticator` | Perform one step. The built-in ones live in this context; other contexts and plugins add theirs |
+| `Authenticator` | Perform one step, say whether the person has the means for it, and make a challenge when the step needs one. The built-in ones live in this context; other contexts and plugins add theirs |
 
 This context calls the `identity`, `credential`, `session`, `tenant` and `notification` contexts through their public interfaces.
 
@@ -353,6 +374,7 @@ This context calls the `identity`, `credential`, `session`, `tenant` and `notifi
 | `candidate_user_id` | `uuid` | Null until the identifier step, and when the identifier belongs to nobody |
 | `identifier_key` | `bytea` | SHA-256 of the normalized identifier typed |
 | `satisfied_methods` | `text[]` | |
+| `challenge` | `bytea` | Null unless the current step asked for one |
 | `rejections` | `integer` | |
 | `status` | `text` | `in_progress`, `completed`, `failed`, `cancelled` |
 | `started_at`, `expires_at` | `timestamptz` | |
@@ -396,8 +418,9 @@ All three are tenant tables under row-level security.
 |---|---|
 | Editing flows and simulating them | Phase 4 |
 | Setting the tenant's second factor policy from the administration interface or the console. Today the command-line tool sets it | Issue-70 |
+| Registering a security key from the pages, and proving oneself again first. Today a key is registered through the interaction interface only, by a person already signed in | Issue-70 |
 | Enrolling a second factor during a sign-in, for a person whose tenant requires one and who has none. Today their sign-in fails at completion | Issue-70 |
-| Offering a choice between several second factors at one step. Today each is its own step, and a person enrolled in two would be asked for both, unless they are conditional on the assurance not being reached | Issue-67, WebAuthn |
+| Offering a choice between several second factors at one step. Today each is its own step: a person with both a security key and an authenticator application is asked for both | Issue-70 |
 | A reason in `authentication.failed` that tells a missing second factor from a rejected step | With the step-up of Issue-69 |
 | Further authenticators, risk signals, recognizing a user's own device | Phases 3 and 4 |
 | Making a user choose a new password when the current one is marked as temporary. The mark is stored and returned by the credential context, but sign-in does not act on it yet | With the administration interface, Issue-29, which is what sets the mark |

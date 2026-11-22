@@ -16,14 +16,16 @@ pub mod testing;
 pub mod api {
     pub use crate::application::account::{AccountRequest, AccountService};
     pub use crate::application::authenticators::{
-        IdentifierAuthenticator, PasswordAuthenticator, TotpAuthenticator,
+        IdentifierAuthenticator, PasswordAuthenticator, TotpAuthenticator, WebAuthnAuthenticator,
     };
+    pub use crate::application::factors::FactorService;
     pub use crate::application::guard::AttemptGuard;
     pub use crate::application::ports::{AttemptStore, TransactionStore, VerificationTokenStore};
     pub use crate::application::service::{AuthenticationService, SignIn, StartedSignIn};
     pub use crate::domain::attempt::{AttemptCounter, AttemptSubject, LockoutRules};
     pub use crate::domain::authenticator::{
-        Authenticator, AuthenticatorTraits, ExternalInput, Factor, StepInput, StepOutcome,
+        Authenticator, AuthenticatorTraits, ExternalInput, Factor, StepChallenge, StepInput,
+        StepOutcome,
     };
     pub use crate::domain::engine::{FlowEngine, Progress};
     pub use crate::domain::event::AuthenticationEvent;

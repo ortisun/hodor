@@ -31,6 +31,11 @@ address.
   - `totp` - `client.submitTotp`, one field (`text.totpLabel`, hint
     `text.totpHint`) with `autocomplete="one-time-code"` and
     `inputmode="numeric"`, and "use another address".
+  - `webauthn` - a button that asks `client.webAuthnOptions()`, then the
+    authenticator through `askAuthenticator`, and sends its answer with
+    `client.submitWebAuthn`. When the authenticator gives no answer nothing
+    is sent and `text.securityKeyNoAnswer` is shown; a browser without
+    WebAuthn is told `text.securityKeyUnavailable`.
   - Any other step - `text.unknownStep` and "start again".
   - Answer `completed` means `go("account")`; `failed` shows `signInEnded`;
     `rejected` shows `rejected` and `attemptsLeft`. "Start again" and "use

@@ -53,6 +53,7 @@ Each store is a unit struct (except where noted) that runs its queries on
 | `PgPasswordStore` | `impl PasswordStore for PgPasswordStore` (`credential.rs`, `hodor_credential::api`) | `credential.password`, `credential.password_history` |
 | `PgAccessTokenStore` | `impl AccessTokenStore for PgAccessTokenStore` (`credential.rs`, `hodor_credential::api`) | `credential.access_token` |
 | `PgTotpStore` | `impl TotpStore for PgTotpStore` (`credential.rs`, `hodor_credential::api`); `activate` locks the pending row with `FOR UPDATE`, `use_step` is one conditional `UPDATE` | `credential.totp` |
+| `PgWebAuthnStore` | `impl WebAuthnStore for PgWebAuthnStore` (`credential.rs`, `hodor_credential::api`) | `credential.webauthn_credential`, `credential.webauthn_registration` |
 | `PgProviderStore` | `impl ProviderStore for PgProviderStore` (`federation.rs`, `hodor_federation::api`) | `federation.identity_provider` |
 | `PgLinkStore` | `impl LinkStore for PgLinkStore` (`federation.rs`, `hodor_federation::api`) | `federation.external_identity` |
 | `PgPendingAuthorizationStore` | `impl PendingAuthorizationStore for PgPendingAuthorizationStore` (`federation.rs`, `hodor_federation::api`) | `federation.pending_authorization` |

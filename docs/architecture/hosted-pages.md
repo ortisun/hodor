@@ -42,8 +42,9 @@ stateDiagram-v2
 The page is a renderer for the answer of the interaction interface:
 
 - On opening, it asks who is signed in. If nobody is, it asks where the current sign-in stands, and starts one if there is none. A reloaded page therefore continues where it was.
-- It shows the form for the `step` in the answer: `identifier`, `password` or `totp`. A step the page does not know is shown as "this page cannot continue this sign-in", never guessed at.
+- It shows the form for the `step` in the answer: `identifier`, `password`, `webauthn` or `totp`. A step the page does not know is shown as "this page cannot continue this sign-in", never guessed at.
 - The `totp` form asks for the code the person's authenticator application shows, in one field with `autocomplete="one-time-code"` and a numeric keyboard on phones, and offers to start again with another identifier.
+- The `webauthn` step is one button, "use the security key". Pressing it asks the server for [the challenge](../api/interaction-api.md#the-webauthn-step), then the person's authenticator through the browser, and sends the answer. When the authenticator gives none, because the person cancelled or it timed out, nothing is sent and the page says the key did not answer; a browser that cannot use security keys is told so.
 - A `rejected` answer shows the same form again with one message, "that did not work", whatever the reason. The page has no way of knowing the reason and does not try.
 - "Use another address" on the password step abandons the sign-in and starts a new one.
 - A sign-in that expired while the person was typing is started again, and the page says so.
@@ -199,7 +200,7 @@ npm run browser-tests
 | Unit tests of the application | The client turns answers and problem documents into what the pages show; both languages have the same messages; each page renders the step it is given | `npm test` in `frontend/auth-ui`, with no server |
 | Tests of the HTTP layer | The listed pages get `index.html` with the policy above, other paths get `404`, files get the right caching, and a path cannot climb out of the directory | `cargo test`, with a directory made by the test; Node.js is not needed |
 | Tests of the server binary | The real `hodor-server` serves the pages of the directory it is given, serves none without the setting, and refuses to start with a directory that has no application | `cargo test`, with a directory made by the test |
-| Browser tests | A person registers, reads the message, chooses a password, signs in and signs out; recovers a password; is refused with a wrong password; signs in with the keyboard alone. No page reports a Content Security Policy violation, a script error or an accessibility violation | Playwright with Chromium against the Compose stack, in continuous integration |
+| Browser tests | A person registers, reads the message, chooses a password, signs in and signs out; recovers a password; is refused with a wrong password; signs in with the keyboard alone; registers a security key and signs in with it, through a virtual authenticator of Chromium. No page reports a Content Security Policy violation, a script error or an accessibility violation | Playwright with Chromium against the Compose stack, in continuous integration |
 
 The browser tests read the messages from the development mail server of the Compose stack, as a person would read their mailbox, and sign in through [the development identity provider](../development/local-setup.md#the-development-identity-provider) of the same stack: created on the first visit, recognized on the second, refused when the address belongs to an account that exists, and told so when the person cancels.
 
@@ -212,3 +213,4 @@ The browser tests read the messages from the development mail server of the Comp
 | The person's sessions on the account page | The account console, Phase 2 |
 | A choice of language on the page, and a remembered theme | The account console, Phase 2 |
 | Browsers other than Chromium in the browser tests | Hardening pass |
+| Registering, naming and removing security keys from the pages | Issue-70 |

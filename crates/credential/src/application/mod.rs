@@ -4,3 +4,4 @@ pub(crate) mod access_tokens;
 pub(crate) mod ports;
 pub(crate) mod service;
 pub(crate) mod totp;
+pub(crate) mod webauthn;

@@ -13,6 +13,8 @@ All paths are relative to the tenant: `https://{host}/t/{slug}`. Requests and re
 | `POST /interaction/sign-in/steps/identifier` | Submit the login identifier |
 | `POST /interaction/sign-in/steps/password` | Submit the password |
 | `POST /interaction/sign-in/steps/totp` | Submit a code of the person's authenticator application |
+| `POST /interaction/sign-in/steps/webauthn/options` | Ask for the challenge of the WebAuthn step |
+| `POST /interaction/sign-in/steps/webauthn` | Submit what the authenticator answered |
 | `DELETE /interaction/sign-in` | Abandon the sign-in |
 | `GET /interaction/session` | Say who is signed in |
 
@@ -56,8 +58,35 @@ The `totp` step comes after the password only for a person who has an authentica
 | `identifier` | `{ "identifier": "ana@example.com" }` |
 | `password` | `{ "password": "…" }` |
 | `totp` | `{ "code": "123456" }` |
+| `webauthn` | `{ "credential_id": "…", "client_data": "…", "authenticator_data": "…", "signature": "…", "user_handle": "…" }`, each the bytes the authenticator gave, in base64url without padding. `user_handle` may be left out or `null` |
 
 Submitting a step other than the one the sign-in is waiting for is an error (`422`, `authentication.unexpected_step`), and changes nothing.
+
+### The WebAuthn step
+
+The `webauthn` step needs a challenge before it can be submitted, so the pages ask for one first. `POST /interaction/sign-in/steps/webauthn/options`, with the CSRF token and no body, answers `200`:
+
+```json
+{
+  "public_key": {
+    "challenge": "q3Fv…",
+    "rpId": "id.example.com",
+    "allowCredentials": [
+      { "type": "public-key", "id": "AbC1…", "transports": ["usb", "nfc"] }
+    ],
+    "userVerification": "discouraged",
+    "timeout": 300000
+  }
+}
+```
+
+`public_key` is the `PublicKeyCredentialRequestOptionsJSON` of the WebAuthn specification: every byte string in base64url without padding. The pages turn it into what `navigator.credentials.get` takes, and send the answer to `POST /interaction/sign-in/steps/webauthn`. Asking again replaces the challenge; submitting uses it up, whatever the answer.
+
+| Situation | Status | Code |
+|---|---|---|
+| The sign-in is not waiting for the `webauthn` step | `422` | `authentication.unexpected_step` |
+
+A wrong answer, a value that is not base64url, an answer to another challenge, from another credential or from another site is a rejection like a wrong password: `200` with `"status": "rejected"`.
 
 ### Errors
 
@@ -205,6 +234,8 @@ On a host that serves several tenants by path, cookies are separated by `Path`, 
 | `GET /interaction/sessions` | List the person's sessions |
 | `DELETE /interaction/sessions/{session_id}` | End one of the person's sessions |
 | `DELETE /interaction/sessions` | End all of the person's sessions except this one |
+| `POST /interaction/webauthn/registrations` | Begin registering a WebAuthn credential |
+| `POST /interaction/webauthn/registrations/{registration_id}` | Finish registering it |
 
 Every one of them needs a valid session cookie. Without one the answer is `401` with `session.not_authenticated`, whatever the reason: no cookie, an unknown token, an expired or a revoked session.
 
@@ -262,9 +293,65 @@ Signing out ends one session. The person's sessions in other browsers continue.
 
 `DELETE /interaction/sessions` ends every session of the person except the current one: `200` with `{ "ended": 2 }`.
 
+### Registering a WebAuthn credential
+
+A signed-in person registers a security key or a platform authenticator in two requests. Both change something and carry the session's CSRF token.
+
+`POST /interaction/webauthn/registrations`, with no body, answers `201`:
+
+```json
+{
+  "registration_id": "0193f1d0-…",
+  "public_key": {
+    "rp": { "id": "id.example.com", "name": "Hodor" },
+    "user": { "id": "AZPx…", "name": "ana@example.com", "displayName": "Ana" },
+    "challenge": "Zm9v…",
+    "pubKeyCredParams": [
+      { "type": "public-key", "alg": -7 },
+      { "type": "public-key", "alg": -257 }
+    ],
+    "timeout": 300000,
+    "excludeCredentials": [],
+    "authenticatorSelection": { "residentKey": "preferred", "userVerification": "discouraged" },
+    "attestation": "none",
+    "extensions": { "credProps": true }
+  }
+}
+```
+
+`public_key` is the `PublicKeyCredentialCreationOptionsJSON` of the WebAuthn specification. The registration can be finished within five minutes, once.
+
+`POST /interaction/webauthn/registrations/{registration_id}` with what `navigator.credentials.create` answered:
+
+```json
+{
+  "client_data": "eyJ0…",
+  "attestation_object": "o2Nm…",
+  "transports": ["usb"],
+  "discoverable": true,
+  "name": "Blue key"
+}
+```
+
+`client_data` and `attestation_object` are base64url without padding. `transports` is what `getTransports()` gave, `discoverable` what the `credProps` extension said, and either may be left out. `name` may be left out too, and is then `Security key`. The answer is `201` with the credential:
+
+```json
+{ "id": "0193f1d1-…", "name": "Blue key", "created_at": "2026-11-20T14:05:00Z" }
+```
+
+| Situation | Status | Code |
+|---|---|---|
+| The registration is unknown, another person's, already used or older than five minutes | `404` | `credential.webauthn_registration_not_found` |
+| The answer fails a check of [registration](../architecture/contexts/credential.md#registering-a-credential) | `422` | `credential.webauthn_registration_refused` |
+| The tenant already has this credential | `409` | `credential.webauthn_credential_exists` |
+
+A registration that fails is used up anyway: the person asks again.
+
+These two routes are what the pages of Issue-70 will use. Until then a person registers a credential from a page of their own on Hodor's origin, or a test does; nothing asks them to prove themselves again before registering.
+
 ### Protection for these requests
 
-The three `DELETE` requests change something, so each must carry the CSRF token from `GET /interaction/session` in the `X-CSRF-Token` header. The token is derived from the session token, and only a page from this origin can read it. A request without it, or with a wrong one, is refused with `403` and `request.csrf_token_invalid`, and changes nothing. The origin check applies as everywhere.
+The three `DELETE` requests and the two WebAuthn registration requests change something, so each must carry the CSRF token from `GET /interaction/session` in the `X-CSRF-Token` header. The token is derived from the session token, and only a page from this origin can read it. A request without it, or with a wrong one, is refused with `403` and `request.csrf_token_invalid`, and changes nothing. The origin check applies as everywhere.
 
 The session cookie is `SameSite=Lax`, which already keeps a browser from attaching it to a `DELETE` another site starts. The token is a second, independent measure.
 
@@ -306,3 +393,4 @@ The address recorded for a sign-in, and used to limit attempts, is the address o
 | Trusting a forwarded client address from named proxies | Before any deployment behind a load balancer |
 | Limiting requests per address on these paths, beyond the attempt limits of the password step | Later in Phase 1 |
 | The `__Host-` cookie variant for a tenant's own host | Phase 3 |
+| Proving oneself again before registering a WebAuthn credential, and pages for it | Issue-70 |

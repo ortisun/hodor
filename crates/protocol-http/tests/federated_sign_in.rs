@@ -336,6 +336,10 @@ async fn world_with(directory: Option<(String, Arc<dyn DirectoryClient>)>) -> Wo
         authentication,
         accounts,
         sessions,
+        factors: hodor_authentication::api::FactorService::new(
+            identity.clone(),
+            webauthn_service(units_of_work.clone(), clock.clone()),
+        ),
         external: Some(external),
         digest,
         clock: clock.clone(),
@@ -2396,4 +2400,21 @@ async fn a_saml_response_is_checked_when_it_arrives_and_only_its_answer_is_kept(
             reason: "malformed"
         })
     );
+}
+
+/// The WebAuthn use cases on the in-memory store, with real cryptography.
+fn webauthn_service(
+    units_of_work: InMemoryUnitOfWorkFactory,
+    clock: Arc<FixedClock>,
+) -> hodor_credential::api::WebAuthnService {
+    hodor_credential::api::WebAuthnService::new(
+        Arc::new(units_of_work),
+        Arc::new(hodor_credential::testing::InMemoryWebAuthn::default()),
+        hodor_credential::api::RelyingParty::from_public_address("https://auth.example")
+            .expect("valid"),
+        Arc::new(hodor_adapters_crypto::Sha256Digest),
+        Arc::new(hodor_adapters_crypto::AwsLcVerifier),
+        Arc::new(hodor_adapters_crypto::OsRandom),
+        clock,
+    )
 }

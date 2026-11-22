@@ -401,6 +401,23 @@ pub async fn run_transaction_contract(ports: TransactionPorts<'_>) {
     assert!(reloaded.snapshot().identified);
     assert!(reloaded.is_bound_to(&[9; 32]), "the binding is stored");
 
+    // A challenge is stored, and its removal too.
+    let mut challenged = reloaded.clone();
+    challenged.record_challenge([6; 32]);
+    update(&ports, &tenant, &challenged).await.expect("update");
+    let reloaded = stored(&ports, &tenant, transaction.id())
+        .await
+        .expect("exists");
+    assert_eq!(reloaded.challenge(), Some(&[6; 32]));
+    let mut answered = reloaded.clone();
+    answered.record_rejection();
+    update(&ports, &tenant, &answered).await.expect("update");
+    let reloaded = stored(&ports, &tenant, transaction.id())
+        .await
+        .expect("exists");
+    assert_eq!(reloaded.challenge(), None);
+    assert_eq!(reloaded.snapshot().version, 3);
+
     // Of two requests working from the same version, the second is
     // refused. This is what makes completion happen once.
     let (mut first, mut second) = (reloaded.clone(), reloaded.clone());

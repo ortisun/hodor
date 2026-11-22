@@ -1,9 +1,13 @@
 //! The stores behind the administration interface, on PostgreSQL.
 
 use hodor_adapters_postgres::testing::TestDatabase;
-use hodor_adapters_postgres::{PgAccessTokenStore, PgEngineBindingStore, PgRoleAssignmentStore};
+use hodor_adapters_postgres::{
+    PgAccessTokenStore, PgEngineBindingStore, PgRoleAssignmentStore, PgWebAuthnStore,
+};
 use hodor_authorization::testing::{BindingPorts, Ports, run_binding_contract, run_contract};
-use hodor_credential::testing::{AccessTokenPorts, run_access_token_contract};
+use hodor_credential::testing::{
+    AccessTokenPorts, WebAuthnPorts, run_access_token_contract, run_webauthn_contract,
+};
 
 #[tokio::test]
 async fn the_postgres_role_assignment_store_passes_the_contract() {
@@ -70,6 +74,16 @@ async fn the_postgres_access_token_store_passes_the_contract() {
     run_access_token_contract(AccessTokenPorts {
         units_of_work: database.app(),
         tokens: &PgAccessTokenStore,
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn the_postgres_webauthn_store_passes_the_contract() {
+    let database = TestDatabase::start().await;
+    run_webauthn_contract(WebAuthnPorts {
+        units_of_work: database.app(),
+        store: &PgWebAuthnStore,
     })
     .await;
 }

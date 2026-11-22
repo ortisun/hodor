@@ -17,15 +17,18 @@ use hodor_adapters_postgres::{
     PgLinkStore, PgMessageQueue, PgPasswordStore, PgPendingAuthorizationStore, PgProviderStore,
     PgResourceServerStore, PgRoleAssignmentStore, PgSessionStore, PgTenantDirectory,
     PgTenantRepository, PgTotpStore, PgTransactionStore, PgUserRepository,
-    PgVerificationTokenStore,
+    PgVerificationTokenStore, PgWebAuthnStore,
 };
 use hodor_audit::api::AuditService;
 use hodor_authentication::api::{
-    AccountService, AttemptGuard, AuthFlow, AuthenticationService, FlowEngine,
+    AccountService, AttemptGuard, AuthFlow, AuthenticationService, FactorService, FlowEngine,
     IdentifierAuthenticator, LockoutRules, PasswordAuthenticator, Requirement, TotpAuthenticator,
+    WebAuthnAuthenticator,
 };
 use hodor_authorization::api::AuthorizationService;
-use hodor_credential::api::{AccessTokenService, CredentialService, TotpService};
+use hodor_credential::api::{
+    AccessTokenService, CredentialService, RelyingParty, TotpService, WebAuthnService,
+};
 use hodor_federation::api::{
     EXTERNAL_STEP, ExternalIdentityAuthenticator, ExternalSignIn, FederationService, GitHubClient,
     LockoutPolicy, OpenIdClient, SamlClient,
@@ -376,6 +379,15 @@ fn interaction(config: &Config, database: &Database) -> Result<InteractionState,
         digest.clone(),
         clock.clone(),
     );
+    let webauthn = WebAuthnService::new(
+        units(),
+        Arc::new(PgWebAuthnStore),
+        RelyingParty::from_public_address(&config.public_url)?,
+        digest.clone(),
+        Arc::new(AwsLcVerifier),
+        random.clone(),
+        clock.clone(),
+    );
     let mut engine = FlowEngine::new()
         .with(Arc::new(IdentifierAuthenticator::new(
             identity.clone(),
@@ -386,11 +398,18 @@ fn interaction(config: &Config, database: &Database) -> Result<InteractionState,
             identity.clone(),
             tenants.clone(),
             guard.clone(),
-        )));
-    // Signing in through an identity provider is an alternative of the
-    // flow, and a code of an authenticator application its third step,
-    // both offered only by an installation that can keep secrets.
-    let mut flow = AuthFlow::built_in();
+        )))
+        .with(Arc::new(WebAuthnAuthenticator::new(webauthn.clone())));
+    // A person who registered a security key is asked for it after the
+    // first factor. Signing in through an identity provider is an
+    // alternative of the flow, and a code of an authenticator application
+    // one more step, both offered only by an installation that can keep
+    // secrets.
+    let mut flow = AuthFlow::built_in().with_step(
+        WebAuthnAuthenticator::KIND,
+        WebAuthnAuthenticator::KIND,
+        Requirement::Optional,
+    );
     if let Some(totp) = totp_service(config, database, random.clone())? {
         engine = engine.with(Arc::new(TotpAuthenticator::new(
             totp,
@@ -425,6 +444,7 @@ fn interaction(config: &Config, database: &Database) -> Result<InteractionState,
         clock.clone(),
         &config.public_url,
     );
+    let factors = FactorService::new(identity.clone(), webauthn);
     let authentication = AuthenticationService::new(
         units(),
         Arc::new(PgTransactionStore),
@@ -441,6 +461,7 @@ fn interaction(config: &Config, database: &Database) -> Result<InteractionState,
         authentication,
         accounts,
         sessions,
+        factors,
         external,
         digest,
         clock,

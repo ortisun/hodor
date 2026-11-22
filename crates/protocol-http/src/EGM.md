@@ -40,6 +40,7 @@ the set of re-exports in `lib.rs`.
 `InteractionState` holds `authentication: AuthenticationService`,
 `accounts: AccountService` (both `hodor_authentication::api`),
 `sessions: SessionService` (`hodor_session::api`),
+`factors: FactorService` (`hodor_authentication::api`),
 `external: Option<ExternalSignIn>` (`hodor_federation::api`; `None` means no
 provider is offered), `digest: Arc<dyn Digest>` and `clock: Arc<dyn Clock>`
 (`hodor_kernel`).
@@ -83,6 +84,8 @@ routes and the whole router.
 | POST | `/sign-in/steps/identifier` | `submit_identifier` |
 | POST | `/sign-in/steps/password` | `submit_password` |
 | POST | `/sign-in/steps/totp` | `submit_totp` (body `{ "code" }`) |
+| POST | `/sign-in/steps/webauthn/options` | `webauthn_options` (the challenge of the WebAuthn step) |
+| POST | `/sign-in/steps/webauthn` | `submit_webauthn` |
 | GET | `/sign-in/providers` | `offered_providers` |
 | POST | `/sign-in/providers/{alias}` | `choose_provider` |
 | POST | `/sign-in/providers/{alias}/callback` | `finish_with_provider` |
@@ -90,6 +93,8 @@ routes and the whole router.
 | GET, DELETE | `/session` | `current_session`, `sign_out` |
 | GET, DELETE | `/sessions` | `list_sessions`, `end_other_sessions` |
 | DELETE | `/sessions/{session_id}` | `end_session` |
+| POST | `/webauthn/registrations` | `begin_webauthn_registration` (session and CSRF token) |
+| POST | `/webauthn/registrations/{registration_id}` | `finish_webauthn_registration` (session and CSRF token) |
 | POST | `/registration` | `request_registration` |
 | POST | `/registration/complete` | `complete_registration` |
 | POST | `/recovery` | `request_recovery` |

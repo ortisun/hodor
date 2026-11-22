@@ -64,7 +64,10 @@ Adapters implemented here:
   the tenant's lockout settings into `LockoutRules`.
 
 Wiring functions: `interaction` (Argon2id hashing, identity, credential,
-session, attempt guard, sign-in flow, accounts and notification queue),
+WebAuthn with the relying party of `HODOR_PUBLIC_URL`, session, attempt
+guard, sign-in flow, accounts and notification queue; the flow is the
+built-in one with an optional `webauthn` step after it, and an optional
+`totp` step when secrets can be kept),
 `external_sign_in` (`ExternalSignIn` with OpenID Connect, GitHub, SAML and,
 through `with_directories`, `LdapDirectoryClient`), `keys`, `key_rotation`
 (the default policy with `HODOR_KEY_OVERLAP_HOURS`), `administration`,

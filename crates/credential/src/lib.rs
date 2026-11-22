@@ -18,6 +18,9 @@ pub mod api {
     pub use crate::application::ports::{PasswordHasher, PasswordStore, PasswordVerification};
     pub use crate::application::service::{CredentialService, NewPassword, PasswordCheck};
     pub use crate::application::totp::{HmacSha1, TotpCheck, TotpService, TotpStore, totp_code_at};
+    pub use crate::application::webauthn::{
+        AssertionChallenge, BegunRegistration, WebAuthnService, WebAuthnStore,
+    };
     pub use crate::domain::access_token::{
         AccessToken, AccessTokenEvent, AccessTokenHash, AccessTokenId, AccessTokenSecret,
         AccessTokenSnapshot,
@@ -30,5 +33,11 @@ pub mod api {
     pub use crate::domain::totp::{
         ENROLLMENT_LIFETIME, SEALING_PURPOSE as TOTP_SEALING_PURPOSE, STEP_SECONDS, Totp,
         TotpEnrollment, TotpEvent, TotpId, TotpSnapshot, TotpStatus,
+    };
+    pub use crate::domain::webauthn::{
+        AssertionResponse, Challenge, CoseAlgorithm, CreationOptions, CredentialDescriptor,
+        PendingRegistration, PendingRegistrationSnapshot, RegistrationResponse, RelyingParty,
+        RequestOptions, WebAuthnCredential, WebAuthnCredentialId, WebAuthnCredentialSnapshot,
+        WebAuthnEvent, WebAuthnRegistrationId, user_handle,
     };
 }

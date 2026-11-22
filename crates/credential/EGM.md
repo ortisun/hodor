@@ -10,6 +10,11 @@ user on the administration interface (`src/domain/access_token.rs`). Storage
 and hashing are reached only through the `PasswordStore`, `AccessTokenStore`,
 `TotpStore`, `PasswordHasher` and `HmacSha1` ports and the kernel's
 `SecretBox`, which adapter crates implement.
+user on the administration interface (`src/domain/access_token.rs`), and
+registers and checks WebAuthn credentials (`src/domain/webauthn/`). Storage,
+hashing and signatures are reached only through the `PasswordStore`,
+`AccessTokenStore`, `WebAuthnStore` and `PasswordHasher` ports and the
+kernel's `Digest` and `SignatureVerifier`, which adapter crates implement.
 
 ## Subdirectories & Boundaries
 
@@ -19,9 +24,10 @@ and hashing are reached only through the `PasswordStore`, `AccessTokenStore`,
 ## Workspace Dependencies
 
 - `hodor-kernel` (`crates/kernel`): units of work, tenant context, errors, events, clock, `Secret`, `RandomSource`, `Digest` and identifiers. The `testing` feature of this crate turns on `hodor-kernel/testing`.
-- Other dependencies: `async-trait`, `serde`, `time`. Test-only dependencies: `tokio`, `proptest`.
+- Other dependencies: `async-trait`, `base64`, `serde`, `serde_json`, `time`. Test-only dependencies: `tokio`, `proptest`.
 - Crates in this workspace that depend on `hodor-credential` (from their `Cargo.toml`): `crates/adapters-crypto`, `crates/adapters-postgres`, `crates/authentication`, `crates/protocol-http`.
 - Port implementations: `Argon2idHasher` (`PasswordHasher`) in `crates/adapters-crypto/src/password.rs`. `AwsLcHmacSha1` (`HmacSha1`) in `crates/adapters-crypto/src/hmac.rs`. `PgPasswordStore` (`PasswordStore`), `PgAccessTokenStore` (`AccessTokenStore`) and `PgTotpStore` (`TotpStore`) in `crates/adapters-postgres/src/credential.rs`.
+- Port implementations: `Argon2idHasher` (`PasswordHasher`) in `crates/adapters-crypto/src/password.rs`. `PgPasswordStore` (`PasswordStore`), `PgAccessTokenStore` (`AccessTokenStore`) and `PgWebAuthnStore` (`WebAuthnStore`) in `crates/adapters-postgres/src/credential.rs`. `AwsLcVerifier` (kernel `SignatureVerifier`) in `crates/adapters-crypto/src/signature.rs`.
 
 ## Verification
 

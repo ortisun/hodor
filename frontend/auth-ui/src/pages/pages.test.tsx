@@ -180,6 +180,58 @@ describe("the sign-in page", () => {
     expect(screen.getByLabelText(en.passwordLabel)).toBeTruthy();
   });
 
+  it("asks the security key for the WebAuthn step and sends its answer", async () => {
+    const bytes = (...values: number[]) => new Uint8Array(values).buffer;
+    const get = vi.fn().mockResolvedValue({
+      rawId: bytes(1, 2),
+      response: { clientDataJSON: bytes(3), authenticatorData: bytes(4), signature: bytes(5), userHandle: null },
+    });
+    vi.stubGlobal("PublicKeyCredential", function PublicKeyCredential() {});
+    Object.defineProperty(navigator, "credentials", { value: { get }, configurable: true });
+    const { props, sent, go, user } = page({
+      "GET /session": [nobody],
+      "GET /sign-in": [pending("webauthn")],
+      "POST /sign-in/steps/webauthn/options": [
+        json(200, { public_key: { challenge: "AQI", rpId: "auth.example", allowCredentials: [] } }),
+      ],
+      "POST /sign-in/steps/webauthn": [json(200, { status: "completed" })],
+    });
+    render(<SignInPage {...props} notice={null} />);
+    await user.click(await screen.findByRole("button", { name: en.useSecurityKey }));
+    await waitFor(() => expect(go).toHaveBeenCalledWith("account"));
+    expect(get).toHaveBeenCalledOnce();
+    expect(sent.at(-1)?.body).toEqual({
+      credential_id: "AQI",
+      client_data: "Aw",
+      authenticator_data: "BA",
+      signature: "BQ",
+      user_handle: null,
+    });
+    vi.unstubAllGlobals();
+  });
+
+  it("sends nothing and says so when the security key gives no answer", async () => {
+    const get = vi.fn().mockRejectedValue(new DOMException("cancelled", "NotAllowedError"));
+    vi.stubGlobal("PublicKeyCredential", function PublicKeyCredential() {});
+    Object.defineProperty(navigator, "credentials", { value: { get }, configurable: true });
+    const { props, sent, user } = page({
+      "GET /session": [nobody],
+      "GET /sign-in": [pending("webauthn")],
+      "POST /sign-in/steps/webauthn/options": [json(200, { public_key: { challenge: "AQI", rpId: "auth.example" } })],
+    });
+    render(<SignInPage {...props} notice={null} />);
+    await user.click(await screen.findByRole("button", { name: en.useSecurityKey }));
+    expect((await alertShown()).textContent).toContain(en.securityKeyNoAnswer);
+    expect(sent.some((request) => request.path === "/sign-in/steps/webauthn")).toBe(false);
+    vi.unstubAllGlobals();
+  });
+
+  it("says so when the browser cannot use security keys", async () => {
+    const { props } = page({ "GET /session": [nobody], "GET /sign-in": [pending("webauthn")] });
+    render(<SignInPage {...props} notice={null} />);
+    expect((await alertShown()).textContent).toContain(en.securityKeyUnavailable);
+  });
+
   it("does not guess at a step it does not know", async () => {
     const { props } = page({ "GET /session": [nobody], "GET /sign-in": [pending("fingerprint")] });
     render(<SignInPage {...props} notice={null} />);

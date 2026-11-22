@@ -8,6 +8,7 @@ import { Frame } from "../parts/Frame";
 import { Notice } from "../parts/Notice";
 import { Action, Submit } from "../parts/Submit";
 import { PageLink, Ways, Words } from "../parts/Words";
+import { askAuthenticator, webAuthnAvailable } from "../webauthn";
 import { asFailure, type PageProps } from "./shared";
 
 type View =
@@ -98,6 +99,8 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice, sign
   const [providers, setProviders] = useState<OfferedProvider[]>([]);
   /** The directory the person chose to sign in through, if any. */
   const [directory, setDirectory] = useState<OfferedProvider | null>(null);
+  /** The security key gave no answer the last time it was asked. */
+  const [noAnswer, setNoAnswer] = useState(false);
 
   const show = useCallback(
     (answer: SignInAnswer) => {
@@ -240,6 +243,22 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice, sign
     } finally {
       setBusy(false);
     }
+  }
+
+  /**
+   * Asks for the challenge, then the authenticator. When the authenticator
+   * gives no answer, nothing is submitted: the person tries again.
+   */
+  async function askSecurityKey() {
+    setNoAnswer(false);
+    await send(async () => {
+      const answer = await askAuthenticator(await client.webAuthnOptions());
+      if (answer === null) {
+        setNoAnswer(true);
+        return { status: "pending", step: "webauthn", attemptsLeft: null };
+      }
+      return client.submitWebAuthn(answer);
+    });
   }
 
   function submit(event: FormEvent, request: () => Promise<SignInAnswer>) {
@@ -408,7 +427,28 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice, sign
         </Form>
       ) : null}
 
-      {view.kind === "step" && !["identifier", "password", "totp"].includes(view.step) ? (
+      {view.kind === "step" && view.step === "webauthn" ? (
+        <Form
+          key={view.shown}
+          onSubmit={(event) => {
+            event.preventDefault();
+            void askSecurityKey();
+          }}
+        >
+          {noAnswer ? <Notice kind="danger">{text.securityKeyNoAnswer}</Notice> : null}
+          {webAuthnAvailable() ? (
+            <>
+              <Words>{text.securityKeyLead}</Words>
+              <Submit label={text.useSecurityKey} busy={busy} text={text} />
+            </>
+          ) : (
+            <Notice kind="danger">{text.securityKeyUnavailable}</Notice>
+          )}
+          <Action variant="ghost" label={text.startAgain} onClick={() => void startAgain()} />
+        </Form>
+      ) : null}
+
+      {view.kind === "step" && !["identifier", "password", "totp", "webauthn"].includes(view.step) ? (
         <>
           <Notice kind="danger">{text.unknownStep}</Notice>
           <Action label={text.startAgain} onClick={() => void startAgain()} />
