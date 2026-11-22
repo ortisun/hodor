@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/images/logo/hodor.png" alt="The Hodor logo: someone braced against a heavy wooden door, holding it shut" width="260">
+</p>
+
 # Hodor
 
 **Identity, authentication and authorization for many tenants, written in Rust.**
