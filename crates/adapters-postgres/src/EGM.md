@@ -67,6 +67,8 @@ Each store is a unit struct (except where noted) that runs its queries on
 | `PgMessageQueue` | `impl MessageQueue for PgMessageQueue` (`notification.rs`, `hodor_notification::api`) | `notification.message` |
 | `PgPendingMessages` (holds a platform `PgPool`; `new(platform)`) | `impl PendingMessages for PgPendingMessages` (`notification.rs`, `hodor_notification::api`) | `notification.message` |
 | `PgKeyStore` | `impl KeyStore for PgKeyStore` (`keys.rs`, `hodor_keys::api`); an activation that would leave two active versions gives `Conflict` `keys.activation_conflict` | `keys.key_version` |
+| `PgSealingStateStore` | `impl SealingStateStore for PgSealingStateStore` (`keys.rs`, `hodor_keys::api`); refusing twice changes nothing | `keys.sealing_state` |
+| `reseal_tenant`, `ResealReport`, `SEALED_COLUMNS`, `SealedColumn` | `resealing.rs`: `reseal_tenant(database, &dyn SecretBox, tenant)` reads each column of `SEALED_COLUMNS` 100 rows at a time and writes a secret sealed again only if the row still holds what was read, one transaction per row. `ResealReport { resealed, current, unreadable }` with `complete()`. What `hodor-cli secrets reseal` runs | `federation.identity_provider.client_secret`, `federation.pending_authorization.code_verifier`, `credential.totp.sealed_secret` |
 | `PgSessionStore` | `impl SessionStore for PgSessionStore` (`session.rs`, `hodor_session::api`) | `session.session` |
 | `PgTenantRepository` | `impl TenantRepository for PgTenantRepository` (`tenant.rs`, `hodor_tenant::api`) | `tenant.tenant` |
 | `PgTenantDirectory` (holds a `Database`; `new(database)`) | `impl TenantDirectory for PgTenantDirectory` (`tenant.rs`, `hodor_tenant::api`) | `platform.tenant_directory` |

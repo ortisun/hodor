@@ -14,7 +14,8 @@ use hodor_kernel::{
 use std::sync::Arc;
 
 /// The purpose client secrets are sealed for.
-const CLIENT_SECRET: &str = "federation.client_secret";
+/// The purpose a provider's client secret is sealed for.
+pub const CLIENT_SECRET: &str = "federation.client_secret";
 const MAX_SECRET_BYTES: usize = 4096;
 
 /// What is needed to add a provider.
@@ -135,7 +136,7 @@ impl FederationService {
         self
     }
 
-    fn seal(
+    async fn seal(
         &self,
         tenant: &TenantContext,
         secret: &Secret<String>,
@@ -149,6 +150,7 @@ impl FederationService {
         }
         self.secrets
             .seal(tenant, CLIENT_SECRET, &Secret::new(bytes.to_vec()))
+            .await
     }
 
     /// Adds an identity provider to the tenant, enabled.
@@ -176,9 +178,10 @@ impl FederationService {
                 return Err(no_secret_for_saml());
             }
             self.secrets
-                .seal(tenant, CLIENT_SECRET, &Secret::new(Vec::new()))?
+                .seal(tenant, CLIENT_SECRET, &Secret::new(Vec::new()))
+                .await?
         } else {
-            self.seal(tenant, &command.client_secret)?
+            self.seal(tenant, &command.client_secret).await?
         };
         let provider = IdentityProvider::create(
             alias,
@@ -272,7 +275,7 @@ impl FederationService {
         client_secret: &Secret<String>,
         caller: Caller,
     ) -> Result<(), DomainError> {
-        let sealed = self.seal(tenant, client_secret)?;
+        let sealed = self.seal(tenant, client_secret).await?;
         let now = self.clock.now();
         self.change_with(tenant, id, caller, |provider| {
             if provider.snapshot().kind == ProviderKind::Saml {
@@ -372,14 +375,15 @@ impl FederationService {
     /// # Errors
     ///
     /// Returns `secret.unreadable` if it cannot be opened.
-    pub fn client_secret(
+    pub async fn client_secret(
         &self,
         tenant: &TenantContext,
         provider: &IdentityProvider,
     ) -> Result<Secret<String>, DomainError> {
-        let opened =
-            self.secrets
-                .open(tenant, CLIENT_SECRET, &provider.snapshot().client_secret)?;
+        let opened = self
+            .secrets
+            .open(tenant, CLIENT_SECRET, &provider.snapshot().client_secret)
+            .await?;
         String::from_utf8(opened.expose().clone())
             .map(Secret::new)
             .map_err(|_| hodor_kernel::sealing::unreadable("the client secret is not text"))

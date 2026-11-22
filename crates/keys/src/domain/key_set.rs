@@ -123,6 +123,33 @@ impl KeySet {
         Ok(Activation { changed, event })
     }
 
+    /// Makes a pending version the active one of its algorithm only if the
+    /// algorithm has no active version: for the first key of a set, which
+    /// must never replace one made at the same moment by someone else.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Conflict` `keys.already_active` if the algorithm already
+    /// has an active version, and what [`KeySet::activate`] returns.
+    pub fn activate_first(
+        &mut self,
+        id: KeyVersionId,
+        now: Timestamp,
+    ) -> Result<Activation, DomainError> {
+        let algorithm = self.versions[self.index_of(id)?].algorithm();
+        if self
+            .versions
+            .iter()
+            .any(|v| v.algorithm() == algorithm && v.state() == KeyState::Active)
+        {
+            return Err(DomainError::conflict(
+                "keys.already_active",
+                "the key set already has an active version of this algorithm",
+            ));
+        }
+        self.activate(id, Duration::ZERO, now)
+    }
+
     /// Retires a retiring version whose time has passed.
     ///
     /// # Errors
@@ -216,6 +243,27 @@ mod tests {
 
     fn signing_set(versions: Vec<KeyVersion>) -> KeySet {
         KeySet::from_versions(KeyUse::Signing, versions).expect("consistent")
+    }
+
+    #[test]
+    fn a_first_activation_never_replaces_an_active_version() {
+        let first = version(KeyAlgorithm::Es256, NOW);
+        let second = version(KeyAlgorithm::Es256, NOW + Duration::minutes(1));
+        let mut set = signing_set(vec![first.clone(), second.clone()]);
+
+        let activation = set.activate_first(first.id(), NOW).expect("the first");
+        assert_eq!(activation.changed.len(), 1, "nothing was replaced");
+        let error = set
+            .activate_first(second.id(), NOW)
+            .expect_err("one is active already");
+        assert_eq!(error.code(), "keys.already_active");
+        assert_eq!(
+            set.versions()
+                .iter()
+                .find(|v| v.id() == first.id())
+                .map(KeyVersion::state),
+            Some(KeyState::Active)
+        );
     }
 
     #[test]

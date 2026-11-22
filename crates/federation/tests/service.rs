@@ -109,6 +109,7 @@ async fn a_provider_is_created_enabled_and_its_secret_is_nowhere_in_sight() {
     let opened = world
         .service
         .client_secret(&world.tenant, &read)
+        .await
         .expect("open");
     assert_eq!(opened.expose(), SECRET);
 }
@@ -125,6 +126,7 @@ async fn a_secret_sealed_for_one_tenant_does_not_open_in_another() {
     let error = world
         .service
         .client_secret(&elsewhere, &provider)
+        .await
         .expect_err("another tenant");
     assert_eq!(error.code(), "secret.unreadable");
 }
@@ -305,6 +307,7 @@ async fn changes_are_stored_and_announced_only_when_something_changed() {
         world
             .service
             .client_secret(&world.tenant, &read)
+            .await
             .expect("open")
             .expose(),
         "a brand new secret"

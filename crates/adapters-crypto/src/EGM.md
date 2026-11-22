@@ -12,7 +12,7 @@ The cryptography adapter. Hodor implements no cryptography of its own: this crat
 | --- | --- | --- |
 | `impl Digest for Sha256Digest` (`digest.rs:10`) | `hodor_kernel::Digest` | `Sha256Digest` |
 | `impl RandomSource for OsRandom` (`random.rs:10`) | `hodor_kernel::RandomSource` | `OsRandom` |
-| `impl SecretBox for SecretKeys` (`sealing.rs:157`) | `hodor_kernel::SecretBox` | `SecretKeys` |
+| `impl FirstFormatSecrets for SecretKeys` (`sealing.rs:253`) | `hodor_keys::api::FirstFormatSecrets` | `SecretKeys` |
 | `impl SignatureVerifier for AwsLcVerifier` (`signature.rs:14`) | `hodor_kernel::SignatureVerifier` | `AwsLcVerifier` |
 | `impl KeyProvider for LocalKeyProvider` (`keys.rs`) | `hodor_keys::api::KeyProvider` (keys context port) | `LocalKeyProvider` |
 | `impl PasswordHasher for Argon2idHasher` (`password.rs:228`) | `hodor_credential::api::PasswordHasher` (credential context port) | `Argon2idHasher` |
@@ -52,7 +52,7 @@ The cryptography adapter. Hodor implements no cryptography of its own: this crat
 - `verify` rejects stored hashes that do not start with `$argon2id$`. A wrong password gives `matches = false`, not an error. `needs_renewal` is true when the stored hash's prefix differs from the current parameters (`password.rs:Argon2idHasher::verify_encoded`, `password.rs:Argon2idHasher::verify`, `password.rs:Argon2Parameters::encoded_prefix`).
 - `verify_nothing` verifies against a decoy hash built at construction with the current parameters, so the work matches a real verification (`password.rs:Argon2idHasher::new`, `password.rs:Argon2idHasher::verify_nothing`).
 - `OsRandom::fill` panics if `getrandom::fill` fails. It never continues with weak randomness (`random.rs:OsRandom::fill`).
-- Sealing (`sealing.rs`):
+- Sealing (`sealing.rs`). The root keys of `HODOR_SECRET_KEYS` wrap the material of key versions (through `LocalKeyProvider`) and open the secrets of the first format, the one 0.1.0 sealed directly with them; new secrets are sealed by `TenantSecretBox` in `crates/keys` under the tenant's data key. `seal`, `open` and `needs_resealing` are methods of `SecretKeys` itself, no longer the kernel's `SecretBox`:
   - Keys are AES-256-GCM `RandomizedNonceKey` values of exactly 32 bytes; the library generates the nonce (`SecretKeys::parse`, `SecretKeys::seal`).
   - The authenticated associated data is `hodor-secret-v1`, the tenant identifier and the purpose, so a sealed secret is bound to its tenant and purpose without storing them (`associated_data`).
   - The purpose must be 1 to 128 bytes of lowercase ASCII letters, digits, `.` or `_`; otherwise the result is `secret.purpose_invalid` (`check_purpose`).

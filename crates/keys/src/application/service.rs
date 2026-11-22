@@ -144,6 +144,37 @@ impl KeyService {
             .ok_or_else(not_found)
     }
 
+    /// Makes a pending version the active one of its algorithm only if the
+    /// algorithm has none, so that two callers making the first key at once
+    /// never replace each other's.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Conflict` `keys.already_active` if an active version exists
+    /// when this is checked, `Conflict` `keys.activation_conflict` if one
+    /// was activated at the same moment, and what [`KeyService::activate`]
+    /// returns.
+    pub async fn activate_first(
+        &self,
+        tenant: &TenantContext,
+        id: KeyVersionId,
+        caller: Caller,
+    ) -> Result<KeyVersion, DomainError> {
+        let mut uow = self.units_of_work.begin(tenant).await?;
+        let mut set = self.set_of(uow.as_mut(), id).await?;
+        let activation = set.activate_first(id, self.clock.now())?;
+        for version in &activation.changed {
+            self.keys.update(uow.as_mut(), version).await?;
+        }
+        self.record(uow.as_mut(), caller, &activation.event)?;
+        uow.commit().await?;
+        activation
+            .changed
+            .into_iter()
+            .find(|version| version.id() == id)
+            .ok_or_else(not_found)
+    }
+
     /// Retires a retiring version whose time has passed.
     ///
     /// # Errors

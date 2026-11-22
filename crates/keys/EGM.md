@@ -12,9 +12,14 @@ kernel traits.
 ## Interface
 
 - Source and public surface: [src](./src/EGM.md).
-- Ports implemented elsewhere: `KeyStore`, by `PgKeyStore` in
+- Ports implemented elsewhere: `KeyStore` and `SealingStateStore`, by
+  `PgKeyStore` and `PgSealingStateStore` in
   `crates/adapters-postgres/src/keys.rs`; `KeyProvider`, by
-  `LocalKeyProvider` in `crates/adapters-crypto/src/keys.rs`.
+  `LocalKeyProvider` in `crates/adapters-crypto/src/keys.rs`;
+  `FirstFormatSecrets`, by `SecretKeys` in
+  `crates/adapters-crypto/src/sealing.rs`.
+- `TenantSecretBox` implements the kernel's `SecretBox` over the tenant's
+  data keys; the binaries give it to every context that keeps secrets.
 - Workspace dependencies: `hodor-kernel` (`crates/kernel`), plus
   `async-trait`, `serde` and `time`.
 - Feature `testing`: enables the public `testing` module and

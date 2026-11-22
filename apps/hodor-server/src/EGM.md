@@ -86,6 +86,10 @@ and `run`.
   (`external_sign_in` returns `None`) and has no identity providers to manage
   (`administration`). A malformed value aborts startup through
   `SecretKeys::parse`.
+- Every context that keeps secrets (federation, authenticator applications)
+  gets the same kind of `TenantSecretBox`, built by `secret_box` with
+  `PgKeyStore`, `LocalKeyProvider` over the root keys, `PgSealingStateStore`
+  and the root keys to open the first format.
 - An overlap that `RotationPolicy::new` refuses, under 65 minutes, aborts
   startup (`key_rotation`, called by `administration`).
 - Invalid hashing parameters or an invalid sign-in flow abort startup

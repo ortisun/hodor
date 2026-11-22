@@ -402,3 +402,72 @@ async fn an_update_cannot_reach_another_tenant(ports: &Ports<'_>) {
         .expect_err("never stored");
     assert_eq!(error.code(), "keys.version_not_found");
 }
+
+/// Whether each tenant refuses the first format, kept in memory.
+#[derive(Debug, Clone, Default)]
+pub struct InMemorySealingStates {
+    refused: Arc<Mutex<BTreeMap<TenantId, Timestamp>>>,
+}
+
+#[async_trait::async_trait]
+impl crate::api::SealingStateStore for InMemorySealingStates {
+    async fn first_format_refused(&self, uow: &mut dyn UnitOfWork) -> Result<bool, DomainError> {
+        let refused = self.refused.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(refused.contains_key(&uow.tenant().tenant_id()))
+    }
+
+    async fn refuse_first_format(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        at: Timestamp,
+    ) -> Result<(), DomainError> {
+        let mut refused = self.refused.lock().unwrap_or_else(|e| e.into_inner());
+        refused.entry(uow.tenant().tenant_id()).or_insert(at);
+        Ok(())
+    }
+}
+
+/// A stand-in for secrets of the first format: a first byte of `1`, then
+/// the tenant and purpose, then the secret reversed. Never use outside
+/// tests.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FakeFirstFormat;
+
+impl FakeFirstFormat {
+    fn label(tenant: &TenantContext, purpose: &str) -> Vec<u8> {
+        let mut label = vec![1];
+        label.extend(format!("first|{}|{purpose}|", tenant.tenant_id()).into_bytes());
+        label
+    }
+
+    /// Seals as the first format did.
+    #[must_use]
+    pub fn seal(
+        tenant: &TenantContext,
+        purpose: &str,
+        secret: &Secret<Vec<u8>>,
+    ) -> hodor_kernel::SealedSecret {
+        let mut bytes = Self::label(tenant, purpose);
+        bytes.extend(secret.expose().iter().rev());
+        hodor_kernel::SealedSecret::from_stored(bytes)
+    }
+}
+
+impl crate::api::FirstFormatSecrets for FakeFirstFormat {
+    fn is_first_format(&self, sealed: &hodor_kernel::SealedSecret) -> bool {
+        sealed.as_bytes().first() == Some(&1)
+    }
+
+    fn open(
+        &self,
+        tenant: &TenantContext,
+        purpose: &str,
+        sealed: &hodor_kernel::SealedSecret,
+    ) -> Result<Secret<Vec<u8>>, DomainError> {
+        let rest = sealed
+            .as_bytes()
+            .strip_prefix(Self::label(tenant, purpose).as_slice())
+            .ok_or_else(|| hodor_kernel::sealing::unreadable("another tenant or purpose"))?;
+        Ok(Secret::new(rest.iter().rev().copied().collect()))
+    }
+}

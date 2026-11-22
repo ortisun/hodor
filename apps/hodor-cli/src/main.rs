@@ -8,7 +8,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 use hodor_adapters_crypto::{AwsLcHmacSha1, LocalKeyProvider, OsRandom, SecretKeys, Sha256Digest};
 use hodor_adapters_postgres::{
     Database, PgAccessTokenStore, PgAuditLog, PgKeyStore, PgLinkStore, PgPool, PgProviderStore,
-    PgRoleAssignmentStore, PgTenantDirectory, PgTenantRepository, PgTotpStore, PgUserRepository,
+    PgRoleAssignmentStore, PgSealingStateStore, PgTenantDirectory, PgTenantRepository, PgTotpStore,
+    PgUserRepository, reseal_tenant,
 };
 use hodor_audit::api::AuditService;
 use hodor_authorization::api::{AuthorizationService, Role};
@@ -20,11 +21,16 @@ use hodor_federation::api::{
 use hodor_identity::api::{
     CreateUser, IdentifierKind, IdentityService, NormalizedIdentifier, Profile, UserKind,
 };
-use hodor_kernel::{Actor, CorrelationId, DomainError, Secret, SystemClock, TenantContext};
+use hodor_kernel::{
+    Actor, CorrelationId, DomainError, Secret, SecretBox, SystemClock, TenantContext,
+};
 use hodor_keys::api::{
     KeyAlgorithm, KeyService, KeyState, KeyUse, KeyVersion, KeyVersionId, RotationPolicy,
+    TenantSecretBox,
 };
-use hodor_tenant::api::{Caller, CreateTenant, DirectoryEntry, SecondFactorPolicy, TenantService};
+use hodor_tenant::api::{
+    Caller, CreateTenant, DirectoryEntry, SecondFactorPolicy, TenantDirectory as _, TenantService,
+};
 use std::error::Error;
 use std::io::{Read as _, Write as _};
 use std::net::{SocketAddr, TcpStream};
@@ -442,6 +448,25 @@ enum SecretsCommand {
     /// The key is printed once and stored nowhere. Give it an identifier
     /// and put the pair first in the setting.
     GenerateKey,
+
+    /// Seal again every secret that is not sealed as new secrets are, in
+    /// every tenant or in one, and make each tenant with nothing left in
+    /// the first format refuse it.
+    ///
+    /// Each secret is its own transaction: the command can be stopped and
+    /// run again as often as wanted. See `docs/security/secrets-at-rest.md`.
+    Reseal {
+        /// Connection URL of the application role.
+        #[arg(long, env = "HODOR_DATABASE_URL", hide_env_values = true)]
+        database_url: Option<String>,
+        /// The keys that keep secrets encrypted at rest, as the server
+        /// has them.
+        #[arg(long, env = "HODOR_SECRET_KEYS", hide_env_values = true)]
+        secret_keys: Option<String>,
+        /// Only this tenant, by its slug.
+        #[arg(long)]
+        tenant: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -683,7 +708,7 @@ async fn run_totp(
     let totp = TotpService::new(
         units(),
         Arc::new(PgTotpStore),
-        Arc::new(SecretKeys::parse(&Secret::from(setting))?),
+        secret_box(database, setting)?,
         Arc::new(AwsLcHmacSha1),
         Arc::new(OsRandom),
         clock.clone(),
@@ -784,7 +809,7 @@ async fn run_provider(
         units(),
         Arc::new(PgProviderStore),
         Arc::new(PgLinkStore),
-        Arc::new(SecretKeys::parse(&Secret::from(setting))?),
+        secret_box(database, setting)?,
         clock,
     )
     .allowing_development_hosts(development_hosts)
@@ -1047,6 +1072,74 @@ async fn run_keys(
             Ok(key_line(&version))
         }
     }
+}
+
+/// Where secrets at rest are sealed, as the server seals them: under the
+/// tenant's data keys, the root keys still opening the first format until
+/// the tenant refuses it.
+fn secret_box(database: &Database, setting: String) -> Result<Arc<dyn SecretBox>, DomainError> {
+    Ok(Arc::new(tenant_secret_box(database, setting)?))
+}
+
+fn tenant_secret_box(database: &Database, setting: String) -> Result<TenantSecretBox, DomainError> {
+    let root = Arc::new(SecretKeys::parse(&Secret::from(setting))?);
+    Ok(TenantSecretBox::new(
+        Arc::new(database.clone()),
+        Arc::new(PgKeyStore),
+        Arc::new(LocalKeyProvider::new(root.clone())),
+        Arc::new(PgSealingStateStore),
+        Some(root),
+        Arc::new(SystemClock),
+    ))
+}
+
+/// Seals again what needs it, tenant by tenant, and returns one line per
+/// tenant and whether every tenant now refuses the first format.
+async fn run_reseal(
+    database: &Database,
+    secret_keys: Option<String>,
+    only: Option<&str>,
+) -> Result<(String, bool), DomainError> {
+    let setting = secret_keys.ok_or_else(|| {
+        DomainError::invalid(
+            "secret.keys_missing",
+            "HODOR_SECRET_KEYS or --secret-keys is required: secrets are opened and sealed again with them",
+        )
+    })?;
+    let secrets = tenant_secret_box(database, setting)?;
+    let directory = PgTenantDirectory::new(database.clone());
+    let entries = match only {
+        Some(slug) => {
+            let tenants = TenantService::new(
+                Arc::new(database.clone()),
+                Arc::new(PgTenantRepository),
+                Arc::new(directory),
+                Arc::new(SystemClock),
+            );
+            vec![existing(&tenants, slug).await?]
+        }
+        None => directory.list().await?,
+    };
+    let mut lines = Vec::with_capacity(entries.len());
+    let mut complete = true;
+    for entry in entries {
+        // The command-line tool is one of the places allowed to establish
+        // a tenant context: the operator runs it for the installation.
+        let tenant = TenantContext::assume(entry.tenant_id);
+        let report = reseal_tenant(database, &secrets, &tenant).await?;
+        let refused = if report.complete() {
+            secrets.refuse_first_format(&tenant).await?;
+            "the first format is refused"
+        } else {
+            complete = false;
+            "the first format is still accepted"
+        };
+        lines.push(format!(
+            "{}: {} sealed again, {} already current, {} did not open; {refused}",
+            entry.slug, report.resealed, report.current, report.unreadable
+        ));
+    }
+    Ok((lines.join("\n"), complete))
 }
 
 async fn bootstrap_administrator(
@@ -1329,6 +1422,24 @@ async fn main() -> Result<(), Box<dyn Error>> {
         } => {
             let key = SecretKeys::generate(&OsRandom);
             writeln!(std::io::stdout(), "{}", key.expose())?;
+        }
+        Command::Secrets {
+            command:
+                SecretsCommand::Reseal {
+                    database_url,
+                    secret_keys,
+                    tenant,
+                },
+        } => {
+            let url = database_url.ok_or("HODOR_DATABASE_URL or --database-url is required")?;
+            let database = Database::connect(&Secret::from(url), 2).await?;
+            let (output, complete) = run_reseal(&database, secret_keys, tenant.as_deref())
+                .await
+                .map_err(|error| format!("{}: {}", error.code(), error.message()))?;
+            writeln!(std::io::stdout(), "{output}")?;
+            if !complete {
+                return Err("some secrets did not open and were left as they were".into());
+            }
         }
         Command::Probe { addr, path } => {
             if !probe(addr, &path)? {

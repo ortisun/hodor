@@ -15,8 +15,8 @@ use hodor_adapters_postgres::{
     Database, PgAccessTokenStore, PgApplicationStore, PgAttemptStore, PgAuditLog,
     PgAuthorizationCodeStore, PgAuthorizationRequestStore, PgClientStore, PgGrantStore, PgKeyStore,
     PgLinkStore, PgMessageQueue, PgPasswordStore, PgPendingAuthorizationStore, PgProviderStore,
-    PgResourceServerStore, PgRoleAssignmentStore, PgSessionStore, PgTenantDirectory,
-    PgTenantRepository, PgTotpStore, PgTransactionStore, PgUserRepository,
+    PgResourceServerStore, PgRoleAssignmentStore, PgSealingStateStore, PgSessionStore,
+    PgTenantDirectory, PgTenantRepository, PgTotpStore, PgTransactionStore, PgUserRepository,
     PgVerificationTokenStore, PgWebAuthnStore,
 };
 use hodor_audit::api::AuditService;
@@ -35,8 +35,8 @@ use hodor_federation::api::{
     LockoutPolicy, OpenIdClient, SamlClient,
 };
 use hodor_identity::api::IdentityService;
-use hodor_kernel::{DomainError, Secret, SystemClock, TenantContext};
-use hodor_keys::api::{KeyService, RotationPolicy};
+use hodor_kernel::{DomainError, Secret, SecretBox, SystemClock, TenantContext};
+use hodor_keys::api::{KeyService, RotationPolicy, TenantSecretBox};
 use hodor_notification::api::Notifier;
 use hodor_oauth::api::{
     ApplicationPorts, ApplicationService, AuthorizationCodePorts, AuthorizationCodeService,
@@ -616,7 +616,7 @@ fn totp_service(
     Ok(Some(TotpService::new(
         Arc::new(database.clone()),
         Arc::new(PgTotpStore),
-        Arc::new(SecretKeys::parse(&Secret::from(setting.clone()))?),
+        secret_box(setting, database)?,
         Arc::new(AwsLcHmacSha1),
         random,
         Arc::new(SystemClock),
@@ -634,7 +634,7 @@ fn external_sign_in(
         tracing::warn!("HODOR_SECRET_KEYS is not set: no identity provider can be used");
         return Ok(None);
     };
-    let secrets = Arc::new(SecretKeys::parse(&Secret::from(setting.clone()))?);
+    let secrets = secret_box(setting, database)?;
     let units = || Arc::new(database.clone());
     let clock = Arc::new(SystemClock);
     let digest = Arc::new(Sha256Digest);
@@ -708,6 +708,22 @@ fn keys(config: &Config, database: &Database) -> Result<Option<KeyService>, Doma
     )))
 }
 
+/// Where secrets at rest are sealed: under the tenant's data keys, with
+/// the root keys of `HODOR_SECRET_KEYS` wrapping those keys and still
+/// opening secrets of the first format until the tenant refuses them
+/// (`docs/security/secrets-at-rest.md`).
+fn secret_box(setting: &str, database: &Database) -> Result<Arc<dyn SecretBox>, DomainError> {
+    let root = Arc::new(SecretKeys::parse(&Secret::from(setting.to_owned()))?);
+    Ok(Arc::new(TenantSecretBox::new(
+        Arc::new(database.clone()),
+        Arc::new(PgKeyStore),
+        Arc::new(LocalKeyProvider::new(root.clone())),
+        Arc::new(PgSealingStateStore),
+        Some(root),
+        Arc::new(SystemClock),
+    )))
+}
+
 /// Builds everything the administration interface needs.
 fn administration(config: &Config, database: &Database) -> Result<AdminState, DomainError> {
     let units = || Arc::new(database.clone());
@@ -722,7 +738,7 @@ fn administration(config: &Config, database: &Database) -> Result<AdminState, Do
                 units(),
                 Arc::new(PgProviderStore),
                 Arc::new(PgLinkStore),
-                Arc::new(SecretKeys::parse(&Secret::from(setting.clone()))?),
+                secret_box(setting, database)?,
                 clock.clone(),
             )
             .allowing_development_hosts(&development_hosts(config))

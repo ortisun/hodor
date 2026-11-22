@@ -1,13 +1,16 @@
-//! Secrets at rest with AES-256-GCM from `aws-lc-rs`.
+//! The root keys of `HODOR_SECRET_KEYS`, with AES-256-GCM from `aws-lc-rs`.
 //!
-//! See `docs/security/secrets-at-rest.md` for the layout of a sealed
-//! secret and for how keys are configured and changed.
+//! They wrap the key versions of the keys context, and read the secrets of
+//! the first format, which 0.1.0 sealed with them directly. Secrets
+//! themselves are sealed under data keys by the keys context's
+//! `TenantSecretBox`. See `docs/security/secrets-at-rest.md`.
 
 use aws_lc_rs::aead::{AES_256_GCM, Aad, NONCE_LEN, Nonce, RandomizedNonceKey};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use hodor_kernel::sealing::unreadable;
-use hodor_kernel::{DomainError, SealedSecret, Secret, SecretBox, TenantContext};
+use hodor_kernel::{DomainError, SealedSecret, Secret, TenantContext};
+use hodor_keys::api::FirstFormatSecrets;
 use zeroize::Zeroize as _;
 
 const FORMAT: u8 = 1;
@@ -154,8 +157,14 @@ fn split(sealed: &[u8]) -> Option<(&str, &[u8])> {
     is_identifier(identifier).then_some((identifier, rest))
 }
 
-impl SecretBox for SecretKeys {
-    fn seal(
+impl SecretKeys {
+    /// Seals `secret` with the first root key, for `tenant` and `purpose`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `secret.keys_missing` without root keys and
+    /// `secret.purpose_invalid` for a purpose that is not a plain name.
+    pub fn seal(
         &self,
         tenant: &TenantContext,
         purpose: &str,
@@ -190,7 +199,13 @@ impl SecretBox for SecretKeys {
         Ok(SealedSecret::from_stored(sealed))
     }
 
-    fn open(
+    /// Opens what [`SecretKeys::seal`] made, with whichever root key it
+    /// names.
+    ///
+    /// # Errors
+    ///
+    /// Returns `secret.unreadable`, whatever the reason.
+    pub fn open(
         &self,
         tenant: &TenantContext,
         purpose: &str,
@@ -227,9 +242,26 @@ impl SecretBox for SecretKeys {
         Ok(Secret::new(buffer))
     }
 
-    fn needs_resealing(&self, sealed: &SealedSecret) -> bool {
+    /// Whether `sealed` names a root key other than the first.
+    #[must_use]
+    pub fn needs_resealing(&self, sealed: &SealedSecret) -> bool {
         let current = self.keys.first().map(|key| key.identifier.as_str());
         split(sealed.as_bytes()).map(|(identifier, _)| identifier) != current
+    }
+}
+
+impl FirstFormatSecrets for SecretKeys {
+    fn is_first_format(&self, sealed: &SealedSecret) -> bool {
+        split(sealed.as_bytes()).is_some()
+    }
+
+    fn open(
+        &self,
+        tenant: &TenantContext,
+        purpose: &str,
+        sealed: &SealedSecret,
+    ) -> Result<Secret<Vec<u8>>, DomainError> {
+        Self::open(self, tenant, purpose, sealed)
     }
 }
 

@@ -2,8 +2,7 @@
 
 use hodor_adapters_crypto::{AwsLcVerifier, LocalKeyProvider, OsRandom, SecretKeys};
 use hodor_kernel::{
-    PublicKey, SealedSecret, Secret, SecretBox, SignatureVerifier, TenantContext, TenantId,
-    Timestamp,
+    PublicKey, SealedSecret, Secret, SignatureVerifier, TenantContext, TenantId, Timestamp,
 };
 use hodor_keys::api::{KeyAlgorithm, KeyMaterial, KeyProvider, KeyVersion, KeyVersionId};
 use std::sync::Arc;
