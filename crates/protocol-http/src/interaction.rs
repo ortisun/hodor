@@ -89,8 +89,8 @@ pub fn interaction_routes(state: InteractionState) -> Router {
         .route("/recovery/complete", post(reset_password))
         .layer(middleware::from_fn(refuse_other_origins))
         // Another site posts to the assertion consumer: it is outside the
-        // origin check, and can only keep a response for a sign-in that
-        // this origin's page finishes.
+        // origin check, and can only keep the answer to a response for a
+        // sign-in that this origin's page finishes.
         .route(
             "/sign-in/providers/{alias}/saml",
             post(receive_saml_response),
@@ -662,10 +662,10 @@ fn is_plain_token(relay_state: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
 }
 
-/// Where a SAML identity provider posts its response. The response is kept,
-/// unread, with the pending authorization its relay state names, and the
-/// browser is sent to the page that finishes. The answer is the same
-/// whatever was found.
+/// Where a SAML identity provider posts its response. The response is checked
+/// against the request of the pending authorization its relay state names,
+/// only its answer is kept there, and the browser is sent to the page that
+/// finishes. What the browser is told is the same whatever was found.
 async fn receive_saml_response(
     State(state): State<InteractionState>,
     Extension(tenant): Extension<TenantContext>,

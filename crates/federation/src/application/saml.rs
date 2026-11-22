@@ -119,8 +119,9 @@ impl SamlClient {
         }
     }
 
-    /// Checks a kept response against the request it must answer, and says
-    /// who the person is. A refusal carries the reason of `hodor-saml`.
+    /// Checks a response, as it arrives, against the request it must answer,
+    /// and says who the person is. A refusal carries the reason of
+    /// `hodor-saml`.
     pub(crate) fn finish(
         provider: &IdentityProvider,
         settings: &SamlSettings,

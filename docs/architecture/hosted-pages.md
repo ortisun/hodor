@@ -59,7 +59,7 @@ The provider sends the person back to `/account/providers/{alias}/callback`. Tha
 - presents them to the server, from Hodor's own origin, and goes on to the account page when the person is signed in;
 - sends the person back to the sign-in page otherwise, with one message, "that did not work", or "the sign-in was not finished at the provider" when the provider sent no code. It asks the server nothing in that second case.
 
-A SAML identity provider does not send the person back with a code: it posts its response to Hodor's [assertion consumer](contexts/federation.md#when-the-response-arrives), which keeps it and sends the browser to the same page with `binding=saml`, the state and a receipt in the address. The page then takes the state and the receipt out of the address in the same way and presents those two. An address with `binding=saml` and no receipt is one the assertion consumer could not use, and the page says "that did not work" without asking the server anything.
+A SAML identity provider does not send the person back with a code: it posts its response to Hodor's [assertion consumer](contexts/federation.md#when-the-response-arrives), which checks it, keeps its answer and sends the browser to the same page with `binding=saml`, the state and a receipt in the address. The page then takes the state and the receipt out of the address in the same way and presents those two. An address with `binding=saml` and no receipt is one the assertion consumer could not use, and the page says "that did not work" without asking the server anything.
 
 The page decides nothing and shows nothing of what the provider sent.
 

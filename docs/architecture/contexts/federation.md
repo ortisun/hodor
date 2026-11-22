@@ -239,17 +239,20 @@ The identity provider makes the person's browser post the response to the assert
 
 1. The assertion consumer address accepts `SAMLResponse` and `RelayState`, form-encoded, a body of at most 768 kibibytes holding a response of at most 384. It is the one route of the interaction interface that accepts a request started by another site.
 2. It makes a **receipt**: a new random value of 256 bits.
-3. It finds the pending authorization of that provider whose state hashes to the `RelayState`, and keeps the response with it, unread, with the hash of the receipt. A second response for the same pending authorization is ignored: the first one wins. A response that is not base64 is not kept.
-4. Whatever it found, it answers `303 See Other` to `/t/{slug}/account/providers/{alias}/callback?binding=saml&state={RelayState}&receipt={receipt}`. It says nothing else: an unknown state and a known one look the same. A relay state that is not a plain token of at most 80 characters is not written into the address, and nothing is kept for it.
+3. It **claims** the pending authorization of that provider whose state hashes to the `RelayState`, if it has not expired and nobody claimed it before: in one step, it writes the hash of the receipt there and reads the request back. Of several responses posted at once for one pending authorization, one claims it; the others find nothing to claim, are not checked and change nothing. A response that is not base64, or that arrives for no pending authorization, is not checked at all.
+4. The response that claimed it is **checked there and then**, against the request that pending authorization holds, as [below](#checking-the-response). Only the **answer** is kept: who the person is, by subject, address and name, or the reason the response was refused. The response itself is never stored.
+5. Whatever it found, it answers `303 See Other` to `/t/{slug}/account/providers/{alias}/callback?binding=saml&state={RelayState}&receipt={receipt}`. It says nothing else: an unknown state and a known one look the same. A relay state that is not a plain token of at most 80 characters is not written into the address, and nothing is kept for it.
 
-The page at that address finishes as it does for OpenID Connect, from Hodor's own origin with the cookie, presenting the state and the receipt: the pending authorization is taken once, and only then is the kept response read and checked. Two things must hold, and each stops one attack:
+The page at that address finishes as it does for OpenID Connect, from Hodor's own origin with the cookie, presenting the state and the receipt: the pending authorization is taken once, and only then is its answer used, to sign the person in or to record why not. Checking on arrival lets nobody in by itself: only the browser that finishes does, and two things must hold, each of which stops one attack:
 
-- **The response answers the request of this browser's sign-in.** A response obtained by someone else, kept on a victim's sign-in, answers a request the victim's sign-in never made, and is refused (Threat-Federation-03).
+- **The response answers the request of this browser's sign-in.** A response obtained by someone else, posted with a victim's relay state, answers a request the victim's sign-in never made: it is checked against the victim's request, refused, and the victim's sign-in can only be refused too (Threat-Federation-03).
 - **The browser that finishes is the one that carried the response.** Whoever starts a sign-in knows its relay state, and the address at the identity provider is a real address on the identity provider's own site. Without the receipt, an attacker could start a sign-in, send that address to a victim already signed in at the identity provider, and finish their own sign-in with the response the victim's browser posted: they would be signed in as the victim. The receipt goes only to the browser that posted the response, in the address it is sent to; the attacker never sees it, and a sign-in finished without it is refused.
+
+Why check on arrival rather than when finishing: what a pending authorization holds is then a few hundred bytes whatever was posted, and only a response the identity provider signed for that very request leads to anything. Keeping the response itself until the sign-in finished let anyone who started a sign-in make Hodor store up to 384 kibibytes of anything for as long as the sign-in lasted.
 
 ### Checking the response
 
-The checks are made by the crate `hodor-saml`, in this order. Each failed check is a refusal with its own reason, recorded as `federation.sign_in_refused`; the person is told only that it did not work. What is read before step 11 is only ever used to refuse, never to let anyone in.
+The checks are made by the crate `hodor-saml` when the response arrives, in this order. Each failed check is a refusal with its own reason, kept as the answer and recorded as `federation.sign_in_refused` when the sign-in is finished; the person is told only that it did not work. What is read before step 11 is only ever used to refuse, never to let anyone in.
 
 | Order | Check | Reason |
 |---|---|---|
@@ -285,7 +288,7 @@ Everything Hodor uses afterwards is read from the assertion found in step 5, whi
 
 From there everything is [as for any provider](#who-the-person-is).
 
-A request is answered once: the pending authorization that holds its identifier is taken before the response is read. The same response presented again, in the same browser or another, finds no request to answer (Threat-SAML-03).
+A request is answered once. A pending authorization is claimed by one response only, and is taken once when the sign-in is finished; a response that answers another sign-in's request is refused against this one's (`request`). The same response presented again, in the same browser or another, finds no request to answer (Threat-SAML-03).
 
 ## Recipes
 
@@ -345,7 +348,7 @@ When a person chooses a provider, Hodor keeps one **pending authorization** for 
 
 **A pending authorization is used once.** Finishing takes the pending authorization away before anything is checked, so whatever the outcome, the same answer from a provider cannot be presented twice.
 
-**One that is never finished is removed once it has expired.** A person who leaves for a provider and never comes back leaves a pending authorization behind, and one that kept a SAML response holds up to 384 kibibytes. `hodor-worker` removes expired pending authorizations every minute, as [a cleanup job](../multi-tenancy.md#cross-tenant-operations): its connection as a member of `hodor_platform` only finds the tenants that have some, and each tenant's are then removed inside that tenant, as the application role, a batch at a time. An expired pending authorization can no longer be finished anyway, so removing it changes nothing a person can see.
+**One that is never finished is removed once it has expired.** A person who leaves for a provider and never comes back leaves a pending authorization behind. `hodor-worker` removes expired pending authorizations every minute, as [a cleanup job](../multi-tenancy.md#cross-tenant-operations): its connection as a member of `hodor_platform` only finds the tenants that have some, and each tenant's are then removed inside that tenant, as the application role, a batch at a time. An expired pending authorization can no longer be finished anyway, so removing it changes nothing a person can see.
 
 The person comes back to a page, not to an interface: the cookie that ties a sign-in to its browser is not sent when another site sends the browser to Hodor, so the page that opens is what presents the code, from Hodor's own origin.
 
@@ -469,8 +472,9 @@ All tables are under [forced row-level security](../multi-tenancy.md#isolation-b
 | `nonce`, `redirect_uri` | `text` | For SAML the nonce holds the identifier of the request |
 | `code_verifier` | `bytea` | The sealed PKCE verifier. For SAML, which has none, an empty secret sealed |
 | `expires_at` | `timestamptz` | |
-| `saml_response` | `text` | The response a SAML identity provider posted, unread, as it arrived. Set once |
-| `saml_receipt_hash` | `bytea` | SHA-256 of the receipt given to the browser that posted the response. Set with it |
+| `saml_subject`, `saml_email`, `saml_name` | `text` | The answer of a SAML response that passed every check: who the person is. Set once |
+| `saml_refusal` | `text` | Or the reason the response was refused, such as `signature`. Set once, in place of the three above |
+| `saml_receipt_hash` | `bytea` | SHA-256 of the receipt given to the browser that posted the response. Set when that response claims the pending authorization; the answer follows once it is checked |
 
 ## Not built yet
 
@@ -490,6 +494,6 @@ All tables are under [forced row-level security](../multi-tenancy.md#isolation-b
 | Mapping what a provider says about a person to the user's profile, groups or roles | Issue-40 for the profile; groups and roles are not in Milestone 2 |
 | Linking and unlinking by the person themself, routing by email domain | The account console |
 | Letting a person who already has an account connect an external identity to it, with proof of both | The account console |
-| Starting a sign-in and choosing a provider are not limited. Within the ten minutes before it expires, a pending authorization that kept a SAML response holds up to 384 kibibytes | Limits on starting sign-ins, before SAML is used anywhere real |
+| Starting a sign-in is not limited. Each sign-in started can make Hodor check one SAML response, about two milliseconds for the largest | Limits on starting sign-ins, with the other limits per address of the interaction interface |
 | Bringing the name and the language up to date on later sign-ins | With claim mapping |
 | Protection against a local account made in advance with someone else's address (Threat-Federation-02). Such an account keeps the person's external identity out; it is not taken over | With linking, in the account console |

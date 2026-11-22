@@ -3,7 +3,7 @@
 use crate::api::{
     Alias, ExternalIdentity, IdentityProvider, LinkStore, PendingAuthorization,
     PendingAuthorizationStore, ProviderId, ProviderKind, ProviderSettings, ProviderSnapshot,
-    ProviderStatus, ProviderStore, Subject,
+    ProviderStatus, ProviderStore, SamlAnswer, Subject,
 };
 use hodor_authentication::api::TransactionId;
 use hodor_kernel::{
@@ -37,6 +37,13 @@ impl InMemoryFederation {
 
     fn links(&self) -> std::sync::MutexGuard<'_, LinkRows> {
         self.links.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Every pending authorization stored, of every tenant, for a test to
+    /// look at what is kept.
+    #[must_use]
+    pub fn pending_authorizations(&self) -> Vec<PendingAuthorization> {
+        self.pending().values().cloned().collect()
     }
 }
 
@@ -237,14 +244,32 @@ impl PendingAuthorizationStore for InMemoryFederation {
             .remove(&(uow.tenant().tenant_id(), transaction_id)))
     }
 
-    async fn keep_response(
+    async fn claim(
         &self,
         uow: &mut dyn UnitOfWork,
         provider_id: ProviderId,
         state_hash: [u8; 32],
-        response: &str,
         receipt_hash: [u8; 32],
         now: Timestamp,
+    ) -> Result<Option<PendingAuthorization>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let mut pending = self.pending();
+        let found = pending.iter_mut().find(|((owner, _), pending)| {
+            unclaimed(*owner, pending, tenant, provider_id, state_hash, now)
+        });
+        Ok(found.map(|(_, pending)| {
+            pending.saml_receipt_hash = Some(receipt_hash);
+            pending.clone()
+        }))
+    }
+
+    async fn answer(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        provider_id: ProviderId,
+        state_hash: [u8; 32],
+        receipt_hash: [u8; 32],
+        answer: &SamlAnswer,
     ) -> Result<bool, DomainError> {
         let tenant = uow.tenant().tenant_id();
         let mut pending = self.pending();
@@ -252,12 +277,11 @@ impl PendingAuthorizationStore for InMemoryFederation {
             *owner == tenant
                 && pending.provider_id == provider_id
                 && pending.state_hash == state_hash
-                && pending.expires_at > now
-                && pending.saml_response.is_none()
+                && pending.saml_receipt_hash == Some(receipt_hash)
+                && pending.saml_answer.is_none()
         });
         Ok(found.is_some_and(|(_, pending)| {
-            pending.saml_response = Some(response.to_owned());
-            pending.saml_receipt_hash = Some(receipt_hash);
+            pending.saml_answer = Some(answer.clone());
             true
         }))
     }
@@ -281,6 +305,23 @@ impl PendingAuthorizationStore for InMemoryFederation {
         }
         Ok(expired.len() as u64)
     }
+}
+
+/// Whether a pending authorization is the one of this tenant, provider and
+/// state, has not expired and was not claimed by a response yet.
+fn unclaimed(
+    owner: TenantId,
+    pending: &PendingAuthorization,
+    tenant: TenantId,
+    provider_id: ProviderId,
+    state_hash: [u8; 32],
+    now: Timestamp,
+) -> bool {
+    owner == tenant
+        && pending.provider_id == provider_id
+        && pending.state_hash == state_hash
+        && pending.expires_at > now
+        && pending.saml_receipt_hash.is_none()
 }
 
 /// The ports under test.
@@ -648,7 +689,7 @@ pub async fn run_contract(ports: Ports<'_>) {
         redirect_uri: "https://hodor.example.com/t/acme/account/providers/google/callback"
             .to_owned(),
         expires_at: later,
-        saml_response: None,
+        saml_answer: None,
         saml_receipt_hash: None,
     };
     assert!(
@@ -696,8 +737,9 @@ pub async fn run_contract(ports: Ports<'_>) {
     .expect("the pending");
     assert_eq!(taken, pending(&entra, "second"));
 
-    // A SAML response is kept once, with the pending authorization of its
-    // provider and state, in its tenant, before it expires.
+    // A SAML response claims the pending authorization of its provider and
+    // state, in its tenant, before it expires, once; only the response that
+    // claimed it answers it, once.
     within!(ports, &tenant, |uow| ports
         .pending
         .put(uow, &pending(&google, "request"))
@@ -705,48 +747,101 @@ pub async fn run_contract(ports: Ports<'_>) {
         .expect("put"));
     let before = later - time::Duration::seconds(1);
     let owner = &tenant;
-    let keep = |provider: ProviderId, state: [u8; 32], response: &'static str, at: Timestamp| {
+    let refused = |reason| SamlAnswer::Refused { reason };
+    let claim = |provider: ProviderId, state: [u8; 32], receipt: [u8; 32], at: Timestamp| {
+        let ports = ports.clone();
+        async move {
+            let mut unit = ports.units_of_work.begin(owner).await.expect("begin");
+            let claimed = ports
+                .pending
+                .claim(unit.as_mut(), provider, state, receipt, at)
+                .await
+                .expect("claim");
+            unit.commit().await.expect("commit");
+            claimed.map(|pending| pending.nonce)
+        }
+    };
+    let google_id = google.id();
+    let answer = |receipt: [u8; 32], answer: SamlAnswer| {
         let ports = ports.clone();
         async move {
             let mut unit = ports.units_of_work.begin(owner).await.expect("begin");
             let kept = ports
                 .pending
-                .keep_response(unit.as_mut(), provider, state, response, [9; 32], at)
+                .answer(unit.as_mut(), google_id, [7; 32], receipt, &answer)
                 .await
-                .expect("keep");
+                .expect("answer");
             unit.commit().await.expect("commit");
             kept
         }
     };
-    assert!(!keep(entra.id(), [7; 32], "other provider", before).await);
-    assert!(!keep(google.id(), [8; 32], "other state", before).await);
-    assert!(!keep(google.id(), [7; 32], "too late", later).await);
+    assert_eq!(claim(entra.id(), [7; 32], [9; 32], before).await, None);
+    assert_eq!(claim(google.id(), [8; 32], [9; 32], before).await, None);
+    assert_eq!(claim(google.id(), [7; 32], [9; 32], later).await, None);
     let mut unit = ports.units_of_work.begin(&elsewhere).await.expect("begin");
     assert!(
-        !ports
+        ports
             .pending
-            .keep_response(
-                unit.as_mut(),
-                google.id(),
-                [7; 32],
-                "other tenant",
-                [9; 32],
-                before,
-            )
+            .claim(unit.as_mut(), google.id(), [7; 32], [9; 32], before)
             .await
-            .expect("keep")
+            .expect("claim")
+            .is_none(),
+        "another tenant claims nothing"
     );
     drop(unit);
-    assert!(keep(google.id(), [7; 32], "first", before).await);
-    assert!(!keep(google.id(), [7; 32], "second", before).await);
+    assert!(
+        !answer([9; 32], refused("signature")).await,
+        "nothing claimed, nothing answered"
+    );
+    assert_eq!(
+        claim(google.id(), [7; 32], [9; 32], before)
+            .await
+            .as_deref(),
+        Some("request")
+    );
+    assert_eq!(
+        claim(google.id(), [7; 32], [5; 32], before).await,
+        None,
+        "claimed once"
+    );
+    assert!(
+        !answer([5; 32], refused("signature")).await,
+        "only the response that claimed it answers it"
+    );
+    let verified = SamlAnswer::Verified {
+        subject: Subject::parse("saml-subject").expect("subject"),
+        email: Some("ana@example.com".to_owned()),
+        name: None,
+    };
+    assert!(answer([9; 32], verified.clone()).await);
+    assert!(
+        !answer([9; 32], refused("signature")).await,
+        "answered once"
+    );
     let taken = within!(ports, &tenant, |uow| ports
         .pending
         .take(uow, sign_in)
         .await
         .expect("take"))
     .expect("the pending");
-    assert_eq!(taken.saml_response.as_deref(), Some("first"));
+    assert_eq!(taken.saml_answer, Some(verified));
     assert_eq!(taken.saml_receipt_hash, Some([9; 32]));
+
+    // A refusal comes back with its reason.
+    within!(ports, &tenant, |uow| ports
+        .pending
+        .put(uow, &pending(&google, "request"))
+        .await
+        .expect("put"));
+    assert!(claim(google.id(), [7; 32], [9; 32], before).await.is_some());
+    assert!(answer([9; 32], refused("another_kind")).await);
+    let taken = within!(ports, &tenant, |uow| ports
+        .pending
+        .take(uow, sign_in)
+        .await
+        .expect("take"))
+    .expect("the pending");
+    assert_eq!(taken.saml_answer, Some(refused("another_kind")));
 
     // Expired pending authorizations are removed, a batch at a time, in
     // their tenant only; one that has not expired stays.

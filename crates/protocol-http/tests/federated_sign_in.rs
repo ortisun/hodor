@@ -22,7 +22,7 @@ use hodor_federation::api::{
     CreateProvider, DirectoryAnswer, DirectoryClient, DirectoryQuery, DirectorySettings,
     EXTERNAL_STEP, ExternalIdentityAuthenticator, ExternalSignIn, FederationService, GitHubClient,
     LockoutPolicy, OpenIdClient, ProviderId, ProviderKind, ProviderSettings, ProviderStatus,
-    SamlClient, SamlSettings, saml_service_provider,
+    SamlAnswer, SamlClient, SamlSettings, saml_service_provider,
 };
 use hodor_federation::testing::InMemoryFederation;
 use hodor_identity::api::{CreateUser, IdentifierKind, IdentityService, Profile, UserKind};
@@ -31,8 +31,8 @@ use hodor_kernel::clock::testing::FixedClock;
 use hodor_kernel::sealing::testing::FakeSecretBox;
 use hodor_kernel::uow::testing::InMemoryUnitOfWorkFactory;
 use hodor_kernel::{
-    Caller, DomainError, HttpClient, HttpRequest, HttpResponse, Secret, TenantContext, Timestamp,
-    UserId,
+    Caller, Digest as _, DomainError, HttpClient, HttpRequest, HttpResponse, Secret, TenantContext,
+    Timestamp, UserId,
 };
 use hodor_notification::api::Notifier;
 use hodor_notification::testing::InMemoryMessages;
@@ -153,6 +153,8 @@ struct World {
     acme: TenantContext,
     /// The provider `example` of the tenant acme.
     example: ProviderId,
+    /// The federation stores, to look at what is kept.
+    stores: InMemoryFederation,
 }
 
 fn settings(creates_users: bool) -> ProviderSettings {
@@ -242,7 +244,7 @@ async fn world_with(directory: Option<(String, Arc<dyn DirectoryClient>)>) -> Wo
         ),
         SamlClient::new(Arc::new(SequentialRandom::default())),
         identity.clone(),
-        Arc::new(stores),
+        Arc::new(stores.clone()),
         units(),
         Arc::new(FakeSecretBox),
         digest.clone(),
@@ -359,6 +361,7 @@ async fn world_with(directory: Option<(String, Arc<dyn DirectoryClient>)>) -> Wo
         credentials,
         acme,
         example,
+        stores,
     }
 }
 
@@ -2247,7 +2250,7 @@ async fn a_response_that_is_not_base64_is_not_kept() {
 }
 
 #[tokio::test]
-async fn a_saml_response_is_checked_when_it_is_finished_and_refused_for_its_reason() {
+async fn a_forged_saml_response_is_refused_for_its_reason_and_the_first_one_wins() {
     let (world, identity_provider) = saml_world().await;
     let mut browser = Browser::default();
     let leaving = browser.leave_for_saml(&world).await;
@@ -2260,7 +2263,7 @@ async fn a_saml_response_is_checked_when_it_is_finished_and_refused_for_its_reas
         "bia@corp.example",
     );
     let posted = world.post_saml(&forged, &leaving.relay_state).await;
-    assert_eq!(posted.status, StatusCode::SEE_OTHER, "kept unread");
+    assert_eq!(posted.status, StatusCode::SEE_OTHER, "checked, and refused");
     // A second response does not replace the first: the first one wins.
     let good = world.saml_response(
         &identity_provider,
@@ -2343,4 +2346,54 @@ async fn only_a_posted_saml_response_may_be_larger_than_other_requests() {
         )
         .await;
     assert_eq!(reply.status, StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+#[tokio::test]
+async fn a_saml_response_is_checked_when_it_arrives_and_only_its_answer_is_kept() {
+    let (world, identity_provider) = saml_world().await;
+    let answer_of = |relay_state: &str| {
+        world
+            .stores
+            .pending_authorizations()
+            .into_iter()
+            .find(|pending| pending.state_hash == Sha256Digest.sha256(relay_state.as_bytes()))
+            .and_then(|pending| pending.saml_answer)
+    };
+
+    // A good response: who the person is is known before anyone finishes.
+    let mut browser = Browser::default();
+    let leaving = browser.leave_for_saml(&world).await;
+    assert_eq!(answer_of(&leaving.relay_state), None);
+    let response = world.saml_response(
+        &identity_provider,
+        &leaving.request_id,
+        "corp-0042",
+        "bia@corp.example",
+    );
+    let posted = world.post_saml(&response, &leaving.relay_state).await;
+    match answer_of(&leaving.relay_state) {
+        Some(SamlAnswer::Verified { subject, email, .. }) => {
+            assert_eq!(subject.expose(), "corp-0042");
+            assert_eq!(email.as_deref(), Some("bia@corp.example"));
+        }
+        other => panic!("not verified on arrival: {other:?}"),
+    }
+    let finished = browser.finish_saml(&world, &posted).await;
+    assert_eq!(finished.sign_in_status(), "completed");
+
+    // Anything else posted is refused on arrival, and nothing of it is kept
+    // but the reason.
+    let mut browser = Browser::default();
+    let leaving = browser.leave_for_saml(&world).await;
+    let junk = base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        "x".repeat(200 * 1024),
+    );
+    world.post_saml(&junk, &leaving.relay_state).await;
+    assert_eq!(
+        answer_of(&leaving.relay_state),
+        Some(SamlAnswer::Refused {
+            reason: "malformed"
+        })
+    );
 }
