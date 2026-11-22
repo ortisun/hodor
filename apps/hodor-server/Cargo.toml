@@ -18,6 +18,7 @@ hodor-adapters-postgres.workspace = true
 hodor-audit.workspace = true
 hodor-authentication.workspace = true
 hodor-authorization.workspace = true
+hodor-authorization-opa.workspace = true
 hodor-credential.workspace = true
 hodor-federation.workspace = true
 hodor-identity.workspace = true

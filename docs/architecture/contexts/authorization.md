@@ -214,6 +214,110 @@ A batch holds at most 100 requests and gives one answer per request, in order; a
 | `authorization.engine_unbound` | A binding was removed; carries the namespace |
 | `authorization.failed_open` | A failure allowed because the binding lets the action fail open; carries the namespace, the action, the engine and the cause |
 
+## Open Policy Agent as an engine
+
+The engine `open_policy_agent` asks an Open Policy Agent instance through its Data API. It lives in its own crate, `hodor-authorization-opa`, which depends on this context and the kernel only. Nothing in this context knows that Open Policy Agent exists ([Decision 0010](../../decisions/0010-opa-integration.md)). The integration as a whole, with bundles and the policy lifecycle, is in [the authorization architecture](../authorization.md#open-policy-agent-integration). This section is what the engine does with one request.
+
+### Which instance answers
+
+Instances are named by whoever operates the installation, in the server's configuration, never by a tenant, a binding or a request:
+
+| Setting | Meaning |
+|---|---|
+| `HODOR_OPEN_POLICY_AGENT_ADDRESS` | The shared instance. It runs only policy written by the operator, parameterized by each tenant's data |
+| `HODOR_OPEN_POLICY_AGENT_TENANT_ADDRESSES` | Instances dedicated to one tenant each, as `tenant-identifier=address` pairs separated by commas. Policy written by a tenant runs only in an instance of its own |
+| `HODOR_OPEN_POLICY_AGENT_TOKEN` | The bearer token Hodor presents to every instance. Open Policy Agent's own interface must require it, and be reachable only from Hodor |
+
+A tenant with an instance of its own is answered by it; any other tenant by the shared instance. With neither, the engine is still registered and answers `indeterminate` with `policy_engine_not_configured`, so that a binding to it fails closed instead of being refused.
+
+An address is an origin, `http://` or `https://`, a host and an optional port, with no path, query, fragment, name or password. Plain HTTP is accepted because the default deployment is a sidecar on `localhost`; the server warns at startup about a plain HTTP address that is not on the machine itself.
+
+### How the instance is reached
+
+Not through the guarded client of [outbound HTTP](../../security/outbound-http.md): that client refuses private addresses, which is where Open Policy Agent lives. The engine has a client of its own, which **calls only the configured origins, exactly**, and refuses everything else, whatever the address resolves to. The addresses come from the operator, and the path is built by the engine, so no input of a tenant or a caller can steer a request anywhere else. The rules that are not about addresses stay: no redirects, no proxy, a limit on the size of the answer (64 kibibytes) and on time.
+
+### The decision path
+
+```text
+POST /v1/data/hodor/tenants/t<tenant>/resource_servers/r<namespace>/decision
+```
+
+- `<tenant>` is the tenant's identifier, from the caller's credential, as 32 hexadecimal digits.
+- `<namespace>` is the first 32 hexadecimal digits of the SHA-256 of the binding's namespace, the resource server's audience. An audience is an address or a name that cannot be a segment of a Rego package; its digest can.
+
+Both come from the `TenantContext` and the binding. **Nothing in the request is part of the path**: an attribute, a resource kind or an identifier that names another tenant or another path is only input that the policy sees.
+
+The policy that answers a tenant's resource server is therefore the rule `decision` of the package `hodor.tenants.t<tenant>.resource_servers.r<namespace>`. The bundles of Issue-78 write it; a person writing Rego does not have to.
+
+### The input
+
+```json
+{
+  "input": {
+    "namespace": "https://api.example.com",
+    "subject": { "kind": "user", "id": "…", "attributes": { … } },
+    "asserted": { … },
+    "resource": { "kind": "document", "id": "…", "attributes": { … } },
+    "action": "read",
+    "context": { … }
+  }
+}
+```
+
+`subject.attributes` are those Hodor resolved. `asserted` is empty unless the binding trusts what the caller asserts.
+
+### The answer
+
+The only answer taken is a result that is an object with a boolean `allow`:
+
+```json
+{ "result": { "allow": true, "reason": "owner_may_read", "policies": ["documents/owner"] } }
+```
+
+| What came back | Effect | Reason |
+|---|---|---|
+| `allow` is `true` | `allow` | `reason` if given, otherwise `policy_allowed` |
+| `allow` is `false` | `deny` | `reason` if given, otherwise `policy_denied` |
+| No `result`: the rule is not defined for this input, or no policy exists at the path | `indeterminate` | `policy_undefined` |
+| Anything else: `allow` missing or not a boolean, a `reason` that is not a code of lower-case letters, digits and `_`, `policies` that are not at most 64 strings, a body that is not JSON | `indeterminate` | `policy_answer_malformed` |
+
+`policies` become the decision's matched policies. A revision is not read yet; it comes with the bundles (Issue-78).
+
+### Failures
+
+Every failure is `indeterminate`, with its own reason. The evaluation then treats it like any other failure of an engine: it denies, unless the binding lets that action fail open.
+
+| Reason | Cause |
+|---|---|
+| `policy_engine_timed_out` | No answer within the binding's time limit |
+| `policy_engine_unreachable` | No connection, twice |
+| `policy_engine_error` | An answer with a status other than 200 |
+| `policy_engine_unavailable` | The instance's circuit is open |
+| `policy_engine_not_configured` | No instance answers this tenant |
+
+- **Time.** The binding's time limit is the whole budget. Each attempt is given what is left of it as its own limit on the connection.
+- **One retry**, only when the first attempt could not connect and time is left. It is made at once: a context has no timer, so there is no wait and no jitter. There is never a retry after a time-out or an error status, which would only double the load on an instance that is already struggling.
+- **A circuit breaker per instance.** It opens after 5 failures in a row, or when at least half of the last 10 seconds' requests failed and there were at least 10 of them. While it is open the instance is not called, and the answer is `policy_engine_unavailable` at once. After 5 seconds one request is let through as a probe: if it succeeds the circuit closes, if not it opens again for another 5 seconds. Only the instance's failures count (time-outs, connections, error statuses); an undefined or malformed answer is a fault of the policy, not of the instance.
+
+### How policies reach an instance
+
+In production, only as signed bundles that the instance pulls from Hodor (Issue-78). Hodor never sends a policy through Open Policy Agent's Policy API. The tests of this engine do, into a container of their own, because the bundles do not exist yet.
+
+### The capabilities file
+
+`deploy/open-policy-agent/capabilities.json` lists the built-in functions a policy may use. It is the list of Open Policy Agent 1.10.1 without:
+
+| Built-in | Why it is removed |
+|---|---|
+| `http.send` | Calls any address from inside a decision |
+| `net.lookup_ip_addr` | Resolves names: a lookup is a request, and its answer leaks what the network looks like |
+| `opa.runtime` | Reads the instance's configuration and environment, where its credentials are |
+| `providers.aws.sign_req` | Signs requests to a cloud with credentials of the instance |
+
+Its `allow_net` is empty, so no built-in may reach the network even if one were added back. The functions that only compute on addresses (`net.cidr_contains` and the others of `net.cidr_*`) stay: they read nothing outside the policy.
+
+Open Policy Agent has no setting that limits the built-ins of a running instance. The file is enforced when a policy is checked and built (`opa check --capabilities`, `opa build --capabilities`, Issue-79), so no bundle using a removed built-in is ever published. An instance should run without a route out of its network as well.
+
 ## Not built yet
 
 | Item | Planned in |
@@ -224,6 +328,10 @@ A batch holds at most 100 requests and gives one answer per request, in order; a
 | Conditions on attributes in Common Expression Language | Issue-74 |
 | The authorization interface for applications, which calls the evaluation; and an implementation of `SubjectAttributeSource`. Until then no binary evaluates through the engine contract, and the administration interface still asks the check above | Issue-75 |
 | The record of decisions | Issue-76 |
-| Open Policy Agent, bundles and the policy lifecycle | Issue-77 to Issue-79 |
+| Bundles, the revision a decision was made with and the lag of an instance behind what is published | Issue-78 |
+| The policy lifecycle, with checks and builds against the capabilities file | Issue-79 |
+| A health check of each instance every 5 seconds. Today an instance's health is known only from the decisions it answers, through its circuit | Issue-78, with the status each instance reports |
+| Instances and their credentials managed through the administration interface, one token per instance, and mutual TLS | Issue-80 |
+| A cache of decisions | When a binding declares its policy deterministic |
 | Managing bindings through the administration interface, the command-line tool and the console | Issue-80 |
 | Access control lists and relationships | Later phase ([Decision 0023](../../decisions/0023-what-0.2.0-holds.md)) |

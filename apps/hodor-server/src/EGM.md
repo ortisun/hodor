@@ -30,6 +30,9 @@ Configuration (`Config`, clap, command name `hodor-server`):
 | `--secret-keys` | `HODOR_SECRET_KEYS` | unset |
 | `--key-overlap-hours` | `HODOR_KEY_OVERLAP_HOURS` | 24 |
 | `--outbound-development-hosts` | `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` | empty, comma separated |
+| `--open-policy-agent-address` | `HODOR_OPEN_POLICY_AGENT_ADDRESS` | unset |
+| `--open-policy-agent-tenant-addresses` | `HODOR_OPEN_POLICY_AGENT_TENANT_ADDRESSES` | empty, comma separated `tenant-identifier=origin` |
+| `--open-policy-agent-token` | `HODOR_OPEN_POLICY_AGENT_TOKEN` | unset; its value is hidden from the help text |
 | `--directory-hosts` | `HODOR_DIRECTORY_HOSTS` | empty, comma separated `host:port` |
 | `--password-hash-memory-kibibytes` | `HODOR_PASSWORD_HASH_MEMORY_KIBIBYTES` | `19 * 1024` |
 | `--password-hash-passes` | `HODOR_PASSWORD_HASH_PASSES` | 2 |
@@ -114,6 +117,11 @@ and `run`.
 - Outbound HTTPS to identity providers goes through `GuardedHttpClient`;
   LDAP connections go through `LdapDirectoryClient`, limited to
   `HODOR_DIRECTORY_HOSTS` (`external_sign_in`).
+- Builds the engine registry with `OpenPolicyAgentEngine` over a
+  `ServiceHttpClient` limited to the configured Open Policy Agent origins,
+  with a 64-kibibyte limit on answers (`authorization_engines`, called in
+  `run`). A wrong origin or tenant pair stops the server at startup. No
+  route evaluates through the registry yet (Issue-75).
 - Queues notification messages in PostgreSQL through `PgMessageQueue`; it
   sends no mail (`interaction`).
 - Reads the built pages and console from disk (`Pages::load`,

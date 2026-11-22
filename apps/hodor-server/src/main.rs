@@ -9,7 +9,7 @@ use hodor_adapters_crypto::{
     Argon2Parameters, Argon2idHasher, AwsLcHmacSha1, AwsLcVerifier, HashingLimits,
     LocalKeyProvider, OsRandom, SecretKeys, Sha256Digest,
 };
-use hodor_adapters_http::{GuardedHttpClient, OutboundPolicy};
+use hodor_adapters_http::{GuardedHttpClient, OutboundPolicy, ServiceHttpClient};
 use hodor_adapters_ldap::LdapDirectoryClient;
 use hodor_adapters_postgres::{
     Database, PgAccessTokenStore, PgApplicationStore, PgAttemptStore, PgAuditLog,
@@ -25,7 +25,8 @@ use hodor_authentication::api::{
     IdentifierAuthenticator, LockoutRules, PasswordAuthenticator, Requirement, TotpAuthenticator,
     WebAuthnAuthenticator,
 };
-use hodor_authorization::api::AuthorizationService;
+use hodor_authorization::api::{AuthorizationService, EngineRegistry};
+use hodor_authorization_opa::api::{Instances, OpenPolicyAgentEngine};
 use hodor_credential::api::{
     AccessTokenService, CredentialService, RelyingParty, TotpService, WebAuthnService,
 };
@@ -140,6 +141,24 @@ struct Config {
     #[arg(long, env = "HODOR_OUTBOUND_DEVELOPMENT_HOSTS", value_delimiter = ',')]
     outbound_development_hosts: Vec<String>,
 
+    /// The shared Open Policy Agent instance, an origin such as
+    /// `http://localhost:8181`, for policy written by the operator.
+    #[arg(long, env = "HODOR_OPEN_POLICY_AGENT_ADDRESS")]
+    open_policy_agent_address: Option<String>,
+
+    /// Open Policy Agent instances dedicated to one tenant each, as
+    /// `tenant-identifier=origin` pairs separated by commas.
+    #[arg(
+        long,
+        env = "HODOR_OPEN_POLICY_AGENT_TENANT_ADDRESSES",
+        default_value = ""
+    )]
+    open_policy_agent_tenant_addresses: String,
+
+    /// The bearer token presented to every Open Policy Agent instance.
+    #[arg(long, env = "HODOR_OPEN_POLICY_AGENT_TOKEN", hide_env_values = true)]
+    open_policy_agent_token: Option<String>,
+
     /// The LDAP directories identity providers may name, as `host:port`
     /// separated by commas. Empty: no directory can be used.
     #[arg(long, env = "HODOR_DIRECTORY_HOSTS", value_delimiter = ',')]
@@ -246,6 +265,9 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
     )
     .await?;
     let health = Health::new(vec![Arc::new(DatabaseCheck(database.clone()))]);
+    // Checked now, so that a wrong address stops the server at startup.
+    // The Authorization API (Issue-75) evaluates through these engines.
+    let _engines = authorization_engines(&config)?;
 
     let mut tenant_routes = axum::Router::new()
         .nest(
@@ -501,6 +523,45 @@ fn development_hosts(config: &Config) -> Vec<String> {
         .map(|host| host.trim().to_owned())
         .filter(|host| !host.is_empty())
         .collect()
+}
+
+/// The engines that answer for resource servers, beside the fixed-role
+/// engine the authorization context keeps for Hodor's administration.
+/// Open Policy Agent is always registered, so that a binding to it fails
+/// closed when no instance is configured instead of being refused.
+fn authorization_engines(config: &Config) -> Result<EngineRegistry, DomainError> {
+    let instances = Instances::parse(
+        config.open_policy_agent_address.as_deref(),
+        &config.open_policy_agent_tenant_addresses,
+    )?;
+    let addresses = instances.addresses();
+    let http = ServiceHttpClient::new(
+        &addresses,
+        OutboundPolicy {
+            max_response_bytes: 64 * 1024,
+            ..OutboundPolicy::default()
+        },
+    )?;
+    if addresses.is_empty() {
+        tracing::info!("no Open Policy Agent instance is configured");
+    } else {
+        tracing::info!(
+            instances = addresses.len(),
+            "Open Policy Agent instances configured"
+        );
+    }
+    let mut engine = OpenPolicyAgentEngine::new(
+        Arc::new(http),
+        Arc::new(Sha256Digest),
+        Arc::new(SystemClock),
+        instances,
+    );
+    if let Some(token) = &config.open_policy_agent_token {
+        engine = engine.with_token(Secret::from(token.clone()));
+    }
+    let mut registry = EngineRegistry::new();
+    registry.register(Arc::new(engine))?;
+    Ok(registry)
 }
 
 /// The directories that may be connected to: empty unless set.

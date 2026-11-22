@@ -214,6 +214,14 @@ See [Decision 0010](../decisions/0010-opa-integration.md).
 
 A failure in Open Policy Agent never produces an `Allow` unless an administrator configured `fail_open` for that specific action.
 
+What is built (Issue-77) is specified in [the authorization context](contexts/authorization.md#open-policy-agent-as-an-engine). It departs from this table in three places:
+
+- The retry is made at once, without jitter, because the engine's crate has no timer.
+- There is no health check yet. An instance's health is known from the decisions it answers, through its circuit.
+- There is no revision tracking before bundles exist (Issue-78).
+
+Open Policy Agent cannot limit the built-ins of a running instance, so the capabilities file is enforced when policies are checked and built.
+
 ## Rego policy lifecycle
 
 ```mermaid
