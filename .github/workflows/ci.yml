@@ -174,3 +174,58 @@ jobs:
           name: browser-tests-report
           path: frontend/auth-ui/playwright-report
           retention-days: 7
+
+  # The two installation packages in deploy/install: the Helm chart renders and the Compose file is valid.
+  # Neither is installed here; docs/operations/install-with-docker.md and install-on-kubernetes.md say how
+  # that was checked by hand.
+  installation:
+    name: Installation packages
+    runs-on: ubuntu-latest
+    env:
+      CHART: deploy/install/helm/hodor
+      REQUIRED: --set image.repository=registry.example.com/hodor --set publicUrl=https://login.example.com --set secret.name=hodor
+    steps:
+      - uses: actions/checkout@v4
+      - name: The chart and the binaries carry the same version
+        run: |
+          binaries="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)"
+          chart="$(sed -n 's/^version: //p' "$CHART/Chart.yaml")"
+          application="$(sed -n 's/^appVersion: "\(.*\)"/\1/p' "$CHART/Chart.yaml")"
+          echo "binaries $binaries, chart $chart, application $application"
+          test -n "$binaries" && test "$binaries" = "$chart" && test "$binaries" = "$application"
+      - name: Lint the chart
+        run: helm lint "$CHART" --strict $REQUIRED
+      - name: Render the chart with its defaults
+        run: helm template hodor "$CHART" --namespace hodor $REQUIRED > /dev/null
+      - name: Render the chart with every optional part
+        run: >
+          helm template hodor "$CHART" --namespace hodor $REQUIRED
+          --set ingress.enabled=true --set ingress.className=nginx
+          --set server.autoscaling.enabled=true
+          --set networkPolicy.enabled=true --set networkPolicy.egress.enabled=true
+          --set mail.enabled=true --set "mail.from=Hodor <no-reply@example.com>"
+          --set "directoryHosts={directory.example.com:636}"
+          --set telemetry.metricsEndpoint=http://collector:4318/v1/metrics
+          --set telemetry.tracesEndpoint=http://collector:4318/v1/traces
+          > /dev/null
+      - name: The chart refuses to render without its required values
+        run: |
+          refused() { if "$@" > /dev/null 2>&1; then echo "accepted, and should not be: $*"; return 1; fi; }
+          refused helm template hodor "$CHART" --namespace hodor
+          refused helm template hodor "$CHART" --namespace hodor $REQUIRED --set publicUrl=https://login.example.com/path
+          refused helm template hodor "$CHART" --namespace hodor $REQUIRED --set mail.enabled=true
+      - name: The Compose file is valid with every part
+        env:
+          HODOR_IMAGE: hodor:test
+          COMPOSE_PROFILES: database,https,tools
+          HODOR_PUBLIC_URL: https://login.example.com
+          HODOR_OWNER_DATABASE_PASSWORD: placeholder
+          HODOR_SERVER_DATABASE_PASSWORD: placeholder
+          HODOR_WORKER_DATABASE_PASSWORD: placeholder
+          HODOR_SECRET_KEYS: test:placeholder
+        run: docker compose -f deploy/install/docker/compose.yaml config --quiet
+      - name: The Compose file refuses to start without its secrets
+        run: |
+          if docker compose -f deploy/install/docker/compose.yaml --env-file deploy/install/docker/.env.example config --quiet 2> /dev/null; then
+            echo "the Compose file accepted empty secrets"; exit 1
+          fi

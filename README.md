@@ -691,7 +691,7 @@ This is a development stack: its passwords are in the repository and it speaks p
 | `crates/` | One crate per bounded context, `protocol-http`, the `kernel`, and the adapters |
 | `frontend/` | `auth-ui`, the hosted pages; `admin-console`; and the showcase of the design system. React, built on Astryx with the Hodor theme |
 | `migrations/` | The database schema |
-| `deploy/` | The container image, the development stack, its development identity providers and directory, and the demonstrations |
+| `deploy/` | The container image, the development stack, its development identity providers and directory, the demonstrations, and the two installation packages: Docker Compose and a Helm chart |
 | `docs/` | Product, architecture, protocols, interfaces, security, operations and the decision records. The design lives there |
 
 ## Documentation map
@@ -708,7 +708,7 @@ Start with the [index](docs/README.md). The pages most readers want first:
 | What could go wrong and what stops it | [Threat model](docs/security/threat-model.md), [SAML attack corpus](docs/security/saml-attack-corpus.md) |
 | Why it was built this way | [Decision records](docs/decisions/README.md) |
 | How it looks | [Design system](docs/design/design-system.md), [hosted pages](docs/architecture/hosted-pages.md), [admin console](docs/architecture/admin-console.md) |
-| How to run it | [Quick-start](docs/operations/quick-start.md), [deployment](docs/operations/deployment.md) |
+| How to run it | [Quick-start](docs/operations/quick-start.md), [installing with Docker](docs/operations/install-with-docker.md), [installing on Kubernetes](docs/operations/install-on-kubernetes.md), [deployment](docs/operations/deployment.md) |
 
 ## Development
 

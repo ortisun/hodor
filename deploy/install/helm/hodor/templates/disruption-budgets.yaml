@@ -1,0 +1,19 @@
+{{- range $part := list "server" "worker" }}
+{{- $settings := index $.Values $part }}
+{{- if $settings.podDisruptionBudget.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "hodor.fullname" $ }}-{{ $part }}
+  labels:
+    {{- include "hodor.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $part }}
+spec:
+  maxUnavailable: {{ $settings.podDisruptionBudget.maxUnavailable }}
+  selector:
+    matchLabels:
+      {{- include "hodor.selectorLabels" $ | nindent 6 }}
+      app.kubernetes.io/component: {{ $part }}
+{{- end }}
+{{- end }}

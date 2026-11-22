@@ -181,4 +181,4 @@ Milestone 1 is a walking skeleton: it proves that the pieces work together. It i
 | The operations listener kept off the internet | It answers health checks without any authentication |
 | Backups of the database | Everything Hodor knows is there, the audit log included |
 
-[Deployment](deployment.md) describes where this is heading.
+[Installing with Docker](install-with-docker.md) and [installing on Kubernetes](install-on-kubernetes.md) start Hodor with passwords of your own, HTTPS and no development provider, and say which of these they still leave open. [Deployment](deployment.md) describes where this is heading.

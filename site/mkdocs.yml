@@ -134,6 +134,8 @@ nav:
   - Get started:
       - Quick-start: operations/quick-start.md
       - Local setup: development/local-setup.md
+      - Install with Docker: operations/install-with-docker.md
+      - Install on Kubernetes: operations/install-on-kubernetes.md
       - Deployment: operations/deployment.md
   - Examples:
       - examples/README.md
@@ -208,6 +210,7 @@ nav:
       - decisions/0019-saml-signature-verification.md
       - decisions/0020-console-on-the-hodor-session.md
       - decisions/0021-documentation-site.md
+      - decisions/0022-installation-packages.md
   - Contributing:
       - development/conventions.md
       - development/documentation-site.md
