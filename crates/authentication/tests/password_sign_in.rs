@@ -17,7 +17,7 @@ use hodor_kernel::uow::testing::InMemoryUnitOfWorkFactory;
 use hodor_kernel::{
     Caller, Clock as _, DomainError, ErrorKind, Secret, TenantContext, Timestamp, UserId,
 };
-use hodor_session::api::ClientInfo;
+use hodor_session::api::{Assurance, ClientInfo};
 use hodor_tenant::api::{CreateTenant, TenantService};
 use hodor_tenant::testing::InMemoryTenants;
 use std::sync::Arc;
@@ -163,6 +163,7 @@ impl World {
                 &self.flow,
                 transaction,
                 &input,
+                Assurance::SingleFactor,
                 self.clock.now(),
             )
             .await
