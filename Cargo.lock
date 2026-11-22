@@ -1715,6 +1715,7 @@ dependencies = [
  "hodor-identity",
  "hodor-kernel",
  "hodor-keys",
+ "hodor-oauth",
  "hodor-tenant",
  "sqlx",
  "time",

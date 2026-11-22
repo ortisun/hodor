@@ -19,13 +19,18 @@ read it from a `Messages` object.
   for the language of `text`.
 - `index.ts:named(names, name)` - `names[name]`, or `name` itself when the key
   is missing.
+- `index.ts:lifetime(seconds, text)` - a lifetime in the largest whole unit:
+  `text.days` when it divides into days, then `text.hours`, else
+  `text.minutes` rounded.
 - `en.ts:en` - the English copy, `locale: "en"`; `en.ts:Messages` is
   `typeof en` and is re-exported by `index.ts`.
 - `en.ts:en` groups - plain keys (`locale`, `product`, `console`, `loading`,
   `scope`, `navigation`, `tenant`), then comment-marked groups for who may be
-  here, the frame, navigation, failures, users, one user, the ladder, audit and
-  identity providers; lookup tables `roles`, `status`, `kinds`,
-  `providerStatus`, `providerKinds`, `valueInvalid` and the list
+  here, the frame, navigation, failures, users, one user, the ladder, audit,
+  identity providers, applications, resource servers, clients and a secret
+  shown once; lookup tables `roles`, `status`, `kinds`, `providerStatus`,
+  `providerKinds`, `clientTypes`, `clientTypeHints`, `methods`, `grants`,
+  `valueInvalid` and the list
   `levelFriction`; text-building functions such as `noAccess`, `sessionUntil`,
   `userCreated`, `typeToConfirm` and `requestIdentifier`.
 - `pt-BR.ts:ptBR` - the Brazilian Portuguese copy, `locale: "pt-BR"`, declared

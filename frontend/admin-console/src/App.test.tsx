@@ -5,7 +5,21 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { placeOf, type Screen } from "./address";
 import { App } from "./App";
 import { en } from "./messages/en";
-import { ANA, BIA, GOOGLE, json, meBody, problem, providerBody, scripted, userBody } from "./testing";
+import {
+  ANA,
+  applicationBody,
+  BIA,
+  BILLING,
+  clientBody,
+  GOOGLE,
+  json,
+  meBody,
+  problem,
+  providerBody,
+  scripted,
+  userBody,
+  WEB,
+} from "./testing";
 
 afterEach(cleanup);
 
@@ -310,5 +324,170 @@ describe("the identity providers", () => {
     expect(screen.getByText(en.managedElsewhere)).toBeTruthy();
     expect(screen.queryByRole("button", { name: en.changeSettings })).toBeNull();
     expect(screen.getByRole("button", { name: en.disableProvider })).toBeTruthy();
+  });
+});
+
+describe("the applications", () => {
+  const SECRET = "hodor_cs_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd";
+
+  it("are listed, each a link to its page, and an auditor may not register one", async () => {
+    show("/t/acme/console/applications", {
+      "GET /console/api/me": [json(200, meBody(["applications:read"], ["tenant_auditor"]))],
+      "GET /console/api/applications": [json(200, { items: [applicationBody()] })],
+    });
+    const billing = await screen.findByRole("link", { name: "Billing" });
+    expect(billing.getAttribute("href")).toBe(`/t/acme/console/applications/${BILLING}`);
+    expect(screen.getByText(en.firstParty)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: en.addApplication })).toBeNull();
+  });
+
+  it("are registered with a form that says whether people are asked for consent", async () => {
+    const { sent, go, user } = show("/t/acme/console/applications", {
+      "GET /console/api/me": [json(200, meBody())],
+      "GET /console/api/applications": [json(200, { items: [] })],
+      "POST /console/api/applications": [json(201, applicationBody({ first_party: false }))],
+    });
+    expect(await screen.findByText(en.noApplications)).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: en.addApplication }));
+    const dialog = await screen.findByRole("dialog");
+    await user.type(within(dialog).getByLabelText(en.applicationNameLabel), "Billing");
+    expect(within(dialog).getByText(en.consentSkipped("Billing"))).toBeTruthy();
+    await user.click(within(dialog).getByRole("switch", { name: en.firstPartyLabel }));
+    expect(within(dialog).getByText(en.consentAsked("Billing"))).toBeTruthy();
+    await user.click(within(dialog).getByRole("button", { name: en.addApplication }));
+    await waitFor(() => expect(go).toHaveBeenCalledWith({ name: "application", id: BILLING }));
+    expect(sent.at(-1)?.body).toEqual({ name: "Billing", first_party: false });
+  });
+
+  it("show a new client's secret once, and the client's page never shows it", async () => {
+    const { sent, go, user } = show(`/t/acme/console/applications/${BILLING}`, {
+      "GET /console/api/me": [json(200, meBody())],
+      [`GET /console/api/applications/${BILLING}`]: [json(200, applicationBody())],
+      [`GET /console/api/applications/${BILLING}/clients`]: [json(200, { items: [] })],
+      "GET /console/api/resource-servers": [json(200, { items: [] })],
+      [`POST /console/api/applications/${BILLING}/clients`]: [json(201, { ...clientBody(), client_secret: SECRET })],
+    });
+    expect(await screen.findByText(en.noClients)).toBeTruthy();
+    expect(screen.getByText(en.noResourceServer)).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: en.addClient }));
+    const dialog = await screen.findByRole("dialog");
+    await user.type(within(dialog).getByLabelText(en.clientNameLabel), "Billing web site");
+    await user.type(within(dialog).getByLabelText(en.redirectUrisLabel), "https://billing.example.com/callback");
+    await user.click(within(dialog).getByRole("button", { name: en.addClient }));
+
+    const shown = await screen.findByTestId("shown-once");
+    expect(shown.textContent).toBe(SECRET);
+    expect(sent.at(-1)?.body).toEqual({
+      name: "Billing web site",
+      type: "confidential",
+      authentication_method: "client_secret_basic",
+      grant_types: ["authorization_code"],
+      redirect_uris: ["https://billing.example.com/callback"],
+      allowed_scopes: ["openid"],
+    });
+    await user.click(screen.getByRole("button", { name: en.secretKept }));
+    await waitFor(() => expect(go).toHaveBeenCalledWith({ name: "client", id: WEB }));
+    expect(screen.queryByText(SECRET)).toBeNull();
+  });
+
+  it("offer a public client no secret and no way to act as itself", async () => {
+    const { user } = show(`/t/acme/console/applications/${BILLING}`, {
+      "GET /console/api/me": [json(200, meBody())],
+      [`GET /console/api/applications/${BILLING}`]: [json(200, applicationBody())],
+      [`GET /console/api/applications/${BILLING}/clients`]: [json(200, { items: [] })],
+      "GET /console/api/resource-servers": [json(200, { items: [] })],
+    });
+    await user.click(await screen.findByRole("button", { name: en.addClient }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(en.methodLabel)).toBeTruthy();
+    await user.click(within(dialog).getByRole("radio", { name: en.clientTypes["public"] ?? "" }));
+    expect(within(dialog).queryByText(en.methodLabel)).toBeNull();
+    expect(within(dialog).queryByText(en.grants["client_credentials"] ?? "")).toBeNull();
+  });
+
+  it("are disabled only with the name typed in full", async () => {
+    const { sent, user } = show(`/t/acme/console/applications/${BILLING}`, {
+      "GET /console/api/me": [json(200, meBody())],
+      [`GET /console/api/applications/${BILLING}`]: [json(200, applicationBody())],
+      [`GET /console/api/applications/${BILLING}/clients`]: [json(200, { items: [clientBody()] })],
+      "GET /console/api/resource-servers": [json(200, { items: [] })],
+      [`POST /console/api/applications/${BILLING}:disable`]: [json(200, applicationBody({ status: "disabled" }))],
+    });
+    expect(await screen.findByRole("link", { name: "Billing web site" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: en.disableApplication }));
+    const dialog = await screen.findByRole("dialog");
+    const confirm = within(dialog).getByRole("button", { name: en.disableApplication });
+    expect(confirm.getAttribute("aria-disabled")).toBe("true");
+    await user.type(within(dialog).getByLabelText(en.typeToConfirm("Billing")), "Billing");
+    await user.click(confirm);
+    expect(await screen.findByRole("button", { name: en.enableApplication })).toBeTruthy();
+    expect(sent.at(-1)?.path).toBe(`/console/api/applications/${BILLING}:disable`);
+  });
+});
+
+describe("the page of a client", () => {
+  const SECRET = "hodor_cs_fedcba9876543210fedcba9876543210fedcba9876543210fedcba98765432";
+
+  it("shows its settings and secrets by expiry, never a secret", async () => {
+    show(`/t/acme/console/clients/${WEB}`, {
+      "GET /console/api/me": [json(200, meBody())],
+      [`GET /console/api/clients/${WEB}`]: [json(200, clientBody())],
+    });
+    expect(await screen.findByRole("heading", { name: "Billing web site" })).toBeTruthy();
+    expect(screen.getByText(WEB)).toBeTruthy();
+    expect(screen.getByText("https://billing.example.com/callback")).toBeTruthy();
+    expect(screen.getAllByText(en.minutes(5)).length).toBe(2);
+    expect(screen.getByText(en.days(30))).toBeTruthy();
+    expect(screen.queryByText(/hodor_cs_/)).toBeNull();
+  });
+
+  it("gives a new secret only with the name typed in full, and shows it once", async () => {
+    const { sent, user } = show(`/t/acme/console/clients/${WEB}`, {
+      "GET /console/api/me": [json(200, meBody())],
+      [`GET /console/api/clients/${WEB}`]: [json(200, clientBody()), json(200, clientBody())],
+      [`POST /console/api/clients/${WEB}/secrets`]: [
+        json(201, {
+          id: "0193f1c2-0000-7000-8000-0000000000d2",
+          client_secret: SECRET,
+          created_at: "2026-11-22T15:03:11Z",
+          expires_at: "2027-11-22T15:03:11Z",
+        }),
+      ],
+    });
+    await user.click(await screen.findByRole("button", { name: en.rotateSecret }));
+    const dialog = await screen.findByRole("dialog");
+    const confirm = within(dialog).getByRole("button", { name: en.rotateSecret });
+    expect(confirm.getAttribute("aria-disabled")).toBe("true");
+    await user.type(within(dialog).getByLabelText(en.typeToConfirm("Billing web site")), "Billing web site");
+    await user.click(confirm);
+    expect((await screen.findByTestId("shown-once")).textContent).toBe(SECRET);
+    expect(sent.find((request) => request.method === "POST")?.csrfToken).toBe("token-of-the-session");
+    await user.click(screen.getByRole("button", { name: en.secretKept }));
+    await waitFor(() => expect(screen.queryByText(SECRET)).toBeNull());
+  });
+
+  it("refuses a key that is not JSON before asking the server, and removes a key by its kid", async () => {
+    const keyed = clientBody({
+      authentication_method: "private_key_jwt",
+      secrets: [],
+      keys: [{ kid: "2026/11", jwk: { kty: "EC", crv: "P-256", kid: "2026/11" }, added_at: "2026-11-22T14:03:11Z" }],
+    });
+    const { sent, user } = show(`/t/acme/console/clients/${WEB}`, {
+      "GET /console/api/me": [json(200, meBody())],
+      [`GET /console/api/clients/${WEB}`]: [json(200, keyed), json(200, clientBody({ ...keyed, keys: [] }))],
+      [`DELETE /console/api/clients/${WEB}/keys/2026%2F11`]: [new Response(null, { status: 204 })],
+    });
+    await user.click(await screen.findByRole("button", { name: en.addKey }));
+    const dialog = await screen.findByRole("dialog");
+    await user.type(within(dialog).getByLabelText(en.keyLabel), "not a key");
+    await user.click(within(dialog).getByRole("button", { name: en.addKey }));
+    expect(await within(dialog).findByText(en.keyNotJson)).toBeTruthy();
+    await user.click(within(dialog).getByRole("button", { name: en.cancel }));
+
+    await user.click(screen.getByRole("button", { name: en.removeKey }));
+    const removing = await screen.findByRole("dialog");
+    await user.click(within(removing).getByRole("button", { name: en.removeKey }));
+    await waitFor(() => expect(sent.at(-2)?.path).toBe(`/console/api/clients/${WEB}/keys/2026%2F11`));
+    expect(sent.some((request) => request.path.endsWith("/keys") && request.method === "POST")).toBe(false);
   });
 });

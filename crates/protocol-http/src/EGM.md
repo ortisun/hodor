@@ -135,6 +135,22 @@ Administration and console handlers, shared by both routers
 | PUT | `/identity-providers/{provider}/client-secret` | `change_provider_secret` |
 | GET, POST | `/keys/{key_set}` | `list_key_versions`, `key_set_action` (`POST /keys/{key_set}:rotate` arrives here) |
 | POST | `/keys/{key_set}/versions/{version}` | `key_version_action` (`:revoke` arrives here) |
+| GET, POST | `/applications` | `applications::list_applications`, `create_application` |
+| GET, PATCH, POST | `/applications/{application}` | `get_application`, `change_application`, `application_action` (`:disable` and `:enable` arrive here) |
+| GET, POST | `/applications/{application}/clients` | `list_clients`, `create_client` |
+| GET, PATCH, POST | `/clients/{client}` | `get_client`, `change_client`, `client_action` (`:disable` and `:enable` arrive here) |
+| POST | `/clients/{client}/secrets` | `rotate_secret` (an empty body is `{}`) |
+| DELETE | `/clients/{client}/secrets/{secret}` | `revoke_secret` |
+| POST | `/clients/{client}/keys` | `add_key` |
+| DELETE | `/clients/{client}/keys/{key}` | `remove_key` (the `kid`, percent-decoded) |
+| GET, POST | `/resource-servers` | `list_resource_servers`, `create_resource_server` |
+| GET, PATCH | `/resource-servers/{resource_server}` | `get_resource_server`, `change_resource_server` |
+
+The application routes live in `admin/applications.rs` and are merged into
+`shared_routes`; they need `ApplicationService` in `AdminState.applications`.
+A client's secret is written only by `create_client` (`client_secret` in
+`CreatedClientBody`) and `rotate_secret` (`NewSecretBody`); neither type is
+`Debug`, and `ClientBody` names secrets by identifier and expiry only.
 
 `admin_routes` (documented mount point `/t/{slug}/api/v1/admin`) adds
 `GET /openapi.json` (`openapi`, no authentication). `console_routes`

@@ -7,6 +7,7 @@
 //! handlers and the table of permissions are the same for both.
 //!
 //! Specified in `docs/api/admin-api.md` and `docs/api/console-interface.md`.
+//! Applications, clients and resource servers are in [`applications`].
 //! Every request is checked before
 //! anything else: the access token, whether its user may sign in, and
 //! whether the user holds a role with the permission the route needs. A
@@ -39,11 +40,14 @@ use hodor_kernel::{
     TenantContext, UserId,
 };
 use hodor_keys::api::{KeyAlgorithm, KeyService, KeyUse, KeyVersion, KeyVersionId, RotationPolicy};
+use hodor_oauth::api::ApplicationService;
 use hodor_session::api::{Session, SessionId, SessionService};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use time::format_description::well_known::Rfc3339;
+
+mod applications;
 
 /// The OpenAPI document of the interface, as served at `/openapi.json`.
 pub const ADMIN_OPENAPI: &str = include_str!("../openapi/admin-v1.json");
@@ -106,6 +110,86 @@ pub const ADMIN_OPERATIONS: &[(&str, &str, Permission)] = &[
         "/keys/{key_set}/versions/{version_id}:revoke",
         Permission::KeysWrite,
     ),
+    ("GET", "/applications", Permission::ApplicationsRead),
+    ("POST", "/applications", Permission::ApplicationsWrite),
+    (
+        "GET",
+        "/applications/{application_id}",
+        Permission::ApplicationsRead,
+    ),
+    (
+        "PATCH",
+        "/applications/{application_id}",
+        Permission::ApplicationsWrite,
+    ),
+    (
+        "POST",
+        "/applications/{application_id}:disable",
+        Permission::ApplicationsWrite,
+    ),
+    (
+        "POST",
+        "/applications/{application_id}:enable",
+        Permission::ApplicationsWrite,
+    ),
+    (
+        "GET",
+        "/applications/{application_id}/clients",
+        Permission::ApplicationsRead,
+    ),
+    (
+        "POST",
+        "/applications/{application_id}/clients",
+        Permission::ApplicationsWrite,
+    ),
+    ("GET", "/clients/{client_id}", Permission::ApplicationsRead),
+    (
+        "PATCH",
+        "/clients/{client_id}",
+        Permission::ApplicationsWrite,
+    ),
+    (
+        "POST",
+        "/clients/{client_id}:disable",
+        Permission::ApplicationsWrite,
+    ),
+    (
+        "POST",
+        "/clients/{client_id}:enable",
+        Permission::ApplicationsWrite,
+    ),
+    (
+        "POST",
+        "/clients/{client_id}/secrets",
+        Permission::ApplicationsWrite,
+    ),
+    (
+        "DELETE",
+        "/clients/{client_id}/secrets/{secret_id}",
+        Permission::ApplicationsWrite,
+    ),
+    (
+        "POST",
+        "/clients/{client_id}/keys",
+        Permission::ApplicationsWrite,
+    ),
+    (
+        "DELETE",
+        "/clients/{client_id}/keys/{key_id}",
+        Permission::ApplicationsWrite,
+    ),
+    ("GET", "/resource-servers", Permission::ApplicationsRead),
+    ("POST", "/resource-servers", Permission::ApplicationsWrite),
+    (
+        "GET",
+        "/resource-servers/{resource_server_id}",
+        Permission::ApplicationsRead,
+    ),
+    (
+        "PATCH",
+        "/resource-servers/{resource_server_id}",
+        Permission::ApplicationsWrite,
+    ),
 ];
 
 /// What the administration handlers need.
@@ -129,6 +213,8 @@ pub struct AdminState {
     pub keys: Option<KeyService>,
     /// How long a replaced signing key stays when it is rotated by hand.
     pub key_rotation: RotationPolicy,
+    /// The applications, their clients and resource servers.
+    pub applications: ApplicationService,
     /// The address people reach this installation at, without a path.
     pub public_url: String,
 }
@@ -218,6 +304,7 @@ fn shared_routes() -> Router<Shared> {
             "/keys/{key_set}/versions/{version}",
             axum::routing::post(key_version_action),
         )
+        .merge(applications::routes())
 }
 
 /// The routes of the administration interface, to be mounted under a

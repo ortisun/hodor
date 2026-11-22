@@ -1,6 +1,6 @@
 # The admin console
 
-The admin console is where the people who run a tenant do it from a browser: see its users, create and suspend them, end their sessions, connect the identity providers people sign in with, and read the audit log. It is the first part of [the control plane](../design/control-plane.md), built on what the server can answer today ([Decision 0020](../decisions/0020-console-on-the-hodor-session.md)).
+The admin console is where the people who run a tenant do it from a browser: see its users, create and suspend them, end their sessions, connect the identity providers people sign in with, register the applications that ask Hodor who someone is, and read the audit log. It is the first part of [the control plane](../design/control-plane.md), built on what the server can answer today ([Decision 0020](../decisions/0020-console-on-the-hodor-session.md)).
 
 It is an application of static files, `admin-console`, served by `hodor-server` on the tenant's origin, built from the components of the [design system](../design/design-system.md). It talks only to the [console interface](../api/console-interface.md).
 
@@ -47,6 +47,9 @@ The console opens in the dark mode and remembers the person's choice in the brow
 | `/audit` | Audit records: a table, a page at a time, with a panel showing the whole record and its hashes | `audit:read` |
 | `/identity-providers` | Identity providers: a table ordered by alias, with status and whether each creates users; add a provider | `identity-providers:read`; `identity-providers:write` to add |
 | `/identity-providers/{provider_id}` | One provider: the callback address to register at the provider, its settings; change them, replace the client secret, disable or enable it | `identity-providers:read`; `identity-providers:write` for the actions |
+| `/applications` | Applications: a table, oldest first, with whether each is first party and its status; register an application | `applications:read`; `applications:write` to register |
+| `/applications/{application_id}` | One application: its settings, its clients, its resource server with the scopes it defines; change the application, disable or enable it, create a client, register or change its resource server | `applications:read`; `applications:write` for every change |
+| `/clients/{client_id}` | One client: its `client_id`, type, authentication method, grants, redirect addresses, scopes and token lifetimes, its secrets by expiry and its keys; change it, give it a new secret, end a secret, add or remove a key, disable or enable it | `applications:read`; `applications:write` for every change |
 
 The console adds OpenID Connect providers, and changes their settings and secrets. Providers of the other kinds, GitHub and directories, are listed and shown, and are disabled and enabled from the console; adding them, and changing their settings or secret, is done through the [administration interface](../api/admin-api.md#identity-providers) for now, because the fields of the form mean other things for them. A directory has no callback address, and its screen shows where it searches instead.
 
@@ -66,13 +69,26 @@ Each action has one level, written once in the console's action catalog (`src/ac
 | Replace an identity provider's client secret | 1 | A dialog that says sign-ins use the new secret at once |
 | Enable an identity provider | 1 | A dialog that says it will be offered on the sign-in page |
 | Disable an identity provider | 2 | The alias typed in full: nobody signs in through it until it is enabled again |
+| Register an application | 1 | The form says, before its button, whether people will be asked for consent: a first-party application is not asked |
+| Change an application | 1 | The form, with the same sentence |
+| Enable an application or a client | 1 | A dialog that says its clients, or it, get tokens again |
+| Disable an application | 2 | The application's name typed in full: none of its clients gets a token until it is enabled again |
+| Create a client | 1 | The form; a client with a secret gets its first secret, shown once |
+| Change a client | 1 | The form, checked by the server against every rule of a client |
+| Register or change a resource server | 1 | The form, which says that the audience can never be changed |
+| Give a client a new secret | 2 | The client's name typed in full: every older secret but the newest stops at once, and the new one is shown once |
+| End one secret of a client | 2 | The client's name typed in full: whatever still uses it stops getting tokens at once |
+| Add a key to a client | 1 | The form, which refuses a key with a private part |
+| Remove a key of a client | 1 | A dialog that names the `kid`: assertions signed with it are refused from now on |
+| Disable a client | 2 | The client's name typed in full: it gets no token until it is enabled again |
 
 The dialog says what will happen in words the reader can check, never puts the destructive button first or focused, and does not act on Enter. After the action a toast confirms it; the audit record it produced is on the audit screen.
 
 ### What the console never does
 
 - It never shows or sets a password. A new user chooses one by recovering it.
-- It never shows a client secret. A secret is typed into a field that hides it, sent once, and forgotten by the page; the provider's screen says only that one is set.
+- It never shows an identity provider's client secret. A secret is typed into a field that hides it, sent once, and forgotten by the page; the provider's screen says only that one is set.
+- It shows a client's new secret once, in the answer that made it, and forgets it when that dialog closes. The dialog says so and offers to copy it; no screen shows it again, because the server cannot.
 - It never holds a token: there is none to hold.
 - It never shows data it did not get from the server.
 
@@ -120,7 +136,8 @@ The console is used in production with these known gaps. Each is a requirement o
 | Recent authentication for sensitive actions (Requirement-Console-03) | There is no step-up yet | Phase 2 |
 | Phishing-resistant sign-in for administrators (Requirement-Console-05) | Passkeys are Phase 4. Until then an administrator signs in with a password | Phase 4 |
 | Adding GitHub providers and directories, and changing their settings or secret, from the console | The form is the one of OpenID Connect providers | Next |
-| Security posture, live activity, applications, signing keys, policies | The server has no such resources yet | The phase of each |
+| Security posture, live activity, signing keys, policies | The server has no such resources yet | The phase of each |
+| Changing a client's token lifetimes from the console | The form keeps to what most clients change; the administration interface changes them | Next |
 | Reactivating, changing or removing a user; filtering and searching the tables | The administration interface does not have them | Phase 2 |
 | Giving and taking roles | No route exists; roles are given with `hodor-cli` | Phase 2 |
 | Conflict detection between two administrators (Requirement-Console-09) | No `ETag` yet | Phase 2 |

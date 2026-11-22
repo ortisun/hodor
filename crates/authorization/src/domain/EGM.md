@@ -26,8 +26,10 @@ reach other crates through `hodor_authorization::api`.
   | `IdentityProvidersWrite` | `identity-providers:write` |
   | `KeysRead` | `keys:read` |
   | `KeysWrite` | `keys:write` |
+  | `ApplicationsRead` | `applications:read` |
+  | `ApplicationsWrite` | `applications:write` |
 
-  `Permission::ALL` lists all nine; `from_name(name) -> Option<Permission>`.
+  `Permission::ALL` lists all eleven; `from_name(name) -> Option<Permission>`.
 - `Role` (`role.rs:Role`): `TenantAdministrator` (`tenant_administrator`) and
   `TenantAuditor` (`tenant_auditor`); `Role::ALL`, `as_str`,
   `from_name(name) -> Result<Role, DomainError>`, `permissions()`,
@@ -91,7 +93,8 @@ implements `hodor_kernel::DomainEvent`:
 - The roles are fixed in this version (`role.rs:Role`).
 - `TenantAdministrator` holds every permission (`Permission::ALL`);
   `TenantAuditor` holds `UsersRead`, `SessionsRead`, `AuditRead`,
-  `IdentityProvidersRead` and `KeysRead` only (`role.rs:Role::permissions`).
+  `IdentityProvidersRead`, `KeysRead` and `ApplicationsRead` only
+  (`role.rs:Role::permissions`).
 - Deny is the default: no role, and no role holding the permission, both give
   `Effect::Deny` with reason `no_matching_role`; otherwise the answer is
   `Effect::Allow` with the allowing role's name as reason

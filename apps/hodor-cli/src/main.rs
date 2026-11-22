@@ -1,5 +1,8 @@
 //! Operations tool: migrations, tenant management, the first
-//! administrator, authenticator applications and checking the audit log.
+//! administrator, identity providers, applications, authenticator
+//! applications and checking the audit log.
+
+mod applications;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use hodor_adapters_crypto::{AwsLcHmacSha1, LocalKeyProvider, OsRandom, SecretKeys, Sha256Digest};
@@ -139,6 +142,48 @@ enum Command {
         public_url: String,
         #[command(subcommand)]
         command: ProviderCommand,
+    },
+
+    /// Manage a tenant's applications.
+    Application {
+        /// Connection URL of the application role.
+        #[arg(
+            long,
+            env = "HODOR_DATABASE_URL",
+            hide_env_values = true,
+            global = true
+        )]
+        database_url: Option<String>,
+        #[command(subcommand)]
+        command: applications::ApplicationCommand,
+    },
+
+    /// Manage the clients of a tenant's applications.
+    Client {
+        /// Connection URL of the application role.
+        #[arg(
+            long,
+            env = "HODOR_DATABASE_URL",
+            hide_env_values = true,
+            global = true
+        )]
+        database_url: Option<String>,
+        #[command(subcommand)]
+        command: applications::ClientCommand,
+    },
+
+    /// Manage a tenant's resource servers.
+    ResourceServer {
+        /// Connection URL of the application role.
+        #[arg(
+            long,
+            env = "HODOR_DATABASE_URL",
+            hide_env_values = true,
+            global = true
+        )]
+        database_url: Option<String>,
+        #[command(subcommand)]
+        command: applications::ResourceServerCommand,
     },
 
     /// Manage people's authenticator applications, until people can do it
@@ -1136,6 +1181,22 @@ fn probe(addr: SocketAddr, path: &str) -> Result<bool, std::io::Error> {
     Ok(&status_line == b"HTTP/1.1 200")
 }
 
+/// Connects as the application role, which the commands need.
+async fn connect(database_url: Option<String>) -> Result<Database, Box<dyn Error>> {
+    let url = database_url.ok_or("HODOR_DATABASE_URL or --database-url is required")?;
+    Ok(Database::connect(&Secret::from(url), 2).await?)
+}
+
+/// Writes what a command printed, or turns its refusal into the error the
+/// tool exits with.
+fn print(result: Result<String, DomainError>) -> Result<(), Box<dyn Error>> {
+    let output = result.map_err(|error| format!("{}: {}", error.code(), error.message()))?;
+    if !output.is_empty() {
+        writeln!(std::io::stdout(), "{output}")?;
+    }
+    Ok(())
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn Error>> {
     match Cli::parse().command {
@@ -1214,6 +1275,27 @@ async fn main() -> Result<(), Box<dyn Error>> {
             if !output.is_empty() {
                 writeln!(std::io::stdout(), "{output}")?;
             }
+        }
+        Command::Application {
+            database_url,
+            command,
+        } => {
+            let database = connect(database_url).await?;
+            print(applications::run_application(&database, command).await)?;
+        }
+        Command::Client {
+            database_url,
+            command,
+        } => {
+            let database = connect(database_url).await?;
+            print(applications::run_client(&database, command).await)?;
+        }
+        Command::ResourceServer {
+            database_url,
+            command,
+        } => {
+            let database = connect(database_url).await?;
+            print(applications::run_resource_server(&database, command).await)?;
         }
         Command::Totp {
             database_url,
