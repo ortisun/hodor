@@ -1606,6 +1606,7 @@ dependencies = [
  "hodor-kernel",
  "hodor-keys",
  "hodor-notification",
+ "hodor-oauth",
  "hodor-saml",
  "hodor-session",
  "hodor-tenant",
@@ -1779,6 +1780,20 @@ dependencies = [
  "hodor-notification",
  "proptest",
  "serde",
+ "time",
+ "tokio",
+]
+
+[[package]]
+name = "hodor-oauth"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "hodor-kernel",
+ "hodor-oauth",
+ "serde",
+ "serde_json",
  "time",
  "tokio",
 ]

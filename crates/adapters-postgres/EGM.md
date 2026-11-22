@@ -28,7 +28,7 @@ From `[dependencies]` in `Cargo.toml`:
 - Domain crates whose ports this crate implements: `hodor-audit`,
   `hodor-authentication`, `hodor-authorization`, `hodor-credential`,
   `hodor-federation`, `hodor-identity`, `hodor-keys`,
-  `hodor-notification`, `hodor-session`, `hodor-tenant`.
+  `hodor-notification`, `hodor-oauth`, `hodor-session`, `hodor-tenant`.
 - `hodor-kernel` (the `UnitOfWork`, `UnitOfWorkFactory`, `EventHandler`,
   `TenantContext` and `DomainError` types).
 - Third party: `async-trait`, `serde_json`, `sqlx`, `time`, and, behind
