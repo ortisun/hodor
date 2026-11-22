@@ -41,6 +41,8 @@ Start with the [critical review](architecture/critical-review.md): it lists wher
 | 24 | Plugin Architecture | [architecture/plugins.md](architecture/plugins.md) |
 | 25 | Testing Strategy | [architecture/testing.md](architecture/testing.md) |
 | 26 | Deployment Architecture | [operations/deployment.md](operations/deployment.md) |
+| — | Installing with Docker: Hodor on one machine, with passwords of your own, PostgreSQL and HTTPS | [operations/install-with-docker.md](operations/install-with-docker.md) |
+| — | Installing on Kubernetes: the Helm chart, what it creates and what it expects to find | [operations/install-on-kubernetes.md](operations/install-on-kubernetes.md) |
 | — | Quick-start: from a clean checkout to a tenant people sign in to, and the demonstration of Milestone 1 | [operations/quick-start.md](operations/quick-start.md) |
 | — | Examples: a tenant and its first administrator, signing in through identity providers, calling the administration interface | [examples/](examples/README.md) |
 | 27 | Decision records | [decisions/](decisions/README.md) |

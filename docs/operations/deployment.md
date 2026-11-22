@@ -1,20 +1,24 @@
 # Deployment architecture
 
+How Hodor is meant to run, and where that is heading. To install it as it is today, follow [installing with Docker](install-with-docker.md) or [installing on Kubernetes](install-on-kubernetes.md); each says what it does not do yet.
+
 ## Artifacts
 
 | Artifact | Contents |
 |---|---|
 | `hodor` image | One image with the three binaries: `hodor-server` (the entrypoint), `hodor-worker` and `hodor-cli`, run by overriding the command. It also holds [the hosted pages](../architecture/hosted-pages.md#how-the-pages-are-served), built into `/usr/share/hodor/auth-ui`, which `HODOR_PAGES_DIRECTORY` points at. The [admin console](../architecture/admin-console.md#how-it-is-served) is built into `/usr/share/hodor/admin-console`, which `HODOR_CONSOLE_DIRECTORY` points at. The account console is added when it exists. Distroless, non-root, `linux/amd64` and `linux/arm64` |
 | `hodor-policy-tools` image | The `opa` binary for the Rego validation job (Phase 5) |
-| Helm chart | Deployments, services, ingress, migration job, network policies, PodDisruptionBudgets, horizontal pod autoscaler, optional Open Policy Agent sidecar and Redis |
+| Helm chart | `deploy/install/helm/hodor`: Deployments, service, ingress, migration job, network policy, PodDisruptionBudgets and horizontal pod autoscaler, as [installing on Kubernetes](install-on-kubernetes.md) describes. The optional Open Policy Agent sidecar and Redis come with the phases that use them |
+| Compose installation | `deploy/install/docker`: the migrations, the server and the worker on one machine, with PostgreSQL and HTTPS as optional parts, as [installing with Docker](install-with-docker.md) describes |
 | Software bill of materials and signatures | CycloneDX software bill of materials and a signature per image |
 
 ## Topologies
 
 | Topology | Use | Shape |
 |---|---|---|
-| Single node | Evaluation, development | Docker Compose in `deploy/docker`: server, worker, PostgreSQL, migrations, VictoriaMetrics |
-| Standard high availability | Production | Kubernetes, 3+ server replicas across zones, 2+ workers, managed PostgreSQL with a standby, optional Redis and Open Policy Agent sidecars |
+| Development | Working on Hodor, the demonstrations | Docker Compose in `deploy/docker`: server, worker, PostgreSQL, migrations, VictoriaMetrics, a mail server that delivers nothing and the development identity providers. Its passwords are public |
+| Single node | Evaluation, small installations | Docker Compose in `deploy/install/docker`: server, worker, migrations, optional PostgreSQL and HTTPS, every secret from a file of your own |
+| Standard high availability | Production | Kubernetes with the chart in `deploy/install/helm/hodor`: 3+ server replicas across zones, 2+ workers, managed PostgreSQL with a standby, optional Redis and Open Policy Agent sidecars |
 | Dedicated | Regulated or very large tenants | A separate standard deployment per customer |
 
 ## Kubernetes reference

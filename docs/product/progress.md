@@ -2,7 +2,7 @@
 
 What has been built, issue by issue. This page is updated with every merge into `develop`; the plan it tracks is in [epics.md](epics.md).
 
-Last updated: 2026-11-21.
+Last updated: 2026-11-22.
 
 ## Milestone 1: Walking skeleton
 
@@ -219,8 +219,20 @@ The pages of `docs/` published as a website, outside the milestone plan, at the 
 | The site | Done | MkDocs with the Material theme, built from `docs/` where the pages are, with search, tabs, light and dark modes and drawn Mermaid diagrams. A home page, and the OpenAPI document of the administration interface shown with Swagger UI. Tools pinned with their hashes |
 | Examples | Done | [A tenant and its first administrator](../examples/first-tenant-and-administrator.md), [signing in through identity providers](../examples/signing-in-through-identity-providers.md), [calling the administration interface](../examples/administration-interface.md). Every command run as written against the development stack; the sign-ins through OpenID Connect, the directory and SAML done in Chromium. The GitHub sign-in stops at GitHub's page, since the stack has no stand-in for it |
 | Checks | Done | Every pull request that touches the pages builds the site with `--strict`: a page missing from the navigation, a broken link or an anchor that leads nowhere fails it |
-| Publishing | Waiting for the owner | The workflow publishes from `develop` once GitHub Pages is turned on with GitHub Actions as its source, and `develop` may deploy to the `github-pages` environment |
+| Publishing | Done | GitHub Pages is turned on with GitHub Actions as its source, and `develop` may deploy to the `github-pages` environment. The workflow publishes every change of the pages on `develop` at <https://ortisun.github.io/hodor/> |
 | Moving to Zensical | Not started | Material for MkDocs reaches its end of life on May 5, 2027. [Decision 0021](../decisions/0021-documentation-site.md#consequences) says when the site moves |
+
+## Installation packages
+
+Two ways to install Hodor that are not the development stack, outside the milestone plan, at the owner's request. Specified in [installing with Docker](../operations/install-with-docker.md), [installing on Kubernetes](../operations/install-on-kubernetes.md) and [Decision 0022](../decisions/0022-installation-packages.md).
+
+| Piece | Status | What exists |
+|---|---|---|
+| With Docker | Done | `deploy/install/docker`: a Compose file for one machine with the migrations, the server and the worker, and PostgreSQL and HTTPS as optional profiles. Every secret comes from a file of the operator's own; nothing starts while one is missing. Started from nothing as its page says, with and without the optional parts and against a database whose owner is not a superuser; HTTPS was tried with a certificate for `localhost` only |
+| On Kubernetes | Done | `deploy/install/helm/hodor`: a Helm chart with the server, the worker, the migration job as a hook, the Service, disruption budgets, and an optional Ingress, autoscaler and network policy. Every secret is read from a Secret that exists beforehand. Installed and upgraded on a local cluster with `deploy/install/helm/evaluation.yaml`; the Ingress, the autoscaler and the network policy were rendered, not exercised |
+| Checks | Done | Continuous integration lints and renders the chart and validates the Compose file. It installs neither |
+| A published image and chart | Not started | Both are built and installed from a checkout |
+| A forwarded client address | Not started | Both packages put a web server in front of Hodor, so everyone shares one limit on sign-in attempts. Listed under [known gaps](#known-gaps-in-what-is-done) |
 
 ## Defects found after merging
 
