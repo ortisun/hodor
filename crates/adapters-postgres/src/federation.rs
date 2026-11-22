@@ -95,8 +95,11 @@ fn pending_from(row: &PgRow) -> Result<PendingAuthorization, DomainError> {
             email: row.try_get("saml_email").map_err(get)?,
             name: row.try_get("saml_name").map_err(get)?,
         }),
+        // A name this version does not know is still a refusal: refusing is
+        // what fails safe, and an error would stop the sign-in from being
+        // taken at all.
         (None, Some(refusal)) => Some(SamlAnswer::Refused {
-            reason: SamlAnswer::refusal_named(&refusal).ok_or_else(|| corrupted("SAML refusal"))?,
+            reason: SamlAnswer::refusal_named(&refusal).unwrap_or("unknown_refusal"),
         }),
         (Some(_), Some(_)) => return Err(corrupted("SAML answer")),
     };
@@ -559,26 +562,31 @@ impl PendingAuthorizationStore for PgPendingAuthorizationStore {
         row.as_ref().map(pending_from).transpose()
     }
 
-    async fn unanswered(
+    async fn claim(
         &self,
         uow: &mut dyn UnitOfWork,
         provider_id: ProviderId,
         state_hash: [u8; 32],
+        receipt_hash: [u8; 32],
         now: Timestamp,
     ) -> Result<Option<PendingAuthorization>, DomainError> {
         let tenant = uow.tenant().tenant_id();
+        // One statement: of several responses at the same moment, one
+        // claims the pending authorization and gets it back.
         let row = sqlx::query(
-            "SELECT transaction_id, provider_id, state_hash, nonce, code_verifier,
-                    redirect_uri, expires_at, saml_subject, saml_email, saml_name,
-                    saml_refusal, saml_receipt_hash
-             FROM federation.pending_authorization
+            "UPDATE federation.pending_authorization
+             SET saml_receipt_hash = $5
              WHERE tenant_id = $1 AND provider_id = $2 AND state_hash = $3
-               AND expires_at > $4 AND saml_receipt_hash IS NULL",
+               AND expires_at > $4 AND saml_receipt_hash IS NULL
+             RETURNING transaction_id, provider_id, state_hash, nonce, code_verifier,
+                       redirect_uri, expires_at, saml_subject, saml_email, saml_name,
+                       saml_refusal, saml_receipt_hash",
         )
         .bind(tenant.as_uuid())
         .bind(provider_id.as_uuid())
         .bind(state_hash.as_slice())
         .bind(now)
+        .bind(receipt_hash.as_slice())
         .fetch_optional(connection(uow)?)
         .await
         .map_err(|e| database_error(&e))?;
@@ -590,9 +598,8 @@ impl PendingAuthorizationStore for PgPendingAuthorizationStore {
         uow: &mut dyn UnitOfWork,
         provider_id: ProviderId,
         state_hash: [u8; 32],
-        answer: &SamlAnswer,
         receipt_hash: [u8; 32],
-        now: Timestamp,
+        answer: &SamlAnswer,
     ) -> Result<bool, DomainError> {
         let tenant = uow.tenant().tenant_id();
         let (subject, email, name, refusal) = match answer {
@@ -608,24 +615,22 @@ impl PendingAuthorizationStore for PgPendingAuthorizationStore {
             ),
             SamlAnswer::Refused { reason } => (None, None, None, Some(*reason)),
         };
-        // One statement: of two answers at the same moment, the first one
-        // wins.
+        // Only the response that claimed it answers it, and once.
         let kept = sqlx::query(
             "UPDATE federation.pending_authorization
-             SET saml_subject = $5, saml_email = $6, saml_name = $7, saml_refusal = $8,
-                 saml_receipt_hash = $9
+             SET saml_subject = $5, saml_email = $6, saml_name = $7, saml_refusal = $8
              WHERE tenant_id = $1 AND provider_id = $2 AND state_hash = $3
-               AND expires_at > $4 AND saml_receipt_hash IS NULL",
+               AND saml_receipt_hash = $4
+               AND saml_subject IS NULL AND saml_refusal IS NULL",
         )
         .bind(tenant.as_uuid())
         .bind(provider_id.as_uuid())
         .bind(state_hash.as_slice())
-        .bind(now)
+        .bind(receipt_hash.as_slice())
         .bind(subject)
         .bind(email)
         .bind(name)
         .bind(refusal)
-        .bind(receipt_hash.as_slice())
         .execute(connection(uow)?)
         .await
         .map_err(|e| database_error(&e))?;

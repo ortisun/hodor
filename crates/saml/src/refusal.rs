@@ -175,6 +175,47 @@ impl From<Reason> for Refusal {
 mod tests {
     use super::Reason;
 
+    /// Where each reason is in [`Reason::ALL`]. The match has no wildcard,
+    /// so a new reason does not compile until it is given a place here, and
+    /// the test below then fails until it is in the list too.
+    const fn place(reason: Reason) -> usize {
+        match reason {
+            Reason::Size => 0,
+            Reason::Malformed => 1,
+            Reason::DocumentType => 2,
+            Reason::Depth => 3,
+            Reason::ProcessingInstruction => 4,
+            Reason::Comment => 5,
+            Reason::Structure => 6,
+            Reason::Encrypted => 7,
+            Reason::Status => 8,
+            Reason::Wrapping => 9,
+            Reason::Unsigned => 10,
+            Reason::Reference => 11,
+            Reason::DuplicateIdentifier => 12,
+            Reason::Transform => 13,
+            Reason::Algorithm => 14,
+            Reason::Signature => 15,
+            Reason::Digest => 16,
+            Reason::Destination => 17,
+            Reason::Request => 18,
+            Reason::Unsolicited => 19,
+            Reason::Issuer => 20,
+            Reason::Confirmation => 21,
+            Reason::Recipient => 22,
+            Reason::Time => 23,
+            Reason::Audience => 24,
+            Reason::Subject => 25,
+        }
+    }
+
+    #[test]
+    fn the_list_holds_every_reason_once() {
+        for (index, reason) in Reason::ALL.into_iter().enumerate() {
+            assert_eq!(place(reason), index, "{reason:?}");
+        }
+    }
+
     #[test]
     fn every_reason_is_read_back_from_its_name() {
         for reason in Reason::ALL {

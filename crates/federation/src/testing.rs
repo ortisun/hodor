@@ -244,21 +244,23 @@ impl PendingAuthorizationStore for InMemoryFederation {
             .remove(&(uow.tenant().tenant_id(), transaction_id)))
     }
 
-    async fn unanswered(
+    async fn claim(
         &self,
         uow: &mut dyn UnitOfWork,
         provider_id: ProviderId,
         state_hash: [u8; 32],
+        receipt_hash: [u8; 32],
         now: Timestamp,
     ) -> Result<Option<PendingAuthorization>, DomainError> {
         let tenant = uow.tenant().tenant_id();
-        Ok(self
-            .pending()
-            .iter()
-            .find(|((owner, _), pending)| {
-                waiting(*owner, pending, tenant, provider_id, state_hash, now)
-            })
-            .map(|(_, pending)| pending.clone()))
+        let mut pending = self.pending();
+        let found = pending.iter_mut().find(|((owner, _), pending)| {
+            unclaimed(*owner, pending, tenant, provider_id, state_hash, now)
+        });
+        Ok(found.map(|(_, pending)| {
+            pending.saml_receipt_hash = Some(receipt_hash);
+            pending.clone()
+        }))
     }
 
     async fn answer(
@@ -266,18 +268,20 @@ impl PendingAuthorizationStore for InMemoryFederation {
         uow: &mut dyn UnitOfWork,
         provider_id: ProviderId,
         state_hash: [u8; 32],
-        answer: &SamlAnswer,
         receipt_hash: [u8; 32],
-        now: Timestamp,
+        answer: &SamlAnswer,
     ) -> Result<bool, DomainError> {
         let tenant = uow.tenant().tenant_id();
         let mut pending = self.pending();
         let found = pending.iter_mut().find(|((owner, _), pending)| {
-            waiting(*owner, pending, tenant, provider_id, state_hash, now)
+            *owner == tenant
+                && pending.provider_id == provider_id
+                && pending.state_hash == state_hash
+                && pending.saml_receipt_hash == Some(receipt_hash)
+                && pending.saml_answer.is_none()
         });
         Ok(found.is_some_and(|(_, pending)| {
             pending.saml_answer = Some(answer.clone());
-            pending.saml_receipt_hash = Some(receipt_hash);
             true
         }))
     }
@@ -304,8 +308,8 @@ impl PendingAuthorizationStore for InMemoryFederation {
 }
 
 /// Whether a pending authorization is the one of this tenant, provider and
-/// state, has not expired and has no answer yet.
-fn waiting(
+/// state, has not expired and was not claimed by a response yet.
+fn unclaimed(
     owner: TenantId,
     pending: &PendingAuthorization,
     tenant: TenantId,
@@ -317,7 +321,7 @@ fn waiting(
         && pending.provider_id == provider_id
         && pending.state_hash == state_hash
         && pending.expires_at > now
-        && pending.saml_answer.is_none()
+        && pending.saml_receipt_hash.is_none()
 }
 
 /// The ports under test.
@@ -733,9 +737,9 @@ pub async fn run_contract(ports: Ports<'_>) {
     .expect("the pending");
     assert_eq!(taken, pending(&entra, "second"));
 
-    // The answer to a SAML response is kept once, with the pending
-    // authorization of its provider and state, in its tenant, before it
-    // expires; until then that pending authorization is found as waiting.
+    // A SAML response claims the pending authorization of its provider and
+    // state, in its tenant, before it expires, once; only the response that
+    // claimed it answers it, once.
     within!(ports, &tenant, |uow| ports
         .pending
         .put(uow, &pending(&google, "request"))
@@ -744,78 +748,75 @@ pub async fn run_contract(ports: Ports<'_>) {
     let before = later - time::Duration::seconds(1);
     let owner = &tenant;
     let refused = |reason| SamlAnswer::Refused { reason };
-    let keep = |provider: ProviderId, state: [u8; 32], answer: SamlAnswer, at: Timestamp| {
+    let claim = |provider: ProviderId, state: [u8; 32], receipt: [u8; 32], at: Timestamp| {
+        let ports = ports.clone();
+        async move {
+            let mut unit = ports.units_of_work.begin(owner).await.expect("begin");
+            let claimed = ports
+                .pending
+                .claim(unit.as_mut(), provider, state, receipt, at)
+                .await
+                .expect("claim");
+            unit.commit().await.expect("commit");
+            claimed.map(|pending| pending.nonce)
+        }
+    };
+    let google_id = google.id();
+    let answer = |receipt: [u8; 32], answer: SamlAnswer| {
         let ports = ports.clone();
         async move {
             let mut unit = ports.units_of_work.begin(owner).await.expect("begin");
             let kept = ports
                 .pending
-                .answer(unit.as_mut(), provider, state, &answer, [9; 32], at)
+                .answer(unit.as_mut(), google_id, [7; 32], receipt, &answer)
                 .await
                 .expect("answer");
             unit.commit().await.expect("commit");
             kept
         }
     };
-    let waiting = |provider: ProviderId, state: [u8; 32], at: Timestamp| {
-        let ports = ports.clone();
-        async move {
-            let mut unit = ports.units_of_work.begin(owner).await.expect("begin");
-            let found = ports
-                .pending
-                .unanswered(unit.as_mut(), provider, state, at)
-                .await
-                .expect("find");
-            unit.commit().await.expect("commit");
-            found.map(|pending| pending.nonce)
-        }
-    };
-    assert_eq!(
-        waiting(google.id(), [7; 32], before).await.as_deref(),
-        Some("request")
-    );
-    assert_eq!(waiting(entra.id(), [7; 32], before).await, None);
-    assert_eq!(waiting(google.id(), [8; 32], before).await, None);
-    assert_eq!(waiting(google.id(), [7; 32], later).await, None);
-    assert!(!keep(entra.id(), [7; 32], refused("signature"), before).await);
-    assert!(!keep(google.id(), [8; 32], refused("signature"), before).await);
-    assert!(!keep(google.id(), [7; 32], refused("signature"), later).await);
+    assert_eq!(claim(entra.id(), [7; 32], [9; 32], before).await, None);
+    assert_eq!(claim(google.id(), [8; 32], [9; 32], before).await, None);
+    assert_eq!(claim(google.id(), [7; 32], [9; 32], later).await, None);
     let mut unit = ports.units_of_work.begin(&elsewhere).await.expect("begin");
     assert!(
         ports
             .pending
-            .unanswered(unit.as_mut(), google.id(), [7; 32], before)
+            .claim(unit.as_mut(), google.id(), [7; 32], [9; 32], before)
             .await
-            .expect("find")
+            .expect("claim")
             .is_none(),
-        "another tenant finds nothing"
-    );
-    assert!(
-        !ports
-            .pending
-            .answer(
-                unit.as_mut(),
-                google.id(),
-                [7; 32],
-                &refused("signature"),
-                [9; 32],
-                before,
-            )
-            .await
-            .expect("answer")
+        "another tenant claims nothing"
     );
     drop(unit);
+    assert!(
+        !answer([9; 32], refused("signature")).await,
+        "nothing claimed, nothing answered"
+    );
+    assert_eq!(
+        claim(google.id(), [7; 32], [9; 32], before)
+            .await
+            .as_deref(),
+        Some("request")
+    );
+    assert_eq!(
+        claim(google.id(), [7; 32], [5; 32], before).await,
+        None,
+        "claimed once"
+    );
+    assert!(
+        !answer([5; 32], refused("signature")).await,
+        "only the response that claimed it answers it"
+    );
     let verified = SamlAnswer::Verified {
         subject: Subject::parse("saml-subject").expect("subject"),
         email: Some("ana@example.com".to_owned()),
         name: None,
     };
-    assert!(keep(google.id(), [7; 32], verified.clone(), before).await);
-    assert!(!keep(google.id(), [7; 32], refused("signature"), before).await);
-    assert_eq!(
-        waiting(google.id(), [7; 32], before).await,
-        None,
-        "an answered one is no longer waiting"
+    assert!(answer([9; 32], verified.clone()).await);
+    assert!(
+        !answer([9; 32], refused("signature")).await,
+        "answered once"
     );
     let taken = within!(ports, &tenant, |uow| ports
         .pending
@@ -832,14 +833,15 @@ pub async fn run_contract(ports: Ports<'_>) {
         .put(uow, &pending(&google, "request"))
         .await
         .expect("put"));
-    assert!(keep(google.id(), [7; 32], refused("signature"), before).await);
+    assert!(claim(google.id(), [7; 32], [9; 32], before).await.is_some());
+    assert!(answer([9; 32], refused("another_kind")).await);
     let taken = within!(ports, &tenant, |uow| ports
         .pending
         .take(uow, sign_in)
         .await
         .expect("take"))
     .expect("the pending");
-    assert_eq!(taken.saml_answer, Some(refused("signature")));
+    assert_eq!(taken.saml_answer, Some(refused("another_kind")));
 
     // Expired pending authorizations are removed, a batch at a time, in
     // their tenant only; one that has not expired stays.

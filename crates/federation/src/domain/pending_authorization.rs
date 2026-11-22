@@ -28,7 +28,8 @@ pub struct PendingAuthorization {
     /// The response itself is never kept.
     pub saml_answer: Option<SamlAnswer>,
     /// The SHA-256 of the receipt given to the browser that posted the
-    /// response. Kept with the answer: only that browser can finish with it.
+    /// response that claimed this pending authorization: only that browser
+    /// can finish with the answer.
     pub saml_receipt_hash: Option<[u8; 32]>,
 }
 
@@ -53,7 +54,7 @@ pub enum SamlAnswer {
 
 /// Reasons a SAML response is refused for that are not the checks of
 /// `hodor-saml`.
-const OTHER_REFUSALS: [&str; 2] = ["certificate_unusable", "subject"];
+const OTHER_REFUSALS: [&str; 3] = ["another_kind", "certificate_unusable", "subject"];
 
 impl SamlAnswer {
     /// The reason of a refusal read from storage, as its fixed name.

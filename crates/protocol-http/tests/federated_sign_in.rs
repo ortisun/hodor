@@ -2250,7 +2250,7 @@ async fn a_response_that_is_not_base64_is_not_kept() {
 }
 
 #[tokio::test]
-async fn a_saml_response_is_checked_when_it_is_finished_and_refused_for_its_reason() {
+async fn a_forged_saml_response_is_refused_for_its_reason_and_the_first_one_wins() {
     let (world, identity_provider) = saml_world().await;
     let mut browser = Browser::default();
     let leaving = browser.leave_for_saml(&world).await;
@@ -2263,7 +2263,7 @@ async fn a_saml_response_is_checked_when_it_is_finished_and_refused_for_its_reas
         "bia@corp.example",
     );
     let posted = world.post_saml(&forged, &leaving.relay_state).await;
-    assert_eq!(posted.status, StatusCode::SEE_OTHER, "kept unread");
+    assert_eq!(posted.status, StatusCode::SEE_OTHER, "checked, and refused");
     // A second response does not replace the first: the first one wins.
     let good = world.saml_response(
         &identity_provider,

@@ -302,11 +302,13 @@ impl ExternalSignIn {
         )))
     }
 
-    /// Keeps the response a SAML identity provider posted, unread, with the
-    /// pending authorization whose state hashes to `relay_state`, and answers
-    /// with a new receipt for the browser that posted it: only that browser
-    /// can finish with the response. A receipt is made whether or not there
-    /// was a pending authorization: the caller answers the same way.
+    /// Checks the response a SAML identity provider posted, as it arrives,
+    /// against the request of the pending authorization whose state hashes
+    /// to `relay_state`, and keeps only its answer there; the response itself
+    /// is never stored. Answers with a new receipt for the browser that
+    /// posted it: only that browser can finish with the answer. A receipt is
+    /// made whether or not there was a pending authorization: the caller
+    /// answers the same way.
     ///
     /// # Errors
     ///
@@ -337,10 +339,19 @@ impl ExternalSignIn {
             return Ok(receipt);
         }
         let state_hash = self.digest.sha256(relay_state.as_bytes());
+        let receipt_hash = self.digest.sha256(receipt.as_bytes());
+        // Claimed first, in one step: of several responses posted at once for
+        // one sign-in, only the one that claims it is checked.
         let mut uow = self.units_of_work.begin(tenant).await?;
         let pending = self
             .pending
-            .unanswered(uow.as_mut(), provider.id(), state_hash, self.clock.now())
+            .claim(
+                uow.as_mut(),
+                provider.id(),
+                state_hash,
+                receipt_hash,
+                self.clock.now(),
+            )
             .await?;
         uow.commit().await?;
         // Nothing is checked for a relay state no sign-in is waiting with.
@@ -371,16 +382,14 @@ impl ExternalSignIn {
                 Err(reason) => SamlAnswer::Refused { reason },
             },
         };
-        let receipt_hash = self.digest.sha256(receipt.as_bytes());
         let mut uow = self.units_of_work.begin(tenant).await?;
         self.pending
             .answer(
                 uow.as_mut(),
                 provider.id(),
                 state_hash,
-                &answer,
                 receipt_hash,
-                self.clock.now(),
+                &answer,
             )
             .await?;
         uow.commit().await?;

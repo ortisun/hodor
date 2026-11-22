@@ -162,25 +162,28 @@ pub trait PendingAuthorizationStore: Send + Sync {
         transaction_id: TransactionId,
     ) -> Result<Option<PendingAuthorization>, DomainError>;
 
-    /// The pending authorization of this provider whose state hashes to
-    /// `state_hash`, if it has not expired at `now` and has no answer to a
-    /// SAML response yet.
+    /// Claims, for one SAML response, the pending authorization of this
+    /// provider whose state hashes to `state_hash`, if it has not expired at
+    /// `now` and no response claimed it before: in one step, the hash of the
+    /// receipt given to the browser that posted the response is kept there,
+    /// and the pending authorization is returned. Of several responses at
+    /// once, one claims it.
     ///
     /// # Errors
     ///
     /// Returns an error if storage fails.
-    async fn unanswered(
+    async fn claim(
         &self,
         uow: &mut dyn UnitOfWork,
         provider_id: ProviderId,
         state_hash: [u8; 32],
+        receipt_hash: [u8; 32],
         now: Timestamp,
     ) -> Result<Option<PendingAuthorization>, DomainError>;
 
-    /// Keeps the answer to a SAML response with that same pending
-    /// authorization, with the hash of the receipt given to the browser that
-    /// posted the response, if it has still not expired at `now` and has no
-    /// answer yet: the first one wins. Returns whether it was kept.
+    /// Keeps the answer to the SAML response that claimed the pending
+    /// authorization with this receipt, if it has none yet. Returns whether
+    /// it was kept.
     ///
     /// # Errors
     ///
@@ -190,9 +193,8 @@ pub trait PendingAuthorizationStore: Send + Sync {
         uow: &mut dyn UnitOfWork,
         provider_id: ProviderId,
         state_hash: [u8; 32],
-        answer: &SamlAnswer,
         receipt_hash: [u8; 32],
-        now: Timestamp,
+        answer: &SamlAnswer,
     ) -> Result<bool, DomainError>;
 
     /// Removes up to `limit` pending authorizations of the tenant that had
