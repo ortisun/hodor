@@ -84,6 +84,9 @@ interface SignInPageProps extends PageProps {
   signInAgain?: boolean;
 }
 
+/** The steps a recovery code can stand in for. */
+const SECOND_FACTORS = ["webauthn", "totp"];
+
 /**
  * Signing in. The page shows the form for the step the server names and
  * sends back what was typed; it decides nothing.
@@ -134,13 +137,19 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice, sign
         setView({ kind: "ended" });
         return;
       }
-      setView((before) => ({
-        kind: "step",
-        step: answer.step ?? "",
-        rejected: answer.status === "rejected",
-        attemptsLeft: answer.attemptsLeft,
-        shown: before.kind === "step" ? before.shown + 1 : 0,
-      }));
+      setView((before) => {
+        // A choice made for one step does not carry over to the next.
+        if (before.kind !== "step" || before.step !== (answer.step ?? "")) {
+          setRecovering(false);
+        }
+        return {
+          kind: "step",
+          step: answer.step ?? "",
+          rejected: answer.status === "rejected",
+          attemptsLeft: answer.attemptsLeft,
+          shown: before.kind === "step" ? before.shown + 1 : 0,
+        };
+      });
     },
     [go, leave],
   );
@@ -427,7 +436,7 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice, sign
         </Form>
       ) : null}
 
-      {view.kind === "step" && view.step === "totp" && recovering ? (
+      {view.kind === "step" && SECOND_FACTORS.includes(view.step) && recovering ? (
         <Form key={view.shown} onSubmit={(event) => submit(event, () => client.submitRecoveryCode(code))}>
           {identifier !== "" ? <Words quiet>{text.signingInAs(identifier)}</Words> : null}
           <Field
@@ -444,7 +453,7 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice, sign
           <Submit label={text.signIn} busy={busy} text={text} />
           <Action
             variant="ghost"
-            label={text.useAuthenticatorApplication}
+            label={view.step === "webauthn" ? text.useSecurityKeyInstead : text.useAuthenticatorApplication}
             onClick={() => switchTo(false)}
           />
           <Action variant="ghost" label={text.useAnotherIdentifier} onClick={() => void startAgain()} />
@@ -476,7 +485,7 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice, sign
         </Form>
       ) : null}
 
-      {view.kind === "step" && view.step === "webauthn" ? (
+      {view.kind === "step" && view.step === "webauthn" && !recovering ? (
         <Form
           key={view.shown}
           onSubmit={(event) => {
@@ -493,6 +502,7 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice, sign
           ) : (
             <Notice kind="danger">{text.securityKeyUnavailable}</Notice>
           )}
+          <Action variant="ghost" label={text.useRecoveryCode} onClick={() => switchTo(true)} />
           <Action variant="ghost" label={text.startAgain} onClick={() => void startAgain()} />
         </Form>
       ) : null}

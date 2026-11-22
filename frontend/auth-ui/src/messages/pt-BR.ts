@@ -22,6 +22,7 @@ export const ptBR: Messages = {
   recoveryCodeLabel: "Código de recuperação",
   recoveryCodeHint: "Um dos códigos que você anotou ou imprimiu. Cada um funciona uma vez.",
   useAuthenticatorApplication: "Usar o código do aplicativo",
+  useSecurityKeyInstead: "Usar a chave de segurança",
   forgotPassword: "Esqueceu a senha?",
   noAccountYet: "Ainda não tem conta?",
   register: "Criar conta",

@@ -8,17 +8,18 @@ use axum::http::{HeaderMap, Method, Request, StatusCode, header};
 use hodor_adapters_crypto::testing::webauthn::SoftwareAuthenticator;
 use hodor_authentication::api::{
     AccountService, AttemptGuard, AuthFlow, AuthenticationService, FactorService, FlowEngine,
-    IdentifierAuthenticator, PasswordAuthenticator, Requirement, WebAuthnAuthenticator,
+    IdentifierAuthenticator, PasswordAuthenticator, RecoveryCodeAuthenticator, Requirement,
+    WebAuthnAuthenticator,
 };
 use hodor_authentication::testing::{
     InMemoryAttempts, InMemoryTransactions, InMemoryVerificationTokens,
 };
-use hodor_credential::api::{CredentialService, NewPassword, PasswordRules};
-use hodor_credential::testing::{FakeHasher, InMemoryPasswords};
+use hodor_credential::api::{CredentialService, NewPassword, PasswordRules, RecoveryCodeService};
+use hodor_credential::testing::{FakeHasher, InMemoryPasswords, InMemoryRecoveryCodes};
 use hodor_identity::api::{CreateUser, IdentifierKind, IdentityService, Profile, UserKind};
 use hodor_identity::testing::InMemoryUsers;
 use hodor_kernel::clock::testing::FixedClock;
-use hodor_kernel::random::testing::FakeDigest;
+use hodor_kernel::random::testing::{CountingRandom, FakeDigest};
 use hodor_kernel::uow::testing::InMemoryUnitOfWorkFactory;
 use hodor_kernel::{Caller, DomainError, Secret, TenantContext, Timestamp};
 use hodor_notification::api::Notifier;
@@ -61,6 +62,10 @@ impl TenantResolver for Tenants {
 
 struct World {
     router: Router,
+    /// Recovery codes; nobody has any unless a test makes them.
+    recovery_codes: RecoveryCodeService,
+    acme: TenantContext,
+    ana: hodor_kernel::UserId,
 }
 
 async fn world() -> World {
@@ -109,6 +114,18 @@ async fn world() -> World {
             guard.clone(),
         )))
         .with(Arc::new(WebAuthnAuthenticator::new(webauthn.clone())));
+    let recovery_codes = RecoveryCodeService::new(
+        units(),
+        Arc::new(InMemoryRecoveryCodes::default()),
+        digest.clone(),
+        Arc::new(CountingRandom::default()),
+        clock.clone(),
+    );
+    let engine = engine.with(Arc::new(RecoveryCodeAuthenticator::new(
+        recovery_codes.clone(),
+        tenants.clone(),
+        guard.clone(),
+    )));
     let messages = InMemoryMessages::default();
     let accounts = AccountService::new(
         units(),
@@ -128,11 +145,13 @@ async fn world() -> World {
         units(),
         Arc::new(InMemoryTransactions::default()),
         engine,
-        AuthFlow::built_in().with_step(
-            WebAuthnAuthenticator::KIND,
-            WebAuthnAuthenticator::KIND,
-            Requirement::Optional,
-        ),
+        AuthFlow::built_in()
+            .with_step(
+                WebAuthnAuthenticator::KIND,
+                WebAuthnAuthenticator::KIND,
+                Requirement::Optional,
+            )
+            .with_substitute(WebAuthnAuthenticator::KIND, RecoveryCodeAuthenticator::KIND),
         identity.clone(),
         sessions.clone(),
         tenants.clone(),
@@ -208,7 +227,12 @@ async fn world() -> World {
         Router::new(),
         Limits::default(),
     );
-    World { router }
+    World {
+        router,
+        recovery_codes,
+        acme,
+        ana,
+    }
 }
 
 struct Reply {
@@ -607,4 +631,34 @@ fn webauthn_service(
         Arc::new(hodor_adapters_crypto::OsRandom),
         clock,
     )
+}
+
+#[tokio::test]
+async fn a_person_who_lost_their_key_gives_a_recovery_code_in_its_place() {
+    let world = world().await;
+    let (mut browser, _key) = registered_key(&world).await;
+    let codes = world
+        .recovery_codes
+        .generate(&world.acme, world.ana, Caller::system())
+        .await
+        .expect("generate");
+    let written_down = codes.codes().next().expect("a code").to_owned();
+
+    browser.up_to_the_key(&world).await;
+    let body = serde_json::json!({ "code": written_down });
+    let done = browser
+        .send(
+            &world,
+            Method::POST,
+            "/t/acme/interaction/sign-in/steps/recovery_code",
+            Some(body),
+        )
+        .await;
+    assert_eq!(done.body["status"], "completed", "{:?}", done.body);
+    let session = browser.session(&world, "acme").await;
+    assert_eq!(session.body["assurance"], "multi_factor");
+    assert_eq!(
+        session.body["methods"],
+        serde_json::json!(["password", "recovery_code"])
+    );
 }

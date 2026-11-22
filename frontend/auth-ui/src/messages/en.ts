@@ -20,6 +20,7 @@ export const en = {
   recoveryCodeLabel: "Recovery code",
   recoveryCodeHint: "One of the codes you wrote down or printed. Each works once.",
   useAuthenticatorApplication: "Use the code of your application instead",
+  useSecurityKeyInstead: "Use the security key instead",
   forgotPassword: "Forgot your password?",
   noAccountYet: "No account yet?",
   register: "Register",

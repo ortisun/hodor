@@ -255,6 +255,35 @@ describe("the sign-in page", () => {
     vi.unstubAllGlobals();
   });
 
+  it("lets a person who lost their security key give a recovery code, and the choice ends with the step", async () => {
+    vi.stubGlobal("PublicKeyCredential", function PublicKeyCredential() {});
+    const { props, sent, user } = page({
+      "GET /session": [nobody],
+      "GET /sign-in": [pending("webauthn")],
+      "POST /sign-in/steps/recovery_code": [pending("totp")],
+    });
+    render(<SignInPage {...props} notice={null} />);
+    await user.click(await screen.findByRole("button", { name: en.useRecoveryCode }));
+    const field = await screen.findByLabelText<HTMLInputElement>(en.recoveryCodeLabel, { exact: false });
+    await waitFor(() => expect(document.activeElement).toBe(field));
+    expect(screen.queryByRole("button", { name: en.useSecurityKey })).toBeNull();
+
+    // Back to the key, and to the code again.
+    await user.click(screen.getByRole("button", { name: en.useSecurityKeyInstead }));
+    expect(await screen.findByRole("button", { name: en.useSecurityKey })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: en.useRecoveryCode }));
+
+    await user.type(
+      await screen.findByLabelText(en.recoveryCodeLabel, { exact: false }),
+      "7K2M-QX9D-4HVN-R8TA{Enter}",
+    );
+    expect(sent.at(-1)?.path).toBe("/sign-in/steps/recovery_code");
+    // The next step is asked for as it is, not with a recovery code.
+    expect(await screen.findByLabelText(en.totpLabel, { exact: false })).toBeTruthy();
+    expect(screen.queryByLabelText(en.recoveryCodeLabel, { exact: false })).toBeNull();
+    vi.unstubAllGlobals();
+  });
+
   it("sends nothing and says so when the security key gives no answer", async () => {
     const get = vi.fn().mockRejectedValue(new DOMException("cancelled", "NotAllowedError"));
     vi.stubGlobal("PublicKeyCredential", function PublicKeyCredential() {});
