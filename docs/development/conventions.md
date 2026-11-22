@@ -133,6 +133,21 @@ Branching follows Gitflow.
 - The description says what changed, what a reviewer should look at, and how it was verified. It states plainly anything that was not verified.
 - A pull request is merged only when continuous integration is green.
 
+### Releases
+
+- **Versions follow Semantic Versioning.** While the major version is 0, a minor version may change what came before; the changelog says so when it does.
+- **One version for everything that ships.** It is the `version` of the Cargo workspace, which every crate and application takes, and the version of the container image. The page applications are built into the image and carry no version of their own.
+- **The changelog is `CHANGELOG.md`**, in the form of [Keep a Changelog](https://keepachangelog.com/): one section per version, newest first, with what was added, changed, fixed and removed, in words a person running Hodor understands. What is built and not yet released is under *Unreleased*, at the top; a pull request that changes what a person running Hodor sees adds its line there. Cutting a release turns *Unreleased* into the section of its version.
+- **A release that cannot hold real accounts is a pre-release.** Its notes say what stands in the way, from the [progress](../product/progress.md) page, and it is marked as a pre-release where it is published.
+
+A release is cut in these steps:
+
+1. Turn *Unreleased* in `CHANGELOG.md` into the section of the version, with its date, and set the version, through a pull request into `develop`.
+2. Cut `release/<version>` from `develop`. Only fixes go into it from then on.
+3. Open a pull request from `release/<version>` into `main`. It is merged with a **merge commit**, not squashed, so that `main` and `develop` keep one history, and only when continuous integration is green on its head.
+4. Tag the merge commit on `main` as `v<version>`, an annotated tag, and publish a release from that tag with its section of the changelog as notes.
+5. Merge `release/<version>` back into `develop` with a pull request, if the release branch received fixes.
+
 ## 6. Definition of done
 
 A change is done when:
