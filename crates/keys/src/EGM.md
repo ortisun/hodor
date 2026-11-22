@@ -13,11 +13,12 @@ surface through `pub mod api`.
 
 - `api` re-exports:
   - Ports: `KeyStore`, `KeyProvider`.
-  - Service: `KeyService`, `Signature`.
+  - Service: `KeyService`, `RotationReport`, `Signature`.
   - Event: `KeyEvent`.
   - Domain: `GeneratedKey`, `KeyAlgorithm`, `KeyMaterial`, `KeyState`,
     `KeyUse`, `KeyVersion`, `KeyVersionId`, `KeyVersionSnapshot`,
-    `MAX_REASON_LENGTH`, `Activation`, `KeySet`.
+    `MAX_REASON_LENGTH`, `Activation`, `KeySet`, `RotationChange`,
+    `RotationPolicy`.
 - `testing` (public test-support module, compiled only under
   `#[cfg(any(test, feature = "testing"))]`):
   - `InMemoryKeys`: a `KeyStore` kept in a shared
@@ -33,7 +34,8 @@ surface through `pub mod api`.
 - Subdirectories:
   - [application](./application/EGM.md): `KeyStore` and `KeyProvider` ports
     and `KeyService` use cases.
-  - [domain](./domain/EGM.md): `KeyVersion`, `KeySet` and `KeyEvent`.
+  - [domain](./domain/EGM.md): `KeyVersion`, `KeySet`, `KeyEvent` and
+    the rotation policy and plan.
 
 ## Invariants
 

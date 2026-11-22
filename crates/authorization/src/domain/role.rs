@@ -19,11 +19,15 @@ pub enum Permission {
     IdentityProvidersRead,
     /// Adding and changing identity providers.
     IdentityProvidersWrite,
+    /// Seeing key versions, without anything of their keys.
+    KeysRead,
+    /// Rotating a signing key and revoking key versions.
+    KeysWrite,
 }
 
 impl Permission {
     /// Every permission.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 9] = [
         Self::UsersRead,
         Self::UsersWrite,
         Self::SessionsRead,
@@ -31,6 +35,8 @@ impl Permission {
         Self::AuditRead,
         Self::IdentityProvidersRead,
         Self::IdentityProvidersWrite,
+        Self::KeysRead,
+        Self::KeysWrite,
     ];
 
     /// The permission written as `resource:action`.
@@ -44,6 +50,8 @@ impl Permission {
             Self::AuditRead => "audit:read",
             Self::IdentityProvidersRead => "identity-providers:read",
             Self::IdentityProvidersWrite => "identity-providers:write",
+            Self::KeysRead => "keys:read",
+            Self::KeysWrite => "keys:write",
         }
     }
 
@@ -102,6 +110,7 @@ impl Role {
                 Permission::SessionsRead,
                 Permission::AuditRead,
                 Permission::IdentityProvidersRead,
+                Permission::KeysRead,
             ],
         }
     }

@@ -3,7 +3,7 @@
   "info": {
     "title": "Hodor administration interface",
     "version": "1.0.0",
-    "description": "Users, sessions, the audit log and the identity providers of a tenant, for the people who run it. Paths are relative to https://{host}/t/{slug}/api/v1/admin. Every operation needs an access token whose user holds a role with the permission named in `x-hodor-permission`."
+    "description": "Users, sessions, the audit log, the identity providers and the keys of a tenant, for the people who run it. Paths are relative to https://{host}/t/{slug}/api/v1/admin. Every operation needs an access token whose user holds a role with the permission named in `x-hodor-permission`."
   },
   "servers": [
     {
@@ -1160,6 +1160,321 @@
           }
         }
       }
+    },
+    "/keys/{key_set}": {
+      "get": {
+        "operationId": "listKeyVersions",
+        "summary": "List the versions of a key set, newest first",
+        "x-hodor-permission": "keys:read",
+        "parameters": [
+          {
+            "name": "key_set",
+            "in": "path",
+            "required": true,
+            "description": "`sig` for the signing keys, `data` for the data keys.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "sig",
+                "data"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The versions, newest first, retired and revoked ones included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "items"
+                  ],
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/KeyVersion"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such key set: `keys.key_set_not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "This installation has no keys to wrap the tenants' keys with (`HODOR_SECRET_KEYS`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/keys/{key_set}:rotate": {
+      "post": {
+        "operationId": "rotateKeySet",
+        "summary": "Activate a new signing key at once",
+        "x-hodor-permission": "keys:write",
+        "description": "A pending version of the algorithm is activated, or a new one made and activated. The version it replaces starts retiring with the installation's overlap. Only `sig` rotates this way.",
+        "parameters": [
+          {
+            "name": "key_set",
+            "in": "path",
+            "required": true,
+            "description": "`sig` for the signing keys, `data` for the data keys.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "sig",
+                "data"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Rotation"
+              }
+            }
+          }
+        },
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The version now active.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KeyVersion"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such key set: `keys.key_set_not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Another activation happened at the same moment: `keys.activation_conflict`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The key set does not rotate by hand (`keys.rotation_not_offered`), the algorithm does not sign (`keys.algorithm_unsuitable`), or the body is not of the expected shape.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "This installation has no keys to wrap the tenants' keys with (`HODOR_SECRET_KEYS`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/keys/{key_set}/versions/{version_id}:revoke": {
+      "post": {
+        "operationId": "revokeKeyVersion",
+        "summary": "Revoke a key version",
+        "x-hodor-permission": "keys:write",
+        "description": "A revoked signing version leaves the published key set at once. Revoking a revoked version changes nothing.",
+        "parameters": [
+          {
+            "name": "key_set",
+            "in": "path",
+            "required": true,
+            "description": "`sig` for the signing keys, `data` for the data keys.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "sig",
+                "data"
+              ]
+            }
+          },
+          {
+            "name": "version_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Revocation"
+              }
+            }
+          }
+        },
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The version, revoked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KeyVersion"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such key set, or no such version in it: `keys.key_set_not_found`, `keys.version_not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The reason is empty or longer than 200 characters (`keys.reason_invalid`), or the body is not of the expected shape.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "This installation has no keys to wrap the tenants' keys with (`HODOR_SECRET_KEYS`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -1760,6 +2075,135 @@
             "type": "string"
           }
         }
+      },
+      "KeyVersion": {
+        "type": "object",
+        "description": "A key version, without anything of its key. Its `id` is the key identifier, `kid`, in the published key set.",
+        "required": [
+          "id",
+          "key_use",
+          "algorithm",
+          "state",
+          "provider",
+          "created_at",
+          "activated_at",
+          "retiring_at",
+          "retire_after",
+          "retired_at",
+          "revoked_at",
+          "revocation_reason"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "key_use": {
+            "type": "string",
+            "enum": [
+              "sig",
+              "enc",
+              "data"
+            ]
+          },
+          "algorithm": {
+            "type": "string",
+            "enum": [
+              "ES256",
+              "RS256",
+              "PS256",
+              "A256GCM"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "active",
+              "retiring",
+              "retired",
+              "revoked"
+            ]
+          },
+          "provider": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "activated_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "retiring_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "retire_after": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "retired_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "revoked_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "revocation_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "Rotation": {
+        "type": "object",
+        "properties": {
+          "algorithm": {
+            "type": "string",
+            "enum": [
+              "ES256",
+              "RS256",
+              "PS256"
+            ],
+            "default": "ES256"
+          }
+        },
+        "additionalProperties": false
+      },
+      "Revocation": {
+        "type": "object",
+        "required": [
+          "reason"
+        ],
+        "properties": {
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        },
+        "additionalProperties": false
       }
     }
   }

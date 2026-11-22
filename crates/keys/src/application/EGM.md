@@ -50,6 +50,12 @@ algorithm.
 | `revoke(tenant, id, reason, caller) -> KeyVersion` | Revokes; again changes nothing and records nothing. |
 | `key_set(tenant, KeyUse) -> KeySet` | The versions of one use. |
 | `sign(tenant, algorithm, message) -> Signature` | Signs with the active version of a signing algorithm. |
+| `rotate_due(tenant, &RotationPolicy, caller) -> RotationReport` | Carries out `KeySet::rotation_plan` for the signing key set, one transaction per change. |
+| `rotate_now(tenant, algorithm, &RotationPolicy, caller) -> KeyVersion` | Activates the oldest pending version of a signing algorithm, or a new one, at once, with the policy's overlap. |
+| `published_keys(tenant) -> Vec<KeyVersion>` | The signing versions of the published key set. |
+
+`RotationReport { created, activated, retired }` with `changed()` and
+`add(other)`.
 
 ## Invariants
 
@@ -60,6 +66,9 @@ algorithm.
 - `activate`, `retire` and `revoke` find the version's use with `get`, load
   that use's set with `list_for_use`, and give `keys.version_not_found` for a
   version the tenant does not have.
+- `rotate_now` gives `Invalid` `keys.algorithm_unsuitable` for a data
+  algorithm before anything is made.
+- `rotate_due` keeps the changes made before an error.
 - `sign` gives `Invalid` `keys.algorithm_unsuitable` for a data algorithm and
   `Conflict` `keys.no_active_version` when no version of the algorithm is
   active (`service.rs:sign`).

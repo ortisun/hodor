@@ -26,7 +26,9 @@ export type Permission =
   | "sessions:revoke"
   | "audit:read"
   | "identity-providers:read"
-  | "identity-providers:write";
+  | "identity-providers:write"
+  | "keys:read"
+  | "keys:write";
 
 export interface Identifier {
   id: string;

@@ -1,19 +1,20 @@
 //! Background jobs composition root.
 //!
-//! The worker has two jobs: delivering outbox events to their handlers,
-//! of which the audit log is the first, and delivering queued messages to
-//! the mail server. See
+//! The worker delivers outbox events to their handlers, of which the audit
+//! log is the first, delivers queued messages to the mail server, runs the
+//! cleanup jobs and rotates the tenants' signing keys. See
 //! `docs/operations/deployment.md`, "The worker".
 
 use clap::{Parser, ValueEnum};
-use hodor_adapters_crypto::Sha256Digest;
+use hodor_adapters_crypto::{LocalKeyProvider, SecretKeys, Sha256Digest};
 use hodor_adapters_postgres::{
-    Database, OutboxDispatcher, PendingAuthorizationCleanup, PgAuditLog, PgMessageQueue,
-    PgPendingMessages, PgPool, connect_pool, ping_pool,
+    Database, KeyRotationJob, OutboxDispatcher, PendingAuthorizationCleanup, PgAuditLog,
+    PgKeyStore, PgMessageQueue, PgPendingMessages, PgPool, connect_pool, ping_pool,
 };
 use hodor_adapters_smtp::SmtpSender;
 use hodor_audit::api::{AuditHandler, AuditService};
 use hodor_kernel::{Clock as _, Secret, SystemClock};
+use hodor_keys::api::{KeyService, RotationPolicy};
 use hodor_notification::api::DeliveryService;
 use hodor_observability::{LogFormat, Telemetry};
 use hodor_protocol_http::{Health, ReadinessCheck, ops_router, serve};
@@ -91,6 +92,31 @@ struct Config {
     #[arg(long, env = "HODOR_CLEANUP_BATCH_SIZE", default_value_t = 500)]
     cleanup_batch_size: u32,
 
+    /// The keys that wrap the tenants' signing keys: the same as the
+    /// server's. Unset: keys do not rotate, and no tenant gets one.
+    #[arg(long, env = "HODOR_SECRET_KEYS", hide_env_values = true)]
+    secret_keys: Option<String>,
+
+    /// How long a signing key signs before it is replaced, in days.
+    #[arg(long, env = "HODOR_KEY_ROTATION_DAYS", default_value_t = 90)]
+    key_rotation_days: i64,
+
+    /// How long a new signing key is published before it signs, in hours.
+    #[arg(long, env = "HODOR_KEY_PUBLICATION_HOURS", default_value_t = 24)]
+    key_publication_hours: i64,
+
+    /// How long a replaced signing key stays published, in hours.
+    #[arg(long, env = "HODOR_KEY_OVERLAP_HOURS", default_value_t = 24)]
+    key_overlap_hours: i64,
+
+    /// Pause between passes of the rotation job.
+    #[arg(
+        long,
+        env = "HODOR_KEY_ROTATION_INTERVAL_MS",
+        default_value_t = 600_000
+    )]
+    key_rotation_interval_ms: u64,
+
     /// Log rendering.
     #[arg(long, env = "HODOR_LOG_FORMAT", value_enum, default_value = "json")]
     log_format: LogFormatArg,
@@ -160,8 +186,17 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 async fn run(config: Config) -> Result<(), Box<dyn Error>> {
     // Checked before anything is connected, so that a mistake in the mail
-    // settings is reported at once.
+    // or rotation settings is reported at once.
     let mail_sender = mail_sender(config.smtp_url, config.mail_from.as_deref())?;
+    let rotation_policy = RotationPolicy::new(
+        time::Duration::days(config.key_rotation_days),
+        time::Duration::hours(config.key_publication_hours),
+        time::Duration::hours(config.key_overlap_hours),
+    )?;
+    let root_keys = config
+        .secret_keys
+        .map(|setting| SecretKeys::parse(&Secret::from(setting)))
+        .transpose()?;
 
     let database = Database::connect(
         &Secret::from(config.database_url),
@@ -207,6 +242,18 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
         Arc::new(SystemClock),
     );
     let cleanup = PendingAuthorizationCleanup::new(platform.clone(), database.clone());
+    let rotation = root_keys.map(|root| {
+        let keys = KeyService::new(
+            Arc::new(database.clone()),
+            Arc::new(PgKeyStore),
+            Arc::new(LocalKeyProvider::new(Arc::new(root))),
+            Arc::new(SystemClock),
+        );
+        KeyRotationJob::new(platform.clone(), keys, rotation_policy)
+    });
+    if rotation.is_none() {
+        tracing::warn!("HODOR_SECRET_KEYS is not set: keys do not rotate and no tenant gets one");
+    }
     let dispatcher =
         OutboxDispatcher::new(platform, database, vec![Arc::new(AuditHandler::new(audit))]);
 
@@ -245,6 +292,11 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
             &cleanup,
             config.cleanup_batch_size,
             Duration::from_millis(config.cleanup_interval_ms),
+            stopped.clone(),
+        ),
+        rotation_loop(
+            rotation.as_ref(),
+            Duration::from_millis(config.key_rotation_interval_ms),
             stopped,
         ),
     );
@@ -295,6 +347,77 @@ async fn cleanup_loop(
             Err(error) => {
                 passes.add(1, &[job.clone(), KeyValue::new("outcome", "error")]);
                 tracing::warn!(code = error.code(), detail = ?error.detail(), "cleanup pass failed");
+                Some(interval.max(MIN_ERROR_PAUSE))
+            }
+        };
+        if let Some(pause) = pause {
+            tokio::select! {
+                () = tokio::time::sleep(pause) => {}
+                _ = stopped.changed() => {}
+            }
+        }
+    }
+}
+
+/// Rotates the tenants' signing keys until asked to stop: now, then after
+/// every pause. A pass that looked at as many tenants as it may is
+/// followed by another at once, unless a step failed in one of them.
+/// Without root keys there is nothing to do.
+async fn rotation_loop(
+    rotation: Option<&KeyRotationJob>,
+    interval: Duration,
+    mut stopped: watch::Receiver<bool>,
+) {
+    let Some(rotation) = rotation else {
+        return;
+    };
+    let meter = opentelemetry::global::meter("hodor.worker");
+    let passes: Counter<u64> = meter
+        .u64_counter("hodor.keys.rotation.passes")
+        .with_description("Passes of the key rotation job, by outcome")
+        .build();
+    let changes: Counter<u64> = meter
+        .u64_counter("hodor.keys.rotation.changes")
+        .with_description("Key versions made, activated and retired by rotation")
+        .build();
+
+    while !*stopped.borrow() {
+        let pause = match rotation.run(SystemClock.now()).await {
+            Ok(pass) if pass.skipped => {
+                passes.add(1, &[KeyValue::new("outcome", "skipped")]);
+                Some(interval)
+            }
+            Ok(pass) => {
+                passes.add(1, &[KeyValue::new("outcome", "ok")]);
+                for (change, count) in [
+                    ("created", pass.changes.created),
+                    ("activated", pass.changes.activated),
+                    ("retired", pass.changes.retired),
+                ] {
+                    changes.add(count, &[KeyValue::new("change", change)]);
+                }
+                if pass.changes.changed() {
+                    tracing::info!(
+                        tenants = pass.tenants,
+                        created = pass.changes.created,
+                        activated = pass.changes.activated,
+                        retired = pass.changes.retired,
+                        "signing keys rotated"
+                    );
+                }
+                for (tenant, error) in &pass.failures {
+                    tracing::warn!(
+                        %tenant,
+                        code = error.code(),
+                        detail = ?error.detail(),
+                        "key rotation failed in a tenant"
+                    );
+                }
+                (!pass.was_full() || !pass.failures.is_empty()).then_some(interval)
+            }
+            Err(error) => {
+                passes.add(1, &[KeyValue::new("outcome", "error")]);
+                tracing::warn!(code = error.code(), detail = ?error.detail(), "key rotation pass failed");
                 Some(interval.max(MIN_ERROR_PAUSE))
             }
         };

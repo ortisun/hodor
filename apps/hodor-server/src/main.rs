@@ -6,17 +6,17 @@
 
 use clap::{Parser, ValueEnum};
 use hodor_adapters_crypto::{
-    Argon2Parameters, Argon2idHasher, AwsLcHmacSha1, AwsLcVerifier, HashingLimits, OsRandom,
-    SecretKeys, Sha256Digest,
+    Argon2Parameters, Argon2idHasher, AwsLcHmacSha1, AwsLcVerifier, HashingLimits,
+    LocalKeyProvider, OsRandom, SecretKeys, Sha256Digest,
 };
 use hodor_adapters_http::{GuardedHttpClient, OutboundPolicy};
 use hodor_adapters_ldap::LdapDirectoryClient;
 use hodor_adapters_postgres::{
     Database, PgAccessTokenStore, PgApplicationStore, PgAttemptStore, PgAuditLog,
     PgAuthorizationCodeStore, PgAuthorizationRequestStore, PgClientStore, PgGrantStore,
-    PgLinkStore, PgMessageQueue, PgPasswordStore, PgPendingAuthorizationStore, PgProviderStore,
-    PgResourceServerStore, PgRoleAssignmentStore, PgSessionStore, PgTenantDirectory,
-    PgTenantRepository, PgTotpStore, PgTransactionStore, PgUserRepository,
+    PgKeyStore, PgLinkStore, PgMessageQueue, PgPasswordStore, PgPendingAuthorizationStore,
+    PgProviderStore, PgResourceServerStore, PgRoleAssignmentStore, PgSessionStore,
+    PgTenantDirectory, PgTenantRepository, PgTotpStore, PgTransactionStore, PgUserRepository,
     PgVerificationTokenStore,
 };
 use hodor_audit::api::AuditService;
@@ -32,13 +32,15 @@ use hodor_federation::api::{
 };
 use hodor_identity::api::IdentityService;
 use hodor_kernel::{DomainError, Secret, SystemClock, TenantContext};
+use hodor_keys::api::{KeyService, RotationPolicy};
 use hodor_notification::api::Notifier;
 use hodor_oauth::api::{AuthorizationCodePorts, AuthorizationCodeService};
 use hodor_observability::{LogFormat, Telemetry};
 use hodor_protocol_http::{
     AdminState, AuthorizationState, ConsoleState, Health, InteractionState, Limits, Pages,
     ReadinessCheck, ResolvedTenant, TenantResolver, TenantStatus as HttpTenantStatus, admin_routes,
-    authorization_routes, console_routes, interaction_routes, ops_router, public_router, serve,
+    authorization_routes, console_routes, interaction_routes, key_set_routes, ops_router,
+    public_router, serve,
 };
 use hodor_session::api::SessionService;
 use hodor_tenant::api::{TenantDirectory as _, TenantService, TenantStatus};
@@ -123,6 +125,11 @@ struct Config {
     /// identity provider can be used.
     #[arg(long, env = "HODOR_SECRET_KEYS", hide_env_values = true)]
     secret_keys: Option<String>,
+
+    /// How long a signing key replaced by hand stays published, in hours.
+    /// The worker's rotation reads the same setting.
+    #[arg(long, env = "HODOR_KEY_OVERLAP_HOURS", default_value_t = 24)]
+    key_overlap_hours: i64,
 
     /// Hosts with their ports that outbound requests may reach without
     /// the address check and over plain HTTP, separated by commas. For a
@@ -258,6 +265,12 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
                 clock: Arc::new(SystemClock),
             }),
         );
+    match keys(&config, &database)? {
+        Some(keys) => tenant_routes = tenant_routes.merge(key_set_routes(keys)),
+        None => tracing::warn!(
+            "HODOR_SECRET_KEYS is not set: no key set is published and keys cannot be managed"
+        ),
+    }
     let mut site_routes = axum::Router::new();
     match &config.pages_directory {
         Some(directory) => {
@@ -585,6 +598,32 @@ fn external_sign_in(
     Ok(Some(sign_in))
 }
 
+/// The rotation policy as far as the server uses it: the overlap of a
+/// rotation by hand.
+fn key_rotation(config: &Config) -> Result<RotationPolicy, DomainError> {
+    let default = RotationPolicy::DEFAULT;
+    RotationPolicy::new(
+        default.period(),
+        default.publication(),
+        time::Duration::hours(config.key_overlap_hours),
+    )
+}
+
+/// The keys context, when there are root keys to wrap the tenants' keys
+/// with.
+fn keys(config: &Config, database: &Database) -> Result<Option<KeyService>, DomainError> {
+    let Some(setting) = &config.secret_keys else {
+        return Ok(None);
+    };
+    let root = Arc::new(SecretKeys::parse(&Secret::from(setting.clone()))?);
+    Ok(Some(KeyService::new(
+        Arc::new(database.clone()),
+        Arc::new(PgKeyStore),
+        Arc::new(LocalKeyProvider::new(root)),
+        Arc::new(SystemClock),
+    )))
+}
+
 /// Builds everything the administration interface needs.
 fn administration(config: &Config, database: &Database) -> Result<AdminState, DomainError> {
     let units = || Arc::new(database.clone());
@@ -631,6 +670,8 @@ fn administration(config: &Config, database: &Database) -> Result<AdminState, Do
         // The server reads the audit log; the worker writes it.
         audit: AuditService::new(units(), Arc::new(PgAuditLog), digest, clock),
         federation,
+        keys: keys(config, database)?,
+        key_rotation: key_rotation(config)?,
         public_url: config.public_url.clone(),
     })
 }

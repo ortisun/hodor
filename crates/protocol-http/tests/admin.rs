@@ -26,6 +26,8 @@ use hodor_kernel::{
     Caller, DomainError, EventHandler, TenantContext, TenantId, Timestamp, UnitOfWorkFactory,
     UserId,
 };
+use hodor_keys::api::{KeyService, RotationPolicy};
+use hodor_keys::testing::{FakeKeyProvider, InMemoryKeys};
 use hodor_protocol_http::{
     ADMIN_OPENAPI, ADMIN_OPERATIONS, AdminState, Limits, ResolvedTenant, TenantResolver,
     TenantStatus, admin_routes, public_router,
@@ -79,6 +81,10 @@ struct World {
 }
 
 async fn world() -> World {
+    world_with_keys(true).await
+}
+
+async fn world_with_keys(with_keys: bool) -> World {
     let units_of_work = InMemoryUnitOfWorkFactory::default();
     let clock = Arc::new(FixedClock::at(Timestamp::UNIX_EPOCH));
     let digest = Arc::new(FakeDigest);
@@ -121,6 +127,15 @@ async fn world() -> World {
     )
     .allowing_directory_hosts(&["ldap.example.com:636".to_owned()]);
 
+    let keys = with_keys.then(|| {
+        KeyService::new(
+            units(),
+            Arc::new(InMemoryKeys::default()),
+            Arc::new(FakeKeyProvider),
+            clock.clone(),
+        )
+    });
+
     let acme = TenantContext::assume(TenantId::generate());
     let globex = TenantContext::assume(TenantId::generate());
     let state = AdminState {
@@ -130,6 +145,8 @@ async fn world() -> World {
         sessions: sessions.clone(),
         audit: audit.clone(),
         federation: Some(federation),
+        keys,
+        key_rotation: RotationPolicy::DEFAULT,
         public_url: "https://auth.example".to_owned(),
     };
     let router = public_router(
@@ -329,6 +346,8 @@ impl Operation {
                 .replace("{user_id}", &UserId::generate().to_string())
                 .replace("{session_id}", &UserId::generate().to_string())
                 .replace("{provider_id}", &UserId::generate().to_string())
+                .replace("{key_set}", "sig")
+                .replace("{version_id}", &UserId::generate().to_string())
         )
     }
 }
@@ -375,7 +394,7 @@ fn the_document_and_the_routes_list_the_same_operations_and_permissions() {
         })
         .collect();
     assert_eq!(documented, served);
-    assert_eq!(served.len(), 14);
+    assert_eq!(served.len(), 17);
 
     // Every operation says how it refuses.
     let document: serde_json::Value = serde_json::from_str(ADMIN_OPENAPI).expect("valid JSON");
@@ -1499,4 +1518,272 @@ async fn an_administrator_adds_and_changes_a_saml_provider() {
         .await;
     assert_eq!(secret.status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(secret.code(), "federation.client_secret_invalid");
+}
+
+#[tokio::test]
+async fn an_administrator_rotates_and_revokes_a_signing_key_and_it_is_audited() {
+    let world = world().await;
+    let empty = world.as_administrator(Method::GET, "/keys/sig", None).await;
+    assert_eq!(empty.status, StatusCode::OK);
+    assert_eq!(empty.body["items"], serde_json::json!([]));
+
+    let first = world
+        .as_administrator(Method::POST, "/keys/sig:rotate", None)
+        .await;
+    assert_eq!(first.status, StatusCode::OK, "{:?}", first.body);
+    assert_eq!(first.body["state"], "active");
+    assert_eq!(first.body["algorithm"], "ES256");
+    assert_eq!(first.body["key_use"], "sig");
+    let first_id = first.body["id"].as_str().expect("id").to_owned();
+
+    let second = world
+        .as_administrator(
+            Method::POST,
+            "/keys/sig:rotate",
+            Some(serde_json::json!({ "algorithm": "ES256" })),
+        )
+        .await;
+    assert_eq!(second.status, StatusCode::OK);
+    let listed = world.as_administrator(Method::GET, "/keys/sig", None).await;
+    let items = listed.body["items"].as_array().expect("items");
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0]["id"], second.body["id"]);
+    assert_eq!(items[0]["state"], "active");
+    assert_eq!(items[1]["id"], first_id.as_str());
+    assert_eq!(items[1]["state"], "retiring");
+    // A day of overlap, the installation's.
+    assert_eq!(items[1]["retire_after"], "1970-01-02T00:00:00Z");
+
+    let revoked = world
+        .as_administrator(
+            Method::POST,
+            &format!("/keys/sig/versions/{first_id}:revoke"),
+            Some(serde_json::json!({ "reason": "the laptop was stolen" })),
+        )
+        .await;
+    assert_eq!(revoked.status, StatusCode::OK);
+    assert_eq!(revoked.body["state"], "revoked");
+    assert_eq!(revoked.body["revocation_reason"], "the laptop was stolen");
+
+    // Nothing of a key is in any answer.
+    for body in [&first.body, &second.body, &listed.body, &revoked.body] {
+        let written = body.to_string();
+        for member in ["material", "public", "\"x\"", "\"n\""] {
+            assert!(!written.contains(member), "{member} in {written}");
+        }
+    }
+
+    world.record_audit().await;
+    let records = world
+        .as_administrator(Method::GET, "/audit-records?limit=200", None)
+        .await;
+    let actions: Vec<&serde_json::Value> = records.body["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .filter(|record| {
+            record["action"]
+                .as_str()
+                .is_some_and(|action| action.starts_with("keys."))
+        })
+        .collect();
+    assert_eq!(actions.len(), 5, "two made, two activated, one revoked");
+    for record in actions {
+        assert_eq!(record["actor"]["id"], world.administrator.to_string());
+    }
+}
+
+#[tokio::test]
+async fn what_breaks_a_rule_of_keys_is_refused_with_its_code() {
+    let world = world().await;
+    let rotated = world
+        .as_administrator(Method::POST, "/keys/sig:rotate", None)
+        .await;
+    let id = rotated.body["id"].as_str().expect("id").to_owned();
+    let cases = [
+        (
+            Method::GET,
+            "/keys/enc".to_owned(),
+            None,
+            StatusCode::NOT_FOUND,
+            "keys.key_set_not_found",
+        ),
+        (
+            Method::GET,
+            "/keys/everything".to_owned(),
+            None,
+            StatusCode::NOT_FOUND,
+            "keys.key_set_not_found",
+        ),
+        (
+            Method::POST,
+            "/keys/data:rotate".to_owned(),
+            None,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "keys.rotation_not_offered",
+        ),
+        (
+            Method::POST,
+            "/keys/sig:explode".to_owned(),
+            None,
+            StatusCode::NOT_FOUND,
+            "route.not_found",
+        ),
+        (
+            Method::POST,
+            "/keys/sig:rotate".to_owned(),
+            Some(serde_json::json!({ "algorithm": "none" })),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "keys.algorithm_unsuitable",
+        ),
+        (
+            Method::POST,
+            "/keys/sig:rotate".to_owned(),
+            Some(serde_json::json!({ "algorithm": "A256GCM" })),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "keys.algorithm_unsuitable",
+        ),
+        (
+            Method::POST,
+            "/keys/sig:rotate".to_owned(),
+            Some(serde_json::json!({ "algorithm": "ES256", "overlap": 0 })),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "request.body_invalid",
+        ),
+        (
+            Method::POST,
+            format!("/keys/sig/versions/{id}:revoke"),
+            Some(serde_json::json!({ "reason": "" })),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "keys.reason_invalid",
+        ),
+        (
+            Method::POST,
+            format!("/keys/sig/versions/{id}:revoke"),
+            Some(serde_json::json!({ "reason": "x".repeat(201) })),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "keys.reason_invalid",
+        ),
+        (
+            Method::POST,
+            format!("/keys/sig/versions/{id}:revoke"),
+            None,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "request.body_invalid",
+        ),
+        (
+            Method::POST,
+            format!("/keys/data/versions/{id}:revoke"),
+            Some(serde_json::json!({ "reason": "wrong set" })),
+            StatusCode::NOT_FOUND,
+            "keys.version_not_found",
+        ),
+        (
+            Method::POST,
+            format!("/keys/sig/versions/{}:revoke", UserId::generate()),
+            Some(serde_json::json!({ "reason": "unknown" })),
+            StatusCode::NOT_FOUND,
+            "keys.version_not_found",
+        ),
+        (
+            Method::POST,
+            "/keys/sig/versions/not-an-identifier:revoke".to_owned(),
+            Some(serde_json::json!({ "reason": "malformed" })),
+            StatusCode::NOT_FOUND,
+            "keys.version_not_found",
+        ),
+        (
+            Method::POST,
+            format!("/keys/sig/versions/{id}:destroy"),
+            Some(serde_json::json!({ "reason": "no such action" })),
+            StatusCode::NOT_FOUND,
+            "route.not_found",
+        ),
+    ];
+    for (method, path, body, status, code) in cases {
+        let reply = world.as_administrator(method.clone(), &path, body).await;
+        assert_eq!(reply.status, status, "{method} {path}: {:?}", reply.body);
+        assert_eq!(reply.code(), code, "{method} {path}");
+    }
+    // The version is still active: nothing above changed it.
+    let listed = world.as_administrator(Method::GET, "/keys/sig", None).await;
+    assert_eq!(listed.body["items"][0]["state"], "active");
+}
+
+#[tokio::test]
+async fn the_keys_of_one_tenant_do_not_exist_for_another() {
+    let world = world().await;
+    let rotated = world
+        .as_administrator(Method::POST, "/keys/sig:rotate", None)
+        .await;
+    let id = rotated.body["id"].as_str().expect("id").to_owned();
+    let (_, globex) = world
+        .person(
+            &world.globex,
+            "root@globex.example",
+            &[Role::TenantAdministrator],
+        )
+        .await;
+    let authorization = format!("Bearer {globex}");
+
+    let listed = world
+        .send(
+            Method::GET,
+            "/t/globex/api/v1/admin/keys/sig",
+            Some(&authorization),
+            None,
+        )
+        .await;
+    assert_eq!(listed.status, StatusCode::OK);
+    assert_eq!(listed.body["items"], serde_json::json!([]));
+    let revoked = world
+        .send(
+            Method::POST,
+            &format!("/t/globex/api/v1/admin/keys/sig/versions/{id}:revoke"),
+            Some(&authorization),
+            Some(serde_json::json!({ "reason": "not ours" })),
+        )
+        .await;
+    assert_eq!(revoked.status, StatusCode::NOT_FOUND);
+    assert_eq!(revoked.code(), "keys.version_not_found");
+    // Globex's token means nothing at Acme.
+    let elsewhere = world
+        .send(
+            Method::GET,
+            "/t/acme/api/v1/admin/keys/sig",
+            Some(&authorization),
+            None,
+        )
+        .await;
+    assert_eq!(elsewhere.status, StatusCode::UNAUTHORIZED);
+
+    let acme = world.as_administrator(Method::GET, "/keys/sig", None).await;
+    assert_eq!(acme.body["items"][0]["state"], "active");
+}
+
+#[tokio::test]
+async fn without_keys_to_wrap_them_with_the_key_routes_say_so() {
+    let world = world_with_keys(false).await;
+    for (method, path) in [
+        (Method::GET, "/keys/sig".to_owned()),
+        (Method::POST, "/keys/sig:rotate".to_owned()),
+        (
+            Method::POST,
+            format!("/keys/sig/versions/{}:revoke", UserId::generate()),
+        ),
+    ] {
+        let reply = world
+            .as_administrator(
+                method.clone(),
+                &path,
+                Some(serde_json::json!({ "reason": "test" })),
+            )
+            .await;
+        assert_eq!(
+            reply.status,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "{method} {path}"
+        );
+        assert_eq!(reply.code(), "keys.not_configured", "{method} {path}");
+    }
 }

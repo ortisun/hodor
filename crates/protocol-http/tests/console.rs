@@ -113,6 +113,8 @@ fn world() -> World {
         audit,
         // Identity providers are tested in `admin.rs`; here they are not configured.
         federation: None,
+        keys: None,
+        key_rotation: hodor_keys::api::RotationPolicy::DEFAULT,
         public_url: "https://auth.example".to_owned(),
     };
     let router = public_router(

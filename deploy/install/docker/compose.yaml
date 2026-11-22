@@ -87,10 +87,11 @@ services:
       HODOR_DATABASE_URL: *server-url
       # The address people use, with https and without a path. Cookies and the links in messages rely on it.
       HODOR_PUBLIC_URL: ${HODOR_PUBLIC_URL:?Set HODOR_PUBLIC_URL in .env to the address people use, such as https://login.example.com}
-      # Keeps the secrets of identity providers encrypted in the database.
+      # Keeps the secrets of identity providers and the signing keys encrypted in the database.
       HODOR_SECRET_KEYS: ${HODOR_SECRET_KEYS:?Set HODOR_SECRET_KEYS in .env, as identifier:key}
       # Optional settings: passed on when `.env` sets them, left to Hodor's defaults otherwise.
       HODOR_DIRECTORY_HOSTS:
+      HODOR_KEY_OVERLAP_HOURS:
       HODOR_DATABASE_MAX_CONNECTIONS:
       HODOR_PASSWORD_HASH_CONCURRENCY:
       HODOR_LOG_FORMAT:
@@ -121,6 +122,8 @@ services:
     environment:
       HODOR_DATABASE_URL: *worker-url
       HODOR_PLATFORM_DATABASE_URL: *worker-platform-url
+      # The server's keys: the worker makes the tenants' signing keys under them.
+      HODOR_SECRET_KEYS: ${HODOR_SECRET_KEYS:?Set HODOR_SECRET_KEYS in .env, as identifier:key}
       # Optional settings, as for the server. Without HODOR_SMTP_URL no message is delivered: they wait.
       HODOR_SMTP_URL:
       HODOR_MAIL_FROM:
@@ -128,6 +131,9 @@ services:
       HODOR_LOG_FILTER:
       HODOR_OTLP_METRICS_ENDPOINT:
       HODOR_OTLP_TRACES_ENDPOINT:
+      HODOR_KEY_ROTATION_DAYS:
+      HODOR_KEY_PUBLICATION_HOURS:
+      HODOR_KEY_OVERLAP_HOURS:
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -173,6 +179,7 @@ services:
       HODOR_PUBLIC_URL: ${HODOR_PUBLIC_URL:?Set HODOR_PUBLIC_URL in .env}
       HODOR_SECRET_KEYS: ${HODOR_SECRET_KEYS:?Set HODOR_SECRET_KEYS in .env, as identifier:key}
       HODOR_DIRECTORY_HOSTS:
+      HODOR_KEY_OVERLAP_HOURS:
       # Read by `provider add`, and only there: never written in `.env`.
       HODOR_PROVIDER_CLIENT_SECRET:
 

@@ -51,7 +51,7 @@ The paths are relative to the tenant, `https://{host}/t/{slug}`, whose issuer is
 |---|---|---|
 | `GET /.well-known/openid-configuration` | Provider metadata | OpenID Connect Discovery |
 | `GET /.well-known/oauth-authorization-server` | Authorization server metadata | RFC 8414 |
-| `GET /oauth2/jwks` | Public signing keys | RFC 7517 |
+| `GET /oauth2/jwks` | Public signing keys (built: [the published key set](../architecture/contexts/keys.md#the-published-key-set)) | RFC 7517 |
 | `GET, POST /oauth2/authorize` | Authorization endpoint | RFC 6749, OpenID Connect Core |
 | `GET /oauth2/authorize/resume` | Where the hosted pages send the browser after a sign-in, to go on with the pending authorization request ([the OAuth context](../architecture/contexts/oauth.md#signing-in-and-coming-back)) | — |
 | `POST /oauth2/par` | Pushed authorization request | RFC 9126 |
@@ -117,7 +117,7 @@ Standard collection and item routes (`GET` list, `POST`, `GET`, `PATCH`, `DELETE
 | Identity providers | `/admin/identity-providers`, `/admin/routing-rules` | `POST /identity-providers/{id}:test`, `:deactivate` |
 | Authentication | `/admin/auth-flows`, `/auth-flows/{id}/versions` | `POST /versions/{v}:validate`, `:simulate`, `:publish` |
 | Authorization | `/admin/roles`, `/permissions`, `/role-assignments`, `/acl`, `/relation-tuples`, `/policies`, `/policies/{id}/versions`, `/bundles`, `/engine-bindings`, `/decision-logs` | `POST /versions/{v}:validate`, `:test`, `:simulate`, `:publish`; `POST /policies/{id}:rollback` |
-| Keys | `/admin/keys` | `POST /keys/{set}:rotate`, `POST /keys/{set}/versions/{kid}:revoke` |
+| Keys | `/admin/keys/{set}` | `POST /keys/{set}:rotate`, `POST /keys/{set}/versions/{kid}:revoke` (built: [the administration interface](admin-api.md#keys)) |
 | Sessions | `/admin/sessions` | `DELETE`, `POST /sessions:revoke-all` |
 | Audit | `/admin/audit-records` (read-only) | `POST /audit-records:export` |
 | Security posture | `/admin/posture` (read-only summary), `/admin/posture/findings`, `/findings/{id}/acceptances` | `POST /posture:evaluate`; an acceptance carries a reason and an expiry ([control plane](../design/control-plane.md#security-posture)) |

@@ -16,11 +16,12 @@ pub mod testing;
 /// What other crates may use from this context.
 pub mod api {
     pub use crate::application::ports::{KeyProvider, KeyStore};
-    pub use crate::application::service::{KeyService, Signature};
+    pub use crate::application::service::{KeyService, RotationReport, Signature};
     pub use crate::domain::event::KeyEvent;
     pub use crate::domain::key::{
         GeneratedKey, KeyAlgorithm, KeyMaterial, KeyState, KeyUse, KeyVersion, KeyVersionId,
         KeyVersionSnapshot, MAX_REASON_LENGTH,
     };
     pub use crate::domain::key_set::{Activation, KeySet};
+    pub use crate::domain::rotation::{RotationChange, RotationPolicy};
 }

@@ -54,6 +54,7 @@ fn worker_command(database: &TestDatabase) -> Command {
     command
         .env_remove("HODOR_SMTP_URL")
         .env_remove("HODOR_MAIL_FROM")
+        .env_remove("HODOR_SECRET_KEYS")
         .env("HODOR_DATABASE_URL", database.app_url())
         .env("HODOR_PLATFORM_DATABASE_URL", database.platform_url())
         .env("HODOR_OPS_ADDR", "127.0.0.1:0")
@@ -286,4 +287,96 @@ fn a_mail_server_without_a_sender_address_is_refused_at_start() {
     );
     assert!(shown.contains("HODOR_MAIL_FROM"), "{shown}");
     assert!(!shown.contains("hunter2"), "{shown}");
+}
+
+/// A root key for tests only, written here in the clear.
+const ROOT_KEY: &str = "test:gV8TjmTiZoYOlhsN4OdTTiWMwWa1t/o5RPNGCdbBNro=";
+
+async fn active_tenant(database: &TestDatabase, slug: &str) {
+    let service = hodor_tenant::api::TenantService::new(
+        std::sync::Arc::new(database.app().clone()),
+        std::sync::Arc::new(hodor_adapters_postgres::PgTenantRepository),
+        std::sync::Arc::new(hodor_adapters_postgres::PgTenantDirectory::new(
+            database.app().clone(),
+        )),
+        std::sync::Arc::new(hodor_kernel::SystemClock),
+    );
+    service
+        .create(
+            hodor_tenant::api::CreateTenant {
+                slug: slug.to_owned(),
+                display_name: slug.to_owned(),
+                open_registration: false,
+                system: false,
+            },
+            hodor_tenant::api::Caller {
+                actor: Actor::System,
+                correlation_id: CorrelationId::generate(),
+            },
+        )
+        .await
+        .expect("tenant");
+}
+
+/// The signing key versions of every tenant, by state.
+async fn signing_keys(database: &TestDatabase) -> Vec<(String, i64)> {
+    sqlx::query_as(
+        "SELECT state, count(*) FROM keys.key_version WHERE key_use = 'sig'
+         GROUP BY state ORDER BY state",
+    )
+    .fetch_all(database.owner())
+    .await
+    .expect("read")
+}
+
+#[tokio::test]
+async fn two_running_workers_give_every_tenant_one_signing_key() {
+    let database = TestDatabase::start().await;
+    for slug in ["acme", "globex", "initech"] {
+        active_tenant(&database, slug).await;
+    }
+    let start = || {
+        worker_command(&database)
+            .env("HODOR_SECRET_KEYS", ROOT_KEY)
+            .env("HODOR_KEY_ROTATION_INTERVAL_MS", "100")
+            .spawn()
+            .expect("worker should start")
+    };
+    let (first, second) = (start(), start());
+
+    let mut keys = signing_keys(&database).await;
+    for _ in 0..100 {
+        if keys == [("active".to_owned(), 3)] {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        keys = signing_keys(&database).await;
+    }
+    assert_eq!(keys, [("active".to_owned(), 3)]);
+    // Passes go on while both run; nothing more is made.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(signing_keys(&database).await, [("active".to_owned(), 3)]);
+
+    stop(first).await;
+    stop(second).await;
+}
+
+#[test]
+fn a_rotation_policy_that_drops_keys_too_soon_is_refused_at_start() {
+    let output = Command::new(env!("CARGO_BIN_EXE_hodor-worker"))
+        .env("HODOR_DATABASE_URL", "postgres://unused@127.0.0.1:1/unused")
+        .env(
+            "HODOR_PLATFORM_DATABASE_URL",
+            "postgres://unused@127.0.0.1:1/unused",
+        )
+        .env("HODOR_KEY_OVERLAP_HOURS", "0")
+        .output()
+        .expect("worker should run");
+    assert!(!output.status.success());
+    let shown = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(shown.contains("65 minutes"), "{shown}");
 }

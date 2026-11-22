@@ -35,7 +35,9 @@ kernel traits.
 ## Side Effects
 
 - Through `KeyStore`: reads and writes key versions. Through `KeyProvider`:
-  makes keys and signs. Through `UnitOfWork::record_event`: records
+  makes keys and signs. Rotation (`KeyService::rotate_due`) is run by
+  `KeyRotationJob` in `crates/adapters-postgres/src/key_rotation.rs`, which
+  `apps/hodor-worker` schedules. Through `UnitOfWork::record_event`: records
   `keys.version_created`, `keys.version_activated`, `keys.version_retired`
   and `keys.version_revoked`.
 

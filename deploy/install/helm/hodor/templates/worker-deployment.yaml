@@ -50,6 +50,7 @@ spec:
             {{- include "hodor.sharedEnvironment" . | nindent 12 }}
             {{- include "hodor.secretEnvironment" (list . "HODOR_DATABASE_URL" .Values.secret.keys.workerDatabaseUrl) | nindent 12 }}
             {{- include "hodor.secretEnvironment" (list . "HODOR_PLATFORM_DATABASE_URL" .Values.secret.keys.workerPlatformDatabaseUrl) | nindent 12 }}
+            {{- include "hodor.secretEnvironment" (list . "HODOR_SECRET_KEYS" .Values.secret.keys.secretKeys) | nindent 12 }}
             - name: HODOR_DATABASE_MAX_CONNECTIONS
               value: {{ .Values.worker.databaseMaxConnections | quote }}
             {{- if .Values.mail.enabled }}

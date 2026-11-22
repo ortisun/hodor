@@ -240,3 +240,225 @@ async fn the_application_cannot_delete_a_version() {
         .await;
     assert!(deleted.is_err(), "the application role may not delete");
 }
+
+mod rotation {
+    use super::local_provider;
+    use hodor_adapters_postgres::testing::TestDatabase;
+    use hodor_adapters_postgres::{
+        KeyRotationJob, PgKeyStore, PgTenantDirectory, PgTenantRepository,
+    };
+    use hodor_kernel::clock::testing::FixedClock;
+    use hodor_kernel::{Actor, Clock as _, CorrelationId, TenantContext, Timestamp};
+    use hodor_keys::api::{KeyService, KeyState, KeyUse, RotationPolicy};
+    use hodor_tenant::api::{Caller, CreateTenant, TenantService};
+    use std::sync::Arc;
+
+    struct World {
+        database: TestDatabase,
+        clock: Arc<FixedClock>,
+        keys: KeyService,
+        tenants: TenantService,
+    }
+
+    async fn world() -> World {
+        let database = TestDatabase::start().await;
+        let clock = Arc::new(FixedClock::at(Timestamp::UNIX_EPOCH));
+        let keys = KeyService::new(
+            Arc::new(database.app().clone()),
+            Arc::new(PgKeyStore),
+            Arc::new(local_provider()),
+            clock.clone(),
+        );
+        let tenants = TenantService::new(
+            Arc::new(database.app().clone()),
+            Arc::new(PgTenantRepository),
+            Arc::new(PgTenantDirectory::new(database.app().clone())),
+            clock.clone(),
+        );
+        World {
+            database,
+            clock,
+            keys,
+            tenants,
+        }
+    }
+
+    fn caller() -> Caller {
+        Caller {
+            actor: Actor::System,
+            correlation_id: CorrelationId::generate(),
+        }
+    }
+
+    impl World {
+        fn job(&self) -> KeyRotationJob {
+            KeyRotationJob::new(
+                self.database.platform().clone(),
+                self.keys.clone(),
+                RotationPolicy::DEFAULT,
+            )
+        }
+
+        async fn tenant(&self, slug: &str) -> TenantContext {
+            let tenant = self
+                .tenants
+                .create(
+                    CreateTenant {
+                        slug: slug.to_owned(),
+                        display_name: slug.to_owned(),
+                        open_registration: false,
+                        system: false,
+                    },
+                    caller(),
+                )
+                .await
+                .expect("tenant");
+            TenantContext::assume(tenant.id())
+        }
+
+        async fn states(&self, tenant: &TenantContext) -> Vec<KeyState> {
+            let set = self
+                .keys
+                .key_set(tenant, KeyUse::Signing)
+                .await
+                .expect("set");
+            set.versions()
+                .iter()
+                .map(|version| version.state())
+                .collect()
+        }
+    }
+
+    #[tokio::test]
+    async fn every_active_tenant_gets_a_key_and_a_suspended_one_does_not() {
+        let world = world().await;
+        let acme = world.tenant("acme").await;
+        let globex = world.tenant("globex").await;
+        let initech = world.tenant("initech").await;
+        world
+            .tenants
+            .suspend(&initech, "unpaid", caller())
+            .await
+            .expect("suspend");
+
+        let pass = world.job().run(world.clock.now()).await.expect("pass");
+        assert!(!pass.skipped);
+        assert_eq!(pass.tenants, 2);
+        assert!(pass.failures.is_empty());
+        assert_eq!((pass.changes.created, pass.changes.activated), (2, 2));
+        assert_eq!(world.states(&acme).await, vec![KeyState::Active]);
+        assert_eq!(world.states(&globex).await, vec![KeyState::Active]);
+        assert!(world.states(&initech).await.is_empty());
+
+        let again = world.job().run(world.clock.now()).await.expect("pass");
+        assert_eq!(again.tenants, 0, "nothing is due, so no tenant is visited");
+    }
+
+    #[tokio::test]
+    async fn a_tenant_is_visited_only_when_a_change_is_due() {
+        let world = world().await;
+        let acme = world.tenant("acme").await;
+        let policy = RotationPolicy::DEFAULT;
+        world.job().run(world.clock.now()).await.expect("first key");
+
+        // Just before the next key is due: nothing.
+        world
+            .clock
+            .advance(policy.period() - policy.publication() - time::Duration::seconds(1));
+        assert_eq!(
+            world
+                .job()
+                .run(world.clock.now())
+                .await
+                .expect("pass")
+                .tenants,
+            0
+        );
+
+        // The next key is made, then nothing until it may sign.
+        world.clock.advance(time::Duration::seconds(1));
+        let prepared = world.job().run(world.clock.now()).await.expect("pass");
+        assert_eq!((prepared.tenants, prepared.changes.created), (1, 1));
+        world.clock.advance(time::Duration::hours(1));
+        assert_eq!(
+            world
+                .job()
+                .run(world.clock.now())
+                .await
+                .expect("pass")
+                .tenants,
+            0
+        );
+
+        // It signs at the end of the period; the old one retires after the
+        // overlap.
+        world
+            .clock
+            .advance(policy.publication() - time::Duration::hours(1));
+        let activated = world.job().run(world.clock.now()).await.expect("pass");
+        assert_eq!(activated.changes.activated, 1);
+        assert_eq!(
+            world.states(&acme).await,
+            vec![KeyState::Active, KeyState::Retiring]
+        );
+        world.clock.advance(policy.overlap());
+        let retired = world.job().run(world.clock.now()).await.expect("pass");
+        assert_eq!(retired.changes.retired, 1);
+        assert_eq!(
+            world.states(&acme).await,
+            vec![KeyState::Active, KeyState::Retired]
+        );
+        assert_eq!(
+            world
+                .job()
+                .run(world.clock.now())
+                .await
+                .expect("pass")
+                .tenants,
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn two_workers_at_once_rotate_once() {
+        let world = world().await;
+        let mut tenants = Vec::new();
+        for slug in ["acme", "globex", "initech", "umbrella"] {
+            tenants.push(world.tenant(slug).await);
+        }
+        let (first, second) = (world.job(), world.job());
+        let now = world.clock.now();
+        let (a, b) = tokio::join!(first.run(now), second.run(now));
+        let (a, b) = (a.expect("first"), b.expect("second"));
+        assert_eq!(
+            a.changes.activated + b.changes.activated,
+            4,
+            "one key for each tenant, whichever worker made it"
+        );
+        for tenant in &tenants {
+            assert_eq!(world.states(tenant).await, vec![KeyState::Active]);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_pass_is_skipped_while_another_holds_the_lock() {
+        let world = world().await;
+        let acme = world.tenant("acme").await;
+        let mut other = world.database.platform().begin().await.expect("begin");
+        let (held,): (bool,) = sqlx::query_as("SELECT pg_try_advisory_xact_lock($1)")
+            .bind(0x686f_646f_726b_6579_i64)
+            .fetch_one(&mut *other)
+            .await
+            .expect("lock");
+        assert!(held);
+
+        let pass = world.job().run(world.clock.now()).await.expect("pass");
+        assert!(pass.skipped);
+        assert!(world.states(&acme).await.is_empty());
+
+        other.rollback().await.expect("release");
+        let pass = world.job().run(world.clock.now()).await.expect("pass");
+        assert!(!pass.skipped);
+        assert_eq!(world.states(&acme).await, vec![KeyState::Active]);
+    }
+}

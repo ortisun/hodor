@@ -33,6 +33,7 @@ the set of re-exports in `lib.rs`.
 | `ADMIN_OPENAPI` | `admin.rs` | `include_str!("../openapi/admin-v1.json")`, served at `/openapi.json`. |
 | `ADMIN_OPERATIONS` | `admin.rs` | Table of `(method, path as written in the OpenAPI document, Permission)`. Every shared handler looks its permission up here; the documentation says a test holds the table and the OpenAPI document together. |
 | `CONSOLE_SESSION_HOURS` | `admin.rs` | `12`: the console stops answering this many hours after `signed_in_at`, whatever the tenant allows. |
+| `key_set_routes(keys: KeyService)` | `key_set.rs` | `GET /oauth2/jwks`, mounted under a tenant: the published key set as a JSON Web Key Set, with `Cache-Control: public, max-age=300` (`RotationPolicy::PUBLISHED_FOR`) and `Access-Control-Allow-Origin: *`. |
 | `Pages` | `pages.rs` | A static application read from a directory: `load` (hosted pages), `load_console` (admin console), `page_routes`, `asset_routes`. |
 | `PAGE_PATHS`, `PROVIDER_CALLBACK_PAGE`, `PAGE_ASSETS_PATH`, `CONSOLE_PATHS`, `CONSOLE_ASSETS_PATH`, `PAGES_CONTENT_SECURITY_POLICY` | `pages.rs` | Paths and the content security policy of the static applications. |
 
@@ -48,7 +49,10 @@ provider is offered), `digest: Arc<dyn Digest>` and `clock: Arc<dyn Clock>`
 `identity: IdentityService` (`hodor_identity`), `sessions: SessionService`,
 `audit: AuditService` (`hodor_audit`),
 `federation: Option<FederationService>` (`None` when the installation has no
-keys to keep provider secrets with) and `public_url: String`.
+keys to keep provider secrets with), `keys: Option<KeyService>`
+(`hodor_keys`; `None` makes the key routes answer `503`
+`keys.not_configured`), `key_rotation: RotationPolicy` (whose overlap a
+rotation by hand uses) and `public_url: String`.
 `ConsoleState` holds an `AdminState` plus `digest` and `clock`.
 
 ### Routes
@@ -124,6 +128,8 @@ Administration and console handlers, shared by both routers
 | GET, POST | `/identity-providers` | `list_providers`, `create_provider` |
 | GET, PATCH, POST | `/identity-providers/{provider}` | `get_provider`, `change_provider`, `provider_action` (`:disable` and `:enable` arrive here) |
 | PUT | `/identity-providers/{provider}/client-secret` | `change_provider_secret` |
+| GET, POST | `/keys/{key_set}` | `list_key_versions`, `key_set_action` (`POST /keys/{key_set}:rotate` arrives here) |
+| POST | `/keys/{key_set}/versions/{version}` | `key_version_action` (`:revoke` arrives here) |
 
 `admin_routes` (documented mount point `/t/{slug}/api/v1/admin`) adds
 `GET /openapi.json` (`openapi`, no authentication). `console_routes`
