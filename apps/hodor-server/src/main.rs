@@ -1,0 +1,601 @@
+//! HTTP composition root: protocols, APIs and the console BFF.
+//!
+//! This is the only place that knows concrete adapter types. It reads the
+//! configuration, builds the adapters, hands them to the HTTP layer as
+//! trait objects and runs the listeners until asked to stop.
+
+use clap::{Parser, ValueEnum};
+use hodor_adapters_crypto::{
+    Argon2Parameters, Argon2idHasher, AwsLcVerifier, HashingLimits, OsRandom, SecretKeys,
+    Sha256Digest,
+};
+use hodor_adapters_http::{GuardedHttpClient, OutboundPolicy};
+use hodor_adapters_ldap::LdapDirectoryClient;
+use hodor_adapters_postgres::{
+    Database, PgAccessTokenStore, PgAttemptStore, PgAuditLog, PgLinkStore, PgMessageQueue,
+    PgPasswordStore, PgPendingAuthorizationStore, PgProviderStore, PgRoleAssignmentStore,
+    PgSessionStore, PgTenantDirectory, PgTenantRepository, PgTransactionStore, PgUserRepository,
+    PgVerificationTokenStore,
+};
+use hodor_audit::api::AuditService;
+use hodor_authentication::api::{
+    AccountService, AttemptGuard, AuthFlow, AuthenticationService, FlowEngine,
+    IdentifierAuthenticator, LockoutRules, PasswordAuthenticator,
+};
+use hodor_authorization::api::AuthorizationService;
+use hodor_credential::api::{AccessTokenService, CredentialService};
+use hodor_federation::api::{
+    EXTERNAL_STEP, ExternalIdentityAuthenticator, ExternalSignIn, FederationService, GitHubClient,
+    LockoutPolicy, OpenIdClient, SamlClient,
+};
+use hodor_identity::api::IdentityService;
+use hodor_kernel::{DomainError, Secret, SystemClock, TenantContext};
+use hodor_notification::api::Notifier;
+use hodor_observability::{LogFormat, Telemetry};
+use hodor_protocol_http::{
+    AdminState, ConsoleState, Health, InteractionState, Limits, Pages, ReadinessCheck,
+    ResolvedTenant, TenantResolver, TenantStatus as HttpTenantStatus, admin_routes, console_routes,
+    interaction_routes, ops_router, public_router, serve,
+};
+use hodor_session::api::SessionService;
+use hodor_tenant::api::{TenantDirectory as _, TenantService, TenantStatus};
+use std::error::Error;
+use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::net::TcpListener;
+use tokio::sync::watch;
+
+#[derive(Clone, Copy, ValueEnum)]
+enum LogFormatArg {
+    Json,
+    Pretty,
+}
+
+/// Hodor identity server.
+#[derive(Parser)]
+#[command(name = "hodor-server", version, about)]
+struct Config {
+    /// Address of the public listener.
+    #[arg(long, env = "HODOR_LISTEN_ADDR", default_value = "0.0.0.0:8080")]
+    listen_addr: SocketAddr,
+
+    /// Address of the operations listener (health endpoints). Keep it off
+    /// the internet.
+    #[arg(long, env = "HODOR_OPS_ADDR", default_value = "127.0.0.1:9090")]
+    ops_addr: SocketAddr,
+
+    /// Database URL of the application role (a member of `hodor_app`).
+    #[arg(long, env = "HODOR_DATABASE_URL", hide_env_values = true)]
+    database_url: String,
+
+    /// Size of the database connection pool.
+    #[arg(long, env = "HODOR_DATABASE_MAX_CONNECTIONS", default_value_t = 10)]
+    database_max_connections: u32,
+
+    /// Log rendering.
+    #[arg(long, env = "HODOR_LOG_FORMAT", value_enum, default_value = "json")]
+    log_format: LogFormatArg,
+
+    /// Log filter, such as `info` or `info,hodor_oauth=debug`.
+    #[arg(long, env = "HODOR_LOG_FILTER", default_value = "info")]
+    log_filter: String,
+
+    /// Full URL of the OTLP/HTTP traces endpoint. Unset disables export.
+    #[arg(long, env = "HODOR_OTLP_TRACES_ENDPOINT")]
+    otlp_traces_endpoint: Option<String>,
+
+    /// Full URL of the OTLP/HTTP metrics endpoint. For VictoriaMetrics:
+    /// `http://<host>:8428/opentelemetry/v1/metrics`. Unset disables export.
+    #[arg(long, env = "HODOR_OTLP_METRICS_ENDPOINT")]
+    otlp_metrics_endpoint: Option<String>,
+
+    /// Seconds to keep serving after a stop signal while readiness fails,
+    /// so the load balancer can take the instance out of rotation.
+    #[arg(long, env = "HODOR_SHUTDOWN_DRAIN_SECONDS", default_value_t = 5)]
+    shutdown_drain_seconds: u64,
+
+    /// The address people reach this installation at, without a path.
+    /// Links in messages start with it.
+    #[arg(
+        long,
+        env = "HODOR_PUBLIC_URL",
+        default_value = "http://localhost:8080"
+    )]
+    public_url: String,
+
+    /// Directory holding the built hosted pages (`index.html` and
+    /// `assets`). Unset: no pages are served.
+    #[arg(long, env = "HODOR_PAGES_DIRECTORY")]
+    pages_directory: Option<PathBuf>,
+
+    /// Directory holding the built admin console (`index.html` and
+    /// `assets`). Unset: no console page is served.
+    #[arg(long, env = "HODOR_CONSOLE_DIRECTORY")]
+    console_directory: Option<PathBuf>,
+
+    /// The keys that keep secrets encrypted at rest: `identifier:key`
+    /// pairs separated by commas, the first one sealing. Unset: no
+    /// identity provider can be used.
+    #[arg(long, env = "HODOR_SECRET_KEYS", hide_env_values = true)]
+    secret_keys: Option<String>,
+
+    /// Hosts with their ports that outbound requests may reach without
+    /// the address check and over plain HTTP, separated by commas. For a
+    /// development stack on one machine; never set it anywhere real.
+    #[arg(long, env = "HODOR_OUTBOUND_DEVELOPMENT_HOSTS", value_delimiter = ',')]
+    outbound_development_hosts: Vec<String>,
+
+    /// The LDAP directories identity providers may name, as `host:port`
+    /// separated by commas. Empty: no directory can be used.
+    #[arg(long, env = "HODOR_DIRECTORY_HOSTS", value_delimiter = ',')]
+    directory_hosts: Vec<String>,
+
+    /// Memory one password hash uses, in kibibytes.
+    #[arg(long, env = "HODOR_PASSWORD_HASH_MEMORY_KIBIBYTES", default_value_t = 19 * 1024)]
+    password_hash_memory_kibibytes: u32,
+
+    /// Passes over that memory.
+    #[arg(long, env = "HODOR_PASSWORD_HASH_PASSES", default_value_t = 2)]
+    password_hash_passes: u32,
+
+    /// Lanes computed in parallel within one hash.
+    #[arg(long, env = "HODOR_PASSWORD_HASH_LANES", default_value_t = 1)]
+    password_hash_lanes: u32,
+
+    /// Password hashes computed at the same time. Defaults to one per
+    /// processor core.
+    #[arg(long, env = "HODOR_PASSWORD_HASH_CONCURRENCY")]
+    password_hash_concurrency: Option<usize>,
+
+    /// Requests allowed to wait for a hash. Defaults to four times the
+    /// concurrency.
+    #[arg(long, env = "HODOR_PASSWORD_HASH_QUEUE")]
+    password_hash_queue: Option<usize>,
+}
+
+/// Resolves tenants through the directory, answering by status as
+/// specified in `docs/architecture/contexts/tenant.md`, "Lifecycle".
+struct DirectoryResolver(PgTenantDirectory);
+
+#[async_trait::async_trait]
+impl TenantResolver for DirectoryResolver {
+    async fn resolve(&self, slug: &str) -> Result<Option<ResolvedTenant>, DomainError> {
+        let Some(entry) = self.0.find_by_slug(slug).await? else {
+            return Ok(None);
+        };
+        let status = match entry.status {
+            TenantStatus::Active => HttpTenantStatus::Active,
+            TenantStatus::Suspended | TenantStatus::PendingDeletion => HttpTenantStatus::Suspended,
+            // Not there yet, or not there any more: indistinguishable from
+            // a tenant that never existed.
+            TenantStatus::Provisioning | TenantStatus::Deleted => return Ok(None),
+        };
+        Ok(Some(ResolvedTenant {
+            // The request path named this tenant and the directory
+            // confirmed it: this is where its context is established.
+            context: TenantContext::assume(entry.tenant_id),
+            status,
+        }))
+    }
+}
+
+struct DatabaseCheck(Database);
+
+#[async_trait::async_trait]
+impl ReadinessCheck for DatabaseCheck {
+    fn name(&self) -> &'static str {
+        "database"
+    }
+
+    async fn check(&self) -> Result<(), String> {
+        self.0.ping().await.map_err(|error| error.to_string())
+    }
+}
+
+fn main() -> Result<(), Box<dyn Error>> {
+    let config = Config::parse();
+
+    // Telemetry starts before the async runtime: its exporters use a
+    // blocking HTTP client on their own threads.
+    let mut telemetry_config =
+        hodor_observability::Config::new(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+    telemetry_config.log_format = match config.log_format {
+        LogFormatArg::Json => LogFormat::Json,
+        LogFormatArg::Pretty => LogFormat::Pretty,
+    };
+    telemetry_config.log_filter.clone_from(&config.log_filter);
+    telemetry_config
+        .traces_endpoint
+        .clone_from(&config.otlp_traces_endpoint);
+    telemetry_config
+        .metrics_endpoint
+        .clone_from(&config.otlp_metrics_endpoint);
+    let telemetry = Telemetry::init(&telemetry_config)?;
+
+    let result = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(run(config));
+
+    if let Err(error) = &result {
+        tracing::error!(%error, "server stopped with an error");
+    }
+    telemetry.shutdown();
+    result
+}
+
+async fn run(config: Config) -> Result<(), Box<dyn Error>> {
+    let database = Database::connect(
+        &Secret::from(config.database_url.clone()),
+        config.database_max_connections,
+    )
+    .await?;
+    let health = Health::new(vec![Arc::new(DatabaseCheck(database.clone()))]);
+
+    let mut tenant_routes = axum::Router::new()
+        .nest(
+            "/interaction",
+            interaction_routes(interaction(&config, &database)?),
+        )
+        .nest(
+            "/api/v1/admin",
+            admin_routes(administration(&config, &database)?),
+        )
+        .nest(
+            "/console/api",
+            console_routes(ConsoleState {
+                administration: administration(&config, &database)?,
+                digest: Arc::new(Sha256Digest),
+                clock: Arc::new(SystemClock),
+            }),
+        );
+    let mut site_routes = axum::Router::new();
+    match &config.pages_directory {
+        Some(directory) => {
+            let pages = Pages::load(directory)?;
+            tenant_routes = tenant_routes.merge(pages.page_routes());
+            site_routes = site_routes.merge(pages.asset_routes());
+            tracing::info!(directory = %directory.display(), "serving the hosted pages");
+        }
+        None => tracing::warn!("HODOR_PAGES_DIRECTORY is not set: no pages are served"),
+    }
+    match &config.console_directory {
+        Some(directory) => {
+            let console = Pages::load_console(directory)?;
+            tenant_routes = tenant_routes.merge(console.page_routes());
+            site_routes = site_routes.merge(console.asset_routes());
+            tracing::info!(directory = %directory.display(), "serving the admin console");
+        }
+        None => tracing::warn!("HODOR_CONSOLE_DIRECTORY is not set: no console is served"),
+    }
+    let public = public_router(
+        Arc::new(DirectoryResolver(PgTenantDirectory::new(database.clone()))),
+        tenant_routes,
+        site_routes,
+        Limits::default(),
+    );
+    let ops = ops_router(health.clone());
+
+    let public_listener = TcpListener::bind(config.listen_addr).await?;
+    let ops_listener = TcpListener::bind(config.ops_addr).await?;
+    tracing::info!(
+        listen = %public_listener.local_addr()?,
+        ops = %ops_listener.local_addr()?,
+        "hodor-server started"
+    );
+
+    // One signal stops both listeners, after the drain delay.
+    let (stop, stopped) = watch::channel(false);
+    let drain = Duration::from_secs(config.shutdown_drain_seconds);
+    tokio::spawn(async move {
+        stop_signal().await;
+        tracing::info!(
+            drain_seconds = drain.as_secs(),
+            "stop signal received, draining"
+        );
+        health.begin_draining();
+        tokio::time::sleep(drain).await;
+        let _ = stop.send(true);
+    });
+
+    let public_server = serve(public_listener, public, wait_for(stopped.clone()));
+    let ops_server = serve(ops_listener, ops, wait_for(stopped));
+    let (public_result, ops_result) = tokio::join!(public_server, ops_server);
+    public_result?;
+    ops_result?;
+    tracing::info!("hodor-server stopped");
+    Ok(())
+}
+
+/// Builds everything the interaction interface needs. This is the composition root: the
+/// one place that knows which adapter stands behind each port.
+fn interaction(config: &Config, database: &Database) -> Result<InteractionState, DomainError> {
+    let units = || Arc::new(database.clone());
+    let clock = Arc::new(SystemClock);
+    let digest = Arc::new(Sha256Digest);
+    let random = Arc::new(OsRandom);
+
+    let defaults = HashingLimits::for_this_machine();
+    let concurrent = config
+        .password_hash_concurrency
+        .unwrap_or(defaults.concurrent);
+    let hasher = Arc::new(Argon2idHasher::new(
+        Argon2Parameters {
+            memory_kibibytes: config.password_hash_memory_kibibytes,
+            passes: config.password_hash_passes,
+            lanes: config.password_hash_lanes,
+        },
+        HashingLimits {
+            concurrent,
+            queued: config.password_hash_queue.unwrap_or(concurrent * 4),
+        },
+        random.clone(),
+    )?);
+
+    let tenants = TenantService::new(
+        units(),
+        Arc::new(PgTenantRepository),
+        Arc::new(PgTenantDirectory::new(database.clone())),
+        clock.clone(),
+    );
+    let identity = IdentityService::new(units(), Arc::new(PgUserRepository), clock.clone());
+    let credentials =
+        CredentialService::new(units(), Arc::new(PgPasswordStore), hasher, clock.clone());
+    let sessions = SessionService::new(
+        units(),
+        Arc::new(PgSessionStore),
+        digest.clone(),
+        random.clone(),
+        clock.clone(),
+    );
+    let guard = AttemptGuard::new(
+        units(),
+        Arc::new(PgAttemptStore),
+        digest.clone(),
+        clock.clone(),
+    );
+    let mut engine = FlowEngine::new()
+        .with(Arc::new(IdentifierAuthenticator::new(
+            identity.clone(),
+            digest.clone(),
+        )))
+        .with(Arc::new(PasswordAuthenticator::new(
+            credentials.clone(),
+            identity.clone(),
+            tenants.clone(),
+            guard.clone(),
+        )));
+    // Signing in through an identity provider is an alternative of the
+    // flow, offered only by an installation that can keep secrets.
+    let mut flow = AuthFlow::built_in();
+    let external = external_sign_in(config, database, &identity, &tenants, &guard)?;
+    if let Some(external) = &external {
+        engine = engine.with(Arc::new(ExternalIdentityAuthenticator::new(
+            external.clone(),
+        )));
+        flow = flow.with_alternative(EXTERNAL_STEP, EXTERNAL_STEP);
+    }
+    // The server only queues messages; the worker delivers them.
+    let accounts = AccountService::new(
+        units(),
+        Arc::new(PgVerificationTokenStore),
+        identity.clone(),
+        credentials,
+        sessions.clone(),
+        tenants.clone(),
+        Notifier::new(Arc::new(PgMessageQueue), clock.clone()),
+        guard,
+        digest.clone(),
+        random.clone(),
+        clock.clone(),
+        &config.public_url,
+    );
+    let authentication = AuthenticationService::new(
+        units(),
+        Arc::new(PgTransactionStore),
+        engine,
+        flow,
+        identity,
+        sessions.clone(),
+        tenants,
+        digest.clone(),
+        random,
+        clock.clone(),
+    )?;
+    Ok(InteractionState {
+        authentication,
+        accounts,
+        sessions,
+        external,
+        digest,
+        clock,
+    })
+}
+
+/// The hosts that may be reached at a private address and over plain
+/// HTTP: empty anywhere real.
+fn development_hosts(config: &Config) -> Vec<String> {
+    config
+        .outbound_development_hosts
+        .iter()
+        .map(|host| host.trim().to_owned())
+        .filter(|host| !host.is_empty())
+        .collect()
+}
+
+/// The directories that may be connected to: empty unless set.
+fn directory_hosts(config: &Config) -> Vec<String> {
+    config
+        .directory_hosts
+        .iter()
+        .map(|host| host.trim().to_ascii_lowercase())
+        .filter(|host| !host.is_empty())
+        .collect()
+}
+
+/// The tenant's lockout rules, read from the tenant context, for the
+/// federation context's directories.
+struct TenantLockout(TenantService);
+
+#[async_trait::async_trait]
+impl LockoutPolicy for TenantLockout {
+    async fn rules(&self, tenant: &TenantContext) -> Result<LockoutRules, DomainError> {
+        let settings = self
+            .0
+            .get(tenant)
+            .await?
+            .snapshot()
+            .settings
+            .lockout
+            .clone();
+        let seconds = |value: u32| time::Duration::seconds(i64::from(value));
+        Ok(LockoutRules {
+            max_failures: u32::from(settings.max_failures),
+            window: seconds(settings.window_seconds),
+            first_lockout: seconds(settings.first_lockout_seconds),
+            longest_lockout: seconds(settings.longest_lockout_seconds),
+        })
+    }
+}
+
+/// Builds what signing in through an identity provider needs, if this
+/// installation has keys to keep secrets with.
+fn external_sign_in(
+    config: &Config,
+    database: &Database,
+    identity: &IdentityService,
+    tenants: &TenantService,
+    guard: &AttemptGuard,
+) -> Result<Option<ExternalSignIn>, DomainError> {
+    let Some(setting) = &config.secret_keys else {
+        tracing::warn!("HODOR_SECRET_KEYS is not set: no identity provider can be used");
+        return Ok(None);
+    };
+    let secrets = Arc::new(SecretKeys::parse(&Secret::from(setting.clone()))?);
+    let units = || Arc::new(database.clone());
+    let clock = Arc::new(SystemClock);
+    let digest = Arc::new(Sha256Digest);
+    let development_hosts = development_hosts(config);
+    let http = Arc::new(GuardedHttpClient::new(OutboundPolicy {
+        development_hosts: development_hosts.clone(),
+        ..OutboundPolicy::default()
+    })?);
+    let federation = FederationService::new(
+        units(),
+        Arc::new(PgProviderStore),
+        Arc::new(PgLinkStore),
+        secrets.clone(),
+        clock.clone(),
+    )
+    .allowing_development_hosts(&development_hosts)
+    .allowing_directory_hosts(&directory_hosts(config));
+    let openid = OpenIdClient::new(
+        http.clone(),
+        Arc::new(AwsLcVerifier),
+        digest.clone(),
+        Arc::new(OsRandom),
+        clock.clone(),
+    )
+    .allowing_development_hosts(&development_hosts);
+    let github = GitHubClient::new(http.clone(), Arc::new(OsRandom));
+    let sign_in = ExternalSignIn::new(
+        federation,
+        openid,
+        github,
+        SamlClient::new(Arc::new(OsRandom)),
+        identity.clone(),
+        Arc::new(PgPendingAuthorizationStore),
+        units(),
+        secrets,
+        digest,
+        clock,
+        &config.public_url,
+    )
+    .with_directories(
+        Arc::new(LdapDirectoryClient::new(&directory_hosts(config))),
+        guard.clone(),
+        Arc::new(TenantLockout(tenants.clone())),
+    );
+    Ok(Some(sign_in))
+}
+
+/// Builds everything the administration interface needs.
+fn administration(config: &Config, database: &Database) -> Result<AdminState, DomainError> {
+    let units = || Arc::new(database.clone());
+    let clock = Arc::new(SystemClock);
+    let digest = Arc::new(Sha256Digest);
+    let random = Arc::new(OsRandom);
+    // Without keys to keep secrets with there are no identity providers
+    // to manage; the routes say so.
+    let federation = match &config.secret_keys {
+        Some(setting) => Some(
+            FederationService::new(
+                units(),
+                Arc::new(PgProviderStore),
+                Arc::new(PgLinkStore),
+                Arc::new(SecretKeys::parse(&Secret::from(setting.clone()))?),
+                clock.clone(),
+            )
+            .allowing_development_hosts(&development_hosts(config))
+            .allowing_directory_hosts(&directory_hosts(config)),
+        ),
+        None => None,
+    };
+    Ok(AdminState {
+        tokens: AccessTokenService::new(
+            units(),
+            Arc::new(PgAccessTokenStore),
+            digest.clone(),
+            random.clone(),
+            clock.clone(),
+        ),
+        authorization: AuthorizationService::new(
+            units(),
+            Arc::new(PgRoleAssignmentStore),
+            clock.clone(),
+        ),
+        identity: IdentityService::new(units(), Arc::new(PgUserRepository), clock.clone()),
+        sessions: SessionService::new(
+            units(),
+            Arc::new(PgSessionStore),
+            digest.clone(),
+            random,
+            clock.clone(),
+        ),
+        // The server reads the audit log; the worker writes it.
+        audit: AuditService::new(units(), Arc::new(PgAuditLog), digest, clock),
+        federation,
+        public_url: config.public_url.clone(),
+    })
+}
+
+async fn wait_for(mut stopped: watch::Receiver<bool>) {
+    // An error means the sender is gone, which also means: stop.
+    let _ = stopped.wait_for(|stop| *stop).await;
+}
+
+/// Resolves on SIGTERM (orchestrators) or Ctrl-C (terminals).
+async fn stop_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        match signal(SignalKind::terminate()) {
+            Ok(mut terminate) => {
+                tokio::select! {
+                    _ = terminate.recv() => {}
+                    _ = tokio::signal::ctrl_c() => {}
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, "cannot listen for SIGTERM, only Ctrl-C will stop the server");
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
+}

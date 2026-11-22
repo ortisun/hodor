@@ -1,0 +1,225 @@
+# Local development stack: PostgreSQL, migrations, the server, the worker,
+# a mail server that delivers nothing, VictoriaMetrics and VictoriaTraces.
+# Not for production: credentials are placeholders and nothing is persisted
+# outside named volumes.
+#
+#   docker compose -f deploy/docker/compose.yaml up --build --wait
+#
+# Server:           http://localhost:8080
+# Health:           http://localhost:9090/readyz
+# VictoriaMetrics:  http://localhost:8428/vmui
+# VictoriaTraces:   http://localhost:10428/select/vmui
+# Mail sent:        http://localhost:8025
+# Development identity provider, which lets anyone sign in as anyone:
+#                   http://localhost:9400
+#
+# If a port is taken on your machine, override it:
+#
+#   HODOR_HTTP_PORT=18080 HODOR_OPS_PORT=19090 HODOR_VM_PORT=18428 \
+#   HODOR_TRACES_PORT=20428 HODOR_MAIL_PORT=18025 HODOR_PROVIDER_PORT=19400 \
+#     docker compose -f deploy/docker/compose.yaml up --build --wait
+
+name: hodor
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: hodor_owner
+      POSTGRES_PASSWORD: dev-owner
+      POSTGRES_DB: hodor
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres-init.sql:/docker-entrypoint-initdb.d/10-roles.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hodor_owner -d hodor"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  migrate:
+    image: hodor:dev
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    entrypoint: ["/usr/local/bin/hodor-cli"]
+    command: ["migrate"]
+    environment:
+      HODOR_DATABASE_OWNER_URL: postgres://hodor_owner:dev-owner@postgres:5432/hodor
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  # Creates the system tenant, unless it already exists.
+  system-tenant:
+    image: hodor:dev
+    entrypoint: ["/usr/local/bin/hodor-cli"]
+    command: ["tenant", "create-system"]
+    environment:
+      HODOR_DATABASE_URL: postgres://hodor_server:dev-server@postgres:5432/hodor
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
+  victoriametrics:
+    image: victoriametrics/victoria-metrics:v1.156.0
+    command: ["-retentionPeriod=7d"]
+    ports:
+      - "127.0.0.1:${HODOR_VM_PORT:-8428}:8428"
+    volumes:
+      - victoriametrics-data:/victoria-metrics-data
+
+  # Receives traces over OTLP and answers queries in the Jaeger format.
+  victoriatraces:
+    image: victoriametrics/victoria-traces:v0.13.0
+    command: ["-retentionPeriod=7d", "-storageDataPath=/victoria-traces-data"]
+    ports:
+      - "127.0.0.1:${HODOR_TRACES_PORT:-10428}:10428"
+    volumes:
+      - victoriatraces-data:/victoria-traces-data
+
+  # Accepts every message and delivers none; what was sent is shown on its
+  # web page.
+  mail:
+    image: axllent/mailpit:v1.27
+    ports:
+      - "127.0.0.1:${HODOR_MAIL_PORT:-8025}:8025"
+
+  # An identity provider for development: it lets anyone sign in as
+  # anyone. Hodor reaches it as `provider`, a browser as `localhost`.
+  provider:
+    image: node:24-bookworm-slim
+    command: ["node", "/provider.mjs"]
+    user: node
+    environment:
+      PORT: "9400"
+      ISSUER: http://provider:9400
+      BROWSER_URL: http://localhost:${HODOR_PROVIDER_PORT:-9400}
+      CLIENT_ID: hodor
+      CLIENT_SECRET: development-client-secret
+    volumes:
+      - ../dev-provider/provider.mjs:/provider.mjs:ro
+    ports:
+      - "127.0.0.1:${HODOR_PROVIDER_PORT:-9400}:9400"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:9400/health').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  # A SAML identity provider for development. It lets anyone sign in as
+  # anyone, and signs with a key written in the repository. Only the
+  # browser talks to it.
+  saml-provider:
+    image: node:24-bookworm-slim
+    command: ["node", "/saml-provider/saml-provider.mjs"]
+    user: node
+    environment:
+      PORT: "9500"
+      ENTITY_ID: urn:hodor:development-saml-provider
+      BROWSER_URL: http://localhost:${HODOR_SAML_PROVIDER_PORT:-9500}
+    volumes:
+      - ../dev-saml-provider:/saml-provider:ro
+    ports:
+      - "127.0.0.1:${HODOR_SAML_PROVIDER_PORT:-9500}:9500"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:9500/health').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  # An LDAP directory for development, with one person in it: dora,
+  # whose password is written in deploy/dev-directory/people.ldif.
+  # Reachable from inside the stack only.
+  directory:
+    image: osixia/openldap:1.5.0
+    command: ["--copy-service"]
+    environment:
+      LDAP_ORGANISATION: Example
+      LDAP_DOMAIN: example.org
+      LDAP_ADMIN_PASSWORD: admin-password
+      LDAP_READONLY_USER: "true"
+      LDAP_READONLY_USER_USERNAME: readonly
+      LDAP_READONLY_USER_PASSWORD: readonly-password
+      LDAP_TLS: "false"
+    volumes:
+      - ../dev-directory/people.ldif:/container/service/slapd/assets/config/bootstrap/ldif/custom/people.ldif:ro
+    healthcheck:
+      test: ["CMD", "ldapwhoami", "-x", "-H", "ldap://127.0.0.1:389", "-D", "cn=readonly,dc=example,dc=org", "-w", "readonly-password"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+
+  server:
+    image: hodor:dev
+    environment:
+      HODOR_DATABASE_URL: postgres://hodor_server:dev-server@postgres:5432/hodor
+      # Where a browser reaches this stack: links in messages and the
+      # address identity providers send people back to start with it.
+      HODOR_PUBLIC_URL: http://localhost:${HODOR_HTTP_PORT:-8080}
+      # A placeholder like every credential here: it keeps the secrets of
+      # identity providers encrypted in this stack and nowhere else.
+      HODOR_SECRET_KEYS: development:gV8TjmTiZoYOlhsN4OdTTiWMwWa1t/o5RPNGCdbBNro=
+      # The development provider is at a private address, over plain
+      # HTTP. This is the setting that allows it; never set it anywhere
+      # real.
+      HODOR_OUTBOUND_DEVELOPMENT_HOSTS: provider:9400,localhost:${HODOR_PROVIDER_PORT:-9400},directory:389,localhost:${HODOR_SAML_PROVIDER_PORT:-9500}
+      # The development directory, the one directory this stack may use.
+      HODOR_DIRECTORY_HOSTS: directory:389
+      HODOR_LOG_FORMAT: pretty
+      HODOR_OTLP_METRICS_ENDPOINT: http://victoriametrics:8428/opentelemetry/v1/metrics
+      HODOR_OTLP_TRACES_ENDPOINT: http://victoriatraces:10428/insert/opentelemetry/v1/traces
+    ports:
+      - "127.0.0.1:${HODOR_HTTP_PORT:-8080}:8080"
+      - "127.0.0.1:${HODOR_OPS_PORT:-9090}:9090"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      # Compose takes a service that exits as a failure of `up --wait`
+      # unless another service waits for it to complete.
+      system-tenant:
+        condition: service_completed_successfully
+      victoriametrics:
+        condition: service_started
+      victoriatraces:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/hodor-cli", "probe", "--addr", "127.0.0.1:9090", "--path", "/readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
+  worker:
+    image: hodor:dev
+    entrypoint: ["/usr/local/bin/hodor-worker"]
+    environment:
+      HODOR_DATABASE_URL: postgres://hodor_worker:dev-worker@postgres:5432/hodor
+      HODOR_PLATFORM_DATABASE_URL: postgres://hodor_worker_platform:dev-worker@postgres:5432/hodor
+      HODOR_SMTP_URL: smtp://mail:1025
+      HODOR_MAIL_FROM: Hodor <no-reply@hodor.localhost>
+      HODOR_LOG_FORMAT: pretty
+      HODOR_OTLP_METRICS_ENDPOINT: http://victoriametrics:8428/opentelemetry/v1/metrics
+      HODOR_OTLP_TRACES_ENDPOINT: http://victoriatraces:10428/insert/opentelemetry/v1/traces
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      victoriametrics:
+        condition: service_started
+      victoriatraces:
+        condition: service_started
+      mail:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/hodor-cli", "probe", "--addr", "127.0.0.1:9090", "--path", "/readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
+volumes:
+  postgres-data:
+  victoriametrics-data:
+  victoriatraces-data:

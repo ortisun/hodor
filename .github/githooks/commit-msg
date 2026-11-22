@@ -1,0 +1,17 @@
+#!/bin/sh
+# commit-msg: checks that the commit message follows Conventional Commits.
+#
+# Installed by the factory's scripts/install.sh, which sets 'git config core.hooksPath .github/githooks'. A person who
+# clones the project turns the hooks on with that same command. The rules and the settings are in
+# .github/scripts/git_policy.py and .factory/repository.json; when the settings are missing, the hook asks for them on
+# the terminal. The pull request check (.github/workflows/git-policy.yml) applies the same rules on GitHub.
+policy="$(git rev-parse --show-toplevel)/.github/scripts/git_policy.py"
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "git policy: python3 is needed to check this commit. Install it, or skip the check once with --no-verify." >&2
+  exit 1
+fi
+if [ ! -f "$policy" ]; then
+  echo "git policy: $policy is missing. Run the factory's installer again (scripts/install.sh --checkout .)." >&2
+  exit 1
+fi
+exec python3 "$policy" hook commit-msg "$1"

@@ -1,0 +1,58 @@
+{{- if .Values.migration.enabled }}
+# Runs before the servers and workers of an install or an upgrade exist: first the migrations, as the
+# owner of the schema, then the system tenant, as the server's role, created only when it is missing.
+# The job is kept after it ends, so that its log can be read, and replaced by the next one.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "hodor.fullname" . }}-migration
+  labels:
+    {{- include "hodor.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migration
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: {{ .Values.migration.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "hodor.labels" . | nindent 8 }}
+        app.kubernetes.io/component: migration
+    spec:
+      restartPolicy: Never
+      # The service account of the release does not exist yet when this runs for the first time, and the
+      # job needs none.
+      automountServiceAccountToken: false
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- range . }}
+        - name: {{ . }}
+        {{- end }}
+      {{- end }}
+      securityContext:
+        {{- include "hodor.podSecurityContext" . | nindent 8 }}
+      initContainers:
+        - name: migrate
+          image: {{ include "hodor.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/usr/local/bin/hodor-cli", "migrate"]
+          securityContext:
+            {{- include "hodor.containerSecurityContext" . | nindent 12 }}
+          env:
+            {{- include "hodor.secretEnvironment" (list . "HODOR_DATABASE_OWNER_URL" .Values.secret.keys.ownerDatabaseUrl) | nindent 12 }}
+          resources:
+            {{- toYaml .Values.migration.resources | nindent 12 }}
+      containers:
+        - name: system-tenant
+          image: {{ include "hodor.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/usr/local/bin/hodor-cli", "tenant", "create-system"]
+          securityContext:
+            {{- include "hodor.containerSecurityContext" . | nindent 12 }}
+          env:
+            {{- include "hodor.secretEnvironment" (list . "HODOR_DATABASE_URL" .Values.secret.keys.serverDatabaseUrl) | nindent 12 }}
+          resources:
+            {{- toYaml .Values.migration.resources | nindent 12 }}
+{{- end }}

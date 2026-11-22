@@ -1,0 +1,182 @@
+# Hodor installed on one machine with Docker: the migrations, the server and the worker, with PostgreSQL and
+# HTTPS as two optional parts. How to use it, step by step: docs/operations/install-with-docker.md.
+#
+# Every password, key and address comes from the file `.env` beside this one, made from `.env.example`.
+# Nothing here has a default secret, and Compose refuses to start while a required value is missing.
+#
+#   docker compose -f deploy/install/docker/compose.yaml up --detach --wait
+#
+# The optional parts are Compose profiles, chosen in `.env` with COMPOSE_PROFILES:
+#
+#   database   PostgreSQL in a container, with its data in the volume `postgres-data`. Leave it out to use
+#              a database of your own, and say where it is with HODOR_DATABASE_ADDRESS.
+#   https      A web server in front of Hodor that gets and renews a certificate for the address in
+#              HODOR_PUBLIC_URL. Leave it out to put a web server of your own in front of port 8080.
+#
+# Needs Docker Compose 2.20 or newer, for `depends_on` entries that are not required.
+
+# Not `hodor`, the name of the development stack in deploy/docker: two stacks under one name would share
+# containers and volumes, and this one would start on the development database.
+name: hodor-install
+
+# What every Hodor container shares: the image, and a container that can change nothing of itself.
+x-hodor: &hodor
+  image: ${HODOR_IMAGE:?Set HODOR_IMAGE in .env to the Hodor image, such as hodor:1.0.0}
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+
+# The four database roles, each with the least it needs. docs/development/local-setup.md#database-roles
+x-database-urls:
+  owner: &owner-url postgres://hodor_owner:${HODOR_OWNER_DATABASE_PASSWORD:?Set HODOR_OWNER_DATABASE_PASSWORD in .env}@${HODOR_DATABASE_ADDRESS:-postgres:5432}/${HODOR_DATABASE_NAME:-hodor}${HODOR_DATABASE_OPTIONS:-}
+  server: &server-url postgres://hodor_server:${HODOR_SERVER_DATABASE_PASSWORD:?Set HODOR_SERVER_DATABASE_PASSWORD in .env}@${HODOR_DATABASE_ADDRESS:-postgres:5432}/${HODOR_DATABASE_NAME:-hodor}${HODOR_DATABASE_OPTIONS:-}
+  worker: &worker-url postgres://hodor_worker:${HODOR_WORKER_DATABASE_PASSWORD:?Set HODOR_WORKER_DATABASE_PASSWORD in .env}@${HODOR_DATABASE_ADDRESS:-postgres:5432}/${HODOR_DATABASE_NAME:-hodor}${HODOR_DATABASE_OPTIONS:-}
+  worker-platform: &worker-platform-url postgres://hodor_worker_platform:${HODOR_WORKER_DATABASE_PASSWORD:?Set HODOR_WORKER_DATABASE_PASSWORD in .env}@${HODOR_DATABASE_ADDRESS:-postgres:5432}/${HODOR_DATABASE_NAME:-hodor}${HODOR_DATABASE_OPTIONS:-}
+
+services:
+  # Profile `database`. The owner of the schema is the role the image creates; `postgres-roles.sh` creates
+  # the others the first time the volume is filled.
+  postgres:
+    profiles: [database]
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: hodor_owner
+      POSTGRES_PASSWORD: ${HODOR_OWNER_DATABASE_PASSWORD:?Set HODOR_OWNER_DATABASE_PASSWORD in .env}
+      POSTGRES_DB: ${HODOR_DATABASE_NAME:-hodor}
+      HODOR_SERVER_DATABASE_PASSWORD: ${HODOR_SERVER_DATABASE_PASSWORD:?Set HODOR_SERVER_DATABASE_PASSWORD in .env}
+      HODOR_WORKER_DATABASE_PASSWORD: ${HODOR_WORKER_DATABASE_PASSWORD:?Set HODOR_WORKER_DATABASE_PASSWORD in .env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres-roles.sh:/docker-entrypoint-initdb.d/10-roles.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready --username hodor_owner --dbname ${HODOR_DATABASE_NAME:-hodor}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  # Applies the migrations, as the owner of the schema, every time the installation starts. It is the only
+  # container that knows the owner's password.
+  migrate:
+    <<: *hodor
+    entrypoint: ["/usr/local/bin/hodor-cli"]
+    command: ["migrate"]
+    environment:
+      HODOR_DATABASE_OWNER_URL: *owner-url
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: false
+    restart: "no"
+
+  # Creates the system tenant, unless it already exists.
+  system-tenant:
+    <<: *hodor
+    entrypoint: ["/usr/local/bin/hodor-cli"]
+    command: ["tenant", "create-system"]
+    environment:
+      HODOR_DATABASE_URL: *server-url
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
+  server:
+    <<: *hodor
+    environment:
+      HODOR_DATABASE_URL: *server-url
+      # The address people use, with https and without a path. Cookies and the links in messages rely on it.
+      HODOR_PUBLIC_URL: ${HODOR_PUBLIC_URL:?Set HODOR_PUBLIC_URL in .env to the address people use, such as https://login.example.com}
+      # Keeps the secrets of identity providers encrypted in the database.
+      HODOR_SECRET_KEYS: ${HODOR_SECRET_KEYS:?Set HODOR_SECRET_KEYS in .env, as identifier:key}
+      # Optional settings: passed on when `.env` sets them, left to Hodor's defaults otherwise.
+      HODOR_DIRECTORY_HOSTS:
+      HODOR_DATABASE_MAX_CONNECTIONS:
+      HODOR_PASSWORD_HASH_CONCURRENCY:
+      HODOR_LOG_FORMAT:
+      HODOR_LOG_FILTER:
+      HODOR_OTLP_METRICS_ENDPOINT:
+      HODOR_OTLP_TRACES_ENDPOINT:
+    ports:
+      # On this machine only: for the web server in front, never for the internet.
+      - "127.0.0.1:${HODOR_HTTP_PORT:-8080}:8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      # Compose takes a service that exits as a failure of `up --wait` unless another service waits for it
+      # to complete.
+      system-tenant:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/hodor-cli", "probe", "--addr", "127.0.0.1:9090", "--path", "/readyz"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped
+
+  worker:
+    <<: *hodor
+    entrypoint: ["/usr/local/bin/hodor-worker"]
+    environment:
+      HODOR_DATABASE_URL: *worker-url
+      HODOR_PLATFORM_DATABASE_URL: *worker-platform-url
+      # Optional settings, as for the server. Without HODOR_SMTP_URL no message is delivered: they wait.
+      HODOR_SMTP_URL:
+      HODOR_MAIL_FROM:
+      HODOR_LOG_FORMAT:
+      HODOR_LOG_FILTER:
+      HODOR_OTLP_METRICS_ENDPOINT:
+      HODOR_OTLP_TRACES_ENDPOINT:
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/hodor-cli", "probe", "--addr", "127.0.0.1:9090", "--path", "/readyz"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped
+
+  # Profile `https`. Answers on ports 80 and 443 for the name in HODOR_PUBLIC_URL, gets a certificate for
+  # it and renews it, and passes every request on to the server.
+  https:
+    profiles: [https]
+    image: caddy:2.10-alpine
+    command: ["caddy", "reverse-proxy", "--from", "${HODOR_PUBLIC_URL:?Set HODOR_PUBLIC_URL in .env}", "--to", "server:8080"]
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      # The certificates and their keys. Losing this volume means asking for new certificates.
+      - https-data:/data
+      - https-configuration:/config
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: ["no-new-privileges:true"]
+    depends_on:
+      server:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # The command-line tool, for the person who operates the installation. It starts only when asked:
+  #
+  #   docker compose -f deploy/install/docker/compose.yaml run --rm cli tenant create --slug acme --name "Acme"
+  cli:
+    <<: *hodor
+    profiles: [tools]
+    entrypoint: ["/usr/local/bin/hodor-cli"]
+    environment:
+      HODOR_DATABASE_URL: *server-url
+      HODOR_PUBLIC_URL: ${HODOR_PUBLIC_URL:?Set HODOR_PUBLIC_URL in .env}
+      HODOR_SECRET_KEYS: ${HODOR_SECRET_KEYS:?Set HODOR_SECRET_KEYS in .env, as identifier:key}
+      HODOR_DIRECTORY_HOSTS:
+      # Read by `provider add`, and only there: never written in `.env`.
+      HODOR_PROVIDER_CLIENT_SECRET:
+
+volumes:
+  postgres-data:
+  https-data:
+  https-configuration:

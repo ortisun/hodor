@@ -1,0 +1,28 @@
+[package]
+name = "hodor-notification"
+description = "The notification context: messages to people, queued with the change that causes them and delivered by the worker."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[features]
+# In-memory queue, a recording sender and the contract suite that every
+# implementation must pass.
+testing = ["hodor-kernel/testing"]
+
+[dependencies]
+async-trait.workspace = true
+hodor-kernel.workspace = true
+serde.workspace = true
+time.workspace = true
+
+[dev-dependencies]
+hodor-kernel = { workspace = true, features = ["testing"] }
+hodor-notification = { path = ".", features = ["testing"] }
+proptest.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

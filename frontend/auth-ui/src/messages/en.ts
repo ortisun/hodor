@@ -1,0 +1,95 @@
+// Everything the pages say, in English. `pt-BR.ts` has the same messages.
+
+export const en = {
+  locale: "en",
+  organization: "Organization",
+  loading: "One moment…",
+  working: "Working…",
+
+  signInTitle: "Sign in",
+  identifierLabel: "Email address or username",
+  passwordLabel: "Password",
+  showPassword: "Show the password",
+  continue: "Continue",
+  signIn: "Sign in",
+  signingInAs: (identifier: string) => `Signing in as ${identifier}`,
+  useAnotherIdentifier: "Use another address",
+  forgotPassword: "Forgot your password?",
+  noAccountYet: "No account yet?",
+  register: "Register",
+  rejected: "That did not work. Check what you typed and try again.",
+  attemptsLeft: (count: number) =>
+    count === 1 ? "One more attempt is left." : `${count} more attempts are left.`,
+  signInEnded: "This sign-in has ended.",
+  startAgain: "Start again",
+  signInExpired: "The sign-in took too long and was started again.",
+  unknownStep: "This page cannot continue this sign-in.",
+
+  registerTitle: "Create an account",
+  registerLead: "Give your email address. A message will bring you a link to finish.",
+  emailLabel: "Email address",
+  sendLink: "Send the link",
+  alreadyRegistered: "Already have an account?",
+  checkMailboxTitle: "Check your mailbox",
+  checkMailbox: (email: string) =>
+    `If ${email} can be used, a message is on its way to it. Follow the link in the message to go on.`,
+  checkMailboxHint: "No message after a few minutes? Look in the unwanted mail folder, or ask again.",
+  askAgain: "Ask again",
+
+  completeRegistrationTitle: "Choose your password",
+  displayNameLabel: "Your name",
+  optional: "optional",
+  newPasswordLabel: "New password",
+  newPasswordHint: "Use 12 characters or more. A phrase of several words works well.",
+  createAccount: "Create the account",
+  linkInvalidTitle: "This link cannot be used",
+  linkInvalid: "The link was already used or has expired.",
+  askForNewRegistrationLink: "Ask for a new link to register",
+  askForNewRecoveryLink: "Ask for a new link",
+
+  recoverTitle: "Recover your password",
+  recoverLead: "Give the email address of your account. A message will bring you a link to choose a new password.",
+  backToSignIn: "Back to sign in",
+
+  resetPasswordTitle: "Choose a new password",
+  changePassword: "Change the password",
+
+  accountTitle: "You are signed in",
+  signedInSince: (moment: string) => `Signed in since ${moment}.`,
+  signOut: "Sign out",
+
+  noticeRegistered: "Your account is ready. Sign in to go on.",
+  noticePasswordChanged: "Your password was changed. Sign in with the new one.",
+  noticeSignedOut: "You signed out.",
+  noticeProviderRefused: "That did not work. Try again, or sign in another way.",
+  noticeProviderCancelled: "The sign-in was not finished at the provider.",
+
+  or: "or",
+  continueWith: (provider: string) => `Continue with ${provider}`,
+  comingBackTitle: "Signing you in",
+  directoryIdentifierLabel: (directory: string) => `Username at ${directory}`,
+  otherWays: "Other ways to sign in",
+
+  pageNotFoundTitle: "Page not found",
+  pageNotFound: "There is nothing at this address.",
+  goToSignIn: "Go to sign in",
+
+  passwordTooShort: "This password is too short.",
+  passwordTooLong: "This password is too long.",
+  passwordIsOwnName: "Do not use your own name or address as the password.",
+  passwordReused: "You have used this password before. Choose another one.",
+  displayNameInvalid: "This name cannot be used.",
+  tooManyAttempts: "Too many attempts.",
+  tryAgainInSeconds: (seconds: number) =>
+    seconds === 1 ? "Try again in a second." : `Try again in ${seconds} seconds.`,
+  tryAgainInMinutes: (minutes: number) =>
+    minutes === 1 ? "Try again in a minute." : `Try again in ${minutes} minutes.`,
+  tryAgainLater: "Try again later.",
+  registrationClosed: "This organization does not accept registrations.",
+  serverBusy: "The server is busy. Try again in a moment.",
+  unreachable: "The server could not be reached. Check your connection and try again.",
+  somethingWentWrong: "Something went wrong. Try again.",
+  requestIdentifier: (identifier: string) => `If you report this, quote ${identifier}.`,
+};
+
+export type Messages = typeof en;

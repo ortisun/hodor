@@ -1,0 +1,34 @@
+{{- if .Values.ingress.enabled }}
+{{- $host := include "hodor.publicUrl" . | trimPrefix "https://" | trimPrefix "http://" | splitList ":" | first }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "hodor.fullname" . }}
+  labels:
+    {{- include "hodor.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ $host | quote }}
+      secretName: {{ .Values.ingress.tls.secretName | default (printf "%s-tls" (include "hodor.fullname" .)) }}
+  {{- end }}
+  rules:
+    - host: {{ $host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "hodor.fullname" . }}
+                port:
+                  name: http
+{{- end }}

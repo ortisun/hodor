@@ -1,0 +1,462 @@
+//! The stores of the federation context, on PostgreSQL.
+
+use hodor_adapters_crypto::{OsRandom, SecretKeys};
+use hodor_adapters_postgres::testing::TestDatabase;
+use hodor_adapters_postgres::{PgLinkStore, PgPendingAuthorizationStore, PgProviderStore};
+use hodor_federation::api::{
+    CreateProvider, FederationService, ProviderKind, ProviderSettings, Subject,
+};
+use hodor_federation::testing::{Ports, run_contract};
+use hodor_kernel::{
+    Caller, Secret, SystemClock, TenantContext, TenantId, UnitOfWorkFactory, UserId,
+};
+use std::sync::Arc;
+
+const SECRET: &str = "the-client-secret-of-the-provider";
+
+#[tokio::test]
+async fn the_postgres_stores_pass_the_contract() {
+    let database = TestDatabase::start().await;
+    run_contract(Ports {
+        units_of_work: database.app(),
+        providers: &PgProviderStore,
+        links: &PgLinkStore,
+        pending: &PgPendingAuthorizationStore,
+    })
+    .await;
+}
+
+fn service(database: &TestDatabase) -> FederationService {
+    let key = SecretKeys::generate(&OsRandom);
+    let keys = SecretKeys::parse(&Secret::new(format!("test:{}", key.expose()))).expect("keys");
+    FederationService::new(
+        Arc::new(database.app().clone()),
+        Arc::new(PgProviderStore),
+        Arc::new(PgLinkStore),
+        Arc::new(keys),
+        Arc::new(SystemClock),
+    )
+}
+
+fn create(alias: &str) -> CreateProvider {
+    CreateProvider {
+        alias: alias.to_owned(),
+        kind: ProviderKind::OpenIdConnect,
+        settings: ProviderSettings {
+            saml: None,
+            display_name: "Example".to_owned(),
+            issuer: "https://accounts.example.com".to_owned(),
+            client_id: "hodor".to_owned(),
+            scopes: ProviderSettings::default_scopes(),
+            creates_users: true,
+            trusts_email: false,
+            directory: None,
+        },
+        client_secret: Secret::from(SECRET.to_owned()),
+    }
+}
+
+#[tokio::test]
+async fn a_client_secret_is_nowhere_in_the_database_and_still_comes_back() {
+    let database = TestDatabase::start().await;
+    let service = service(&database);
+    let tenant = TenantContext::assume(TenantId::generate());
+
+    let provider = service
+        .create_provider(&tenant, create("example"), Caller::system())
+        .await
+        .expect("create");
+
+    // Everything the database holds about providers and their events,
+    // read as the owner of the tables. Bytes are written out so that any
+    // text among them stays readable, whatever the other bytes are.
+    let everything: String = sqlx::query_scalar(
+        r#"SELECT concat(
+               (SELECT string_agg(to_jsonb(t)::text || encode(t.client_secret, 'escape'), '')
+                FROM federation.identity_provider t),
+               (SELECT string_agg(to_jsonb(t)::text, '') FROM platform.outbox t))"#,
+    )
+    .fetch_one(database.owner())
+    .await
+    .expect("dump");
+    assert!(
+        everything.contains("accounts.example.com"),
+        "the dump saw the provider"
+    );
+    assert!(
+        !everything.contains(SECRET),
+        "the secret is stored nowhere in the clear"
+    );
+
+    let read = service
+        .provider(&tenant, provider.id())
+        .await
+        .expect("read");
+    assert_eq!(
+        service
+            .client_secret(&tenant, &read)
+            .expect("open")
+            .expose(),
+        SECRET
+    );
+
+    // The same bytes under another tenant do not open.
+    let elsewhere = TenantContext::assume(TenantId::generate());
+    assert!(service.client_secret(&elsewhere, &read).is_err());
+}
+
+#[tokio::test]
+async fn a_user_and_their_link_are_stored_together_or_not_at_all() {
+    let database = TestDatabase::start().await;
+    let service = service(&database);
+    let tenant = TenantContext::assume(TenantId::generate());
+    let provider = service
+        .create_provider(&tenant, create("example"), Caller::system())
+        .await
+        .expect("create");
+    let subject = Subject::parse("subject-1").expect("subject");
+    let ana = UserId::generate();
+
+    // Linked, then abandoned: as when creating the user fails afterwards.
+    let mut uow = UnitOfWorkFactory::begin(database.app(), &tenant)
+        .await
+        .expect("begin");
+    service
+        .link(
+            uow.as_mut(),
+            provider.id(),
+            subject.clone(),
+            ana,
+            Caller::system(),
+        )
+        .await
+        .expect("link");
+    drop(uow);
+
+    let mut uow = UnitOfWorkFactory::begin(database.app(), &tenant)
+        .await
+        .expect("begin");
+    assert_eq!(
+        service
+            .find_user(uow.as_mut(), provider.id(), &subject)
+            .await
+            .expect("find"),
+        None
+    );
+    service
+        .link(
+            uow.as_mut(),
+            provider.id(),
+            subject.clone(),
+            ana,
+            Caller::system(),
+        )
+        .await
+        .expect("link");
+    uow.commit().await.expect("commit");
+
+    let mut uow = UnitOfWorkFactory::begin(database.app(), &tenant)
+        .await
+        .expect("begin");
+    assert_eq!(
+        service
+            .find_user(uow.as_mut(), provider.id(), &subject)
+            .await
+            .expect("find"),
+        Some(ana)
+    );
+    drop(uow);
+    let announced: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM platform.outbox WHERE event_type = 'federation.identity_linked'",
+    )
+    .fetch_one(database.owner())
+    .await
+    .expect("count");
+    assert_eq!(announced, 1, "only the committed link was announced");
+}
+
+#[tokio::test]
+async fn two_links_of_the_same_identity_made_at_once_leave_one() {
+    let database = TestDatabase::start().await;
+    let service = Arc::new(service(&database));
+    let tenant = TenantContext::assume(TenantId::generate());
+    let provider = service
+        .create_provider(&tenant, create("example"), Caller::system())
+        .await
+        .expect("create");
+
+    let attempts: Vec<_> = (0..8)
+        .map(|_| {
+            let (service, tenant, app) = (service.clone(), tenant.clone(), database.app().clone());
+            let provider_id = provider.id();
+            tokio::spawn(async move {
+                let mut uow = UnitOfWorkFactory::begin(&app, &tenant)
+                    .await
+                    .expect("begin");
+                let user = UserId::generate();
+                let subject = Subject::parse("the same person").expect("subject");
+                service
+                    .link(uow.as_mut(), provider_id, subject, user, Caller::system())
+                    .await?;
+                uow.commit().await.map(|()| user)
+            })
+        })
+        .collect();
+    let mut winners = Vec::new();
+    for attempt in attempts {
+        match attempt.await.expect("task") {
+            Ok(user) => winners.push(user),
+            Err(error) => assert_eq!(error.code(), "federation.identity_already_linked"),
+        }
+    }
+    assert_eq!(winners.len(), 1, "exactly one link was made");
+
+    let mut uow = UnitOfWorkFactory::begin(database.app(), &tenant)
+        .await
+        .expect("begin");
+    let subject = Subject::parse("the same person").expect("subject");
+    assert_eq!(
+        service
+            .find_user(uow.as_mut(), provider.id(), &subject)
+            .await
+            .expect("find"),
+        Some(winners[0])
+    );
+}
+
+#[tokio::test]
+async fn the_database_itself_refuses_what_the_rules_forbid() {
+    let database = TestDatabase::start().await;
+    let service = service(&database);
+    let tenant = TenantContext::assume(TenantId::generate());
+    let provider = service
+        .create_provider(&tenant, create("example"), Caller::system())
+        .await
+        .expect("create");
+
+    for statement in [
+        "UPDATE federation.identity_provider SET alias = 'Not An Alias'",
+        "UPDATE federation.identity_provider SET kind = 'something_else'",
+        "UPDATE federation.identity_provider SET status = 'half'",
+        "UPDATE federation.identity_provider SET issuer = 'ftp://files.example.com'",
+        "UPDATE federation.identity_provider SET issuer = 'accounts.example.com'",
+        "UPDATE federation.identity_provider SET client_secret = ''",
+    ] {
+        let refused = sqlx::query(statement).execute(database.owner()).await;
+        assert!(refused.is_err(), "{statement}");
+    }
+    // A provider that has links cannot be deleted from under them.
+    let mut uow = UnitOfWorkFactory::begin(database.app(), &tenant)
+        .await
+        .expect("begin");
+    let subject = Subject::parse("subject-1").expect("subject");
+    service
+        .link(
+            uow.as_mut(),
+            provider.id(),
+            subject,
+            UserId::generate(),
+            Caller::system(),
+        )
+        .await
+        .expect("link");
+    uow.commit().await.expect("commit");
+    let refused = sqlx::query("DELETE FROM federation.identity_provider")
+        .execute(database.owner())
+        .await;
+    assert!(refused.is_err());
+}
+
+#[tokio::test]
+async fn a_directory_comes_back_with_its_own_settings() {
+    use hodor_federation::api::DirectorySettings;
+    let database = TestDatabase::start().await;
+    let service = service(&database).allowing_directory_hosts(&["ldap.example.com:636".to_owned()]);
+    let tenant = TenantContext::assume(TenantId::generate());
+    let mut settings = DirectorySettings::new(
+        "ou=people,dc=example,dc=com",
+        "(sAMAccountName={identifier})",
+    );
+    settings.subject_attribute = "objectGUID".to_owned();
+    let created = service
+        .create_provider(
+            &tenant,
+            CreateProvider {
+                alias: "company".to_owned(),
+                kind: ProviderKind::Ldap,
+                settings: ProviderSettings {
+                    saml: None,
+                    display_name: "Company".to_owned(),
+                    issuer: "ldaps://ldap.example.com".to_owned(),
+                    client_id: "cn=hodor,ou=services,dc=example,dc=com".to_owned(),
+                    scopes: Vec::new(),
+                    creates_users: true,
+                    trusts_email: true,
+                    directory: Some(settings.clone()),
+                },
+                client_secret: Secret::from("the bind password".to_owned()),
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("a directory");
+    let read = service.provider(&tenant, created.id()).await.expect("read");
+    // Compared field by field: the database keeps times to the
+    // microsecond, and some clocks give nanoseconds.
+    assert_eq!(read.snapshot().kind, ProviderKind::Ldap);
+    assert_eq!(read.snapshot().settings, created.snapshot().settings);
+    assert_eq!(read.snapshot().settings.directory, Some(settings));
+
+    // A directory without its settings, or another kind with them, is
+    // refused by the database itself.
+    for statement in [
+        "UPDATE federation.identity_provider SET directory_base = NULL",
+        "UPDATE federation.identity_provider SET kind = 'openid_connect'",
+    ] {
+        assert!(
+            sqlx::query(statement)
+                .execute(database.owner())
+                .await
+                .is_err(),
+            "{statement}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_saml_provider_comes_back_with_its_own_settings() {
+    use hodor_federation::api::SamlSettings;
+    let database = TestDatabase::start().await;
+    let service = service(&database);
+    let tenant = TenantContext::assume(TenantId::generate());
+    let identity_provider = hodor_saml::testing::TestIdentityProvider::rsa("urn:corp:idp");
+    let mut saml = SamlSettings::new(
+        "https://idp.corp.example/sso",
+        identity_provider.certificate_pem(),
+    );
+    saml.email_attribute =
+        "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress".to_owned();
+    let created = service
+        .create_provider(
+            &tenant,
+            CreateProvider {
+                alias: "corp".to_owned(),
+                kind: ProviderKind::Saml,
+                settings: ProviderSettings {
+                    display_name: "Corp".to_owned(),
+                    issuer: "urn:corp:idp".to_owned(),
+                    client_id: String::new(),
+                    scopes: Vec::new(),
+                    creates_users: true,
+                    trusts_email: true,
+                    directory: None,
+                    saml: Some(saml),
+                },
+                client_secret: Secret::from(String::new()),
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("a SAML provider");
+    let read = service.provider(&tenant, created.id()).await.expect("read");
+    assert_eq!(read.snapshot().kind, ProviderKind::Saml);
+    assert_eq!(read.snapshot().settings, created.snapshot().settings);
+
+    // A SAML provider without its settings, with a client identifier, or
+    // another kind with them, is refused by the database itself.
+    for statement in [
+        "UPDATE federation.identity_provider SET saml_certificate = NULL",
+        "UPDATE federation.identity_provider SET client_id = 'hodor'",
+        "UPDATE federation.identity_provider SET kind = 'openid_connect'",
+    ] {
+        assert!(
+            sqlx::query(statement)
+                .execute(database.owner())
+                .await
+                .is_err(),
+            "{statement}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn expired_pending_authorizations_are_removed_in_every_tenant_and_no_other_is() {
+    use hodor_adapters_postgres::PendingAuthorizationCleanup;
+    use hodor_authentication::api::TransactionId;
+    use hodor_federation::api::{PendingAuthorization, PendingAuthorizationStore as _};
+    use hodor_kernel::{SealedSecret, Timestamp};
+
+    let database = TestDatabase::start().await;
+    let service = service(&database);
+    let now = Timestamp::now_utc();
+    let mut kept = Vec::new();
+    for _ in 0..2 {
+        let tenant = TenantContext::assume(TenantId::generate());
+        let provider = service
+            .create_provider(&tenant, create("example"), Caller::system())
+            .await
+            .expect("a provider");
+        let mut unit = UnitOfWorkFactory::begin(database.app(), &tenant)
+            .await
+            .expect("begin");
+        // Three that expired, one that has not.
+        for (index, expires_at) in [
+            now - time::Duration::minutes(30),
+            now - time::Duration::minutes(1),
+            now,
+            now + time::Duration::minutes(5),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let transaction_id = TransactionId::generate();
+            PgPendingAuthorizationStore
+                .put(
+                    unit.as_mut(),
+                    &PendingAuthorization {
+                        transaction_id,
+                        provider_id: provider.id(),
+                        state_hash: [u8::try_from(index).expect("small"); 32],
+                        nonce: "nonce".to_owned(),
+                        code_verifier: SealedSecret::from_stored(vec![1]),
+                        redirect_uri: "https://hodor.example/callback".to_owned(),
+                        expires_at,
+                        saml_answer: None,
+                        saml_receipt_hash: None,
+                    },
+                )
+                .await
+                .expect("put");
+            if expires_at > now {
+                kept.push((tenant.clone(), transaction_id));
+            }
+        }
+        unit.commit().await.expect("commit");
+    }
+
+    let cleanup =
+        PendingAuthorizationCleanup::new(database.platform().clone(), database.app().clone());
+    // A batch of two in each tenant, then the rest.
+    let first = cleanup.run(now, 2).await.expect("cleanup");
+    assert_eq!((first.tenants, first.removed), (2, 4));
+    let second = cleanup.run(now, 2).await.expect("cleanup");
+    assert_eq!((second.tenants, second.removed), (2, 2));
+    let third = cleanup.run(now, 2).await.expect("cleanup");
+    assert_eq!(
+        (third.tenants, third.removed),
+        (0, 0),
+        "nothing expired is left"
+    );
+
+    // The ones that have not expired are still there, each in its tenant.
+    for (tenant, transaction_id) in kept {
+        let mut unit = UnitOfWorkFactory::begin(database.app(), &tenant)
+            .await
+            .expect("begin");
+        let found = PgPendingAuthorizationStore
+            .take(unit.as_mut(), transaction_id)
+            .await
+            .expect("take");
+        assert!(found.is_some());
+    }
+}

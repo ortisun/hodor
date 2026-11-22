@@ -1,0 +1,25 @@
+[package]
+name = "hodor-authorization"
+description = "The authorization context: answers whether a user may do something."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[features]
+# In-memory store and the contract suite that every implementation must pass.
+testing = ["hodor-kernel/testing"]
+
+[dependencies]
+async-trait.workspace = true
+hodor-kernel.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+hodor-authorization = { path = ".", features = ["testing"] }
+hodor-kernel = { workspace = true, features = ["testing"] }
+tokio.workspace = true
+
+[lints]
+workspace = true

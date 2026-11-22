@@ -1,0 +1,27 @@
+[package]
+name = "hodor-session"
+description = "The session context: the record that a user signed in, and for how long that remains true."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[features]
+# In-memory store and the contract suite that every implementation must pass.
+testing = ["hodor-kernel/testing"]
+
+[dependencies]
+async-trait.workspace = true
+hodor-kernel.workspace = true
+serde.workspace = true
+time.workspace = true
+
+[dev-dependencies]
+hodor-kernel = { workspace = true, features = ["testing"] }
+hodor-session = { path = ".", features = ["testing"] }
+proptest.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

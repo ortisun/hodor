@@ -1,0 +1,1766 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Hodor administration interface",
+    "version": "1.0.0",
+    "description": "Users, sessions, the audit log and the identity providers of a tenant, for the people who run it. Paths are relative to https://{host}/t/{slug}/api/v1/admin. Every operation needs an access token whose user holds a role with the permission named in `x-hodor-permission`."
+  },
+  "servers": [
+    {
+      "url": "/t/{slug}/api/v1/admin",
+      "variables": {
+        "slug": {
+          "default": "acme",
+          "description": "The tenant's slug."
+        }
+      }
+    }
+  ],
+  "security": [
+    {
+      "accessToken": []
+    }
+  ],
+  "paths": {
+    "/users": {
+      "post": {
+        "operationId": "createUser",
+        "summary": "Create a user",
+        "x-hodor-permission": "users:write",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewUser"
+              }
+            }
+          }
+        },
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "The user that was created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/User"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A problem document",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A problem document",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "operationId": "listUsers",
+        "summary": "List users, oldest first",
+        "x-hodor-permission": "users:read",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "The `next_cursor` of the page before."
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "A page of users.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "items"
+                  ],
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/User"
+                      }
+                    },
+                    "next_cursor": {
+                      "type": "string",
+                      "description": "Absent on the last page."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A problem document",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/users/{user_id}": {
+      "get": {
+        "operationId": "getUser",
+        "summary": "Read one user",
+        "x-hodor-permission": "users:read",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/User"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "A problem document",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/users/{user_id}:suspend": {
+      "post": {
+        "operationId": "suspendUser",
+        "summary": "Suspend a user",
+        "x-hodor-permission": "users:write",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Suspension"
+              }
+            }
+          }
+        },
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The suspended user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/User"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "A problem document",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A problem document",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A problem document",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/users/{user_id}/sessions": {
+      "get": {
+        "operationId": "listUserSessions",
+        "summary": "List a user's active sessions, newest first",
+        "x-hodor-permission": "sessions:read",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The user's active sessions.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "items"
+                  ],
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Session"
+                      }
+                    },
+                    "next_cursor": {
+                      "type": "string",
+                      "description": "Absent on the last page."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "A problem document",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sessions/{session_id}": {
+      "delete": {
+        "operationId": "revokeSession",
+        "summary": "End a session",
+        "x-hodor-permission": "sessions:revoke",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "The session is ended."
+          },
+          "404": {
+            "description": "A problem document",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/audit-records": {
+      "get": {
+        "operationId": "listAuditRecords",
+        "summary": "Read the audit log, oldest first",
+        "x-hodor-permission": "audit:read",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "The `next_cursor` of the page before."
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "A page of audit records.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "items"
+                  ],
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/AuditRecord"
+                      }
+                    },
+                    "next_cursor": {
+                      "type": "string",
+                      "description": "Absent on the last page."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A problem document",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/identity-providers": {
+      "get": {
+        "operationId": "listIdentityProviders",
+        "summary": "List the tenant's identity providers",
+        "x-hodor-permission": "identity-providers:read",
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The providers, ordered by alias. Never their secrets.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "items"
+                  ],
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/IdentityProvider"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "This installation has no keys to keep the secrets of identity providers with.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createIdentityProvider",
+        "summary": "Add an identity provider",
+        "x-hodor-permission": "identity-providers:write",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewIdentityProvider"
+              }
+            }
+          }
+        },
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "The provider, enabled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProvider"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The alias is taken, or the tenant already has as many providers as it may.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A value breaks its rule, or the body is not of the expected shape.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "This installation has no keys to keep the secrets of identity providers with.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/identity-providers/{provider_id}": {
+      "get": {
+        "operationId": "getIdentityProvider",
+        "summary": "Read one identity provider",
+        "x-hodor-permission": "identity-providers:read",
+        "parameters": [
+          {
+            "name": "provider_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The provider.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProvider"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such identity provider in this tenant.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "This installation has no keys to keep the secrets of identity providers with.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "operationId": "changeIdentityProvider",
+        "summary": "Change an identity provider's settings",
+        "x-hodor-permission": "identity-providers:write",
+        "parameters": [
+          {
+            "name": "provider_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IdentityProviderChanges"
+              }
+            }
+          }
+        },
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The provider.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProvider"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such identity provider in this tenant.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Someone else changed the provider at the same moment.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A value breaks its rule, or the body is not of the expected shape.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "This installation has no keys to keep the secrets of identity providers with.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/identity-providers/{provider_id}/client-secret": {
+      "put": {
+        "operationId": "replaceIdentityProviderClientSecret",
+        "summary": "Replace an identity provider's client secret",
+        "x-hodor-permission": "identity-providers:write",
+        "parameters": [
+          {
+            "name": "provider_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClientSecret"
+              }
+            }
+          }
+        },
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "The secret was replaced."
+          },
+          "404": {
+            "description": "No such identity provider in this tenant.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A value breaks its rule, or the body is not of the expected shape.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "This installation has no keys to keep the secrets of identity providers with.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/identity-providers/{provider_id}:disable": {
+      "post": {
+        "operationId": "disableIdentityProvider",
+        "summary": "Stop an identity provider from signing people in",
+        "x-hodor-permission": "identity-providers:write",
+        "parameters": [
+          {
+            "name": "provider_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The provider.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProvider"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such identity provider in this tenant.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "This installation has no keys to keep the secrets of identity providers with.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/identity-providers/{provider_id}:enable": {
+      "post": {
+        "operationId": "enableIdentityProvider",
+        "summary": "Let an identity provider sign people in again",
+        "x-hodor-permission": "identity-providers:write",
+        "parameters": [
+          {
+            "name": "provider_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The provider.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProvider"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such identity provider in this tenant.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "This installation has no keys to keep the secrets of identity providers with.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "accessToken": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "An access token: `hodor_at_` followed by 64 hexadecimal characters."
+      }
+    },
+    "schemas": {
+      "NewUser": {
+        "type": "object",
+        "required": [
+          "email"
+        ],
+        "properties": {
+          "email": {
+            "type": "string",
+            "format": "email"
+          },
+          "display_name": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "locale": {
+            "type": "string",
+            "examples": [
+              "pt-BR"
+            ]
+          }
+        }
+      },
+      "Suspension": {
+        "type": "object",
+        "required": [
+          "reason"
+        ],
+        "properties": {
+          "reason": {
+            "type": "string"
+          }
+        }
+      },
+      "User": {
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "status",
+          "identifiers",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "human",
+              "service_account",
+              "agent"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "active",
+              "suspended",
+              "deactivated",
+              "deleted"
+            ]
+          },
+          "status_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "locale": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "identifiers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Identifier"
+            }
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "Identifier": {
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "value",
+          "verified",
+          "primary"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "email",
+              "username"
+            ]
+          },
+          "value": {
+            "type": "string"
+          },
+          "verified": {
+            "type": "boolean"
+          },
+          "primary": {
+            "type": "boolean"
+          }
+        }
+      },
+      "Session": {
+        "type": "object",
+        "required": [
+          "session_id",
+          "started_at",
+          "last_activity_at",
+          "expires_at"
+        ],
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_activity_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "address": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "AuditRecord": {
+        "type": "object",
+        "required": [
+          "sequence",
+          "action",
+          "occurred_at",
+          "recorded_at",
+          "actor",
+          "correlation_id",
+          "details",
+          "previous_hash",
+          "hash"
+        ],
+        "properties": {
+          "sequence": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "action": {
+            "type": "string",
+            "examples": [
+              "identity.user_suspended"
+            ]
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "recorded_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "actor": {
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "user",
+                  "system",
+                  "anonymous"
+                ]
+              },
+              "id": {
+                "type": "string",
+                "format": "uuid"
+              }
+            }
+          },
+          "correlation_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "details": {
+            "type": "object"
+          },
+          "previous_hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        }
+      },
+      "Problem": {
+        "type": "object",
+        "required": [
+          "type",
+          "title",
+          "status",
+          "detail",
+          "code"
+        ],
+        "properties": {
+          "type": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string",
+            "description": "A stable code for programs, for example `admin.forbidden`."
+          },
+          "request_id": {
+            "type": "string"
+          }
+        }
+      },
+      "IdentityProvider": {
+        "type": "object",
+        "description": "An identity provider of the tenant. It has no field for the client secret, which no operation returns.",
+        "required": [
+          "id",
+          "alias",
+          "kind",
+          "display_name",
+          "issuer",
+          "client_id",
+          "scopes",
+          "creates_users",
+          "trusts_email",
+          "status",
+          "callback_address",
+          "created_at",
+          "updated_at",
+          "directory",
+          "saml",
+          "metadata_address"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "alias": {
+            "type": "string",
+            "description": "The provider's name in addresses. It never changes."
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "openid_connect",
+              "github",
+              "ldap",
+              "saml"
+            ]
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "issuer": {
+            "type": "string",
+            "format": "uri"
+          },
+          "client_id": {
+            "type": "string"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "creates_users": {
+            "type": "boolean",
+            "description": "Whether a person nobody knows yet is created on first sign-in."
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "enabled",
+              "disabled"
+            ]
+          },
+          "callback_address": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uri",
+            "description": "The address to register at the provider. `null` for a directory, which nobody leaves for."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "trusts_email": {
+            "type": "boolean",
+            "description": "Whether every address the provider gives is taken as vouched for, even when the provider does not say so."
+          },
+          "directory": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/DirectorySettings"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What only a directory has; `null` for every other kind."
+          },
+          "saml": {
+            "description": "What only a SAML identity provider has; `null` for every other kind.",
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SamlSettings"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "metadata_address": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uri",
+            "description": "Hodor's metadata for a SAML identity provider, to give it; `null` for every other kind."
+          }
+        }
+      },
+      "NewIdentityProvider": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "alias",
+          "display_name"
+        ],
+        "properties": {
+          "alias": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "issuer": {
+            "type": "string",
+            "format": "uri",
+            "description": "May be left out for the kind `github`."
+          },
+          "client_id": {
+            "type": "string",
+            "description": "Required for every kind but `saml`, which has none."
+          },
+          "client_secret": {
+            "type": "string",
+            "writeOnly": true,
+            "description": "Required for every kind but `saml`, which has none."
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "creates_users": {
+            "type": "boolean"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "openid_connect",
+              "github",
+              "ldap",
+              "saml"
+            ],
+            "default": "openid_connect"
+          },
+          "trusts_email": {
+            "type": "boolean",
+            "default": false
+          },
+          "directory": {
+            "$ref": "#/components/schemas/DirectoryInput"
+          },
+          "saml": {
+            "$ref": "#/components/schemas/SamlInput"
+          }
+        }
+      },
+      "IdentityProviderChanges": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "What is left out stays as it is.",
+        "properties": {
+          "display_name": {
+            "type": "string"
+          },
+          "issuer": {
+            "type": "string",
+            "format": "uri"
+          },
+          "client_id": {
+            "type": "string"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "creates_users": {
+            "type": "boolean"
+          },
+          "trusts_email": {
+            "type": "boolean"
+          },
+          "directory": {
+            "$ref": "#/components/schemas/DirectoryInput"
+          },
+          "saml": {
+            "$ref": "#/components/schemas/SamlInput"
+          }
+        }
+      },
+      "ClientSecret": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "client_secret"
+        ],
+        "properties": {
+          "client_secret": {
+            "type": "string",
+            "writeOnly": true
+          }
+        }
+      },
+      "DirectorySettings": {
+        "type": "object",
+        "required": [
+          "base",
+          "filter",
+          "subject_attribute",
+          "email_attribute",
+          "name_attribute"
+        ],
+        "properties": {
+          "base": {
+            "type": "string"
+          },
+          "filter": {
+            "type": "string"
+          },
+          "subject_attribute": {
+            "type": "string"
+          },
+          "email_attribute": {
+            "type": "string"
+          },
+          "name_attribute": {
+            "type": "string"
+          }
+        }
+      },
+      "DirectoryInput": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "What is left out is `entryUUID`, `mail` and `cn` for the attribute names, or, in a change, what it was.",
+        "properties": {
+          "base": {
+            "type": "string"
+          },
+          "filter": {
+            "type": "string"
+          },
+          "subject_attribute": {
+            "type": "string"
+          },
+          "email_attribute": {
+            "type": "string"
+          },
+          "name_attribute": {
+            "type": "string"
+          }
+        }
+      },
+      "SamlSettings": {
+        "type": "object",
+        "required": [
+          "single_sign_on_address",
+          "certificate",
+          "email_attribute",
+          "name_attribute"
+        ],
+        "properties": {
+          "single_sign_on_address": {
+            "type": "string",
+            "format": "uri"
+          },
+          "certificate": {
+            "type": "string",
+            "description": "The identity provider's signing certificate, in PEM."
+          },
+          "email_attribute": {
+            "type": "string"
+          },
+          "name_attribute": {
+            "type": "string"
+          }
+        }
+      },
+      "SamlInput": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "What is left out is `email` and `name` for the attribute names, or, in a change, what it was. A new provider needs the single sign-on address and the certificate.",
+        "properties": {
+          "single_sign_on_address": {
+            "type": "string",
+            "format": "uri"
+          },
+          "certificate": {
+            "type": "string"
+          },
+          "email_attribute": {
+            "type": "string"
+          },
+          "name_attribute": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

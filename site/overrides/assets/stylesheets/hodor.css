@@ -1,0 +1,122 @@
+/* The Hodor colors on the Material theme, and the parts of the home page. */
+
+:root,
+[data-md-color-scheme="default"] {
+  --md-primary-fg-color: #0b6f8a;
+  --md-primary-fg-color--light: #2b8aa3;
+  --md-primary-fg-color--dark: #005566;
+  --md-accent-fg-color: #007b92;
+  --md-accent-fg-color--transparent: rgba(0, 123, 146, 0.1);
+  --md-typeset-a-color: #0b6f8a;
+  --hodor-hero-background: linear-gradient(135deg, #005566 0%, #0b6f8a 55%, #1d93ad 100%);
+  --hodor-card-border: #d7e7eb;
+}
+
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: #0b6f8a;
+  --md-primary-fg-color--light: #2b8aa3;
+  --md-primary-fg-color--dark: #005566;
+  --md-accent-fg-color: #5cc8dd;
+  --md-accent-fg-color--transparent: rgba(92, 200, 221, 0.12);
+  --md-typeset-a-color: #6fd0e2;
+  --hodor-hero-background: linear-gradient(135deg, #032f39 0%, #08495a 55%, #0b6f8a 100%);
+  --hodor-card-border: #2a3a40;
+}
+
+/* Home page: the opening band. */
+.hodor-hero {
+  margin: 0 0 2rem;
+  padding: 2.5rem 2rem;
+  border-radius: 0.6rem;
+  background: var(--hodor-hero-background);
+  color: #ffffff;
+}
+
+.md-typeset .hodor-hero h1 {
+  margin: 0 0 0.6rem;
+  color: #ffffff;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+/* The logo, beside the text; the band grows to hold it. */
+.hodor-hero {
+  display: flow-root;
+}
+
+.md-typeset .hodor-hero .hodor-hero-logo {
+  float: right;
+  width: 13rem;
+  max-width: 34%;
+  margin: 0 0 0.5rem 2rem;
+}
+
+.hodor-hero-logo img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+/* The header shows the logo a little larger than the theme does: the picture has detail. */
+.md-header__button.md-logo img {
+  width: auto;
+  height: 1.7rem;
+}
+
+.hodor-hero p {
+  max-width: 42rem;
+  font-size: 0.95rem;
+  opacity: 0.95;
+}
+
+.md-typeset .hodor-hero .md-button {
+  margin: 0.4rem 0.4rem 0 0;
+  color: #ffffff;
+  border-color: rgba(255, 255, 255, 0.7);
+}
+
+.md-typeset .hodor-hero .md-button--primary {
+  background: #ffffff;
+  color: #005566;
+  border-color: #ffffff;
+}
+
+.md-typeset .hodor-hero .md-button:hover,
+.md-typeset .hodor-hero .md-button:focus {
+  background: rgba(255, 255, 255, 0.16);
+  color: #ffffff;
+  border-color: #ffffff;
+}
+
+.md-typeset .hodor-hero .md-button--primary:hover,
+.md-typeset .hodor-hero .md-button--primary:focus {
+  background: #e0f2f5;
+  color: #005566;
+}
+
+.md-typeset .grid.cards > ul > li,
+.md-typeset .grid > .card {
+  border-color: var(--hodor-card-border);
+}
+
+.hodor-screenshot {
+  display: block;
+  margin: 0 auto;
+  max-width: 100%;
+  border-radius: 0.4rem;
+  box-shadow: var(--md-shadow-z2);
+}
+
+@media screen and (max-width: 44.9375em) {
+  .hodor-hero {
+    padding: 1.75rem 1.25rem;
+  }
+
+  /* On a narrow screen the logo goes above the text, centered. */
+  .md-typeset .hodor-hero .hodor-hero-logo {
+    float: none;
+    width: 9rem;
+    max-width: 60%;
+    margin: 0 auto 1rem;
+  }
+}

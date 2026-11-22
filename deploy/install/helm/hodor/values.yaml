@@ -1,0 +1,168 @@
+# The settings of a Hodor installation on Kubernetes. How to use them, step by step:
+# docs/operations/install-on-kubernetes.md.
+#
+# Three values have no default and must be given: image.repository, publicUrl and secret.name.
+# No password or key is ever written here: they are read from the Secret that secret.name names.
+
+image:
+  # Where the Hodor image is, such as registry.example.com/hodor. Required.
+  repository: ""
+  # The version to run. Empty: the version this chart was made for (appVersion in Chart.yaml).
+  tag: ""
+  pullPolicy: IfNotPresent
+  # Names of Secrets that hold the credentials of a private registry.
+  pullSecrets: []
+
+# The address people use to reach Hodor: https, the name, no path. Required.
+# Cookies and the links in messages rely on it.
+publicUrl: ""
+
+# The Secret that holds everything secret. It is made before the chart is installed, by you or by whatever
+# manages secrets in the cluster, in the namespace of the release. Required.
+secret:
+  name: ""
+  # The key of each value inside the Secret.
+  keys:
+    # Connection address of the role that owns the schema. Read by the migration job and nothing else.
+    ownerDatabaseUrl: owner-database-url
+    # Connection address of the server's role, a member of hodor_app.
+    serverDatabaseUrl: server-database-url
+    # Connection addresses of the worker's two roles, members of hodor_app and of hodor_platform.
+    workerDatabaseUrl: worker-database-url
+    workerPlatformDatabaseUrl: worker-platform-database-url
+    # The keys that keep the secrets of identity providers encrypted, as identifier:key.
+    secretKeys: secret-keys
+    # Address of the mail server, such as smtps://user:password@mail.example.com:465. Read when mail.enabled.
+    smtpUrl: smtp-url
+
+# The messages Hodor sends: address verification and password recovery.
+mail:
+  # false: no message is delivered, and they wait in the database.
+  enabled: false
+  # The address messages come from, such as "Hodor <no-reply@example.com>". Required when enabled.
+  from: ""
+
+# The LDAP directories identity providers may name, each as host:port. Empty: none can be used.
+directoryHosts: []
+
+log:
+  # json or pretty.
+  format: json
+  # What is logged, such as info or info,hodor_adapters_postgres=debug.
+  filter: info
+
+# Where metrics and traces are sent, over OTLP/HTTP, as full addresses. Empty: none are sent.
+telemetry:
+  metricsEndpoint: ""
+  tracesEndpoint: ""
+
+server:
+  # How many servers run when autoscaling is off. Three, spread across zones, keep a majority through the
+  # loss of a zone.
+  replicas: 3
+  # Size of the database connection pool of each server.
+  databaseMaxConnections: 10
+  # Password hashes one server computes at the same time. Each uses about 19 MiB of memory, so this value
+  # times 19 MiB must fit under the memory limit below with room for the rest.
+  passwordHashConcurrency: 4
+  # Seconds a server keeps serving after it is told to stop, while it reports itself not ready, so that
+  # requests stop being sent to it.
+  shutdownDrainSeconds: 5
+  resources:
+    requests:
+      cpu: 500m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
+  autoscaling:
+    enabled: false
+    minReplicas: 3
+    maxReplicas: 10
+    # Average processor use, as a percentage of the request, above which servers are added.
+    targetProcessorUtilizationPercentage: 70
+  podDisruptionBudget:
+    enabled: true
+    # Servers that may be taken down at once by a planned disruption, such as draining a node.
+    maxUnavailable: 1
+  # More environment variables for the server, as Kubernetes writes them: a list of name and value.
+  extraEnvironment: []
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+worker:
+  # How many workers run. They share the work without a leader; two keep it going while one restarts.
+  replicas: 2
+  # Size of each of the worker's two database connection pools.
+  databaseMaxConnections: 5
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+  podDisruptionBudget:
+    enabled: true
+    maxUnavailable: 1
+  extraEnvironment: []
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# Before every install and upgrade, a job applies the migrations as the owner of the schema and creates
+# the system tenant if it is missing. The servers and workers start after it succeeds.
+migration:
+  enabled: true
+  # Seconds the job may take before the install or upgrade is given up.
+  activeDeadlineSeconds: 600
+  resources:
+    requests:
+      cpu: 100m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+# The Service in front of the servers. Only the public port is in it; the operations port, which answers
+# health checks without authentication, is reached by the kubelet alone.
+service:
+  type: ClusterIP
+  port: 8080
+  annotations: {}
+
+# The way in from outside the cluster. The host is taken from publicUrl.
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  tls:
+    # true: the Ingress serves HTTPS for the host with the certificate in secretName.
+    enabled: true
+    # The Secret that holds the certificate. Empty: "<release>-tls", for a certificate manager to fill.
+    secretName: ""
+
+networkPolicy:
+  enabled: false
+  # Who may reach the servers' public port, as Kubernetes writes network policy peers. Empty: anyone in
+  # the cluster. For an ingress controller in the namespace ingress-nginx:
+  #   - namespaceSelector:
+  #       matchLabels:
+  #         kubernetes.io/metadata.name: ingress-nginx
+  ingressFrom: []
+  egress:
+    # true: Hodor's pods may reach the cluster's name service and what `to` lists, and nothing else.
+    enabled: false
+    # Where Hodor's pods may connect, as Kubernetes writes egress rules: the database, the mail server,
+    # the collector of metrics and traces, the identity providers and directories.
+    to: []
+
+serviceAccount:
+  # false: the pods use the service account named below, which must exist.
+  create: true
+  # Empty: the name of the release.
+  name: ""
+  annotations: {}
+
+# Replaces the name the resources are given, which is otherwise the name of the release.
+fullnameOverride: ""

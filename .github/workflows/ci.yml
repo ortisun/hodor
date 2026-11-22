@@ -1,0 +1,231 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [develop, main]
+  push:
+    branches: [develop, main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUSTFLAGS: -D warnings
+
+jobs:
+  lint:
+    name: Format and lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Installs the toolchain pinned in rust-toolchain.toml.
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  test:
+    name: Build and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --workspace --all-targets --locked
+      - run: cargo test --workspace --locked
+
+  supply-chain:
+    name: Dependency checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny,cargo-machete
+      - run: cargo deny check
+      - run: cargo machete
+
+  console:
+    name: Admin console
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend/admin-console
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/admin-console/package-lock.json
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm audit --audit-level=high
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      # Builds against the compiled theme of the hosted pages.
+      - run: npm run build
+
+  showcase:
+    name: Design system showcase
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend/design-system/showcase
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/design-system/showcase/package-lock.json
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm audit --audit-level=high
+      # Typechecks, then builds against the compiled theme of the hosted pages.
+      - run: npm run build
+
+  pages:
+    name: Hosted pages and demonstration
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend/auth-ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/auth-ui/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm audit --audit-level=high
+      - run: npm run theme-check
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+      # The browser tests drive the pages as the image serves them, with
+      # the whole development stack behind them.
+      - name: Start the development stack
+        working-directory: .
+        run: docker compose -f deploy/docker/compose.yaml up --build --wait
+      - name: Create a tenant that accepts registrations
+        working-directory: .
+        run: >
+          docker compose -f deploy/docker/compose.yaml run --rm --no-deps
+          --entrypoint /usr/local/bin/hodor-cli
+          -e HODOR_DATABASE_URL=postgres://hodor_server:dev-server@postgres:5432/hodor
+          server tenant create --slug acme --name "Acme" --open-registration
+      - name: Add the development identity provider to the tenant
+        working-directory: .
+        run: >
+          docker compose -f deploy/docker/compose.yaml run --rm --no-deps
+          --entrypoint /usr/local/bin/hodor-cli
+          -e HODOR_DATABASE_URL=postgres://hodor_server:dev-server@postgres:5432/hodor
+          -e HODOR_PROVIDER_CLIENT_SECRET=development-client-secret
+          server provider add --tenant acme --alias development
+          --name "Development provider" --issuer http://provider:9400 --client-id hodor
+      - name: Add the development directory to the tenant
+        working-directory: .
+        run: >
+          docker compose -f deploy/docker/compose.yaml run --rm --no-deps
+          --entrypoint /usr/local/bin/hodor-cli
+          -e HODOR_DATABASE_URL=postgres://hodor_server:dev-server@postgres:5432/hodor
+          -e HODOR_PROVIDER_CLIENT_SECRET=readonly-password
+          server provider add --tenant acme --alias directory --kind ldap
+          --name "Company directory" --issuer ldap://directory:389
+          --client-id cn=readonly,dc=example,dc=org
+          --base ou=people,dc=example,dc=org --filter "(uid={identifier})" --trust-email
+      - name: Add the development SAML identity provider to the tenant
+        working-directory: .
+        run: >
+          docker compose -f deploy/docker/compose.yaml run --rm --no-deps
+          --entrypoint /usr/local/bin/hodor-cli
+          -e HODOR_DATABASE_URL=postgres://hodor_server:dev-server@postgres:5432/hodor
+          server provider add --tenant acme --alias corp --kind saml
+          --name "Development SAML provider" --issuer urn:hodor:development-saml-provider
+          --sign-on-address http://localhost:9500/sso
+          --certificate "$(cat deploy/dev-saml-provider/certificate.pem)" --trust-email
+      - run: npx playwright install --with-deps chromium
+      - run: npm run browser-tests
+      # The demonstration of the milestone, as the quick-start tells an
+      # operator to run it.
+      - name: Run the demonstration
+        working-directory: .
+        run: python3 deploy/demo/demo.py
+      - name: Run the demonstration of Milestone 2
+        working-directory: .
+        run: python3 deploy/demo/external_identities.py
+      - name: Show what the stack logged
+        if: failure()
+        working-directory: .
+        run: docker compose -f deploy/docker/compose.yaml logs --no-color --tail 200 server worker system-tenant provider directory saml-provider
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: browser-tests-report
+          path: frontend/auth-ui/playwright-report
+          retention-days: 7
+
+  # The two installation packages in deploy/install: the Helm chart renders and the Compose file is valid.
+  # Neither is installed here; docs/operations/install-with-docker.md and install-on-kubernetes.md say how
+  # that was checked by hand.
+  installation:
+    name: Installation packages
+    runs-on: ubuntu-latest
+    env:
+      CHART: deploy/install/helm/hodor
+      REQUIRED: --set image.repository=registry.example.com/hodor --set publicUrl=https://login.example.com --set secret.name=hodor
+    steps:
+      - uses: actions/checkout@v4
+      - name: The chart and the binaries carry the same version
+        run: |
+          binaries="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)"
+          chart="$(sed -n 's/^version: //p' "$CHART/Chart.yaml")"
+          application="$(sed -n 's/^appVersion: "\(.*\)"/\1/p' "$CHART/Chart.yaml")"
+          echo "binaries $binaries, chart $chart, application $application"
+          test -n "$binaries" && test "$binaries" = "$chart" && test "$binaries" = "$application"
+      - name: Lint the chart
+        run: helm lint "$CHART" --strict $REQUIRED
+      - name: Render the chart with its defaults
+        run: helm template hodor "$CHART" --namespace hodor $REQUIRED > /dev/null
+      - name: Render the chart with every optional part
+        run: >
+          helm template hodor "$CHART" --namespace hodor $REQUIRED
+          --set ingress.enabled=true --set ingress.className=nginx
+          --set server.autoscaling.enabled=true
+          --set networkPolicy.enabled=true --set networkPolicy.egress.enabled=true
+          --set mail.enabled=true --set "mail.from=Hodor <no-reply@example.com>"
+          --set "directoryHosts={directory.example.com:636}"
+          --set telemetry.metricsEndpoint=http://collector:4318/v1/metrics
+          --set telemetry.tracesEndpoint=http://collector:4318/v1/traces
+          > /dev/null
+      - name: The chart refuses to render without its required values
+        run: |
+          refused() { if "$@" > /dev/null 2>&1; then echo "accepted, and should not be: $*"; return 1; fi; }
+          refused helm template hodor "$CHART" --namespace hodor
+          refused helm template hodor "$CHART" --namespace hodor $REQUIRED --set publicUrl=https://login.example.com/path
+          refused helm template hodor "$CHART" --namespace hodor $REQUIRED --set mail.enabled=true
+      - name: The Compose file is valid with every part
+        env:
+          HODOR_IMAGE: hodor:test
+          COMPOSE_PROFILES: database,https,tools
+          HODOR_PUBLIC_URL: https://login.example.com
+          HODOR_OWNER_DATABASE_PASSWORD: placeholder
+          HODOR_SERVER_DATABASE_PASSWORD: placeholder
+          HODOR_WORKER_DATABASE_PASSWORD: placeholder
+          HODOR_SECRET_KEYS: test:placeholder
+        run: docker compose -f deploy/install/docker/compose.yaml config --quiet
+      - name: The Compose file refuses to start without its secrets
+        run: |
+          if docker compose -f deploy/install/docker/compose.yaml --env-file deploy/install/docker/.env.example config --quiet 2> /dev/null; then
+            echo "the Compose file accepted empty secrets"; exit 1
+          fi

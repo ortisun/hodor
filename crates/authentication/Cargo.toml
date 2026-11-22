@@ -1,0 +1,37 @@
+[package]
+name = "hodor-authentication"
+description = "The authentication context: runs a sign-in from the first step to the start of a session."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[features]
+# In-memory stores and the contract suites that every implementation must pass.
+testing = ["hodor-kernel/testing"]
+
+[dependencies]
+async-trait.workspace = true
+hodor-credential.workspace = true
+hodor-identity.workspace = true
+hodor-kernel.workspace = true
+hodor-notification.workspace = true
+hodor-tenant.workspace = true
+serde.workspace = true
+hodor-session.workspace = true
+time.workspace = true
+
+[dev-dependencies]
+hodor-authentication = { path = ".", features = ["testing"] }
+hodor-credential = { workspace = true, features = ["testing"] }
+hodor-identity = { workspace = true, features = ["testing"] }
+hodor-kernel = { workspace = true, features = ["testing"] }
+hodor-notification = { workspace = true, features = ["testing"] }
+hodor-session = { workspace = true, features = ["testing"] }
+hodor-tenant = { workspace = true, features = ["testing"] }
+proptest.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

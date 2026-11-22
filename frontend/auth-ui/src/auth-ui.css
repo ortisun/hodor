@@ -1,0 +1,70 @@
+/*
+ * Layout of the hosted pages. Everything else comes from the design
+ * system: Astryx components under the Hodor theme. Only tokens of the
+ * theme are used here.
+ */
+
+body {
+  margin: 0;
+  background: var(--color-background-body);
+  color: var(--color-text-primary);
+  font-family: var(--font-family-body);
+}
+
+.auth-page {
+  display: grid;
+  place-items: start center;
+  min-height: 100vh;
+  min-height: 100dvh;
+  padding: var(--spacing-12) var(--spacing-4) var(--spacing-8);
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 26rem;
+}
+
+/* The heading takes focus when a page opens, to be announced; it is not a control. */
+.auth-title:focus,
+.auth-title:focus-visible {
+  outline: none;
+}
+
+.auth-ways {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* Not shown and not reachable: see the sign-in page. */
+.auth-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* What stands between the form and the identity providers: a word with a line on each side. */
+.auth-divider {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-3);
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+}
+
+.auth-divider::before,
+.auth-divider::after {
+  content: "";
+  flex: 1;
+  border-top: 1px solid var(--color-border);
+}
+
+@media (max-width: 30rem) {
+  .auth-page {
+    padding-top: var(--spacing-6);
+  }
+}

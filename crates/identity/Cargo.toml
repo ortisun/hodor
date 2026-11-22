@@ -1,0 +1,26 @@
+[package]
+name = "hodor-identity"
+description = "The identity context: users and the login identifiers they are found by."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[features]
+# In-memory port and the contract suite that every implementation must pass.
+testing = ["hodor-kernel/testing"]
+
+[dependencies]
+async-trait.workspace = true
+hodor-kernel.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+hodor-identity = { path = ".", features = ["testing"] }
+hodor-kernel = { workspace = true, features = ["testing"] }
+tokio.workspace = true
+proptest.workspace = true
+
+[lints]
+workspace = true
