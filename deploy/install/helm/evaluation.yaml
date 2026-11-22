@@ -1,0 +1,156 @@
+# What a Hodor installation on Kubernetes needs around it, for trying the chart on a cluster of your own:
+# a PostgreSQL with Hodor's roles, a mail server that delivers nothing, and the Secret the chart reads.
+#
+# NOT FOR ANYTHING REAL. Every password and the encryption key below are written in the repository, the
+# database is one pod with one small volume, and the mail server keeps messages instead of sending them.
+# A real installation brings its own database, mail server and Secret:
+# docs/operations/install-on-kubernetes.md.
+#
+#   kubectl apply --namespace hodor --filename deploy/install/helm/evaluation.yaml
+
+# The Secret the chart is pointed at with secret.name=hodor-evaluation.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: hodor-evaluation
+  labels:
+    app.kubernetes.io/part-of: hodor-evaluation
+type: Opaque
+stringData:
+  owner-database-url: postgres://hodor_owner:evaluation-owner@hodor-evaluation-database:5432/hodor
+  server-database-url: postgres://hodor_server:evaluation-server@hodor-evaluation-database:5432/hodor
+  worker-database-url: postgres://hodor_worker:evaluation-worker@hodor-evaluation-database:5432/hodor
+  worker-platform-database-url: postgres://hodor_worker_platform:evaluation-worker@hodor-evaluation-database:5432/hodor
+  secret-keys: evaluation:db6fwhb64xvifyc+xwnDwdiVUF7KicQI+qFaoUm/4nk=
+  smtp-url: smtp://hodor-evaluation-mail:1025
+---
+# The script that creates Hodor's roles the first time the database starts. The owner of the schema,
+# hodor_owner, is created by the image.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hodor-evaluation-database
+  labels:
+    app.kubernetes.io/part-of: hodor-evaluation
+data:
+  10-roles.sql: |
+    CREATE ROLE hodor_app NOLOGIN;
+    CREATE ROLE hodor_platform NOLOGIN;
+    CREATE ROLE hodor_server LOGIN PASSWORD 'evaluation-server' IN ROLE hodor_app;
+    CREATE ROLE hodor_worker LOGIN PASSWORD 'evaluation-worker' IN ROLE hodor_app;
+    CREATE ROLE hodor_worker_platform LOGIN PASSWORD 'evaluation-worker' IN ROLE hodor_platform;
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hodor-evaluation-database
+  labels:
+    app.kubernetes.io/part-of: hodor-evaluation
+spec:
+  selector:
+    app.kubernetes.io/name: hodor-evaluation-database
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: hodor-evaluation-database
+  labels:
+    app.kubernetes.io/part-of: hodor-evaluation
+spec:
+  serviceName: hodor-evaluation-database
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hodor-evaluation-database
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hodor-evaluation-database
+        app.kubernetes.io/part-of: hodor-evaluation
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:17-alpine
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: hodor_owner
+            - name: POSTGRES_PASSWORD
+              value: evaluation-owner
+            - name: POSTGRES_DB
+              value: hodor
+            # The volume's own folder holds a lost+found directory, which the image refuses to start in.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "--username", "hodor_owner", "--dbname", "hodor"]
+            periodSeconds: 3
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: roles
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+      volumes:
+        - name: roles
+          configMap:
+            name: hodor-evaluation-database
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 1Gi
+---
+# Accepts every message on port 1025 and delivers none; what was sent is shown on its page, port 8025.
+apiVersion: v1
+kind: Service
+metadata:
+  name: hodor-evaluation-mail
+  labels:
+    app.kubernetes.io/part-of: hodor-evaluation
+spec:
+  selector:
+    app.kubernetes.io/name: hodor-evaluation-mail
+  ports:
+    - name: smtp
+      port: 1025
+      targetPort: smtp
+    - name: http
+      port: 8025
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hodor-evaluation-mail
+  labels:
+    app.kubernetes.io/part-of: hodor-evaluation
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hodor-evaluation-mail
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hodor-evaluation-mail
+        app.kubernetes.io/part-of: hodor-evaluation
+    spec:
+      containers:
+        - name: mail
+          image: axllent/mailpit:v1.27
+          ports:
+            - name: smtp
+              containerPort: 1025
+            - name: http
+              containerPort: 8025

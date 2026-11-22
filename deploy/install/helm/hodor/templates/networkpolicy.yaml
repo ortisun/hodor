@@ -1,0 +1,42 @@
+{{- if .Values.networkPolicy.enabled }}
+# Applies to every pod of the release: servers, workers and the migration job. Only the servers have the
+# port `http`, so nothing can connect to a worker or to the job. The operations port is not opened to
+# other pods: the kubelet, which runs the health checks from the node, is not subject to this policy.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "hodor.fullname" . }}
+  labels:
+    {{- include "hodor.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "hodor.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    {{- if .Values.networkPolicy.egress.enabled }}
+    - Egress
+    {{- end }}
+  ingress:
+    - ports:
+        - port: http
+          protocol: TCP
+      {{- with .Values.networkPolicy.ingressFrom }}
+      from:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  {{- if .Values.networkPolicy.egress.enabled }}
+  egress:
+    # The name service of the cluster.
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+      to:
+        - namespaceSelector: {}
+    {{- with .Values.networkPolicy.egress.to }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- end }}
+{{- end }}

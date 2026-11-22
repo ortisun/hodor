@@ -1,0 +1,78 @@
+{{- if and .Values.mail.enabled (not .Values.mail.from) }}
+{{- fail "mail.from is required when mail.enabled is true: the address messages come from, such as \"Hodor <no-reply@example.com>\"" }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "hodor.fullname" . }}-worker
+  labels:
+    {{- include "hodor.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  replicas: {{ .Values.worker.replicas }}
+  selector:
+    matchLabels:
+      {{- include "hodor.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels:
+        {{- include "hodor.labels" . | nindent 8 }}
+        app.kubernetes.io/component: worker
+      {{- with .Values.worker.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "hodor.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- range . }}
+        - name: {{ . }}
+        {{- end }}
+      {{- end }}
+      securityContext:
+        {{- include "hodor.podSecurityContext" . | nindent 8 }}
+      # A worker told to stop finishes the batches it is handling first.
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: worker
+          image: {{ include "hodor.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/usr/local/bin/hodor-worker"]
+          securityContext:
+            {{- include "hodor.containerSecurityContext" . | nindent 12 }}
+          ports:
+            - name: operations
+              containerPort: 9090
+          env:
+            {{- include "hodor.sharedEnvironment" . | nindent 12 }}
+            {{- include "hodor.secretEnvironment" (list . "HODOR_DATABASE_URL" .Values.secret.keys.workerDatabaseUrl) | nindent 12 }}
+            {{- include "hodor.secretEnvironment" (list . "HODOR_PLATFORM_DATABASE_URL" .Values.secret.keys.workerPlatformDatabaseUrl) | nindent 12 }}
+            - name: HODOR_DATABASE_MAX_CONNECTIONS
+              value: {{ .Values.worker.databaseMaxConnections | quote }}
+            {{- if .Values.mail.enabled }}
+            {{- include "hodor.secretEnvironment" (list . "HODOR_SMTP_URL" .Values.secret.keys.smtpUrl) | nindent 12 }}
+            - name: HODOR_MAIL_FROM
+              value: {{ .Values.mail.from | quote }}
+            {{- end }}
+            {{- with .Values.worker.extraEnvironment }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- include "hodor.probes" . | nindent 10 }}
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}
+      {{- include "hodor.spread" (list . "worker") | nindent 6 }}
+      {{- with .Values.worker.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

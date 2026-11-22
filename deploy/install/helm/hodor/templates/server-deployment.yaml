@@ -1,0 +1,92 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "hodor.fullname" . }}-server
+  labels:
+    {{- include "hodor.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+spec:
+  {{- if not .Values.server.autoscaling.enabled }}
+  replicas: {{ .Values.server.replicas }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "hodor.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: server
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # A new server is ready before an old one is stopped.
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        {{- include "hodor.labels" . | nindent 8 }}
+        app.kubernetes.io/component: server
+      {{- with .Values.server.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "hodor.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- range . }}
+        - name: {{ . }}
+        {{- end }}
+      {{- end }}
+      securityContext:
+        {{- include "hodor.podSecurityContext" . | nindent 8 }}
+      # Longer than the drain, so that requests in flight finish before the pod is killed.
+      terminationGracePeriodSeconds: {{ add .Values.server.shutdownDrainSeconds 25 }}
+      containers:
+        - name: server
+          image: {{ include "hodor.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/usr/local/bin/hodor-server"]
+          securityContext:
+            {{- include "hodor.containerSecurityContext" . | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: operations
+              containerPort: 9090
+          env:
+            - name: HODOR_LISTEN_ADDR
+              value: "0.0.0.0:8080"
+            {{- include "hodor.sharedEnvironment" . | nindent 12 }}
+            - name: HODOR_PUBLIC_URL
+              value: {{ include "hodor.publicUrl" . | quote }}
+            {{- include "hodor.secretEnvironment" (list . "HODOR_DATABASE_URL" .Values.secret.keys.serverDatabaseUrl) | nindent 12 }}
+            {{- include "hodor.secretEnvironment" (list . "HODOR_SECRET_KEYS" .Values.secret.keys.secretKeys) | nindent 12 }}
+            - name: HODOR_DATABASE_MAX_CONNECTIONS
+              value: {{ .Values.server.databaseMaxConnections | quote }}
+            - name: HODOR_PASSWORD_HASH_CONCURRENCY
+              value: {{ .Values.server.passwordHashConcurrency | quote }}
+            - name: HODOR_SHUTDOWN_DRAIN_SECONDS
+              value: {{ .Values.server.shutdownDrainSeconds | quote }}
+            {{- with .Values.directoryHosts }}
+            - name: HODOR_DIRECTORY_HOSTS
+              value: {{ join "," . | quote }}
+            {{- end }}
+            {{- with .Values.server.extraEnvironment }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- include "hodor.probes" . | nindent 10 }}
+          resources:
+            {{- toYaml .Values.server.resources | nindent 12 }}
+      {{- include "hodor.spread" (list . "server") | nindent 6 }}
+      {{- with .Values.server.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.server.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.server.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

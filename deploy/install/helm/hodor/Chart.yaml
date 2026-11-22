@@ -1,0 +1,11 @@
+apiVersion: v2
+name: hodor
+description: Hodor, the identity server for many tenants, on Kubernetes - the server, the worker and the migration job.
+type: application
+# The version of the chart and the version of Hodor it installs move together.
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.27.0-0"
+home: https://ortisun.github.io/hodor/
+sources:
+  - https://github.com/ortisun/hodor
