@@ -138,7 +138,7 @@ Every tenant is served under the same public address, at `/t/{slug}`, so every t
 | The public key, as the COSE key the authenticator sent, and its algorithm | To check signatures. Kept as sent, so that algorithms added later need no conversion |
 | The signature counter | To notice a copied authenticator |
 | Whether the credential may be backed up, and whether it is | Reported by the authenticator. A credential that may be backed up is a synchronized passkey |
-| Whether the credential is discoverable, when the browser said | A discoverable credential can sign a person in without an identifier first, which [passkeys](../../product/epics.md#slice-q-factors) will use |
+| Whether the credential is discoverable, when the browser said | A discoverable credential can sign a person in without an identifier first, which [passkeys](../../product/epics.md#milestone-4-strong-authentication) will use |
 | How the authenticator is reached, as the browser said: `usb`, `nfc`, `ble`, `internal`, `hybrid` | Passed back to the browser, which uses it to offer the right authenticator |
 | A name the person gives it | So that they can tell their keys apart |
 | When it was registered and last used | For display |
