@@ -2,7 +2,7 @@
 
 ## Overview
 
-The PostgreSQL schema, as twenty-seven numbered SQL files. A number is
+The PostgreSQL schema, as twenty-eight numbered SQL files. A number is
 reserved when a piece of work starts, so a number can be missing until that
 work merges; every file not yet applied is applied, in order. They are
 embedded in the binaries by `static MIGRATOR: Migrator = sqlx::migrate!("../../migrations")`
@@ -44,6 +44,7 @@ Tables created, by file:
 | `0023_keys.sql` | schema `keys`; table `keys.key_version` with the partial unique index `key_version_one_active` (one `active` row per tenant, use and algorithm) |
 | `0024_oauth_clients.sql` | schema `oauth`; `oauth.application`; `oauth.client`; `oauth.client_secret`; `oauth.client_key`; `oauth.resource_server`; `oauth.resource_server_scope` |
 | `0026_credential_totp.sql` | `credential.totp`: authenticator applications, with the secret sealed (`totp_one_per_status`, `totp_confirmed_when_active`) |
+| `0027_credential_webauthn.sql` | `credential.webauthn_credential` (unique `webauthn_credential_id_unique` on tenant and credential identifier); `credential.webauthn_registration`; adds the column `challenge` to `authentication.transaction` |
 | `0029_oauth_authorization.sql` | `oauth.authorization_request`; `oauth.authorization_grant`; `oauth.authorization_code` (a code lives at most 60 seconds; an S256 challenge is 43 base64url characters) |
 | `0030_authorization_engine_binding.sql` | `"authorization".engine_binding`: which engine answers for a resource server, never `hodor:admin` |
 
