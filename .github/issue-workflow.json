@@ -1,0 +1,151 @@
+{
+  "design": {
+    "approved": "approved",
+    "document_field": "Design document",
+    "document_glob": "docs/designs/*.md",
+    "prefix": "design: ",
+    "reply_caps_per_issue": {
+      "environment": 2,
+      "refusal": 3,
+      "withdrawal": 2
+    },
+    "reply_window_hours": 24,
+    "start_states": [
+      "proposed",
+      "in progress"
+    ],
+    "transitions": [
+      [
+        "proposed",
+        "in progress"
+      ],
+      [
+        "in progress",
+        "in review"
+      ],
+      [
+        "in review",
+        "in progress"
+      ],
+      [
+        "in review",
+        "approved"
+      ],
+      [
+        "approved",
+        "in progress"
+      ]
+    ]
+  },
+  "factory": {
+    "job_states": {
+      "ACTIVE": "factory: working",
+      "BLOCKED": "factory: blocked",
+      "CANCELLED": "factory: cancelled",
+      "CANCELLING": "factory: stopping",
+      "COMPLETED": "factory: done",
+      "FAILED": "factory: failed",
+      "PAUSED": "factory: paused",
+      "RECEIVED": "factory: queued",
+      "REJECTED": "factory: rejected",
+      "WAITING_FOR_HUMAN": "factory: waiting for a person"
+    },
+    "prefix": "factory: "
+  },
+  "labels": [
+    {
+      "color": "1d76db",
+      "description": "Ask the factory to work on this issue. Only a named requester can apply it.",
+      "kind": "trigger",
+      "name": "factory"
+    },
+    {
+      "color": "c5def5",
+      "description": "A new solution was proposed. Nobody has worked out the design yet.",
+      "kind": "design",
+      "name": "design: proposed"
+    },
+    {
+      "color": "bfd4f2",
+      "description": "A person and EGM are working out requirements and trade-offs.",
+      "kind": "design",
+      "name": "design: in progress"
+    },
+    {
+      "color": "84b6eb",
+      "description": "The design is in review: fresh EGM reviewers and a design pull request.",
+      "kind": "design",
+      "name": "design: in review"
+    },
+    {
+      "color": "0e8a16",
+      "description": "The design pull request was merged. The design is the agreed source for the work.",
+      "kind": "design",
+      "name": "design: approved"
+    },
+    {
+      "color": "ededed",
+      "description": "The factory accepted the request and has not started.",
+      "kind": "factory",
+      "name": "factory: queued"
+    },
+    {
+      "color": "fbca04",
+      "description": "The factory is working on this issue.",
+      "kind": "factory",
+      "name": "factory: working"
+    },
+    {
+      "color": "d93f0b",
+      "description": "The factory needs a person to answer or decide.",
+      "kind": "factory",
+      "name": "factory: waiting for a person"
+    },
+    {
+      "color": "d4c5f9",
+      "description": "An operator paused the work.",
+      "kind": "factory",
+      "name": "factory: paused"
+    },
+    {
+      "color": "b60205",
+      "description": "A check could not run, or something is missing. See the comment.",
+      "kind": "factory",
+      "name": "factory: blocked"
+    },
+    {
+      "color": "cccccc",
+      "description": "The work is being stopped.",
+      "kind": "factory",
+      "name": "factory: stopping"
+    },
+    {
+      "color": "0e8a16",
+      "description": "The work finished and a draft pull request is ready for review.",
+      "kind": "factory",
+      "name": "factory: done"
+    },
+    {
+      "color": "b60205",
+      "description": "The work failed. See the comment for the reason.",
+      "kind": "factory",
+      "name": "factory: failed"
+    },
+    {
+      "color": "cccccc",
+      "description": "An operator cancelled the work.",
+      "kind": "factory",
+      "name": "factory: cancelled"
+    },
+    {
+      "color": "e99695",
+      "description": "An approver rejected the result.",
+      "kind": "factory",
+      "name": "factory: rejected"
+    }
+  ],
+  "schema": "factory-issue-workflow/1",
+  "source": "policies/issue-workflow.yaml",
+  "source_sha256": "2865b13143a6d8c91463ba88ca120621ebd41ac2fe62c2a9412f68d560feb633",
+  "trigger": "factory"
+}

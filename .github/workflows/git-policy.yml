@@ -1,0 +1,76 @@
+# Checks every pull request against the project's git policy: Conventional Commits and gitflow.
+#
+# The installer (scripts/install.sh) copies this file and `.github/scripts/git_policy.py` into a repository, and records
+# the project's settings in `.factory/repository.json`. The check fails when:
+#   * the head branch is not a gitflow name, or closes into a branch that the gitflow mode does not allow
+#     (closing_mode "develop": feature/ and bugfix/ into develop; "release": straight into the release/ branch;
+#     release/ into main or develop; hotfix/ into main, develop or a release branch; the factory's factory/ branches
+#     are feature branches);
+#   * the pull request title, which becomes the commit of a squash merge, is not a Conventional Commits header;
+#   * a commit of the pull request (merge commits aside) does not follow Conventional Commits, or is a fixup! or
+#     squash! commit that was not squashed.
+# The git hooks in `.github/githooks/` apply the same rules on a developer's machine; this check is the one that a
+# person cannot skip. Make it a required status check of main and develop in the branch rules.
+#
+# The policy and the settings are read from the BASE branch, not from the pull request, so a pull request cannot
+# change the rules it is judged by. The pull request's commits are only read as data.
+name: Git policy
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: git-policy-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  policy:
+    name: Conventional Commits and gitflow
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out the base branch (the policy and the settings)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+          persist-credentials: false
+          sparse-checkout: |
+            .github/scripts
+            .factory
+
+      - name: Check out the pull request with its history (data only)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: pull
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Branch names and the title come from people, so they reach the script through the environment and never through
+      # the text of this command.
+      - name: Check the pull request
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          policy=base/.github/scripts/git_policy.py
+          if [ ! -f "$policy" ]; then
+            # The pull request that brings the policy in: there is no copy on the base branch yet.
+            echo "::warning title=git policy::the base branch has no .github/scripts/git_policy.py yet; using the pull request's copy"
+            policy=pull/.github/scripts/git_policy.py
+          fi
+          settings=base/.factory/repository.json
+          if [ ! -f "$settings" ] && [ -f pull/.factory/repository.json ]; then
+            echo "::warning title=git policy::the base branch has no .factory/repository.json yet; using the pull request's copy"
+            settings=pull/.factory/repository.json
+          fi
+          python3 -I "$policy" check-pr --settings "$settings" --checkout pull \
+            --base-ref "$BASE_REF" --head-ref "$HEAD_REF" --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA"

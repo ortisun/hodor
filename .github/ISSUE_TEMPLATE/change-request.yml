@@ -1,0 +1,52 @@
+name: Request a small, clear change
+description: A bug or a change whose outcome is already clear, so it needs no design.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form when the fix is clear. If you are not sure how it should work, use "Propose a new
+        solution" instead. This form does not start the factory: a named requester applies the `factory`
+        label when the issue is ready.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What is wrong or missing, in one to three sentences.
+    validations:
+      required: true
+  - type: textarea
+    id: where
+    attributes:
+      label: Where it happens
+      description: The page, command or file, and the steps to see it, one step per line.
+  - type: textarea
+    id: fix
+    attributes:
+      label: The change you want
+      description: The intended change in one to three lines. Leave the implementation to the builder.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Two to five outcomes that a test can check.
+      placeholder: |
+        - [ ] The spinner stops when the upload fails.
+    validations:
+      required: true
+  - type: dropdown
+    id: risk
+    attributes:
+      label: Risk
+      options:
+        - Low
+        - Medium
+        - High
+    validations:
+      required: true
+  - type: textarea
+    id: blocked
+    attributes:
+      label: Blocked by
+      description: Issues that must be finished first, with the reason. Write "None." if there are none.

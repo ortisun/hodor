@@ -1,0 +1,20 @@
+{
+  "options": {
+    "design_review": "Design review",
+    "designing": "Designing",
+    "done": "Done",
+    "idea": "Idea",
+    "in_review": "In review",
+    "needs_person": "Needs a person",
+    "ready": "Ready",
+    "stopped": "Stopped",
+    "working": "Working"
+  },
+  "project": {
+    "number": 3,
+    "owner": "ortisun",
+    "owner_type": "organization"
+  },
+  "schema": "factory-project-board/1",
+  "status_field": "Stage"
+}
