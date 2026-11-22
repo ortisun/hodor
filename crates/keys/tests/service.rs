@@ -3,9 +3,10 @@
 
 use hodor_kernel::clock::testing::FixedClock;
 use hodor_kernel::uow::testing::InMemoryUnitOfWorkFactory;
-use hodor_kernel::{Caller, Secret, TenantContext, TenantId, Timestamp};
+use hodor_kernel::{Caller, Clock as _, Secret, TenantContext, TenantId, Timestamp};
 use hodor_keys::api::{
     KeyAlgorithm, KeyProvider, KeyService, KeyState, KeyUse, KeyVersion, KeyVersionId,
+    RotationPolicy, RotationReport,
 };
 use hodor_keys::testing::{FakeKeyProvider, InMemoryKeys, Ports, pending_version, run_contract};
 use std::sync::Arc;
@@ -303,4 +304,215 @@ async fn the_stand_in_provider_refuses_material_of_another_tenant_or_use() {
             .await
             .is_err()
     );
+}
+
+fn policy() -> RotationPolicy {
+    RotationPolicy::DEFAULT
+}
+
+impl World {
+    async fn rotate_due(&self) -> RotationReport {
+        self.service
+            .rotate_due(&self.tenant, &policy(), Caller::system())
+            .await
+            .expect("rotate")
+    }
+
+    async fn published(&self) -> Vec<(KeyVersionId, KeyState)> {
+        self.service
+            .published_keys(&self.tenant)
+            .await
+            .expect("published")
+            .iter()
+            .map(|version| (version.id(), version.state()))
+            .collect()
+    }
+}
+
+#[tokio::test]
+async fn rotation_gives_a_tenant_its_first_key_then_replaces_it_on_schedule() {
+    let world = world();
+    let first = world.rotate_due().await;
+    assert_eq!(
+        first,
+        RotationReport {
+            created: 1,
+            activated: 1,
+            retired: 0
+        }
+    );
+    let signature = world
+        .service
+        .sign(&world.tenant, KeyAlgorithm::Es256, b"token")
+        .await
+        .expect("the first key signs");
+    let original = signature.key_version_id;
+    assert_eq!(world.rotate_due().await, RotationReport::default());
+
+    // A day before the period ends, the next key is made and published.
+    world
+        .clock
+        .advance(policy().period() - policy().publication());
+    assert_eq!(world.rotate_due().await.created, 1);
+    let published = world.published().await;
+    assert_eq!(published.len(), 2);
+    assert_eq!(published[0].1, KeyState::Pending);
+    let next = published[0].0;
+    assert_eq!(
+        world
+            .service
+            .sign(&world.tenant, KeyAlgorithm::Es256, b"token")
+            .await
+            .expect("sign")
+            .key_version_id,
+        original,
+        "a published key does not sign before its time"
+    );
+
+    // At the end of the period it signs, and the old one stays published.
+    world.clock.advance(policy().publication());
+    assert_eq!(world.rotate_due().await.activated, 1);
+    assert_eq!(
+        world.published().await,
+        vec![(next, KeyState::Active), (original, KeyState::Retiring)]
+    );
+    assert_eq!(
+        world
+            .service
+            .sign(&world.tenant, KeyAlgorithm::Es256, b"token")
+            .await
+            .expect("sign")
+            .key_version_id,
+        next
+    );
+
+    // After the overlap the old one is retired and leaves the key set.
+    world.clock.advance(policy().overlap());
+    assert_eq!(world.rotate_due().await.retired, 1);
+    assert_eq!(world.published().await, vec![(next, KeyState::Active)]);
+    assert_eq!(
+        world.units_of_work.committed_event_types(),
+        vec![
+            "keys.version_created",
+            "keys.version_activated",
+            "keys.version_created",
+            "keys.version_activated",
+            "keys.version_retired",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn rotating_by_hand_signs_at_once_with_the_published_key_if_there_is_one() {
+    let world = world();
+    world.rotate_due().await;
+    let original = world.published().await[0].0;
+
+    let rotated = world
+        .service
+        .rotate_now(
+            &world.tenant,
+            KeyAlgorithm::Es256,
+            &policy(),
+            Caller::system(),
+        )
+        .await
+        .expect("rotate");
+    assert_eq!(rotated.state(), KeyState::Active);
+    assert_eq!(
+        world.published().await,
+        vec![
+            (rotated.id(), KeyState::Active),
+            (original, KeyState::Retiring)
+        ]
+    );
+    let set = world
+        .service
+        .key_set(&world.tenant, KeyUse::Signing)
+        .await
+        .expect("set");
+    let replaced = set.version(original).expect("kept").snapshot();
+    assert_eq!(
+        replaced.retire_after,
+        Some(world.clock.now() + policy().overlap()),
+        "the replaced key stays for the policy's overlap"
+    );
+
+    // With a key already published, that one is activated.
+    let pending = world.made(KeyAlgorithm::Es256).await;
+    let again = world
+        .service
+        .rotate_now(
+            &world.tenant,
+            KeyAlgorithm::Es256,
+            &policy(),
+            Caller::system(),
+        )
+        .await
+        .expect("rotate");
+    assert_eq!(again.id(), pending.id());
+}
+
+#[tokio::test]
+async fn only_a_signing_key_is_rotated_by_hand() {
+    let world = world();
+    let error = world
+        .service
+        .rotate_now(
+            &world.tenant,
+            KeyAlgorithm::A256Gcm,
+            &policy(),
+            Caller::system(),
+        )
+        .await
+        .expect_err("refused");
+    assert_eq!(error.code(), "keys.algorithm_unsuitable");
+    assert!(world.units_of_work.committed_event_types().is_empty());
+}
+
+#[tokio::test]
+async fn a_revoked_key_leaves_the_published_set_and_rotation_replaces_it() {
+    let world = world();
+    world.rotate_due().await;
+    let original = world.published().await[0].0;
+    world
+        .service
+        .revoke(&world.tenant, original, "leaked", Caller::system())
+        .await
+        .expect("revoke");
+    assert!(world.published().await.is_empty());
+
+    let report = world.rotate_due().await;
+    assert_eq!((report.created, report.activated), (1, 1));
+    let published = world.published().await;
+    assert_eq!(published.len(), 1);
+    assert_ne!(published[0].0, original);
+}
+
+#[tokio::test]
+async fn the_published_keys_of_one_tenant_are_not_those_of_another() {
+    let world = world();
+    world.rotate_due().await;
+    let elsewhere = TenantContext::assume(TenantId::generate());
+    assert!(
+        world
+            .service
+            .published_keys(&elsewhere)
+            .await
+            .expect("published")
+            .is_empty()
+    );
+    world
+        .service
+        .rotate_due(&elsewhere, &policy(), Caller::system())
+        .await
+        .expect("rotate");
+    let theirs = world
+        .service
+        .published_keys(&elsewhere)
+        .await
+        .expect("published");
+    let ours = world.published().await;
+    assert_eq!((theirs.len(), ours.len()), (1, 1));
+    assert_ne!(theirs[0].id(), ours[0].0);
 }

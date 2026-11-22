@@ -75,7 +75,7 @@ Then fill in the five values that have no default. Compose refuses to start whil
 | `HODOR_OWNER_DATABASE_PASSWORD` | A password for the role that owns the schema, used by `migrate` only |
 | `HODOR_SERVER_DATABASE_PASSWORD` | A password for the server's role |
 | `HODOR_WORKER_DATABASE_PASSWORD` | A password for the worker's two roles |
-| `HODOR_SECRET_KEYS` | The key that keeps the secrets of identity providers encrypted in the database, as `identifier:key` |
+| `HODOR_SECRET_KEYS` | The key that keeps the secrets of identity providers and the tenants' signing keys encrypted in the database, as `identifier:key`. The server and the worker both read it |
 
 Make each of the three passwords with the command below. They are written into connection addresses, so they must be letters and digits only, which is what this prints:
 

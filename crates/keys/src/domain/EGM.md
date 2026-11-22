@@ -38,6 +38,19 @@ through `crate::api`.
 - `Activation { changed: Vec<KeyVersion>, event: KeyEvent }`: the replaced
   version first.
 
+### `rotation.rs`
+
+- `RotationPolicy`: `new(period, publication, overlap)`, `period`,
+  `publication`, `overlap`, `shortest_overlap()`, `DEFAULT` (90 days, 24
+  hours, 24 hours), and the constants `LONGEST_SIGNED_LIFETIME` (1 hour),
+  `CLOCK_ALLOWANCE` (5 minutes), `PUBLISHED_FOR` (5 minutes, the `max-age`
+  of the published key set) and `PERIOD_BOUNDS` (1 to 730 days).
+- `RotationChange { Retire(id), Activate(id), Prepare(algorithm),
+  CreateAndActivate(algorithm) }`.
+- On `KeySet`: `rotation_plan(policy, now) -> Vec<RotationChange>`,
+  `oldest_pending(algorithm)`, `published()` (pending, active and retiring
+  signing versions, newest first).
+
 ### `event.rs`
 
 `KeyEvent` (`Serialize`, untagged) implements `DomainEvent`:
@@ -68,6 +81,19 @@ through `crate::api`.
 - `KeySet::from_versions` gives `keys.stored_data_invalid` for a version of
   another use or two active versions of one algorithm.
 - Events never carry key material or the public key.
+- `RotationPolicy::new` gives `keys.rotation_policy_invalid` for a period
+  outside 1 to 730 days, a publication time shorter than `PUBLISHED_FOR` or
+  not shorter than the period, or an overlap shorter than
+  `LONGEST_SIGNED_LIFETIME` plus `CLOCK_ALLOWANCE`.
+- `rotation_plan` follows `docs/architecture/contexts/keys.md`, "One step
+  of rotation": retires what is due, then for ES256 with nothing active
+  activates the oldest pending version or makes one and activates it at
+  once; for each algorithm with an active version it prepares a pending
+  version once the active one is older than the period less the
+  publication time, and activates it once the active one is older than the
+  period and the pending one was published for the publication time. A
+  data key set plans nothing and publishes nothing: no data version is made,
+  activated or retired by rotation, since secrets sealed with it may remain.
 
 ## Side Effects
 

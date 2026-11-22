@@ -4,6 +4,7 @@ use crate::application::ports::{KeyProvider, KeyStore};
 use crate::domain::event::KeyEvent;
 use crate::domain::key::{KeyAlgorithm, KeyUse, KeyVersion, KeyVersionId};
 use crate::domain::key_set::{KeySet, not_found};
+use crate::domain::rotation::{RotationChange, RotationPolicy};
 use hodor_kernel::{
     Caller, Clock, DomainError, EventEnvelope, EventMetadata, TenantContext, UnitOfWork,
     UnitOfWorkFactory,
@@ -20,6 +21,32 @@ pub struct Signature {
     pub algorithm: KeyAlgorithm,
     /// The signature.
     pub bytes: Vec<u8>,
+}
+
+/// What one step of rotation changed in a tenant.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RotationReport {
+    /// Versions made.
+    pub created: u64,
+    /// Versions activated.
+    pub activated: u64,
+    /// Versions retired.
+    pub retired: u64,
+}
+
+impl RotationReport {
+    /// Whether the step changed anything.
+    #[must_use]
+    pub const fn changed(&self) -> bool {
+        self.created + self.activated + self.retired > 0
+    }
+
+    /// Adds what another step changed.
+    pub const fn add(&mut self, other: Self) {
+        self.created += other.created;
+        self.activated += other.activated;
+        self.retired += other.retired;
+    }
 }
 
 /// The use cases of the keys context.
@@ -177,6 +204,94 @@ impl KeyService {
         let mut uow = self.units_of_work.begin(tenant).await?;
         let versions = self.keys.list_for_use(uow.as_mut(), key_use).await?;
         KeySet::from_versions(key_use, versions)
+    }
+
+    /// Runs one step of rotation in the tenant's signing key set: retires,
+    /// makes and activates the versions whose time has come under
+    /// `policy`. Each change is its own transaction and its own event.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the provider cannot make a key or storage fails;
+    /// the changes made before the error stay made.
+    pub async fn rotate_due(
+        &self,
+        tenant: &TenantContext,
+        policy: &RotationPolicy,
+        caller: Caller,
+    ) -> Result<RotationReport, DomainError> {
+        let set = self.key_set(tenant, KeyUse::Signing).await?;
+        let mut report = RotationReport::default();
+        for change in set.rotation_plan(policy, self.clock.now()) {
+            match change {
+                RotationChange::Retire(id) => {
+                    self.retire(tenant, id, caller).await?;
+                    report.retired += 1;
+                }
+                RotationChange::Activate(id) => {
+                    self.activate(tenant, id, policy.overlap(), caller).await?;
+                    report.activated += 1;
+                }
+                RotationChange::Prepare(algorithm) => {
+                    self.create_version(tenant, algorithm, caller).await?;
+                    report.created += 1;
+                }
+                RotationChange::CreateAndActivate(algorithm) => {
+                    let version = self.create_version(tenant, algorithm, caller).await?;
+                    report.created += 1;
+                    self.activate(tenant, version.id(), policy.overlap(), caller)
+                        .await?;
+                    report.activated += 1;
+                }
+            }
+        }
+        Ok(report)
+    }
+
+    /// Activates a new signing version of `algorithm` at once, for an
+    /// operator who will not wait for the schedule: the pending version
+    /// published longest if there is one, a new one otherwise. The version
+    /// it replaces starts retiring with the policy's overlap.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Invalid` `keys.algorithm_unsuitable` for an algorithm that
+    /// does not sign, `Conflict` `keys.activation_conflict` if another
+    /// activation happened at the same moment, and an error if the provider
+    /// cannot make a key or storage fails.
+    pub async fn rotate_now(
+        &self,
+        tenant: &TenantContext,
+        algorithm: KeyAlgorithm,
+        policy: &RotationPolicy,
+        caller: Caller,
+    ) -> Result<KeyVersion, DomainError> {
+        if algorithm.key_use() != KeyUse::Signing {
+            return Err(DomainError::invalid(
+                "keys.algorithm_unsuitable",
+                "the algorithm does not sign",
+            ));
+        }
+        let set = self.key_set(tenant, KeyUse::Signing).await?;
+        let id = match set.oldest_pending(algorithm) {
+            Some(pending) => pending.id(),
+            None => self.create_version(tenant, algorithm, caller).await?.id(),
+        };
+        self.activate(tenant, id, policy.overlap(), caller).await
+    }
+
+    /// The signing versions that are published for those who check
+    /// signatures: pending, active and retiring, newest first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    pub async fn published_keys(
+        &self,
+        tenant: &TenantContext,
+    ) -> Result<Vec<KeyVersion>, DomainError> {
+        let set = self.key_set(tenant, KeyUse::Signing).await?;
+        Ok(set.published().into_iter().cloned().collect())
     }
 
     /// Signs `message` with the active version of a signing algorithm.

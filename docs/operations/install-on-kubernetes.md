@@ -95,7 +95,7 @@ kubectl create secret generic hodor --namespace hodor \
 | `server-database-url` | The servers, and the migration job to create the system tenant | Connection address of the server's role |
 | `worker-database-url` | The workers | Connection address of the worker's role in `hodor_app` |
 | `worker-platform-database-url` | The workers | Connection address of the worker's role in `hodor_platform` |
-| `secret-keys` | The servers | `HODOR_SECRET_KEYS`: one or more `identifier:key` pairs, separated by commas |
+| `secret-keys` | The servers and the workers | `HODOR_SECRET_KEYS`: one or more `identifier:key` pairs, separated by commas. The workers make the tenants' signing keys with them, and the servers use those keys |
 | `smtp-url` | The workers, with `mail.enabled` | Address of the mail server |
 
 A password written into an address must be made of letters and digits, or be percent-encoded. A tool that manages secrets in the cluster can make this Secret instead of `kubectl`; `secret.keys` renames the keys if it needs other names.

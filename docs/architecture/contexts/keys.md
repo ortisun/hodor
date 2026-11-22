@@ -4,7 +4,7 @@ The `keys` context owns the keys a tenant's tokens are signed with and, later, t
 
 It holds no cryptography of its own. Keys are made, kept and used by a **key provider**, a port that `hodor-adapters-crypto` implements on `aws-lc-rs` ([Decision 0008](../../decisions/0008-cryptography.md)). This context decides which key is used when, and keeps what the provider hands back.
 
-This page specifies what Issue-50 builds: key sets, key versions and their states, the key provider port, the local provider and the storage. Scheduled rotation, publication of the key set, revocation commands and the administration interface are Issue-51. Moving the secrets of Milestone 2 under managed keys is Issue-52.
+This page specifies what Issues 50 and 51 build. Issue-50: key sets, key versions and their states, the key provider port, the local provider and the storage. Issue-51: rotation on a schedule, the published key set, and managing keys with the command-line tool and the administration interface. Moving the secrets of Milestone 2 under managed keys is Issue-52.
 
 ## Key sets and key versions
 
@@ -50,7 +50,7 @@ stateDiagram-v2
 
 | State | Signs or encrypts | Checks or decrypts | How it is reached |
 |---|---|---|---|
-| Pending | No | No | Made, not yet in use. A version can be published before it signs, so that those who check signatures know it in advance |
+| Pending | No | No | Made, not yet in use. It is published before it signs, so that those who check signatures know it in advance |
 | Active | Yes | Yes | Activated |
 | Retiring | No | Yes | Replaced by a newer version of the same algorithm; stays until everything it signed has expired |
 | Retired | No | No | Retired after its time |
@@ -74,9 +74,12 @@ Rules:
 | Retire | Retires a retiring version whose time has passed |
 | Revoke | Revokes a version, with a reason |
 | Read a key set | Returns the versions of one use, newest first |
+| Rotate what is due | Runs one step of [rotation](#rotation) in a tenant: retires, makes and activates the versions whose time has come |
+| Rotate now | Activates a new signing version of an algorithm at once, for an operator who will not wait for the schedule |
+| Published keys | The signing versions that [the published key set](#the-published-key-set) holds |
 | Sign | Signs a message with the active version of an algorithm, and answers the signature with the version's identifier. Refused when the algorithm has no active version |
 
-Who calls them, and when, is Issue-51: rotation on a schedule, the command-line tool and the administration interface.
+Rotation, the published key set and the commands below call these, and nothing else changes a version.
 
 ### Events
 
@@ -96,6 +99,74 @@ Events carry identifiers, uses, algorithms and times. They never carry key mater
 | `KeyStore` | Store and load key versions; load the key set of one use |
 | `KeyProvider` | Make a key; sign with a signing key; encrypt and decrypt with a data key. Asynchronous, because a provider of a key management service answers over the network |
 | `Clock` | The times of the lifecycle |
+
+## Rotation
+
+A signing key is replaced on a schedule, so that a key that leaked without anyone knowing stops being trusted after a while, and so that replacing a key is something Hodor does every few months rather than for the first time during an incident.
+
+### The rotation policy
+
+One policy for the whole installation, read from the configuration of the worker, the server and the command-line tool. It is not a tenant setting: how often keys change, and how long a replaced key stays, protect those who check signatures, not the tenant's own choices.
+
+| Setting | Variable | Default | Bounds |
+|---|---|---|---|
+| Period: how long a version is active before it is replaced | `HODOR_KEY_ROTATION_DAYS` | 90 days | 1 to 730 days |
+| Publication: how long a new version is published before it signs | `HODOR_KEY_PUBLICATION_HOURS` | 24 hours | At least the 5 minutes the published key set may be kept by those who read it, and less than the period |
+| Overlap: how long a replaced version stays published after it stopped signing | `HODOR_KEY_OVERLAP_HOURS` | 24 hours | At least the lifetime of the longest-lived token a key signs, one hour, plus five minutes for clocks that disagree |
+
+**Why the overlap is enough.** The tokens Hodor signs are access tokens and ID tokens, and the `oauth` context caps both at one hour (`TokenPolicy`; refresh tokens are not signed). A version that stops signing at the moment its successor is activated has signed nothing that lives past that moment plus one hour, so a version retired after the overlap checks every token it signed. The policy refuses an overlap shorter than `RotationPolicy::LONGEST_SIGNED_LIFETIME` plus `RotationPolicy::CLOCK_ALLOWANCE`, so the rule cannot be configured away. Signing a token is Issue-56, which ties the two: it refuses to sign a token that lives longer than that constant, so a longer token lifetime would have to raise the constant, and with it the shortest overlap, first.
+
+### One step of rotation
+
+The worker runs a step for every tenant that has something due. A step looks at the tenant's signing key set and, in this order:
+
+1. **Retires** every retiring version whose time to retire has passed.
+2. **Makes sure the default algorithm signs.** When ES256 has no active version, a tenant's first key or one whose active key was revoked, a pending ES256 version is activated at once, or made and activated at once when there is none. Waiting for the publication time would leave the tenant signing nothing.
+3. **Prepares the next version.** For each algorithm with an active version older than the period less the publication time, a pending version is made, unless one is pending already. It is published from that moment.
+4. **Activates it when its time comes.** When the active version is older than the period and the pending one has been published for the publication time, the pending one is activated; the one it replaces starts retiring with the overlap.
+
+Each change is its own transaction with its own event, as with every other use of the operations above. An algorithm other than the default rotates only while it has an active version: a tenant that revokes its RS256 key and makes no other has chosen to stop signing with RS256.
+
+The decision is made in the domain, by `KeySet::rotation_plan`, from the key set and the time alone; the step only carries it out.
+
+**Rotation never touches the data key set.** It makes, activates and retires signing versions only. A data version must not be retired while secrets sealed with it remain, and only the context that seals them knows when none do; Issue-52, which seals secrets under the tenant's data keys, decides when a data version may be replaced and retired. Until then a data version is retired by nothing.
+
+### Two workers, one rotation
+
+Several workers can run at once. A step that two of them took together would activate two new versions one after the other, and the first would be replaced seconds after it was published. A pass of the rotation job therefore holds a PostgreSQL advisory lock for its whole length, taken with `pg_try_advisory_xact_lock` in a transaction of its own: a worker that does not get it skips the pass. The lock is released when that transaction ends, whatever happens to the worker.
+
+A pass finds the tenants that have something due through the platform connection, which sees every tenant's versions, and does each step inside the tenant as the application role, like the outbox and the cleanup jobs ([multi-tenancy](../multi-tenancy.md#cross-tenant-operations)). Only active tenants are rotated.
+
+| Setting | Variable | Default |
+|---|---|---|
+| Pause between passes | `HODOR_KEY_ROTATION_INTERVAL_MS` | 600 000 (ten minutes) |
+
+A worker started without `HODOR_SECRET_KEYS` cannot make keys: it does not rotate, and says so in its log when it starts.
+
+### Rotating and revoking by hand
+
+An operator can rotate a tenant's signing key at once, with `hodor-cli keys rotate` or `POST /keys/sig:rotate`. A pending version of the algorithm is activated if there is one, and otherwise a new version is made and activated. A version activated this way is not published in advance: those who check signatures see a key identifier they do not know and fetch the key set again, which every library that reads a key set does.
+
+Revoking, with `hodor-cli keys revoke` or `POST /keys/sig/versions/{version_id}:revoke`, takes a reason and removes the version from the published key set at once. Tokens it signed stop being accepted by those who fetch the key set again. To replace a key that is no longer trusted, **rotate first, then revoke the version that was replaced**: revoking the active version first leaves the tenant without a signing key until the next pass of the rotation job makes one.
+
+A manual rotation can meet a step of the job in the same moment. The database still allows one active version per algorithm; the worst outcome is two rotations in a row, and the version replaced by the second still stays for the overlap.
+
+## The published key set
+
+Those who check the signatures of a tenant read its signing keys at `GET /t/{tenant}/oauth2/jwks`, the address the OpenID Provider's Discovery document will name (Issue-59). The answer is a JSON Web Key Set (RFC 7517) with one key for each signing version that is **pending, active or retiring**. Retired and revoked versions are left out; a revoked version leaves the moment it is revoked.
+
+| Member | Value |
+|---|---|
+| `kid` | The version's identifier |
+| `kty` | `EC` for ES256, `RSA` for RS256 and PS256 |
+| `use` | `sig` |
+| `alg` | The version's algorithm |
+| `crv`, `x`, `y` | For ES256: `P-256` and the point, base64url without padding |
+| `n`, `e` | For RS256 and PS256: the modulus and the exponent, base64url without padding |
+
+Nothing else of a version is published: not its state, its times, or anything of its key material. Keys are listed newest first.
+
+The answer carries `Cache-Control: public, max-age=300`: someone who keeps it at most five minutes sees a new version well within its publication time, and a revoked version disappears for everyone within five minutes. The key set of one tenant names only that tenant's versions, as every read inside a tenant does. When the server has no `HODOR_SECRET_KEYS`, there is no keys context and the address is not served.
 
 ## The key provider
 
@@ -145,10 +216,10 @@ When an activation replaces a version, the replaced version is written first and
 
 | Item | Planned in |
 |---|---|
-| Rotation on a schedule, under an advisory lock, in the worker | Issue-51 |
-| The key set published for those who check signatures, with retiring versions in it | Issue-51 |
-| Revoking from the command-line tool and the administration interface | Issue-51 |
-| Secrets at rest under a data key of the tenant | Issue-52 |
+| Secrets at rest under a data key of the tenant, and rotating the data key set | Issue-52 |
+| Signing tokens with these keys | Issue-56 |
+| Naming the published key set in Discovery | Issue-59 |
 | Algorithms for the encryption key set | When Hodor accepts encrypted requests or encrypts tokens |
 | EdDSA | Optional, not scheduled |
+| A rotation policy per tenant | When a tenant asks for one |
 | Providers of key management services and vaults | Phase 9 |

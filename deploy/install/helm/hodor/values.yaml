@@ -30,7 +30,8 @@ secret:
     # Connection addresses of the worker's two roles, members of hodor_app and of hodor_platform.
     workerDatabaseUrl: worker-database-url
     workerPlatformDatabaseUrl: worker-platform-database-url
-    # The keys that keep the secrets of identity providers encrypted, as identifier:key.
+    # The keys that keep the secrets of identity providers and the signing keys encrypted, as identifier:key.
+    # Read by the servers and the workers.
     secretKeys: secret-keys
     # Address of the mail server, such as smtps://user:password@mail.example.com:465. Read when mail.enabled.
     smtpUrl: smtp-url

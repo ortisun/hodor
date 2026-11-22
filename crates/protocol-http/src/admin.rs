@@ -1,5 +1,5 @@
-//! The administration interface: users, sessions and the audit log of a
-//! tenant, for the people who run it.
+//! The administration interface: users, sessions, the audit log, identity
+//! providers and keys of a tenant, for the people who run it.
 //!
 //! The same routes are served twice. The administration interface, for
 //! programs, knows who is asking by an access token; the console
@@ -38,6 +38,7 @@ use hodor_kernel::{
     Actor, Caller, Clock, CorrelationId, Cursor, Digest, DomainError, Page, PageRequest, Secret,
     TenantContext, UserId,
 };
+use hodor_keys::api::{KeyAlgorithm, KeyService, KeyUse, KeyVersion, KeyVersionId, RotationPolicy};
 use hodor_session::api::{Session, SessionId, SessionService};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -98,6 +99,13 @@ pub const ADMIN_OPERATIONS: &[(&str, &str, Permission)] = &[
         "/identity-providers/{provider_id}:enable",
         Permission::IdentityProvidersWrite,
     ),
+    ("GET", "/keys/{key_set}", Permission::KeysRead),
+    ("POST", "/keys/{key_set}:rotate", Permission::KeysWrite),
+    (
+        "POST",
+        "/keys/{key_set}/versions/{version_id}:revoke",
+        Permission::KeysWrite,
+    ),
 ];
 
 /// What the administration handlers need.
@@ -116,6 +124,11 @@ pub struct AdminState {
     /// The identity providers. `None` when this installation has no keys
     /// to keep their secrets with.
     pub federation: Option<FederationService>,
+    /// The tenants' keys. `None` when this installation has no keys to
+    /// wrap them with.
+    pub keys: Option<KeyService>,
+    /// How long a replaced signing key stays when it is rotated by hand.
+    pub key_rotation: RotationPolicy,
     /// The address people reach this installation at, without a path.
     pub public_url: String,
 }
@@ -194,6 +207,16 @@ fn shared_routes() -> Router<Shared> {
         .route(
             "/identity-providers/{provider}/client-secret",
             put(change_provider_secret),
+        )
+        // `POST /keys/{key_set}:rotate` arrives here as well, as part of
+        // the last segment; so does `:revoke` on a version.
+        .route(
+            "/keys/{key_set}",
+            get(list_key_versions).post(key_set_action),
+        )
+        .route(
+            "/keys/{key_set}/versions/{version}",
+            axum::routing::post(key_version_action),
         )
 }
 
@@ -1281,6 +1304,211 @@ async fn provider_action(
                 .await
                 .map_err(failed)?;
             Ok(Json(provider_body(&provider, &state.public_url, &slug)).into_response())
+        }
+        .await,
+    )
+}
+
+fn keys(state: &AdminState) -> Result<&KeyService, Box<Response>> {
+    state.keys.as_ref().ok_or_else(|| {
+        problem(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "keys.not_configured",
+            "this installation is not set up to keep keys",
+        )
+    })
+}
+
+fn key_set_not_found() -> Box<Response> {
+    problem(
+        StatusCode::NOT_FOUND,
+        "keys.key_set_not_found",
+        "there is no such key set: it is sig or data",
+    )
+}
+
+fn key_version_not_found() -> Box<Response> {
+    problem(
+        StatusCode::NOT_FOUND,
+        "keys.version_not_found",
+        "the key version does not exist",
+    )
+}
+
+/// The key set named by the path: `sig` or `data`.
+fn key_use(name: &str) -> Result<KeyUse, Box<Response>> {
+    match name {
+        "sig" => Ok(KeyUse::Signing),
+        "data" => Ok(KeyUse::Data),
+        _ => Err(key_set_not_found()),
+    }
+}
+
+/// A key version, without anything of its key: the published key set is
+/// where public keys are read.
+#[derive(Debug, Serialize)]
+struct KeyVersionBody {
+    id: String,
+    key_use: &'static str,
+    algorithm: &'static str,
+    state: &'static str,
+    provider: String,
+    created_at: String,
+    activated_at: Option<String>,
+    retiring_at: Option<String>,
+    retire_after: Option<String>,
+    retired_at: Option<String>,
+    revoked_at: Option<String>,
+    revocation_reason: Option<String>,
+}
+
+impl From<&KeyVersion> for KeyVersionBody {
+    fn from(version: &KeyVersion) -> Self {
+        let state = version.snapshot();
+        Self {
+            id: state.id.to_string(),
+            key_use: version.key_use().as_str(),
+            algorithm: state.algorithm.as_str(),
+            state: state.state.as_str(),
+            provider: state.provider.clone(),
+            created_at: written(state.created_at),
+            activated_at: state.activated_at.map(written),
+            retiring_at: state.retiring_at.map(written),
+            retire_after: state.retire_after.map(written),
+            retired_at: state.retired_at.map(written),
+            revoked_at: state.revoked_at.map(written),
+            revocation_reason: state.revocation_reason.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct KeyVersionsBody {
+    items: Vec<KeyVersionBody>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RotateBody {
+    algorithm: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RevokeBody {
+    reason: String,
+}
+
+async fn list_key_versions(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+    parameters: RawPathParams,
+) -> Response {
+    respond(
+        async {
+            authorize(&state, &tenant, &headers, "GET", "/keys/{key_set}").await?;
+            let keys = keys(&state)?;
+            let name: String = parameter(&parameters, "key_set").ok_or_else(key_set_not_found)?;
+            let key_use = key_use(&name)?;
+            let set = keys.key_set(&tenant, key_use).await.map_err(failed)?;
+            let items = set.versions().iter().map(KeyVersionBody::from).collect();
+            Ok(Json(KeyVersionsBody { items }).into_response())
+        }
+        .await,
+    )
+}
+
+async fn key_set_action(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+    parameters: RawPathParams,
+    bytes: Bytes,
+) -> Response {
+    respond(
+        async {
+            // Checked before the action is read, so that a caller without a
+            // token learns nothing about paths.
+            let caller =
+                authorize(&state, &tenant, &headers, "POST", "/keys/{key_set}:rotate").await?;
+            let keys = keys(&state)?;
+            let segment: String =
+                parameter(&parameters, "key_set").ok_or_else(key_set_not_found)?;
+            let Some(name) = segment.strip_suffix(":rotate") else {
+                return Err(problem(
+                    StatusCode::NOT_FOUND,
+                    "route.not_found",
+                    "there is no such action on a key set",
+                ));
+            };
+            if key_use(name)? != KeyUse::Signing {
+                return Err(problem(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "keys.rotation_not_offered",
+                    "only the signing key set is rotated by hand",
+                ));
+            }
+            let asked: RotateBody = if bytes.is_empty() {
+                RotateBody::default()
+            } else {
+                body(&bytes)?
+            };
+            let algorithm = match asked.algorithm.as_deref() {
+                None => KeyAlgorithm::DEFAULT_SIGNING,
+                Some(name) => KeyAlgorithm::from_name(name).ok_or_else(|| {
+                    problem(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "keys.algorithm_unsuitable",
+                        "the algorithm does not sign: ES256, RS256 or PS256",
+                    )
+                })?,
+            };
+            let version = keys
+                .rotate_now(&tenant, algorithm, &state.key_rotation, caller)
+                .await
+                .map_err(failed)?;
+            Ok(Json(KeyVersionBody::from(&version)).into_response())
+        }
+        .await,
+    )
+}
+
+async fn key_version_action(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+    parameters: RawPathParams,
+    bytes: Bytes,
+) -> Response {
+    respond(
+        async {
+            let operation = "/keys/{key_set}/versions/{version_id}:revoke";
+            let caller = authorize(&state, &tenant, &headers, "POST", operation).await?;
+            let keys = keys(&state)?;
+            let name: String = parameter(&parameters, "key_set").ok_or_else(key_set_not_found)?;
+            let key_use = key_use(&name)?;
+            let segment: String =
+                parameter(&parameters, "version").ok_or_else(key_version_not_found)?;
+            let Some(id) = segment.strip_suffix(":revoke") else {
+                return Err(problem(
+                    StatusCode::NOT_FOUND,
+                    "route.not_found",
+                    "there is no such action on a key version",
+                ));
+            };
+            let id: KeyVersionId = id.parse().map_err(|_| key_version_not_found())?;
+            let asked: RevokeBody = body(&bytes)?;
+            // A version of another key set is not found in this one.
+            let set = keys.key_set(&tenant, key_use).await.map_err(failed)?;
+            if set.version(id).is_none() {
+                return Err(key_version_not_found());
+            }
+            let version = keys
+                .revoke(&tenant, id, &asked.reason, caller)
+                .await
+                .map_err(failed)?;
+            Ok(Json(KeyVersionBody::from(&version)).into_response())
         }
         .await,
     )

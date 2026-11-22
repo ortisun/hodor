@@ -2,10 +2,11 @@
 
 ## Overview
 
-The background process, in one file, `main.rs`. It runs three loops side by
+The background process, in one file, `main.rs`. It runs four loops side by
 side: the outbox dispatch loop, which turns every outbox event into an audit
-record, the mail delivery loop, which sends queued messages over SMTP, and
-the cleanup loop, which removes pending authorizations that expired. It
+record, the mail delivery loop, which sends queued messages over SMTP, the
+cleanup loop, which removes pending authorizations that expired, and the
+rotation loop, which rotates the tenants' signing keys. It
 holds two PostgreSQL pools: one as the application role, to handle each piece
 of work inside its tenant, and one as the platform role, used only to find
 pending work across tenants. An operations listener serves health endpoints.
@@ -28,6 +29,11 @@ Configuration (`Config`, clap, command name `hodor-worker`):
 | `--mail-poll-interval-ms` | `HODOR_MAIL_POLL_INTERVAL_MS` | 1000 |
 | `--cleanup-interval-ms` | `HODOR_CLEANUP_INTERVAL_MS` | 60000 |
 | `--cleanup-batch-size` | `HODOR_CLEANUP_BATCH_SIZE` (rows per tenant per pass) | 500 |
+| `--secret-keys` | `HODOR_SECRET_KEYS` | unset: keys do not rotate |
+| `--key-rotation-days` | `HODOR_KEY_ROTATION_DAYS` | 90 |
+| `--key-publication-hours` | `HODOR_KEY_PUBLICATION_HOURS` | 24 |
+| `--key-overlap-hours` | `HODOR_KEY_OVERLAP_HOURS` | 24 |
+| `--key-rotation-interval-ms` | `HODOR_KEY_ROTATION_INTERVAL_MS` | 600000 |
 | `--log-format` (`json`, `pretty`) | `HODOR_LOG_FORMAT` | `json` |
 | `--log-filter` | `HODOR_LOG_FILTER` | `info` |
 | `--otlp-traces-endpoint` | `HODOR_OTLP_TRACES_ENDPOINT` | unset: no export |
@@ -39,11 +45,14 @@ Symbols:
   `PgPendingMessages::new(platform)`, `SmtpSender`, `SystemClock`),
   `AuditService` (with `PgAuditLog`, `Sha256Digest`), and
   `PendingAuthorizationCleanup::new(platform, database)` and
-  `OutboxDispatcher::new(platform, database, [AuditHandler])`, then serves
-  `ops_router(health)` and joins the three loops.
+  `OutboxDispatcher::new(platform, database, [AuditHandler])`, and, with
+  `HODOR_SECRET_KEYS`, `KeyRotationJob::new(platform, KeyService, policy)`
+  over `PgKeyStore` and `LocalKeyProvider`; then serves
+  `ops_router(health)` and joins the four loops.
 - `dispatch_loop` calls `OutboxDispatcher::dispatch_batch(batch_size)`.
 - `delivery_loop` calls `DeliveryService::deliver_pending(batch_size)`.
 - `cleanup_loop` calls `PendingAuthorizationCleanup::run(now, batch_size)`.
+- `rotation_loop` calls `KeyRotationJob::run(now)`.
 - `mail_sender` builds the optional `SmtpSender`.
 - `PoolCheck` implements `hodor_protocol_http::ReadinessCheck` over
   `ping_pool`; the checks are named `database` and `platform_database`.
@@ -57,6 +66,13 @@ Symbols:
   `--smtp-url` (`Config.mail_from`).
 - Without `HODOR_SMTP_URL` the worker logs a warning, messages wait, and
   `delivery_loop` returns at once.
+- The rotation policy is checked with `RotationPolicy::new` before any
+  connection: an overlap under 65 minutes, for example, stops the worker
+  with `keys.rotation_policy_invalid`. Without `HODOR_SECRET_KEYS` the worker
+  logs a warning and `rotation_loop` returns at once.
+- The rotation loop runs at start, then after every pause; a pass skipped
+  because another worker held the lock pauses like any other, and a full
+  pass without failures is followed by another at once (`rotation_loop`).
 - `AuditHandler` is the only outbox handler. Comment in `run`: "Every event
   becomes an audit record, in the transaction that marks the event
   delivered."
@@ -86,8 +102,13 @@ Symbols:
 - Deletes expired rows of `federation.pending_authorization`, inside each
   tenant, through `PendingAuthorizationCleanup` (`cleanup_loop`), and logs
   how many when any were removed.
+- Makes, activates and retires signing key versions inside each tenant
+  through `KeyRotationJob` (`rotation_loop`), and logs what changed and
+  each tenant whose step failed.
 - Records metrics on the meter `hodor.worker`: the counters
-  `hodor.outbox.events`, `hodor.outbox.passes`,
+  `hodor.keys.rotation.passes` (attribute `outcome`: `ok`, `skipped`,
+  `error`), `hodor.keys.rotation.changes` (attribute `change`: `created`,
+  `activated`, `retired`), `hodor.outbox.events`, `hodor.outbox.passes`,
   `hodor.notification.messages`, `hodor.notification.passes`,
   `hodor.cleanup.removed` and `hodor.cleanup.passes` (attribute `job` =
   `pending_authorizations`).

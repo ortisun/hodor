@@ -1,6 +1,6 @@
 # The administration interface
 
-The administration interface is how the people who run a tenant, and the programs they write, manage it: its users, their sessions and its audit log. It is the first part of the Admin API outlined in the [API specification](api-spec.md#admin-api); this page specifies what is built.
+The administration interface is how the people who run a tenant, and the programs they write, manage it: its users, their sessions, its audit log, its identity providers and its keys. It is the first part of the Admin API outlined in the [API specification](api-spec.md#admin-api); this page specifies what is built.
 
 All paths are relative to the tenant: `https://{host}/t/{slug}/api/v1/admin`. Requests and responses are JSON and follow the [conventions for the JSON APIs](api-spec.md#conventions-for-the-json-apis). Errors are problem documents.
 
@@ -74,6 +74,9 @@ It needs `HODOR_DATABASE_URL`, like the tenant commands.
 | `PUT /identity-providers/{provider_id}/client-secret` | `identity-providers:write` | Replace its client secret |
 | `POST /identity-providers/{provider_id}:disable` | `identity-providers:write` | Stop it from signing people in |
 | `POST /identity-providers/{provider_id}:enable` | `identity-providers:write` | Let it sign people in again |
+| `GET /keys/{key_set}` | `keys:read` | List the versions of a key set: `sig` or `data` |
+| `POST /keys/{key_set}:rotate` | `keys:write` | Activate a new signing version at once |
+| `POST /keys/{key_set}/versions/{version_id}:revoke` | `keys:write` | Revoke a version, with a reason |
 
 ### A user
 
@@ -248,6 +251,46 @@ For a SAML provider, `issuer` is the identity provider's entity identifier, `cli
 | No such provider in this tenant | `404` | `federation.provider_not_found` |
 | Someone else changed the provider at the same moment | `409` | `federation.provider_modified_concurrently` |
 | The server has no keys to keep secrets with (`HODOR_SECRET_KEYS`) | `503` | `federation.not_configured` |
+
+### Keys
+
+The rules behind these operations are in [the keys context](../architecture/contexts/keys.md). Keys rotate by themselves on a schedule; these routes are for looking at them and for an operator who will not wait.
+
+A key version:
+
+```json
+{
+  "id": "0193f1c2-…",
+  "key_use": "sig",
+  "algorithm": "ES256",
+  "state": "active",
+  "provider": "local",
+  "created_at": "2026-11-21T14:03:11Z",
+  "activated_at": "2026-11-21T14:03:11Z",
+  "retiring_at": null,
+  "retire_after": null,
+  "retired_at": null,
+  "revoked_at": null,
+  "revocation_reason": null
+}
+```
+
+The `id` is the key identifier, `kid`, of the version in [the published key set](../architecture/contexts/keys.md#the-published-key-set). **Nothing of the key itself is part of an answer**, not even the public key: that is what the published key set is for.
+
+`GET /keys/{key_set}` answers `{ "items": [ … ] }`, newest first, for `sig` or `data`. Revoked and retired versions are listed too: they are kept so that every signature can be traced to its key.
+
+`POST /keys/sig:rotate` takes an optional body, `{ "algorithm": "ES256" }`, ES256 unless given, RS256 or PS256 otherwise. A pending version of that algorithm is activated, or a new one made and activated. The version it replaces starts retiring with the installation's overlap. The answer is `200` with the activated version. Only the signing key set rotates this way: `data` is refused with `422` and `keys.rotation_not_offered`.
+
+`POST /keys/{key_set}/versions/{version_id}:revoke` with `{ "reason": "…" }`, 1 to 200 characters, answers `200` with the version, revoked. A signing version leaves the published key set at once. Revoking a revoked version changes nothing. To replace a key that is no longer trusted, rotate first and revoke the version that was replaced: revoking the active version first leaves the tenant signing nothing until the next pass of the rotation job.
+
+| Situation | Status | Code |
+|---|---|---|
+| A key set other than `sig` or `data` | `404` | `keys.key_set_not_found` |
+| No such version in this key set | `404` | `keys.version_not_found` |
+| An algorithm that is not ES256, RS256 or PS256 | `422` | `keys.algorithm_unsuitable` |
+| A reason that is empty or too long | `422` | `keys.reason_invalid` |
+| Two activations at the same moment | `409` | `keys.activation_conflict` |
+| The server has no keys to keep secrets with (`HODOR_SECRET_KEYS`) | `503` | `keys.not_configured` |
 
 ## Not built yet
 

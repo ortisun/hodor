@@ -28,6 +28,7 @@ Configuration (`Config`, clap, command name `hodor-server`):
 | `--pages-directory` | `HODOR_PAGES_DIRECTORY` | unset |
 | `--console-directory` | `HODOR_CONSOLE_DIRECTORY` | unset |
 | `--secret-keys` | `HODOR_SECRET_KEYS` | unset |
+| `--key-overlap-hours` | `HODOR_KEY_OVERLAP_HOURS` | 24 |
 | `--outbound-development-hosts` | `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` | empty, comma separated |
 | `--directory-hosts` | `HODOR_DIRECTORY_HOSTS` | empty, comma separated `host:port` |
 | `--password-hash-memory-kibibytes` | `HODOR_PASSWORD_HASH_MEMORY_KIBIBYTES` | `19 * 1024` |
@@ -43,6 +44,10 @@ Routers, as assembled in `run`:
 - `/api/v1/admin` nests `hodor_protocol_http::admin_routes` with the
   `AdminState` built by `administration`.
 - `/console/api` nests `hodor_protocol_http::console_routes`.
+- `/oauth2/jwks`: `hodor_protocol_http::key_set_routes(KeyService)` is merged
+  into the tenant routes when `keys` built a `KeyService` (`PgKeyStore`,
+  `LocalKeyProvider` over `HODOR_SECRET_KEYS`); otherwise a warning is logged
+  and the address is not served.
 - Hosted pages and the console come from `Pages::load` and
   `Pages::load_console`, merged through `page_routes` and `asset_routes`.
 - The public router is `hodor_protocol_http::public_router`; the operations
@@ -61,7 +66,8 @@ Adapters implemented here:
 Wiring functions: `interaction` (Argon2id hashing, identity, credential,
 session, attempt guard, sign-in flow, accounts and notification queue),
 `external_sign_in` (`ExternalSignIn` with OpenID Connect, GitHub, SAML and,
-through `with_directories`, `LdapDirectoryClient`), `administration`,
+through `with_directories`, `LdapDirectoryClient`), `keys`, `key_rotation`
+(the default policy with `HODOR_KEY_OVERLAP_HOURS`), `administration`,
 `development_hosts`, `directory_hosts`, `wait_for`, `stop_signal`, `main`
 and `run`.
 
@@ -74,6 +80,8 @@ and `run`.
   (`external_sign_in` returns `None`) and has no identity providers to manage
   (`administration`). A malformed value aborts startup through
   `SecretKeys::parse`.
+- An overlap that `RotationPolicy::new` refuses, under 65 minutes, aborts
+  startup (`key_rotation`, called by `administration`).
 - Invalid hashing parameters or an invalid sign-in flow abort startup
   (`Argon2idHasher::new`, `AuthenticationService::new` in `interaction`).
 - Failure to load a configured pages or console directory aborts startup; an

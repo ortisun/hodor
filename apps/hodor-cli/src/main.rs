@@ -2,9 +2,9 @@
 //! administrator, authenticator applications and checking the audit log.
 
 use clap::{Parser, Subcommand, ValueEnum};
-use hodor_adapters_crypto::{AwsLcHmacSha1, OsRandom, SecretKeys, Sha256Digest};
+use hodor_adapters_crypto::{AwsLcHmacSha1, LocalKeyProvider, OsRandom, SecretKeys, Sha256Digest};
 use hodor_adapters_postgres::{
-    Database, PgAccessTokenStore, PgAuditLog, PgLinkStore, PgPool, PgProviderStore,
+    Database, PgAccessTokenStore, PgAuditLog, PgKeyStore, PgLinkStore, PgPool, PgProviderStore,
     PgRoleAssignmentStore, PgTenantDirectory, PgTenantRepository, PgTotpStore, PgUserRepository,
 };
 use hodor_audit::api::AuditService;
@@ -18,6 +18,9 @@ use hodor_identity::api::{
     CreateUser, IdentifierKind, IdentityService, NormalizedIdentifier, Profile, UserKind,
 };
 use hodor_kernel::{Actor, CorrelationId, DomainError, Secret, SystemClock, TenantContext};
+use hodor_keys::api::{
+    KeyAlgorithm, KeyService, KeyState, KeyUse, KeyVersion, KeyVersionId, RotationPolicy,
+};
 use hodor_tenant::api::{Caller, CreateTenant, DirectoryEntry, SecondFactorPolicy, TenantService};
 use std::error::Error;
 use std::io::{Read as _, Write as _};
@@ -155,6 +158,35 @@ enum Command {
         secret_keys: Option<String>,
         #[command(subcommand)]
         command: TotpCommand,
+    },
+
+    /// Look at a tenant's keys, rotate its signing key and revoke versions.
+    ///
+    /// Keys rotate by themselves in the worker; these commands are for an
+    /// operator who will not wait.
+    Keys {
+        /// Connection URL of the application role.
+        #[arg(
+            long,
+            env = "HODOR_DATABASE_URL",
+            hide_env_values = true,
+            global = true
+        )]
+        database_url: Option<String>,
+        /// The keys that wrap the tenants' keys, as the server has them.
+        #[arg(long, env = "HODOR_SECRET_KEYS", hide_env_values = true, global = true)]
+        secret_keys: Option<String>,
+        /// How long a signing key replaced by hand stays published, in
+        /// hours, as the server and the worker have it.
+        #[arg(
+            long,
+            env = "HODOR_KEY_OVERLAP_HOURS",
+            default_value_t = 24,
+            global = true
+        )]
+        key_overlap_hours: i64,
+        #[command(subcommand)]
+        command: KeysCommand,
     },
 
     /// Work with the keys that keep secrets encrypted at rest.
@@ -301,6 +333,60 @@ enum ProviderCommand {
         /// The provider's alias.
         #[arg(long)]
         alias: String,
+    },
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum KeySetArg {
+    /// The signing keys.
+    Sig,
+    /// The data keys.
+    Data,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum SigningAlgorithmArg {
+    /// ECDSA on P-256, the default.
+    Es256,
+    /// RSA with PKCS#1 version 1.5 padding, for interoperability.
+    Rs256,
+    /// RSA with PSS padding, for interoperability.
+    Ps256,
+}
+
+#[derive(Subcommand)]
+enum KeysCommand {
+    /// List a tenant's key versions, newest first.
+    List {
+        /// The tenant's slug.
+        #[arg(long)]
+        tenant: String,
+        /// Which key set.
+        #[arg(long, value_enum, default_value = "sig")]
+        key_set: KeySetArg,
+    },
+    /// Activate a new signing key at once. The one it replaces stays
+    /// published for the overlap.
+    Rotate {
+        /// The tenant's slug.
+        #[arg(long)]
+        tenant: String,
+        /// The algorithm to rotate.
+        #[arg(long, value_enum, default_value = "es256")]
+        algorithm: SigningAlgorithmArg,
+    },
+    /// Revoke a key version. A signing key leaves the published key set at
+    /// once: rotate first if it is the active one.
+    Revoke {
+        /// The tenant's slug.
+        #[arg(long)]
+        tenant: String,
+        /// The version's identifier, as `keys list` shows it.
+        #[arg(long)]
+        version: String,
+        /// Why, for the audit log: 1 to 200 characters.
+        #[arg(long)]
+        reason: String,
     },
 }
 
@@ -801,6 +887,123 @@ async fn run_provider(
     }
 }
 
+/// A moment as RFC 3339, to the second.
+fn written(moment: time::OffsetDateTime) -> String {
+    moment
+        .replace_nanosecond(0)
+        .unwrap_or(moment)
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default()
+}
+
+/// One line of `keys list`: the version, its algorithm, its state and
+/// the times that matter for that state.
+fn key_line(version: &KeyVersion) -> String {
+    let state = version.snapshot();
+    let at = |moment: Option<time::OffsetDateTime>| moment.map(written).unwrap_or_default();
+    let mut line = format!(
+        "{} {} {} created {}",
+        state.id,
+        state.algorithm.as_str(),
+        state.state.as_str(),
+        written(state.created_at)
+    );
+    match state.state {
+        KeyState::Active => line.push_str(&format!(" activated {}", at(state.activated_at))),
+        KeyState::Retiring => line.push_str(&format!(" retire-after {}", at(state.retire_after))),
+        KeyState::Retired => line.push_str(&format!(" retired {}", at(state.retired_at))),
+        KeyState::Revoked => line.push_str(&format!(
+            " revoked {} {}",
+            at(state.revoked_at),
+            state.revocation_reason.as_deref().unwrap_or_default()
+        )),
+        KeyState::Pending => {}
+    }
+    line
+}
+
+/// Runs a keys command against a tenant named by its slug.
+async fn run_keys(
+    database: &Database,
+    secret_keys: Option<String>,
+    key_overlap_hours: i64,
+    command: KeysCommand,
+) -> Result<String, DomainError> {
+    let setting = secret_keys.ok_or_else(|| {
+        DomainError::invalid(
+            "secret.keys_missing",
+            "HODOR_SECRET_KEYS or --secret-keys is required: keys are kept wrapped under them",
+        )
+    })?;
+    let default = RotationPolicy::DEFAULT;
+    let policy = RotationPolicy::new(
+        default.period(),
+        default.publication(),
+        time::Duration::hours(key_overlap_hours),
+    )?;
+    let units = || Arc::new(database.clone());
+    let clock = Arc::new(SystemClock);
+    let tenants = TenantService::new(
+        units(),
+        Arc::new(PgTenantRepository),
+        Arc::new(PgTenantDirectory::new(database.clone())),
+        clock.clone(),
+    );
+    let keys = KeyService::new(
+        units(),
+        Arc::new(PgKeyStore),
+        Arc::new(LocalKeyProvider::new(Arc::new(SecretKeys::parse(
+            &Secret::from(setting),
+        )?))),
+        clock,
+    );
+    let slug = match &command {
+        KeysCommand::List { tenant, .. }
+        | KeysCommand::Rotate { tenant, .. }
+        | KeysCommand::Revoke { tenant, .. } => tenant.clone(),
+    };
+    let entry = existing(&tenants, &slug).await?;
+    // The command-line tool is one of the places allowed to establish a
+    // tenant context: the operator names the tenant.
+    let tenant = TenantContext::assume(entry.tenant_id);
+
+    match command {
+        KeysCommand::List { key_set, .. } => {
+            let key_use = match key_set {
+                KeySetArg::Sig => KeyUse::Signing,
+                KeySetArg::Data => KeyUse::Data,
+            };
+            let set = keys.key_set(&tenant, key_use).await?;
+            Ok(set
+                .versions()
+                .iter()
+                .map(key_line)
+                .collect::<Vec<_>>()
+                .join("\n"))
+        }
+        KeysCommand::Rotate { algorithm, .. } => {
+            let algorithm = match algorithm {
+                SigningAlgorithmArg::Es256 => KeyAlgorithm::Es256,
+                SigningAlgorithmArg::Rs256 => KeyAlgorithm::Rs256,
+                SigningAlgorithmArg::Ps256 => KeyAlgorithm::Ps256,
+            };
+            let version = keys
+                .rotate_now(&tenant, algorithm, &policy, caller())
+                .await?;
+            Ok(key_line(&version))
+        }
+        KeysCommand::Revoke {
+            version, reason, ..
+        } => {
+            let id: KeyVersionId = version.parse().map_err(|_| {
+                DomainError::not_found("keys.version_not_found", "the key version does not exist")
+            })?;
+            let version = keys.revoke(&tenant, id, &reason, caller()).await?;
+            Ok(key_line(&version))
+        }
+    }
+}
+
 async fn bootstrap_administrator(
     database: &Database,
     slug: &str,
@@ -1023,6 +1226,21 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .await
                 .map_err(|error| format!("{}: {}", error.code(), error.message()))?;
             writeln!(std::io::stdout(), "{output}")?;
+        }
+        Command::Keys {
+            database_url,
+            secret_keys,
+            key_overlap_hours,
+            command,
+        } => {
+            let url = database_url.ok_or("HODOR_DATABASE_URL or --database-url is required")?;
+            let database = Database::connect(&Secret::from(url), 2).await?;
+            let output = run_keys(&database, secret_keys, key_overlap_hours, command)
+                .await
+                .map_err(|error| format!("{}: {}", error.code(), error.message()))?;
+            if !output.is_empty() {
+                writeln!(std::io::stdout(), "{output}")?;
+            }
         }
         Command::Secrets {
             command: SecretsCommand::GenerateKey,

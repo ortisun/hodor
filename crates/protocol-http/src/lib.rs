@@ -13,6 +13,7 @@ mod admin;
 mod authorize;
 mod health;
 mod interaction;
+mod key_set;
 mod pages;
 mod problem;
 mod request;
@@ -26,6 +27,7 @@ pub use admin::{
 pub use authorize::{AuthorizationState, authorization_routes};
 pub use health::{Health, ReadinessCheck, ops_router};
 pub use interaction::{InteractionState, interaction_routes};
+pub use key_set::key_set_routes;
 pub use pages::{
     CONSOLE_ASSETS_PATH, CONSOLE_PATHS, PAGE_ASSETS_PATH, PAGE_PATHS,
     PAGES_CONTENT_SECURITY_POLICY, PROVIDER_CALLBACK_PAGE, Pages,

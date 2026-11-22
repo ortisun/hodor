@@ -131,7 +131,8 @@ Every setting is a command-line flag with an environment variable of the same me
 | `HODOR_OTLP_METRICS_ENDPOINT` | unset | Full URL of the OTLP/HTTP metrics endpoint. For VictoriaMetrics: `http://<host>:8428/opentelemetry/v1/metrics` |
 | `HODOR_SHUTDOWN_DRAIN_SECONDS` | `5` | How long to keep serving after a stop signal while readiness fails |
 | `HODOR_PUBLIC_URL` | `http://localhost:8080` | The address people reach this installation at, without a path. Links in messages start with it |
-| `HODOR_SECRET_KEYS` | unset | The keys that keep secrets [encrypted at rest](../security/secrets-at-rest.md#keys). Unset: no identity provider can be used, and none is offered |
+| `HODOR_SECRET_KEYS` | unset | The keys that keep secrets [encrypted at rest](../security/secrets-at-rest.md#keys) and wrap the tenants' [signing keys](../architecture/contexts/keys.md#the-local-provider). Unset: no identity provider can be used, and none is offered; the key set is not published and keys cannot be managed |
+| `HODOR_KEY_OVERLAP_HOURS` | `24` | How long a replaced signing key stays published when an administrator rotates by hand. See [the rotation policy](../architecture/contexts/keys.md#the-rotation-policy) |
 | `HODOR_DIRECTORY_HOSTS` | empty | The LDAP directories identity providers may name, as `host:port` separated by commas, such as `ldap.example.com:636`. Empty: no directory can be added or used. See [which directories may be used](../architecture/contexts/federation.md#which-directories-may-be-used) |
 | `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` | empty | Hosts with ports, separated by commas, that [outbound requests](../security/outbound-http.md#the-exception-for-development) may reach at a private address and over plain HTTP. Never set it anywhere real |
 | `HODOR_PAGES_DIRECTORY` | unset; the image sets `/usr/share/hodor/auth-ui` | The directory holding the built [hosted pages](../architecture/hosted-pages.md#how-the-pages-are-served). Unset: no pages are served. Set to a directory without `index.html`: the server does not start |
@@ -160,6 +161,9 @@ The worker connects to the database twice, with different roles: as a member of 
 | `HODOR_MAIL_POLL_INTERVAL_MS` | `1000` | Pause between passes when there is no message to deliver |
 | `HODOR_CLEANUP_INTERVAL_MS` | `60000` | Pause between passes of the cleanup jobs: removing [pending authorizations](../architecture/contexts/federation.md#the-pending-authorization) that expired |
 | `HODOR_CLEANUP_BATCH_SIZE` | `500` | Most rows a cleanup job removes in one tenant per pass |
+| `HODOR_SECRET_KEYS` | unset | The same keys as the server's. Unset: [keys do not rotate](../architecture/contexts/keys.md#two-workers-one-rotation), and no tenant gets a signing key |
+| `HODOR_KEY_ROTATION_DAYS`, `HODOR_KEY_PUBLICATION_HOURS`, `HODOR_KEY_OVERLAP_HOURS` | `90`, `24`, `24` | [The rotation policy](../architecture/contexts/keys.md#the-rotation-policy): how long a signing key signs, how long its successor is published before it signs, how long it stays published after |
+| `HODOR_KEY_ROTATION_INTERVAL_MS` | `600000` | Pause between passes of the rotation job |
 | `HODOR_LOG_FORMAT`, `HODOR_LOG_FILTER`, `HODOR_OTLP_TRACES_ENDPOINT`, `HODOR_OTLP_METRICS_ENDPOINT` | as for the server | Telemetry |
 
 ### `hodor-cli`
@@ -171,6 +175,7 @@ The worker connects to the database twice, with different roles: as a member of 
 | `admin bootstrap --tenant <slug> --email <address>` | `HODOR_DATABASE_URL` (required) | Makes a user an administrator of a tenant, creating the user if needed, and prints an access token for [the administration interface](../api/admin-api.md#the-first-administrator) |
 | `audit verify --tenant <slug>` | `HODOR_DATABASE_URL` (required) | Checks a tenant's whole chain of audit records and exits non-zero if a record was changed, removed or inserted. See [the audit context](../architecture/contexts/audit.md#verifying) |
 | `provider add`, `provider list`, `provider disable`, `provider enable` | `HODOR_DATABASE_URL` and `HODOR_SECRET_KEYS` (required); `HODOR_DIRECTORY_HOSTS` for a directory | Manage a tenant's [identity providers](../architecture/contexts/federation.md#identity-providers). `provider add` reads the client secret from `HODOR_PROVIDER_CLIENT_SECRET`, never from an argument, so that it does not show in the list of processes or in the history of a shell. A SAML provider (`--kind saml`) has no secret; it takes `--sign-on-address`, `--certificate` with the certificate's PEM, which is not secret, and optionally `--email-attribute` and `--name-attribute`. `provider list` shows the metadata address of a SAML provider, to give the identity provider |
+| `keys list`, `keys rotate`, `keys revoke` | `HODOR_DATABASE_URL` and `HODOR_SECRET_KEYS` (required); `HODOR_KEY_OVERLAP_HOURS` | Look at a tenant's key versions (`--key-set sig` or `data`), rotate its signing key at once (`--algorithm`, ES256 unless given) and revoke a version (`--version`, `--reason`). See [rotating and revoking by hand](../architecture/contexts/keys.md#rotating-and-revoking-by-hand) |
 | `secrets generate-key` | — | Prints a new key for `HODOR_SECRET_KEYS`. See [secrets at rest](../security/secrets-at-rest.md#keys) |
 | `probe` | — | Requests a health endpoint (`--addr`, `--path`) and exits non-zero unless it answers 200. Used by container health checks, since the image has no shell |
 

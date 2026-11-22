@@ -34,6 +34,7 @@ All modules are private; the public surface is the set of re-exports in
 | `migrate(owner_pool)` | `migrate.rs` | Applies all pending migrations. |
 | `OutboxDispatcher`, `DispatchReport` | `outbox.rs` | Delivers pending outbox events to `hodor_kernel::EventHandler`s. |
 | `PendingAuthorizationCleanup`, `CleanupReport` | `cleanup.rs` | `new(platform, database)`; `run(now, batch)` finds, through the platform pool, up to 100 tenants (`TENANTS_PER_PASS`) that have pending authorizations expired at `now`, and in each tenant removes up to `batch` of them in its own unit of work, through `PgPendingAuthorizationStore::remove_expired`. The report counts the tenants and the rows removed. |
+| `KeyRotationJob`, `RotationPass` | `key_rotation.rs` | `new(platform, keys: KeyService, policy: RotationPolicy)`; `run(now)` takes `pg_try_advisory_xact_lock` (key `0x686f646f726b6579`, "hodorkey") in a transaction of the platform pool and, without it, answers `skipped`. With it, it finds up to 100 active tenants (`platform.tenant_directory`) that have something due by the rules of `KeySet::rotation_plan`, runs `KeyService::rotate_due` in each, and records a tenant's error in `failures` and goes on. `RotationPass { skipped, tenants, failures, changes }` with `was_full()`. The lock ends with the transaction. |
 | `MigrateError`, `Error`, `PgPool` | `lib.rs` | Re-exported from `sqlx`. |
 
 ### Port implementations

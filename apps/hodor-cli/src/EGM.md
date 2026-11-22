@@ -6,7 +6,8 @@ The operations tool of a Hodor installation, in one file, `main.rs`. It parses
 the command line with clap (`Cli`, `Command`), connects to PostgreSQL and calls
 the services of the domain crates directly. It applies migrations, manages
 tenants, makes the first administrator of a tenant, verifies the audit chain,
-manages identity providers, generates secret keys and probes a health endpoint.
+manages identity providers, looks at, rotates and revokes a tenant's keys,
+generates secret keys and probes a health endpoint.
 The tool acts as the system: every mutating call passes `caller()`, which
 returns `Caller { actor: Actor::System, correlation_id: CorrelationId::generate() }`.
 
@@ -31,6 +32,9 @@ Commands, as typed, from the clap enums in `main.rs`:
 | `hodor-cli totp enroll` | `--tenant`, `--login`; keys from `HODOR_SECRET_KEYS` | `TotpService::begin_enrollment`, issuer the tenant's display name; prints `secret <Base32>` and `address <otpauth://…>` (`TotpCommand::Enroll`, `run_totp`) |
 | `hodor-cli totp confirm` | `--tenant`, `--login`, `--code` | `TotpService::confirm_enrollment`; prints `confirmed` (`TotpCommand::Confirm`) |
 | `hodor-cli totp remove` | `--tenant`, `--login` | `TotpService::remove`; prints `removed` or `nothing to remove` (`TotpCommand::Remove`) |
+| `hodor-cli keys list` | `--tenant`, `--key-set` (`sig`, `data`; default `sig`) | `KeyService::key_set`, one `key_line` per version (`KeysCommand::List`, `run_keys`) |
+| `hodor-cli keys rotate` | `--tenant`, `--algorithm` (`es256`, `rs256`, `ps256`; default `es256`) | `KeyService::rotate_now` with the overlap of `--key-overlap-hours` (`KeysCommand::Rotate`) |
+| `hodor-cli keys revoke` | `--tenant`, `--version`, `--reason` | `KeyService::revoke` (`KeysCommand::Revoke`) |
 | `hodor-cli secrets generate-key` | none | `hodor_adapters_crypto::SecretKeys::generate(&OsRandom)` (`SecretsCommand::GenerateKey`) |
 | `hodor-cli probe` | `--addr` (default `127.0.0.1:9090`), `--path` (default `/readyz`) | local `probe`, over `std::net::TcpStream` (`Command::Probe`) |
 
@@ -39,6 +43,10 @@ Global flags of the command groups (`Command` in `main.rs`):
 - `tenant`, `admin`, `audit` and `provider` take `--database-url` /
   `HODOR_DATABASE_URL`, the application role, connected with
   `Database::connect(&Secret, 2)`.
+- `keys` takes `--database-url` / `HODOR_DATABASE_URL`, `--secret-keys` /
+  `HODOR_SECRET_KEYS` (required: `run_keys` refuses with
+  `secret.keys_missing`) and `--key-overlap-hours` /
+  `HODOR_KEY_OVERLAP_HOURS` (default 24, checked by `RotationPolicy::new`).
 - `provider` also takes `--secret-keys` / `HODOR_SECRET_KEYS`,
   `--development-hosts` / `HODOR_OUTBOUND_DEVELOPMENT_HOSTS`,
   `--directory-hosts` / `HODOR_DIRECTORY_HOSTS` (both comma separated) and
@@ -46,7 +54,8 @@ Global flags of the command groups (`Command` in `main.rs`):
 
 Other symbols in `main.rs`: `ProviderKindArg` (maps to `ProviderKind`),
 `caller`, `existing` (tenant lookup by slug), `run_tenant`, `run_provider`,
-`provider_line`, `bootstrap_administrator`, `verify_audit`, `probe`, and
+`provider_line`, `KeySetArg`, `SigningAlgorithmArg`, `run_keys`, `key_line`,
+`written`, `bootstrap_administrator`, `verify_audit`, `probe`, and
 `main` (`#[tokio::main(flavor = "current_thread")]`).
 
 ## Invariants
