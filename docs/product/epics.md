@@ -191,6 +191,116 @@ Built before Phase 2 at the project owner's request; [Decision 0017](../decision
 
 Hodor as a SAML identity provider, synchronizing users and groups from LDAP, SCIM, routing by email domain, linking and unlinking from an account page, mapping external groups to roles, single logout, and everything of Phase 2.
 
+## Milestone 3: Applications ask Hodor who someone is
+
+**Goal**: an application registered in a tenant signs a person in through Hodor with the authorization code and PKCE, receives an ID token and an access token signed with the tenant's key, refreshes it, and can have it revoked; a service gets a token with its own credentials. Hodor passes the Basic OpenID Provider and Config OpenID Provider profiles of the OpenID conformance suite. Phase 2 of the roadmap, without pairwise subjects, claim mappers and back-channel logout ([Decision 0023](../decisions/0023-what-1.0.0-holds.md)).
+
+**Demo script**: register an application and a client in a tenant with the command-line tool; sign in from an example application and see the consent page; read the ID token and call UserInfo; refresh, then present the old refresh token again and see the whole family revoked; get a token with client credentials; revoke an access token and see introspection say so; rotate the tenant's key and see the old key stay in the key set until its tokens expire; show a code, a token and a client of one tenant refused by another.
+
+### Slice L — Keys (Epic 7)
+
+| Identifier | Issue | Acceptance | Depends on |
+|---|---|---|---|
+| Issue-50 | `keys` context: key sets per tenant and use, versions with their states, the `KeyProvider` port and the local provider with envelope encryption; storage under row-level security and a contract suite | A version moves only along its states; one version is active per algorithm; a private key is never read back in the clear; tenant isolation cases pass | — |
+| Issue-51 | Rotation and publication: a scheduled rotation in the worker under an advisory lock, the key set published with the overlap of retiring versions, revocation; the command-line tool and the administration interface | Two workers rotate once; a retiring version stays published until the longest token it signed has expired; a revoked version leaves at once | Issue-50 |
+| Issue-52 | The secrets of Milestone 2 under managed keys: the `SecretBox` keyed from configuration gives way to the key domain, and existing ciphertexts are moved | Every provider secret opens after the move; a ciphertext of the old key is refused once the move is done | Issue-50 |
+
+### Slice M — Applications and clients (Epic 8)
+
+| Identifier | Issue | Acceptance | Depends on |
+|---|---|---|---|
+| Issue-53 | `oauth` context, its first part: applications, clients with their types, exact redirect addresses, allowed grants and authentication method, secrets shown once and kept as hashes with rotation and expiry, keys for `private_key_jwt`, resource servers with their scopes, the token policy | A public client has no secret and cannot be given one; a redirect address is matched by exact equality only; tenant isolation cases pass | — |
+| Issue-54 | Managing applications: the administration interface, the command-line tool and the console pages for applications, clients and resource servers | A client is created, changed, its secret rotated and disabled; a secret is shown once and never again | Issue-53 |
+
+### Slice N — OAuth 2.x core (Epic 9)
+
+| Identifier | Issue | Acceptance | Depends on |
+|---|---|---|---|
+| Issue-55 | The authorization endpoint: the request checked before anything is shown, PKCE with S256 required, the hand-off to the sign-in and the return to the request, the authorization code kept as a hash and good for one use | Every malformed request of a test corpus is refused for its own reason, and only a request whose redirect address is registered is answered there; a second use of a code revokes the grant | Issue-53 |
+| Issue-56 | The token endpoint: the four client authentication methods, the code redeemed with its verifier, JWT access tokens per RFC 9068 signed with the tenant's key, the audience restricted by resource indicators | A wrong verifier, a code of another client and a reused `private_key_jwt` assertion are refused; a token carries only the audiences asked for and allowed | Issue-51, Issue-55 |
+| Issue-57 | Refresh tokens and client credentials: rotation on every use, the family revoked on reuse with a short window for a retried request, the client credentials grant | A rotated token presented again revokes the family; the same request retried inside the window gets the same answer | Issue-56 |
+| Issue-58 | Revocation, introspection and metadata: RFC 7009 and RFC 7662 with the deny-list of `jti`, the authorization server metadata, limits on the endpoints | A revoked access token is reported inactive; a client cannot introspect or revoke another client's token; the metadata names only what is built | Issue-57 |
+
+### Slice O — OpenID Connect (Epic 10)
+
+| Identifier | Issue | Acceptance | Depends on |
+|---|---|---|---|
+| Issue-59 | The OpenID Provider: the ID token, claims by scope, UserInfo, `nonce`, `prompt`, `max_age`, `login_hint`, `ui_locales`, `acr` and `amr` from the session, Discovery | An ID token is checked by an independent library; `prompt=none` without a session answers `login_required` | Issue-56 |
+| Issue-60 | Logout initiated by the relying party: the end-session endpoint with `id_token_hint` and registered addresses to return to | The session ends; an unregistered return address is refused | Issue-59 |
+| Issue-61 | The OpenID conformance suite in continuous integration: Basic OpenID Provider and Config OpenID Provider | Both profiles pass against the image on every pull request | Issue-58, Issue-60 |
+
+### Slice P — Consent and acceptance (Epic 11)
+
+| Identifier | Issue | Acceptance | Depends on |
+|---|---|---|---|
+| Issue-62 | Consent: what a person agreed to per client and scope, with its history and expiry; revoking it revokes the grants; first-party clients skip it; the consent page in the hosted pages | A scope not agreed to is asked for; revoking a consent revokes its refresh tokens; browser tests with the policy, accessibility and keyboard checks | Issue-55, Issue-57 |
+| Issue-63 | Acceptance: the cross-tenant suite extended to codes, tokens, clients and keys; the demonstration of the milestone with an example application | The suite and the demonstration pass in continuous integration against the image | all |
+
+### Explicitly not in Milestone 3
+
+Pairwise subject identifiers, claim mappers per client, back-channel and front-channel logout, opaque access tokens by default, pushed authorization requests, DPoP, the device grant, dynamic client registration, token exchange, Apple as an identity provider, signing in to the admin console with OpenID Connect.
+
+## Milestone 4: Strong authentication
+
+**Goal**: a person proves who they are with more than a password: a code from an authenticator application, a security key, or a passkey alone. A tenant can require a second factor, and an application can ask for a higher assurance in the middle of a session, which asks only for what is missing. Part of Phase 4 of the roadmap ([Decision 0023](../decisions/0023-what-1.0.0-holds.md)).
+
+**Demo script**: enroll an authenticator application and get recovery codes; make the tenant require a second factor and sign in with the code; use a recovery code once and see it refused the second time; register a passkey and sign in with it alone; from the example application of Milestone 3, ask for a higher `acr` during a session and give only the second factor; show the `amr` of each token; show that an administrator can remove a person's factors and that it is in the audit log.
+
+### Slice Q — Factors
+
+| Identifier | Issue | Acceptance | Depends on |
+|---|---|---|---|
+| Issue-64 | Conditional and optional steps in the flow engine; a tenant's policy that requires a second factor | The built-in flow still passes its suite; with the policy on, no sign-in completes with one factor, and with it off nothing changes | — |
+| Issue-65 | TOTP: enrollment with its secret sealed at rest, verification with a window, a code used once refused again, attempts counted with the lockout | A code outside the window, a used code and a code of another person are refused; the secret is never read back | Issue-64 |
+| Issue-66 | Recovery codes: generated at enrollment, kept as hashes, each good for one use, generated again on request | A used code is refused even when presented many times at once; generating again invalidates the old set | Issue-65 |
+| Issue-67 | WebAuthn as a second factor: registration and assertion, the signature counter and the backup flags, no attestation required; a decision record on the library | A cloned authenticator is caught by its counter; an assertion for another origin or another challenge is refused | Issue-64 |
+| Issue-68 | Passkeys: discoverable credentials as the first and only step, sign-in without typing an identifier | A person signs in with a passkey alone in a browser test with a virtual authenticator; a passkey of another tenant is not offered and not accepted | Issue-67 |
+
+### Slice R — Step-up and the person's own factors
+
+| Identifier | Issue | Acceptance | Depends on |
+|---|---|---|---|
+| Issue-69 | Assurance levels: the tenant's `acr` values mapped to methods, the `amr` kept on the session; step-up from `acr_values` and `max_age`, which completes only the missing steps | A request for a higher `acr` asks for the second factor only; a token never claims an `acr` the session did not reach | Issue-59, Issue-65, Issue-67 |
+| Issue-70 | Managing factors: the pages where a person adds and removes their authenticator application, passkeys and recovery codes after proving themselves again; an administrator removes a person's factors through the administration interface and the console | Removing the last factor under a policy that requires one is refused; every change is in the audit log | Issue-66, Issue-68 |
+| Issue-71 | Acceptance: browser tests with a virtual authenticator, the cross-tenant suite extended to factors, the demonstration of the milestone | They pass in continuous integration against the image | all |
+
+### Explicitly not in Milestone 4
+
+HOTP, magic links and one-time passwords by email or text message, risk signals, trusted devices, the flow editing interface with versions and simulation, session limits, the account console beyond factors, pushed authorization requests, DPoP, the device grant, dynamic client registration.
+
+## Milestone 5: The authorization engine
+
+**Goal**: an application asks Hodor whether a subject may do something to a resource and gets an answer it can trust: from Hodor's native engine with roles and conditions, or from Open Policy Agent with the tenant's policies, published, simulated and rolled back through Hodor. A failing engine never answers allow. Part of Phase 5 of the roadmap ([Decision 0023](../decisions/0023-what-1.0.0-holds.md)).
+
+**Demo script**: define a resource server's permissions and roles, assign a role to a person and to a client; evaluate from the example application with a token and get allow and deny with their reasons; add a condition and see it change the answer; bind another resource server to Open Policy Agent, publish a policy, simulate a draft against past decisions, publish it, roll it back; stop Open Policy Agent and see deny with an indeterminate reason; read the decision log; show that a token of one tenant cannot evaluate in another.
+
+### Slice S — The native engine
+
+| Identifier | Issue | Acceptance | Depends on |
+|---|---|---|---|
+| Issue-72 | The engine contract of [Decision 0009](../decisions/0009-authorization-engine-contract.md): the request and the decision, the engine registry and the bindings per resource server, the source of the subject's attributes, indeterminate treated as deny | A request names no tenant of its own; asserted attributes are kept apart from resolved ones; an unbound resource server answers deny | Issue-53 |
+| Issue-73 | Native role-based access control: permissions per resource server, roles with hierarchy and composites, assignments to users and clients scoped to the tenant or an application, the closure cached and dropped on change | A role cycle is refused; a revoked assignment stops allowing on the next decision; the fixed roles of the administration interface move onto it unchanged | Issue-72 |
+| Issue-74 | Attribute-based access control conditions in Common Expression Language: a spike to choose the interpreter, conditions compiled when published, bounded cost, no input or output | A condition over subject, resource and environment changes the answer; a condition that is too costly is refused when published | Issue-73 |
+| Issue-75 | The Authorization API: `evaluate`, `batch` and `simulate`, called with access tokens holding `authz:evaluate` and `authz:simulate`; the explanation only with `authz:explain` | A batch returns one result per request; a caller without `authz:explain` gets the reason code only; a token of another tenant is refused | Issue-58, Issue-74 |
+| Issue-76 | The decision log: one format for both engines, per tenant full, sampled or deny only, masking by path, retention | A masked attribute is never stored; a simulated decision is never logged as real | Issue-75 |
+
+### Slice T — Open Policy Agent
+
+| Identifier | Issue | Acceptance | Depends on |
+|---|---|---|---|
+| Issue-77 | `authorization-opa`: the adapter over the Data API, the decision path from the tenant and the binding, bounded time and retries, a circuit breaker, fail closed by default and fail open only per action and recorded; the capabilities file | Every failure of Open Policy Agent, slow, down, wrong answer, is a deny with an indeterminate reason; the path cannot be steered from the request | Issue-72 |
+| Issue-78 | Bundles: the builder and its signature, the bundle endpoint with a credential per instance, the status and decision log endpoints | An instance pulls only its own tenant's bundle; an unsigned or changed bundle is refused by Open Policy Agent | Issue-77 |
+| Issue-79 | The policy lifecycle: policies and immutable versions, draft, validation and tests with the `opa` binary in a sandboxed worker job, simulation against recorded decisions, publication, tracking of what each instance runs, rollback | A policy that does not compile or fails its tests is not published; a rollback is what instances run after their next pull | Issue-78 |
+| Issue-80 | Managing authorization and acceptance: the administration interface, the command-line tool and the console pages for permissions, roles, assignments, bindings, policies and instances; the cross-tenant suite extended; the demonstration of the milestone | The suite and the demonstration pass in continuous integration against the image, with Open Policy Agent in the stack | all |
+
+### Explicitly not in Milestone 5
+
+Per-resource access control lists, relationship-based access control, assigning roles to groups or organizations, Hodor starting Open Policy Agent instances for tenants, token exchange, service accounts, agents, API keys, webhooks.
+
+### After Milestone 5
+
+1.0.0 is released when Milestone 5 is done, following [the release rules](../development/conventions.md#releases).
+
 ## Later epics at story level
 
 **Epic 7 Keys** — key set and version model with states; local provider with envelope encryption; scheduled rotation job with advisory lock; JWKS publication with overlap; revoke; admin API.

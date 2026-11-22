@@ -28,3 +28,4 @@ All records below are **Proposed** unless marked otherwise: they become Accepted
 | [0020](0020-console-on-the-hodor-session.md) | Until Hodor issues tokens, the admin console rides the administrator's Hodor session (Accepted) |
 | [0021](0021-documentation-site.md) | The documentation site is built from `docs/` with MkDocs and Material, and published on GitHub Pages from `develop` |
 | [0022](0022-installation-packages.md) | Hodor is installed from two packages kept apart from the development stack, and neither holds a secret |
+| [0023](0023-what-1.0.0-holds.md) | 1.0.0 holds the OAuth server, strong authentication and the authorization engine, each cut to what makes it whole |
