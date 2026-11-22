@@ -92,7 +92,7 @@ A client using `private_key_jwt` proves who it is by signing an assertion with i
 - **no private part**: a key with `d`, `p`, `q`, `dp`, `dq`, `qi`, `oth` or `k` is refused, so that a private key pasted by mistake is never kept;
 - at most 5 keys per client.
 
-Checking an assertion against these keys is Issue-56.
+How an assertion is checked against these keys is in [checking a client assertion](#checking-a-client-assertion).
 
 ### Token policy
 
