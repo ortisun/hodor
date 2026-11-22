@@ -176,9 +176,17 @@ Planned in [the epics](epics.md#milestone-3-applications-ask-hodor-who-someone-i
 
 | Milestone | Slices | Done | Total |
 |---|---|---|---|
-| 3 — Applications ask Hodor who someone is | L to P: keys, applications and clients, OAuth 2.x core, OpenID Connect, consent | 0 | 14 |
+| 3 — Applications ask Hodor who someone is | L to P: keys, applications and clients, OAuth 2.x core, OpenID Connect, consent | 1 | 14 |
 | 4 — Strong authentication | Q and R: factors, step-up and the person's own factors | 0 | 8 |
 | 5 — The authorization engine | S and T: the native engine, Open Policy Agent | 0 | 9 |
+
+### Milestone 3
+
+Specified in [the OAuth context](../architecture/contexts/oauth.md).
+
+| Issue | Status | What exists |
+|---|---|---|
+| Issue-53 `oauth` context: applications and clients | Done | `hodor-oauth` crate: applications; clients that are confidential or public, with exact redirect addresses (HTTPS, plain HTTP to `127.0.0.1` or `[::1]`, a private-use scheme for a public client), grants, the four authentication methods, the scopes they may ask for and a token policy; secrets `hodor_cs_…` shown once, kept as SHA-256 hashes, expiring after 1 to 730 days, rotated with the newest previous one kept for up to 30 days; public keys for `private_key_jwt` with any private part refused; resource servers with an audience and scopes. Six tables in the schema `oauth` under row-level security, whose constraints also keep a public client without a method and with PKCE. One contract suite passed by the in-memory stores and by PostgreSQL. No endpoint, route or command yet (Issue-54 and Issue-55) |
 
 ## Admin console
 

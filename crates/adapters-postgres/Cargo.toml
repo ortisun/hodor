@@ -21,6 +21,7 @@ hodor-credential.workspace = true
 hodor-identity.workspace = true
 hodor-kernel.workspace = true
 hodor-notification.workspace = true
+hodor-oauth.workspace = true
 hodor-session.workspace = true
 hodor-tenant.workspace = true
 serde_json.workspace = true
@@ -41,6 +42,7 @@ hodor-federation = { workspace = true, features = ["testing"] }
 hodor-saml = { workspace = true, features = ["testing"] }
 hodor-session = { workspace = true, features = ["testing"] }
 hodor-notification = { workspace = true, features = ["testing"] }
+hodor-oauth = { workspace = true, features = ["testing"] }
 hodor-credential = { workspace = true, features = ["testing"] }
 hodor-identity = { workspace = true, features = ["testing"] }
 hodor-tenant = { workspace = true, features = ["testing"] }

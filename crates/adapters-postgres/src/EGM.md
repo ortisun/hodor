@@ -53,6 +53,9 @@ Each store is a unit struct (except where noted) that runs its queries on
 | `PgProviderStore` | `impl ProviderStore for PgProviderStore` (`federation.rs`, `hodor_federation::api`) | `federation.identity_provider` |
 | `PgLinkStore` | `impl LinkStore for PgLinkStore` (`federation.rs`, `hodor_federation::api`) | `federation.external_identity` |
 | `PgPendingAuthorizationStore` | `impl PendingAuthorizationStore for PgPendingAuthorizationStore` (`federation.rs`, `hodor_federation::api`) | `federation.pending_authorization` |
+| `PgApplicationStore` | `impl ApplicationStore for PgApplicationStore` (`oauth.rs`, `hodor_oauth::api`) | `oauth.application` |
+| `PgClientStore` | `impl ClientStore for PgClientStore` (`oauth.rs`, `hodor_oauth::api`); `update` checks the version, then replaces the client's secrets and keys | `oauth.client`, `oauth.client_secret`, `oauth.client_key` |
+| `PgResourceServerStore` | `impl ResourceServerStore for PgResourceServerStore` (`oauth.rs`, `hodor_oauth::api`); maps the constraints `resource_server_audience_unique`, `resource_server_application_unique` and `resource_server_application_fk` to `oauth.audience_taken`, `oauth.application_has_resource_server` and `oauth.application_not_found` | `oauth.resource_server`, `oauth.resource_server_scope` |
 | `PgUserRepository` | `impl UserRepository for PgUserRepository` (`identity.rs`, `hodor_identity::api`) | `identity."user"`, `identity.user_identifier` |
 | `PgMessageQueue` | `impl MessageQueue for PgMessageQueue` (`notification.rs`, `hodor_notification::api`) | `notification.message` |
 | `PgPendingMessages` (holds a platform `PgPool`; `new(platform)`) | `impl PendingMessages for PgPendingMessages` (`notification.rs`, `hodor_notification::api`) | `notification.message` |

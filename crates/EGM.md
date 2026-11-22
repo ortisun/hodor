@@ -6,7 +6,7 @@ The library crates of the Hodor Cargo workspace (`members = ["crates/*", "apps/*
 
 - Layer 0, the shared kernel: `hodor-kernel`.
 - Layer 1, the base bounded contexts: `hodor-tenant`, `hodor-identity`, `hodor-credential`, `hodor-session`, `hodor-audit`, `hodor-notification`, `hodor-authorization`. Each may depend only on `hodor-kernel`.
-- Layer 2, the orchestrating contexts: `hodor-authentication` (depends on kernel, identity, credential, session, tenant and notification) and `hodor-saml` (kernel only in the rules; its `Cargo.toml` lists no workspace crate).
+- Layer 2, the orchestrating contexts: `hodor-authentication` (depends on kernel, identity, credential, session, tenant and notification), `hodor-oauth` (allowed kernel, identity, session, keys and tenant; today it depends on the kernel only) and `hodor-saml` (kernel only in the rules; its `Cargo.toml` lists no workspace crate).
 - Layer 3, the context extensions: `hodor-federation` (kernel, authentication, identity, saml).
 - Layer 4, the adapters: `hodor-adapters-postgres`, `hodor-adapters-crypto`, `hodor-adapters-http`, `hodor-adapters-ldap`, `hodor-adapters-smtp`, `hodor-observability` and `hodor-protocol-http`.
 
@@ -30,6 +30,7 @@ Bounded contexts:
 - notification: [./notification/EGM.md](./notification/EGM.md) - `Notifier` queues a message in the caller's unit of work; `DeliveryService` delivers due messages with retries (at most 8 attempts). Ports `MessageQueue`, `PendingMessages`, `EmailSender`.
 - authentication: [./authentication/EGM.md](./authentication/EGM.md) - `AuthenticationService` runs a sign-in through `FlowEngine` up to the start of a session; `AttemptGuard` counts attempts and locks out; `AccountService` handles registration and password recovery by email link. Ports `AttemptStore`, `TransactionStore`, `VerificationTokenStore`.
 - saml: [./saml/EGM.md](./saml/EGM.md) - Pure computation for Hodor as a SAML service provider: `check_response`, `AuthenticationRequest`, `metadata`, `IdentityProviderKey`. The only crate allowed an XML library (`xml-sec`).
+- oauth: [./oauth/EGM.md](./oauth/EGM.md) - `ApplicationService`: applications, clients (types, exact redirect addresses, grants, authentication methods, secrets kept as SHA-256 hashes with rotation, public keys for `private_key_jwt`, token policy) and resource servers with their scopes. Ports `ApplicationStore`, `ClientStore`, `ResourceServerStore`. No endpoint yet.
 - federation: [./federation/EGM.md](./federation/EGM.md) - `FederationService` (identity providers and external identity links) and `ExternalSignIn` (sign-in through OpenID Connect, GitHub, SAML and LDAP directories). Plugs into authentication as the `external` step. Ports `ProviderStore`, `LinkStore`, `PendingAuthorizationStore`, `DirectoryClient`, `LockoutPolicy`.
 
 Adapters:
@@ -48,7 +49,7 @@ Adapters:
 - An adapter never depends on another adapter (`RULES` comment on layer 4; test `an_adapter_cannot_depend_on_another_adapter`).
 - Only `hodor-saml` may depend on an XML library (`XML`, `XML_CRATE`; test `only_the_saml_crate_reads_xml`).
 - No bounded context depends on `hodor-audit` (test `no_context_depends_on_audit`); audit records are made from outbox events by `AuditHandler`, which `apps/hodor-worker` runs.
-- `RULES` also lists crates that do not exist yet (for example `hodor-keys`, `hodor-oauth`, `hodor-adapters-redis`); they are not part of this directory today.
+- `RULES` also lists crates that do not exist yet (for example `hodor-keys`, `hodor-adapters-redis`); they are not part of this directory today.
 
 ## Verification
 

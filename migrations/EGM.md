@@ -2,7 +2,7 @@
 
 ## Overview
 
-The PostgreSQL schema, as twenty-one numbered SQL files. They are embedded in the
+The PostgreSQL schema, as numbered SQL files (`0023` is left to the keys context). They are embedded in the
 binaries by `static MIGRATOR: Migrator = sqlx::migrate!("../../migrations")`
 in `crates/adapters-postgres/src/migrate.rs` and applied by
 `hodor_adapters_postgres::migrate`, which `hodor-cli migrate` calls with a
@@ -38,6 +38,8 @@ Tables created, by file:
 | `0019_federation_directories.sql` | adds the kind `ldap` and the `directory_*` columns to `federation.identity_provider` |
 | `0020_federation_saml.sql` | adds the kind `saml` and the `saml_*` columns to `federation.identity_provider`; adds `saml_response` and `saml_receipt_hash` to `federation.pending_authorization` |
 | `0021_federation_pending_authorization_expiry.sql` | adds the index `pending_authorization_expiry_idx` on `federation.pending_authorization (expires_at)`, for the cleanup job of `hodor-worker` |
+| `0022_federation_saml_answer.sql` | `federation.pending_authorization` keeps the answer to a SAML response, never the response |
+| `0024_oauth_clients.sql` | schema `oauth`; `oauth.application`; `oauth.client`; `oauth.client_secret`; `oauth.client_key`; `oauth.resource_server`; `oauth.resource_server_scope` |
 
 No migration creates a type, an extension or seed rows; enumerations are text
 columns with `CHECK ... IN (...)` constraints.
