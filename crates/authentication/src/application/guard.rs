@@ -75,7 +75,6 @@ impl AttemptGuard {
         address: Option<&str>,
         caller: Caller,
     ) -> Result<(), DomainError> {
-        let now = self.clock.now();
         let mut subjects = vec![AttemptSubject::Identifier(identifier_key)];
         if let Some(address) = address {
             subjects.push(AttemptSubject::Address(
@@ -85,10 +84,46 @@ impl AttemptGuard {
         // Always in the same order, so that two attempts can never wait
         // for each other.
         subjects.sort();
+        self.count(tenant, rules, &subjects, caller).await
+    }
 
+    /// Admits the start of one sign-in from an address, counting it against
+    /// the address's network, apart from any count of passwords. An address
+    /// that is not known is not counted.
+    ///
+    /// # Errors
+    ///
+    /// Returns `RateLimited` with code `authentication.too_many_attempts`
+    /// and the time to wait if too many sign-ins were started from that
+    /// network. Nothing is counted in that case, and no sign-in may start.
+    pub async fn admit_start(
+        &self,
+        tenant: &TenantContext,
+        address: Option<&str>,
+        caller: Caller,
+    ) -> Result<(), DomainError> {
+        let Some(address) = address else {
+            return Ok(());
+        };
+        let network = format!("start:{}", network_of(address));
+        let subject = AttemptSubject::Start(self.digest.sha256(network.as_bytes()));
+        self.count(tenant, &LockoutRules::STARTS, &[subject], caller)
+            .await
+    }
+
+    /// Counts one attempt against each subject, refusing it if any of them
+    /// is locked out.
+    async fn count(
+        &self,
+        tenant: &TenantContext,
+        rules: &LockoutRules,
+        subjects: &[AttemptSubject],
+        caller: Caller,
+    ) -> Result<(), DomainError> {
+        let now = self.clock.now();
         let mut uow = self.units_of_work.begin(tenant).await?;
         let mut counters = Vec::with_capacity(subjects.len());
-        for subject in &subjects {
+        for subject in subjects {
             let counter = self.attempts.lock(uow.as_mut(), subject, now).await?;
             if let Some(until) = counter.locked_until(now) {
                 return Err(too_many_attempts(until, now));
@@ -131,5 +166,37 @@ impl AttemptGuard {
             .clear(uow.as_mut(), &AttemptSubject::Identifier(identifier_key))
             .await?;
         uow.commit().await
+    }
+}
+
+/// The network an address belongs to, as counted: a whole IPv6 network of
+/// 64 bits, the block one machine is usually given, or one IPv4 address.
+/// What is not an address is counted as it is written.
+fn network_of(address: &str) -> String {
+    match address.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V6(address)) => match address.to_ipv4_mapped() {
+            Some(mapped) => mapped.to_string(),
+            None => {
+                let [a, b, c, d, ..] = address.segments();
+                format!("{a:x}:{b:x}:{c:x}:{d:x}::/64")
+            }
+        },
+        Ok(std::net::IpAddr::V4(address)) => address.to_string(),
+        Err(_) => address.to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::network_of;
+
+    #[test]
+    fn an_ipv6_network_of_64_bits_is_one_address() {
+        assert_eq!(network_of("2001:db8:1:2:aaaa::1"), "2001:db8:1:2::/64");
+        assert_eq!(network_of("2001:db8:1:2:bbbb::9"), "2001:db8:1:2::/64");
+        assert_ne!(network_of("2001:db8:1:3::1"), network_of("2001:db8:1:2::1"));
+        assert_eq!(network_of("::ffff:192.0.2.7"), "192.0.2.7");
+        assert_eq!(network_of("192.0.2.7"), "192.0.2.7");
+        assert_eq!(network_of("not an address"), "not an address");
     }
 }

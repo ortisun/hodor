@@ -1,5 +1,6 @@
 //! The use cases of the authentication context: running a sign-in.
 
+use crate::application::guard::AttemptGuard;
 use crate::application::ports::TransactionStore;
 use crate::domain::authenticator::StepInput;
 use crate::domain::engine::{FlowEngine, Progress};
@@ -71,6 +72,8 @@ pub struct AuthenticationService {
     identity: IdentityService,
     sessions: SessionService,
     tenants: TenantService,
+    /// Counts the sign-ins started from each network.
+    guard: AttemptGuard,
     digest: Arc<dyn Digest>,
     random: Arc<dyn RandomSource>,
     clock: Arc<dyn Clock>,
@@ -107,6 +110,7 @@ impl AuthenticationService {
         identity: IdentityService,
         sessions: SessionService,
         tenants: TenantService,
+        guard: AttemptGuard,
         digest: Arc<dyn Digest>,
         random: Arc<dyn RandomSource>,
         clock: Arc<dyn Clock>,
@@ -120,6 +124,7 @@ impl AuthenticationService {
             identity,
             sessions,
             tenants,
+            guard,
             digest,
             random,
             clock,
@@ -131,12 +136,19 @@ impl AuthenticationService {
     ///
     /// # Errors
     ///
-    /// Returns an error if storage fails.
+    /// Returns `RateLimited` with code `authentication.too_many_attempts`
+    /// if too many sign-ins were started from the client's network, and an
+    /// error if storage fails.
     pub async fn start(
         &self,
         tenant: &TenantContext,
         client: ClientInfo,
     ) -> Result<StartedSignIn, DomainError> {
+        // Counted before anything is stored: a sign-in may come to hold a
+        // provider's answer until it expires.
+        self.guard
+            .admit_start(tenant, client.address.as_deref(), Caller::system())
+            .await?;
         let mut bytes = [0_u8; 32];
         self.random.fill(&mut bytes);
         let secret: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();

@@ -176,6 +176,13 @@ pub async fn run_attempt_contract(ports: AttemptPorts<'_>) {
         AttemptCounter::new(identifier, MOMENT)
     );
     assert_eq!(lock(&ports, &tenant, &address).await.failures(), 1);
+
+    // The sign-ins started from a network are a subject of their own, kept
+    // apart from an address with the same digest.
+    let starts = AttemptSubject::Start([1; 32]);
+    count(&ports, &tenant, &starts).await;
+    assert_eq!(lock(&ports, &tenant, &starts).await.failures(), 1);
+    assert_eq!(lock(&ports, &tenant, &address).await.failures(), 1);
 }
 
 /// Sign-ins in progress kept in memory.

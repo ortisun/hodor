@@ -10,6 +10,8 @@ pub enum AttemptSubject {
     Identifier([u8; 32]),
     /// A network address, by its digest.
     Address([u8; 32]),
+    /// The sign-ins started from a network, by its digest.
+    Start([u8; 32]),
 }
 
 impl AttemptSubject {
@@ -19,6 +21,7 @@ impl AttemptSubject {
         match self {
             Self::Identifier(_) => "identifier",
             Self::Address(_) => "address",
+            Self::Start(_) => "start",
         }
     }
 
@@ -26,7 +29,7 @@ impl AttemptSubject {
     #[must_use]
     pub const fn key(&self) -> &[u8; 32] {
         match self {
-            Self::Identifier(key) | Self::Address(key) => key,
+            Self::Identifier(key) | Self::Address(key) | Self::Start(key) => key,
         }
     }
 }
@@ -50,11 +53,21 @@ impl LockoutRules {
     /// many people can share one address.
     pub const ADDRESS_FACTOR: u32 = 10;
 
+    /// How many sign-ins one network may start: generous, since an office
+    /// signs in from one address in the morning, and there to bound what
+    /// one address can make Hodor store.
+    pub const STARTS: Self = Self {
+        max_failures: 200,
+        window: Duration::minutes(10),
+        first_lockout: Duration::minutes(1),
+        longest_lockout: Duration::minutes(15),
+    };
+
     /// The number of attempts allowed for a subject within the window.
     #[must_use]
     pub const fn limit_for(&self, subject: &AttemptSubject) -> u32 {
         match subject {
-            AttemptSubject::Identifier(_) => self.max_failures,
+            AttemptSubject::Identifier(_) | AttemptSubject::Start(_) => self.max_failures,
             AttemptSubject::Address(_) => self.max_failures.saturating_mul(Self::ADDRESS_FACTOR),
         }
     }

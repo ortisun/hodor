@@ -81,7 +81,7 @@ async fn world(database: &TestDatabase) -> World {
             credentials.clone(),
             identity.clone(),
             tenants.clone(),
-            guard,
+            guard.clone(),
         )));
     let service = AuthenticationService::new(
         units(),
@@ -91,6 +91,7 @@ async fn world(database: &TestDatabase) -> World {
         identity.clone(),
         sessions.clone(),
         tenants.clone(),
+        guard.clone(),
         Arc::new(Sha256Digest),
         Arc::new(OsRandom),
         clock,

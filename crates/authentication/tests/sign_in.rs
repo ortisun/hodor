@@ -109,7 +109,7 @@ async fn world_with(lenient_password_step: bool) -> World {
             credentials.clone(),
             identity.clone(),
             tenants.clone(),
-            guard,
+            guard.clone(),
         ))
     };
     let engine = FlowEngine::new()
@@ -126,6 +126,7 @@ async fn world_with(lenient_password_step: bool) -> World {
         identity.clone(),
         sessions.clone(),
         tenants.clone(),
+        guard.clone(),
         Arc::new(FakeDigest),
         Arc::new(SequentialRandom::default()),
         clock.clone(),
@@ -602,4 +603,60 @@ async fn a_sign_in_can_be_continued_only_with_its_secret() {
         world.password(id, PASSWORD).await.expect("password"),
         SignIn::Completed { .. }
     ));
+}
+
+#[tokio::test]
+async fn sign_ins_started_from_one_network_are_limited_and_passwords_are_not_touched() {
+    let world = world().await;
+    let start_from = |address: Option<&str>| {
+        let client = ClientInfo {
+            address: address.map(str::to_owned),
+            description: None,
+        };
+        world.service.start(&world.tenant, client)
+    };
+    for _ in 0..200 {
+        start_from(Some("198.51.100.7")).await.expect("start");
+    }
+    let refused = start_from(Some("198.51.100.7"))
+        .await
+        .expect_err("one too many");
+    assert_eq!(refused.code(), "authentication.too_many_attempts");
+    assert_eq!(refused.retry_after_seconds(), Some(60));
+    let event_types = world.units_of_work.committed_event_types();
+    assert!(
+        event_types
+            .iter()
+            .any(|name| name == "authentication.locked_out"),
+        "{event_types:?}"
+    );
+
+    // Another address, and a start whose address is not known, are not held back.
+    start_from(Some("198.51.100.8"))
+        .await
+        .expect("another address");
+    start_from(None).await.expect("an unknown address");
+
+    // Signing in from the held-back address with a password still works:
+    // the counts are kept apart.
+    let id = world.start().await;
+    world.identifier(id, "ana@example.com").await;
+    assert!(matches!(
+        world.password(id, PASSWORD).await.expect("password"),
+        SignIn::Completed { .. }
+    ));
+
+    // An IPv6 network of 64 bits counts as one address.
+    for host in 0..200 {
+        start_from(Some(&format!("2001:db8:7:7::{host:x}")))
+            .await
+            .expect("start");
+    }
+    let refused = start_from(Some("2001:db8:7:7:ffff::1"))
+        .await
+        .expect_err("the same network");
+    assert_eq!(refused.code(), "authentication.too_many_attempts");
+    start_from(Some("2001:db8:7:8::1"))
+        .await
+        .expect("another network");
 }
