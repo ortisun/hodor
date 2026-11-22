@@ -206,7 +206,11 @@ describe("the page that finishes", () => {
     const password = screen.getByLabelText<HTMLInputElement>(en.newPasswordLabel);
     await user.type(password, "short{Enter}");
 
-    expect(await screen.findByText(en.passwordTooShort)).toBeTruthy();
+    // The message next to the field. Astryx also announces it in a hidden
+    // live region, at a moment of its own, so that copy is left out.
+    expect(
+      await screen.findByText(en.passwordTooShort, { ignore: "script, style, [data-astryx-live-region]" }),
+    ).toBeTruthy();
     expect(password.getAttribute("aria-invalid")).toBe("true");
     const described = (password.getAttribute("aria-describedby") ?? "").split(" ");
     expect(described.map((id) => document.getElementById(id)?.textContent).join(" ")).toContain(en.passwordTooShort);
