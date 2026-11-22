@@ -138,6 +138,23 @@ Failed password attempts are counted, per tenant, against two things: the identi
 
 A lockout can be used to keep a real user out by failing on purpose. That is the cost of this protection; the short, growing durations limit it, and stronger answers such as recognizing the user's own device belong to Phase 4.
 
+### Starting sign-ins
+
+Starting a sign-in stores one, and a sign-in that chose a provider may hold what the provider sent, a SAML response of up to 384 kibibytes, until it expires ten minutes later. Starts are therefore limited too, per tenant, by where they come from:
+
+| Count | Limit | Effect when reached |
+|---|---|---|
+| Sign-ins started from one address within ten minutes | 200 | Starting is refused with "too many attempts" and the time to wait: one minute the first time, doubling up to fifteen |
+
+The limit is generous because many people share an address behind the network of an office or a school, and they all sign in in the morning; it is there to bound what one address can make Hodor store, about 75 megabytes at most, gone ten minutes later.
+
+- **An address is a whole IPv6 network of 64 bits**, the block one machine is usually given, and a single IPv4 address. Counting each IPv6 address apart would let one machine start as many sign-ins as it has addresses.
+- **These counts are kept apart from the failures of passwords.** Starting sign-ins does not lock anyone out of a password, and failing passwords does not stop anyone from starting.
+- **A start is counted before the sign-in is stored**, so that only as many as the limit are stored when many arrive at once.
+- A start whose address is unknown is not counted; Hodor reached through a load balancer counts everyone as one address, as for passwords.
+
+Choosing a provider replaces the sign-in's one pending authorization, so a sign-in never holds more than one: limiting starts limits what pending authorizations can hold.
+
 ## Completing a sign-in
 
 When the last step is satisfied:
@@ -157,7 +174,7 @@ Marking the transaction completed and starting the session are two separate writ
 |---|---|
 | `authentication.succeeded` | A sign-in completed; carries the user, the session and the methods |
 | `authentication.failed` | A step was rejected; carries the step and, when known, the user. Never the identifier typed or anything about the password |
-| `authentication.locked_out` | An identifier or an address reached its limit; carries which kind and until when |
+| `authentication.locked_out` | An identifier, an address or the sign-ins started from an address reached their limit; carries which kind (`identifier`, `address` or `start`) and until when |
 | `authentication.registration_completed` | A person finished registering; carries the user |
 | `authentication.recovery_requested` | A recovery link was sent; carries the user. Not recorded when the address belongs to nobody |
 | `authentication.password_reset` | A person chose a new password with a recovery link; carries the user |
@@ -314,8 +331,8 @@ This context calls the `identity`, `credential`, `session`, `tenant` and `notifi
 | Column | Type | Notes |
 |---|---|---|
 | `tenant_id` | `uuid` | |
-| `subject_kind` | `text` | `identifier` or `address` |
-| `subject_key` | `bytea` | SHA-256 of the normalized identifier or of the address |
+| `subject_kind` | `text` | `identifier`, `address`, or `start` for the sign-ins started from an address |
+| `subject_key` | `bytea` | SHA-256 of the normalized identifier, of the address, or of the network an address belongs to |
 | `failures` | `integer` | Failures in the current window |
 | `window_started_at` | `timestamptz` | |
 | `lockouts` | `integer` | Lockouts so far, which sets the next duration |

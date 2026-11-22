@@ -62,7 +62,7 @@ Submitting a step other than the one the sign-in is waiting for is an error (`42
 | The sign-in has ended | `409` | `authentication.transaction_not_active` |
 | Another request advanced the sign-in at the same moment | `409` | `authentication.transaction_modified_concurrently` |
 | The wrong step was submitted | `422` | `authentication.unexpected_step` |
-| Attempts are being limited | `429`, with `Retry-After` | `authentication.too_many_attempts` |
+| Attempts are being limited, or too many sign-ins were [started](../architecture/contexts/authentication.md#starting-sign-ins) from this address | `429`, with `Retry-After` | `authentication.too_many_attempts` |
 | The server is too busy to check a password | `503`, with `Retry-After` when known | `credential.hashing_overloaded` |
 | The CSRF token is missing or wrong | `403` | `request.csrf_token_invalid` |
 | The request comes from another site | `403` | `request.cross_origin` |
@@ -299,5 +299,5 @@ The address recorded for a sign-in, and used to limit attempts, is the address o
 | Item | Planned in |
 |---|---|
 | Trusting a forwarded client address from named proxies | Before any deployment behind a load balancer |
-| Limiting requests per address on these paths, beyond the attempt limits of the password step | Later in Phase 1 |
+| Limiting requests per address on the other paths, beyond starting a sign-in and the attempt limits of the password step | Later in Phase 1 |
 | The `__Host-` cookie variant for a tenant's own host | Phase 3 |

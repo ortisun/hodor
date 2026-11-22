@@ -490,6 +490,5 @@ All tables are under [forced row-level security](../multi-tenancy.md#isolation-b
 | Mapping what a provider says about a person to the user's profile, groups or roles | Issue-40 for the profile; groups and roles are not in Milestone 2 |
 | Linking and unlinking by the person themself, routing by email domain | The account console |
 | Letting a person who already has an account connect an external identity to it, with proof of both | The account console |
-| Starting a sign-in and choosing a provider are not limited. Within the ten minutes before it expires, a pending authorization that kept a SAML response holds up to 384 kibibytes | Limits on starting sign-ins, before SAML is used anywhere real |
 | Bringing the name and the language up to date on later sign-ins | With claim mapping |
 | Protection against a local account made in advance with someone else's address (Threat-Federation-02). Such an account keeps the person's external identity out; it is not taken over | With linking, in the account console |
