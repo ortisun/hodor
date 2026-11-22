@@ -1112,3 +1112,306 @@ pub async fn run_totp_contract(ports: TotpPorts<'_>) {
     );
     assert!(!ports.totps.remove(uow.as_mut(), user).await.expect("again"));
 }
+
+type WebAuthnRows =
+    BTreeMap<(TenantId, crate::api::WebAuthnCredentialId), crate::api::WebAuthnCredential>;
+type RegistrationRows =
+    BTreeMap<(TenantId, crate::api::WebAuthnRegistrationId), crate::api::PendingRegistration>;
+
+/// WebAuthn credentials and pending registrations kept in memory.
+#[derive(Debug, Clone, Default)]
+pub struct InMemoryWebAuthn {
+    credentials: Arc<Mutex<WebAuthnRows>>,
+    registrations: Arc<Mutex<RegistrationRows>>,
+}
+
+impl InMemoryWebAuthn {
+    fn credentials(&self) -> std::sync::MutexGuard<'_, WebAuthnRows> {
+        self.credentials.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn registrations(&self) -> std::sync::MutexGuard<'_, RegistrationRows> {
+        self.registrations.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::api::WebAuthnStore for InMemoryWebAuthn {
+    async fn insert_registration(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        registration: &crate::api::PendingRegistration,
+    ) -> Result<(), DomainError> {
+        self.registrations().insert(
+            (uow.tenant().tenant_id(), registration.snapshot().id),
+            registration.clone(),
+        );
+        Ok(())
+    }
+
+    async fn take_registration(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: crate::api::WebAuthnRegistrationId,
+    ) -> Result<Option<crate::api::PendingRegistration>, DomainError> {
+        Ok(self.registrations().remove(&(uow.tenant().tenant_id(), id)))
+    }
+
+    async fn insert(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        credential: &crate::api::WebAuthnCredential,
+    ) -> Result<(), DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let mut rows = self.credentials();
+        if rows.iter().any(|((owner, _), existing)| {
+            *owner == tenant
+                && existing.snapshot().credential_id == credential.snapshot().credential_id
+        }) {
+            return Err(DomainError::conflict(
+                "credential.webauthn_credential_exists",
+                "this security key is already registered",
+            ));
+        }
+        rows.insert((tenant, credential.id()), credential.clone());
+        Ok(())
+    }
+
+    async fn list_for_user(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        user_id: UserId,
+    ) -> Result<Vec<crate::api::WebAuthnCredential>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let mut found: Vec<_> = self
+            .credentials()
+            .iter()
+            .filter(|((owner, _), credential)| *owner == tenant && credential.user_id() == user_id)
+            .map(|(_, credential)| credential.clone())
+            .collect();
+        found.sort_by_key(|credential| (credential.snapshot().created_at, credential.id()));
+        Ok(found)
+    }
+
+    async fn record_use(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        credential: &crate::api::WebAuthnCredential,
+        previous_count: u32,
+    ) -> Result<bool, DomainError> {
+        let key = (uow.tenant().tenant_id(), credential.id());
+        let mut rows = self.credentials();
+        match rows.get(&key) {
+            Some(stored) if stored.snapshot().sign_count == previous_count => {
+                rows.insert(key, credential.clone());
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+}
+
+/// The ports under test.
+#[derive(Clone)]
+pub struct WebAuthnPorts<'a> {
+    /// Starts units of work.
+    pub units_of_work: &'a dyn UnitOfWorkFactory,
+    /// The store under test.
+    pub store: &'a dyn crate::api::WebAuthnStore,
+}
+
+impl std::fmt::Debug for WebAuthnPorts<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WebAuthnPorts").finish_non_exhaustive()
+    }
+}
+
+/// A credential as a store keeps it, made directly: the contract is about
+/// storage, not about the checks.
+#[must_use]
+pub fn stored_credential(
+    user_id: UserId,
+    credential_id: Vec<u8>,
+    created_at: Timestamp,
+) -> crate::api::WebAuthnCredential {
+    crate::api::WebAuthnCredential::from_snapshot(crate::api::WebAuthnCredentialSnapshot {
+        id: crate::api::WebAuthnCredentialId::generate(),
+        user_id,
+        credential_id,
+        public_key: vec![0xa0],
+        algorithm: crate::api::CoseAlgorithm::Es256,
+        sign_count: 3,
+        backup_eligible: true,
+        backed_up: false,
+        discoverable: Some(true),
+        transports: vec!["internal".to_owned(), "usb".to_owned()],
+        name: "Blue key".to_owned(),
+        created_at,
+        last_used_at: None,
+    })
+}
+
+/// Runs every rule a WebAuthn store must obey. Each run uses tenants of
+/// its own, so runs can share one database.
+///
+/// # Panics
+///
+/// Panics if the implementation breaks a rule.
+pub async fn run_webauthn_contract(ports: WebAuthnPorts<'_>) {
+    let tenant = tenant();
+    let elsewhere = self::tenant();
+    let moment = Timestamp::UNIX_EPOCH + time::Duration::days(20_000);
+    let user = UserId::generate();
+    let identifier = crate::api::WebAuthnCredentialId::generate()
+        .as_uuid()
+        .as_bytes()
+        .to_vec();
+    let first = stored_credential(user, identifier.clone(), moment);
+    let second = stored_credential(user, vec![7; 64], moment + time::Duration::minutes(1));
+
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    ports
+        .store
+        .insert(uow.as_mut(), &second)
+        .await
+        .expect("insert");
+    ports
+        .store
+        .insert(uow.as_mut(), &first)
+        .await
+        .expect("insert");
+    uow.commit().await.expect("commit");
+
+    // A user's credentials come back unchanged, oldest first, in their
+    // own tenant only.
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    assert_eq!(
+        ports
+            .store
+            .list_for_user(uow.as_mut(), user)
+            .await
+            .expect("list"),
+        vec![first.clone(), second.clone()]
+    );
+    assert_eq!(
+        ports
+            .store
+            .list_for_user(uow.as_mut(), UserId::generate())
+            .await
+            .expect("list"),
+        Vec::new()
+    );
+    // The same credential identifier cannot be registered twice in a
+    // tenant, for anyone.
+    let error = ports
+        .store
+        .insert(
+            uow.as_mut(),
+            &stored_credential(UserId::generate(), identifier.clone(), moment),
+        )
+        .await
+        .expect_err("a duplicate");
+    assert_eq!(error.code(), "credential.webauthn_credential_exists");
+    drop(uow);
+
+    let mut uow = ports.units_of_work.begin(&elsewhere).await.expect("begin");
+    assert_eq!(
+        ports
+            .store
+            .list_for_user(uow.as_mut(), user)
+            .await
+            .expect("list"),
+        Vec::new()
+    );
+    // Another tenant has its own credentials, even with the same
+    // identifier, and cannot change this tenant's.
+    ports
+        .store
+        .insert(
+            uow.as_mut(),
+            &stored_credential(user, identifier.clone(), moment),
+        )
+        .await
+        .expect("another tenant's own");
+    assert!(
+        !ports
+            .store
+            .record_use(uow.as_mut(), &first, 3)
+            .await
+            .expect("record")
+    );
+    uow.commit().await.expect("commit");
+
+    // A use is stored only over the counter that was read.
+    let mut used = first.clone();
+    let mut snapshot = used.snapshot().clone();
+    snapshot.sign_count = 4;
+    snapshot.backed_up = true;
+    snapshot.last_used_at = Some(moment + time::Duration::hours(1));
+    used = crate::api::WebAuthnCredential::from_snapshot(snapshot);
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    assert!(
+        ports
+            .store
+            .record_use(uow.as_mut(), &used, 3)
+            .await
+            .expect("record")
+    );
+    assert!(
+        !ports
+            .store
+            .record_use(uow.as_mut(), &used, 3)
+            .await
+            .expect("record")
+    );
+    uow.commit().await.expect("commit");
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    assert_eq!(
+        ports
+            .store
+            .list_for_user(uow.as_mut(), user)
+            .await
+            .expect("list")[0],
+        used
+    );
+    drop(uow);
+
+    // A pending registration is taken once, in its own tenant only.
+    let pending = crate::api::PendingRegistration::begin(user, &ContractRandom, moment);
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    ports
+        .store
+        .insert_registration(uow.as_mut(), &pending)
+        .await
+        .expect("insert");
+    uow.commit().await.expect("commit");
+    let mut uow = ports.units_of_work.begin(&elsewhere).await.expect("begin");
+    assert_eq!(
+        ports
+            .store
+            .take_registration(uow.as_mut(), pending.snapshot().id)
+            .await
+            .expect("take"),
+        None
+    );
+    uow.commit().await.expect("commit");
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    assert_eq!(
+        ports
+            .store
+            .take_registration(uow.as_mut(), pending.snapshot().id)
+            .await
+            .expect("take"),
+        Some(pending.clone())
+    );
+    uow.commit().await.expect("commit");
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    assert_eq!(
+        ports
+            .store
+            .take_registration(uow.as_mut(), pending.snapshot().id)
+            .await
+            .expect("take"),
+        None
+    );
+}

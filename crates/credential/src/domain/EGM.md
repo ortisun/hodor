@@ -45,10 +45,15 @@ use cases that drive this model are described in
 - `TotpSnapshot { id, user_id, status, sealed_secret, created_at, confirmed_at, last_used_step }` and `Totp`: `begin(user_id, sealed, now)`, `from_snapshot`, `snapshot`, `id`, `can_be_confirmed_at(now)`, `confirm(step, now) -> TotpEvent`, `accepts_step(step)` (later than the last step used).
 - `TotpEnrollment::new(secret, issuer, account)`: `secret()` in Base32 without padding and `address()` (`otpauth://totp/…?secret=…&issuer=…&algorithm=SHA1&digits=6&period=30`). Its `Debug` prints nothing of either.
 - `TotpEvent`: `Enrolled { user_id }` (`credential.totp_enrolled`) and `Removed { user_id }` (`credential.totp_removed`).
+### `webauthn/` (Decision 0024)
+
+- `mod.rs`: `RelyingParty::from_public_address(address)` (the host is the identifier, scheme, host and port the origin; refuses other schemes, addresses by number and user information), `Challenge([u8; 32])` with `generate` and `encoded`, `user_handle(user)` (the 16 bytes of the identifier), `WebAuthnCredential` with its snapshot, `PendingRegistration` (`begin`, `is_good_for`), the options sent to browsers (`CreationOptions`, `RequestOptions`, `CredentialDescriptor`), `RegistrationResponse` and `AssertionResponse` with `from_base64url`, and the crate-private checks `check_registration` and `check_assertion` with their reasons, `Refusal` and `AssertionCheck`.
+- `cbor.rs`: the narrow CBOR reader, `read` and `read_exactly`.
+- `tests.rs`: one test per check, with a simulated authenticator and stand-in signatures.
 
 ### Domain events
 
-Both enums implement `hodor_kernel::DomainEvent` and serialize untagged.
+The four enums implement `hodor_kernel::DomainEvent` and serialize untagged.
 
 | Enum (file) | Variant | Fields | `event_type()` |
 | --- | --- | --- | --- |
@@ -57,6 +62,8 @@ Both enums implement `hodor_kernel::DomainEvent` and serialize untagged.
 | `PasswordEvent` (`event.rs`) | `Removed` | `user_id` | `credential.password_removed` |
 | `AccessTokenEvent` (`access_token.rs`) | `Issued` | `user_id`, `token_id`, `expires_at` (serialized as RFC 3339) | `credential.access_token_issued` |
 | `AccessTokenEvent` (`access_token.rs`) | `Revoked` | `user_id`, `token_id` | `credential.access_token_revoked` |
+| `WebAuthnEvent` (`webauthn/mod.rs`) | `Registered` | `user_id`, `credential_id` (Hodor's) | `credential.webauthn_registered` |
+| `WebAuthnEvent` (`webauthn/mod.rs`) | `CounterNotIncreased` | `user_id`, `credential_id` (Hodor's) | `credential.webauthn_counter_not_increased` |
 
 ## Invariants
 
@@ -67,6 +74,8 @@ Both enums implement `hodor_kernel::DomainEvent` and serialize untagged.
   - A password equal to one of `own_names`, ignoring case, is refused (`credential.password_is_own_name`).
   - Nothing else is checked: there are no composition rules and the value is not trimmed. Reuse needs the stored hashes and is checked elsewhere.
 - `PasswordRecord::hashes_barred_from_reuse(depth)` yields the current hash and then the newest `depth` historic hashes.
+- The WebAuthn checks run in the order of `docs/architecture/contexts/credential.md`. Attestation statements are not checked; only ES256 and RS256 keys of 2,048 bits or more are accepted; an ES256 signature must be strict DER; a counter that is not zero on either side must grow.
+- The CBOR reader accepts integers, byte and text strings, definite arrays and maps, true, false and null, at most eight deep; it refuses everything else, a duplicate map key, and any length beyond the input.
 - `PasswordRecord::replace` moves the current hash to the front of the history, trims the history to `history_depth`, and sets `must_change` and `changed_at`. `renew_hash` changes only the hash: the history, `changed_at` and `must_change` stay as they are.
 - `PasswordHash`, `AccessTokenSecret` and `AccessTokenHash` hide their contents in `Debug` output (`PasswordHash([REDACTED])`, `AccessTokenSecret([REDACTED])`, `AccessTokenHash(..)`).
 - An access token is `hodor_at_` followed by 64 lowercase hexadecimal characters taken from 32 random bytes (`PREFIX`, `SECRET_LENGTH`, `AccessTokenSecret::generate`). `AccessTokenHash::of_presented` returns `None` for any value of another shape, so nothing is computed or looked up for it.

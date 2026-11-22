@@ -26,6 +26,10 @@ export const en = {
   startAgain: "Start again",
   signInExpired: "The sign-in took too long and was started again.",
   unknownStep: "This page cannot continue this sign-in.",
+  securityKeyLead: "Use your security key, or the one built into this device, to finish signing in.",
+  useSecurityKey: "Use the security key",
+  securityKeyNoAnswer: "The security key did not answer. Try again.",
+  securityKeyUnavailable: "This browser cannot use security keys. Sign in from another browser.",
 
   registerTitle: "Create an account",
   registerLead: "Give your email address. A message will bring you a link to finish.",

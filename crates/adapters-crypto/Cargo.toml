@@ -28,6 +28,7 @@ zeroize.workspace = true
 
 [dev-dependencies]
 hodor-adapters-crypto = { path = ".", features = ["testing"] }
+hodor-credential = { workspace = true, features = ["testing"] }
 hodor-federation.workspace = true
 form_urlencoded.workspace = true
 hodor-kernel = { workspace = true, features = ["testing"] }

@@ -254,6 +254,53 @@ impl FlowEngine {
         })
     }
 
+    /// Asks the current step's authenticator for a challenge, keeps it in
+    /// the transaction in place of any earlier one, and returns what the
+    /// browser needs. The caller stores the transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Conflict` if the transaction is not in progress, `Invalid`
+    /// if `step` is not the current step or needs no challenge, and
+    /// whatever error the authenticator reports.
+    pub async fn challenge(
+        &self,
+        tenant: &TenantContext,
+        flow: &AuthFlow,
+        transaction: &mut AuthTransaction,
+        step: &str,
+        now: Timestamp,
+    ) -> Result<serde_json::Value, DomainError> {
+        transaction.require_in_progress(now)?;
+        let current = flow
+            .steps
+            .get(transaction.snapshot().current_step)
+            .ok_or_else(|| {
+                DomainError::conflict(
+                    "authentication.no_step_pending",
+                    "every step of this sign-in is already satisfied",
+                )
+            })?;
+        if current.key != step {
+            return Err(DomainError::invalid(
+                "authentication.unexpected_step",
+                format!("this sign-in is waiting for the `{}` step", current.key),
+            ));
+        }
+        let made = self
+            .authenticator(current)?
+            .challenge(tenant, transaction)
+            .await?
+            .ok_or_else(|| {
+                DomainError::invalid(
+                    "authentication.step_has_no_challenge",
+                    format!("the `{step}` step needs no challenge"),
+                )
+            })?;
+        transaction.record_challenge(made.challenge);
+        Ok(made.options)
+    }
+
     /// Passes over the steps from the current one on that are not to be
     /// performed, and stops at the first that is, or at the end.
     async fn pass_over(

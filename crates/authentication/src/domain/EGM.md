@@ -49,7 +49,11 @@ reach other crates only through `hodor_authentication::api` in `../lib.rs`.
   extension point: `kind() -> &'static str`, `traits() -> AuthenticatorTraits`,
   `perform(tenant, transaction, input) -> StepOutcome`, and
   `has_means(tenant, transaction) -> bool`, asked only for steps that are not
-  required; the default answers `true`.
+  required; the default answers `true`; and `challenge(tenant, transaction) ->
+  Option<StepChallenge>`, for a step that checks an answer only to a question
+  it asked; the default answers `None`.
+- `StepChallenge { challenge: [u8; 32], options: serde_json::Value }`: what the
+  engine keeps in the transaction, and what the browser needs.
 - `AuthenticatorTraits { identifies, factor, method }`.
 - `Factor`: `Knowledge`, `Possession`, `Inherence`.
 - `StepInput`: `Identifier(String)`, `Password(Secret<String>)`,

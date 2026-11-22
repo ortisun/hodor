@@ -171,6 +171,30 @@ impl AuthenticationService {
         self.pending(&transaction)
     }
 
+    /// Asks the current step of a sign-in for a challenge, for a step that
+    /// needs one, and returns what the browser needs to answer it.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NotFound` if there is no such sign-in, `Conflict` if it is
+    /// not in progress or was advanced by another request meanwhile, and
+    /// `Invalid` if `step` is not the current step or needs no challenge.
+    pub async fn challenge(
+        &self,
+        tenant: &TenantContext,
+        id: TransactionId,
+        secret: &str,
+        step: &str,
+    ) -> Result<serde_json::Value, DomainError> {
+        let mut transaction = self.load(tenant, id, secret).await?;
+        let options = self
+            .engine
+            .challenge(tenant, &self.flow, &mut transaction, step, self.clock.now())
+            .await?;
+        self.store(tenant, &transaction, None).await?;
+        Ok(options)
+    }
+
     /// Runs the current step of a sign-in with what was submitted.
     ///
     /// The step's authenticator runs with no database transaction open.

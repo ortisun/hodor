@@ -2,6 +2,8 @@
 // knows paths, headers and the shape of answers; the pages see values.
 // See docs/api/interaction-api.md.
 
+import type { WebAuthnAnswer } from "./webauthn";
+
 /** Why a request did not do what was asked. */
 export class Failure {
   constructor(
@@ -257,6 +259,20 @@ export class Client {
   /** Sends a code of the person's authenticator application. */
   async submitTotp(code: string): Promise<SignInAnswer> {
     return this.#signIn(await this.#send("POST", "/sign-in/steps/totp", { code }));
+  }
+
+  /** The challenge of the WebAuthn step, in the options the interface gives. */
+  async webAuthnOptions(): Promise<Record<string, unknown>> {
+    const reply = await this.#send("POST", "/sign-in/steps/webauthn/options");
+    const options = reply.body["public_key"];
+    if (typeof options !== "object" || options === null) {
+      throw new Failure(null, reply.status);
+    }
+    return options as Record<string, unknown>;
+  }
+
+  async submitWebAuthn(answer: WebAuthnAnswer): Promise<SignInAnswer> {
+    return this.#signIn(await this.#send("POST", "/sign-in/steps/webauthn", answer));
   }
 
   /** Abandons the sign-in. One that is already gone is not an error. */

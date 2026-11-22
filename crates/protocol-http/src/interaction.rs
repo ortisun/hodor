@@ -16,9 +16,10 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Extension, Json, Router};
 use hodor_authentication::api::{
-    AccountRequest, AccountService, AuthenticationService, ExternalInput, SignIn, StepInput,
-    TransactionId,
+    AccountRequest, AccountService, AuthenticationService, ExternalInput, FactorService, SignIn,
+    StepInput, TransactionId, WebAuthnAuthenticator,
 };
+use hodor_credential::api::{RegistrationResponse, WebAuthnRegistrationId};
 use hodor_federation::api::{Alias, EXTERNAL_STEP, ExternalSignIn};
 use hodor_kernel::{
     Actor, Caller, Clock, CorrelationId, Digest, DomainError, Secret, TenantContext,
@@ -43,6 +44,8 @@ pub struct InteractionState {
     pub accounts: AccountService,
     /// The session use cases.
     pub sessions: SessionService,
+    /// The factors a signed-in person registers.
+    pub factors: FactorService,
     /// Signing in through an identity provider. `None` when this
     /// installation is not set up for it: no provider is offered then.
     pub external: Option<ExternalSignIn>,
@@ -71,6 +74,8 @@ pub fn interaction_routes(state: InteractionState) -> Router {
         .route("/sign-in/steps/identifier", post(submit_identifier))
         .route("/sign-in/steps/password", post(submit_password))
         .route("/sign-in/steps/totp", post(submit_totp))
+        .route("/sign-in/steps/webauthn/options", post(webauthn_options))
+        .route("/sign-in/steps/webauthn", post(submit_webauthn))
         .route("/sign-in/providers", get(offered_providers))
         .route("/sign-in/providers/{alias}", post(choose_provider))
         .route(
@@ -84,6 +89,11 @@ pub fn interaction_routes(state: InteractionState) -> Router {
         .route("/session", get(current_session).delete(sign_out))
         .route("/sessions", get(list_sessions).delete(end_other_sessions))
         .route("/sessions/{session_id}", delete(end_session))
+        .route("/webauthn/registrations", post(begin_webauthn_registration))
+        .route(
+            "/webauthn/registrations/{registration_id}",
+            post(finish_webauthn_registration),
+        )
         .route("/registration", post(request_registration))
         .route("/registration/complete", post(complete_registration))
         .route("/recovery", post(request_recovery))
@@ -575,6 +585,193 @@ async fn submit_totp(
 ) -> Response {
     let input = StepInput::Totp(Secret::from(body.code));
     submit(&state, &tenant, &slug, &headers, input).await
+}
+
+#[derive(Debug, Deserialize)]
+struct WebAuthnAnswerBody {
+    credential_id: String,
+    client_data: String,
+    authenticator_data: String,
+    signature: String,
+    #[serde(default)]
+    user_handle: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct PublicKeyBody<T: Serialize> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    registration_id: Option<WebAuthnRegistrationId>,
+    public_key: T,
+}
+
+#[derive(Debug, Deserialize)]
+struct FinishWebAuthnBody {
+    client_data: String,
+    attestation_object: String,
+    #[serde(default)]
+    transports: Vec<String>,
+    #[serde(default)]
+    discoverable: Option<bool>,
+    #[serde(default)]
+    name: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct WebAuthnCredentialBody {
+    id: String,
+    name: String,
+    created_at: String,
+}
+
+/// The challenge of the WebAuthn step of the current sign-in.
+async fn webauthn_options(
+    State(state): State<InteractionState>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(handle) = handle(&headers) else {
+        return no_sign_in();
+    };
+    if !csrf_is_valid(&headers, state.digest.as_ref(), &handle) {
+        return problem(
+            StatusCode::FORBIDDEN,
+            "request.csrf_token_invalid",
+            "the request is missing its CSRF token, or the token is wrong",
+        );
+    }
+    match state
+        .authentication
+        .challenge(
+            &tenant,
+            handle.id,
+            handle.secret.expose(),
+            WebAuthnAuthenticator::KIND,
+        )
+        .await
+    {
+        Ok(options) => Json(PublicKeyBody {
+            registration_id: None,
+            public_key: options,
+        })
+        .into_response(),
+        Err(error) => Problem::from(error).into_response(),
+    }
+}
+
+async fn submit_webauthn(
+    State(state): State<InteractionState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(TenantSlug(slug)): Extension<TenantSlug>,
+    headers: HeaderMap,
+    Json(body): Json<WebAuthnAnswerBody>,
+) -> Response {
+    let mut fields = vec![
+        ("credential_id", body.credential_id),
+        ("client_data", body.client_data),
+        ("authenticator_data", body.authenticator_data),
+        ("signature", body.signature),
+    ];
+    if let Some(handle) = body.user_handle {
+        fields.push(("user_handle", handle));
+    }
+    let input = StepInput::External(ExternalInput {
+        step: WebAuthnAuthenticator::KIND.to_owned(),
+        fields: fields
+            .into_iter()
+            .map(|(name, value)| (name.to_owned(), Secret::from(value)))
+            .collect(),
+    });
+    submit(&state, &tenant, &slug, &headers, input).await
+}
+
+async fn begin_webauthn_registration(
+    State(state): State<InteractionState>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+) -> Response {
+    let person = match signed_in_to_change(&state, &tenant, &headers).await {
+        Ok(person) => person,
+        Err(response) => return *response,
+    };
+    match state
+        .factors
+        .begin_webauthn_registration(&tenant, person.session.user_id())
+        .await
+    {
+        Ok(begun) => (
+            StatusCode::CREATED,
+            Json(PublicKeyBody {
+                registration_id: Some(begun.id),
+                public_key: begun.options,
+            }),
+        )
+            .into_response(),
+        Err(error) => Problem::from(error).into_response(),
+    }
+}
+
+async fn finish_webauthn_registration(
+    State(state): State<InteractionState>,
+    Extension(tenant): Extension<TenantContext>,
+    parameters: RawPathParams,
+    headers: HeaderMap,
+    Json(body): Json<FinishWebAuthnBody>,
+) -> Response {
+    let person = match signed_in_to_change(&state, &tenant, &headers).await {
+        Ok(person) => person,
+        Err(response) => return *response,
+    };
+    // Something that is not an identifier names no registration.
+    let Some(id) = parameters
+        .iter()
+        .find(|(name, _)| *name == "registration_id")
+        .and_then(|(_, value)| value.parse::<WebAuthnRegistrationId>().ok())
+    else {
+        return Problem::from(DomainError::not_found(
+            "credential.webauthn_registration_not_found",
+            "this registration does not exist or has expired; start again",
+        ))
+        .into_response();
+    };
+    let Some(response) = RegistrationResponse::from_base64url(
+        &body.client_data,
+        &body.attestation_object,
+        body.transports,
+        body.discoverable,
+        body.name,
+    ) else {
+        return problem(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "request.invalid_body",
+            "client_data and attestation_object must be base64url without padding",
+        );
+    };
+    let finished = state
+        .factors
+        .finish_webauthn_registration(
+            &tenant,
+            person.session.user_id(),
+            id,
+            response,
+            person.caller(),
+        )
+        .await;
+    match finished {
+        Ok(credential) => (
+            StatusCode::CREATED,
+            Json(WebAuthnCredentialBody {
+                id: credential.id().to_string(),
+                name: credential.snapshot().name.clone(),
+                created_at: credential
+                    .snapshot()
+                    .created_at
+                    .format(&Rfc3339)
+                    .unwrap_or_default(),
+            }),
+        )
+            .into_response(),
+        Err(error) => Problem::from(error).into_response(),
+    }
 }
 
 fn provider_not_found() -> Response {

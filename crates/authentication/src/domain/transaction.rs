@@ -91,6 +91,9 @@ pub struct TransactionSnapshot {
     pub identifier_key: Option<[u8; 32]>,
     /// The methods satisfied so far.
     pub satisfied_methods: Vec<String>,
+    /// The challenge the current step asked for, if it needs one. Used
+    /// once: submitting the step removes it.
+    pub challenge: Option<[u8; 32]>,
     /// How many times a step was rejected.
     pub rejections: u32,
     /// How the transaction ended, or that it has not.
@@ -142,6 +145,7 @@ impl AuthTransaction {
                 candidate: None,
                 identifier_key: None,
                 satisfied_methods: Vec::new(),
+                challenge: None,
                 rejections: 0,
                 status: TransactionStatus::InProgress,
                 started_at: now,
@@ -218,12 +222,25 @@ impl AuthTransaction {
         }
     }
 
+    /// The challenge the current step asked for, if any.
+    #[must_use]
+    pub const fn challenge(&self) -> Option<&[u8; 32]> {
+        self.state.challenge.as_ref()
+    }
+
+    /// Keeps the challenge the current step asked for, in place of any
+    /// earlier one.
+    pub(crate) fn record_challenge(&mut self, challenge: [u8; 32]) {
+        self.state.challenge = Some(challenge);
+    }
+
     /// Records the outcome of the identifier step and moves on.
     pub(crate) fn record_identified(
         &mut self,
         candidate: Option<UserId>,
         identifier_key: [u8; 32],
     ) {
+        self.state.challenge = None;
         self.state.identified = true;
         self.state.candidate = candidate;
         self.state.identifier_key = Some(identifier_key);
@@ -232,6 +249,7 @@ impl AuthTransaction {
 
     /// Records a satisfied step and moves on.
     pub(crate) fn record_satisfied(&mut self, method: Option<&str>) {
+        self.state.challenge = None;
         if let Some(method) = method
             && !self.state.satisfied_methods.iter().any(|m| m == method)
         {
@@ -253,6 +271,7 @@ impl AuthTransaction {
         method: Option<&str>,
         steps: usize,
     ) {
+        self.state.challenge = None;
         self.state.identified = true;
         self.state.candidate = Some(user);
         if let Some(method) = method
@@ -267,6 +286,7 @@ impl AuthTransaction {
     /// fails once it has tolerated enough. Returns how many more
     /// rejections it tolerates.
     pub(crate) fn record_rejection(&mut self) -> u32 {
+        self.state.challenge = None;
         self.state.rejections += 1;
         if self.state.rejections >= Self::MAX_REJECTIONS {
             self.state.status = TransactionStatus::Failed;

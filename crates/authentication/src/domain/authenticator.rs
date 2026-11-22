@@ -105,6 +105,17 @@ pub enum StepOutcome {
     Rejected,
 }
 
+/// A challenge a step asked for: what is kept in the transaction until the
+/// step is submitted, and what the browser needs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StepChallenge {
+    /// Kept in the transaction and handed back to the authenticator with
+    /// the answer. Used once.
+    pub challenge: [u8; 32],
+    /// What the browser needs to answer, in the authenticator's own terms.
+    pub options: serde_json::Value,
+}
+
 /// Performs one step of a flow.
 #[async_trait::async_trait]
 pub trait Authenticator: Send + Sync {
@@ -146,5 +157,23 @@ pub trait Authenticator: Send + Sync {
         _transaction: &AuthTransaction,
     ) -> Result<bool, DomainError> {
         Ok(true)
+    }
+
+    /// Makes the challenge this step's answer must be to, for a step that
+    /// can check an answer only to a question it asked. The engine keeps
+    /// the challenge in the transaction, and `perform` finds it there.
+    ///
+    /// An authenticator that needs no challenge keeps the default: `None`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the challenge could not be made, for example
+    /// because a dependency is unavailable.
+    async fn challenge(
+        &self,
+        _tenant: &TenantContext,
+        _transaction: &AuthTransaction,
+    ) -> Result<Option<StepChallenge>, DomainError> {
+        Ok(None)
     }
 }

@@ -4,7 +4,7 @@ The `credential` context owns what a user proves their identity with. It stores 
 
 It does not decide whether a sign-in succeeds. That belongs to the `authentication` context, which also counts failed attempts and locks accounts. The credential context only says whether a secret is right.
 
-This page specifies passwords (Milestone 1), access tokens, and authenticator applications (Milestone 4). Passkeys, recovery codes and keys for programs are credentials too and are specified here when their turn comes.
+This page specifies passwords (Milestone 1), access tokens, and authenticator applications and security keys (Milestone 4). Passkeys, recovery codes and keys for programs are credentials too and are specified here when their turn comes.
 
 ## Passwords
 
@@ -114,6 +114,81 @@ A code is right when it is the code of the current step or of the step just befo
 ### Removing
 
 Removing takes away the application in use and any enrollment waiting to be confirmed. Removing a user's last second factor under a tenant policy that requires one is refused by the caller (Issue-70), not here.
+## Security keys and platform authenticators
+
+A **WebAuthn credential** is a key pair made by an authenticator: a security key, or the one built into a telephone or a computer. The private key never leaves the authenticator; Hodor keeps the public key, and later checks that the authenticator signed a challenge Hodor chose. It proves something the person has. How the checks are written is [Decision 0024](../../decisions/0024-webauthn-checks.md).
+
+### The relying party
+
+The **relying party** is who a credential is made for. A browser lets a page use only the credentials made for the page's own site.
+
+| Part | Value |
+|---|---|
+| Identifier | The host of the installation's public address, `HODOR_PUBLIC_URL`: `id.example.com` for `https://id.example.com` |
+| Origin | The public address without its path: scheme, host and port |
+| Name | `Hodor` |
+
+Every tenant is served under the same public address, at `/t/{slug}`, so every tenant has the same relying party. What keeps tenants apart is where a credential is stored: in the tenant it was registered in, under row-level security. A credential registered in one tenant is unknown in every other, and a challenge belongs to one sign-in of one tenant.
+
+### What is stored
+
+| What | Why |
+|---|---|
+| The credential identifier, as the authenticator made it | To tell the browser which credentials may answer, and to find the one that did. Unique within the tenant |
+| The public key, as the COSE key the authenticator sent, and its algorithm | To check signatures. Kept as sent, so that algorithms added later need no conversion |
+| The signature counter | To notice a copied authenticator |
+| Whether the credential may be backed up, and whether it is | Reported by the authenticator. A credential that may be backed up is a synchronized passkey |
+| Whether the credential is discoverable, when the browser said | A discoverable credential can sign a person in without an identifier first, which [passkeys](../../product/epics.md#milestone-4-strong-authentication) will use |
+| How the authenticator is reached, as the browser said: `usb`, `nfc`, `ble`, `internal`, `hybrid` | Passed back to the browser, which uses it to offer the right authenticator |
+| A name the person gives it | So that they can tell their keys apart |
+| When it was registered and last used | For display |
+
+The **user handle** given to an authenticator is the user's identifier, the 16 bytes of the UUID. It names no one: it is not an email address or a login identifier.
+
+### Registering a credential
+
+Registration is done by a person who is signed in, in two requests.
+
+1. **Asking.** Hodor makes a challenge of 32 random bytes and keeps it for five minutes, for this user, as a pending registration. It answers with the options the browser passes to the authenticator:
+   - the relying party, the user handle, the user's primary login identifier as the name, and their display name;
+   - the challenge;
+   - ES256, then RS256, as the algorithms accepted;
+   - the user's existing credentials, so that the same authenticator is not registered twice;
+   - a discoverable credential preferred, and user verification discouraged: a second factor needs the key, not a fingerprint or a PIN on it;
+   - no attestation;
+   - the `credProps` extension, so that the browser says whether the credential is discoverable.
+2. **Finishing.** The person's browser sends what the authenticator answered. The pending registration is used up first: whatever follows, it cannot be presented again. Then, in order, anything that fails refuses the registration:
+
+| Check | Refused when |
+|---|---|
+| The pending registration | It is unknown, belongs to another user, or is older than five minutes |
+| The client data, read as JSON | Its `type` is not `webauthn.create`; its `challenge` is not the pending one; its `origin` is not the relying party's; it says `crossOrigin` is true |
+| The attestation object, read as CBOR | It is not a map holding `fmt`, `attStmt` and `authData`. The statement is not checked, whatever its format |
+| The authenticator data | It is shorter than its fixed part; the hash of the relying party identifier is not SHA-256 of Hodor's; the user was not present; it carries no credential; it says the credential is backed up but may not be; anything is left over at its end |
+| The credential identifier | It is longer than 1,023 bytes, or the tenant already has a credential with it |
+| The public key | It is not an ES256 key on P-256 or an RS256 key of at least 2,048 bits |
+
+The credential is stored with the counter the authenticator reported, and `credential.webauthn_registered` is recorded.
+
+### Checking a credential
+
+A sign-in asks for a challenge first and checks the answer second; the challenge is kept with the sign-in, by the [authentication context](authentication.md#steps-that-need-a-challenge).
+
+1. **The challenge.** 32 random bytes, and the options for the browser: the challenge, the relying party identifier, the user's credentials with how each is reached, and user verification discouraged.
+2. **The answer.** The browser sends the credential identifier, the client data, the authenticator data, the signature and, when the authenticator gave one, the user handle. Anything that fails is a rejection, and the rejections are not told apart:
+
+| Check | Rejected when |
+|---|---|
+| The credential | It is not one of this user's in this tenant |
+| The user handle | It was sent and is not this user's |
+| The client data | Its `type` is not `webauthn.get`; its `challenge` is not the sign-in's; its `origin` is not the relying party's; it says `crossOrigin` is true |
+| The authenticator data | It is shorter than 37 bytes; the hash of the relying party identifier is not Hodor's; the user was not present; it says the credential is backed up but may not be; whether the credential may be backed up differs from what was registered |
+| The signature | It is not a signature of the authenticator data followed by SHA-256 of the client data, by the stored key |
+| The counter | The stored counter or the reported one is not zero, and the reported one is not greater than the stored one |
+
+A counter that does not grow means two authenticators answer for one credential: the credential was copied. The answer is refused and `credential.webauthn_counter_not_increased` is recorded, so that an administrator can see it. An authenticator that keeps no counter reports zero every time, and is accepted.
+
+When every check passes, the counter, whether the credential is backed up and when it was last used are stored.
 
 ## Operations
 
@@ -133,6 +208,11 @@ Removing takes away the application in use and any enrollment waiting to be conf
 | Verify authenticator application code | Answers "verified" or "rejected", and marks an accepted code as used |
 | Has authenticator application | Says whether a user has an application in use; asked by the sign-in once the person has proved a first factor |
 | Remove authenticator application | Takes away the application in use and any enrollment waiting to be confirmed |
+| Begin WebAuthn registration | Makes a pending registration for a user and returns the options for the browser |
+| Finish WebAuthn registration | Checks what the authenticator answered and stores the credential |
+| WebAuthn challenge | Makes a challenge for a user's credentials and returns it with the options for the browser |
+| Verify WebAuthn assertion | Answers "verified" or "rejected" for an answer to a challenge, and stores the new counter |
+| Has WebAuthn credentials | Says whether a user has at least one credential, for the authentication context to know whether a step can be performed |
 
 ### Events
 
@@ -145,8 +225,11 @@ Removing takes away the application in use and any enrollment waiting to be conf
 | `credential.access_token_revoked` | An access token was revoked; carries the user and the token's identifier |
 | `credential.totp_enrolled` | A user's authenticator application was put in use; carries the user |
 | `credential.totp_removed` | A user's authenticator application was removed; carries the user |
+| `credential.webauthn_registered` | A WebAuthn credential was registered; carries the user and Hodor's identifier of the credential |
+| `credential.webauthn_counter_not_increased` | An answer came with a counter that did not grow; carries the user and Hodor's identifier of the credential |
 
-Events carry the user's identifier and nothing derived from the password, from a token or from a secret of an authenticator application. Beginning an enrollment produces no event: nothing is in use until it is confirmed. Replacing a hash because the parameters changed produces no event: nothing the user or an auditor cares about happened.
+Events carry the user's identifier and nothing derived from the password, from a token, from a secret of an authenticator application or from a key. Beginning an enrollment produces no event: nothing is in use until it is confirmed. Replacing a hash because the parameters changed produces no event: nothing the user or an auditor cares about happened.
+
 
 ### Ports
 
@@ -158,6 +241,8 @@ Events carry the user's identifier and nothing derived from the password, from a
 | `TotpStore` | Store a user's authenticator application and the enrollment waiting to be confirmed; put one in use; mark a step used only if it is later than the last one, in one statement |
 | `HmacSha1` | Compute HMAC-SHA-1, from which the codes are made |
 | `SecretBox` | The kernel's port that seals and opens the secret of an authenticator application |
+| `WebAuthnStore` | Keep pending registrations and use one up exactly once; store credentials, list a user's, find one by its identifier, store a new counter only over the one that was read |
+| `SignatureVerifier` (kernel) | Check a signature made with a WebAuthn credential's key |
 
 The hasher is a port because the choice of library is an infrastructure decision ([Decision 0008](../../decisions/0008-cryptography.md)); the context only knows that hashing is slow and can be unavailable.
 
@@ -206,9 +291,37 @@ The hasher is a port because the choice of library is an infrastructure decision
 | `confirmed_at` | `timestamptz` | Null while pending |
 | `last_used_step` | `bigint` | The step of the last accepted code; null until one is accepted |
 
-All four are tenant tables under row-level security. `user_id` refers to a user of the identity context but is not a database foreign key: contexts do not reference each other's tables.
+### `credential.webauthn_credential`
 
-The design's data model has a general `credential` table with one row per credential of any kind. It is introduced with the second kind of credential; with only passwords it would add a table and a join for nothing.
+| Column | Type | Notes |
+|---|---|---|
+| `tenant_id`, `id` | `uuid` | Primary key |
+| `user_id` | `uuid` | The user the credential belongs to |
+| `credential_id` | `bytea` | As the authenticator made it; unique within the tenant; at most 1,023 bytes |
+| `public_key` | `bytea` | The COSE key |
+| `algorithm` | `integer` | The COSE algorithm: `-7` or `-257` |
+| `sign_count` | `bigint` | The counter last reported |
+| `backup_eligible`, `backed_up` | `boolean` | |
+| `discoverable` | `boolean` | Null when the browser did not say |
+| `transports` | `text[]` | |
+| `name` | `text` | |
+| `created_at` | `timestamptz` | |
+| `last_used_at` | `timestamptz` | Null until first used |
+
+### `credential.webauthn_registration`
+
+| Column | Type | Notes |
+|---|---|---|
+| `tenant_id`, `id` | `uuid` | Primary key |
+| `user_id` | `uuid` | Who asked |
+| `challenge` | `bytea` | 32 bytes |
+| `created_at`, `expires_at` | `timestamptz` | Five minutes apart |
+
+A pending registration is deleted when it is used.
+
+All six are tenant tables under row-level security. `user_id` refers to a user of the identity context but is not a database foreign key: contexts do not reference each other's tables.
+
+The design's data model has a general `credential` table with one row per credential of any kind. Each kind still has its own table: what is stored differs too much between kinds, and nothing yet needs to list every credential of a user at once.
 
 ## Not built yet
 
@@ -216,10 +329,13 @@ The design's data model has a general `credential` table with one row per creden
 |---|---|
 | Refusing passwords found in breach lists. The tenant setting exists and is stored, but nothing checks it yet | Later in Phase 1 |
 | A secret key mixed into every hash, kept outside the database | With the keys context, Phase 2 |
-| Passkeys and security keys | Issue-67 and Issue-68 |
 | Recovery codes | Issue-66 |
 | Enrolling and removing an authenticator application from the account pages, after proving oneself again | Issue-70 |
 | Moving the sealed secrets of authenticator applications under the keys of the key domain | Issue-52 |
 | HOTP, the counter-based codes of RFC 4226, and codes sent by email or text message | Phase 4, outside the plan of 0.2.0 |
+| Signing in with a WebAuthn credential alone, without an identifier first: passkeys | Issue-68 |
+| Listing, renaming and removing WebAuthn credentials, and proving oneself again before registering one | Issue-70 |
+| Removing pending WebAuthn registrations that were never finished | With the other cleanup jobs |
+| Checking attestation, EdDSA keys | When someone needs them ([Decision 0024](../../decisions/0024-webauthn-checks.md)) |
 | Keys for programs and certificates | Phases 5 and 6 |
 | Listing and revoking access tokens through an interface, and recording when one was last used | With OAuth in Phase 2, which replaces them |

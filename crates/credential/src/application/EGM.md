@@ -3,10 +3,12 @@
 ## Overview
 
 The use cases of the credential context and the ports they need. There are
-three services. `CredentialService` (`service.rs`) sets, changes, verifies and
+four services. `CredentialService` (`service.rs`) sets, changes, verifies and
 removes passwords. `AccessTokenService` (`access_tokens.rs`) issues,
 authenticates and revokes access tokens. `TotpService` (`totp.rs`) enrolls,
-confirms, checks and removes authenticator applications. They drive the
+confirms, checks and removes authenticator applications. `WebAuthnService`
+(`webauthn.rs`) registers WebAuthn credentials and checks answers to
+challenges. They drive the
 [domain model](../domain/EGM.md) and reach storage and hashing only through
 port traits. The modules are `pub(crate)` (`mod.rs`); other crates use
 `hodor_credential::api` (`src/lib.rs`).
@@ -42,6 +44,13 @@ bound to.
   - `remove(uow, user_id) -> bool`: removes both rows; answers whether one was in use.
 - `HmacSha1` (`totp.rs`), not async: `mac(key, message) -> [u8; 20]`. Implemented by `AwsLcHmacSha1` in `crates/adapters-crypto/src/hmac.rs` and by `FakeHmacSha1` in `src/testing.rs`.
 
+- `WebAuthnStore` (`webauthn.rs`). Implemented by `PgWebAuthnStore` in `crates/adapters-postgres/src/credential.rs` and by `InMemoryWebAuthn` in `src/testing.rs`.
+  - `insert_registration(uow, registration)`.
+  - `take_registration(uow, id) -> Option<PendingRegistration>`: removes and returns it; of any number of callers at once, one gets it.
+  - `insert(uow, credential)`: `Conflict` `credential.webauthn_credential_exists` when the tenant has the credential identifier.
+  - `list_for_user(uow, user_id)`: oldest first.
+  - `record_use(uow, credential, previous_count) -> bool`: stores the counter, backup state and last use only if the stored counter is still `previous_count`.
+
 ### Service entry points
 
 - `NewPassword<'a> { password: &Secret<String>, rules: PasswordRules, own_names: &[&str] }` (`service.rs`). `own_names` holds the user's login identifiers, which the password must not equal.
@@ -63,7 +72,13 @@ bound to.
   - `issue(tenant, user_id, description, lifetime: time::Duration, caller) -> (AccessToken, AccessTokenSecret)`: the secret is returned once and is not available again.
   - `authenticate(tenant, presented: &str) -> Option<AccessToken>`.
   - `revoke(tenant, id: AccessTokenId, caller)`.
-- Both services are `Clone`, and their `Debug` output shows no fields.
+- `WebAuthnService::new(units_of_work, store: Arc<dyn WebAuthnStore>, relying_party: RelyingParty, digest, verifier: Arc<dyn SignatureVerifier>, random, clock)`.
+  - `begin_registration(tenant, user_id, name, display_name) -> BegunRegistration { id, options }`: stores a pending registration of five minutes.
+  - `finish_registration(tenant, user_id, id, response, caller) -> WebAuthnCredential`: takes the pending registration first; `NotFound` `credential.webauthn_registration_not_found` if it is unknown, another user's, used or expired; `Invalid` `credential.webauthn_registration_refused` with the reason in the detail; records `credential.webauthn_registered`.
+  - `list(tenant, user_id)`, `has_credentials(tenant, user_id) -> bool`.
+  - `challenge(tenant, user_id) -> AssertionChallenge { challenge, options }`: stores nothing; the caller keeps the challenge.
+  - `verify(tenant, user_id, challenge, response) -> bool`: `false` for any refused check; a counter that did not grow records `credential.webauthn_counter_not_increased`; `true` only when the use was stored over the counter that was read.
+- The services are `Clone`. `CredentialService`, `AccessTokenService` and `TotpService` show no fields in `Debug`; `WebAuthnService` shows its relying party.
 
 ## Invariants
 

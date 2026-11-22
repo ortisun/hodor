@@ -30,7 +30,7 @@ pub use audit::PgAuditLog;
 pub use authentication::{PgAttemptStore, PgTransactionStore, PgVerificationTokenStore};
 pub use authorization::{PgEngineBindingStore, PgRoleAssignmentStore};
 pub use cleanup::{CleanupReport, PendingAuthorizationCleanup};
-pub use credential::{PgAccessTokenStore, PgPasswordStore, PgTotpStore};
+pub use credential::{PgAccessTokenStore, PgPasswordStore, PgTotpStore, PgWebAuthnStore};
 pub use database::{Database, TenantTransaction, connect_pool, ping_pool};
 pub use federation::{PgLinkStore, PgPendingAuthorizationStore, PgProviderStore};
 pub use identity::PgUserRepository;

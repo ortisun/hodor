@@ -1,13 +1,16 @@
-//! The built-in authenticators: login identifier, password and
-//! authenticator application.
+//! The built-in authenticators: login identifier, password, authenticator
+//! application and WebAuthn.
 
 use crate::application::guard::AttemptGuard;
 use crate::domain::attempt::LockoutRules;
 use crate::domain::authenticator::{
-    Authenticator, AuthenticatorTraits, Factor, StepInput, StepOutcome,
+    Authenticator, AuthenticatorTraits, Factor, StepChallenge, StepInput, StepOutcome,
 };
 use crate::domain::transaction::AuthTransaction;
-use hodor_credential::api::{CredentialService, PasswordCheck, TotpCheck, TotpService};
+use hodor_credential::api::{
+    AssertionResponse, Challenge, CredentialService, PasswordCheck, TotpCheck, TotpService,
+    WebAuthnService,
+};
 use hodor_identity::api::{IdentityService, NormalizedIdentifier};
 use hodor_kernel::{Caller, Digest, DomainError, ErrorKind, TenantContext, UserId};
 use hodor_tenant::api::TenantService;
@@ -293,5 +296,118 @@ impl Authenticator for TotpAuthenticator {
             Some(user) => self.totp.has_totp(tenant, user).await,
             None => Ok(false),
         }
+    }
+}
+
+/// Checks the answer of a security key or a platform authenticator to a
+/// challenge, with the credential context. Proves something the person
+/// has.
+///
+/// The step needs a challenge: the engine asks for one first and keeps it
+/// in the transaction. Every answer that does not verify is the same
+/// rejection, whatever was wrong with it.
+#[derive(Clone, Debug)]
+pub struct WebAuthnAuthenticator {
+    webauthn: WebAuthnService,
+}
+
+impl WebAuthnAuthenticator {
+    /// The kind flows name it by, and the key of its step in the flow the
+    /// server runs.
+    pub const KIND: &'static str = "webauthn";
+
+    /// Wires the authenticator to the credential context.
+    #[must_use]
+    pub const fn new(webauthn: WebAuthnService) -> Self {
+        Self { webauthn }
+    }
+}
+
+fn answer_of(input: &StepInput) -> Option<AssertionResponse> {
+    let StepInput::External(input) = input else {
+        return None;
+    };
+    let field = |name: &str| input.field(name).map(|value| value.expose().as_str());
+    AssertionResponse::from_base64url(
+        field("credential_id")?,
+        field("client_data")?,
+        field("authenticator_data")?,
+        field("signature")?,
+        field("user_handle"),
+    )
+}
+
+#[async_trait::async_trait]
+impl Authenticator for WebAuthnAuthenticator {
+    fn kind(&self) -> &'static str {
+        Self::KIND
+    }
+
+    fn traits(&self) -> AuthenticatorTraits {
+        AuthenticatorTraits {
+            identifies: false,
+            factor: Some(Factor::Possession),
+            method: Some(Self::KIND),
+        }
+    }
+
+    async fn perform(
+        &self,
+        tenant: &TenantContext,
+        transaction: &AuthTransaction,
+        input: &StepInput,
+    ) -> Result<StepOutcome, DomainError> {
+        let (Some(user), Some(challenge), Some(answer)) = (
+            transaction.candidate(),
+            transaction.challenge(),
+            answer_of(input),
+        ) else {
+            return Ok(StepOutcome::Rejected);
+        };
+        let verified = self
+            .webauthn
+            .verify(tenant, user, &Challenge(*challenge), &answer)
+            .await?;
+        Ok(if verified {
+            StepOutcome::Proven
+        } else {
+            StepOutcome::Rejected
+        })
+    }
+
+    async fn has_means(
+        &self,
+        tenant: &TenantContext,
+        transaction: &AuthTransaction,
+    ) -> Result<bool, DomainError> {
+        match transaction.candidate() {
+            Some(user) => self.webauthn.has_credentials(tenant, user).await,
+            None => Ok(false),
+        }
+    }
+
+    async fn challenge(
+        &self,
+        tenant: &TenantContext,
+        transaction: &AuthTransaction,
+    ) -> Result<Option<StepChallenge>, DomainError> {
+        // The step is performed only for a person who was identified and
+        // has credentials; a sign-in that reaches it without one has
+        // nothing to answer with.
+        let Some(user) = transaction.candidate() else {
+            return Ok(None);
+        };
+        let made = self.webauthn.challenge(tenant, user).await?;
+        let options = serde_json::to_value(&made.options).map_err(|error| {
+            DomainError::internal(
+                "authentication.challenge_not_serializable",
+                "the sign-in could not continue",
+            )
+            .with_detail(error.to_string())
+        })?;
+        Ok(Some(StepChallenge {
+            challenge: made.challenge.0,
+            options,
+        }))
     }
 }

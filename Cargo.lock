@@ -1668,6 +1668,7 @@ dependencies = [
  "hodor-tenant",
  "proptest",
  "serde",
+ "serde_json",
  "time",
  "tokio",
 ]
@@ -1710,10 +1711,12 @@ name = "hodor-credential"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "hodor-credential",
  "hodor-kernel",
  "proptest",
  "serde",
+ "serde_json",
  "time",
  "tokio",
 ]

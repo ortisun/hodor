@@ -4,9 +4,11 @@
 
 use crate::uow::{connection, database_error};
 use hodor_credential::api::{
-    AccessToken, AccessTokenHash, AccessTokenId, AccessTokenSnapshot, AccessTokenStore,
-    HistoricHash, PasswordHash, PasswordRecord, PasswordStore, Totp, TotpId, TotpSnapshot,
-    TotpStatus, TotpStore,
+    AccessToken, AccessTokenHash, AccessTokenId, AccessTokenSnapshot, AccessTokenStore, Challenge,
+    CoseAlgorithm, HistoricHash, PasswordHash, PasswordRecord, PasswordStore, PendingRegistration,
+    PendingRegistrationSnapshot, Totp, TotpId, TotpSnapshot, TotpStatus, TotpStore,
+    WebAuthnCredential, WebAuthnCredentialId, WebAuthnCredentialSnapshot, WebAuthnRegistrationId,
+    WebAuthnStore,
 };
 use hodor_kernel::{DomainError, SealedSecret, TenantId, Timestamp, UnitOfWork, UserId};
 use sqlx::PgConnection;
@@ -543,5 +545,218 @@ impl TotpStore for PgTotpStore {
         .await
         .map_err(|e| database_error(&e))?;
         Ok(had.is_some_and(|(count,)| count > 0))
+    }
+}
+
+/// [`WebAuthnStore`] on `credential.webauthn_credential` and
+/// `credential.webauthn_registration`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PgWebAuthnStore;
+
+const CREDENTIAL_CONSTRAINT: &str = "webauthn_credential_id_unique";
+
+const WEBAUTHN_COLUMNS: &str = "id, user_id, credential_id, public_key, algorithm, sign_count,
+     backup_eligible, backed_up, discoverable, transports, name, created_at, last_used_at";
+
+type WebAuthnRow = (
+    Uuid,
+    Uuid,
+    Vec<u8>,
+    Vec<u8>,
+    i32,
+    i64,
+    bool,
+    bool,
+    Option<bool>,
+    Vec<String>,
+    String,
+    Timestamp,
+    Option<Timestamp>,
+);
+
+fn to_webauthn(row: WebAuthnRow) -> Result<WebAuthnCredential, DomainError> {
+    let (
+        id,
+        user_id,
+        credential_id,
+        public_key,
+        algorithm,
+        sign_count,
+        backup_eligible,
+        backed_up,
+        discoverable,
+        transports,
+        name,
+        created_at,
+        last_used_at,
+    ) = row;
+    Ok(WebAuthnCredential::from_snapshot(
+        WebAuthnCredentialSnapshot {
+            id: WebAuthnCredentialId::from_uuid(id),
+            user_id: UserId::from_uuid(user_id),
+            credential_id,
+            public_key,
+            algorithm: CoseAlgorithm::from_code(i64::from(algorithm))
+                .ok_or_else(|| out_of_range("unknown WebAuthn algorithm"))?,
+            sign_count: u32::try_from(sign_count)
+                .map_err(|_| out_of_range("WebAuthn counter out of range"))?,
+            backup_eligible,
+            backed_up,
+            discoverable,
+            transports,
+            name,
+            created_at,
+            last_used_at,
+        },
+    ))
+}
+
+#[async_trait::async_trait]
+impl WebAuthnStore for PgWebAuthnStore {
+    async fn insert_registration(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        registration: &PendingRegistration,
+    ) -> Result<(), DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let state = registration.snapshot();
+        sqlx::query(
+            "INSERT INTO credential.webauthn_registration
+                 (tenant_id, id, user_id, challenge, created_at, expires_at)
+             VALUES ($1, $2, $3, $4, $5, $6)",
+        )
+        .bind(tenant.as_uuid())
+        .bind(state.id.as_uuid())
+        .bind(state.user_id.as_uuid())
+        .bind(state.challenge.0.as_slice())
+        .bind(state.created_at)
+        .bind(state.expires_at)
+        .execute(connection(uow)?)
+        .await
+        .map_err(|e| database_error(&e))?;
+        Ok(())
+    }
+
+    async fn take_registration(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: WebAuthnRegistrationId,
+    ) -> Result<Option<PendingRegistration>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        // Deleting and returning in one statement: of any number of
+        // requests at once, one gets the row.
+        let row: Option<(Uuid, Vec<u8>, Timestamp, Timestamp)> = sqlx::query_as(
+            "DELETE FROM credential.webauthn_registration
+             WHERE tenant_id = $1 AND id = $2
+             RETURNING user_id, challenge, created_at, expires_at",
+        )
+        .bind(tenant.as_uuid())
+        .bind(id.as_uuid())
+        .fetch_optional(connection(uow)?)
+        .await
+        .map_err(|e| database_error(&e))?;
+        row.map(|(user_id, challenge, created_at, expires_at)| {
+            let challenge: [u8; 32] = challenge
+                .try_into()
+                .map_err(|_| out_of_range("challenge is not 32 bytes"))?;
+            Ok(PendingRegistration::from_snapshot(
+                PendingRegistrationSnapshot {
+                    id,
+                    user_id: UserId::from_uuid(user_id),
+                    challenge: Challenge(challenge),
+                    created_at,
+                    expires_at,
+                },
+            ))
+        })
+        .transpose()
+    }
+
+    async fn insert(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        credential: &WebAuthnCredential,
+    ) -> Result<(), DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let state = credential.snapshot();
+        let result = sqlx::query(
+            "INSERT INTO credential.webauthn_credential
+                 (tenant_id, id, user_id, credential_id, public_key, algorithm, sign_count,
+                  backup_eligible, backed_up, discoverable, transports, name, created_at,
+                  last_used_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
+        )
+        .bind(tenant.as_uuid())
+        .bind(state.id.as_uuid())
+        .bind(state.user_id.as_uuid())
+        .bind(&state.credential_id)
+        .bind(&state.public_key)
+        .bind(state.algorithm.code())
+        .bind(i64::from(state.sign_count))
+        .bind(state.backup_eligible)
+        .bind(state.backed_up)
+        .bind(state.discoverable)
+        .bind(&state.transports)
+        .bind(&state.name)
+        .bind(state.created_at)
+        .bind(state.last_used_at)
+        .execute(connection(uow)?)
+        .await;
+        match result {
+            Ok(_) => Ok(()),
+            Err(sqlx::Error::Database(error))
+                if error.constraint() == Some(CREDENTIAL_CONSTRAINT) =>
+            {
+                Err(DomainError::conflict(
+                    "credential.webauthn_credential_exists",
+                    "this security key is already registered",
+                ))
+            }
+            Err(error) => Err(database_error(&error)),
+        }
+    }
+
+    async fn list_for_user(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        user_id: UserId,
+    ) -> Result<Vec<WebAuthnCredential>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let rows: Vec<WebAuthnRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT {WEBAUTHN_COLUMNS} FROM credential.webauthn_credential
+             WHERE tenant_id = $1 AND user_id = $2
+             ORDER BY created_at, id"
+        )))
+        .bind(tenant.as_uuid())
+        .bind(user_id.as_uuid())
+        .fetch_all(connection(uow)?)
+        .await
+        .map_err(|e| database_error(&e))?;
+        rows.into_iter().map(to_webauthn).collect()
+    }
+
+    async fn record_use(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        credential: &WebAuthnCredential,
+        previous_count: u32,
+    ) -> Result<bool, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let state = credential.snapshot();
+        let updated = sqlx::query(
+            "UPDATE credential.webauthn_credential
+             SET sign_count = $3, backed_up = $4, last_used_at = $5
+             WHERE tenant_id = $1 AND id = $2 AND sign_count = $6",
+        )
+        .bind(tenant.as_uuid())
+        .bind(state.id.as_uuid())
+        .bind(i64::from(state.sign_count))
+        .bind(state.backed_up)
+        .bind(state.last_used_at)
+        .bind(i64::from(previous_count))
+        .execute(connection(uow)?)
+        .await
+        .map_err(|e| database_error(&e))?;
+        Ok(updated.rows_affected() == 1)
     }
 }
