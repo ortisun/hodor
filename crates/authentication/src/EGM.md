@@ -22,7 +22,7 @@ The modules `application` and `domain` are private (`mod application;`,
 - Domain: `AttemptCounter`, `AttemptSubject`, `LockoutRules`, `Authenticator`,
   `AuthenticatorTraits`, `ExternalInput`, `Factor`, `StepInput`, `StepOutcome`,
   `FlowEngine`, `Progress`, `AuthenticationEvent`, `AuthFlow`, `FlowStep`,
-  `Requirement`, `AuthTransaction`, `TransactionId`, `TransactionSnapshot`,
+  `Requirement`, `Condition`, `AuthTransaction`, `TransactionId`, `TransactionSnapshot`,
   `TransactionState`, `TransactionStatus`, `TokenPurpose`,
   `VerificationSecret`, `VerificationToken`, `VerificationTokenHash`,
   `VerificationTokenId`, `VerificationTokenSnapshot`.
@@ -38,6 +38,11 @@ is, with the crate feature `testing`.
   `run_transaction_contract(ports)`.
 - `InMemoryVerificationTokens` (implements `VerificationTokenStore`),
   `VerificationTokenPorts`, `run_verification_token_contract(ports)`.
+- `TestSecondFactor` (implements `Authenticator`): a stand-in second factor
+  of kind `test-second-factor`, a possession factor whose method is
+  `test-second-factor`. `enroll(user)` gives a person the means for it; it is
+  satisfied by an `External` input whose field `code` is `TestSecondFactor::CODE`
+  (`"246810"`), for someone enrolled. Used until real second factors exist.
 
 ### Subdirectories
 

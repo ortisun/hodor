@@ -177,8 +177,14 @@ Planned in [the epics](epics.md#milestone-3-applications-ask-hodor-who-someone-i
 | Milestone | Slices | Done | Total |
 |---|---|---|---|
 | 3 — Applications ask Hodor who someone is | L to P: keys, applications and clients, OAuth 2.x core, OpenID Connect, consent | 0 | 14 |
-| 4 — Strong authentication | Q and R: factors, step-up and the person's own factors | 0 | 8 |
+| 4 — Strong authentication | Q and R: factors, step-up and the person's own factors | 1 | 8 |
 | 5 — The authorization engine | S and T: the native engine, Open Policy Agent | 0 | 9 |
+
+### Milestone 4 — Strong authentication
+
+| Issue | Status | What exists |
+|---|---|---|
+| Issue-64 Conditional and optional steps; a policy that requires a second factor | Done | A flow step is required, optional (performed when the person has the means for it) or conditional (performed while the assurance the sign-in must reach is not reached). The server decides what is passed over, and nobody can decline a step that is performed. Steps that are not required come after the required ones, so an alternative such as an external identity is still followed by them. The tenant's second factor policy, not required by default, makes every sign-in reach multi-factor assurance or fail, checked again at completion. Settings stored before the policy read as the default. Driven in tests by a stand-in second factor; the built-in flow has no second factor yet, so a tenant with the policy on refuses every sign-in until TOTP (Issue-65). The policy cannot be set from the command-line tool, the administration interface or the console yet. Specified in [the authentication context](../architecture/contexts/authentication.md#what-a-sign-in-must-reach) and [the tenant context](../architecture/contexts/tenant.md#authentication-policy) |
 
 ## Admin console
 

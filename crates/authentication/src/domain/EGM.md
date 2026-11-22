@@ -16,17 +16,30 @@ reach other crates only through `hodor_authentication::api` in `../lib.rs`.
 - `AuthFlow { name, version, steps, alternatives, minimum_assurance }`
   (`flow.rs:AuthFlow`); `AuthFlow::built_in()` is the `"sign-in"` flow,
   version 1, with steps `identifier` then `password` and minimum assurance
-  `Assurance::SingleFactor`; `with_alternative(key, authenticator)` adds an
-  alternative step.
+  `Assurance::SingleFactor`; `with_step(key, authenticator, requirement)` adds
+  a step at the end; `with_alternative(key, authenticator)` adds an
+  alternative step; `required_steps()` counts the leading required steps.
 - `FlowStep { key, authenticator, requirement }` (`flow.rs:FlowStep`).
-- `Requirement::Required` (the only variant) (`flow.rs:Requirement`).
+- `Requirement` (`flow.rs:Requirement`): `Required`, `Optional` (performed when
+  the authenticator's `has_means` says yes), `Conditional(Condition)`
+  (performed when the condition holds and `has_means` says yes);
+  `is_required()`.
+- `Condition` (`flow.rs:Condition`): `AssuranceNotReached`, which holds while
+  the satisfied methods are below the assurance the sign-in must reach.
 
 ### Engine (`engine.rs`)
 
 - `FlowEngine` (`engine.rs:FlowEngine`): `new()`, `with(authenticator)`
   (a later registration of the same kind replaces the earlier one),
-  `validate(flow)`, `submit(tenant, flow, transaction, input, now) -> Progress`,
+  `validate(flow)`,
+  `submit(tenant, flow, transaction, input, demanded, now) -> Progress`
+  (`demanded` is the assurance the tenant's policy asks beyond the flow's
+  minimum; after a satisfied step the steps to be passed over are passed over,
+  and an error leaves the transaction unchanged),
   `assurance(transaction) -> Option<Assurance>`.
+- Validity rules added for steps that are not required: they come after every
+  required step, never establish who is signing in, and prove a factor; only
+  required steps count towards the minimum assurance.
 - `Progress` (`engine.rs:Progress`): `Next { step }`, `ReadyToComplete`,
   `Rejected { attempts_left }`, `Failed`.
 
@@ -34,7 +47,9 @@ reach other crates only through `hodor_authentication::api` in `../lib.rs`.
 
 - `Authenticator` trait (`authenticator.rs:Authenticator`), the context's
   extension point: `kind() -> &'static str`, `traits() -> AuthenticatorTraits`,
-  `perform(tenant, transaction, input) -> StepOutcome`.
+  `perform(tenant, transaction, input) -> StepOutcome`, and
+  `has_means(tenant, transaction) -> bool`, asked only for steps that are not
+  required; the default answers `true`.
 - `AuthenticatorTraits { identifies, factor, method }`.
 - `Factor`: `Knowledge`, `Possession`, `Inherence`.
 - `StepInput`: `Identifier(String)`, `Password(Secret<String>)`,

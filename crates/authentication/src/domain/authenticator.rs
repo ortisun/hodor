@@ -124,4 +124,24 @@ pub trait Authenticator: Send + Sync {
         transaction: &AuthTransaction,
         input: &StepInput,
     ) -> Result<StepOutcome, DomainError>;
+
+    /// Whether the person signing in has the means to perform this step,
+    /// such as an authenticator application they enrolled. Asked only for
+    /// steps that are not required, which come after the person has been
+    /// identified and has proved a first factor.
+    ///
+    /// An authenticator with nothing to enroll keeps the default: the
+    /// means are always there.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the answer could not be found, for example
+    /// because a dependency is unavailable.
+    async fn has_means(
+        &self,
+        _tenant: &TenantContext,
+        _transaction: &AuthTransaction,
+    ) -> Result<bool, DomainError> {
+        Ok(true)
+    }
 }

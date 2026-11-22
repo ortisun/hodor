@@ -17,7 +17,8 @@ pub mod api {
     pub use crate::application::service::{CreateTenant, TenantService};
     pub use crate::domain::event::TenantEvent;
     pub use crate::domain::settings::{
-        LockoutPolicy, PasswordPolicy, RegistrationPolicy, SessionPolicy, TenantSettings,
+        AuthenticationPolicy, LockoutPolicy, PasswordPolicy, RegistrationPolicy,
+        SecondFactorPolicy, SessionPolicy, TenantSettings,
     };
     pub use crate::domain::slug::Slug;
     pub use crate::domain::tenant::{Tenant, TenantSnapshot, TenantStatus};

@@ -18,7 +18,7 @@ surface through `pub mod api`.
   - Event: `TenantEvent`.
   - Domain: `Tenant`, `TenantSnapshot`, `TenantStatus`, `Slug`,
     `TenantSettings`, `PasswordPolicy`, `SessionPolicy`, `LockoutPolicy`,
-    `RegistrationPolicy`.
+    `RegistrationPolicy`, `AuthenticationPolicy`, `SecondFactorPolicy`.
   - From the kernel: `hodor_kernel::Caller`.
 - `testing` (public test-support module, compiled only under
   `#[cfg(any(test, feature = "testing"))]`; the `testing` feature enables

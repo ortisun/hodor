@@ -166,6 +166,25 @@ pub enum RegistrationPolicy {
     Open,
 }
 
+/// Whether a sign-in to the tenant needs a second factor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SecondFactorPolicy {
+    /// One factor is enough, unless the flow asks for more.
+    #[default]
+    NotRequired,
+    /// No sign-in completes with one factor.
+    Required,
+}
+
+/// How people must prove who they are to sign in.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct AuthenticationPolicy {
+    /// Whether a second factor is required.
+    #[serde(default)]
+    pub second_factor: SecondFactorPolicy,
+}
+
 /// All the policies of one tenant.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct TenantSettings {
@@ -177,6 +196,10 @@ pub struct TenantSettings {
     pub lockout: LockoutPolicy,
     /// Who may register.
     pub registration: RegistrationPolicy,
+    /// How people must prove who they are. Settings stored before this
+    /// policy existed read as the default.
+    #[serde(default)]
+    pub authentication: AuthenticationPolicy,
 }
 
 impl TenantSettings {
@@ -210,7 +233,31 @@ mod tests {
         assert_eq!(settings.lockout.first_lockout_seconds, MINUTE);
         assert_eq!(settings.lockout.longest_lockout_seconds, HOUR);
         assert_eq!(settings.registration, RegistrationPolicy::Closed);
+        assert_eq!(
+            settings.authentication.second_factor,
+            SecondFactorPolicy::NotRequired
+        );
         settings.validate().expect("defaults are valid");
+    }
+
+    #[test]
+    fn settings_stored_before_the_authentication_policy_read_as_the_default() {
+        let mut stored = serde_json::to_value(TenantSettings::default()).expect("serializes");
+        stored
+            .as_object_mut()
+            .expect("an object")
+            .remove("authentication");
+        let read: TenantSettings = serde_json::from_value(stored).expect("still reads");
+        assert_eq!(read, TenantSettings::default());
+    }
+
+    #[test]
+    fn a_required_second_factor_is_stored_by_name() {
+        let mut settings = TenantSettings::default();
+        settings.authentication.second_factor = SecondFactorPolicy::Required;
+        let stored = serde_json::to_value(&settings).expect("serializes");
+        assert_eq!(stored["authentication"]["second_factor"], "required");
+        settings.validate().expect("valid");
     }
 
     fn rejected(change: impl FnOnce(&mut TenantSettings)) -> bool {

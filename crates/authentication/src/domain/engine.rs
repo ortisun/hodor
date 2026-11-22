@@ -1,7 +1,7 @@
 //! The engine that interprets flows.
 
 use crate::domain::authenticator::{Authenticator, Factor, StepInput, StepOutcome};
-use crate::domain::flow::{AuthFlow, FlowStep};
+use crate::domain::flow::{AuthFlow, Condition, FlowStep, Requirement};
 use crate::domain::transaction::{AuthTransaction, TransactionStatus};
 use hodor_kernel::{DomainError, TenantContext, Timestamp};
 use hodor_session::api::Assurance;
@@ -82,6 +82,7 @@ impl FlowEngine {
         let mut keys = BTreeSet::new();
         let mut factors = BTreeSet::new();
         let mut identified = false;
+        let mut past_required = false;
         for step in &flow.steps {
             if !keys.insert(step.key.as_str()) {
                 return Err(invalid_flow(format!(
@@ -96,8 +97,30 @@ impl FlowEngine {
                     step.key
                 )));
             }
-            identified |= traits.identifies;
-            factors.extend(traits.factor);
+            if step.requirement.is_required() {
+                if past_required {
+                    return Err(invalid_flow(format!(
+                        "the required step `{}` comes after a step that is not required",
+                        step.key
+                    )));
+                }
+                identified |= traits.identifies;
+                factors.extend(traits.factor);
+            } else {
+                past_required = true;
+                if traits.identifies {
+                    return Err(invalid_flow(format!(
+                        "the step `{}` establishes who is signing in, so it must be required",
+                        step.key
+                    )));
+                }
+                if traits.factor.is_none() {
+                    return Err(invalid_flow(format!(
+                        "the step `{}` is not required and proves nothing",
+                        step.key
+                    )));
+                }
+            }
         }
         if !identified {
             return Err(invalid_flow("no step establishes who is signing in"));
@@ -134,6 +157,12 @@ impl FlowEngine {
     /// Runs the current step of a transaction with what was submitted and
     /// records the result in the transaction. The caller stores it.
     ///
+    /// `demanded` is the assurance the sign-in must reach beyond the
+    /// flow's own minimum, from the tenant's policy. Once a step is
+    /// satisfied, the steps after it that are to be passed over are passed
+    /// over, so that the step the transaction waits for is always one that
+    /// is performed.
+    ///
     /// # Errors
     ///
     /// Returns `Conflict` if the transaction is not in progress, `Invalid`
@@ -146,6 +175,7 @@ impl FlowEngine {
         flow: &AuthFlow,
         transaction: &mut AuthTransaction,
         input: &StepInput,
+        demanded: Assurance,
         now: Timestamp,
     ) -> Result<Progress, DomainError> {
         transaction.require_in_progress(now)?;
@@ -186,6 +216,7 @@ impl FlowEngine {
                 step.authenticator
             ))
         };
+        let before = transaction.clone();
         match authenticator.perform(tenant, transaction, input).await? {
             StepOutcome::Rejected => {
                 let attempts_left = transaction.record_rejection();
@@ -198,7 +229,7 @@ impl FlowEngine {
                 );
             }
             StepOutcome::Authenticated { user } if is_alternative => transaction
-                .record_authenticated(user, authenticator.traits().method, flow.steps.len()),
+                .record_authenticated(user, authenticator.traits().method, flow.required_steps()),
             StepOutcome::Identified {
                 candidate,
                 identifier_key,
@@ -210,12 +241,61 @@ impl FlowEngine {
             | StepOutcome::Identified { .. }
             | StepOutcome::Proven => return Err(misbehaved()),
         }
+        let must_reach = flow.minimum_assurance.max(demanded);
+        if let Err(error) = self.pass_over(tenant, flow, transaction, must_reach).await {
+            *transaction = before;
+            return Err(error);
+        }
         Ok(match flow.steps.get(transaction.snapshot().current_step) {
             Some(next) => Progress::Next {
                 step: next.key.clone(),
             },
             None => Progress::ReadyToComplete,
         })
+    }
+
+    /// Passes over the steps from the current one on that are not to be
+    /// performed, and stops at the first that is, or at the end.
+    async fn pass_over(
+        &self,
+        tenant: &TenantContext,
+        flow: &AuthFlow,
+        transaction: &mut AuthTransaction,
+        must_reach: Assurance,
+    ) -> Result<(), DomainError> {
+        while let Some(step) = flow.steps.get(transaction.snapshot().current_step) {
+            let performed = match step.requirement {
+                Requirement::Required => true,
+                Requirement::Optional => {
+                    self.authenticator(step)?
+                        .has_means(tenant, transaction)
+                        .await?
+                }
+                Requirement::Conditional(condition) => {
+                    self.holds(condition, transaction, must_reach)
+                        && self
+                            .authenticator(step)?
+                            .has_means(tenant, transaction)
+                            .await?
+                }
+            };
+            if performed {
+                break;
+            }
+            transaction.record_passed_over();
+        }
+        Ok(())
+    }
+
+    fn holds(
+        &self,
+        condition: Condition,
+        transaction: &AuthTransaction,
+        must_reach: Assurance,
+    ) -> bool {
+        match condition {
+            Condition::AssuranceNotReached => self.assurance(transaction) < Some(must_reach),
+        }
     }
 
     /// The assurance a transaction's satisfied methods amount to, or

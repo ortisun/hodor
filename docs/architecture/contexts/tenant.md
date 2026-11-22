@@ -98,7 +98,15 @@ Settings are the tenant's policies. Other contexts read them; only the tenant co
 | Closed (default) | Only administrators and invitations create users |
 | Open | Anyone can register |
 
-Settings outside the allowed ranges are rejected as a whole; a tenant never holds a partly valid policy. Branding, quotas and the multi-factor authentication policy are added by later phases.
+### Authentication policy
+
+| Setting | Default | Allowed |
+|---|---|---|
+| Second factor | Not required | Not required, or required |
+
+When a second factor is required, no sign-in to the tenant completes with one factor ([what a sign-in must reach](authentication.md#what-a-sign-in-must-reach)). Settings stored before this policy existed read as the default.
+
+Settings outside the allowed ranges are rejected as a whole; a tenant never holds a partly valid policy. Branding and quotas are added by later phases.
 
 ## Events
 
