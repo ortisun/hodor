@@ -92,7 +92,8 @@ through `crate::api`.
   version once the active one is older than the period less the
   publication time, and activates it once the active one is older than the
   period and the pending one was published for the publication time. A
-  data key set plans nothing and publishes nothing.
+  data key set plans nothing and publishes nothing: no data version is made,
+  activated or retired by rotation, since secrets sealed with it may remain.
 
 ## Side Effects
 

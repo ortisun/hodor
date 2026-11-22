@@ -127,7 +127,9 @@ The worker runs a step for every tenant that has something due. A step looks at 
 
 Each change is its own transaction with its own event, as with every other use of the operations above. An algorithm other than the default rotates only while it has an active version: a tenant that revokes its RS256 key and makes no other has chosen to stop signing with RS256.
 
-The decision is made in the domain, by `KeySet::rotation_plan`, from the key set and the time alone; the step only carries it out. The data key set does not rotate yet: it has no keys until Issue-52.
+The decision is made in the domain, by `KeySet::rotation_plan`, from the key set and the time alone; the step only carries it out.
+
+**Rotation never touches the data key set.** It makes, activates and retires signing versions only. A data version must not be retired while secrets sealed with it remain, and only the context that seals them knows when none do; Issue-52, which seals secrets under the tenant's data keys, decides when a data version may be replaced and retired. Until then a data version is retired by nothing.
 
 ### Two workers, one rotation
 
