@@ -19,10 +19,10 @@ The stack uses the ports 8080, 9090, 8025, 8428, 9400, 9500 and 10428 on `localh
 
 ## 0. Get the code
 
-The work happens on the branch `develop`; `main` receives releases and has none yet. Clone `develop` and run every command of this page from the root of the checkout:
+The branch `main` holds the latest release, [1.0.0](../product/releases.md#100); the work towards the next one happens on `develop`. Clone the release and run every command of this page from the root of the checkout:
 
 ```bash
-git clone --branch develop https://github.com/ortisun/hodor.git
+git clone https://github.com/ortisun/hodor.git
 ```
 
 ```bash
