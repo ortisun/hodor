@@ -180,6 +180,20 @@ pub trait PendingAuthorizationStore: Send + Sync {
         receipt_hash: [u8; 32],
         now: Timestamp,
     ) -> Result<bool, DomainError>;
+
+    /// Removes up to `limit` pending authorizations of the tenant that had
+    /// expired at `now`, and says how many. Nobody can finish one of them
+    /// any more.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn remove_expired(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        now: Timestamp,
+        limit: u32,
+    ) -> Result<u64, DomainError>;
 }
 
 /// What to ask a directory about one person.

@@ -261,6 +261,26 @@ impl PendingAuthorizationStore for InMemoryFederation {
             true
         }))
     }
+
+    async fn remove_expired(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        now: Timestamp,
+        limit: u32,
+    ) -> Result<u64, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let mut pending = self.pending();
+        let expired: Vec<_> = pending
+            .iter()
+            .filter(|((owner, _), pending)| *owner == tenant && pending.expires_at <= now)
+            .map(|(key, _)| *key)
+            .take(usize::try_from(limit).unwrap_or(usize::MAX))
+            .collect();
+        for key in &expired {
+            pending.remove(key);
+        }
+        Ok(expired.len() as u64)
+    }
 }
 
 /// The ports under test.
@@ -727,6 +747,60 @@ pub async fn run_contract(ports: Ports<'_>) {
     .expect("the pending");
     assert_eq!(taken.saml_response.as_deref(), Some("first"));
     assert_eq!(taken.saml_receipt_hash, Some([9; 32]));
+
+    // Expired pending authorizations are removed, a batch at a time, in
+    // their tenant only; one that has not expired stays.
+    let expired_at = later;
+    let pending_of = |transaction_id, expires_at| PendingAuthorization {
+        transaction_id,
+        expires_at,
+        ..pending(&google, "cleanup")
+    };
+    let first = TransactionId::generate();
+    let second = TransactionId::generate();
+    let current = TransactionId::generate();
+    let mut unit = ports.units_of_work.begin(&tenant).await.expect("begin");
+    for (transaction, expires_at) in [
+        (first, expired_at),
+        (second, expired_at),
+        (current, expired_at + time::Duration::minutes(10)),
+    ] {
+        ports
+            .pending
+            .put(unit.as_mut(), &pending_of(transaction, expires_at))
+            .await
+            .expect("put");
+    }
+    unit.commit().await.expect("commit");
+    let mut unit = ports.units_of_work.begin(&elsewhere).await.expect("begin");
+    let removed_elsewhere = ports
+        .pending
+        .remove_expired(unit.as_mut(), expired_at, 10)
+        .await
+        .expect("remove");
+    drop(unit);
+    assert_eq!(removed_elsewhere, 0, "another tenant removes none of them");
+    let mut unit = ports.units_of_work.begin(&tenant).await.expect("begin");
+    let removed = ports
+        .pending
+        .remove_expired(unit.as_mut(), expired_at, 1)
+        .await
+        .expect("remove");
+    let removed_next = ports
+        .pending
+        .remove_expired(unit.as_mut(), expired_at, 10)
+        .await
+        .expect("remove");
+    unit.commit().await.expect("commit");
+    assert_eq!((removed, removed_next), (1, 1), "a batch at a time");
+    for (transaction, left) in [(first, false), (second, false), (current, true)] {
+        let found = within!(ports, &tenant, |uow| ports
+            .pending
+            .take(uow, transaction)
+            .await
+            .expect("take"));
+        assert_eq!(found.is_some(), left);
+    }
     assert!(
         within!(ports, &tenant, |uow| ports
             .pending

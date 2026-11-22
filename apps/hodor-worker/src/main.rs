@@ -8,12 +8,12 @@
 use clap::{Parser, ValueEnum};
 use hodor_adapters_crypto::Sha256Digest;
 use hodor_adapters_postgres::{
-    Database, OutboxDispatcher, PgAuditLog, PgMessageQueue, PgPendingMessages, PgPool,
-    connect_pool, ping_pool,
+    Database, OutboxDispatcher, PendingAuthorizationCleanup, PgAuditLog, PgMessageQueue,
+    PgPendingMessages, PgPool, connect_pool, ping_pool,
 };
 use hodor_adapters_smtp::SmtpSender;
 use hodor_audit::api::{AuditHandler, AuditService};
-use hodor_kernel::{Secret, SystemClock};
+use hodor_kernel::{Clock as _, Secret, SystemClock};
 use hodor_notification::api::DeliveryService;
 use hodor_observability::{LogFormat, Telemetry};
 use hodor_protocol_http::{Health, ReadinessCheck, ops_router, serve};
@@ -82,6 +82,14 @@ struct Config {
     /// Pause between passes when there is no message to deliver.
     #[arg(long, env = "HODOR_MAIL_POLL_INTERVAL_MS", default_value_t = 1000)]
     mail_poll_interval_ms: u64,
+
+    /// Pause between passes of the cleanup jobs.
+    #[arg(long, env = "HODOR_CLEANUP_INTERVAL_MS", default_value_t = 60_000)]
+    cleanup_interval_ms: u64,
+
+    /// Most rows a cleanup job removes in one tenant per pass.
+    #[arg(long, env = "HODOR_CLEANUP_BATCH_SIZE", default_value_t = 500)]
+    cleanup_batch_size: u32,
 
     /// Log rendering.
     #[arg(long, env = "HODOR_LOG_FORMAT", value_enum, default_value = "json")]
@@ -198,6 +206,7 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
         Arc::new(Sha256Digest),
         Arc::new(SystemClock),
     );
+    let cleanup = PendingAuthorizationCleanup::new(platform.clone(), database.clone());
     let dispatcher =
         OutboxDispatcher::new(platform, database, vec![Arc::new(AuditHandler::new(audit))]);
 
@@ -230,6 +239,12 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
             delivery.as_ref(),
             config.mail_batch_size,
             Duration::from_millis(config.mail_poll_interval_ms),
+            stopped.clone(),
+        ),
+        cleanup_loop(
+            &cleanup,
+            config.cleanup_batch_size,
+            Duration::from_millis(config.cleanup_interval_ms),
             stopped,
         ),
     );
@@ -237,6 +252,59 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
     ops_server.await??;
     tracing::info!("hodor-worker stopped");
     Ok(())
+}
+
+/// Runs the cleanup jobs until asked to stop: now, then after every pause.
+/// A pass that removed a full batch somewhere is followed by another at
+/// once, since more may be waiting.
+async fn cleanup_loop(
+    cleanup: &PendingAuthorizationCleanup,
+    batch_size: u32,
+    interval: Duration,
+    mut stopped: watch::Receiver<bool>,
+) {
+    let meter = opentelemetry::global::meter("hodor.worker");
+    let removed: Counter<u64> = meter
+        .u64_counter("hodor.cleanup.removed")
+        .with_description("Rows removed by the cleanup jobs, by job")
+        .build();
+    let passes: Counter<u64> = meter
+        .u64_counter("hodor.cleanup.passes")
+        .with_description("Passes of the cleanup jobs, by job and outcome")
+        .build();
+    let job = KeyValue::new("job", "pending_authorizations");
+
+    while !*stopped.borrow() {
+        let now = SystemClock.now();
+        let pause = match cleanup.run(now, batch_size).await {
+            Ok(report) => {
+                passes.add(1, &[job.clone(), KeyValue::new("outcome", "ok")]);
+                removed.add(report.removed, std::slice::from_ref(&job));
+                if report.removed > 0 {
+                    tracing::info!(
+                        tenants = report.tenants,
+                        removed = report.removed,
+                        "expired pending authorizations removed"
+                    );
+                }
+                // A full batch in every tenant looked at: there may be more.
+                let full =
+                    report.tenants > 0 && report.removed >= report.tenants * u64::from(batch_size);
+                (!full).then_some(interval)
+            }
+            Err(error) => {
+                passes.add(1, &[job.clone(), KeyValue::new("outcome", "error")]);
+                tracing::warn!(code = error.code(), detail = ?error.detail(), "cleanup pass failed");
+                Some(interval.max(MIN_ERROR_PAUSE))
+            }
+        };
+        if let Some(pause) = pause {
+            tokio::select! {
+                () = tokio::time::sleep(pause) => {}
+                _ = stopped.changed() => {}
+            }
+        }
+    }
 }
 
 /// Sets up the mail server, if one is configured.
