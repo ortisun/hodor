@@ -77,11 +77,12 @@ Anything outside this table is written out. When in doubt, write it out. If a ne
 | [`api/`](../api/api-spec.md) | The HTTP surfaces and their conventions |
 | [`security/`](../security/threat-model.md) | Threat models and security analysis |
 | [`operations/`](../operations/deployment.md) | Running it: deployment, configuration, observability, backup |
-| [`development/`](local-setup.md) | Working on it: these conventions and the local setup |
+| [`development/`](local-setup.md) | Working on it: these conventions, the local setup and the documentation site |
+| [`examples/`](../examples/README.md) | Worked examples on the development stack, each run as written against the code |
 | [`decisions/`](../decisions/README.md) | Decisions and their reasons |
 | `images/` | Screenshots and pictures that pages link to, taken from the development stack. A picture never replaces text: what it shows is also written out |
 
-[`docs/README.md`](../README.md) is the index. A page that is not linked from it does not exist as far as a reader is concerned, so a new page is added to the index in the same change.
+[`docs/README.md`](../README.md) is the index. A page that is not linked from it does not exist as far as a reader is concerned, so a new page is added to the index in the same change, and to the navigation of [the documentation site](documentation-site.md#adding-a-page).
 
 ## 5. Git
 

@@ -10,11 +10,24 @@ This page is for someone who wants to run Hodor and see what it does. To change 
 
 | Tool | Why |
 |---|---|
+| Git | To get the code |
 | Docker with Compose | Everything runs in containers, built from this checkout. Nothing else is installed on the machine |
 | A browser | Chromium, Chrome, Edge or Firefox. Safari refuses the session cookie over plain HTTP |
 | Python 3 | Only for [the demonstration](#the-demonstration). It uses nothing outside the standard library |
 
 The stack uses the ports 8080, 9090, 8025, 8428, 9400, 9500 and 10428 on `localhost`. [Local setup](../development/local-setup.md#running-the-development-stack) says how to choose others.
+
+## 0. Get the code
+
+The work happens on the branch `develop`; `main` receives releases and has none yet. Clone `develop` and run every command of this page from the root of the checkout:
+
+```bash
+git clone --branch develop https://github.com/ortisun/hodor.git
+```
+
+```bash
+cd hodor
+```
 
 ## 1. Start the stack
 
@@ -83,6 +96,14 @@ docker compose -f deploy/docker/compose.yaml run --rm --no-deps --entrypoint /us
 ```
 
 The traces of the requests you made are at <http://localhost:10428/select/vmui>, and the metrics at <http://localhost:8428/vmui>.
+
+## 6. Go further
+
+| Next | What it shows |
+|---|---|
+| [Signing in through identity providers](../examples/signing-in-through-identity-providers.md) | The stack's OpenID Connect provider, LDAP directory and SAML identity provider, added to `acme` and signed in through; and what GitHub needs |
+| [Calling the administration interface](../examples/administration-interface.md) | The token of step 4 used with `curl`: users, sessions, the audit log, identity providers |
+| [A tenant and its first administrator](../examples/first-tenant-and-administrator.md) | A tenant where only administrators add people, and its admin console at `/t/{slug}/console` |
 
 ## The demonstration
 

@@ -26,3 +26,4 @@ All records below are **Proposed** unless marked otherwise: they become Accepted
 | [0018](0018-astryx-component-foundation.md) | Astryx is the foundation of the design system (Accepted) |
 | [0019](0019-saml-signature-verification.md) | SAML signatures are verified with `xml-sec` behind a narrow profile (Accepted) |
 | [0020](0020-console-on-the-hodor-session.md) | Until Hodor issues tokens, the admin console rides the administrator's Hodor session (Accepted) |
+| [0021](0021-documentation-site.md) | The documentation site is built from `docs/` with MkDocs and Material, and published on GitHub Pages from `develop` |

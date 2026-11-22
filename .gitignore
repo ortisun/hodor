@@ -6,3 +6,7 @@
 # the repository on purpose: see deploy/dev-saml-provider/README.md. A rule
 # elsewhere that ignores every PEM file must not keep it out.
 !deploy/dev-saml-provider/*.pem
+
+# The documentation site: its Python environment and what `mkdocs build` writes.
+/site/.venv
+/site/build

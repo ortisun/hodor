@@ -42,6 +42,7 @@ Start with the [critical review](architecture/critical-review.md): it lists wher
 | 25 | Testing Strategy | [architecture/testing.md](architecture/testing.md) |
 | 26 | Deployment Architecture | [operations/deployment.md](operations/deployment.md) |
 | — | Quick-start: from a clean checkout to a tenant people sign in to, and the demonstration of Milestone 1 | [operations/quick-start.md](operations/quick-start.md) |
+| — | Examples: a tenant and its first administrator, signing in through identity providers, calling the administration interface | [examples/](examples/README.md) |
 | 27 | Decision records | [decisions/](decisions/README.md) |
 | 28 | Product Roadmap | [product/roadmap.md](product/roadmap.md) |
 | 29 | Epics and Development Issues | [product/epics.md](product/epics.md) |
@@ -59,6 +60,7 @@ Start with the [critical review](architecture/critical-review.md): it lists wher
 |---|---|
 | [development/conventions.md](development/conventions.md) | The rules: documentation first, how docs are written and organized, commits, branches, pull requests, definition of done |
 | [development/local-setup.md](development/local-setup.md) | How to build, run the checks and start Hodor locally; configuration reference |
+| [development/documentation-site.md](development/documentation-site.md) | How these pages become the site at <https://ortisun.github.io/hodor/>, how to see it locally, and how it is published |
 | [product/progress.md](product/progress.md) | What has been built so far, known gaps, and where the implementation departs from the design |
 
 ## Conventions

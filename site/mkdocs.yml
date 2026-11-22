@@ -1,0 +1,212 @@
+# The documentation site of Hodor, built from docs/ with MkDocs and the Material theme.
+# How it is built and published: docs/development/documentation-site.md.
+#
+#   python3 -m venv site/.venv
+#   site/.venv/bin/pip install --require-hashes -r site/requirements.txt
+#   site/.venv/bin/mkdocs serve -f site/mkdocs.yml
+#   site/.venv/bin/mkdocs build -f site/mkdocs.yml --strict
+
+site_name: Hodor
+site_description: Identity, authentication and authorization for many tenants, written in Rust.
+site_url: https://ortisun.github.io/hodor/
+repo_url: https://github.com/ortisun/hodor
+repo_name: ortisun/hodor
+edit_uri: edit/develop/docs/
+copyright: Hodor documentation, written in <code>docs/</code> of the repository.
+
+# The pages are the ones in docs/, read where they are.
+docs_dir: ../docs
+site_dir: build
+# Contracts for coding agents, not pages for readers.
+exclude_docs: |
+  EGM.md
+
+hooks:
+  - hooks.py
+
+# `mkdocs serve` also rebuilds when these change.
+watch:
+  - pages
+  - hooks.py
+  - overrides
+  - ../crates/protocol-http/openapi
+
+theme:
+  name: material
+  custom_dir: overrides
+  language: en
+  logo: assets/images/door.svg
+  favicon: assets/images/door.svg
+  icon:
+    repo: fontawesome/brands/github
+  # The system's own fonts: nothing is fetched from a font service.
+  font: false
+  palette:
+    - media: "(prefers-color-scheme)"
+      toggle:
+        icon: material/brightness-auto
+        name: Use the light theme
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-7
+        name: Use the dark theme
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-4
+        name: Follow the system
+  features:
+    - content.action.edit
+    - content.code.copy
+    - navigation.footer
+    - navigation.indexes
+    - navigation.sections
+    - navigation.tabs
+    - navigation.top
+    - navigation.tracking
+    - search.highlight
+    - search.suggest
+    - toc.follow
+
+extra_css:
+  - assets/stylesheets/hodor.css
+
+# Mermaid at one exact version. Without it the theme loads the newest 11.x it finds.
+extra_javascript:
+  - https://unpkg.com/mermaid@11.17.2/dist/mermaid.min.js
+
+plugins:
+  - search
+  - swagger-ui-tag:
+      # The page shows the document; requests are made with curl against the development stack.
+      supportedSubmitMethods: []
+      docExpansion: list
+      syntaxHighlightTheme: monokai
+
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      # Anchors as GitHub makes them, so that a link written for GitHub works on the site.
+      slugify: !!python/object/apply:pymdownx.slugs.slugify
+        kwds:
+          case: lower
+  - pymdownx.details
+  # The icons of the home page, drawn from the theme's own sets.
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+
+validation:
+  nav:
+    omitted_files: warn
+    not_found: warn
+  links:
+    not_found: warn
+    anchors: warn
+    absolute_links: info
+    unrecognized_links: warn
+
+nav:
+  - Home: index.md
+  - Get started:
+      - Quick-start: operations/quick-start.md
+      - Local setup: development/local-setup.md
+      - Deployment: operations/deployment.md
+  - Examples:
+      - examples/README.md
+      - examples/first-tenant-and-administrator.md
+      - examples/signing-in-through-identity-providers.md
+      - examples/administration-interface.md
+  - Architecture:
+      - architecture/overview.md
+      - architecture/domain-model.md
+      - architecture/crates.md
+      - architecture/multi-tenancy.md
+      - architecture/database.md
+      - architecture/authorization.md
+      - architecture/hosted-pages.md
+      - architecture/admin-console.md
+      - architecture/plugins.md
+      - architecture/testing.md
+      - architecture/critical-review.md
+      - Bounded contexts:
+          - architecture/contexts/tenant.md
+          - architecture/contexts/identity.md
+          - architecture/contexts/credential.md
+          - architecture/contexts/session.md
+          - architecture/contexts/authentication.md
+          - architecture/contexts/notification.md
+          - architecture/contexts/audit.md
+          - architecture/contexts/authorization.md
+          - architecture/contexts/federation.md
+  - Interfaces and protocols:
+      - api/api-spec.md
+      - api/interaction-api.md
+      - api/admin-api.md
+      - api/admin-reference.md
+      - api/console-interface.md
+      - protocols/sequences.md
+  - Security:
+      - security/threat-model.md
+      - security/outbound-http.md
+      - security/secrets-at-rest.md
+      - security/saml-attack-corpus.md
+  - Product:
+      - Documentation map: README.md
+      - product/product-requirements.md
+      - product/requirements.md
+      - product/roadmap.md
+      - product/epics.md
+      - product/progress.md
+      - product/competitive-analysis.md
+      - Design:
+          - design/design-system.md
+          - design/control-plane.md
+  - Decisions:
+      - decisions/README.md
+      - decisions/0001-modular-monolith-clean-architecture.md
+      - decisions/0002-crate-consolidation.md
+      - decisions/0003-context-communication.md
+      - decisions/0004-token-formats.md
+      - decisions/0005-tenant-and-organization.md
+      - decisions/0006-tenant-isolation.md
+      - decisions/0007-postgres-required-redis-optional.md
+      - decisions/0008-cryptography.md
+      - decisions/0009-authorization-engine-contract.md
+      - decisions/0010-opa-integration.md
+      - decisions/0011-frontends-bff.md
+      - decisions/0012-extension-strategy.md
+      - decisions/0013-auth-flow-as-data.md
+      - decisions/0014-saml-deferred-with-spike.md
+      - decisions/0015-observability-stack.md
+      - decisions/0016-design-system.md
+      - decisions/0017-external-identities-before-oauth.md
+      - decisions/0018-astryx-component-foundation.md
+      - decisions/0019-saml-signature-verification.md
+      - decisions/0020-console-on-the-hodor-session.md
+      - decisions/0021-documentation-site.md
+  - Contributing:
+      - development/conventions.md
+      - development/documentation-site.md

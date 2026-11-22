@@ -1,0 +1,90 @@
+# Builds the documentation site from docs/ and publishes it on GitHub Pages.
+#
+# A pull request that touches the pages builds the site with --strict, so a page missing from the navigation,
+# a broken link or an anchor that leads nowhere fails it, and keeps the result as an artifact to look at.
+# A push to develop builds it the same way and publishes it. See docs/development/documentation-site.md and
+# docs/decisions/0021-documentation-site.md.
+#
+# Publishing needs two settings of the repository: Settings > Pages > Source: GitHub Actions, and develop
+# allowed to deploy to the github-pages environment.
+name: Documentation site
+
+on:
+  pull_request:
+    branches: [develop, main]
+    paths:
+      - "docs/**"
+      - "site/**"
+      - "crates/protocol-http/openapi/**"
+      - ".github/workflows/documentation-site.yml"
+  push:
+    branches: [develop]
+    paths:
+      - "docs/**"
+      - "site/**"
+      - "crates/protocol-http/openapi/**"
+      - ".github/workflows/documentation-site.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: documentation-site-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The notice that Material for MkDocs reaches its end of life is answered by Decision 0021.
+  NO_MKDOCS_2_WARNING: "1"
+
+jobs:
+  build:
+    name: Build the site
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: site/requirements.txt
+      - name: Install the tools at their pinned versions
+        run: python -m pip install --require-hashes --no-deps -r site/requirements.txt
+      - name: Build the site, failing on any warning
+        run: mkdocs build -f site/mkdocs.yml --strict
+      # For a pull request: the site as the change would publish it, to download and open.
+      - if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: documentation-site
+          path: site/build
+          retention-days: 7
+      # For a publication: the site in the form the Pages deployment takes.
+      - if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: site/build
+
+  publish:
+    name: Publish on GitHub Pages
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/develop'
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    # One publication at a time, and a newer one never cancels one already under way.
+    concurrency:
+      group: documentation-site-pages
+      cancel-in-progress: false
+    steps:
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
