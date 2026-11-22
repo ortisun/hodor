@@ -133,6 +133,23 @@ Branching follows Gitflow.
 - The description says what changed, what a reviewer should look at, and how it was verified. It states plainly anything that was not verified.
 - A pull request is merged only when continuous integration is green.
 
+### Releases
+
+- **Versions follow Semantic Versioning.** Before 1.0.0, versions are `0.<minor>.<patch>`, and a minor version may break what came before; the changelog says what breaks. From 1.0.0 on, a change that breaks what came before raises the major version.
+- **0.2.0 waits for three parts.** The owner chose to release 0.2.0 once the OAuth 2.x authorization server and OpenID Provider, multi-factor authentication with passkeys and step-up, and the authorization engine with Open Policy Agent are built.
+- **One version for everything that ships.** It is the `version` of the Cargo workspace, which every crate and application takes, the version of the container image, and the `version` and `appVersion` of the Helm chart; continuous integration fails when the chart and the workspace differ. The page applications are built into the image and carry no version of their own.
+- **The changelog is `CHANGELOG.md`**, in the form of [Keep a Changelog](https://keepachangelog.com/): one section per version, newest first, with what was added, changed, fixed and removed, in words a person running Hodor understands. What is built and not yet released is under *Unreleased*, at the top; a pull request that changes what a person running Hodor sees adds its line there. Cutting a release turns *Unreleased* into the section of its version.
+- **A release says what it is not ready for.** When it cannot hold real accounts, its section of the changelog and its notes say what stands in the way, from the [progress](../product/progress.md) page, and it is published as a pre-release.
+- **A release is named by its tag alone**, `v<version>`, such as `v0.1.0`: the name of the published release and the message of the tag are the same, without the product's name.
+
+A release is cut in these steps:
+
+1. Turn *Unreleased* in `CHANGELOG.md` into the section of the version, with its date, and set the version, through a pull request into `develop`.
+2. Cut `release/<version>` from `develop`. Only fixes go into it from then on.
+3. Open a pull request from `release/<version>` into `main`. It is merged with a **merge commit**, not squashed, so that `main` and `develop` keep one history, and only when continuous integration is green on its head.
+4. Tag the merge commit on `main` as `v<version>`, an annotated tag whose message is `v<version>`, and publish a release named `v<version>` from that tag, with its section of the changelog as notes.
+5. Merge `release/<version>` back into `develop` with a pull request and a merge commit, if the release branch received any commit, as it does when the version is set on it.
+
 ## 6. Definition of done
 
 A change is done when:
