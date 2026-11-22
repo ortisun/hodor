@@ -193,7 +193,7 @@ Hodor as a SAML identity provider, synchronizing users and groups from LDAP, SCI
 
 ## Milestone 3: Applications ask Hodor who someone is
 
-**Goal**: an application registered in a tenant signs a person in through Hodor with the authorization code and PKCE, receives an ID token and an access token signed with the tenant's key, refreshes it, and can have it revoked; a service gets a token with its own credentials. Hodor passes the Basic OpenID Provider and Config OpenID Provider profiles of the OpenID conformance suite. Phase 2 of the roadmap, without pairwise subjects, claim mappers and back-channel logout ([Decision 0023](../decisions/0023-what-1.0.0-holds.md)).
+**Goal**: an application registered in a tenant signs a person in through Hodor with the authorization code and PKCE, receives an ID token and an access token signed with the tenant's key, refreshes it, and can have it revoked; a service gets a token with its own credentials. Hodor passes the Basic OpenID Provider and Config OpenID Provider profiles of the OpenID conformance suite. Phase 2 of the roadmap, without pairwise subjects, claim mappers and back-channel logout ([Decision 0023](../decisions/0023-what-0.2.0-holds.md)).
 
 **Demo script**: register an application and a client in a tenant with the command-line tool; sign in from an example application and see the consent page; read the ID token and call UserInfo; refresh, then present the old refresh token again and see the whole family revoked; get a token with client credentials; revoke an access token and see introspection say so; rotate the tenant's key and see the old key stay in the key set until its tokens expire; show a code, a token and a client of one tenant refused by another.
 
@@ -242,7 +242,7 @@ Pairwise subject identifiers, claim mappers per client, back-channel and front-c
 
 ## Milestone 4: Strong authentication
 
-**Goal**: a person proves who they are with more than a password: a code from an authenticator application, a security key, or a passkey alone. A tenant can require a second factor, and an application can ask for a higher assurance in the middle of a session, which asks only for what is missing. Part of Phase 4 of the roadmap ([Decision 0023](../decisions/0023-what-1.0.0-holds.md)).
+**Goal**: a person proves who they are with more than a password: a code from an authenticator application, a security key, or a passkey alone. A tenant can require a second factor, and an application can ask for a higher assurance in the middle of a session, which asks only for what is missing. Part of Phase 4 of the roadmap ([Decision 0023](../decisions/0023-what-0.2.0-holds.md)).
 
 **Demo script**: enroll an authenticator application and get recovery codes; make the tenant require a second factor and sign in with the code; use a recovery code once and see it refused the second time; register a passkey and sign in with it alone; from the example application of Milestone 3, ask for a higher `acr` during a session and give only the second factor; show the `amr` of each token; show that an administrator can remove a person's factors and that it is in the audit log.
 
@@ -270,7 +270,7 @@ HOTP, magic links and one-time passwords by email or text message, risk signals,
 
 ## Milestone 5: The authorization engine
 
-**Goal**: an application asks Hodor whether a subject may do something to a resource and gets an answer it can trust: from Hodor's native engine with roles and conditions, or from Open Policy Agent with the tenant's policies, published, simulated and rolled back through Hodor. A failing engine never answers allow. Part of Phase 5 of the roadmap ([Decision 0023](../decisions/0023-what-1.0.0-holds.md)).
+**Goal**: an application asks Hodor whether a subject may do something to a resource and gets an answer it can trust: from Hodor's native engine with roles and conditions, or from Open Policy Agent with the tenant's policies, published, simulated and rolled back through Hodor. A failing engine never answers allow. Part of Phase 5 of the roadmap ([Decision 0023](../decisions/0023-what-0.2.0-holds.md)).
 
 **Demo script**: define a resource server's permissions and roles, assign a role to a person and to a client; evaluate from the example application with a token and get allow and deny with their reasons; add a condition and see it change the answer; bind another resource server to Open Policy Agent, publish a policy, simulate a draft against past decisions, publish it, roll it back; stop Open Policy Agent and see deny with an indeterminate reason; read the decision log; show that a token of one tenant cannot evaluate in another.
 
@@ -299,7 +299,7 @@ Per-resource access control lists, relationship-based access control, assigning 
 
 ### After Milestone 5
 
-1.0.0 is released when Milestone 5 is done, following [the release rules](../development/conventions.md#releases).
+0.2.0 is released when Milestone 5 is done, following [the release rules](../development/conventions.md#releases).
 
 ## Later epics at story level
 
