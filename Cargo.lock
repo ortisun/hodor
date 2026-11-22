@@ -1558,6 +1558,7 @@ dependencies = [
  "hodor-credential",
  "hodor-federation",
  "hodor-kernel",
+ "hodor-keys",
  "serde_json",
  "sha2",
  "time",
@@ -1603,6 +1604,7 @@ dependencies = [
  "hodor-federation",
  "hodor-identity",
  "hodor-kernel",
+ "hodor-keys",
  "hodor-notification",
  "hodor-saml",
  "hodor-session",
@@ -1753,6 +1755,19 @@ dependencies = [
  "time",
  "uuid",
  "zeroize",
+]
+
+[[package]]
+name = "hodor-keys"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "hodor-kernel",
+ "hodor-keys",
+ "serde",
+ "serde_json",
+ "time",
+ "tokio",
 ]
 
 [[package]]

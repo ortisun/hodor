@@ -2,7 +2,7 @@
 
 ## Overview
 
-The PostgreSQL schema, as twenty-one numbered SQL files. They are embedded in the
+The PostgreSQL schema, as twenty-three numbered SQL files. They are embedded in the
 binaries by `static MIGRATOR: Migrator = sqlx::migrate!("../../migrations")`
 in `crates/adapters-postgres/src/migrate.rs` and applied by
 `hodor_adapters_postgres::migrate`, which `hodor-cli migrate` calls with a
@@ -38,6 +38,8 @@ Tables created, by file:
 | `0019_federation_directories.sql` | adds the kind `ldap` and the `directory_*` columns to `federation.identity_provider` |
 | `0020_federation_saml.sql` | adds the kind `saml` and the `saml_*` columns to `federation.identity_provider`; adds `saml_response` and `saml_receipt_hash` to `federation.pending_authorization` |
 | `0021_federation_pending_authorization_expiry.sql` | adds the index `pending_authorization_expiry_idx` on `federation.pending_authorization (expires_at)`, for the cleanup job of `hodor-worker` |
+| `0022_federation_saml_answer.sql` | keeps only the answer of a SAML response in `federation.pending_authorization`, never the response |
+| `0023_keys.sql` | schema `keys`; table `keys.key_version` with the partial unique index `key_version_one_active` (one `active` row per tenant, use and algorithm) |
 
 No migration creates a type, an extension or seed rows; enumerations are text
 columns with `CHECK ... IN (...)` constraints.
@@ -78,6 +80,11 @@ columns with `CHECK ... IN (...)` constraints.
   `directory_*` columns are set only for `ldap`
   (`identity_provider_directory_settings`), and the `saml_*` columns only for
   `saml` (`identity_provider_saml_settings`).
+- `keys.key_version` holds key material only as a provider sealed it
+  (constraint `key_version_material_present`); the algorithm fits the use
+  and the public key fits the algorithm, each state has the times it needs
+  (`key_version_times_fit_state`), and `DELETE` is revoked from `hodor_app`
+  (`0023_keys.sql`).
 
 ## Side Effects
 

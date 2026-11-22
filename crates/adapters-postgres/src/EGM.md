@@ -56,6 +56,7 @@ Each store is a unit struct (except where noted) that runs its queries on
 | `PgUserRepository` | `impl UserRepository for PgUserRepository` (`identity.rs`, `hodor_identity::api`) | `identity."user"`, `identity.user_identifier` |
 | `PgMessageQueue` | `impl MessageQueue for PgMessageQueue` (`notification.rs`, `hodor_notification::api`) | `notification.message` |
 | `PgPendingMessages` (holds a platform `PgPool`; `new(platform)`) | `impl PendingMessages for PgPendingMessages` (`notification.rs`, `hodor_notification::api`) | `notification.message` |
+| `PgKeyStore` | `impl KeyStore for PgKeyStore` (`keys.rs`, `hodor_keys::api`); an activation that would leave two active versions gives `Conflict` `keys.activation_conflict` | `keys.key_version` |
 | `PgSessionStore` | `impl SessionStore for PgSessionStore` (`session.rs`, `hodor_session::api`) | `session.session` |
 | `PgTenantRepository` | `impl TenantRepository for PgTenantRepository` (`tenant.rs`, `hodor_tenant::api`) | `tenant.tenant` |
 | `PgTenantDirectory` (holds a `Database`; `new(database)`) | `impl TenantDirectory for PgTenantDirectory` (`tenant.rs`, `hodor_tenant::api`) | `platform.tenant_directory` |

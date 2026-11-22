@@ -5,7 +5,7 @@
 The library crates of the Hodor Cargo workspace (`members = ["crates/*", "apps/*", "tests/*"]` in the root `Cargo.toml`). They are arranged in layers that `tests/architecture/src/lib.rs` (`RULES`) enforces:
 
 - Layer 0, the shared kernel: `hodor-kernel`.
-- Layer 1, the base bounded contexts: `hodor-tenant`, `hodor-identity`, `hodor-credential`, `hodor-session`, `hodor-audit`, `hodor-notification`, `hodor-authorization`. Each may depend only on `hodor-kernel`.
+- Layer 1, the base bounded contexts: `hodor-tenant`, `hodor-identity`, `hodor-credential`, `hodor-session`, `hodor-keys`, `hodor-audit`, `hodor-notification`, `hodor-authorization`. Each may depend only on `hodor-kernel`.
 - Layer 2, the orchestrating contexts: `hodor-authentication` (depends on kernel, identity, credential, session, tenant and notification) and `hodor-saml` (kernel only in the rules; its `Cargo.toml` lists no workspace crate).
 - Layer 3, the context extensions: `hodor-federation` (kernel, authentication, identity, saml).
 - Layer 4, the adapters: `hodor-adapters-postgres`, `hodor-adapters-crypto`, `hodor-adapters-http`, `hodor-adapters-ldap`, `hodor-adapters-smtp`, `hodor-observability` and `hodor-protocol-http`.
@@ -25,6 +25,7 @@ Bounded contexts:
 - identity: [./identity/EGM.md](./identity/EGM.md) - `IdentityService` and the `User` aggregate with its status lifecycle and normalized login identifiers (username, email). Port `UserRepository`.
 - credential: [./credential/EGM.md](./credential/EGM.md) - `CredentialService` (passwords with rules and history) and `AccessTokenService` (`hodor_at_` tokens for the administration interface). Ports `PasswordHasher`, `PasswordStore`, `AccessTokenStore`.
 - session: [./session/EGM.md](./session/EGM.md) - `SessionService`: starts, finds by token, lists, revokes and re-tokens browser sessions. Only the SHA-256 hash of a session token is stored. Port `SessionStore`.
+- keys: [./keys/EGM.md](./keys/EGM.md) - `KeyService`: key sets per tenant and use (`sig`, `enc`, `data`), key versions with states `pending`, `active`, `retiring`, `retired` and `revoked`, one active version per algorithm, and signing with it. Ports `KeyStore` and `KeyProvider`; the key material is never read by the context.
 - authorization: [./authorization/EGM.md](./authorization/EGM.md) - `AuthorizationService`: fixed roles (`TenantAdministrator`, `TenantAuditor`), fixed permissions, deny by default. Port `RoleAssignmentStore`.
 - audit: [./audit/EGM.md](./audit/EGM.md) - `AuditService` and `AuditHandler`: one hash-chained audit record per event, per tenant, and chain verification. Port `AuditLog`.
 - notification: [./notification/EGM.md](./notification/EGM.md) - `Notifier` queues a message in the caller's unit of work; `DeliveryService` delivers due messages with retries (at most 8 attempts). Ports `MessageQueue`, `PendingMessages`, `EmailSender`.
@@ -35,7 +36,7 @@ Bounded contexts:
 Adapters:
 
 - adapters-postgres: [./adapters-postgres/EGM.md](./adapters-postgres/EGM.md) - PostgreSQL implementations of every bounded context's storage ports, `PgUnitOfWork` (tenant-bound transaction that writes recorded events to `platform.outbox`), `OutboxDispatcher`, and `migrate`, which embeds `migrations/`.
-- adapters-crypto: [./adapters-crypto/EGM.md](./adapters-crypto/EGM.md) - `Sha256Digest`, `OsRandom`, `SecretKeys` (AES-256-GCM sealing bound to tenant and purpose), `AwsLcVerifier`, and `Argon2idHasher` (implements the credential `PasswordHasher`).
+- adapters-crypto: [./adapters-crypto/EGM.md](./adapters-crypto/EGM.md) - `Sha256Digest`, `OsRandom`, `SecretKeys` (AES-256-GCM sealing bound to tenant and purpose), `LocalKeyProvider` (implements the keys `KeyProvider`), `AwsLcVerifier`, and `Argon2idHasher` (implements the credential `PasswordHasher`).
 - adapters-http: [./adapters-http/EGM.md](./adapters-http/EGM.md) - `GuardedHttpClient`, the kernel `HttpClient`: public addresses only, HTTPS except listed development hosts, no redirects, size and time limits.
 - adapters-ldap: [./adapters-ldap/EGM.md](./adapters-ldap/EGM.md) - `LdapDirectoryClient`, the federation `DirectoryClient`, limited to allowed hosts.
 - adapters-smtp: [./adapters-smtp/EGM.md](./adapters-smtp/EGM.md) - `SmtpSender`, the notification `EmailSender`.
@@ -48,7 +49,7 @@ Adapters:
 - An adapter never depends on another adapter (`RULES` comment on layer 4; test `an_adapter_cannot_depend_on_another_adapter`).
 - Only `hodor-saml` may depend on an XML library (`XML`, `XML_CRATE`; test `only_the_saml_crate_reads_xml`).
 - No bounded context depends on `hodor-audit` (test `no_context_depends_on_audit`); audit records are made from outbox events by `AuditHandler`, which `apps/hodor-worker` runs.
-- `RULES` also lists crates that do not exist yet (for example `hodor-keys`, `hodor-oauth`, `hodor-adapters-redis`); they are not part of this directory today.
+- `RULES` also lists crates that do not exist yet (for example `hodor-oauth`, `hodor-adapters-redis`); they are not part of this directory today.
 
 ## Verification
 

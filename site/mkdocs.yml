@@ -160,6 +160,7 @@ nav:
           - architecture/contexts/identity.md
           - architecture/contexts/credential.md
           - architecture/contexts/session.md
+          - architecture/contexts/keys.md
           - architecture/contexts/authentication.md
           - architecture/contexts/notification.md
           - architecture/contexts/audit.md

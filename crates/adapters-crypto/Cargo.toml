@@ -1,6 +1,6 @@
 [package]
 name = "hodor-adapters-crypto"
-description = "Cryptography adapter: password hashing and the operating system's random source."
+description = "Cryptography adapter: password hashing, signatures, secrets at rest, the local key provider and the operating system's random source."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -20,6 +20,7 @@ form_urlencoded = { workspace = true, optional = true }
 getrandom.workspace = true
 hodor-credential.workspace = true
 hodor-kernel.workspace = true
+hodor-keys.workspace = true
 serde_json = { workspace = true, optional = true }
 sha2.workspace = true
 tokio.workspace = true

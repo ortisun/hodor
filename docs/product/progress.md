@@ -176,9 +176,17 @@ Planned in [the epics](epics.md#milestone-3-applications-ask-hodor-who-someone-i
 
 | Milestone | Slices | Done | Total |
 |---|---|---|---|
-| 3 — Applications ask Hodor who someone is | L to P: keys, applications and clients, OAuth 2.x core, OpenID Connect, consent | 0 | 14 |
+| 3 — Applications ask Hodor who someone is | L to P: keys, applications and clients, OAuth 2.x core, OpenID Connect, consent | 1 | 14 |
 | 4 — Strong authentication | Q and R: factors, step-up and the person's own factors | 1 | 8 |
 | 5 — The authorization engine | S and T: the native engine, Open Policy Agent | 0 | 9 |
+
+### Milestone 3 — Applications ask Hodor who someone is
+
+Slice L, keys, is specified in [the keys context](../architecture/contexts/keys.md).
+
+| Issue | Status | What exists |
+|---|---|---|
+| Issue-50 Keys context | Done | `hodor-keys` crate: key sets per tenant and use (`sig`, `enc`, `data`), key versions with the states pending, active, retiring, retired and revoked, one active version per algorithm, activation that sets the replaced version retiring until its overlap has passed, revocation, and signing with the active version. The `KeyProvider` port makes and uses keys; the context never reads the key material and no event carries it. `LocalKeyProvider` in `hodor-adapters-crypto` makes P-256 keys for ES256, RSA keys of 2048 bits for RS256 and PS256 and AES-256-GCM data keys with `aws-lc-rs`, and keeps each sealed under the root keys of `HODOR_SECRET_KEYS`, bound to its tenant, version and algorithm; signatures it makes are checked with the verifier Hodor uses for others' signatures. `keys.key_version` under row-level security, with one active row per tenant, use and algorithm held by a partial unique index, checks on the algorithm, the public key and the times of each state, and no deletion by the application role. One contract suite passed by the in-memory store and by PostgreSQL. Nothing calls it yet: no binary wires it, and no key is published (Issue-51) |
 
 ### Milestone 4 — Strong authentication
 
