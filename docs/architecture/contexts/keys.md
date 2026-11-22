@@ -4,7 +4,7 @@ The `keys` context owns the keys a tenant's tokens are signed with and, later, t
 
 It holds no cryptography of its own. Keys are made, kept and used by a **key provider**, a port that `hodor-adapters-crypto` implements on `aws-lc-rs` ([Decision 0008](../../decisions/0008-cryptography.md)). This context decides which key is used when, and keeps what the provider hands back.
 
-This page specifies what Issues 50 and 51 build. Issue-50: key sets, key versions and their states, the key provider port, the local provider and the storage. Issue-51: rotation on a schedule, the published key set, and managing keys with the command-line tool and the administration interface. Moving the secrets of Milestone 2 under managed keys is Issue-52.
+This page specifies what Issues 50, 51 and 52 build. Issue-50: key sets, key versions and their states, the key provider port, the local provider and the storage. Issue-51: rotation on a schedule, the published key set, and managing keys with the command-line tool and the administration interface. Issue-52: [secrets sealed under data keys](#secrets-under-data-keys), which moves the secrets of Milestone 2 under managed keys.
 
 ## Key sets and key versions
 
@@ -71,6 +71,7 @@ Rules:
 |---|---|
 | Make a version | Asks the provider for a new key of an algorithm, and stores it as a pending version |
 | Activate | Makes a pending version the active one of its algorithm; the one it replaces starts retiring |
+| Activate as the first | Activates a pending version only if its algorithm has no active version, and is refused otherwise; how the first data key is made |
 | Retire | Retires a retiring version whose time has passed |
 | Revoke | Revokes a version, with a reason |
 | Read a key set | Returns the versions of one use, newest first |
@@ -129,7 +130,7 @@ Each change is its own transaction with its own event, as with every other use o
 
 The decision is made in the domain, by `KeySet::rotation_plan`, from the key set and the time alone; the step only carries it out.
 
-**Rotation never touches the data key set.** It makes, activates and retires signing versions only. A data version must not be retired while secrets sealed with it remain, and only the context that seals them knows when none do; Issue-52, which seals secrets under the tenant's data keys, decides when a data version may be replaced and retired. Until then a data version is retired by nothing.
+**Rotation never touches the data key set.** It makes, activates and retires signing versions only. A data version must not be retired while secrets sealed with it remain, and only the context that seals them knows when none do; [Secrets under data keys](#secrets-under-data-keys) says how a data version is made; replacing and retiring one is not built yet, so a data version is retired by nothing.
 
 ### Two workers, one rotation
 
@@ -187,6 +188,21 @@ The provider is told the tenant, the version's identifier and the algorithm ever
 
 What the root key protects against is what it protects for secrets at rest: a copy of the database alone yields no private key. Someone holding both the database and the server's configuration holds the keys. Keeping the root key elsewhere is what the providers of key management services in Phase 9 are for.
 
+## Secrets under data keys
+
+The kernel's `SecretBox` port, which every context that keeps a secret uses, is implemented here by `TenantSecretBox`: each secret is sealed under the tenant's active data key, and names the version that sealed it. [Secrets at rest](../../security/secrets-at-rest.md) gives the format, the commands and what the root keys protect against; this section gives the rules this context holds.
+
+- **The first data key is made on demand.** When a tenant seals a secret and has no active `A256GCM` version, a version is made and activated, with no overlap: there is nothing it replaces. The caller is the system. It is activated only as the first: an activation that finds an active version already is refused (`keys.already_active`) rather than replacing it, and two activations at the same moment are told apart by the unique index (`keys.activation_conflict`). Either way the sealing that lost revokes its own version, with the reason `lost the race to become the first data key`, and uses the one that won, so a tenant never ends with a second data version made by a race.
+- **Only an active or retiring version opens.** A retiring data key opens what it sealed until everything is sealed again under the active one; then it may retire. A retired or revoked data key opens nothing, so retiring a data key that still seals something makes those secrets unreadable. Nothing in this issue retires a data key.
+- **The first format.** Secrets sealed directly by the root keys, as 0.1.0 did, still open through the root keys until the tenant **refuses the first format**, which `hodor-cli secrets reseal` records once the tenant has none left. Refusing is final.
+
+### Ports added
+
+| Port | Purpose |
+|---|---|
+| `SealingStateStore` | Whether the tenant refuses the first format, and recording that it does |
+| `FirstFormatSecrets` | Opens a secret of the first format, and says whether bytes are one. Implemented by `SecretKeys` in `hodor-adapters-crypto` over the root keys |
+
 ## Storage
 
 ### `keys.key_version`
@@ -212,11 +228,20 @@ A tenant table under row-level security. The database holds the rules too:
 
 When an activation replaces a version, the replaced version is written first and the activated one after, so that the unique index holds after every statement.
 
+### `keys.sealing_state`
+
+| Column | Type | Notes |
+|---|---|---|
+| `tenant_id` | `uuid` | Primary key |
+| `first_format_refused_at` | `timestamptz` | When the tenant started refusing secrets of the first format |
+
+A tenant table under row-level security, with at most one row per tenant: no row means the first format still opens. The application role may insert the row and read it, never change or delete it, so refusing cannot be undone through the application.
+
 ## Not built yet
 
 | Item | Planned in |
 |---|---|
-| Secrets at rest under a data key of the tenant, and rotating the data key set | Issue-52 |
+| Rotating the data key set: a new data version, every secret sealed again under it, and the old version retired once nothing is sealed with it | Not scheduled. Sealing again exists (`hodor-cli secrets reseal`); a data version is retired by nothing yet |
 | Signing tokens with these keys | Issue-56 |
 | Naming the published key set in Discovery | Issue-59 |
 | Algorithms for the encryption key set | When Hodor accepts encrypted requests or encrypts tokens |
