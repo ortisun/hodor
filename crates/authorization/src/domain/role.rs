@@ -114,12 +114,16 @@ impl Role {
 }
 
 /// Whether something may be done.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Effect {
     /// It may.
     Allow,
     /// It may not. This is the answer unless something allows.
     Deny,
+    /// It could not be decided: the engine failed, timed out, was not
+    /// available or said so. Whoever enforces the answer treats it as deny.
+    Indeterminate,
 }
 
 /// The answer to a check, with a reason that is safe to show.
