@@ -239,8 +239,9 @@ The identity provider makes the person's browser post the response to the assert
 
 1. The assertion consumer address accepts `SAMLResponse` and `RelayState`, form-encoded, a body of at most 768 kibibytes holding a response of at most 384. It is the one route of the interaction interface that accepts a request started by another site.
 2. It makes a **receipt**: a new random value of 256 bits.
-3. It finds the pending authorization of that provider whose state hashes to the `RelayState`, and **checks the response there and then**, against the request that pending authorization holds, as [below](#checking-the-response). It keeps only the **answer**, with the hash of the receipt: who the person is, by subject, address and name, or the reason the response was refused. The response itself is never stored. A second response for the same pending authorization is not checked and changes nothing: the first one wins. A response that is not base64, or that arrives for no pending authorization, is not checked at all.
-4. Whatever it found, it answers `303 See Other` to `/t/{slug}/account/providers/{alias}/callback?binding=saml&state={RelayState}&receipt={receipt}`. It says nothing else: an unknown state and a known one look the same. A relay state that is not a plain token of at most 80 characters is not written into the address, and nothing is kept for it.
+3. It **claims** the pending authorization of that provider whose state hashes to the `RelayState`, if it has not expired and nobody claimed it before: in one step, it writes the hash of the receipt there and reads the request back. Of several responses posted at once for one pending authorization, one claims it; the others find nothing to claim, are not checked and change nothing. A response that is not base64, or that arrives for no pending authorization, is not checked at all.
+4. The response that claimed it is **checked there and then**, against the request that pending authorization holds, as [below](#checking-the-response). Only the **answer** is kept: who the person is, by subject, address and name, or the reason the response was refused. The response itself is never stored.
+5. Whatever it found, it answers `303 See Other` to `/t/{slug}/account/providers/{alias}/callback?binding=saml&state={RelayState}&receipt={receipt}`. It says nothing else: an unknown state and a known one look the same. A relay state that is not a plain token of at most 80 characters is not written into the address, and nothing is kept for it.
 
 The page at that address finishes as it does for OpenID Connect, from Hodor's own origin with the cookie, presenting the state and the receipt: the pending authorization is taken once, and only then is its answer used, to sign the person in or to record why not. Checking on arrival lets nobody in by itself: only the browser that finishes does, and two things must hold, each of which stops one attack:
 
@@ -287,7 +288,7 @@ Everything Hodor uses afterwards is read from the assertion found in step 5, whi
 
 From there everything is [as for any provider](#who-the-person-is).
 
-A request is answered once: the pending authorization that holds its identifier is taken before the response is read. The same response presented again, in the same browser or another, finds no request to answer (Threat-SAML-03).
+A request is answered once. A pending authorization is claimed by one response only, and is taken once when the sign-in is finished; a response that answers another sign-in's request is refused against this one's (`request`). The same response presented again, in the same browser or another, finds no request to answer (Threat-SAML-03).
 
 ## Recipes
 
@@ -473,7 +474,7 @@ All tables are under [forced row-level security](../multi-tenancy.md#isolation-b
 | `expires_at` | `timestamptz` | |
 | `saml_subject`, `saml_email`, `saml_name` | `text` | The answer of a SAML response that passed every check: who the person is. Set once |
 | `saml_refusal` | `text` | Or the reason the response was refused, such as `signature`. Set once, in place of the three above |
-| `saml_receipt_hash` | `bytea` | SHA-256 of the receipt given to the browser that posted the response. Set with the answer |
+| `saml_receipt_hash` | `bytea` | SHA-256 of the receipt given to the browser that posted the response. Set when that response claims the pending authorization; the answer follows once it is checked |
 
 ## Not built yet
 
@@ -493,5 +494,6 @@ All tables are under [forced row-level security](../multi-tenancy.md#isolation-b
 | Mapping what a provider says about a person to the user's profile, groups or roles | Issue-40 for the profile; groups and roles are not in Milestone 2 |
 | Linking and unlinking by the person themself, routing by email domain | The account console |
 | Letting a person who already has an account connect an external identity to it, with proof of both | The account console |
+| Starting a sign-in is not limited. Each sign-in started can make Hodor check one SAML response, about two milliseconds for the largest | Limits on starting sign-ins, with the other limits per address of the interaction interface |
 | Bringing the name and the language up to date on later sign-ins | With claim mapping |
 | Protection against a local account made in advance with someone else's address (Threat-Federation-02). Such an account keeps the person's external identity out; it is not taken over | With linking, in the account console |
