@@ -184,6 +184,7 @@ nav:
       - product/roadmap.md
       - product/epics.md
       - product/progress.md
+      - product/releases.md
       - product/competitive-analysis.md
       - Design:
           - design/design-system.md
