@@ -100,6 +100,16 @@ impl InMemoryGrants {
     fn exists(&self, tenant: TenantId, id: GrantId) -> bool {
         lock(&self.rows).contains_key(&(tenant, id))
     }
+
+    /// Every grant of `tenant`, for tests that look behind the use cases.
+    #[must_use]
+    pub fn all(&self, tenant: TenantId) -> Vec<Grant> {
+        lock(&self.rows)
+            .iter()
+            .filter(|((owner, _), _)| *owner == tenant)
+            .map(|(_, grant)| grant.clone())
+            .collect()
+    }
 }
 
 #[async_trait::async_trait]

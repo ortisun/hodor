@@ -48,6 +48,7 @@ Tables created, by file:
 | `0029_oauth_authorization.sql` | `oauth.authorization_request`; `oauth.authorization_grant`; `oauth.authorization_code` (a code lives at most 60 seconds; an S256 challenge is 43 base64url characters) |
 | `0030_authorization_engine_binding.sql` | `"authorization".engine_binding`: which engine answers for a resource server, never `hodor:admin` |
 | `0032_keys_sealing_state.sql` | `keys.sealing_state`: whether a tenant refuses secrets of the first format; `hodor_app` may insert and read, never update or delete |
+| `0035_oauth_client_assertion.sql` | `oauth.client_assertion`: the `jti` of every client assertion until it expires, once per client (`client_assertion_jti_shape`) |
 
 No migration creates a type, an extension or seed rows; enumerations are text
 columns with `CHECK ... IN (...)` constraints.

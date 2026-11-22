@@ -3,7 +3,8 @@
 ## Overview
 
 The use cases of applications, clients and resource servers, those of the
-authorization endpoint, and the storage ports they need. Every use case runs in a unit of work bound to one
+authorization endpoint and of the token endpoint, and the storage ports
+they need. Every use case runs in a unit of work bound to one
 tenant and records its events in it.
 
 ## Interface
@@ -18,6 +19,7 @@ tenant and records its events in it.
 | `AuthorizationRequestStore` | `insert` (`oauth.client_not_found`), `get`, `remove` (answers whether this call removed it) |
 | `GrantStore` | `insert` (`oauth.client_not_found`), `get`, `update` (status and revocation; `oauth.grant_not_found`) |
 | `AuthorizationCodeStore` | `insert` (`oauth.grant_not_found`), `find` (by hash), `redeem` (only if not redeemed; answers whether this call redeemed it) |
+| `ClientAssertionStore` | `remember(client, jti, expires_at)` (`oauth.client_not_found`; answers whether this call was the first) |
 
 ### Service (`service.rs`)
 
@@ -60,6 +62,30 @@ random, clock })`:
   found as redeemed or lost in the conditional `redeem`, revokes the grant
   (`oauth.grant_revoked`, reason `code_reused`) and commits that.
 
+### Token endpoint (`token.rs`)
+
+`TokenService::new(TokenPorts { units_of_work, applications, clients,
+grants, assertions, codes, keys, verifier, digest, random, clock })`, with
+`codes` the `AuthorizationCodeService` and `keys` the `KeyService`:
+
+- `token(tenant, Issuer { issuer, token_endpoint }, request,
+  correlation_id)`: the outer `Result` is storage or signing; the inner one
+  a `TokenError` to answer with.
+  - Authentication: the client named by `client_id`, the `Basic`
+    credentials or, without either, the assertion's `iss`; it and its
+    application must be enabled; the request's method must be the one it
+    was registered with; then the secret (`Client::accepts_secret`), or the
+    assertion (`check_assertion`) whose `jti` is remembered and committed at
+    once. Every failure is `invalid_client`.
+  - `authorization_code`: `unauthorized_client` without that grant;
+    `AuthorizationCodeService::redeem_code` (any `oauth.code_refused` is
+    `invalid_grant`); the grant must still be `active`.
+  - The access token: claims from `access_token_claims`, signed with
+    `KeyAlgorithm::DEFAULT_SIGNING` through `KeyService::sign_naming_key`
+    so that the header's `kid` is the version that signs;
+    `keys.no_active_version` is `server_error`. Records
+    `oauth.access_token_issued` with the user as the actor.
+
 ## Invariants
 
 - A change that changes nothing stores nothing and announces nothing.
@@ -68,5 +94,6 @@ random, clock })`:
 
 ## Verification
 
-- Run: `cargo test -p hodor-oauth --test service` and
-  `cargo test -p hodor-oauth --test authorization`
+- Run: `cargo test -p hodor-oauth --test service`,
+  `cargo test -p hodor-oauth --test authorization` and
+  `cargo test -p hodor-oauth --test token`

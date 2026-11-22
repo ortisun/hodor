@@ -187,17 +187,25 @@ impl KeyProvider for LocalKeyProvider {
                 Ok(signature.as_ref().to_vec())
             }
             algorithm @ (KeyAlgorithm::Rs256 | KeyAlgorithm::Ps256) => {
-                let pair = RsaKeyPair::from_pkcs8(key.expose())
-                    .map_err(|_| unusable("the key is not an RSA key"))?;
-                let padding: &'static dyn RsaEncoding = if algorithm == KeyAlgorithm::Rs256 {
-                    &RSA_PKCS1_SHA256
-                } else {
-                    &RSA_PSS_SHA256
-                };
-                let mut signature = vec![0; pair.public_modulus_len()];
-                pair.sign(padding, &random, message, &mut signature)
-                    .map_err(|_| unusable("the signature could not be made"))?;
-                Ok(signature)
+                // An RSA signature takes about a millisecond, a thousand
+                // times an ECDSA one: off the threads that answer requests,
+                // as the password hasher does.
+                let message = message.to_vec();
+                tokio::task::spawn_blocking(move || {
+                    let pair = RsaKeyPair::from_pkcs8(key.expose())
+                        .map_err(|_| unusable("the key is not an RSA key"))?;
+                    let padding: &'static dyn RsaEncoding = if algorithm == KeyAlgorithm::Rs256 {
+                        &RSA_PKCS1_SHA256
+                    } else {
+                        &RSA_PSS_SHA256
+                    };
+                    let mut signature = vec![0; pair.public_modulus_len()];
+                    pair.sign(padding, &random, &message, &mut signature)
+                        .map_err(|_| unusable("the signature could not be made"))?;
+                    Ok(signature)
+                })
+                .await
+                .map_err(|_| unusable("the signature could not be made"))?
             }
             KeyAlgorithm::A256Gcm => Err(unusable("a data key does not sign")),
         }

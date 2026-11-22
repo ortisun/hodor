@@ -13,11 +13,11 @@ use hodor_adapters_http::{GuardedHttpClient, OutboundPolicy, ServiceHttpClient};
 use hodor_adapters_ldap::LdapDirectoryClient;
 use hodor_adapters_postgres::{
     Database, PgAccessTokenStore, PgApplicationStore, PgAttemptStore, PgAuditLog,
-    PgAuthorizationCodeStore, PgAuthorizationRequestStore, PgClientStore, PgGrantStore, PgKeyStore,
-    PgLinkStore, PgMessageQueue, PgPasswordStore, PgPendingAuthorizationStore, PgProviderStore,
-    PgResourceServerStore, PgRoleAssignmentStore, PgSealingStateStore, PgSessionStore,
-    PgTenantDirectory, PgTenantRepository, PgTotpStore, PgTransactionStore, PgUserRepository,
-    PgVerificationTokenStore, PgWebAuthnStore,
+    PgAuthorizationCodeStore, PgAuthorizationRequestStore, PgClientAssertionStore, PgClientStore,
+    PgGrantStore, PgKeyStore, PgLinkStore, PgMessageQueue, PgPasswordStore,
+    PgPendingAuthorizationStore, PgProviderStore, PgResourceServerStore, PgRoleAssignmentStore,
+    PgSealingStateStore, PgSessionStore, PgTenantDirectory, PgTenantRepository, PgTotpStore,
+    PgTransactionStore, PgUserRepository, PgVerificationTokenStore, PgWebAuthnStore,
 };
 use hodor_audit::api::AuditService;
 use hodor_authentication::api::{
@@ -40,13 +40,14 @@ use hodor_keys::api::{KeyService, RotationPolicy, TenantSecretBox};
 use hodor_notification::api::Notifier;
 use hodor_oauth::api::{
     ApplicationPorts, ApplicationService, AuthorizationCodePorts, AuthorizationCodeService,
+    TokenPorts, TokenService,
 };
 use hodor_observability::{LogFormat, Telemetry};
 use hodor_protocol_http::{
     AdminState, AuthorizationState, ConsoleState, Health, InteractionState, Limits, Pages,
-    ReadinessCheck, ResolvedTenant, TenantResolver, TenantStatus as HttpTenantStatus, admin_routes,
-    authorization_routes, console_routes, interaction_routes, key_set_routes, ops_router,
-    public_router, serve,
+    ReadinessCheck, ResolvedTenant, TenantResolver, TenantStatus as HttpTenantStatus, TokenState,
+    admin_routes, authorization_routes, console_routes, interaction_routes, key_set_routes,
+    ops_router, public_router, serve, token_routes,
 };
 use hodor_session::api::SessionService;
 use hodor_tenant::api::{TenantDirectory as _, TenantService, TenantStatus};
@@ -271,15 +272,23 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
     // The Authorization API (Issue-75) evaluates through these engines.
     let _engines = authorization_engines(&config)?;
 
+    let keys = keys(&config, &database)?;
+    let authorization = authorization(&config, &database);
+    let mut oauth2 = authorization_routes(authorization.clone());
+    if let Some(keys) = &keys {
+        oauth2 = oauth2.merge(token_routes(token(
+            &config,
+            &database,
+            keys.clone(),
+            authorization.authorization,
+        )));
+    }
     let mut tenant_routes = axum::Router::new()
         .nest(
             "/interaction",
             interaction_routes(interaction(&config, &database)?),
         )
-        .nest(
-            "/oauth2",
-            authorization_routes(authorization(&config, &database)),
-        )
+        .nest("/oauth2", oauth2)
         .nest(
             "/api/v1/admin",
             admin_routes(administration(&config, &database)?),
@@ -292,10 +301,11 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
                 clock: Arc::new(SystemClock),
             }),
         );
-    match keys(&config, &database)? {
+    match keys {
         Some(keys) => tenant_routes = tenant_routes.merge(key_set_routes(keys)),
         None => tracing::warn!(
-            "HODOR_SECRET_KEYS is not set: no key set is published and keys cannot be managed"
+            "HODOR_SECRET_KEYS is not set: no key set is published, keys cannot be managed and \
+             no token is issued"
         ),
     }
     let mut site_routes = axum::Router::new();
@@ -512,6 +522,32 @@ fn authorization(config: &Config, database: &Database) -> AuthorizationState {
             clock: clock.clone(),
         }),
         sessions: SessionService::new(units, Arc::new(PgSessionStore), digest, random, clock),
+        public_url: config.public_url.clone(),
+    }
+}
+
+/// Builds everything the token endpoint needs. Tokens are signed with the
+/// tenants' keys, so there is no token endpoint without them.
+fn token(
+    config: &Config,
+    database: &Database,
+    keys: KeyService,
+    codes: AuthorizationCodeService,
+) -> TokenState {
+    TokenState {
+        tokens: TokenService::new(TokenPorts {
+            units_of_work: Arc::new(database.clone()),
+            applications: Arc::new(PgApplicationStore),
+            clients: Arc::new(PgClientStore),
+            grants: Arc::new(PgGrantStore),
+            assertions: Arc::new(PgClientAssertionStore),
+            codes,
+            keys,
+            verifier: Arc::new(AwsLcVerifier),
+            digest: Arc::new(Sha256Digest),
+            random: Arc::new(OsRandom),
+            clock: Arc::new(SystemClock),
+        }),
         public_url: config.public_url.clone(),
     }
 }

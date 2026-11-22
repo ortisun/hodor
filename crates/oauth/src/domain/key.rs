@@ -3,7 +3,7 @@
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use hodor_kernel::{DomainError, Timestamp};
+use hodor_kernel::{DomainError, PublicKey, SignatureAlgorithm, Timestamp};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 
@@ -159,6 +159,48 @@ impl ClientKey {
     }
 }
 
+impl ClientKey {
+    /// The key, as the kernel's signature checking reads it, when it can
+    /// have made a signature of `algorithm`: of the kind the algorithm
+    /// needs, and of the key's own `alg` when it has one. Keys on P-384 and
+    /// Ed25519 are kept but fit no algorithm Hodor checks yet.
+    #[must_use]
+    pub fn verifying_key(&self, algorithm: SignatureAlgorithm) -> Option<PublicKey> {
+        let key: Map<String, Value> = serde_json::from_str(&self.jwk).ok()?;
+        let member = |name: &str| {
+            key.get(name)
+                .and_then(Value::as_str)
+                .and_then(|value| URL_SAFE_NO_PAD.decode(value).ok())
+        };
+        let named = match algorithm {
+            SignatureAlgorithm::Es256 => "ES256",
+            SignatureAlgorithm::Rs256 => "RS256",
+            SignatureAlgorithm::Ps256 => "PS256",
+        };
+        if key
+            .get("alg")
+            .is_some_and(|given| given.as_str() != Some(named))
+        {
+            return None;
+        }
+        let public = match (
+            key.get("kty").and_then(Value::as_str),
+            key.get("crv").and_then(Value::as_str),
+        ) {
+            (Some("EC"), Some("P-256")) => PublicKey::P256 {
+                x: member("x")?,
+                y: member("y")?,
+            },
+            (Some("RSA"), _) => PublicKey::Rsa {
+                modulus: member("n")?,
+                exponent: member("e")?,
+            },
+            _ => return None,
+        };
+        algorithm.fits(&public).then_some(public)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -247,6 +289,35 @@ mod tests {
         }
         assert!(ClientKey::parse("not json", NOW).is_err());
         assert!(ClientKey::parse(&" ".repeat(MAX_KEY_BYTES + 1), NOW).is_err());
+    }
+
+    #[test]
+    fn a_key_verifies_only_the_algorithms_it_fits() {
+        let p256 = parse(&p256()).expect("accepted");
+        assert!(matches!(
+            p256.verifying_key(SignatureAlgorithm::Es256),
+            Some(PublicKey::P256 { .. })
+        ));
+        assert!(p256.verifying_key(SignatureAlgorithm::Rs256).is_none());
+        let rsa_key = parse(&rsa(2048)).expect("accepted");
+        assert!(rsa_key.verifying_key(SignatureAlgorithm::Rs256).is_some());
+        assert!(rsa_key.verifying_key(SignatureAlgorithm::Ps256).is_some());
+        assert!(rsa_key.verifying_key(SignatureAlgorithm::Es256).is_none());
+        let mut only_pss = rsa(2048);
+        only_pss["alg"] = json!("PS256");
+        let only_pss = parse(&only_pss).expect("accepted");
+        assert!(only_pss.verifying_key(SignatureAlgorithm::Rs256).is_none());
+        assert!(only_pss.verifying_key(SignatureAlgorithm::Ps256).is_some());
+        let ed25519 =
+            parse(&json!({"kty": "OKP", "crv": "Ed25519", "kid": "ed", "x": encoded(&[3; 32])}))
+                .expect("accepted");
+        for algorithm in [
+            SignatureAlgorithm::Es256,
+            SignatureAlgorithm::Rs256,
+            SignatureAlgorithm::Ps256,
+        ] {
+            assert!(ed25519.verifying_key(algorithm).is_none());
+        }
     }
 
     #[test]

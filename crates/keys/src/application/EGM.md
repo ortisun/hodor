@@ -60,6 +60,7 @@ recognizes the secrets 0.1.0 sealed directly with a root key.
 | `revoke(tenant, id, reason, caller) -> KeyVersion` | Revokes; again changes nothing and records nothing. |
 | `key_set(tenant, KeyUse) -> KeySet` | The versions of one use. |
 | `sign(tenant, algorithm, message) -> Signature` | Signs with the active version of a signing algorithm. |
+| `sign_naming_key(tenant, algorithm, message: FnOnce(KeyVersionId) -> Vec<u8>) -> (Vec<u8>, Signature)` | Signs a message that names the key signing it, such as a JSON Web Token whose header carries the `kid`: `message` is given the active version, and the same version signs what it returns. `sign` is this with a message that ignores the version. |
 | `rotate_due(tenant, &RotationPolicy, caller) -> RotationReport` | Carries out `KeySet::rotation_plan` for the signing key set, one transaction per change. |
 | `rotate_now(tenant, algorithm, &RotationPolicy, caller) -> KeyVersion` | Activates the oldest pending version of a signing algorithm, or a new one, at once, with the policy's overlap. |
 | `published_keys(tenant) -> Vec<KeyVersion>` | The signing versions of the published key set. |

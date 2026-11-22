@@ -8,3 +8,4 @@ pub(crate) mod key;
 pub(crate) mod resource_server;
 pub(crate) mod secret;
 pub(crate) mod text;
+pub(crate) mod token;

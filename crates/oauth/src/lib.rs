@@ -3,8 +3,8 @@
 //! Makes Hodor an OAuth 2.x authorization server and an OpenID Provider.
 //! It holds the applications a tenant registers, the clients that ask for
 //! tokens on their behalf, the resource servers those tokens are for, and
-//! the authorization endpoint's requests, grants and codes. It does not
-//! sign anyone in.
+//! the authorization endpoint's requests, grants and codes, and the token
+//! endpoint with the access tokens it issues. It does not sign anyone in.
 //!
 //! The specification is `docs/architecture/contexts/oauth.md`; this crate
 //! follows it.
@@ -20,12 +20,13 @@ pub mod api {
         AuthorizationCodePorts, AuthorizationCodeService, RedeemedCode, ResumedRequest,
     };
     pub use crate::application::ports::{
-        ApplicationStore, AuthorizationCodeStore, AuthorizationRequestStore, ClientStore,
-        GrantStore, ResourceServerStore,
+        ApplicationStore, AuthorizationCodeStore, AuthorizationRequestStore, ClientAssertionStore,
+        ClientStore, GrantStore, ResourceServerStore,
     };
     pub use crate::application::service::{
         ApplicationPorts, ApplicationService, CreateClient, CreateResourceServer, RotateSecret,
     };
+    pub use crate::application::token::{IssuedTokens, Issuer, TokenPorts, TokenService};
     pub use crate::domain::application::{
         Application, ApplicationId, ApplicationSettings, ApplicationSnapshot, MAX_APPLICATIONS,
         Status,
@@ -51,4 +52,10 @@ pub mod api {
         ClientSecret, ClientSecretHash, ClientSecretId, ClientSecretValue,
     };
     pub use crate::domain::text::{MAX_SCOPE_LENGTH, is_scope};
+    pub use crate::domain::token::{
+        ASSERTION_LONGEST_AHEAD, ASSERTION_TYPE, AccessTokenClaims, AssertionAudience,
+        BasicCredentials, CLOCK_ALLOWANCE, CheckedAssertion, GrantRequest, MAX_ASSERTION_BYTES,
+        MAX_ASSERTION_ID_LENGTH, PresentedClient, TokenError, TokenRequest, access_token_claims,
+        assertion_issuer, check_assertion,
+    };
 }
