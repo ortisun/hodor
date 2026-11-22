@@ -48,7 +48,6 @@ Start with the [critical review](architecture/critical-review.md): it lists wher
 | 27 | Decision records | [decisions/](decisions/README.md) |
 | 28 | Product Roadmap | [product/roadmap.md](product/roadmap.md) |
 | 29 | Epics and Development Issues | [product/epics.md](product/epics.md) |
-| — | Releases: what each released version contains and what its number means | [product/releases.md](product/releases.md) |
 | — | Design system: Astryx, the Hodor theme and the security interaction patterns | [design/design-system.md](design/design-system.md) |
 | — | The control plane: admin console information architecture and self-protection | [design/control-plane.md](design/control-plane.md) |
 | — | The admin console: what is built of the control plane, and how | [architecture/admin-console.md](architecture/admin-console.md) |

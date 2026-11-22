@@ -1,6 +1,6 @@
 # Progress
 
-What has been built, issue by issue. This page is updated with every merge into `develop`; the plan it tracks is in [epics.md](epics.md). What each released version holds is in [releases](releases.md).
+What has been built, issue by issue. This page is updated with every merge into `develop`; the plan it tracks is in [epics.md](epics.md). What each released version holds is in the [changelog](https://github.com/ortisun/hodor/blob/main/CHANGELOG.md).
 
 Last updated: 2026-11-22.
 
