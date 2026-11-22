@@ -9,9 +9,8 @@ It implements these ports:
 - Kernel ports (see [the kernel contract](../kernel/EGM.md)):
   - `impl Digest for Sha256Digest` (`src/digest.rs:10`)
   - `impl RandomSource for OsRandom` (`src/random.rs:10`)
-  - `impl SecretBox for SecretKeys` (`src/sealing.rs:157`)
   - `impl SignatureVerifier for AwsLcVerifier` (`src/signature.rs:14`)
-- Keys context port: `impl KeyProvider for LocalKeyProvider` (`src/keys.rs`), the trait `hodor_keys::api::KeyProvider` from `crates/keys`.
+- Keys context ports: `impl KeyProvider for LocalKeyProvider` (`src/keys.rs`) and `impl FirstFormatSecrets for SecretKeys` (`src/sealing.rs:253`), the traits `hodor_keys::api::KeyProvider` and `hodor_keys::api::FirstFormatSecrets` from `crates/keys`. Secrets at rest are sealed by `hodor_keys::api::TenantSecretBox`, not by this crate.
 - Credential context ports: `impl PasswordHasher for Argon2idHasher` (`src/password.rs:228`) and `impl HmacSha1 for AwsLcHmacSha1` (`src/hmac.rs`), the traits `hodor_credential::api::PasswordHasher` and `hodor_credential::api::HmacSha1` from `crates/credential`.
 - Test support only: `impl HttpClient for TestProvider` (`src/testing.rs:241`).
 

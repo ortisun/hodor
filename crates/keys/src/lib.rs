@@ -15,7 +15,10 @@ pub mod testing;
 
 /// What other crates may use from this context.
 pub mod api {
-    pub use crate::application::ports::{KeyProvider, KeyStore};
+    pub use crate::application::ports::{
+        FirstFormatSecrets, KeyProvider, KeyStore, SealingStateStore,
+    };
+    pub use crate::application::secret_box::{FORMAT as SEALED_FORMAT, LOST_RACE, TenantSecretBox};
     pub use crate::application::service::{KeyService, RotationReport, Signature};
     pub use crate::domain::event::KeyEvent;
     pub use crate::domain::key::{

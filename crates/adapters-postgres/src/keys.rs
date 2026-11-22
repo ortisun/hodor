@@ -6,7 +6,7 @@ use crate::uow::{connection, database_error};
 use hodor_kernel::{DomainError, PublicKey, Timestamp, UnitOfWork};
 use hodor_keys::api::{
     KeyAlgorithm, KeyMaterial, KeyState, KeyStore, KeyUse, KeyVersion, KeyVersionId,
-    KeyVersionSnapshot,
+    KeyVersionSnapshot, SealingStateStore,
 };
 use sqlx::types::Uuid;
 
@@ -228,6 +228,43 @@ impl KeyStore for PgKeyStore {
                 "the key version does not exist",
             ));
         }
+        Ok(())
+    }
+}
+
+/// [`SealingStateStore`] on `keys.sealing_state`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PgSealingStateStore;
+
+#[async_trait::async_trait]
+impl SealingStateStore for PgSealingStateStore {
+    async fn first_format_refused(&self, uow: &mut dyn UnitOfWork) -> Result<bool, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let row: Option<(Uuid,)> =
+            sqlx::query_as("SELECT tenant_id FROM keys.sealing_state WHERE tenant_id = $1")
+                .bind(tenant.as_uuid())
+                .fetch_optional(connection(uow)?)
+                .await
+                .map_err(|e| database_error(&e))?;
+        Ok(row.is_some())
+    }
+
+    async fn refuse_first_format(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        at: Timestamp,
+    ) -> Result<(), DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        sqlx::query(
+            "INSERT INTO keys.sealing_state (tenant_id, first_format_refused_at)
+             VALUES ($1, $2)
+             ON CONFLICT (tenant_id) DO NOTHING",
+        )
+        .bind(tenant.as_uuid())
+        .bind(at)
+        .execute(connection(uow)?)
+        .await
+        .map_err(|e| database_error(&e))?;
         Ok(())
     }
 }

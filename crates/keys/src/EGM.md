@@ -12,8 +12,9 @@ surface through `pub mod api`.
 ## Interface
 
 - `api` re-exports:
-  - Ports: `KeyStore`, `KeyProvider`.
+  - Ports: `KeyStore`, `KeyProvider`, `SealingStateStore`, `FirstFormatSecrets`.
   - Service: `KeyService`, `RotationReport`, `Signature`.
+  - Secrets at rest: `TenantSecretBox`, `SEALED_FORMAT` (2), `LOST_RACE`.
   - Event: `KeyEvent`.
   - Domain: `GeneratedKey`, `KeyAlgorithm`, `KeyMaterial`, `KeyState`,
     `KeyUse`, `KeyVersion`, `KeyVersionId`, `KeyVersionSnapshot`,
@@ -24,6 +25,8 @@ surface through `pub mod api`.
   - `InMemoryKeys`: a `KeyStore` kept in a shared
     `Arc<Mutex<BTreeMap<(TenantId, KeyVersionId), KeyVersion>>>`; its
     `update` changes only the lifecycle fields.
+  - `InMemorySealingStates`: a `SealingStateStore` in memory.
+  - `FakeFirstFormat`: a `FirstFormatSecrets` for tests.
   - `FakeKeyProvider`: a `KeyProvider` named `fake` whose material names the
     tenant, version and algorithm and whose "signature" is that label
     followed by the message. Not cryptography; tests only.

@@ -331,7 +331,6 @@ The design's data model has a general `credential` table with one row per creden
 | A secret key mixed into every hash, kept outside the database | With the keys context, Phase 2 |
 | Recovery codes | Issue-66 |
 | Enrolling and removing an authenticator application from the account pages, after proving oneself again | Issue-70 |
-| Moving the sealed secrets of authenticator applications under the keys of the key domain | Issue-52 |
 | HOTP, the counter-based codes of RFC 4226, and codes sent by email or text message | Phase 4, outside the plan of 0.2.0 |
 | Signing in with a WebAuthn credential alone, without an identifier first: passkeys | Issue-68 |
 | Listing, renaming and removing WebAuthn credentials, and proving oneself again before registering one | Issue-70 |

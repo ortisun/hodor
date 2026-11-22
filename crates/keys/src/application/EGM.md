@@ -2,10 +2,10 @@
 
 ## Overview
 
-The use cases of the keys context and the two ports they need.
+The use cases of the keys context and the ports they need.
 `KeyService` makes, activates, retires and revokes key versions, reads key
-sets and signs; every use case runs inside a unit of work bound to one
-tenant. Both modules are `pub(crate)` in `mod.rs` and reach other crates
+sets and signs; `TenantSecretBox` seals secrets at rest under the tenant's
+data key. Every use case runs inside a unit of work bound to one tenant. Both modules are `pub(crate)` in `mod.rs` and reach other crates
 only through `crate::api`.
 
 ## Interface
@@ -37,6 +37,15 @@ only through `crate::api`.
 A provider must refuse material made for another tenant, version or
 algorithm.
 
+`SealingStateStore` (`#[async_trait]`), implemented by `PgSealingStateStore`
+(`crates/adapters-postgres/src/keys.rs`) and `InMemorySealingStates`:
+`first_format_refused(uow) -> bool` and `refuse_first_format(uow, at)`,
+final.
+
+`FirstFormatSecrets` (`Send + Sync`), implemented by `SecretKeys`
+(`crates/adapters-crypto/src/sealing.rs`) and `FakeFirstFormat`: opens and
+recognizes the secrets 0.1.0 sealed directly with a root key.
+
 ### Service (`service.rs`)
 
 - `KeyService::new(units_of_work, keys: Arc<dyn KeyStore>, provider: Arc<dyn KeyProvider>, clock)`.
@@ -46,6 +55,7 @@ algorithm.
 | --- | --- |
 | `create_version(tenant, algorithm, caller) -> KeyVersion` | Asks the provider for a key; stores it pending. |
 | `activate(tenant, id, overlap: Duration, caller) -> KeyVersion` | Pending to active; the replaced version retires after `now + overlap`. |
+| `activate_first(tenant, id, caller) -> KeyVersion` | Pending to active only if the algorithm has no active version; `Conflict` `keys.already_active` otherwise. |
 | `retire(tenant, id, caller) -> KeyVersion` | Retiring to retired, once its time has passed. |
 | `revoke(tenant, id, reason, caller) -> KeyVersion` | Revokes; again changes nothing and records nothing. |
 | `key_set(tenant, KeyUse) -> KeySet` | The versions of one use. |
@@ -56,6 +66,15 @@ algorithm.
 
 `RotationReport { created, activated, retired }` with `changed()` and
 `add(other)`.
+
+### Secrets at rest (`secret_box.rs`)
+
+- `TenantSecretBox::new(units_of_work, keys, provider, states: Arc<dyn SealingStateStore>, first_format: Option<Arc<dyn FirstFormatSecrets>>, clock)` implements `hodor_kernel::SecretBox`.
+- `seal` uses the tenant's active `A256GCM` data version, made with `create_version` and `activate_first` when there is none; the version that loses a race is revoked with `LOST_RACE`.
+- Sealed bytes: `FORMAT` (2), the 16 bytes of the version identifier, then what the provider's `encrypt` returned; the associated data names `hodor-secret-v2`, the tenant, the purpose and the version.
+- `open` opens only with an active or retiring version; the first format opens through `first_format` until the tenant refuses it. Every failure is `secret.unreadable`.
+- `needs_resealing` is true for the first format and for a version that is not the active one; it does not open the secret.
+- `first_format_refused(tenant)` and `refuse_first_format(tenant)`.
 
 ## Invariants
 

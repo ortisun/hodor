@@ -10,7 +10,7 @@ schema owner (`Command::Migrate` in `src/main.rs`).
 ## Subdirectories & Boundaries
 
 - src: [./src/EGM.md](./src/EGM.md) - the commands `migrate`, `tenant`,
-  `admin bootstrap`, `audit verify`, `provider`, `secrets generate-key` and
+  `admin bootstrap`, `audit verify`, `provider`, `secrets generate-key`, `secrets reseal` and
   `probe`, and the services each one calls.
 
 ## Dependencies

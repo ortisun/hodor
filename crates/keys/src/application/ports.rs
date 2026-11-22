@@ -1,7 +1,7 @@
 //! What the keys context needs from storage and from a key provider.
 
 use crate::domain::key::{GeneratedKey, KeyAlgorithm, KeyUse, KeyVersion, KeyVersionId};
-use hodor_kernel::{DomainError, Secret, TenantContext, UnitOfWork};
+use hodor_kernel::{DomainError, SealedSecret, Secret, TenantContext, Timestamp, UnitOfWork};
 
 /// Stores and loads key versions. Every method works inside the tenant
 /// the unit of work is bound to.
@@ -118,5 +118,51 @@ pub trait KeyProvider: Send + Sync {
         version: &KeyVersion,
         associated: &[u8],
         ciphertext: &[u8],
+    ) -> Result<Secret<Vec<u8>>, DomainError>;
+}
+
+/// Whether a tenant still opens secrets of the first format, the one
+/// sealed directly with a root key. Works inside the tenant the unit of work
+/// is bound to.
+#[async_trait::async_trait]
+pub trait SealingStateStore: Send + Sync {
+    /// Whether the tenant refuses secrets of the first format.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn first_format_refused(&self, uow: &mut dyn UnitOfWork) -> Result<bool, DomainError>;
+
+    /// Records that the tenant refuses secrets of the first format from
+    /// `at` on. Recording it again changes nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn refuse_first_format(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        at: Timestamp,
+    ) -> Result<(), DomainError>;
+}
+
+/// Secrets of the first format: sealed directly with a root key, as 0.1.0
+/// did. See `docs/security/secrets-at-rest.md`, "The first format".
+pub trait FirstFormatSecrets: Send + Sync {
+    /// Whether `sealed` is laid out as the first format. Says nothing about
+    /// whether it opens.
+    fn is_first_format(&self, sealed: &SealedSecret) -> bool;
+
+    /// Opens a secret of the first format sealed for `tenant` and
+    /// `purpose`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `secret.unreadable`, whatever the reason.
+    fn open(
+        &self,
+        tenant: &TenantContext,
+        purpose: &str,
+        sealed: &SealedSecret,
     ) -> Result<Secret<Vec<u8>>, DomainError>;
 }

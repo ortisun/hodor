@@ -48,6 +48,7 @@ Commands, as typed, from the clap enums in `main.rs`:
 | `hodor-cli keys rotate` | `--tenant`, `--algorithm` (`es256`, `rs256`, `ps256`; default `es256`) | `KeyService::rotate_now` with the overlap of `--key-overlap-hours` (`KeysCommand::Rotate`) |
 | `hodor-cli keys revoke` | `--tenant`, `--version`, `--reason` | `KeyService::revoke` (`KeysCommand::Revoke`) |
 | `hodor-cli secrets generate-key` | none | `hodor_adapters_crypto::SecretKeys::generate(&OsRandom)` (`SecretsCommand::GenerateKey`) |
+| `hodor-cli secrets reseal` | `--tenant` (optional), `HODOR_DATABASE_URL`, `HODOR_SECRET_KEYS` | `hodor_adapters_postgres::reseal_tenant` per tenant of `TenantDirectory::list`, then `TenantSecretBox::refuse_first_format` when nothing was left unreadable; one line per tenant (`SecretsCommand::Reseal`, `run_reseal`) |
 | `hodor-cli probe` | `--addr` (default `127.0.0.1:9090`), `--path` (default `/readyz`) | local `probe`, over `std::net::TcpStream` (`Command::Probe`) |
 
 Global flags of the command groups (`Command` in `main.rs`):
@@ -134,6 +135,10 @@ the application commands), `run_tenant`, `run_provider`,
   tenant's settings.
 - `secrets generate-key` prints a new key once and stores it nowhere; it opens
   no database (`SecretsCommand::GenerateKey`).
+- `secrets reseal` exits with a failure when a secret that needed sealing
+  again did not open; that tenant keeps accepting the first format
+  (`run_reseal`). The `totp` and `provider` commands seal through the same
+  `TenantSecretBox` as the server (`secret_box`).
 - `probe` opens one TCP connection and sends `GET <path> HTTP/1.1` (`probe`).
 - `main.rs` writes no audit record itself; any audit record comes from inside
   the services it calls.

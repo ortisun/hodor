@@ -12,7 +12,7 @@ use aws_lc_rs::signature::{
     ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, KeyPair as _, RSA_PKCS1_SHA256, RSA_PSS_SHA256,
     RsaEncoding, RsaKeyPair,
 };
-use hodor_kernel::{DomainError, PublicKey, SealedSecret, Secret, SecretBox, TenantContext};
+use hodor_kernel::{DomainError, PublicKey, SealedSecret, Secret, TenantContext};
 use hodor_keys::api::{
     GeneratedKey, KeyAlgorithm, KeyMaterial, KeyProvider, KeyUse, KeyVersion, KeyVersionId,
 };

@@ -89,7 +89,7 @@ Make the key with the image you built, and write it after an identifier of your 
 docker run --rm --entrypoint /usr/local/bin/hodor-cli hodor:0.1.0 secrets generate-key
 ```
 
-Keep a copy of the key outside the machine. What it encrypted cannot be read without it; [secrets at rest](../security/secrets-at-rest.md#keys) explains the format and how to change the key later.
+Keep a copy of the key outside the machine. What it encrypted cannot be read without it; [secrets at rest](../security/secrets-at-rest.md#root-keys) explains the format and how to change the key later.
 
 For messages to be delivered, also set `HODOR_SMTP_URL` and `HODOR_MAIL_FROM`. The other settings are optional and explained in `.env.example`.
 
@@ -169,6 +169,11 @@ Keep the backups and the key of `HODOR_SECRET_KEYS` in different places, both ou
 1. Get the new version of the code and build its image under a new tag, as in [step 1](#1-build-the-image).
 2. Write the new tag in `HODOR_IMAGE`.
 3. Run the command of [step 3](#3-start) again. The migrations of the new version are applied first, then the server and the worker are replaced.
+4. If [deployment](deployment.md#upgrades) lists a command for the version you upgraded from, run it with the service `cli`. From 0.1.0:
+
+```bash
+docker compose -f deploy/install/docker/compose.yaml run --rm cli secrets reseal
+```
 
 Upgrade one release at a time: [deployment](deployment.md#upgrades) explains why the migrations allow that and no more.
 

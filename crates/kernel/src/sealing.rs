@@ -1,8 +1,9 @@
 //! Secrets that must be read back, kept encrypted.
 //!
 //! A port, because Hodor implements no cryptography of its own. It lives
-//! in the kernel because any context may have a secret to keep. See
-//! `docs/security/secrets-at-rest.md`.
+//! in the kernel because any context may have a secret to keep. It is
+//! asynchronous because its implementation reads the tenant's data keys
+//! from storage. See `docs/security/secrets-at-rest.md`.
 
 use crate::error::DomainError;
 use crate::secret::Secret;
@@ -41,6 +42,7 @@ impl fmt::Debug for SealedSecret {
 /// `purpose` is a fixed name chosen by the caller, such as
 /// `federation.client_secret`. A secret sealed for one tenant and purpose
 /// opens for no other.
+#[async_trait::async_trait]
 pub trait SecretBox: Send + Sync {
     /// Encrypts `secret` for `tenant` and `purpose`.
     ///
@@ -48,7 +50,7 @@ pub trait SecretBox: Send + Sync {
     ///
     /// Returns an error if no key is configured or the purpose is not a
     /// usable name.
-    fn seal(
+    async fn seal(
         &self,
         tenant: &TenantContext,
         purpose: &str,
@@ -62,16 +64,25 @@ pub trait SecretBox: Send + Sync {
     ///
     /// Returns `secret.unreadable`, whatever the reason: changed bytes,
     /// another tenant or purpose, or a key that is not configured.
-    fn open(
+    async fn open(
         &self,
         tenant: &TenantContext,
         purpose: &str,
         sealed: &SealedSecret,
     ) -> Result<Secret<Vec<u8>>, DomainError>;
 
-    /// Whether `sealed` was made with a key that is no longer the one new
-    /// secrets are sealed with.
-    fn needs_resealing(&self, sealed: &SealedSecret) -> bool;
+    /// Whether `sealed`, kept by `tenant`, was made otherwise than new
+    /// secrets are sealed now: in an earlier format, or with a key that is
+    /// no longer the one new secrets are sealed with.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if what decides it cannot be read.
+    async fn needs_resealing(
+        &self,
+        tenant: &TenantContext,
+        sealed: &SealedSecret,
+    ) -> Result<bool, DomainError>;
 }
 
 /// The error of a sealed secret that does not open. One code for every
@@ -100,8 +111,9 @@ pub mod testing {
         format!("sealed|{}|{purpose}|", tenant.tenant_id()).into_bytes()
     }
 
+    #[async_trait::async_trait]
     impl SecretBox for FakeSecretBox {
-        fn seal(
+        async fn seal(
             &self,
             tenant: &TenantContext,
             purpose: &str,
@@ -114,7 +126,7 @@ pub mod testing {
             Ok(SealedSecret::from_stored(bytes))
         }
 
-        fn open(
+        async fn open(
             &self,
             tenant: &TenantContext,
             purpose: &str,
@@ -128,8 +140,12 @@ pub mod testing {
             Ok(Secret::new(rest.iter().rev().copied().collect()))
         }
 
-        fn needs_resealing(&self, _sealed: &SealedSecret) -> bool {
-            false
+        async fn needs_resealing(
+            &self,
+            _tenant: &TenantContext,
+            _sealed: &SealedSecret,
+        ) -> Result<bool, DomainError> {
+            Ok(false)
         }
     }
 }
@@ -146,23 +162,26 @@ mod tests {
         assert_eq!(format!("{sealed:?}"), "SealedSecret(9 bytes)");
     }
 
-    #[test]
-    fn the_fake_opens_only_for_the_tenant_and_purpose_it_sealed_for() {
+    #[tokio::test]
+    async fn the_fake_opens_only_for_the_tenant_and_purpose_it_sealed_for() {
         let tenant = TenantContext::assume(TenantId::generate());
         let other = TenantContext::assume(TenantId::generate());
         let secret = Secret::new(b"client secret".to_vec());
 
         let sealed = FakeSecretBox
             .seal(&tenant, "a.purpose", &secret)
+            .await
             .expect("seal");
         let opened = FakeSecretBox
             .open(&tenant, "a.purpose", &sealed)
+            .await
             .expect("open");
         assert_eq!(opened.expose(), secret.expose());
 
         for (tenant, purpose) in [(&other, "a.purpose"), (&tenant, "another.purpose")] {
             let error = FakeSecretBox
                 .open(tenant, purpose, &sealed)
+                .await
                 .expect_err("must not open");
             assert_eq!(error.code(), "secret.unreadable");
         }

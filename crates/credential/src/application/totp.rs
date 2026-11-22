@@ -175,7 +175,7 @@ impl TotpService {
         let mut secret = vec![0_u8; SECRET_BYTES];
         self.random.fill(&mut secret);
         let secret = Secret::new(secret);
-        let sealed = self.secrets.seal(tenant, SEALING_PURPOSE, &secret)?;
+        let sealed = self.secrets.seal(tenant, SEALING_PURPOSE, &secret).await?;
         let enrollment = Totp::begin(user_id, sealed, self.clock.now());
         let mut uow = self.units_of_work.begin(tenant).await?;
         self.store
@@ -209,7 +209,7 @@ impl TotpService {
             .await?
             .filter(|enrollment| enrollment.can_be_confirmed_at(now))
             .ok_or_else(enrollment_not_found)?;
-        let Some(step) = self.matching_step(tenant, &enrollment, code, now)? else {
+        let Some(step) = self.matching_step(tenant, &enrollment, code, now).await? else {
             return Err(DomainError::invalid(
                 "credential.totp_code_wrong",
                 "that is not the code the authenticator application shows",
@@ -245,7 +245,7 @@ impl TotpService {
         let Some(active) = self.store.active(uow.as_mut(), user_id).await? else {
             return Ok(TotpCheck::Rejected);
         };
-        let Some(step) = self.matching_step(tenant, &active, code, now)? else {
+        let Some(step) = self.matching_step(tenant, &active, code, now).await? else {
             return Ok(TotpCheck::Rejected);
         };
         if !self.store.use_step(uow.as_mut(), active.id(), step).await? {
@@ -293,7 +293,7 @@ impl TotpService {
     /// The step of the code typed, if it is right for this application at
     /// `now` and later than the last step used. Every candidate step is
     /// computed, so the time taken does not depend on which one matches.
-    fn matching_step(
+    async fn matching_step(
         &self,
         tenant: &TenantContext,
         totp: &Totp,
@@ -305,7 +305,8 @@ impl TotpService {
         };
         let secret = self
             .secrets
-            .open(tenant, SEALING_PURPOSE, &totp.snapshot().sealed_secret)?;
+            .open(tenant, SEALING_PURPOSE, &totp.snapshot().sealed_secret)
+            .await?;
         let mut matched = None;
         for step in candidate_steps(now) {
             if code_of_step(self.mac.as_ref(), secret.expose(), step) == typed

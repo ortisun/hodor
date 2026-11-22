@@ -71,7 +71,7 @@ The chart never takes a password or a key as a value: it reads them from one Sec
 kubectl create namespace hodor
 ```
 
-Make the key that keeps the secrets of identity providers encrypted. It is written after an identifier of your choice, as `identifier:key`; [secrets at rest](../security/secrets-at-rest.md#keys) explains the format and how to change the key later:
+Make the key that keeps the secrets of identity providers encrypted. It is written after an identifier of your choice, as `identifier:key`; [secrets at rest](../security/secrets-at-rest.md#root-keys) explains the format and how to change the key later:
 
 ```bash
 docker run --rm --entrypoint /usr/local/bin/hodor-cli registry.example.com/hodor:0.1.0 secrets generate-key
@@ -187,6 +187,12 @@ A cluster enforces network policies only if its network plugin does.
 
 ```bash
 helm upgrade hodor deploy/install/helm/hodor --namespace hodor --values hodor-values.yaml --wait
+```
+
+If [deployment](deployment.md#upgrades) lists a command for the version you upgraded from, run it in a server once the upgrade is done. From 0.1.0:
+
+```bash
+kubectl exec --namespace hodor deployment/hodor-server -- /usr/local/bin/hodor-cli secrets reseal
 ```
 
 The migration job runs first, against the database the old servers are still using; then the servers and workers are replaced one at a time. Upgrade one release at a time: [deployment](deployment.md#upgrades) explains why the migrations allow that and no more. Going back within one release is `helm rollback`.

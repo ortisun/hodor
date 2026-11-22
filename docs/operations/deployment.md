@@ -120,6 +120,11 @@ Nothing tenant-specific is configured through deployment files, so adding a tena
 1. The chart runs `hodor-cli migrate` as a pre-upgrade job. Migrations are *expand* only in the release that introduces them.
 2. Server and worker roll out; old and new versions run side by side against the expanded schema.
 3. The *contract* migration (dropping what the old version needed) ships in the next release.
+4. Some releases ask for a command once the new version runs. The changelog of the release names it, and the installation guides say how to run it.
+
+| Upgrading from | Run once, after the upgrade | Why |
+|---|---|---|
+| 0.1.0 | `hodor-cli secrets reseal`, with the server's `HODOR_DATABASE_URL` and `HODOR_SECRET_KEYS` | Moves the secrets kept by 0.1.0 under a data key of their tenant, then refuses their old format: [secrets at rest](../security/secrets-at-rest.md#moving-the-secrets-of-an-earlier-version). Until it runs they still open as before |
 
 The server checks the schema version at startup and refuses to run against a schema older than it needs or newer than it understands by more than one release. Rollback within one release is a redeploy of the previous image.
 

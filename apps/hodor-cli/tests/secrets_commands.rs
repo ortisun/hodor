@@ -1,7 +1,7 @@
 //! The secrets command, run as the real binary. It needs no database.
 
 use hodor_adapters_crypto::SecretKeys;
-use hodor_kernel::{Secret, SecretBox as _, TenantContext, TenantId};
+use hodor_kernel::{Secret, TenantContext, TenantId};
 use std::process::Command;
 
 fn generate() -> String {

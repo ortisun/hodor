@@ -20,6 +20,7 @@ mod notification;
 mod oauth;
 mod oauth_authorization;
 mod outbox;
+mod resealing;
 mod session;
 mod tenant;
 #[cfg(feature = "testing")]
@@ -35,7 +36,7 @@ pub use database::{Database, TenantTransaction, connect_pool, ping_pool};
 pub use federation::{PgLinkStore, PgPendingAuthorizationStore, PgProviderStore};
 pub use identity::PgUserRepository;
 pub use key_rotation::{KeyRotationJob, RotationPass};
-pub use keys::PgKeyStore;
+pub use keys::{PgKeyStore, PgSealingStateStore};
 pub use migrate::migrate;
 pub use notification::{PgMessageQueue, PgPendingMessages};
 pub use oauth::{PgApplicationStore, PgClientStore, PgResourceServerStore};
@@ -43,6 +44,7 @@ pub use oauth_authorization::{
     PgAuthorizationCodeStore, PgAuthorizationRequestStore, PgGrantStore,
 };
 pub use outbox::{DispatchReport, OutboxDispatcher};
+pub use resealing::{ResealReport, SEALED_COLUMNS, SealedColumn, reseal_tenant};
 pub use session::PgSessionStore;
 pub use sqlx::migrate::MigrateError;
 pub use sqlx::{Error, PgPool};
