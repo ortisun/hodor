@@ -4,8 +4,9 @@
 
 The source root of the `hodor-authorization` crate. `lib.rs` describes the
 context: it "answers one question: may this subject do this? Hodor's
-administration asks it through the fixed roles; applications ask it through
-the engine bound to their resource server." The specification it follows is
+administration asks it through the built-in roles; applications ask it
+through the engine bound to their resource server, such as the native
+engine over the roles the tenant defined." The specification it follows is
 `docs/architecture/contexts/authorization.md` (`lib.rs` crate comment).
 
 The modules `application` and `domain` are private; other crates use only
@@ -24,10 +25,16 @@ The modules `application` and `domain` are private; other crates use only
   `PolicyRevision`, `PolicyReference`.
 - Engines and bindings: `AuthorizationEngine`, `PolicySimulator`,
   `EngineCapabilities`, `EvaluationInput`, `PolicySelection`,
-  `SimulationAnswer`, `EngineRegistry`, `FixedRoleEngine`,
-  `FIXED_ROLES_REVISION`, `EngineBinding`, `BindingSettings`,
-  `DEFAULT_TIME_LIMIT`, `EngineBindingStore`, `SubjectAttributeSource`,
-  `EvaluationService`, `Simulation`, `MAX_BATCH`.
+  `SimulationAnswer`, `EngineRegistry`, `NativeEngine`,
+  `FIXED_ROLES_REVISION`, `MATCHING_ROLE`, `EngineBinding`,
+  `BindingSettings`, `DEFAULT_TIME_LIMIT`, `EngineBindingStore`,
+  `SubjectAttributeSource`, `EvaluationService`, `Simulation`, `MAX_BATCH`,
+  `ApplicationReference`.
+- Native role-based access control: `NativeRoleStore` (port trait),
+  `RoleService`, `Validity`, `PermissionName`, `PermissionDefinition`,
+  `RoleName`, `RoleKey`, `RoleContents`, `RoleDefinition`, `RoleGraph`,
+  `AssignmentScope`, `RoleAssignment`, `Grant`, `MAX_DESCRIPTION_LENGTH`,
+  `MAX_ROLE_PERMISSIONS`, `MAX_INCLUDED_ROLES`, `MAX_INCLUSION_DEPTH`.
 
 ### `testing.rs` (public test support)
 
@@ -41,6 +48,11 @@ is, with the crate feature `testing`.
   `run_binding_contract(ports)`.
 - `StaticSubjectAttributes` (implements `SubjectAttributeSource`; `set`,
   `fail`).
+- `InMemoryNativeRoles` (implements `NativeRoleStore`; like the database it
+  refuses a role naming an undeclared permission or a missing role, an
+  assignment of a missing role, and removing an included role),
+  `NativeRolePorts { units_of_work, roles }`,
+  `run_native_role_contract(ports)`.
 - `ScriptedEngine` (implements `AuthorizationEngine` and `PolicySimulator`):
   answers with a closure, remembers what it was given (`seen`, `batches`),
   can move a `FixedClock` forward on every call (`take`) and answer a batch
@@ -49,10 +61,11 @@ is, with the crate feature `testing`.
 ### Subdirectories
 
 - [application](./application/EGM.md): `AuthorizationService`,
-  `EvaluationService`, the engine traits, `EngineRegistry`,
-  `FixedRoleEngine` and the ports.
+  `EvaluationService`, `RoleService`, the engine traits, `EngineRegistry`,
+  `NativeEngine` and the ports.
 - [domain](./domain/EGM.md): `Permission`, `Role`, `Effect`, `Decision`, the
-  request and decision types, `EngineBinding` and `AuthorizationEvent`.
+  request and decision types, `EngineBinding`, `AuthorizationEvent` and the
+  native role-based access control types (`native.rs`).
 
 ## Invariants
 
@@ -65,6 +78,17 @@ is, with the crate feature `testing`.
   must do: every setting is kept as given; `list` is ordered by namespace;
   `put` replaces the binding of the same namespace; a binding belongs to its
   tenant; `remove` returns `true` once.
+- `testing.rs:run_native_role_contract` states what every
+  `NativeRoleStore` must do: the revision starts at zero and each raise adds
+  one, per tenant; permissions are listed by name and putting again
+  describes again; roles keep what they hold and include and are listed by
+  namespace and name; a role naming an undeclared permission or a missing
+  role is refused; removing a permission removes it from every role;
+  assignments are keyed by principal, role and scope, putting again replaces
+  the start and end, and they are listed by role and scope; an assignment of
+  a missing role is refused; a role another role includes cannot be removed
+  (`authorization.role_in_use`); removing a role removes its assignments;
+  nothing is seen from another tenant.
 
 ## Side Effects
 

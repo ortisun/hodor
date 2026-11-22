@@ -3,6 +3,7 @@
 
 pub(crate) mod engine;
 pub(crate) mod evaluation;
-pub(crate) mod fixed_roles;
+pub(crate) mod native;
 pub(crate) mod ports;
+pub(crate) mod roles;
 pub(crate) mod service;

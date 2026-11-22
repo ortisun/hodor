@@ -5,8 +5,8 @@
 The domain model of the authorization context: the fixed permissions, the
 fixed roles that hold them, the answer to a check (`role.rs`); the request an
 engine answers (`request.rs`); the decision (`decision.rs`); the binding of a
-resource server to an engine (`binding.rs`); and the context's events
-(`event.rs`). The code is pure. Both modules are `pub(crate)`; the public names
+resource server to an engine (`binding.rs`); native role-based access
+control (`native.rs`); and the context's events (`event.rs`). The code is pure. Both modules are `pub(crate)`; the public names
 reach other crates through `hodor_authorization::api`.
 
 ## Interface
@@ -49,7 +49,9 @@ reach other crates through `hodor_authorization::api`.
 - `Attributes`: at most 64 names (`MAX_ATTRIBUTES`) with JSON values.
 - `Action`, and the kind of a `Resource`: a lower-case letter, then
   lower-case letters, digits, `-`, `_`, `.`, at most 64 characters.
-- `EvaluationContext { attributes, correlation_id }`.
+- `ApplicationReference`: an application's identifier, 1 to 255 characters
+  without control characters (`authorization.application_invalid`).
+- `EvaluationContext { attributes, correlation_id, application }`.
 - `AuthorizationRequest { namespace, subject, asserted, resource, action,
   context }`: never names a tenant.
 
@@ -75,6 +77,21 @@ reach other crates through `hodor_authorization::api`.
 - `EngineBinding`: `new`, `changed`, `restore`, `administration()` (the
   fixed binding of `hodor:admin`), `fails_open(action)`.
 
+### Native role-based access control (`native.rs`)
+
+- `PermissionName`: `kind:action` (`authorization.permission_invalid`);
+  `of(kind, action)`, `fixed(Permission)`.
+- `PermissionDefinition { namespace, name, description }`.
+- `RoleName` (`authorization.role_name_invalid`), `RoleKey { namespace, name
+  }` with `built_in(Role)` and `reference()` (`namespace#name`).
+- `RoleContents { description, permissions, includes }`,
+  `RoleDefinition` (`new`, `replaced`, `restore`, `built_in(Role)`).
+- `RoleGraph`: `new`, `built_in`, `get`, `roles`, `including`,
+  `check(candidate, declared)`, `permissions_held(start)`.
+- `AssignmentScope` (`Tenant`, `Application`), `RoleAssignment` (`new`,
+  `in_force_at`, `same_grant`), `Grant`; crate-private `grants_of` and
+  `allowing_roles`.
+
 ### Domain events (`event.rs`)
 
 `AuthorizationEvent` (`event.rs:AuthorizationEvent`), serialized untagged,
@@ -87,10 +104,33 @@ implements `hodor_kernel::DomainEvent`:
 | `EngineBound` | `namespace`, `engine` | `authorization.engine_bound` |
 | `EngineUnbound` | `namespace` | `authorization.engine_unbound` |
 | `FailedOpen` | `namespace`, `action`, `engine`, `cause` | `authorization.failed_open` |
+| `PermissionDeclared` | `namespace`, `permission` | `authorization.permission_declared` |
+| `PermissionRemoved` | `namespace`, `permission` | `authorization.permission_removed` |
+| `RoleDefined` | `namespace`, `name` | `authorization.role_defined` |
+| `RoleRemoved` | `namespace`, `name` | `authorization.role_removed` |
+| `PrincipalRoleAssigned` | `principal_kind`, `principal`, `namespace`, `role`, `application` | `authorization.principal_role_assigned` |
+| `PrincipalRoleRevoked` | `principal_kind`, `principal`, `namespace`, `role`, `application` | `authorization.principal_role_revoked` |
 
 ## Invariants
 
-- The roles are fixed in this version (`role.rs:Role`).
+- The roles of `hodor:admin` are fixed (`role.rs:Role`); as native roles they
+  are `RoleDefinition::built_in`, holding exactly `Role::permissions`.
+- Nothing a tenant defines is in `hodor:admin`, and no tenant role includes
+  a built-in role (`authorization.namespace_reserved`,
+  `native.rs:RoleDefinition::checked`, `PermissionDefinition::new`,
+  `RoleAssignment::new`).
+- A role holds at most 200 permissions (`authorization.too_many_permissions`)
+  and includes at most 50 roles (`authorization.too_many_included_roles`);
+  a description has at most 500 characters
+  (`authorization.description_invalid`).
+- `RoleGraph::check`: only declared permissions of the role's namespace
+  (`authorization.permission_not_declared`), included roles exist
+  (`authorization.role_not_found`), no cycle anywhere
+  (`authorization.role_cycle`), at most ten deep
+  (`authorization.role_inclusion_too_deep`).
+- An assignment ends after it starts (`authorization.validity_invalid`) and
+  allows from its start up to but not at its end; one scoped to an
+  application applies only to requests naming it.
 - `TenantAdministrator` holds every permission (`Permission::ALL`);
   `TenantAuditor` holds `UsersRead`, `SessionsRead`, `AuditRead`,
   `IdentityProvidersRead`, `KeysRead` and `ApplicationsRead` only

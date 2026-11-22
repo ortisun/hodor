@@ -5,7 +5,8 @@ The `authorization` context answers one question: may this user do this? Other p
 The whole design, with policies, several engines and Open Policy Agent, is in [authorization](../authorization.md). This page specifies what is built:
 
 - the fixed roles that protect Hodor's own administration interface, from Milestone 1;
-- the engine contract of [Decision 0009](../../decisions/0009-authorization-engine-contract.md), from Milestone 5 (Issue-72): the request, the decision, engines and the binding that says which engine answers for a resource server.
+- the engine contract of [Decision 0009](../../decisions/0009-authorization-engine-contract.md), from Milestone 5 (Issue-72): the request, the decision, engines and the binding that says which engine answers for a resource server;
+- native role-based access control, from Milestone 5 (Issue-73): permissions and roles a tenant defines for its resource servers, who holds them, and the native engine that answers from them. The fixed roles above are its built-in roles for Hodor's administration.
 
 ## Permissions
 
@@ -27,7 +28,7 @@ A permission names something that can be done: a kind of resource and an action 
 
 ## Roles
 
-A role is a named set of permissions. In this version the roles are fixed: they are part of Hodor and cannot be changed or added to.
+A role is a named set of permissions. The roles of Hodor's administration are fixed: they are part of Hodor and cannot be changed or added to. They are the **built-in roles** of the namespace `hodor:admin` in [native role-based access control](#native-role-based-access-control); roles a tenant defines for its own resource servers are described there.
 
 | Role | Permissions | Meant for |
 |---|---|---|
@@ -49,6 +50,7 @@ flowchart LR
 - **Deny is the default.** A user with no role, a role that lacks the permission and a user that does not exist all get the same answer: deny, with the reason `no_matching_role`.
 - **The tenant comes from the caller's credential and the address of the request**, never from anything the caller sends in a body.
 - **Nothing is cached.** Every check reads the user's roles. Taking a role away takes effect on the next request.
+- **It is the native engine's answer for `hodor:admin`.** The check and the native engine read the same assignments and the same built-in role definitions, and give the same reason: the first role, in the fixed order, that holds the permission.
 
 The check says whether a user may do something. Whether the user is who they claim to be, and whether they may sign in at all, is decided before it is asked, by whoever asks.
 
@@ -78,12 +80,16 @@ The check says whether a user may do something. Whether the user is who they cla
 
 ### `authorization.role_assignment`
 
+Who holds which role, for the built-in roles and for the roles a tenant defines. Since Issue-73 it holds both; the rows written before it became assignments of the built-in roles of `hodor:admin` to users, for the whole tenant, without an end.
+
 | Column | Type | Notes |
 |---|---|---|
-| `tenant_id`, `user_id`, `role` | `uuid`, `uuid`, `text` | Primary key |
+| `tenant_id`, `principal_kind`, `principal_id`, `namespace`, `role`, `application` | `uuid`, `text`, `text`, `text`, `text`, `text` | Primary key. `principal_kind` is `user` or `client`. `application` is empty for an assignment to the whole tenant |
+| `valid_from`, `valid_until` | `timestamptz` | Both optional; when both are given, the end comes after the start |
 | `assigned_at` | `timestamptz` | |
+| `role_namespace` | `text` | Generated: the namespace, or nothing for `hodor:admin`. It carries the reference to `authorization.role`, so that an assignment of a tenant's role names a role that exists and goes when the role goes |
 
-A tenant table under row-level security. `user_id` refers to a user of the identity context but is deliberately not a foreign key: contexts do not reference each other's tables.
+A tenant table under row-level security. In `hodor:admin` the role is one of the built-in roles, the principal is a user, the assignment covers the whole tenant and has no start or end; the database refuses anything else there. `principal_id` refers to a user of the identity context or a client of the OAuth context but is deliberately not a foreign key: contexts do not reference each other's tables.
 
 ### `authorization.engine_binding`
 
@@ -112,7 +118,7 @@ Applications ask about their own resources: whether a subject may do an action t
 | Asserted attributes | What the caller claims about the subject, such as roles it keeps itself | Kept apart from what Hodor resolves; **not given to the engine** unless the binding trusts them |
 | Resource | A kind (`document`), an optional identifier and attributes | A kind is 1 to 64 characters of lower-case letters, digits, `-`, `_` and `.`, starting with a letter |
 | Action | What is to be done (`read`) | Same characters as a kind |
-| Context | Attributes of the moment, such as the address the request came from, and an optional correlation identifier | |
+| Context | Attributes of the moment, such as the address the request came from, an optional correlation identifier, and the application the request is made for, when there is one | The application is an identifier of 1 to 255 characters without a control character. It is what an assignment scoped to an application is compared with |
 
 Attributes are names with JSON values. A set holds at most 64 names of at most 64 characters each.
 
@@ -160,7 +166,7 @@ One request is answered by exactly one engine. Decisions of several engines are 
 
 **A resource server without a binding is denied everything**, with the reason `no_engine_bound`.
 
-**Hodor's administration namespace, `hodor:admin`, is never bound and never rebound.** It is always answered by the fixed-role engine inside this context, from the roles above, with nothing outside the context involved: an outage of Open Policy Agent can never lock administrators out of the system that fixes it. Its binding is fixed: sensitive, nothing fails open, asserted attributes are never trusted.
+**Hodor's administration namespace, `hodor:admin`, is never bound and never rebound.** It is always answered by the native engine inside this context, from the built-in roles above, with nothing outside the context involved: an outage of Open Policy Agent can never lock administrators out of the system that fixes it. Its binding is fixed: sensitive, nothing fails open, asserted attributes are never trusted.
 
 ### Evaluating
 
@@ -215,6 +221,111 @@ A batch holds at most 100 requests and gives one answer per request, in order; a
 | `authorization.engine_bound` | A binding was made or changed; carries the namespace and the engine |
 | `authorization.engine_unbound` | A binding was removed; carries the namespace |
 | `authorization.failed_open` | A failure allowed because the binding lets the action fail open; carries the namespace, the action, the engine and the cause |
+
+## Native role-based access control
+
+The native engine answers for the resource servers a tenant binds to it, `native`, and always for `hodor:admin`. It answers from **permissions**, **roles** and **assignments** kept in this context, and needs nothing outside it.
+
+```mermaid
+flowchart LR
+    principal["User or client"] -- "assignment: whole tenant or one application, with an optional start and end" --> role["Role"]
+    role -- "includes" --> included["Other roles"]
+    role -- "holds" --> permission["Permissions of its resource server"]
+    included -- "hold" --> more["Their permissions"]
+```
+
+### Permissions of a resource server
+
+A tenant declares the permissions of each of its resource servers. A permission is written `resource:action`, the resource kind and the action of a [request](#the-request): `document:read` allows the action `read` on resources of the kind `document`. Both halves follow the rules of a kind and an action. A permission has a description of at most 500 characters.
+
+Permissions cannot be declared for `hodor:admin`: its permissions are [the fixed ones](#permissions). Removing a permission removes it from every role that held it.
+
+### Roles
+
+A role belongs to one resource server, its namespace, and has a name, unique in that namespace: a lower-case letter followed by lower-case letters, digits, `-`, `_` and `.`, at most 64 characters. It holds permissions of its own namespace only, at most 200, and may **include** other roles, at most 50.
+
+- **A role holds what the roles it includes hold.** A role that includes another of its own namespace is a **hierarchy**: a senior role (`editor`) includes a junior one (`viewer`) and holds everything the junior holds. A role that includes roles of other namespaces is a **composite role**: `support` may include `viewer` of the documents server and `reader` of the billing server, and holding it is holding both. Inclusion is followed as far as it goes.
+- **Inclusion never makes a cycle.** A role that would include itself, directly or through other roles, is refused with `authorization.role_cycle`. Inclusion is at most 10 roles deep; a deeper chain is refused with `authorization.role_inclusion_too_deep`.
+- **A role cannot include a built-in role**, and no role can be defined in `hodor:admin`: what a tenant defines never reaches Hodor's administration.
+- **A role holds only permissions declared for its namespace.** An undeclared permission or an included role that does not exist is refused when the role is defined.
+- **Defining a role again replaces it**: its description, its permissions and what it includes. **A role that another role includes cannot be removed** (`authorization.role_in_use`); removing a role removes its assignments.
+
+### Assignments
+
+An assignment gives a role to a **principal**, a user or a client (an application acting for itself). There are no groups or organizations yet, so roles are given to them only ([Decision 0023](../../decisions/0023-what-0.2.0-holds.md)).
+
+| Part | Meaning |
+|---|---|
+| Principal | A user, by its identifier, or a client, by its client identifier |
+| Role | The role, by namespace and name. It must exist |
+| Scope | The whole tenant, or one application. An assignment to an application applies only to requests made for that application, those whose context names it |
+| Start and end | Both optional. Before the start and from the end on, the assignment allows nothing. The end must come after the start |
+
+Assigning the same role to the same principal with the same scope again replaces its start and end; with nothing changed, it changes nothing and announces nothing. Built-in roles are not given this way: they are given by [the bootstrap command](../../api/admin-api.md#the-first-administrator), as before.
+
+### How the native engine decides
+
+For a request about the resource server `namespace`, with the resource kind `kind` and the action `action`:
+
+1. The principal is the request's subject. Its assignments in the tenant are read.
+2. An assignment counts when it is in force at the moment of the decision and its scope is the whole tenant or the application named by the request's context.
+3. From each assignment that counts, the role and every role it includes are followed. Every permission of `namespace` they hold is collected.
+4. If `kind:action` is among them, the answer is **allow** with the reason `matching_role`. It names the assigned roles that led there, written `namespace#role`, and reports the tenant's role revision.
+5. Otherwise the answer is **deny** with the reason `no_matching_role`. An undeclared permission, an unknown subject and a subject with no assignment get the same answer, so the answer does not reveal what exists.
+
+For `hodor:admin` the built-in roles are used, the subject must be a user, and the answer is the one of [the check](#the-check): the reason is the name of the first role that allows, and the revision is `fixed_roles`.
+
+Conditions on attributes come with Issue-74; then a role's permission may carry a condition that must also hold.
+
+### Caching and the role revision
+
+The native engine keeps, per tenant and principal, what the principal's assignments come to: the permissions, with the role, the scope, the start and the end of each assignment that gives them. Every change to a tenant's permissions, roles or assignments raises **the tenant's role revision** in the same transaction. Before using what it keeps, the engine reads the revision: when it has changed, it reads everything again. So **a change takes effect on the next decision**, whichever instance of Hodor answers it. The start and end of assignments are checked at every decision, so time passing needs no change. `hodor:admin` is not cached.
+
+### Operations of native role-based access control
+
+| Use case | What it does |
+|---|---|
+| Declare permission | Declares, or describes again, a permission of a resource server |
+| Remove permission | Removes it, and removes it from every role |
+| Permissions | Lists the permissions of a resource server |
+| Define role | Creates a role or replaces it, after the checks above |
+| Remove role | Removes a role no other role includes, with its assignments |
+| Roles | Lists the tenant's roles, or one role |
+| Assign | Gives a role to a principal, for the tenant or an application, with an optional start and end |
+| Revoke | Takes it away |
+| Assignments of a principal | Lists a principal's assignments |
+
+They are not reachable through the administration interface, the command-line tool or the console yet; that is Issue-80.
+
+### Events of native role-based access control
+
+| Event type | When |
+|---|---|
+| `authorization.permission_declared` | A permission was declared or described again; carries the namespace and the permission |
+| `authorization.permission_removed` | A permission was removed |
+| `authorization.role_defined` | A role was created or replaced; carries the namespace and the name |
+| `authorization.role_removed` | A role was removed |
+| `authorization.principal_role_assigned` | A role was given to a principal, or its start and end changed; carries the principal, the role and the scope |
+| `authorization.principal_role_revoked` | A role was taken away from a principal |
+
+### Port of native role-based access control
+
+| Port | Purpose |
+|---|---|
+| `NativeRoleStore` | Store, read and remove a tenant's permissions, roles and assignments, and read and raise its role revision |
+
+### Storage of native role-based access control
+
+| Table | Primary key | What it holds |
+|---|---|---|
+| `authorization.permission` | `tenant_id`, `namespace`, `name` | The declared permissions, with a description |
+| `authorization.role` | `tenant_id`, `namespace`, `name` | The roles, with a description |
+| `authorization.role_permission` | `tenant_id`, `namespace`, `role`, `permission` | What each role holds. Goes with its role and with its permission |
+| `authorization.role_inclusion` | `tenant_id`, `namespace`, `role`, `included_namespace`, `included_role` | What each role includes. Goes with the including role; the included role cannot be removed while it is there |
+| `authorization.role_revision` | `tenant_id` | The tenant's role revision |
+| `authorization.role_assignment` | See [above](#authorizationrole_assignment) | Who holds which role |
+
+All are tenant tables under row-level security. None of them may name `hodor:admin` except the assignments of the built-in roles.
 
 ## Open Policy Agent as an engine
 
@@ -326,7 +437,6 @@ Open Policy Agent has no setting that limits the built-ins of a running instance
 |---|---|
 | Roles given through groups and organizations | When groups and organizations exist ([Decision 0023](../../decisions/0023-what-0.2.0-holds.md)) |
 | Assigning and revoking roles through the administration interface. Today the only way to give a role is [the bootstrap command](../../api/admin-api.md#the-first-administrator), and there is no way to take one away | Phase 2 |
-| Native role-based access control: roles that a tenant defines for its resource servers, with hierarchies and composites | Issue-73 |
 | Conditions on attributes in Common Expression Language | Issue-74 |
 | The authorization interface for applications, which calls the evaluation; and an implementation of `SubjectAttributeSource`. Until then no binary evaluates through the engine contract, and the administration interface still asks the check above | Issue-75 |
 | The record of decisions | Issue-76 |
@@ -335,5 +445,5 @@ Open Policy Agent has no setting that limits the built-ins of a running instance
 | A health check of each instance every 5 seconds. Today an instance's health is known only from the decisions it answers, through its circuit | Issue-78, with the status each instance reports |
 | Instances and their credentials managed through the administration interface, one token per instance, and mutual TLS | Issue-80 |
 | A cache of decisions | When a binding declares its policy deterministic |
-| Managing bindings through the administration interface, the command-line tool and the console | Issue-80 |
+| Managing bindings, permissions, roles and assignments through the administration interface, the command-line tool and the console | Issue-80 |
 | Access control lists and relationships | Later phase ([Decision 0023](../../decisions/0023-what-0.2.0-holds.md)) |

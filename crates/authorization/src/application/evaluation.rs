@@ -5,7 +5,7 @@
 use crate::application::engine::{
     AuthorizationEngine, EngineRegistry, EvaluationInput, PolicySelection,
 };
-use crate::application::fixed_roles::FixedRoleEngine;
+use crate::application::native::NativeEngine;
 use crate::application::ports::{EngineBindingStore, RoleAssignmentStore, SubjectAttributeSource};
 use crate::domain::binding::{BindingSettings, EngineBinding};
 use crate::domain::decision::{
@@ -80,8 +80,8 @@ impl std::fmt::Debug for EvaluationService {
 
 impl EvaluationService {
     /// Wires the evaluation to its ports. Hodor's administration is
-    /// answered by a [`FixedRoleEngine`] over `assignments`, whatever the
-    /// registry holds.
+    /// answered by a [`NativeEngine`] over `assignments`, from the built-in
+    /// roles, whatever the registry holds.
     #[must_use]
     pub fn new(
         units_of_work: Arc<dyn UnitOfWorkFactory>,
@@ -91,7 +91,7 @@ impl EvaluationService {
         registry: EngineRegistry,
         clock: Arc<dyn Clock>,
     ) -> Self {
-        let administration = Arc::new(FixedRoleEngine::new(
+        let administration = Arc::new(NativeEngine::administration(
             Arc::clone(&units_of_work),
             assignments,
         ));
