@@ -131,6 +131,12 @@ impl FlowEngine {
             ));
         }
         for alternative in &flow.alternatives {
+            if !alternative.substitutes.is_empty() {
+                return Err(invalid_flow(format!(
+                    "the alternative `{}` has substitutes; only a step that is not required can",
+                    alternative.key
+                )));
+            }
             if !keys.insert(alternative.key.as_str()) {
                 return Err(invalid_flow(format!(
                     "the step key `{}` appears twice",
@@ -149,6 +155,41 @@ impl FlowEngine {
                     "the alternative `{}` does not reach the flow's minimum assurance",
                     alternative.key
                 )));
+            }
+        }
+        self.validate_substitutes(flow, &keys)
+    }
+
+    /// Every substitute stands for a step that is not required, proves a
+    /// factor without establishing who is signing in, and has a key no step
+    /// and no alternative has.
+    fn validate_substitutes(
+        &self,
+        flow: &AuthFlow,
+        keys: &BTreeSet<&str>,
+    ) -> Result<(), DomainError> {
+        for step in &flow.steps {
+            let mut seen = BTreeSet::new();
+            for substitute in &step.substitutes {
+                if step.requirement.is_required() {
+                    return Err(invalid_flow(format!(
+                        "the step `{}` is required, so nothing can stand in for it",
+                        step.key
+                    )));
+                }
+                if keys.contains(substitute.as_str()) || !seen.insert(substitute.as_str()) {
+                    return Err(invalid_flow(format!(
+                        "the substitute `{substitute}` of the step `{}` has the key of another step, alternative or substitute",
+                        step.key
+                    )));
+                }
+                let traits = self.authenticator_of_kind(&step.key, substitute)?.traits();
+                if traits.identifies || traits.factor.is_none() {
+                    return Err(invalid_flow(format!(
+                        "the substitute `{substitute}` of the step `{}` must prove a factor without establishing who is signing in",
+                        step.key
+                    )));
+                }
             }
         }
         Ok(())
@@ -188,9 +229,21 @@ impl FlowEngine {
                     .find(|alternative| alternative.key == input.step_key())
             })
             .flatten();
-        let (step, is_alternative) = match (alternative, current) {
-            (Some(alternative), _) => (alternative, true),
-            (None, Some(step)) if step.key == input.step_key() => (step, false),
+        let (step, kind, is_alternative) = match (alternative, current) {
+            (Some(alternative), _) => (alternative, alternative.authenticator.as_str(), true),
+            (None, Some(step)) if step.key == input.step_key() => {
+                (step, step.authenticator.as_str(), false)
+            }
+            // A substitute is submitted under its own kind while the
+            // sign-in waits for the step it stands in for.
+            (None, Some(step))
+                if step
+                    .substitutes
+                    .iter()
+                    .any(|substitute| substitute == input.step_key()) =>
+            {
+                (step, input.step_key(), false)
+            }
             (None, Some(step)) => {
                 return Err(DomainError::invalid(
                     "authentication.unexpected_step",
@@ -205,15 +258,14 @@ impl FlowEngine {
             }
         };
 
-        let authenticator = self.authenticator(step)?;
+        let authenticator = self.authenticator_of_kind(&step.key, kind)?;
         let misbehaved = || {
             DomainError::internal(
                 "authentication.authenticator_misbehaved",
                 "the sign-in could not continue",
             )
             .with_detail(format!(
-                "the authenticator `{}` answered in a way its place in the flow does not allow",
-                step.authenticator
+                "the authenticator `{kind}` answered in a way its place in the flow does not allow"
             ))
         };
         let before = transaction.clone();
@@ -368,14 +420,19 @@ impl FlowEngine {
     }
 
     fn authenticator(&self, step: &FlowStep) -> Result<&Arc<dyn Authenticator>, DomainError> {
-        self.authenticators
-            .get(step.authenticator.as_str())
-            .ok_or_else(|| {
-                invalid_flow(format!(
-                    "the step `{}` names the unknown authenticator `{}`",
-                    step.key, step.authenticator
-                ))
-            })
+        self.authenticator_of_kind(&step.key, &step.authenticator)
+    }
+
+    fn authenticator_of_kind(
+        &self,
+        step: &str,
+        kind: &str,
+    ) -> Result<&Arc<dyn Authenticator>, DomainError> {
+        self.authenticators.get(kind).ok_or_else(|| {
+            invalid_flow(format!(
+                "the step `{step}` names the unknown authenticator `{kind}`"
+            ))
+        })
     }
 }
 

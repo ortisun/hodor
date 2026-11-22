@@ -4,7 +4,7 @@ The `credential` context owns what a user proves their identity with. It stores 
 
 It does not decide whether a sign-in succeeds. That belongs to the `authentication` context, which also counts failed attempts and locks accounts. The credential context only says whether a secret is right.
 
-This page specifies passwords (Milestone 1), access tokens, and authenticator applications and security keys (Milestone 4). Passkeys, recovery codes and keys for programs are credentials too and are specified here when their turn comes.
+This page specifies passwords (Milestone 1), access tokens, and authenticator applications, security keys and recovery codes (Milestone 4). Passkeys and keys for programs are credentials too and are specified here when their turn comes.
 
 ## Passwords
 
@@ -190,6 +190,41 @@ A counter that does not grow means two authenticators answer for one credential:
 
 When every check passes, the counter, whether the credential is backed up and when it was last used are stored.
 
+## Recovery codes
+
+Recovery codes let a person in who has lost their second factor: the phone with the authenticator application, or the security key. They are written down or printed when the person enrolls, and each is used in place of the second factor once.
+
+### The codes
+
+| Property | Rule |
+|---|---|
+| How many | A set of ten codes per user. A user has at most one set |
+| Shape | Sixteen characters from the alphabet `0123456789ABCDEFGHJKMNPQRSTVWXYZ`, shown in four groups of four separated by hyphens, such as `7K2M-QX9D-4HVN-R8TA` |
+| Strength | Each character carries five bits, so a code carries 80 bits from the operating system's random source |
+| At rest | Only the SHA-256 of each code is stored. A copy of the database yields no code |
+| Read back | Never. The set is shown once, when it is generated |
+
+The alphabet leaves out `I`, `L`, `O` and `U`, so that a code copied by hand is not misread. What a person types is read generously: lowercase counts as uppercase, spaces and hyphens are ignored, `O` is read as `0`, and `I` and `L` as `1`. Anything else that is not sixteen characters of the alphabet is not a code.
+
+80 bits is why a plain SHA-256 is enough, as for the other high-entropy secrets of [Decision 0004](../../decisions/0004-token-formats.md): guessing one code online is stopped by the lockout long before luck matters, and finding a code from its hash in a copy of the database would take about 2⁸⁰ hashes. A slow password hash would add nothing but the cost of checking ten of them on every attempt.
+
+### Generating
+
+- **Generating makes a new set and ends the old one whole.** Every code of the earlier set, used or not, stops working in the same transaction. Two requests that generate at the same moment never leave two sets: one of them is refused, and the person asks again.
+- **A set is generated when a person enrolls their first second factor**, if they have no set with an unused code: whatever enrolls the factor asks for one and shows it with the confirmation. Until the account pages of Issue-70, that is the command-line tool, which shows the set after confirming an authenticator application. Registering a security key through the interaction interface does not make a set yet; an operator makes one with `hodor-cli recovery-codes generate`, until Issue-70 shows it with the registration.
+- **A set can be generated again on request**, which is what a person does after using several codes or when they fear a copy was seen.
+
+### Using a code
+
+- **A code works once.** It is marked used in the statement that accepts it. Of many requests that present the same code at the same moment, exactly one is accepted.
+- **The answer is only "verified" or "rejected"**, as for a password, with the number of unused codes left on success, so that the person can be told to generate a new set. A user without a set, a wrong code, a used code, a code of an earlier set and something that is not a code are all "rejected".
+- **Attempts are limited by the authentication context**, with the same counts and lockouts as passwords and codes of an authenticator application.
+- Using a code is an event of its own, carrying the user and how many codes are left, so that an auditor sees every use.
+
+### Removing
+
+Removing takes away the user's set. Removing the last second factor does not remove the set by itself: the codes are useless without a second factor step to stand in for, and the account pages of Issue-70 decide what removing a factor does.
+
 ## Operations
 
 | Use case | What it does |
@@ -213,6 +248,11 @@ When every check passes, the counter, whether the credential is backed up and wh
 | WebAuthn challenge | Makes a challenge for a user's credentials and returns it with the options for the browser |
 | Verify WebAuthn assertion | Answers "verified" or "rejected" for an answer to a challenge, and stores the new counter |
 | Has WebAuthn credentials | Says whether a user has at least one credential, for the authentication context to know whether a step can be performed |
+| Generate recovery codes | Makes a set of ten codes in place of the user's set, if any, and returns it once |
+| Generate recovery codes if none | The same, only when the user has no set with an unused code; answers nothing otherwise. Asked when a first second factor is enrolled |
+| Verify recovery code | Answers "verified", with the number of unused codes left, or "rejected", and marks an accepted code as used |
+| Count recovery codes | Says how many unused codes a user has |
+| Remove recovery codes | Takes away the user's set |
 
 ### Events
 
@@ -228,7 +268,12 @@ When every check passes, the counter, whether the credential is backed up and wh
 | `credential.webauthn_registered` | A WebAuthn credential was registered; carries the user and Hodor's identifier of the credential |
 | `credential.webauthn_counter_not_increased` | An answer came with a counter that did not grow; carries the user and Hodor's identifier of the credential |
 
-Events carry the user's identifier and nothing derived from the password, from a token, from a secret of an authenticator application or from a key. Beginning an enrollment produces no event: nothing is in use until it is confirmed. Replacing a hash because the parameters changed produces no event: nothing the user or an auditor cares about happened.
+| `credential.recovery_codes_generated` | A set of recovery codes was made in place of any earlier one; carries the user |
+| `credential.recovery_code_used` | A recovery code was accepted; carries the user and how many unused codes are left |
+| `credential.recovery_codes_removed` | A user's set of recovery codes was removed; carries the user |
+
+
+Events carry the user's identifier and nothing derived from the password, from a token, from a secret of an authenticator application, from a key or from a recovery code. Beginning an enrollment produces no event: nothing is in use until it is confirmed. Replacing a hash because the parameters changed produces no event: nothing the user or an auditor cares about happened.
 
 
 ### Ports
@@ -243,6 +288,8 @@ Events carry the user's identifier and nothing derived from the password, from a
 | `SecretBox` | The kernel's port that seals and opens the secret of an authenticator application |
 | `WebAuthnStore` | Keep pending registrations and use one up exactly once; store credentials, list a user's, find one by its identifier, store a new counter only over the one that was read |
 | `SignatureVerifier` (kernel) | Check a signature made with a WebAuthn credential's key |
+| `RecoveryCodeStore` | Store a user's set of recovery codes in place of the earlier one; mark a code used only if it is unused, in one statement; count the unused codes; remove the set |
+| `Digest` | The kernel's port that computes the SHA-256 of a recovery code |
 
 The hasher is a port because the choice of library is an infrastructure decision ([Decision 0008](../../decisions/0008-cryptography.md)); the context only knows that hashing is slow and can be unavailable.
 
@@ -319,7 +366,24 @@ The hasher is a port because the choice of library is an infrastructure decision
 
 A pending registration is deleted when it is used.
 
-All six are tenant tables under row-level security. `user_id` refers to a user of the identity context but is not a database foreign key: contexts do not reference each other's tables.
+### `credential.recovery_code_set`
+
+| Column | Type | Notes |
+|---|---|---|
+| `tenant_id`, `id` | `uuid` | Primary key |
+| `user_id` | `uuid` | The user the set belongs to; unique within the tenant, so a user has at most one set |
+| `created_at` | `timestamptz` | When the set was generated |
+
+### `credential.recovery_code`
+
+| Column | Type | Notes |
+|---|---|---|
+| `tenant_id`, `id` | `uuid` | Primary key |
+| `set_id` | `uuid` | The set the code belongs to; the code is removed with it |
+| `code_hash` | `bytea` | SHA-256 of the code, as read from what was typed; unique within its set |
+| `used_at` | `timestamptz` | Null until the code is accepted |
+
+All eight are tenant tables under row-level security. `user_id` refers to a user of the identity context but is not a database foreign key: contexts do not reference each other's tables.
 
 The design's data model has a general `credential` table with one row per credential of any kind. Each kind still has its own table: what is stored differs too much between kinds, and nothing yet needs to list every credential of a user at once.
 
@@ -329,8 +393,7 @@ The design's data model has a general `credential` table with one row per creden
 |---|---|
 | Refusing passwords found in breach lists. The tenant setting exists and is stored, but nothing checks it yet | Later in Phase 1 |
 | A secret key mixed into every hash, kept outside the database | With the keys context, Phase 2 |
-| Recovery codes | Issue-66 |
-| Enrolling and removing an authenticator application from the account pages, after proving oneself again | Issue-70 |
+| Enrolling and removing an authenticator application, and seeing and generating recovery codes, from the account pages, after proving oneself again | Issue-70 |
 | HOTP, the counter-based codes of RFC 4226, and codes sent by email or text message | Phase 4, outside the plan of 0.2.0 |
 | Signing in with a WebAuthn credential alone, without an identifier first: passkeys | Issue-68 |
 | Listing, renaming and removing WebAuthn credentials, and proving oneself again before registering one | Issue-70 |

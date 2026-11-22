@@ -192,6 +192,7 @@ fn step(key: &str, authenticator: &str) -> FlowStep {
         key: key.to_owned(),
         authenticator: authenticator.to_owned(),
         requirement: Requirement::Required,
+        substitutes: Vec::new(),
     }
 }
 

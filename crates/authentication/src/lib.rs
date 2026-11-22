@@ -16,7 +16,8 @@ pub mod testing;
 pub mod api {
     pub use crate::application::account::{AccountRequest, AccountService};
     pub use crate::application::authenticators::{
-        IdentifierAuthenticator, PasswordAuthenticator, TotpAuthenticator, WebAuthnAuthenticator,
+        IdentifierAuthenticator, PasswordAuthenticator, RecoveryCodeAuthenticator,
+        TotpAuthenticator, WebAuthnAuthenticator,
     };
     pub use crate::application::factors::FactorService;
     pub use crate::application::guard::AttemptGuard;

@@ -1,5 +1,5 @@
 //! The built-in authenticators: login identifier, password, authenticator
-//! application and WebAuthn.
+//! application, WebAuthn and recovery code.
 
 use crate::application::guard::AttemptGuard;
 use crate::domain::attempt::LockoutRules;
@@ -8,8 +8,8 @@ use crate::domain::authenticator::{
 };
 use crate::domain::transaction::AuthTransaction;
 use hodor_credential::api::{
-    AssertionResponse, Challenge, CredentialService, PasswordCheck, TotpCheck, TotpService,
-    WebAuthnService,
+    AssertionResponse, Challenge, CredentialService, PasswordCheck, RecoveryCodeCheck,
+    RecoveryCodeService, TotpCheck, TotpService, WebAuthnService,
 };
 use hodor_identity::api::{IdentityService, NormalizedIdentifier};
 use hodor_kernel::{Caller, Digest, DomainError, ErrorKind, TenantContext, UserId};
@@ -409,5 +409,99 @@ impl Authenticator for WebAuthnAuthenticator {
             challenge: made.challenge.0,
             options,
         }))
+    }
+}
+
+/// Checks one of the candidate's recovery codes, in place of a second
+/// factor they lost: a substitute, never a step of its own. See
+/// `docs/architecture/contexts/authentication.md`, "Substitutes".
+///
+/// The code is checked only once the attempt is admitted, with the same
+/// counts and lockouts as the password. A wrong code, a used code, a code
+/// of an earlier set and something that is not a code get the same
+/// rejection.
+#[derive(Clone)]
+pub struct RecoveryCodeAuthenticator {
+    codes: RecoveryCodeService,
+    tenants: TenantService,
+    guard: AttemptGuard,
+}
+
+impl std::fmt::Debug for RecoveryCodeAuthenticator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RecoveryCodeAuthenticator")
+            .finish_non_exhaustive()
+    }
+}
+
+impl RecoveryCodeAuthenticator {
+    /// The kind flows name it by, the key it is submitted under, and the
+    /// method recorded for it.
+    pub const KIND: &'static str = "recovery_code";
+
+    /// Wires the authenticator to the contexts it asks.
+    #[must_use]
+    pub fn new(codes: RecoveryCodeService, tenants: TenantService, guard: AttemptGuard) -> Self {
+        Self {
+            codes,
+            tenants,
+            guard,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Authenticator for RecoveryCodeAuthenticator {
+    fn kind(&self) -> &'static str {
+        Self::KIND
+    }
+
+    fn traits(&self) -> AuthenticatorTraits {
+        AuthenticatorTraits {
+            identifies: false,
+            factor: Some(Factor::Possession),
+            method: Some(Self::KIND),
+        }
+    }
+
+    async fn perform(
+        &self,
+        tenant: &TenantContext,
+        transaction: &AuthTransaction,
+        input: &StepInput,
+    ) -> Result<StepOutcome, DomainError> {
+        let StepInput::RecoveryCode(code) = input else {
+            return Ok(StepOutcome::Rejected);
+        };
+        let Some(identifier_key) = transaction.snapshot().identifier_key else {
+            return Ok(StepOutcome::Rejected);
+        };
+        let rules = lockout_rules(&self.tenants, tenant).await?;
+        let address = transaction.snapshot().client.address.as_deref();
+        self.guard
+            .admit(tenant, &rules, identifier_key, address, Caller::system())
+            .await?;
+        match self
+            .codes
+            .verify(tenant, transaction.candidate(), code, Caller::system())
+            .await?
+        {
+            RecoveryCodeCheck::Verified { .. } => {
+                self.guard.succeeded(tenant, identifier_key).await?;
+                Ok(StepOutcome::Proven)
+            }
+            RecoveryCodeCheck::Rejected => Ok(StepOutcome::Rejected),
+        }
+    }
+
+    async fn has_means(
+        &self,
+        tenant: &TenantContext,
+        transaction: &AuthTransaction,
+    ) -> Result<bool, DomainError> {
+        match transaction.candidate() {
+            Some(user) => Ok(self.codes.unused(tenant, user).await? > 0),
+            None => Ok(false),
+        }
     }
 }

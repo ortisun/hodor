@@ -1415,3 +1415,228 @@ pub async fn run_webauthn_contract(ports: WebAuthnPorts<'_>) {
         None
     );
 }
+
+type StoredSet = (crate::api::RecoveryCodeSetId, Vec<([u8; 32], bool)>);
+
+/// Recovery codes kept in memory.
+#[derive(Debug, Clone, Default)]
+pub struct InMemoryRecoveryCodes {
+    sets: Arc<Mutex<BTreeMap<(TenantId, UserId), StoredSet>>>,
+}
+
+impl InMemoryRecoveryCodes {
+    fn sets(&self) -> std::sync::MutexGuard<'_, BTreeMap<(TenantId, UserId), StoredSet>> {
+        self.sets.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::api::RecoveryCodeStore for InMemoryRecoveryCodes {
+    async fn replace(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        set: &crate::api::RecoveryCodeSet,
+    ) -> Result<(), DomainError> {
+        let codes = set.code_hashes.iter().map(|hash| (*hash, false)).collect();
+        self.sets()
+            .insert((uow.tenant().tenant_id(), set.user_id), (set.id, codes));
+        Ok(())
+    }
+
+    async fn use_code(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        user_id: UserId,
+        code_hash: &[u8; 32],
+    ) -> Result<bool, DomainError> {
+        let mut sets = self.sets();
+        let Some((_, codes)) = sets.get_mut(&(uow.tenant().tenant_id(), user_id)) else {
+            return Ok(false);
+        };
+        match codes
+            .iter_mut()
+            .find(|(hash, used)| hash == code_hash && !*used)
+        {
+            Some((_, used)) => {
+                *used = true;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    async fn unused(&self, uow: &mut dyn UnitOfWork, user_id: UserId) -> Result<u32, DomainError> {
+        let count = self
+            .sets()
+            .get(&(uow.tenant().tenant_id(), user_id))
+            .map_or(0, |(_, codes)| {
+                codes.iter().filter(|(_, used)| !used).count()
+            });
+        Ok(u32::try_from(count).unwrap_or(u32::MAX))
+    }
+
+    async fn remove(&self, uow: &mut dyn UnitOfWork, user_id: UserId) -> Result<bool, DomainError> {
+        Ok(self
+            .sets()
+            .remove(&(uow.tenant().tenant_id(), user_id))
+            .is_some())
+    }
+}
+
+/// The ports under test.
+#[derive(Clone)]
+pub struct RecoveryCodePorts<'a> {
+    /// Starts units of work.
+    pub units_of_work: &'a dyn UnitOfWorkFactory,
+    /// The store under test.
+    pub codes: &'a dyn crate::api::RecoveryCodeStore,
+}
+
+impl std::fmt::Debug for RecoveryCodePorts<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RecoveryCodePorts").finish_non_exhaustive()
+    }
+}
+
+/// Runs every rule a store of recovery codes must obey. Each run uses
+/// tenants of its own, so runs can share one database.
+///
+/// # Panics
+///
+/// Panics if the implementation breaks a rule.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one contract, read from top to bottom"
+)]
+pub async fn run_recovery_code_contract(ports: RecoveryCodePorts<'_>) {
+    use crate::api::{RecoveryCodeSet, RecoveryCodeSetId};
+    let tenant = tenant();
+    let elsewhere = self::tenant();
+    let user = UserId::generate();
+    let other = UserId::generate();
+    let moment = Timestamp::UNIX_EPOCH + time::Duration::days(20_000);
+    let hash = |byte: u8| [byte; 32];
+    let set = |user_id: UserId, bytes: &[u8]| RecoveryCodeSet {
+        id: RecoveryCodeSetId::generate(),
+        user_id,
+        created_at: moment,
+        code_hashes: bytes.iter().map(|byte| hash(*byte)).collect(),
+    };
+    let codes = ports.codes;
+
+    // Nothing is stored for a new user.
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    assert_eq!(codes.unused(uow.as_mut(), user).await.expect("unused"), 0);
+    assert!(
+        !codes
+            .use_code(uow.as_mut(), user, &hash(1))
+            .await
+            .expect("use")
+    );
+    assert!(!codes.remove(uow.as_mut(), user).await.expect("remove"));
+    drop(uow);
+
+    // A set is stored, and each of its codes is good for one use.
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    codes
+        .replace(uow.as_mut(), &set(user, &[1, 2, 3]))
+        .await
+        .expect("replace");
+    codes
+        .replace(uow.as_mut(), &set(other, &[1, 9]))
+        .await
+        .expect("other user");
+    uow.commit().await.expect("commit");
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    assert_eq!(codes.unused(uow.as_mut(), user).await.expect("unused"), 3);
+    assert!(
+        codes
+            .use_code(uow.as_mut(), user, &hash(1))
+            .await
+            .expect("first use")
+    );
+    assert!(
+        !codes
+            .use_code(uow.as_mut(), user, &hash(1))
+            .await
+            .expect("second use")
+    );
+    assert!(
+        !codes
+            .use_code(uow.as_mut(), user, &hash(7))
+            .await
+            .expect("not a code of the set")
+    );
+    uow.commit().await.expect("commit");
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    assert_eq!(codes.unused(uow.as_mut(), user).await.expect("unused"), 2);
+    assert!(
+        !codes
+            .use_code(uow.as_mut(), user, &hash(1))
+            .await
+            .expect("used before")
+    );
+
+    // A code is the user's own: another user's code does not work, and
+    // using one does not use the other user's equal code.
+    assert!(
+        !codes
+            .use_code(uow.as_mut(), user, &hash(9))
+            .await
+            .expect("another user's code")
+    );
+    assert_eq!(codes.unused(uow.as_mut(), other).await.expect("unused"), 2);
+    drop(uow);
+
+    // Nothing of one tenant is seen or used from another.
+    let mut uow = ports.units_of_work.begin(&elsewhere).await.expect("begin");
+    assert_eq!(codes.unused(uow.as_mut(), user).await.expect("unused"), 0);
+    assert!(
+        !codes
+            .use_code(uow.as_mut(), user, &hash(2))
+            .await
+            .expect("from another tenant")
+    );
+    assert!(
+        !codes
+            .remove(uow.as_mut(), user)
+            .await
+            .expect("remove from another tenant")
+    );
+    drop(uow);
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    assert_eq!(codes.unused(uow.as_mut(), user).await.expect("unused"), 2);
+    drop(uow);
+
+    // A new set ends the old one whole, used codes and unused ones.
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    codes
+        .replace(uow.as_mut(), &set(user, &[4]))
+        .await
+        .expect("new set");
+    uow.commit().await.expect("commit");
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    assert_eq!(codes.unused(uow.as_mut(), user).await.expect("unused"), 1);
+    assert!(
+        !codes
+            .use_code(uow.as_mut(), user, &hash(2))
+            .await
+            .expect("a code of the old set")
+    );
+    assert!(
+        codes
+            .use_code(uow.as_mut(), user, &hash(4))
+            .await
+            .expect("a code of the new set")
+    );
+    uow.commit().await.expect("commit");
+
+    // Removing takes the set away, and only the user's.
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    assert!(codes.remove(uow.as_mut(), user).await.expect("remove"));
+    uow.commit().await.expect("commit");
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    assert_eq!(codes.unused(uow.as_mut(), user).await.expect("unused"), 0);
+    assert!(!codes.remove(uow.as_mut(), user).await.expect("again"));
+    assert_eq!(codes.unused(uow.as_mut(), other).await.expect("unused"), 2);
+}

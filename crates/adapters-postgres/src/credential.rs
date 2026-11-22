@@ -6,8 +6,8 @@ use crate::uow::{connection, database_error};
 use hodor_credential::api::{
     AccessToken, AccessTokenHash, AccessTokenId, AccessTokenSnapshot, AccessTokenStore, Challenge,
     CoseAlgorithm, HistoricHash, PasswordHash, PasswordRecord, PasswordStore, PendingRegistration,
-    PendingRegistrationSnapshot, Totp, TotpId, TotpSnapshot, TotpStatus, TotpStore,
-    WebAuthnCredential, WebAuthnCredentialId, WebAuthnCredentialSnapshot, WebAuthnRegistrationId,
+    PendingRegistrationSnapshot, RecoveryCodeSet, RecoveryCodeStore, Totp, TotpId, TotpSnapshot,
+    TotpStatus, TotpStore, WebAuthnCredential, WebAuthnCredentialId, WebAuthnCredentialSnapshot, WebAuthnRegistrationId,
     WebAuthnStore,
 };
 use hodor_kernel::{DomainError, SealedSecret, TenantId, Timestamp, UnitOfWork, UserId};
@@ -758,5 +758,119 @@ impl WebAuthnStore for PgWebAuthnStore {
         .await
         .map_err(|e| database_error(&e))?;
         Ok(updated.rows_affected() == 1)
+    }
+}
+
+/// [`RecoveryCodeStore`] on `credential.recovery_code_set` and
+/// `credential.recovery_code`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PgRecoveryCodeStore;
+
+#[async_trait::async_trait]
+impl RecoveryCodeStore for PgRecoveryCodeStore {
+    async fn replace(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        set: &RecoveryCodeSet,
+    ) -> Result<(), DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        // The earlier set goes with its codes. Of two sets stored at the
+        // same moment, the second waits here or at the insert below, then
+        // meets the first one's row and is refused.
+        sqlx::query(
+            "DELETE FROM credential.recovery_code_set WHERE tenant_id = $1 AND user_id = $2",
+        )
+        .bind(tenant.as_uuid())
+        .bind(set.user_id.as_uuid())
+        .execute(connection(uow)?)
+        .await
+        .map_err(|e| database_error(&e))?;
+        sqlx::query(
+            "INSERT INTO credential.recovery_code_set (tenant_id, id, user_id, created_at)
+             VALUES ($1, $2, $3, $4)",
+        )
+        .bind(tenant.as_uuid())
+        .bind(set.id.as_uuid())
+        .bind(set.user_id.as_uuid())
+        .bind(set.created_at)
+        .execute(connection(uow)?)
+        .await
+        .map_err(|e| match &e {
+            sqlx::Error::Database(database) if database.is_unique_violation() => {
+                DomainError::conflict(
+                    "credential.recovery_codes_conflict",
+                    "another set of recovery codes was generated at the same time; ask again",
+                )
+            }
+            _ => database_error(&e),
+        })?;
+        let ids: Vec<Uuid> = set.code_hashes.iter().map(|_| Uuid::now_v7()).collect();
+        let hashes: Vec<Vec<u8>> = set.code_hashes.iter().map(|hash| hash.to_vec()).collect();
+        sqlx::query(
+            "INSERT INTO credential.recovery_code (tenant_id, id, set_id, code_hash)
+             SELECT $1, id, $2, code_hash FROM unnest($3::uuid[], $4::bytea[]) AS code (id, code_hash)",
+        )
+        .bind(tenant.as_uuid())
+        .bind(set.id.as_uuid())
+        .bind(&ids)
+        .bind(&hashes)
+        .execute(connection(uow)?)
+        .await
+        .map_err(|e| database_error(&e))?;
+        Ok(())
+    }
+
+    async fn use_code(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        user_id: UserId,
+        code_hash: &[u8; 32],
+    ) -> Result<bool, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        // One statement: of many requests with the same code, the row lock
+        // makes every one after the first see it used and change nothing.
+        let updated = sqlx::query(
+            "UPDATE credential.recovery_code AS code SET used_at = now()
+             FROM credential.recovery_code_set AS code_set
+             WHERE code.tenant_id = $1 AND code_set.tenant_id = $1
+               AND code_set.id = code.set_id AND code_set.user_id = $2
+               AND code.code_hash = $3 AND code.used_at IS NULL",
+        )
+        .bind(tenant.as_uuid())
+        .bind(user_id.as_uuid())
+        .bind(code_hash.as_slice())
+        .execute(connection(uow)?)
+        .await
+        .map_err(|e| database_error(&e))?;
+        Ok(updated.rows_affected() == 1)
+    }
+
+    async fn unused(&self, uow: &mut dyn UnitOfWork, user_id: UserId) -> Result<u32, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let (count,): (i64,) = sqlx::query_as(
+            "SELECT count(*) FROM credential.recovery_code AS code
+             JOIN credential.recovery_code_set AS code_set
+               ON code_set.tenant_id = code.tenant_id AND code_set.id = code.set_id
+             WHERE code.tenant_id = $1 AND code_set.user_id = $2 AND code.used_at IS NULL",
+        )
+        .bind(tenant.as_uuid())
+        .bind(user_id.as_uuid())
+        .fetch_one(connection(uow)?)
+        .await
+        .map_err(|e| database_error(&e))?;
+        u32::try_from(count).map_err(|_| out_of_range("count out of range"))
+    }
+
+    async fn remove(&self, uow: &mut dyn UnitOfWork, user_id: UserId) -> Result<bool, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let removed = sqlx::query(
+            "DELETE FROM credential.recovery_code_set WHERE tenant_id = $1 AND user_id = $2",
+        )
+        .bind(tenant.as_uuid())
+        .bind(user_id.as_uuid())
+        .execute(connection(uow)?)
+        .await
+        .map_err(|e| database_error(&e))?;
+        Ok(removed.rows_affected() > 0)
     }
 }
