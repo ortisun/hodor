@@ -235,6 +235,11 @@ export class Client {
     return this.#signIn(await this.#send("POST", "/sign-in/steps/password", { password }));
   }
 
+  /** Sends a code of the person's authenticator application. */
+  async submitTotp(code: string): Promise<SignInAnswer> {
+    return this.#signIn(await this.#send("POST", "/sign-in/steps/totp", { code }));
+  }
+
   /** Abandons the sign-in. One that is already gone is not an error. */
   async abandonSignIn(): Promise<void> {
     try {

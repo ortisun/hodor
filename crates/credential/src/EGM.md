@@ -13,19 +13,23 @@ The `application` and `domain` modules are private; other crates use the
 
 - `lib.rs: pub mod api` re-exports:
   - Access token use cases and port: `AccessTokenService`, `AccessTokenStore`.
+  - Authenticator application use cases and ports: `TotpService`, `TotpCheck`, `TotpStore`, `HmacSha1`, and `totp_code_at(mac, secret, moment)`, the code an application shows.
   - Password ports: `PasswordHasher`, `PasswordStore`, `PasswordVerification`.
   - Password use cases: `CredentialService`, `NewPassword`, `PasswordCheck`.
   - Access tokens: `AccessToken`, `AccessTokenEvent`, `AccessTokenHash`, `AccessTokenId`, `AccessTokenSecret`, `AccessTokenSnapshot`.
   - Passwords: `PasswordEvent`, `HistoricHash`, `MAX_PASSWORD_BYTES`, `PasswordHash`, `PasswordRecord`, `PasswordRules`, `check_acceptable`.
+  - Authenticator applications: `Totp`, `TotpEnrollment`, `TotpEvent`, `TotpId`, `TotpSnapshot`, `TotpStatus`, `ENROLLMENT_LIFETIME`, `STEP_SECONDS`, `TOTP_SEALING_PURPOSE`.
 - `lib.rs: pub mod testing` (`testing.rs`): public test support, compiled only under `#[cfg(any(test, feature = "testing"))]`. The `testing` feature turns on `hodor-kernel/testing` (`Cargo.toml`).
   - `InMemoryPasswords`: an in-memory `PasswordStore`.
   - `InMemoryAccessTokens`: an in-memory `AccessTokenStore`.
+  - `InMemoryTotps`: an in-memory `TotpStore`. `FakeHmacSha1`: a deterministic stand-in for HMAC-SHA-1, not HMAC. `base32_secret(text)`: the bytes of a Base32 secret, as an application reads it.
+  - `TotpPorts<'a> { units_of_work, totps }` and `run_totp_contract(ports)`: the contract every `TotpStore` must pass.
   - `FakeHasher`: a `PasswordHasher` for tests, with `raise_parameters()`, `set_overloaded(bool)`, and the counters `hashes()`, `verifications()` and `checks_against_nothing()`.
   - `Ports<'a> { units_of_work, passwords }` and `run_contract(ports)`: the contract every `PasswordStore` must pass.
   - `AccessTokenPorts<'a> { units_of_work, tokens }` and `run_access_token_contract(ports)`: the contract every `AccessTokenStore` must pass. It uses `hodor_kernel::random::testing::FakeDigest`.
 - Subdirectories:
-  - [application](./application/EGM.md): `CredentialService`, `AccessTokenService` and the `PasswordHasher`, `PasswordStore` and `AccessTokenStore` ports.
-  - [domain](./domain/EGM.md): password rules and records, access tokens, `PasswordEvent` and `AccessTokenEvent`.
+  - [application](./application/EGM.md): `CredentialService`, `AccessTokenService`, `TotpService` and the `PasswordHasher`, `PasswordStore`, `AccessTokenStore`, `TotpStore` and `HmacSha1` ports.
+  - [domain](./domain/EGM.md): password rules and records, access tokens, authenticator applications, `PasswordEvent`, `AccessTokenEvent` and `TotpEvent`.
 
 ## Invariants
 

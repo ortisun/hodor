@@ -6,24 +6,24 @@
 
 use clap::{Parser, ValueEnum};
 use hodor_adapters_crypto::{
-    Argon2Parameters, Argon2idHasher, AwsLcVerifier, HashingLimits, OsRandom, SecretKeys,
-    Sha256Digest,
+    Argon2Parameters, Argon2idHasher, AwsLcHmacSha1, AwsLcVerifier, HashingLimits, OsRandom,
+    SecretKeys, Sha256Digest,
 };
 use hodor_adapters_http::{GuardedHttpClient, OutboundPolicy};
 use hodor_adapters_ldap::LdapDirectoryClient;
 use hodor_adapters_postgres::{
     Database, PgAccessTokenStore, PgAttemptStore, PgAuditLog, PgLinkStore, PgMessageQueue,
     PgPasswordStore, PgPendingAuthorizationStore, PgProviderStore, PgRoleAssignmentStore,
-    PgSessionStore, PgTenantDirectory, PgTenantRepository, PgTransactionStore, PgUserRepository,
-    PgVerificationTokenStore,
+    PgSessionStore, PgTenantDirectory, PgTenantRepository, PgTotpStore, PgTransactionStore,
+    PgUserRepository, PgVerificationTokenStore,
 };
 use hodor_audit::api::AuditService;
 use hodor_authentication::api::{
     AccountService, AttemptGuard, AuthFlow, AuthenticationService, FlowEngine,
-    IdentifierAuthenticator, LockoutRules, PasswordAuthenticator,
+    IdentifierAuthenticator, LockoutRules, PasswordAuthenticator, Requirement, TotpAuthenticator,
 };
 use hodor_authorization::api::AuthorizationService;
-use hodor_credential::api::{AccessTokenService, CredentialService};
+use hodor_credential::api::{AccessTokenService, CredentialService, TotpService};
 use hodor_federation::api::{
     EXTERNAL_STEP, ExternalIdentityAuthenticator, ExternalSignIn, FederationService, GitHubClient,
     LockoutPolicy, OpenIdClient, SamlClient,
@@ -368,8 +368,21 @@ fn interaction(config: &Config, database: &Database) -> Result<InteractionState,
             guard.clone(),
         )));
     // Signing in through an identity provider is an alternative of the
-    // flow, offered only by an installation that can keep secrets.
+    // flow, and a code of an authenticator application its third step,
+    // both offered only by an installation that can keep secrets.
     let mut flow = AuthFlow::built_in();
+    if let Some(totp) = totp_service(config, database, random.clone())? {
+        engine = engine.with(Arc::new(TotpAuthenticator::new(
+            totp,
+            tenants.clone(),
+            guard.clone(),
+        )));
+        flow = flow.with_step(
+            TotpAuthenticator::KIND,
+            TotpAuthenticator::KIND,
+            Requirement::Optional,
+        );
+    }
     let external = external_sign_in(config, database, &identity, &tenants, &guard)?;
     if let Some(external) = &external {
         engine = engine.with(Arc::new(ExternalIdentityAuthenticator::new(
@@ -462,6 +475,26 @@ impl LockoutPolicy for TenantLockout {
 
 /// Builds what signing in through an identity provider needs, if this
 /// installation has keys to keep secrets with.
+/// Authenticator applications, whose secrets are kept sealed: none
+/// without `HODOR_SECRET_KEYS`.
+fn totp_service(
+    config: &Config,
+    database: &Database,
+    random: Arc<OsRandom>,
+) -> Result<Option<TotpService>, DomainError> {
+    let Some(setting) = &config.secret_keys else {
+        return Ok(None);
+    };
+    Ok(Some(TotpService::new(
+        Arc::new(database.clone()),
+        Arc::new(PgTotpStore),
+        Arc::new(SecretKeys::parse(&Secret::from(setting.clone()))?),
+        Arc::new(AwsLcHmacSha1),
+        random,
+        Arc::new(SystemClock),
+    )))
+}
+
 fn external_sign_in(
     config: &Config,
     database: &Database,

@@ -59,6 +59,39 @@ describe("the sign-in page", () => {
     expect(sent.at(-1)?.body).toEqual({ password: "correct horse" });
   });
 
+  it("asks a person with an authenticator application for its code after the password", async () => {
+    const { props, sent, go, user } = page({
+      "GET /session": [nobody],
+      "GET /sign-in": [noSignIn],
+      "POST /sign-in": [pending("identifier")],
+      "POST /sign-in/steps/identifier": [pending("password")],
+      "POST /sign-in/steps/password": [pending("totp")],
+      "POST /sign-in/steps/totp": [
+        json(200, { status: "rejected", step: "totp", attempts_left: 4, csrf_token: "token" }),
+        json(200, { status: "completed" }),
+      ],
+    });
+    render(<SignInPage {...props} notice={null} />);
+    await user.type(await screen.findByLabelText(en.identifierLabel), "ana@example.com{Enter}");
+    await user.type(await screen.findByLabelText(en.passwordLabel), "correct horse{Enter}");
+
+    const code = await screen.findByLabelText<HTMLInputElement>(en.totpLabel, { exact: false });
+    expect(document.activeElement).toBe(code);
+    expect(code.getAttribute("autocomplete")).toBe("one-time-code");
+    expect(code.getAttribute("inputmode")).toBe("numeric");
+    expect(screen.getByText(en.totpHint)).toBeTruthy();
+    await user.type(code, "000000{Enter}");
+
+    const alert = await alertShown();
+    expect(alert.textContent).toBe(`${en.rejected} ${en.attemptsLeft(4)}`);
+    const again = screen.getByLabelText<HTMLInputElement>(en.totpLabel, { exact: false });
+    expect(again.value).toBe("");
+    await user.type(again, "123 456{Enter}");
+
+    await waitFor(() => expect(go).toHaveBeenCalledWith("account"));
+    expect(sent.at(-1)?.body).toEqual({ code: "123 456" });
+  });
+
   it("continues a sign-in that is already in progress", async () => {
     const { props } = page({ "GET /session": [nobody], "GET /sign-in": [pending("password")] });
     render(<SignInPage {...props} notice={null} />);

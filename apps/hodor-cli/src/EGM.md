@@ -22,11 +22,15 @@ Commands, as typed, from the clap enums in `main.rs`:
 | `hodor-cli tenant list` | none | `TenantService::list` (`TenantCommand::List`) |
 | `hodor-cli tenant suspend` | `--slug`, `--reason` | `TenantService::suspend` (`TenantCommand::Suspend`) |
 | `hodor-cli tenant reactivate` | `--slug` | `TenantService::reactivate` (`TenantCommand::Reactivate`) |
+| `hodor-cli tenant second-factor` | `--slug`, `--policy` (`required`, `not-required`) | `TenantService::change_settings` with `authentication.second_factor` (`TenantCommand::SecondFactor`) |
 | `hodor-cli admin bootstrap` | `--tenant`, `--email`, `--token-minutes` (default 60) | `bootstrap_administrator` (`AdminCommand::Bootstrap`) |
 | `hodor-cli audit verify` | `--tenant` | `verify_audit`, which calls `hodor_audit::api::AuditService::verify` (`AuditCommand::Verify`) |
 | `hodor-cli provider add` | `--tenant`, `--alias`, `--name`, `--kind` (`openid-connect`, `github`, `ldap`, `saml`; default `openid-connect`), `--issuer`, `--client-id`, `--scope` (repeatable), `--no-create-users`, `--base`, `--filter`, `--subject-attribute` (default `entryUUID`), `--email-attribute`, `--name-attribute`, `--sign-on-address`, `--certificate`, `--trust-email`; client secret from `HODOR_PROVIDER_CLIENT_SECRET` | `FederationService::create_provider` (`ProviderCommand::Add`, `run_provider`) |
 | `hodor-cli provider list` | `--tenant` | `FederationService::providers` (`ProviderCommand::List`) |
 | `hodor-cli provider disable` / `enable` | `--tenant`, `--alias` | `FederationService::provider_by_alias`, then `FederationService::set_provider_status` with `ProviderStatus::Disabled` or `ProviderStatus::Enabled` |
+| `hodor-cli totp enroll` | `--tenant`, `--login`; keys from `HODOR_SECRET_KEYS` | `TotpService::begin_enrollment`, issuer the tenant's display name; prints `secret <Base32>` and `address <otpauth://…>` (`TotpCommand::Enroll`, `run_totp`) |
+| `hodor-cli totp confirm` | `--tenant`, `--login`, `--code` | `TotpService::confirm_enrollment`; prints `confirmed` (`TotpCommand::Confirm`) |
+| `hodor-cli totp remove` | `--tenant`, `--login` | `TotpService::remove`; prints `removed` or `nothing to remove` (`TotpCommand::Remove`) |
 | `hodor-cli secrets generate-key` | none | `hodor_adapters_crypto::SecretKeys::generate(&OsRandom)` (`SecretsCommand::GenerateKey`) |
 | `hodor-cli probe` | `--addr` (default `127.0.0.1:9090`), `--path` (default `/readyz`) | local `probe`, over `std::net::TcpStream` (`Command::Probe`) |
 
@@ -98,6 +102,11 @@ Other symbols in `main.rs`: `ProviderKindArg` (maps to `ProviderKind`),
 - `provider add`, `disable` and `enable` write identity provider rows; the
   client secret is sealed with the keys from `HODOR_SECRET_KEYS`
   (`run_provider`).
+- `totp enroll` stores a sealed secret and prints it once in Base32 with its
+  `otpauth://` address; `totp confirm` and `totp remove` change
+  `credential.totp` and record `credential.totp_enrolled` or
+  `credential.totp_removed` (`run_totp`). `tenant second-factor` changes the
+  tenant's settings.
 - `secrets generate-key` prints a new key once and stores it nowhere; it opens
   no database (`SecretsCommand::GenerateKey`).
 - `probe` opens one TCP connection and sends `GET <path> HTTP/1.1` (`probe`).

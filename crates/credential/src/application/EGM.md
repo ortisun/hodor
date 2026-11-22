@@ -3,9 +3,10 @@
 ## Overview
 
 The use cases of the credential context and the ports they need. There are
-two services. `CredentialService` (`service.rs`) sets, changes, verifies and
+three services. `CredentialService` (`service.rs`) sets, changes, verifies and
 removes passwords. `AccessTokenService` (`access_tokens.rs`) issues,
-authenticates and revokes access tokens. They drive the
+authenticates and revokes access tokens. `TotpService` (`totp.rs`) enrolls,
+confirms, checks and removes authenticator applications. They drive the
 [domain model](../domain/EGM.md) and reach storage and hashing only through
 port traits. The modules are `pub(crate)` (`mod.rs`); other crates use
 `hodor_credential::api` (`src/lib.rs`).
@@ -33,6 +34,13 @@ bound to.
   - `get(uow, id: AccessTokenId) -> Option<AccessToken>`.
   - `find_by_hash(uow, hash: &AccessTokenHash) -> Option<AccessToken>`.
   - `update(uow, token)`: stores a revoked token. `NotFound` if the tenant has no such token.
+- `TotpStore` (`totp.rs`). Implemented by `PgTotpStore` in `crates/adapters-postgres/src/credential.rs` and by `InMemoryTotps` in `src/testing.rs`.
+  - `active(uow, user_id) -> Option<Totp>` and `pending(uow, user_id) -> Option<Totp>`.
+  - `replace_pending(uow, enrollment)`: stores an enrollment in place of the user's earlier one still pending.
+  - `activate(uow, confirmed)`: puts the pending row in use and removes the user's earlier application in use. `NotFound` `credential.totp_enrollment_not_found` if the row is no longer pending.
+  - `use_step(uow, id, step) -> bool`: stores the step only if it is later than the last one used, in one statement.
+  - `remove(uow, user_id) -> bool`: removes both rows; answers whether one was in use.
+- `HmacSha1` (`totp.rs`), not async: `mac(key, message) -> [u8; 20]`. Implemented by `AwsLcHmacSha1` in `crates/adapters-crypto/src/hmac.rs` and by `FakeHmacSha1` in `src/testing.rs`.
 
 ### Service entry points
 
@@ -45,6 +53,12 @@ bound to.
   - `verify_password(tenant, user_id: Option<UserId>, password) -> PasswordCheck`.
   - `remove_password(tenant, user_id, caller)`.
   - `has_password(tenant, user_id) -> bool`: for administrators and account pages, never a sign-in form (doc comment).
+- `TotpService::new(units_of_work, store: Arc<dyn TotpStore>, secrets: Arc<dyn SecretBox>, mac: Arc<dyn HmacSha1>, random, clock)`.
+  - `begin_enrollment(tenant, user_id, issuer, account) -> TotpEnrollment`: 20 random bytes, sealed for `credential.totp_secret`; the secret is returned once, in Base32 and as an `otpauth://totp/` address.
+  - `confirm_enrollment(tenant, user_id, code, caller)`: `NotFound` `credential.totp_enrollment_not_found` when nothing waits or it waited ten minutes; `Invalid` `credential.totp_code_wrong` for a wrong code; records `credential.totp_enrolled`.
+  - `verify(tenant, user_id: Option<UserId>, code) -> TotpCheck`: `Verified` or `Rejected`; a right code is marked used in the same call.
+  - `has_totp(tenant, user_id) -> bool` and `remove(tenant, user_id, caller) -> bool` (records `credential.totp_removed` when one was in use).
+- `totp_code_at(mac, secret, moment) -> String` (`totp.rs`): the six digits an application shows.
 - `AccessTokenService::new(units_of_work, tokens: Arc<dyn AccessTokenStore>, digest: Arc<dyn Digest>, random: Arc<dyn RandomSource>, clock)`.
   - `issue(tenant, user_id, description, lifetime: time::Duration, caller) -> (AccessToken, AccessTokenSecret)`: the secret is returned once and is not available again.
   - `authenticate(tenant, presented: &str) -> Option<AccessToken>`.

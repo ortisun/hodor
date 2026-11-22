@@ -53,8 +53,8 @@ reach other crates only through `hodor_authentication::api` in `../lib.rs`.
 - `AuthenticatorTraits { identifies, factor, method }`.
 - `Factor`: `Knowledge`, `Possession`, `Inherence`.
 - `StepInput`: `Identifier(String)`, `Password(Secret<String>)`,
-  `External(ExternalInput)`; `step_key()` gives `"identifier"`, `"password"`
-  or the external input's step.
+  `Totp(Secret<String>)`, `External(ExternalInput)`; `step_key()` gives
+  `"identifier"`, `"password"`, `"totp"` or the external input's step.
 - `ExternalInput { step, fields }` with `field(name)`.
 - `StepOutcome`: `Identified { candidate, identifier_key }`, `Proven`,
   `Authenticated { user }`, `Rejected`.

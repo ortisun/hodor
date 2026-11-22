@@ -84,6 +84,13 @@ watched page and the steps a person repeats.
     SAML provider"`) - a person signs in through a SAML identity provider and
     is the same person the next time; a person who cancels at the SAML
     identity provider is told it did not work.
+  - `totp.spec.ts` - a person whose authenticator application an operator
+    enrolled with `hodor-cli totp enroll` and `totp confirm` (run through
+    `docker compose run … server`, honoring `COMPOSE_FILE` and
+    `COMPOSE_PROJECT_NAME`) is asked for a code after the password, is
+    refused with a wrong code, and signs in with the next one; the same with
+    the keyboard alone. The codes are computed with `node:crypto` as RFC 6238
+    says.
 
 ## Invariants
 
@@ -91,7 +98,8 @@ watched page and the steps a person repeats.
   `HODOR_URL`, the development mail server at `HODOR_MAIL_URL`, and a tenant
   `HODOR_TENANT` with open registration that offers the three development
   providers (commands in `stack.ts:HELP`). Otherwise `checkTheStack` stops
-  the run before any test.
+  the run before any test. `totp.spec.ts` also needs `docker compose` on the
+  machine that runs the tests, to run `hodor-cli` in the stack.
 - Tests run one at a time (`workers: 1`, `fullyParallel: false`), because
   the server limits attempts by the address requests come from and every test
   comes from the same one (comment in `../playwright.config.ts`).

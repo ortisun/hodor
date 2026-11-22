@@ -106,6 +106,8 @@ Settings are the tenant's policies. Other contexts read them; only the tenant co
 
 When a second factor is required, no sign-in to the tenant completes with one factor ([what a sign-in must reach](authentication.md#what-a-sign-in-must-reach)). Settings stored before this policy existed read as the default.
 
+The policy is set with `hodor-cli tenant second-factor --slug <slug> --policy required` (or `not-required`). Turning it on refuses every sign-in of a person who has no second factor yet, since enrolling one during a sign-in comes with Issue-70; enroll the people first, with `hodor-cli totp`.
+
 Settings outside the allowed ranges are rejected as a whole; a tenant never holds a partly valid policy. Branding and quotas are added by later phases.
 
 ## Events

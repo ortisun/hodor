@@ -16,6 +16,7 @@ The cryptography adapter. Hodor implements no cryptography of its own: this crat
 | `impl SignatureVerifier for AwsLcVerifier` (`signature.rs:14`) | `hodor_kernel::SignatureVerifier` | `AwsLcVerifier` |
 | `impl KeyProvider for LocalKeyProvider` (`keys.rs`) | `hodor_keys::api::KeyProvider` (keys context port) | `LocalKeyProvider` |
 | `impl PasswordHasher for Argon2idHasher` (`password.rs:228`) | `hodor_credential::api::PasswordHasher` (credential context port) | `Argon2idHasher` |
+| `impl HmacSha1 for AwsLcHmacSha1` (`hmac.rs`) | `hodor_credential::api::HmacSha1` (credential context port) | `AwsLcHmacSha1` |
 | `impl HttpClient for TestProvider` (`testing.rs:241`, test support only) | `hodor_kernel::HttpClient` | `testing::TestProvider` |
 
 ### Public items
@@ -31,6 +32,7 @@ The cryptography adapter. Hodor implements no cryptography of its own: this crat
   - `SecretKeys::generate(&dyn RandomSource) -> Secret<String>` makes a new 32-byte key in Base64.
 - `AwsLcVerifier`: verifies signatures with `aws-lc-rs` (`signature.rs:AwsLcVerifier`).
 - `LocalKeyProvider::new(root: Arc<SecretKeys>)`: the local key provider, named `local` (`keys.rs:LocalKeyProvider`). It makes P-256 keys for ES256, RSA keys of 2048 bits for RS256 and PS256, and 32-byte data keys for AES-256-GCM, and keeps each as a PKCS#8 document or raw key sealed with `root` for the tenant and the purpose `keys.<algorithm in lowercase>.<version without hyphens>`.
+- `AwsLcHmacSha1`: HMAC-SHA-1 with `aws-lc-rs` (`HMAC_SHA1_FOR_LEGACY_USE_ONLY`), for the codes of authenticator applications. Tested against RFC 2202 and the SHA-1 cases of RFC 6238 (`hmac.rs`).
 - `testing` (public test-support module): compiled only under `#[cfg(any(test, feature = "testing"))]` (`lib.rs:12`). The Cargo feature `testing` pulls in the optional `form_urlencoded` and `serde_json`. It provides:
   - the constants `CLIENT_ID` and `CLIENT_SECRET`;
   - `SigningKey`, with `rsa()`, `p256()`, `published(id)` (a JSON Web Key), `sign(algorithm, message)` and `token(header, claims)`;

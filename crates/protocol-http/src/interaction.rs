@@ -70,6 +70,7 @@ pub fn interaction_routes(state: InteractionState) -> Router {
         )
         .route("/sign-in/steps/identifier", post(submit_identifier))
         .route("/sign-in/steps/password", post(submit_password))
+        .route("/sign-in/steps/totp", post(submit_totp))
         .route("/sign-in/providers", get(offered_providers))
         .route("/sign-in/providers/{alias}", post(choose_provider))
         .route(
@@ -173,6 +174,13 @@ struct IdentifierBody {
 #[derive(Deserialize)]
 struct PasswordBody {
     password: String,
+}
+
+/// No `Debug`: this holds a code of an authenticator application until it
+/// is wrapped.
+#[derive(Deserialize)]
+struct TotpBody {
+    code: String,
 }
 
 /// What a person gives when asking to register or to recover a password.
@@ -537,6 +545,17 @@ async fn submit_password(
     Json(body): Json<PasswordBody>,
 ) -> Response {
     let input = StepInput::Password(Secret::from(body.password));
+    submit(&state, &tenant, &slug, &headers, input).await
+}
+
+async fn submit_totp(
+    State(state): State<InteractionState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(TenantSlug(slug)): Extension<TenantSlug>,
+    headers: HeaderMap,
+    Json(body): Json<TotpBody>,
+) -> Response {
+    let input = StepInput::Totp(Secret::from(body.code));
     submit(&state, &tenant, &slug, &headers, input).await
 }
 

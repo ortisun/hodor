@@ -644,3 +644,471 @@ pub async fn run_access_token_contract(ports: AccessTokenPorts<'_>) {
         None
     );
 }
+
+/// Authenticator applications kept in memory.
+#[derive(Debug, Clone, Default)]
+pub struct InMemoryTotps {
+    rows: Arc<Mutex<BTreeMap<(TenantId, crate::api::TotpId), crate::api::Totp>>>,
+}
+
+impl InMemoryTotps {
+    fn rows(
+        &self,
+    ) -> std::sync::MutexGuard<'_, BTreeMap<(TenantId, crate::api::TotpId), crate::api::Totp>> {
+        self.rows.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn find(
+        &self,
+        tenant: TenantId,
+        user_id: UserId,
+        status: crate::api::TotpStatus,
+    ) -> Option<crate::api::Totp> {
+        self.rows()
+            .iter()
+            .find(|((owner, _), totp)| {
+                *owner == tenant
+                    && totp.snapshot().user_id == user_id
+                    && totp.snapshot().status == status
+            })
+            .map(|(_, totp)| totp.clone())
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::api::TotpStore for InMemoryTotps {
+    async fn active(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        user_id: UserId,
+    ) -> Result<Option<crate::api::Totp>, DomainError> {
+        Ok(self.find(
+            uow.tenant().tenant_id(),
+            user_id,
+            crate::api::TotpStatus::Active,
+        ))
+    }
+
+    async fn pending(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        user_id: UserId,
+    ) -> Result<Option<crate::api::Totp>, DomainError> {
+        Ok(self.find(
+            uow.tenant().tenant_id(),
+            user_id,
+            crate::api::TotpStatus::Pending,
+        ))
+    }
+
+    async fn replace_pending(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        enrollment: &crate::api::Totp,
+    ) -> Result<(), DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let user_id = enrollment.snapshot().user_id;
+        let mut rows = self.rows();
+        rows.retain(|(owner, _), totp| {
+            !(*owner == tenant
+                && totp.snapshot().user_id == user_id
+                && totp.snapshot().status == crate::api::TotpStatus::Pending)
+        });
+        rows.insert((tenant, enrollment.id()), enrollment.clone());
+        Ok(())
+    }
+
+    async fn activate(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        confirmed: &crate::api::Totp,
+    ) -> Result<(), DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let user_id = confirmed.snapshot().user_id;
+        let mut rows = self.rows();
+        let waiting = rows
+            .get(&(tenant, confirmed.id()))
+            .is_some_and(|stored| stored.snapshot().status == crate::api::TotpStatus::Pending);
+        if !waiting {
+            return Err(DomainError::not_found(
+                "credential.totp_enrollment_not_found",
+                "there is no enrollment of an authenticator application waiting to be confirmed; begin again",
+            ));
+        }
+        rows.retain(|(owner, _), totp| {
+            !(*owner == tenant
+                && totp.snapshot().user_id == user_id
+                && totp.snapshot().status == crate::api::TotpStatus::Active)
+        });
+        rows.insert((tenant, confirmed.id()), confirmed.clone());
+        Ok(())
+    }
+
+    async fn use_step(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: crate::api::TotpId,
+        step: u64,
+    ) -> Result<bool, DomainError> {
+        let mut rows = self.rows();
+        let Some(totp) = rows.get_mut(&(uow.tenant().tenant_id(), id)) else {
+            return Ok(false);
+        };
+        let mut state = totp.snapshot().clone();
+        if state.status != crate::api::TotpStatus::Active
+            || state.last_used_step.is_some_and(|last| step <= last)
+        {
+            return Ok(false);
+        }
+        state.last_used_step = Some(step);
+        *totp = crate::api::Totp::from_snapshot(state);
+        Ok(true)
+    }
+
+    async fn remove(&self, uow: &mut dyn UnitOfWork, user_id: UserId) -> Result<bool, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let mut rows = self.rows();
+        let had = rows.iter().any(|((owner, _), totp)| {
+            *owner == tenant
+                && totp.snapshot().user_id == user_id
+                && totp.snapshot().status == crate::api::TotpStatus::Active
+        });
+        rows.retain(|(owner, _), totp| !(*owner == tenant && totp.snapshot().user_id == user_id));
+        Ok(had)
+    }
+}
+
+/// A stand-in for HMAC-SHA-1 in tests of use cases: deterministic, mixes
+/// every byte of the key and the message, and is not HMAC. The real one is
+/// tested against the vectors of RFC 6238 in `adapters-crypto`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FakeHmacSha1;
+
+impl crate::api::HmacSha1 for FakeHmacSha1 {
+    fn mac(&self, key: &[u8], message: &[u8]) -> [u8; 20] {
+        let mut out = [0_u8; 20];
+        let mut state: u32 = 0x811c_9dc5;
+        for (index, byte) in key.iter().chain(message).enumerate() {
+            state = (state ^ u32::from(*byte)).wrapping_mul(0x0100_0193);
+            out[index % 20] ^= state.to_be_bytes()[index % 4];
+        }
+        for (index, slot) in out.iter_mut().enumerate() {
+            state = (state ^ u32::try_from(index).unwrap_or(0)).wrapping_mul(0x0100_0193);
+            *slot ^= state.to_be_bytes()[0];
+        }
+        out
+    }
+}
+
+/// Reads the Base32 secret of an enrollment back into bytes, as an
+/// authenticator application does.
+///
+/// # Panics
+///
+/// Panics if the text is not Base32 of RFC 4648 without padding.
+#[must_use]
+pub fn base32_secret(text: &str) -> Vec<u8> {
+    const ALPHABET: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+    let mut bytes = Vec::new();
+    let mut buffer: u32 = 0;
+    let mut bits = 0;
+    for character in text.chars() {
+        let value =
+            u32::try_from(ALPHABET.find(character).expect("a Base32 character")).expect("small");
+        buffer = (buffer << 5) | value;
+        bits += 5;
+        if bits >= 8 {
+            bits -= 8;
+            bytes.push(u8::try_from((buffer >> bits) & 0xff).expect("one byte"));
+        }
+    }
+    bytes
+}
+
+/// The ports under test.
+#[derive(Clone)]
+pub struct TotpPorts<'a> {
+    /// Starts units of work.
+    pub units_of_work: &'a dyn UnitOfWorkFactory,
+    /// The store under test.
+    pub totps: &'a dyn crate::api::TotpStore,
+}
+
+impl std::fmt::Debug for TotpPorts<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TotpPorts").finish_non_exhaustive()
+    }
+}
+
+/// Runs every rule a store of authenticator applications must obey. Each
+/// run uses tenants of its own, so runs can share one database.
+///
+/// # Panics
+///
+/// Panics if the implementation breaks a rule.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one contract, read from top to bottom"
+)]
+pub async fn run_totp_contract(ports: TotpPorts<'_>) {
+    use crate::api::{Totp, TotpStatus};
+    use hodor_kernel::SealedSecret;
+    let tenant = tenant();
+    let elsewhere = self::tenant();
+    let user = UserId::generate();
+    let moment = Timestamp::UNIX_EPOCH + time::Duration::days(20_000);
+    let sealed = |byte: u8| SealedSecret::from_stored(vec![byte; 40]);
+
+    // Nothing is stored for a new user.
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    assert_eq!(
+        ports
+            .totps
+            .active(uow.as_mut(), user)
+            .await
+            .expect("active"),
+        None
+    );
+    assert_eq!(
+        ports
+            .totps
+            .pending(uow.as_mut(), user)
+            .await
+            .expect("pending"),
+        None
+    );
+    drop(uow);
+
+    // A new enrollment takes the place of the earlier one still waiting.
+    let first = Totp::begin(user, sealed(1), moment);
+    let second = Totp::begin(user, sealed(2), moment);
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    ports
+        .totps
+        .replace_pending(uow.as_mut(), &first)
+        .await
+        .expect("first");
+    ports
+        .totps
+        .replace_pending(uow.as_mut(), &second)
+        .await
+        .expect("second");
+    uow.commit().await.expect("commit");
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    assert_eq!(
+        ports
+            .totps
+            .pending(uow.as_mut(), user)
+            .await
+            .expect("pending"),
+        Some(second.clone())
+    );
+    assert_eq!(
+        ports
+            .totps
+            .active(uow.as_mut(), user)
+            .await
+            .expect("active"),
+        None
+    );
+    drop(uow);
+
+    // Another tenant sees nothing, cannot put it in use, use it or remove it.
+    let mut confirmed = second.clone();
+    confirmed.confirm(100, moment);
+    let mut uow = ports.units_of_work.begin(&elsewhere).await.expect("begin");
+    assert_eq!(
+        ports
+            .totps
+            .pending(uow.as_mut(), user)
+            .await
+            .expect("pending"),
+        None
+    );
+    assert_eq!(
+        ports
+            .totps
+            .activate(uow.as_mut(), &confirmed)
+            .await
+            .expect_err("another tenant's enrollment")
+            .code(),
+        "credential.totp_enrollment_not_found"
+    );
+    assert!(
+        !ports
+            .totps
+            .remove(uow.as_mut(), user)
+            .await
+            .expect("remove")
+    );
+    drop(uow);
+
+    // Putting it in use stores it unchanged, as the one in use.
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    ports
+        .totps
+        .activate(uow.as_mut(), &confirmed)
+        .await
+        .expect("activate");
+    uow.commit().await.expect("commit");
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    assert_eq!(
+        ports
+            .totps
+            .active(uow.as_mut(), user)
+            .await
+            .expect("active"),
+        Some(confirmed.clone())
+    );
+    assert_eq!(
+        ports
+            .totps
+            .pending(uow.as_mut(), user)
+            .await
+            .expect("pending"),
+        None
+    );
+    // It cannot be put in use a second time.
+    assert_eq!(
+        ports
+            .totps
+            .activate(uow.as_mut(), &confirmed)
+            .await
+            .expect_err("no longer pending")
+            .code(),
+        "credential.totp_enrollment_not_found"
+    );
+    drop(uow);
+
+    // A step is used only when it is later than the last one, and only in
+    // its own tenant.
+    let mut uow = ports.units_of_work.begin(&elsewhere).await.expect("begin");
+    assert!(
+        !ports
+            .totps
+            .use_step(uow.as_mut(), confirmed.id(), 200)
+            .await
+            .expect("use")
+    );
+    drop(uow);
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    assert!(
+        !ports
+            .totps
+            .use_step(uow.as_mut(), confirmed.id(), 99)
+            .await
+            .expect("earlier")
+    );
+    assert!(
+        !ports
+            .totps
+            .use_step(uow.as_mut(), confirmed.id(), 100)
+            .await
+            .expect("same")
+    );
+    assert!(
+        ports
+            .totps
+            .use_step(uow.as_mut(), confirmed.id(), 101)
+            .await
+            .expect("later")
+    );
+    assert!(
+        !ports
+            .totps
+            .use_step(uow.as_mut(), confirmed.id(), 101)
+            .await
+            .expect("again")
+    );
+    uow.commit().await.expect("commit");
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    assert_eq!(
+        ports
+            .totps
+            .active(uow.as_mut(), user)
+            .await
+            .expect("active")
+            .map(|totp| totp.snapshot().last_used_step),
+        Some(Some(101))
+    );
+    drop(uow);
+
+    // A new application waiting does not disturb the one in use; once
+    // confirmed it replaces it.
+    let third = Totp::begin(user, sealed(3), moment);
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    ports
+        .totps
+        .replace_pending(uow.as_mut(), &third)
+        .await
+        .expect("third");
+    assert_eq!(
+        ports
+            .totps
+            .active(uow.as_mut(), user)
+            .await
+            .expect("active")
+            .map(|t| t.id()),
+        Some(confirmed.id())
+    );
+    let mut third_confirmed = third.clone();
+    third_confirmed.confirm(500, moment);
+    ports
+        .totps
+        .activate(uow.as_mut(), &third_confirmed)
+        .await
+        .expect("activate");
+    uow.commit().await.expect("commit");
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    let active = ports
+        .totps
+        .active(uow.as_mut(), user)
+        .await
+        .expect("active")
+        .expect("one");
+    assert_eq!(active, third_confirmed);
+    assert_eq!(active.snapshot().status, TotpStatus::Active);
+    // The application replaced cannot be used any more.
+    assert!(
+        !ports
+            .totps
+            .use_step(uow.as_mut(), confirmed.id(), 1_000)
+            .await
+            .expect("use")
+    );
+    drop(uow);
+
+    // Removing takes everything away and says whether one was in use.
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    ports
+        .totps
+        .replace_pending(uow.as_mut(), &Totp::begin(user, sealed(4), moment))
+        .await
+        .expect("waiting");
+    assert!(
+        ports
+            .totps
+            .remove(uow.as_mut(), user)
+            .await
+            .expect("remove")
+    );
+    uow.commit().await.expect("commit");
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    assert_eq!(
+        ports
+            .totps
+            .active(uow.as_mut(), user)
+            .await
+            .expect("active"),
+        None
+    );
+    assert_eq!(
+        ports
+            .totps
+            .pending(uow.as_mut(), user)
+            .await
+            .expect("pending"),
+        None
+    );
+    assert!(!ports.totps.remove(uow.as_mut(), user).await.expect("again"));
+}

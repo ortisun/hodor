@@ -6,17 +6,22 @@ use axum::body::Body;
 use axum::http::{HeaderMap, Method, Request, StatusCode, header};
 use hodor_authentication::api::{
     AccountService, AttemptGuard, AuthFlow, AuthenticationService, FlowEngine,
-    IdentifierAuthenticator, PasswordAuthenticator,
+    IdentifierAuthenticator, PasswordAuthenticator, Requirement, TotpAuthenticator,
 };
 use hodor_authentication::testing::{
     InMemoryAttempts, InMemoryTransactions, InMemoryVerificationTokens,
 };
-use hodor_credential::api::{CredentialService, NewPassword, PasswordRules};
-use hodor_credential::testing::{FakeHasher, InMemoryPasswords};
+use hodor_credential::api::{
+    CredentialService, NewPassword, PasswordRules, STEP_SECONDS, TotpService, totp_code_at,
+};
+use hodor_credential::testing::{
+    FakeHasher, FakeHmacSha1, InMemoryPasswords, InMemoryTotps, base32_secret,
+};
 use hodor_identity::api::{CreateUser, IdentifierKind, IdentityService, Profile, UserKind};
 use hodor_identity::testing::InMemoryUsers;
 use hodor_kernel::clock::testing::FixedClock;
-use hodor_kernel::random::testing::FakeDigest;
+use hodor_kernel::random::testing::{CountingRandom, FakeDigest};
+use hodor_kernel::sealing::testing::FakeSecretBox;
 use hodor_kernel::uow::testing::InMemoryUnitOfWorkFactory;
 use hodor_kernel::{Caller, DomainError, Secret, TenantContext, Timestamp, UserId};
 use hodor_notification::api::Notifier;
@@ -61,6 +66,8 @@ impl TenantResolver for Tenants {
 struct World {
     router: Router,
     clock: Arc<FixedClock>,
+    /// Authenticator applications; nobody has one unless a test gives it.
+    totp: TotpService,
     ana: UserId,
     acme: TenantContext,
     /// What would be in people's mailboxes.
@@ -133,6 +140,19 @@ async fn world() -> World {
             tenants.clone(),
             guard.clone(),
         )));
+    let totp = TotpService::new(
+        units(),
+        Arc::new(InMemoryTotps::default()),
+        Arc::new(FakeSecretBox),
+        Arc::new(FakeHmacSha1),
+        Arc::new(CountingRandom::default()),
+        clock.clone(),
+    );
+    let engine = engine.with(Arc::new(TotpAuthenticator::new(
+        totp.clone(),
+        tenants.clone(),
+        guard.clone(),
+    )));
     let messages = InMemoryMessages::default();
     let accounts = AccountService::new(
         units(),
@@ -152,7 +172,11 @@ async fn world() -> World {
         units(),
         Arc::new(InMemoryTransactions::default()),
         engine,
-        AuthFlow::built_in(),
+        AuthFlow::built_in().with_step(
+            TotpAuthenticator::KIND,
+            TotpAuthenticator::KIND,
+            Requirement::Optional,
+        ),
         identity.clone(),
         sessions.clone(),
         tenants.clone(),
@@ -230,6 +254,7 @@ async fn world() -> World {
     World {
         router,
         clock,
+        totp,
         ana,
         acme,
         messages,
@@ -353,6 +378,17 @@ impl Browser {
             world,
             Method::POST,
             "/t/acme/interaction/sign-in/steps/password",
+            Some(body),
+        )
+        .await
+    }
+
+    async fn code(&mut self, world: &World, typed: &str) -> Reply {
+        let body = serde_json::json!({ "code": typed });
+        self.send(
+            world,
+            Method::POST,
+            "/t/acme/interaction/sign-in/steps/totp",
             Some(body),
         )
         .await
@@ -1239,4 +1275,80 @@ async fn the_routes_of_a_signed_in_person_refuse_everyone_else_in_one_way() {
         assert_eq!(reply.status, StatusCode::UNAUTHORIZED, "{method} {path}");
         assert_eq!(reply.code(), "session.not_authenticated");
     }
+}
+
+#[tokio::test]
+async fn a_person_with_an_authenticator_application_gives_a_code_after_the_password() {
+    use hodor_kernel::Clock as _;
+    let world = world().await;
+    let enrollment = world
+        .totp
+        .begin_enrollment(&world.acme, world.ana, "Acme", "ana@example.com")
+        .await
+        .expect("begin");
+    let secret = base32_secret(enrollment.secret());
+    let phone = || totp_code_at(&FakeHmacSha1, &secret, world.clock.now());
+    world
+        .totp
+        .confirm_enrollment(
+            &world.acme,
+            world.ana,
+            &Secret::from(phone()),
+            Caller::system(),
+        )
+        .await
+        .expect("confirm");
+    world.clock.advance(Duration::seconds(STEP_SECONDS));
+
+    let mut browser = Browser::default();
+    browser.start(&world).await;
+    browser.identifier(&world, "ana@example.com").await;
+    let after_password = browser.password(&world, PASSWORD).await;
+    assert_eq!(
+        (
+            after_password.body["status"].as_str(),
+            after_password.body["step"].as_str()
+        ),
+        (Some("pending"), Some("totp"))
+    );
+    assert_eq!(
+        browser.session(&world, "acme").await.status,
+        StatusCode::UNAUTHORIZED
+    );
+
+    let wrong = browser.code(&world, "000000").await;
+    assert_eq!(
+        (
+            wrong.status,
+            wrong.body["status"].as_str(),
+            wrong.body["step"].as_str()
+        ),
+        (StatusCode::OK, Some("rejected"), Some("totp"))
+    );
+    assert_eq!(wrong.body["attempts_left"], 4);
+
+    let done = browser.code(&world, &phone()).await;
+    assert_eq!(done.body, serde_json::json!({ "status": "completed" }));
+    let session = browser.session(&world, "acme").await;
+    assert_eq!(session.body["assurance"], "multi_factor");
+    assert_eq!(
+        session.body["methods"],
+        serde_json::json!(["password", "totp"])
+    );
+}
+
+#[tokio::test]
+async fn a_code_sent_before_the_password_is_the_wrong_step() {
+    let world = world().await;
+    let mut browser = Browser::default();
+    browser.start(&world).await;
+    browser.identifier(&world, "ana@example.com").await;
+    let early = browser.code(&world, "123456").await;
+    assert_eq!(
+        (early.status, early.code()),
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "authentication.unexpected_step"
+        )
+    );
 }

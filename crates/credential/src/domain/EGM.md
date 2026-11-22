@@ -36,6 +36,16 @@ use cases that drive this model are described in
   - `from_snapshot`, `snapshot`, `id`, `user_id`.
   - `is_good_at(now)`, `revoke(now) -> Option<AccessTokenEvent>`, `issued_event()`.
 
+### `totp.rs`
+
+- `TotpId`: defined with `hodor_kernel::define_id!`.
+- Constants: `ENROLLMENT_LIFETIME` (10 minutes), `STEP_SECONDS` (30), `SEALING_PURPOSE` (`credential.totp_secret`); crate-private `SECRET_BYTES` (20), `DIGITS` (6), `TOLERATED_STEPS` (1).
+- Crate-private functions: `step_at(moment)`, `code_from_mac(&[u8; 20]) -> u32` (the dynamic truncation of RFC 4226), `parse_code(typed) -> Option<u32>` (six digits once spaces are taken out), `candidate_steps(moment)` (the step before, the current one and the one after).
+- `TotpStatus`: `Pending` or `Active`; `as_str`, `parse`.
+- `TotpSnapshot { id, user_id, status, sealed_secret, created_at, confirmed_at, last_used_step }` and `Totp`: `begin(user_id, sealed, now)`, `from_snapshot`, `snapshot`, `id`, `can_be_confirmed_at(now)`, `confirm(step, now) -> TotpEvent`, `accepts_step(step)` (later than the last step used).
+- `TotpEnrollment::new(secret, issuer, account)`: `secret()` in Base32 without padding and `address()` (`otpauth://totp/…?secret=…&issuer=…&algorithm=SHA1&digits=6&period=30`). Its `Debug` prints nothing of either.
+- `TotpEvent`: `Enrolled { user_id }` (`credential.totp_enrolled`) and `Removed { user_id }` (`credential.totp_removed`).
+
 ### Domain events
 
 Both enums implement `hodor_kernel::DomainEvent` and serialize untagged.

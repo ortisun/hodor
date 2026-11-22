@@ -32,6 +32,14 @@ describe("the client for the interaction interface", () => {
     expect(await client.submitPassword("wrong")).toEqual({ status: "rejected", step: "password", attemptsLeft: 3 });
   });
 
+  it("sends a code of an authenticator application to its step", async () => {
+    const { client, sent } = scripted({
+      "POST /sign-in/steps/totp": [json(200, { status: "completed" })],
+    });
+    expect(await client.submitTotp("123456")).toEqual({ status: "completed", step: null, attemptsLeft: null });
+    expect(sent[0]?.body).toEqual({ code: "123456" });
+  });
+
   it("says there is no sign-in when the server knows none", async () => {
     const { client } = scripted({
       "GET /sign-in": [problem(404, "authentication.transaction_not_found")],

@@ -28,6 +28,9 @@ address.
     calls `client.chooseProvider(alias)` and passes the answer to `leave`.
   - `password` - `client.submitPassword`, with a hidden read-only `username`
     input for password managers.
+  - `totp` - `client.submitTotp`, one field (`text.totpLabel`, hint
+    `text.totpHint`) with `autocomplete="one-time-code"` and
+    `inputmode="numeric"`, and "use another address".
   - Any other step - `text.unknownStep` and "start again".
   - Answer `completed` means `go("account")`; `failed` shows `signInEnded`;
     `rejected` shows `rejected` and `attemptsLeft`. "Start again" and "use

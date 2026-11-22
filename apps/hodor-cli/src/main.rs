@@ -1,15 +1,15 @@
 //! Operations tool: migrations, tenant management, the first
-//! administrator and checking the audit log.
+//! administrator, authenticator applications and checking the audit log.
 
 use clap::{Parser, Subcommand, ValueEnum};
-use hodor_adapters_crypto::{OsRandom, SecretKeys, Sha256Digest};
+use hodor_adapters_crypto::{AwsLcHmacSha1, OsRandom, SecretKeys, Sha256Digest};
 use hodor_adapters_postgres::{
     Database, PgAccessTokenStore, PgAuditLog, PgLinkStore, PgPool, PgProviderStore,
-    PgRoleAssignmentStore, PgTenantDirectory, PgTenantRepository, PgUserRepository,
+    PgRoleAssignmentStore, PgTenantDirectory, PgTenantRepository, PgTotpStore, PgUserRepository,
 };
 use hodor_audit::api::AuditService;
 use hodor_authorization::api::{AuthorizationService, Role};
-use hodor_credential::api::AccessTokenService;
+use hodor_credential::api::{AccessTokenService, TotpService};
 use hodor_federation::api::{
     CreateProvider, DirectorySettings, FederationService, IdentityProvider, ProviderKind,
     ProviderSettings, ProviderStatus, SamlSettings, callback_address, saml_metadata_address,
@@ -18,7 +18,7 @@ use hodor_identity::api::{
     CreateUser, IdentifierKind, IdentityService, NormalizedIdentifier, Profile, UserKind,
 };
 use hodor_kernel::{Actor, CorrelationId, DomainError, Secret, SystemClock, TenantContext};
-use hodor_tenant::api::{Caller, CreateTenant, DirectoryEntry, TenantService};
+use hodor_tenant::api::{Caller, CreateTenant, DirectoryEntry, SecondFactorPolicy, TenantService};
 use std::error::Error;
 use std::io::{Read as _, Write as _};
 use std::net::{SocketAddr, TcpStream};
@@ -136,6 +136,25 @@ enum Command {
         public_url: String,
         #[command(subcommand)]
         command: ProviderCommand,
+    },
+
+    /// Manage people's authenticator applications, until people can do it
+    /// themselves from the account pages.
+    Totp {
+        /// Connection URL of the application role.
+        #[arg(
+            long,
+            env = "HODOR_DATABASE_URL",
+            hide_env_values = true,
+            global = true
+        )]
+        database_url: Option<String>,
+        /// The keys that keep secrets encrypted at rest, as the server
+        /// has them.
+        #[arg(long, env = "HODOR_SECRET_KEYS", hide_env_values = true, global = true)]
+        secret_keys: Option<String>,
+        #[command(subcommand)]
+        command: TotpCommand,
     },
 
     /// Work with the keys that keep secrets encrypted at rest.
@@ -306,6 +325,52 @@ enum AuditCommand {
 }
 
 #[derive(Subcommand)]
+enum TotpCommand {
+    /// Begin enrolling an authenticator application for a person: print
+    /// its secret and the `otpauth://` address for a QR code, once.
+    ///
+    /// Nothing is in use until a code is confirmed with `totp confirm`
+    /// within ten minutes.
+    Enroll {
+        /// The tenant's slug.
+        #[arg(long)]
+        tenant: String,
+        /// The person's login identifier.
+        #[arg(long)]
+        login: String,
+    },
+    /// Put the enrolled application in use with a code it shows.
+    Confirm {
+        /// The tenant's slug.
+        #[arg(long)]
+        tenant: String,
+        /// The person's login identifier.
+        #[arg(long)]
+        login: String,
+        /// The six digits the application shows.
+        #[arg(long)]
+        code: String,
+    },
+    /// Remove a person's authenticator application.
+    Remove {
+        /// The tenant's slug.
+        #[arg(long)]
+        tenant: String,
+        /// The person's login identifier.
+        #[arg(long)]
+        login: String,
+    },
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum SecondFactorArg {
+    /// Every sign-in must prove a second factor.
+    Required,
+    /// A second factor is asked only of the people who have one.
+    NotRequired,
+}
+
+#[derive(Subcommand)]
 enum TenantCommand {
     /// Create and activate a tenant.
     Create {
@@ -337,6 +402,18 @@ enum TenantCommand {
         /// The tenant's slug.
         #[arg(long)]
         slug: String,
+    },
+    /// Say whether every sign-in to the tenant must prove a second factor.
+    ///
+    /// Turned on, a person without a second factor can no longer sign in:
+    /// enroll people first with `totp enroll`.
+    SecondFactor {
+        /// The tenant's slug.
+        #[arg(long)]
+        slug: String,
+        /// Whether a second factor is required.
+        #[arg(long, value_enum)]
+        policy: SecondFactorArg,
     },
 }
 
@@ -436,6 +513,93 @@ async fn run_tenant(
                 .await?;
             Ok(format!("{} {}", entry.slug, tenant.status().as_str()))
         }
+        TenantCommand::SecondFactor { slug, policy } => {
+            let entry = existing(service, &slug).await?;
+            let tenant = TenantContext::assume(entry.tenant_id);
+            let mut settings = service.get(&tenant).await?.snapshot().settings.clone();
+            let (policy, said) = match policy {
+                SecondFactorArg::Required => (SecondFactorPolicy::Required, "required"),
+                SecondFactorArg::NotRequired => (SecondFactorPolicy::NotRequired, "not-required"),
+            };
+            settings.authentication.second_factor = policy;
+            service.change_settings(&tenant, settings, caller()).await?;
+            Ok(format!("{} second-factor {said}", entry.slug))
+        }
+    }
+}
+
+/// Runs a command about authenticator applications against a person of a
+/// tenant, both named by the operator.
+async fn run_totp(
+    database: &Database,
+    secret_keys: Option<String>,
+    command: TotpCommand,
+) -> Result<String, DomainError> {
+    let setting = secret_keys.ok_or_else(|| {
+        DomainError::invalid(
+            "secret.keys_missing",
+            "HODOR_SECRET_KEYS or --secret-keys is required: the secrets of authenticator applications are kept encrypted",
+        )
+    })?;
+    let units = || Arc::new(database.clone());
+    let clock = Arc::new(SystemClock);
+    let tenants = TenantService::new(
+        units(),
+        Arc::new(PgTenantRepository),
+        Arc::new(PgTenantDirectory::new(database.clone())),
+        clock.clone(),
+    );
+    let totp = TotpService::new(
+        units(),
+        Arc::new(PgTotpStore),
+        Arc::new(SecretKeys::parse(&Secret::from(setting))?),
+        Arc::new(AwsLcHmacSha1),
+        Arc::new(OsRandom),
+        clock.clone(),
+    );
+    let identity = IdentityService::new(units(), Arc::new(PgUserRepository), clock);
+    let (slug, login) = match &command {
+        TotpCommand::Enroll { tenant, login }
+        | TotpCommand::Confirm { tenant, login, .. }
+        | TotpCommand::Remove { tenant, login } => (tenant.clone(), login.clone()),
+    };
+    let entry = existing(&tenants, &slug).await?;
+    // The command-line tool is one of the places allowed to establish a
+    // tenant context: the operator names the tenant.
+    let tenant = TenantContext::assume(entry.tenant_id);
+    let user = identity
+        .find_by_login(&tenant, &login)
+        .await?
+        .ok_or_else(|| {
+            DomainError::not_found(
+                "identity.user_not_found",
+                "no person of this tenant has this login identifier",
+            )
+        })?
+        .id();
+
+    match command {
+        TotpCommand::Enroll { .. } => {
+            let issuer = tenants.get(&tenant).await?.snapshot().display_name.clone();
+            let enrollment = totp
+                .begin_enrollment(&tenant, user, &issuer, &login)
+                .await?;
+            Ok(format!(
+                "secret {}\naddress {}",
+                enrollment.secret(),
+                enrollment.address()
+            ))
+        }
+        TotpCommand::Confirm { code, .. } => {
+            totp.confirm_enrollment(&tenant, user, &Secret::from(code), caller())
+                .await?;
+            Ok("confirmed".to_owned())
+        }
+        TotpCommand::Remove { .. } => Ok(if totp.remove(&tenant, user, caller()).await? {
+            "removed".to_owned()
+        } else {
+            "nothing to remove".to_owned()
+        }),
     }
 }
 
@@ -847,6 +1011,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
             if !output.is_empty() {
                 writeln!(std::io::stdout(), "{output}")?;
             }
+        }
+        Command::Totp {
+            database_url,
+            secret_keys,
+            command,
+        } => {
+            let url = database_url.ok_or("HODOR_DATABASE_URL or --database-url is required")?;
+            let database = Database::connect(&Secret::from(url), 2).await?;
+            let output = run_totp(&database, secret_keys, command)
+                .await
+                .map_err(|error| format!("{}: {}", error.code(), error.message()))?;
+            writeln!(std::io::stdout(), "{output}")?;
         }
         Command::Secrets {
             command: SecretsCommand::GenerateKey,

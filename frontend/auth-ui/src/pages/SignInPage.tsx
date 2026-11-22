@@ -90,6 +90,7 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice }: Si
   const [expired, setExpired] = useState(false);
   const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
+  const [code, setCode] = useState("");
   const [providers, setProviders] = useState<OfferedProvider[]>([]);
   /** The directory the person chose to sign in through, if any. */
   const [directory, setDirectory] = useState<OfferedProvider | null>(null);
@@ -161,16 +162,19 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice }: Si
     try {
       const answer = await request();
       setPassword("");
+      setCode("");
       show(answer);
     } catch (thrown) {
       const failed = asFailure(thrown);
       const code = failed.code ?? "";
       if (GONE.includes(code)) {
         setPassword("");
+        setCode("");
         setExpired(true);
         await open(true);
       } else if (OUT_OF_STEP.includes(code)) {
         setPassword("");
+        setCode("");
         await open(false);
       } else {
         setFailure(failed);
@@ -188,6 +192,7 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice }: Si
     setFailure(null);
     setExpired(false);
     setPassword("");
+    setCode("");
     try {
       await client.abandonSignIn();
       await open(true);
@@ -207,6 +212,7 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice }: Si
     if (provider.isDirectory) {
       setFailure(null);
       setPassword("");
+      setCode("");
       setDirectory(provider);
       return;
     }
@@ -299,6 +305,7 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice }: Si
               setDirectory(null);
               setFailure(null);
               setPassword("");
+              setCode("");
             }}
           />
         </Form>
@@ -374,7 +381,26 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice }: Si
         </Form>
       ) : null}
 
-      {view.kind === "step" && view.step !== "identifier" && view.step !== "password" ? (
+      {view.kind === "step" && view.step === "totp" ? (
+        <Form key={view.shown} onSubmit={(event) => submit(event, () => client.submitTotp(code))}>
+          {identifier !== "" ? <Words quiet>{text.signingInAs(identifier)}</Words> : null}
+          <Field
+            label={text.totpLabel}
+            hint={text.totpHint}
+            name="code"
+            autoComplete="one-time-code"
+            inputMode="numeric"
+            autoFocus
+            verbatim
+            value={code}
+            onChange={setCode}
+          />
+          <Submit label={text.signIn} busy={busy} text={text} />
+          <Action variant="ghost" label={text.useAnotherIdentifier} onClick={() => void startAgain()} />
+        </Form>
+      ) : null}
+
+      {view.kind === "step" && !["identifier", "password", "totp"].includes(view.step) ? (
         <>
           <Notice kind="danger">{text.unknownStep}</Notice>
           <Action label={text.startAgain} onClick={() => void startAgain()} />

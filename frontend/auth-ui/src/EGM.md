@@ -66,6 +66,7 @@ its header); the pages see plain values.
     | `finishWithProvider(alias, state, { code } or { receipt })` | `POST /sign-in/providers/{alias}/callback` |
     | `submitIdentifier(identifier)` | `POST /sign-in/steps/identifier` |
     | `submitPassword(password)` | `POST /sign-in/steps/password` |
+    | `submitTotp(code)` | `POST /sign-in/steps/totp` |
     | `askToRegister(email, locale)` | `POST /registration` |
     | `completeRegistration(token, password, displayName)` | `POST /registration/complete` |
     | `askToRecover(email, locale)` | `POST /recovery` |
