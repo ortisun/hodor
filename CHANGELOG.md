@@ -8,7 +8,7 @@ Every release of Hodor, newest first. The rules for versions and releases are in
 
 The first release, a pre-release: the walking skeleton of [Milestone 1](docs/product/epics.md#milestone-1-walking-skeleton) and signing in with external identities, [Milestone 2](docs/product/epics.md#milestone-2-signing-in-with-external-identities). Hodor lets people into a tenant; it does not yet let applications ask Hodor who someone is.
 
-1.0.0 comes when three more parts are built: the OAuth 2.x authorization server and OpenID Provider, multi-factor authentication with passkeys and step-up, and the authorization engine with Open Policy Agent. These same contents were first published as `v1.0.0` by mistake, before those parts; that tag and release were withdrawn the same day, before any image or chart was published.
+0.2.0 comes when three more parts are built: the OAuth 2.x authorization server and OpenID Provider, multi-factor authentication with passkeys and step-up, and the authorization engine with Open Policy Agent. These same contents were first published as `v1.0.0` by mistake, before those parts; that tag and release were withdrawn the same day, before any image or chart was published.
 
 **0.1.0 is not ready to hold real accounts.** What stands in the way:
 
