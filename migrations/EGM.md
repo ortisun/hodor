@@ -2,7 +2,7 @@
 
 ## Overview
 
-The PostgreSQL schema, as twenty-three numbered SQL files. They are embedded in the
+The PostgreSQL schema, as twenty-four numbered SQL files. They are embedded in the
 binaries by `static MIGRATOR: Migrator = sqlx::migrate!("../../migrations")`
 in `crates/adapters-postgres/src/migrate.rs` and applied by
 `hodor_adapters_postgres::migrate`, which `hodor-cli migrate` calls with a
@@ -40,6 +40,7 @@ Tables created, by file:
 | `0021_federation_pending_authorization_expiry.sql` | adds the index `pending_authorization_expiry_idx` on `federation.pending_authorization (expires_at)`, for the cleanup job of `hodor-worker` |
 | `0022_federation_saml_answer.sql` | keeps only the answer of a SAML response in `federation.pending_authorization`, never the response |
 | `0023_keys.sql` | schema `keys`; table `keys.key_version` with the partial unique index `key_version_one_active` (one `active` row per tenant, use and algorithm) |
+| `0024_oauth_clients.sql` | schema `oauth`; `oauth.application`; `oauth.client`; `oauth.client_secret`; `oauth.client_key`; `oauth.resource_server`; `oauth.resource_server_scope` |
 
 No migration creates a type, an extension or seed rows; enumerations are text
 columns with `CHECK ... IN (...)` constraints.
