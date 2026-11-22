@@ -35,8 +35,9 @@ theme:
   name: material
   custom_dir: overrides
   language: en
-  logo: assets/images/door.svg
-  favicon: assets/images/door.svg
+  # The logo is in docs/, with the other pictures: docs/images/logo/.
+  logo: images/logo/hodor-icon.png
+  favicon: images/logo/hodor-icon.png
   icon:
     repo: fontawesome/brands/github
   # The system's own fonts: nothing is fetched from a font service.

@@ -8,6 +8,9 @@ hide:
 
 <div class="hodor-hero" markdown>
 
+![The Hodor logo: someone braced against a heavy wooden door, holding it shut](images/logo/hodor.png)
+{ .hodor-hero-logo }
+
 # Hodor
 
 Identity, authentication and authorization for many tenants, written in Rust. One server knows who people are and lets them in; each customer, product or environment gets a **tenant** of its own, with its own users, sign-in page, identity providers and audit log.
