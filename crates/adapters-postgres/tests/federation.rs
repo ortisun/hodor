@@ -421,7 +421,7 @@ async fn expired_pending_authorizations_are_removed_in_every_tenant_and_no_other
                         code_verifier: SealedSecret::from_stored(vec![1]),
                         redirect_uri: "https://hodor.example/callback".to_owned(),
                         expires_at,
-                        saml_response: None,
+                        saml_answer: None,
                         saml_receipt_hash: None,
                     },
                 )

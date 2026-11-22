@@ -67,6 +67,42 @@ pub enum Reason {
 }
 
 impl Reason {
+    /// Every reason, in the order of the checks.
+    pub const ALL: [Self; 26] = [
+        Self::Size,
+        Self::Malformed,
+        Self::DocumentType,
+        Self::Depth,
+        Self::ProcessingInstruction,
+        Self::Comment,
+        Self::Structure,
+        Self::Encrypted,
+        Self::Status,
+        Self::Wrapping,
+        Self::Unsigned,
+        Self::Reference,
+        Self::DuplicateIdentifier,
+        Self::Transform,
+        Self::Algorithm,
+        Self::Signature,
+        Self::Digest,
+        Self::Destination,
+        Self::Request,
+        Self::Unsolicited,
+        Self::Issuer,
+        Self::Confirmation,
+        Self::Recipient,
+        Self::Time,
+        Self::Audience,
+        Self::Subject,
+    ];
+
+    /// The reason with this fixed name, as [`Reason::as_str`] writes it.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|reason| reason.as_str() == name)
+    }
+
     /// The fixed name of the reason.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -132,5 +168,18 @@ impl fmt::Display for Refusal {
 impl From<Reason> for Refusal {
     fn from(reason: Reason) -> Self {
         Self::new(reason)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Reason;
+
+    #[test]
+    fn every_reason_is_read_back_from_its_name() {
+        for reason in Reason::ALL {
+            assert_eq!(Reason::from_name(reason.as_str()), Some(reason));
+        }
+        assert_eq!(Reason::from_name("not a reason"), None);
     }
 }

@@ -31,7 +31,7 @@ pub mod api {
     };
     pub use crate::domain::event::FederationEvent;
     pub use crate::domain::link::{ExternalIdentity, Subject};
-    pub use crate::domain::pending_authorization::PendingAuthorization;
+    pub use crate::domain::pending_authorization::{PendingAuthorization, SamlAnswer};
     pub use crate::domain::provider::{
         Alias, DirectorySettings, IdentityProvider, ProviderId, ProviderKind, ProviderSettings,
         ProviderSnapshot, ProviderStatus, SamlSettings, directory_host,

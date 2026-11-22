@@ -15,7 +15,7 @@ use crate::application::saml::{self, SamlClient};
 use crate::application::service::FederationService;
 use crate::domain::event::FederationEvent;
 use crate::domain::link::Subject;
-use crate::domain::pending_authorization::PendingAuthorization;
+use crate::domain::pending_authorization::{PendingAuthorization, SamlAnswer};
 use crate::domain::provider::{IDENTIFIER_PLACE, IdentityProvider, ProviderId, ProviderKind};
 use hodor_authentication::api::{
     AttemptGuard, AuthTransaction, Authenticator, AuthenticatorTraits, ExternalInput, Factor,
@@ -266,7 +266,7 @@ impl ExternalSignIn {
             code_verifier: self.secrets.seal(tenant, CODE_VERIFIER, &verifier)?,
             redirect_uri,
             expires_at: self.clock.now() + PENDING_LIFETIME,
-            saml_response: None,
+            saml_answer: None,
             saml_receipt_hash: None,
         };
         let mut uow = self.units_of_work.begin(tenant).await?;
@@ -337,14 +337,48 @@ impl ExternalSignIn {
             return Ok(receipt);
         }
         let state_hash = self.digest.sha256(relay_state.as_bytes());
+        let mut uow = self.units_of_work.begin(tenant).await?;
+        let pending = self
+            .pending
+            .unanswered(uow.as_mut(), provider.id(), state_hash, self.clock.now())
+            .await?;
+        uow.commit().await?;
+        // Nothing is checked for a relay state no sign-in is waiting with.
+        let Some(pending) = pending else {
+            return Ok(receipt);
+        };
+
+        // Checked now, against the request of that sign-in; only the answer
+        // is kept, never the response.
+        let service_provider = saml::service_provider_at(&pending.redirect_uri);
+        let answer = match saml::settings_of(&provider) {
+            None => SamlAnswer::Refused {
+                reason: "another_kind",
+            },
+            Some(settings) => match SamlClient::finish(
+                &provider,
+                settings,
+                &service_provider,
+                response,
+                &pending.nonce,
+                self.clock.now(),
+            ) {
+                Ok(identity) => SamlAnswer::Verified {
+                    subject: identity.subject,
+                    email: identity.email,
+                    name: identity.name,
+                },
+                Err(reason) => SamlAnswer::Refused { reason },
+            },
+        };
         let receipt_hash = self.digest.sha256(receipt.as_bytes());
         let mut uow = self.units_of_work.begin(tenant).await?;
         self.pending
-            .keep_response(
+            .answer(
                 uow.as_mut(),
                 provider.id(),
                 state_hash,
-                response,
+                &answer,
                 receipt_hash,
                 self.clock.now(),
             )
@@ -463,11 +497,8 @@ impl ExternalSignIn {
         input: &ExternalInput,
     ) -> Result<Result<UserId, Refusal>, DomainError> {
         let refuse = |reason| Ok(Err(Refusal::new(Some(provider.id()), reason)));
-        let Some(settings) = saml::settings_of(provider) else {
-            return refuse("another_kind");
-        };
-        let (Some(response), Some(kept_receipt)) =
-            (pending.saml_response.as_deref(), pending.saml_receipt_hash)
+        let (Some(answer), Some(kept_receipt)) =
+            (pending.saml_answer.as_ref(), pending.saml_receipt_hash)
         else {
             return refuse("no_response");
         };
@@ -481,17 +512,24 @@ impl ExternalSignIn {
         if !carried {
             return refuse("receipt_mismatch");
         }
-        let service_provider = saml::service_provider_at(&pending.redirect_uri);
-        match SamlClient::finish(
-            provider,
-            settings,
-            &service_provider,
-            response,
-            &pending.nonce,
-            self.clock.now(),
-        ) {
-            Ok(identity) => self.resolve(tenant, provider, identity).await,
-            Err(reason) => refuse(reason),
+        match answer {
+            SamlAnswer::Refused { reason } => refuse(reason),
+            SamlAnswer::Verified {
+                subject,
+                email,
+                name,
+            } => {
+                let identity = VerifiedIdentity {
+                    subject: subject.clone(),
+                    email: email.clone(),
+                    // SAML has no way of saying whether an address is
+                    // vouched for; that is the provider's setting.
+                    email_verified: false,
+                    name: name.clone(),
+                    locale: None,
+                };
+                self.resolve(tenant, provider, identity).await
+            }
         }
     }
 
