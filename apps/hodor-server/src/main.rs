@@ -15,20 +15,22 @@ use hodor_adapters_postgres::{
     Database, PgAccessTokenStore, PgApplicationStore, PgAttemptStore, PgAuditLog,
     PgAuthorizationCodeStore, PgAuthorizationRequestStore, PgClientAssertionStore, PgClientStore,
     PgGrantStore, PgKeyStore, PgLinkStore, PgMessageQueue, PgPasswordStore,
-    PgPendingAuthorizationStore, PgProviderStore, PgResourceServerStore, PgRoleAssignmentStore,
-    PgSealingStateStore, PgSessionStore, PgTenantDirectory, PgTenantRepository, PgTotpStore,
-    PgTransactionStore, PgUserRepository, PgVerificationTokenStore, PgWebAuthnStore,
+    PgPendingAuthorizationStore, PgProviderStore, PgRecoveryCodeStore, PgResourceServerStore,
+    PgRoleAssignmentStore, PgSealingStateStore, PgSessionStore, PgTenantDirectory,
+    PgTenantRepository, PgTotpStore, PgTransactionStore, PgUserRepository,
+    PgVerificationTokenStore, PgWebAuthnStore,
 };
 use hodor_audit::api::AuditService;
 use hodor_authentication::api::{
     AccountService, AttemptGuard, AuthFlow, AuthenticationService, FactorService, FlowEngine,
-    IdentifierAuthenticator, LockoutRules, PasswordAuthenticator, Requirement, TotpAuthenticator,
-    WebAuthnAuthenticator,
+    IdentifierAuthenticator, LockoutRules, PasswordAuthenticator, RecoveryCodeAuthenticator,
+    Requirement, TotpAuthenticator, WebAuthnAuthenticator,
 };
 use hodor_authorization::api::{AuthorizationService, EngineRegistry};
 use hodor_authorization_opa::api::{Instances, OpenPolicyAgentEngine};
 use hodor_credential::api::{
-    AccessTokenService, CredentialService, RelyingParty, TotpService, WebAuthnService,
+    AccessTokenService, CredentialService, RecoveryCodeService, RelyingParty, TotpService,
+    WebAuthnService,
 };
 use hodor_federation::api::{
     EXTERNAL_STEP, ExternalIdentityAuthenticator, ExternalSignIn, FederationService, GitHubClient,
@@ -433,28 +435,43 @@ fn interaction(config: &Config, database: &Database) -> Result<InteractionState,
             tenants.clone(),
             guard.clone(),
         )))
-        .with(Arc::new(WebAuthnAuthenticator::new(webauthn.clone())));
+        .with(Arc::new(WebAuthnAuthenticator::new(webauthn.clone())))
+        .with(Arc::new(RecoveryCodeAuthenticator::new(
+            RecoveryCodeService::new(
+                units(),
+                Arc::new(PgRecoveryCodeStore),
+                digest.clone(),
+                random.clone(),
+                clock.clone(),
+            ),
+            tenants.clone(),
+            guard.clone(),
+        )));
     // A person who registered a security key is asked for it after the
     // first factor. Signing in through an identity provider is an
     // alternative of the flow, and a code of an authenticator application
     // one more step, both offered only by an installation that can keep
-    // secrets.
-    let mut flow = AuthFlow::built_in().with_step(
-        WebAuthnAuthenticator::KIND,
-        WebAuthnAuthenticator::KIND,
-        Requirement::Optional,
-    );
+    // secrets. A recovery code stands in for either second factor.
+    let mut flow = AuthFlow::built_in()
+        .with_step(
+            WebAuthnAuthenticator::KIND,
+            WebAuthnAuthenticator::KIND,
+            Requirement::Optional,
+        )
+        .with_substitute(WebAuthnAuthenticator::KIND, RecoveryCodeAuthenticator::KIND);
     if let Some(totp) = totp_service(config, database, random.clone())? {
         engine = engine.with(Arc::new(TotpAuthenticator::new(
             totp,
             tenants.clone(),
             guard.clone(),
         )));
-        flow = flow.with_step(
-            TotpAuthenticator::KIND,
-            TotpAuthenticator::KIND,
-            Requirement::Optional,
-        );
+        flow = flow
+            .with_step(
+                TotpAuthenticator::KIND,
+                TotpAuthenticator::KIND,
+                Requirement::Optional,
+            )
+            .with_substitute(TotpAuthenticator::KIND, RecoveryCodeAuthenticator::KIND);
     }
     let external = external_sign_in(config, database, &identity, &tenants, &guard)?;
     if let Some(external) = &external {

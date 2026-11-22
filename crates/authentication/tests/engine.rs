@@ -1267,3 +1267,199 @@ async fn a_failure_to_learn_the_means_leaves_the_sign_in_unchanged() {
         "the password step is not recorded either"
     );
 }
+
+/// The built-in flow, then the security key "key" as an optional step, with
+/// "spare" as its substitute; both enrolled or not as asked.
+fn world_with_substitute(key_enrolled: bool, spare_enrolled: bool) -> (World, Arc<Enrollable>) {
+    let (mut world, _) = world_with_second_step(Requirement::Optional, key_enrolled);
+    let spare = Enrollable::new("spare", Factor::Possession, spare_enrolled);
+    world.engine = world.engine.with(spare.clone());
+    world.flow = world.flow.with_substitute("key", "spare");
+    (world, spare)
+}
+
+#[test]
+fn the_validity_rules_of_substitutes_are_enforced() {
+    let (mut world, _) = world_with_substitute(true, true);
+    world.engine = world.engine.with(Arc::new(Named {
+        kind: "remark",
+        traits: AuthenticatorTraits {
+            identifies: false,
+            factor: None,
+            method: None,
+        },
+    }));
+    world.engine = world.engine.with(Arc::new(Named {
+        kind: "badge",
+        traits: AuthenticatorTraits {
+            identifies: true,
+            factor: Some(Factor::Possession),
+            method: Some("badge"),
+        },
+    }));
+    world
+        .engine
+        .validate(&world.flow)
+        .expect("a substitute of an optional second step is valid");
+    let optional_key = || AuthFlow::built_in().with_step("key", "key", Requirement::Optional);
+    let mut alternative_with_substitute =
+        AuthFlow::built_in().with_alternative("security-key", "security-key");
+    alternative_with_substitute.alternatives[0]
+        .substitutes
+        .push("spare".to_owned());
+    let cases = [
+        (
+            "a substitute of a required step",
+            AuthFlow::built_in().with_substitute("password", "spare"),
+            "is required",
+        ),
+        (
+            "a substitute with the key of a step",
+            optional_key().with_substitute("key", "password"),
+            "has the key of another step",
+        ),
+        (
+            "the same substitute twice for one step",
+            optional_key()
+                .with_substitute("key", "spare")
+                .with_substitute("key", "spare"),
+            "has the key of another step",
+        ),
+        (
+            "a substitute that establishes who is signing in",
+            optional_key().with_substitute("key", "badge"),
+            "without establishing who is signing in",
+        ),
+        (
+            "a substitute that proves nothing",
+            optional_key().with_substitute("key", "remark"),
+            "must prove a factor",
+        ),
+        (
+            "a substitute the engine does not know",
+            optional_key().with_substitute("key", "carrier-pigeon"),
+            "unknown authenticator",
+        ),
+        (
+            "an alternative with a substitute",
+            alternative_with_substitute,
+            "has substitutes",
+        ),
+    ];
+    for (case, flow, expected) in cases {
+        let error = world.engine.validate(&flow).expect_err(case);
+        assert_eq!(error.code(), "authentication.flow_invalid", "{case}");
+        assert!(
+            error.message().contains(expected),
+            "{case}: `{}` does not mention `{expected}`",
+            error.message()
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_substitute_satisfies_the_step_and_records_its_own_method() {
+    let (world, _) = world_with_substitute(true, true);
+    let (mut transaction, progress) = through_the_password(&world).await;
+    assert_eq!(
+        progress,
+        Progress::Next {
+            step: "key".to_owned()
+        },
+        "the step is what the pages show"
+    );
+    let done = world
+        .submit(&mut transaction, code("spare", "1234"), START)
+        .await
+        .expect("satisfied by the substitute");
+    assert_eq!(done, Progress::ReadyToComplete);
+    assert_eq!(
+        world.engine.assurance(&transaction),
+        Some(Assurance::MultiFactor)
+    );
+    assert_eq!(
+        transaction.snapshot().satisfied_methods,
+        ["password", "spare"],
+        "the substitute's method, not the step's"
+    );
+    let error = world
+        .submit(&mut transaction, code("key", "1234"), START)
+        .await
+        .expect_err("the step is satisfied already");
+    assert_eq!(error.code(), "authentication.no_step_pending");
+}
+
+#[tokio::test]
+async fn a_rejected_substitute_counts_against_the_step_which_still_waits() {
+    let (world, _) = world_with_substitute(true, true);
+    let (mut transaction, _) = through_the_password(&world).await;
+    let first = world
+        .submit(&mut transaction, code("spare", "0000"), START)
+        .await
+        .expect("rejected, not refused");
+    let Progress::Rejected {
+        attempts_left: after_substitute,
+    } = first
+    else {
+        panic!("a wrong substitute is a rejection, not {first:?}");
+    };
+    let second = world
+        .submit(&mut transaction, code("key", "0000"), START)
+        .await
+        .expect("rejected, not refused");
+    let Progress::Rejected {
+        attempts_left: after_step,
+    } = second
+    else {
+        panic!("a wrong code of the step is a rejection, not {second:?}");
+    };
+    assert_eq!(
+        after_step + 1,
+        after_substitute,
+        "both ways count against the same tolerance"
+    );
+    let done = world
+        .submit(&mut transaction, code("key", "1234"), START)
+        .await
+        .expect("the step itself still works");
+    assert_eq!(done, Progress::ReadyToComplete);
+    assert_eq!(transaction.snapshot().satisfied_methods, ["password", "key"]);
+}
+
+#[tokio::test]
+async fn a_substitute_is_not_offered_for_a_step_that_is_passed_over() {
+    let (world, spare) = world_with_substitute(false, true);
+    let (mut transaction, progress) = through_the_password(&world).await;
+    assert_eq!(
+        progress,
+        Progress::ReadyToComplete,
+        "without the security key the step is passed over, whatever the substitute"
+    );
+    assert_eq!(
+        spare.asked.load(Ordering::SeqCst),
+        0,
+        "whether the step is performed is the step's own question"
+    );
+    let error = world
+        .submit(&mut transaction, code("spare", "1234"), START)
+        .await
+        .expect_err("nothing waits for a substitute");
+    assert_eq!(error.code(), "authentication.no_step_pending");
+}
+
+#[tokio::test]
+async fn a_substitute_is_accepted_only_while_its_step_waits() {
+    let (world, _) = world_with_substitute(true, true);
+    let mut transaction = world.begin();
+    world
+        .submit(&mut transaction, identifier("ana"), START)
+        .await
+        .expect("identifier");
+    let before = transaction.clone();
+    let error = world
+        .submit(&mut transaction, code("spare", "1234"), START)
+        .await
+        .expect_err("the sign-in waits for the password");
+    assert_eq!(error.code(), "authentication.unexpected_step");
+    assert_eq!(transaction, before, "a refused substitute changes nothing");
+}

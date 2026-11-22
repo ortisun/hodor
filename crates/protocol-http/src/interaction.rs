@@ -74,6 +74,7 @@ pub fn interaction_routes(state: InteractionState) -> Router {
         .route("/sign-in/steps/identifier", post(submit_identifier))
         .route("/sign-in/steps/password", post(submit_password))
         .route("/sign-in/steps/totp", post(submit_totp))
+        .route("/sign-in/steps/recovery_code", post(submit_recovery_code))
         .route("/sign-in/steps/webauthn/options", post(webauthn_options))
         .route("/sign-in/steps/webauthn", post(submit_webauthn))
         .route("/sign-in/providers", get(offered_providers))
@@ -194,6 +195,12 @@ struct PasswordBody {
 /// is wrapped.
 #[derive(Deserialize)]
 struct TotpBody {
+    code: String,
+}
+
+/// No `Debug`: this holds a recovery code until it is wrapped.
+#[derive(Deserialize)]
+struct RecoveryCodeBody {
     code: String,
 }
 
@@ -584,6 +591,18 @@ async fn submit_totp(
     Json(body): Json<TotpBody>,
 ) -> Response {
     let input = StepInput::Totp(Secret::from(body.code));
+    submit(&state, &tenant, &slug, &headers, input).await
+}
+
+/// A recovery code, in place of the second factor the sign-in waits for.
+async fn submit_recovery_code(
+    State(state): State<InteractionState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(TenantSlug(slug)): Extension<TenantSlug>,
+    headers: HeaderMap,
+    Json(body): Json<RecoveryCodeBody>,
+) -> Response {
+    let input = StepInput::RecoveryCode(Secret::from(body.code));
     submit(&state, &tenant, &slug, &headers, input).await
 }
 

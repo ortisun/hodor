@@ -93,7 +93,15 @@ async fn an_operator_enrolls_confirms_and_removes_an_authenticator_application()
         "totp", "confirm", "--tenant", "acme", "--login", LOGIN, "--code", &code,
     ]);
     assert!(confirmed.status.success(), "{confirmed:?}");
-    assert_eq!(text(&confirmed.stdout), "confirmed");
+    let said = text(&confirmed.stdout);
+    let mut lines = said.lines();
+    assert_eq!(lines.next(), Some("confirmed"));
+    assert_eq!(
+        lines.next(),
+        Some("recovery codes, shown once: 10"),
+        "a first second factor comes with recovery codes"
+    );
+    assert_eq!(lines.count(), 10);
     let again = tool.run(&[
         "totp", "confirm", "--tenant", "acme", "--login", LOGIN, "--code", &code,
     ]);

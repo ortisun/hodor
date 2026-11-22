@@ -6,16 +6,19 @@ use axum::body::Body;
 use axum::http::{HeaderMap, Method, Request, StatusCode, header};
 use hodor_authentication::api::{
     AccountService, AttemptGuard, AuthFlow, AuthenticationService, FlowEngine,
-    IdentifierAuthenticator, PasswordAuthenticator, Requirement, TotpAuthenticator,
+    IdentifierAuthenticator, PasswordAuthenticator, RecoveryCodeAuthenticator, Requirement,
+    TotpAuthenticator,
 };
 use hodor_authentication::testing::{
     InMemoryAttempts, InMemoryTransactions, InMemoryVerificationTokens,
 };
 use hodor_credential::api::{
-    CredentialService, NewPassword, PasswordRules, STEP_SECONDS, TotpService, totp_code_at,
+    CredentialService, NewPassword, PasswordRules, RecoveryCodeService, STEP_SECONDS, TotpService,
+    totp_code_at,
 };
 use hodor_credential::testing::{
-    FakeHasher, FakeHmacSha1, InMemoryPasswords, InMemoryTotps, base32_secret,
+    FakeHasher, FakeHmacSha1, InMemoryPasswords, InMemoryRecoveryCodes, InMemoryTotps,
+    base32_secret,
 };
 use hodor_identity::api::{CreateUser, IdentifierKind, IdentityService, Profile, UserKind};
 use hodor_identity::testing::InMemoryUsers;
@@ -68,6 +71,8 @@ struct World {
     clock: Arc<FixedClock>,
     /// Authenticator applications; nobody has one unless a test gives it.
     totp: TotpService,
+    /// Recovery codes; nobody has any unless a test makes them.
+    recovery_codes: RecoveryCodeService,
     ana: UserId,
     acme: TenantContext,
     /// What would be in people's mailboxes.
@@ -148,11 +153,24 @@ async fn world() -> World {
         Arc::new(CountingRandom::default()),
         clock.clone(),
     );
-    let engine = engine.with(Arc::new(TotpAuthenticator::new(
-        totp.clone(),
-        tenants.clone(),
-        guard.clone(),
-    )));
+    let recovery_codes = RecoveryCodeService::new(
+        units(),
+        Arc::new(InMemoryRecoveryCodes::default()),
+        digest.clone(),
+        Arc::new(CountingRandom::default()),
+        clock.clone(),
+    );
+    let engine = engine
+        .with(Arc::new(TotpAuthenticator::new(
+            totp.clone(),
+            tenants.clone(),
+            guard.clone(),
+        )))
+        .with(Arc::new(RecoveryCodeAuthenticator::new(
+            recovery_codes.clone(),
+            tenants.clone(),
+            guard.clone(),
+        )));
     let messages = InMemoryMessages::default();
     let accounts = AccountService::new(
         units(),
@@ -172,11 +190,13 @@ async fn world() -> World {
         units(),
         Arc::new(InMemoryTransactions::default()),
         engine,
-        AuthFlow::built_in().with_step(
-            TotpAuthenticator::KIND,
-            TotpAuthenticator::KIND,
-            Requirement::Optional,
-        ),
+        AuthFlow::built_in()
+            .with_step(
+                TotpAuthenticator::KIND,
+                TotpAuthenticator::KIND,
+                Requirement::Optional,
+            )
+            .with_substitute(TotpAuthenticator::KIND, RecoveryCodeAuthenticator::KIND),
         identity.clone(),
         sessions.clone(),
         tenants.clone(),
@@ -259,6 +279,7 @@ async fn world() -> World {
         router,
         clock,
         totp,
+        recovery_codes,
         ana,
         acme,
         messages,
@@ -393,6 +414,17 @@ impl Browser {
             world,
             Method::POST,
             "/t/acme/interaction/sign-in/steps/totp",
+            Some(body),
+        )
+        .await
+    }
+
+    async fn recovery_code(&mut self, world: &World, typed: &str) -> Reply {
+        let body = serde_json::json!({ "code": typed });
+        self.send(
+            world,
+            Method::POST,
+            "/t/acme/interaction/sign-in/steps/recovery_code",
             Some(body),
         )
         .await
@@ -1339,6 +1371,84 @@ async fn a_person_with_an_authenticator_application_gives_a_code_after_the_passw
         session.body["methods"],
         serde_json::json!(["password", "totp"])
     );
+}
+
+#[tokio::test]
+async fn a_person_who_lost_their_application_gives_a_recovery_code_once() {
+    use hodor_kernel::Clock as _;
+    let world = world().await;
+    let enrollment = world
+        .totp
+        .begin_enrollment(&world.acme, world.ana, "Acme", "ana@example.com")
+        .await
+        .expect("begin");
+    let secret = base32_secret(enrollment.secret());
+    let code = totp_code_at(&FakeHmacSha1, &secret, world.clock.now());
+    world
+        .totp
+        .confirm_enrollment(
+            &world.acme,
+            world.ana,
+            &Secret::from(code),
+            Caller::system(),
+        )
+        .await
+        .expect("confirm");
+    let codes = world
+        .recovery_codes
+        .generate(&world.acme, world.ana, Caller::system())
+        .await
+        .expect("generate");
+    let written_down = codes.codes().next().expect("a code").to_owned();
+
+    let mut browser = Browser::default();
+    browser.start(&world).await;
+    browser.identifier(&world, "ana@example.com").await;
+    let after_password = browser.password(&world, PASSWORD).await;
+    assert_eq!(after_password.body["step"], "totp");
+
+    let wrong = browser.recovery_code(&world, "AAAA-AAAA-AAAA-AAAA").await;
+    assert_eq!(
+        (
+            wrong.status,
+            wrong.body["status"].as_str(),
+            wrong.body["step"].as_str()
+        ),
+        (StatusCode::OK, Some("rejected"), Some("totp")),
+        "a rejected substitute leaves the sign-in waiting for the step"
+    );
+
+    let typed = written_down.to_lowercase().replace('-', " ");
+    let done = browser.recovery_code(&world, &typed).await;
+    assert_eq!(done.body, serde_json::json!({ "status": "completed" }));
+    let session = browser.session(&world, "acme").await;
+    assert_eq!(session.body["assurance"], "multi_factor");
+    assert_eq!(
+        session.body["methods"],
+        serde_json::json!(["password", "recovery_code"])
+    );
+
+    let mut again = Browser::default();
+    again.start(&world).await;
+    again.identifier(&world, "ana@example.com").await;
+    again.password(&world, PASSWORD).await;
+    let reused = again.recovery_code(&world, &written_down).await;
+    assert_eq!(
+        (reused.status, reused.body["status"].as_str()),
+        (StatusCode::OK, Some("rejected")),
+        "a recovery code is good for one sign-in"
+    );
+}
+
+#[tokio::test]
+async fn a_recovery_code_is_the_wrong_step_where_no_second_factor_is_asked() {
+    let world = world().await;
+    let mut browser = Browser::default();
+    browser.start(&world).await;
+    browser.identifier(&world, "ana@example.com").await;
+    let early = browser.recovery_code(&world, "AAAA-AAAA-AAAA-AAAA").await;
+    assert_eq!(early.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(early.code(), "authentication.unexpected_step");
 }
 
 #[tokio::test]
