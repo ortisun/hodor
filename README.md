@@ -6,6 +6,8 @@
 
 **Identity, authentication and authorization for many tenants, written in Rust.**
 
+**Documentation: [ortisun.github.io/hodor](https://ortisun.github.io/hodor/)**, the pages of [`docs/`](docs/README.md) published as a site, with search.
+
 Hodor is one server that knows who people are and lets them in. A company runs it once and gives each customer, product or environment a **tenant** of its own: its own users, its own sign-in page, its own identity providers, its own audit log, and nothing shared with any other tenant.
 
 The goal is a complete identity platform: identity provider, OAuth 2.x authorization server, OpenID Provider, federation broker and policy decision point. It is built in phases. This page says what exists today, explains the ideas the code is built on, and draws the flows that run through it. Every section links to the page in [`docs/`](docs/README.md) that specifies it; when this page and `docs/` disagree, `docs/` is right.
