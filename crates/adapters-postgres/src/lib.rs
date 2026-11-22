@@ -8,6 +8,7 @@
 mod audit;
 mod authentication;
 mod authorization;
+mod cleanup;
 mod credential;
 mod database;
 mod federation;
@@ -24,6 +25,7 @@ mod uow;
 pub use audit::PgAuditLog;
 pub use authentication::{PgAttemptStore, PgTransactionStore, PgVerificationTokenStore};
 pub use authorization::PgRoleAssignmentStore;
+pub use cleanup::{CleanupReport, PendingAuthorizationCleanup};
 pub use credential::{PgAccessTokenStore, PgPasswordStore};
 pub use database::{Database, TenantTransaction, connect_pool, ping_pool};
 pub use federation::{PgLinkStore, PgPendingAuthorizationStore, PgProviderStore};

@@ -191,7 +191,7 @@ The first part of Epic 12, built ahead of Phase 2 on what the server can answer 
 Every issue of the milestone is done. What stands between it and real accounts:
 
 - **An external security review of `hodor-saml` and of `xml-sec` as it is used**, which [Decision 0019](../decisions/0019-saml-signature-verification.md) makes a condition. Two independent reviews inside the project found a denial of service and a way for a victim's response to finish an attacker's sign-in; both are fixed and tested, which is a reason for the outside review, not a substitute for it.
-- **Pending authorizations that are never finished are never removed**, and one that kept a SAML response holds up to 384 kibibytes, while starting a sign-in and choosing a provider are not limited.
+- **Starting a sign-in and choosing a provider are not limited.** Pending authorizations that were never finished are removed once they expire, but within those ten minutes one that kept a SAML response holds up to 384 kibibytes.
 - **No connector has been tried against the real provider.** The SAML samples are shapes built to each identity provider's documentation; the only SAML identity provider signed in through end to end is the development one, which writes its own canonical XML.
 
 ## Design system

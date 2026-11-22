@@ -158,6 +158,8 @@ The worker connects to the database twice, with different roles: as a member of 
 | `HODOR_MAIL_FROM` | — (required with `HODOR_SMTP_URL`) | The address messages are sent from, for example `Hodor <no-reply@example.com>` |
 | `HODOR_MAIL_BATCH_SIZE` | `50` | Most messages handled per pass |
 | `HODOR_MAIL_POLL_INTERVAL_MS` | `1000` | Pause between passes when there is no message to deliver |
+| `HODOR_CLEANUP_INTERVAL_MS` | `60000` | Pause between passes of the cleanup jobs: removing [pending authorizations](../architecture/contexts/federation.md#the-pending-authorization) that expired |
+| `HODOR_CLEANUP_BATCH_SIZE` | `500` | Most rows a cleanup job removes in one tenant per pass |
 | `HODOR_LOG_FORMAT`, `HODOR_LOG_FILTER`, `HODOR_OTLP_TRACES_ENDPOINT`, `HODOR_OTLP_METRICS_ENDPOINT` | as for the server | Telemetry |
 
 ### `hodor-cli`

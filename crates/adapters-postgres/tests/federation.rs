@@ -378,3 +378,85 @@ async fn a_saml_provider_comes_back_with_its_own_settings() {
         );
     }
 }
+
+#[tokio::test]
+async fn expired_pending_authorizations_are_removed_in_every_tenant_and_no_other_is() {
+    use hodor_adapters_postgres::PendingAuthorizationCleanup;
+    use hodor_authentication::api::TransactionId;
+    use hodor_federation::api::{PendingAuthorization, PendingAuthorizationStore as _};
+    use hodor_kernel::{SealedSecret, Timestamp};
+
+    let database = TestDatabase::start().await;
+    let service = service(&database);
+    let now = Timestamp::now_utc();
+    let mut kept = Vec::new();
+    for _ in 0..2 {
+        let tenant = TenantContext::assume(TenantId::generate());
+        let provider = service
+            .create_provider(&tenant, create("example"), Caller::system())
+            .await
+            .expect("a provider");
+        let mut unit = UnitOfWorkFactory::begin(database.app(), &tenant)
+            .await
+            .expect("begin");
+        // Three that expired, one that has not.
+        for (index, expires_at) in [
+            now - time::Duration::minutes(30),
+            now - time::Duration::minutes(1),
+            now,
+            now + time::Duration::minutes(5),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let transaction_id = TransactionId::generate();
+            PgPendingAuthorizationStore
+                .put(
+                    unit.as_mut(),
+                    &PendingAuthorization {
+                        transaction_id,
+                        provider_id: provider.id(),
+                        state_hash: [u8::try_from(index).expect("small"); 32],
+                        nonce: "nonce".to_owned(),
+                        code_verifier: SealedSecret::from_stored(vec![1]),
+                        redirect_uri: "https://hodor.example/callback".to_owned(),
+                        expires_at,
+                        saml_response: None,
+                        saml_receipt_hash: None,
+                    },
+                )
+                .await
+                .expect("put");
+            if expires_at > now {
+                kept.push((tenant.clone(), transaction_id));
+            }
+        }
+        unit.commit().await.expect("commit");
+    }
+
+    let cleanup =
+        PendingAuthorizationCleanup::new(database.platform().clone(), database.app().clone());
+    // A batch of two in each tenant, then the rest.
+    let first = cleanup.run(now, 2).await.expect("cleanup");
+    assert_eq!((first.tenants, first.removed), (2, 4));
+    let second = cleanup.run(now, 2).await.expect("cleanup");
+    assert_eq!((second.tenants, second.removed), (2, 2));
+    let third = cleanup.run(now, 2).await.expect("cleanup");
+    assert_eq!(
+        (third.tenants, third.removed),
+        (0, 0),
+        "nothing expired is left"
+    );
+
+    // The ones that have not expired are still there, each in its tenant.
+    for (tenant, transaction_id) in kept {
+        let mut unit = UnitOfWorkFactory::begin(database.app(), &tenant)
+            .await
+            .expect("begin");
+        let found = PgPendingAuthorizationStore
+            .take(unit.as_mut(), transaction_id)
+            .await
+            .expect("take");
+        assert!(found.is_some());
+    }
+}

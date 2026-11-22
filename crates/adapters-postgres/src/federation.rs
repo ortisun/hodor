@@ -570,4 +570,35 @@ impl PendingAuthorizationStore for PgPendingAuthorizationStore {
         .map_err(|e| database_error(&e))?;
         Ok(kept.rows_affected() > 0)
     }
+
+    async fn remove_expired(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        now: Timestamp,
+        limit: u32,
+    ) -> Result<u64, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        // A batch at a time, so that one pass holds no lock for long. The
+        // batch is chosen once, in a common table expression that locks
+        // what it chooses: a limited subquery inside `IN` may be scanned
+        // again for every row, and its limit then applies to each scan.
+        let removed = sqlx::query(
+            "WITH chosen AS (
+                 SELECT transaction_id FROM federation.pending_authorization
+                 WHERE tenant_id = $1 AND expires_at <= $2
+                 LIMIT $3
+                 FOR UPDATE SKIP LOCKED
+             )
+             DELETE FROM federation.pending_authorization AS pending
+             USING chosen
+             WHERE pending.tenant_id = $1 AND pending.transaction_id = chosen.transaction_id",
+        )
+        .bind(tenant.as_uuid())
+        .bind(now)
+        .bind(i64::from(limit))
+        .execute(connection(uow)?)
+        .await
+        .map_err(|e| database_error(&e))?;
+        Ok(removed.rows_affected())
+    }
 }
