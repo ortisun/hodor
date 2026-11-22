@@ -4,15 +4,24 @@ Every release of Hodor, newest first. The rules for versions and releases are in
 
 ## [Unreleased]
 
-What is built and waits for the first release. That release comes when three more parts are built as well: the OAuth 2.x authorization server and OpenID Provider, multi-factor authentication with passkeys and step-up, and the authorization engine with Open Policy Agent. Until now: the walking skeleton of [Milestone 1](docs/product/epics.md#milestone-1-walking-skeleton) and signing in with external identities, [Milestone 2](docs/product/epics.md#milestone-2-signing-in-with-external-identities).
+### Added
 
-**What is built is not ready to hold real accounts.** What stands in the way:
+- **Two test environments** on one machine, each seeded with a tenant, a person and an administrator: the stack in Docker with the three development providers, and Hodor installed by its chart on a Kubernetes cluster in Docker.
+
+## [1.0.0] - 2026-11-22
+
+The first release: the walking skeleton of [Milestone 1](docs/product/epics.md#milestone-1-walking-skeleton) and signing in with external identities, [Milestone 2](docs/product/epics.md#milestone-2-signing-in-with-external-identities). Hodor lets people into a tenant; it does not yet let applications ask Hodor who someone is.
+
+The owner chose to release this as 1.0.0, a full release, before the three parts the plan had waited for: the OAuth 2.x authorization server and OpenID Provider, multi-factor authentication with passkeys and step-up, and the authorization engine with Open Policy Agent. The number is not the stage the [product requirements](docs/product/product-requirements.md#9-release-criteria) call general availability: by those criteria Hodor has not reached Alpha.
+
+**1.0.0 is not ready to hold real accounts.** What stands in the way:
 
 - the development stack's passwords and keys are written in the repository, and it speaks plain HTTP: see [before anything real](docs/operations/quick-start.md#before-anything-real);
 - behind a load balancer every person shares one limit of attempts, since a forwarded address is not trusted yet;
 - SAML has not been reviewed by anyone outside the project, which [Decision 0019](docs/decisions/0019-saml-signature-verification.md) makes a condition for production;
 - no connector has been tried against the real provider, and LDAP was tried against OpenLDAP only;
-- sessions, verification tokens, sign-ins, attempt counters and message records that expired are never removed.
+- sessions, verification tokens, sign-ins, attempt counters and message records that expired are never removed;
+- no image and no chart are published: both are built from a checkout of the tag.
 
 The [progress](docs/product/progress.md) page lists every known gap.
 
@@ -33,6 +42,6 @@ The [progress](docs/product/progress.md) page lists every known gap.
 - **A Compose stack for development** with a development OpenID Connect provider, an LDAP directory and a SAML identity provider, all of which let anyone sign in as anyone; **installation packages** for Docker and Kubernetes.
 - **Two demonstrations**, one per milestone, run in continuous integration against the image.
 - **The documentation site**, published from `docs/` at <https://ortisun.github.io/hodor/>.
-- **Two test environments** on one machine, each seeded with a tenant, a person and an administrator: the stack in Docker with the three development providers, and Hodor installed by its chart on a Kubernetes cluster in Docker.
 
-[Unreleased]: https://github.com/ortisun/hodor/compare/32b616a...develop
+[Unreleased]: https://github.com/ortisun/hodor/compare/v1.0.0...develop
+[1.0.0]: https://github.com/ortisun/hodor/releases/tag/v1.0.0

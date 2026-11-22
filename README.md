@@ -42,7 +42,7 @@ The goal is a complete identity platform: identity provider, OAuth 2.x authoriza
 
 ## Where it stands
 
-Hodor lets people **into** a tenant. It does not yet let applications **ask** Hodor who someone is: the OAuth authorization server and the OpenID Provider are the next phase. [Progress](docs/product/progress.md) tracks every issue, and [releases](docs/product/releases.md) says what each released version holds; the latest is 1.0.0.
+Hodor lets people **into** a tenant. It does not yet let applications **ask** Hodor who someone is: the OAuth authorization server and the OpenID Provider are the next phase. [Progress](docs/product/progress.md) tracks every issue, and the [changelog](CHANGELOG.md) says what each released version holds; the latest is 1.0.0.
 
 | Capability | Status |
 |---|---|
