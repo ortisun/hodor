@@ -121,7 +121,8 @@ and `run`.
 - Outbound HTTPS to identity providers goes through `GuardedHttpClient`;
   LDAP connections go through `LdapDirectoryClient`, limited to
   `HODOR_DIRECTORY_HOSTS` (`external_sign_in`).
-- Builds the engine registry with `OpenPolicyAgentEngine` over a
+- Builds the engine registry with `NativeEngine` (over `PgRoleAssignmentStore`
+  and `PgNativeRoleStore`) and `OpenPolicyAgentEngine` over a
   `ServiceHttpClient` limited to the configured Open Policy Agent origins,
   with a 64-kibibyte limit on answers (`authorization_engines`, called in
   `run`). A wrong origin or tenant pair stops the server at startup. No

@@ -14,7 +14,7 @@ use hodor_adapters_ldap::LdapDirectoryClient;
 use hodor_adapters_postgres::{
     Database, PgAccessTokenStore, PgApplicationStore, PgAttemptStore, PgAuditLog,
     PgAuthorizationCodeStore, PgAuthorizationRequestStore, PgClientAssertionStore, PgClientStore,
-    PgGrantStore, PgKeyStore, PgLinkStore, PgMessageQueue, PgPasswordStore,
+    PgGrantStore, PgKeyStore, PgLinkStore, PgMessageQueue, PgNativeRoleStore, PgPasswordStore,
     PgPendingAuthorizationStore, PgProviderStore, PgRecoveryCodeStore, PgResourceServerStore,
     PgRoleAssignmentStore, PgSealingStateStore, PgSessionStore, PgTenantDirectory,
     PgTenantRepository, PgTotpStore, PgTransactionStore, PgUserRepository,
@@ -26,7 +26,7 @@ use hodor_authentication::api::{
     IdentifierAuthenticator, LockoutRules, PasswordAuthenticator, RecoveryCodeAuthenticator,
     Requirement, TotpAuthenticator, WebAuthnAuthenticator,
 };
-use hodor_authorization::api::{AuthorizationService, EngineRegistry};
+use hodor_authorization::api::{AuthorizationService, EngineRegistry, NativeEngine};
 use hodor_authorization_opa::api::{Instances, OpenPolicyAgentEngine};
 use hodor_credential::api::{
     AccessTokenService, CredentialService, RecoveryCodeService, RelyingParty, TotpService,
@@ -272,7 +272,7 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
     let health = Health::new(vec![Arc::new(DatabaseCheck(database.clone()))]);
     // Checked now, so that a wrong address stops the server at startup.
     // The Authorization API (Issue-75) evaluates through these engines.
-    let _engines = authorization_engines(&config)?;
+    let _engines = authorization_engines(&config, &database)?;
 
     let keys = keys(&config, &database)?;
     let authorization = authorization(&config, &database);
@@ -580,11 +580,15 @@ fn development_hosts(config: &Config) -> Vec<String> {
         .collect()
 }
 
-/// The engines that answer for resource servers, beside the fixed-role
-/// engine the authorization context keeps for Hodor's administration.
-/// Open Policy Agent is always registered, so that a binding to it fails
-/// closed when no instance is configured instead of being refused.
-fn authorization_engines(config: &Config) -> Result<EngineRegistry, DomainError> {
+/// The engines that answer for resource servers, beside the native engine
+/// the authorization context keeps for Hodor's administration: the native
+/// engine over the tenant's own roles, and Open Policy Agent. Open Policy
+/// Agent is always registered, so that a binding to it fails closed when no
+/// instance is configured instead of being refused.
+fn authorization_engines(
+    config: &Config,
+    database: &Database,
+) -> Result<EngineRegistry, DomainError> {
     let instances = Instances::parse(
         config.open_policy_agent_address.as_deref(),
         &config.open_policy_agent_tenant_addresses,
@@ -615,6 +619,12 @@ fn authorization_engines(config: &Config) -> Result<EngineRegistry, DomainError>
         engine = engine.with_token(Secret::from(token.clone()));
     }
     let mut registry = EngineRegistry::new();
+    registry.register(Arc::new(NativeEngine::new(
+        Arc::new(database.clone()),
+        Arc::new(PgRoleAssignmentStore),
+        Arc::new(PgNativeRoleStore),
+        Arc::new(SystemClock),
+    )))?;
     registry.register(Arc::new(engine))?;
     Ok(registry)
 }
