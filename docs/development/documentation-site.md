@@ -14,7 +14,8 @@ The site is built by [MkDocs](https://www.mkdocs.org/) with the [Material](https
 | The configuration | `site/mkdocs.yml` | The site's name and address, the theme, the Markdown extensions, the version of Mermaid that draws the diagrams, and the navigation: which page goes in which tab and in what order |
 | Pages of the site alone | `site/pages/` | The home page, and the page that shows the OpenAPI document. They hold no fact of their own: they point at the pages of `docs/` |
 | The build hooks | `site/hooks.py` | Adds the pages of `site/pages/`, publishes the OpenAPI document of the administration interface from `crates/protocol-http/openapi/admin-v1.json`, and moves `docs/README.md`, the documentation map, from the root of the site to `/map/`, since the home page takes the root |
-| Colors and the logo | `site/overrides/` | The Hodor colors over the theme, and the door of the hosted pages as the logo |
+| Colors | `site/overrides/` | The Hodor colors over the theme, and the layout of the home page |
+| The logo | `docs/images/logo/` | `hodor.png`, someone holding a heavy door shut against what pushes from outside, which is what the name means; it opens the readme and the home page. `hodor-icon.png` is the same picture on a square, 128 pixels wide, for the header of the site and the icon of the browser tab |
 | The tools, at exact versions | `site/requirements.txt` | Every Python package of the build, at one version, with the hashes of its files. `site/requirements.in` names the packages asked for directly |
 | The workflow | `.github/workflows/documentation-site.yml` | Builds the site on every pull request and publishes it from `develop` |
 
