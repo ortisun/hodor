@@ -1,0 +1,211 @@
+{
+  "created_field": "Stage",
+  "rules": [
+    {
+      "labels_any": [
+        "factory: failed",
+        "factory: cancelled",
+        "factory: rejected"
+      ],
+      "stage": "stopped"
+    },
+    {
+      "issue_closed": true,
+      "stage": "done"
+    },
+    {
+      "labels_any": [
+        "factory: waiting for a person",
+        "factory: blocked",
+        "factory: paused"
+      ],
+      "stage": "needs_person"
+    },
+    {
+      "labels_any": [
+        "factory: done"
+      ],
+      "stage": "in_review"
+    },
+    {
+      "labels_any": [
+        "factory: queued",
+        "factory: working",
+        "factory: stopping"
+      ],
+      "stage": "working"
+    },
+    {
+      "labels_any": [
+        "design: approved"
+      ],
+      "stage": "ready"
+    },
+    {
+      "labels_any": [
+        "design: in review"
+      ],
+      "stage": "design_review"
+    },
+    {
+      "labels_any": [
+        "design: in progress"
+      ],
+      "stage": "designing"
+    },
+    {
+      "labels_any": [
+        "design: proposed"
+      ],
+      "stage": "idea"
+    }
+  ],
+  "schema": "factory-project-board-policy/1",
+  "source": "policies/project-board.yaml",
+  "source_sha256": "d4c70174737717a04fa6aa00679a2a80fbb4b518654969a7b84d25571f7a5652",
+  "stages": [
+    {
+      "fallback": [
+        "ready"
+      ],
+      "key": "idea",
+      "matches": [
+        "idea",
+        "ideas",
+        "backlog",
+        "triage",
+        "new",
+        "inbox",
+        "proposed",
+        "icebox"
+      ],
+      "title": "Idea"
+    },
+    {
+      "fallback": [
+        "working"
+      ],
+      "key": "designing",
+      "matches": [
+        "designing",
+        "in design",
+        "design",
+        "discovery",
+        "refinement",
+        "refining",
+        "analysis",
+        "planning"
+      ],
+      "title": "Designing"
+    },
+    {
+      "fallback": [
+        "in_review",
+        "working"
+      ],
+      "key": "design_review",
+      "matches": [
+        "design review",
+        "in design review",
+        "review design",
+        "spec review"
+      ],
+      "title": "Design review"
+    },
+    {
+      "fallback": [],
+      "key": "ready",
+      "matches": [
+        "ready",
+        "todo",
+        "to do",
+        "selected",
+        "approved",
+        "ready for development",
+        "up next",
+        "planned"
+      ],
+      "title": "Ready"
+    },
+    {
+      "fallback": [],
+      "key": "working",
+      "matches": [
+        "working",
+        "in progress",
+        "doing",
+        "in development",
+        "building",
+        "implementing",
+        "active"
+      ],
+      "title": "Working"
+    },
+    {
+      "fallback": [
+        "working"
+      ],
+      "key": "needs_person",
+      "matches": [
+        "needs a person",
+        "needs attention",
+        "waiting",
+        "blocked",
+        "on hold",
+        "needs input",
+        "paused",
+        "waiting for input"
+      ],
+      "title": "Needs a person"
+    },
+    {
+      "fallback": [
+        "working"
+      ],
+      "key": "in_review",
+      "matches": [
+        "in review",
+        "review",
+        "code review",
+        "qa",
+        "testing",
+        "ready for review",
+        "verify"
+      ],
+      "title": "In review"
+    },
+    {
+      "fallback": [],
+      "key": "done",
+      "matches": [
+        "done",
+        "closed",
+        "complete",
+        "completed",
+        "shipped",
+        "released",
+        "finished",
+        "resolved"
+      ],
+      "title": "Done"
+    },
+    {
+      "fallback": [
+        "needs_person"
+      ],
+      "key": "stopped",
+      "matches": [
+        "stopped",
+        "cancelled",
+        "canceled",
+        "won't do",
+        "wontfix",
+        "rejected",
+        "failed",
+        "abandoned",
+        "declined"
+      ],
+      "title": "Stopped"
+    }
+  ]
+}

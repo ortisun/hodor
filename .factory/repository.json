@@ -1,0 +1,54 @@
+{
+  "schema": "factory-repository-settings/1",
+  "repository": {
+    "owner": "ortisun",
+    "name": "hodor"
+  },
+  "project_board": {
+    "owner": "ortisun",
+    "number": 3
+  },
+  "commits": {
+    "convention": "conventional-commits",
+    "types": [
+      "build",
+      "chore",
+      "ci",
+      "docs",
+      "feat",
+      "fix",
+      "perf",
+      "refactor",
+      "revert",
+      "style",
+      "test"
+    ],
+    "scopes": [],
+    "require_scope": false,
+    "header_max_length": 100
+  },
+  "gitflow": {
+    "closing_mode": "develop",
+    "main_branch": "main",
+    "develop_branch": "develop",
+    "prefixes": {
+      "feature": [
+        "feature/",
+        "factory/"
+      ],
+      "bugfix": [
+        "bugfix/"
+      ],
+      "release": [
+        "release/"
+      ],
+      "hotfix": [
+        "hotfix/"
+      ],
+      "support": [
+        "support/"
+      ]
+    },
+    "additional_flows": []
+  }
+}

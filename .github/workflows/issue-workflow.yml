@@ -1,0 +1,97 @@
+# Keeps the labels of an issue consistent with the factory's issue workflow (ADR 0016).
+#
+# The installer (scripts/install.sh) copies this file, `.github/scripts/issue_workflow.py` and
+# `.github/issue-workflow.json` into a repository. It reacts to a label being added or removed and:
+#   * keeps one `design:` label per issue and refuses a move the workflow does not allow;
+#   * refuses a `design: approved` label unless the issue names a design document on the default branch;
+#   * puts back a `factory:` label that a person removed, and removes one that a person added.
+# It never adds or removes the `factory` label. That label is a person's request and the factory's engine
+# decides whether the person may make it. Nothing here authorizes work.
+#
+# If the project has a GitHub Projects board (`.github/project-board.json`, written by the installer), the last
+# step puts the issue in the board option that its labels and state call for (ADR 0018). The board is a view of
+# the labels. The credential for it is the owner's choice: a GitHub App (variable FACTORY_BOARD_CLIENT_ID and
+# secret FACTORY_BOARD_APP_PRIVATE_KEY, which gives a token that lives for this job only) or a personal access
+# token (secret FACTORY_BOARD_TOKEN). With neither, the step warns and does nothing. `GITHUB_TOKEN` cannot reach
+# a project, so the credential is separate, and it is given to the board step only.
+name: Issue workflow
+
+on:
+  issues:
+    types: [labeled, unlabeled, closed, reopened]
+
+# Issues: write is the one permission the job needs, to change labels and to comment. Contents: read is for
+# the checkout, which finds the design document.
+permissions:
+  contents: read
+  issues: write
+
+# One run per issue at a time. GitHub keeps ONE waiting run per issue and cancels an older waiting one, so a run can be
+# skipped. That is safe because every run checks the whole issue and not only the label of its own event: the next run
+# puts right what a skipped run left.
+concurrency:
+  group: issue-workflow-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  labels:
+    name: Keep the issue labels consistent
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      # An `issues` event runs the workflow file of the default branch, and this checkout is the default branch.
+      # Only the two folders the script reads are fetched.
+      - name: Check out the default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .github
+            docs/designs
+
+      # Issue text reaches the script only through the event file, never through this command line.
+      # FACTORY_BOT_LOGIN is the login of the factory's GitHub App, for example `my-factory[bot]`. Set it as a
+      # repository variable. With no value this step does nothing and says so in its log (PL-21): it cannot tell the
+      # factory's own `factory:` labels from a person's, and it would otherwise remove them and comment each time.
+      # The two board steps below wait for the same variable.
+      - name: Apply the issue workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FACTORY_BOT_LOGIN: ${{ vars.FACTORY_BOT_LOGIN }}
+          REPOSITORY: ${{ github.repository }}
+        run: >-
+          python3 .github/scripts/issue_workflow.py apply
+          --event "$GITHUB_EVENT_PATH"
+          --config .github/issue-workflow.json
+          --repo "$REPOSITORY"
+          --docs-root .
+
+      # Only for a project whose board belongs to an organization and that uses an App. The token asks for the
+      # two permissions the board step needs and nothing else, and it expires when the job ends.
+      - name: Create a short-lived credential for the board
+        id: board-app
+        if: ${{ vars.FACTORY_BOT_LOGIN != '' && vars.FACTORY_BOARD_CLIENT_ID != '' }}
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.FACTORY_BOARD_CLIENT_ID }}
+          private-key: ${{ secrets.FACTORY_BOARD_APP_PRIVATE_KEY }}
+          permission-organization-projects: write
+          permission-issues: read
+
+      # The issue is read with the repository token. Only the board calls use BOARD_TOKEN.
+      - name: Move the issue on the board
+        if: ${{ vars.FACTORY_BOT_LOGIN != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BOARD_TOKEN: ${{ steps.board-app.outputs.token || secrets.FACTORY_BOARD_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          # A card moves only when the factory's App, or a person with triage rights, caused the event, and only on a
+          # board of this repository's owner or of an owner listed in FACTORY_BOARD_OWNERS (a comma-separated variable).
+          FACTORY_BOT_LOGIN: ${{ vars.FACTORY_BOT_LOGIN }}
+          FACTORY_BOARD_OWNERS: ${{ vars.FACTORY_BOARD_OWNERS }}
+        run: >-
+          python3 .github/scripts/project_board.py sync
+          --event "$GITHUB_EVENT_PATH"
+          --policy-json .github/project-board-policy.json
+          --board-config .github/project-board.json
+          --repo "$REPOSITORY"

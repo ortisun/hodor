@@ -1,0 +1,55 @@
+name: Propose a new solution
+description: A feature or change that needs design decisions before anyone builds it.
+labels:
+  - "design: proposed"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the problem, not the solution. A person works out the design with EGM and the
+        agreed design is merged under `docs/designs/` before the factory is asked to build anything.
+        This form does not start the factory.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What is wrong or missing, seen from the side of the people who have it. One to three sentences.
+    validations:
+      required: true
+  - type: textarea
+    id: who
+    attributes:
+      label: Who is affected
+      description: Who has this problem, and how often.
+    validations:
+      required: true
+  - type: textarea
+    id: constraints
+    attributes:
+      label: What you already know
+      description: Constraints, deadlines, related issues, things that were tried, and decisions already made.
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: How we will know it works
+      description: Outcomes that a test or a person can check. Avoid "works well" and "is fast".
+      placeholder: |
+        - [ ] A webhook that fails is retried three times, then recorded as failed.
+    validations:
+      required: true
+  - type: dropdown
+    id: risk
+    attributes:
+      label: Risk
+      description: What could go wrong if this is built badly.
+      options:
+        - Low
+        - Medium
+        - High
+    validations:
+      required: true
+  - type: textarea
+    id: blocked
+    attributes:
+      label: Blocked by
+      description: Issues that must be finished first, with the reason. Write "None." if there are none.
