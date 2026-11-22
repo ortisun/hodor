@@ -69,7 +69,14 @@ pub trait PolicySimulator: Send + Sync {
 }
 ```
 
-`async_trait` is used because engines are selected at run time behind `Arc<dyn AuthorizationEngine>`; native `async fn` in traits is not dyn-compatible. The default `evaluate_batch` runs `evaluate` concurrently with a bound; the Open Policy Agent adapter overrides it to send one request.
+`async_trait` is used because engines are selected at run time behind `Arc<dyn AuthorizationEngine>`; native `async fn` in traits is not dyn-compatible. The Open Policy Agent adapter overrides `evaluate_batch` to send one request.
+
+The contract as built (Issue-72) differs from the sketch above in four details, specified in [the authorization context](contexts/authorization.md#the-engine-contract):
+
+- **An engine returns only its part of the answer**: the effect, the reason, the policy revision and the matched policies. The context adds the decision identifier, the time, the engine's name and the duration, so an engine cannot claim another's name or another moment.
+- **The engine receives the request with the time limit of its binding and the subject's resolved attributes.** The asserted attributes are left out unless the binding trusts them. Errors are the kernel's `DomainError`.
+- **The default `evaluate_batch` answers one request after the other.** Domain crates do not depend on an asynchronous runtime, so concurrency belongs to engines that need it.
+- **The request names its namespace**, the resource server's audience or `hodor:admin`, so that the binding can be found.
 
 `Effect::Indeterminate` means the engine could not decide (error, missing data, no applicable policy when the binding requires one). **A policy enforcement point must treat it as deny.** It exists so that logs and metrics distinguish "denied by policy" from "could not evaluate".
 

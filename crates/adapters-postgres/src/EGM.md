@@ -48,6 +48,7 @@ Each store is a unit struct (except where noted) that runs its queries on
 | `PgTransactionStore` | `impl TransactionStore for PgTransactionStore` (`authentication.rs`, `hodor_authentication::api`) | `authentication.transaction` |
 | `PgVerificationTokenStore` | `impl VerificationTokenStore for PgVerificationTokenStore` (`authentication.rs`, `hodor_authentication::api`) | `authentication.verification_token` |
 | `PgRoleAssignmentStore` | `impl RoleAssignmentStore for PgRoleAssignmentStore` (`authorization.rs`, `hodor_authorization::api`) | `"authorization".role_assignment` |
+| `PgEngineBindingStore` | `impl EngineBindingStore for PgEngineBindingStore` (`authorization.rs`, `hodor_authorization::api`) | `"authorization".engine_binding`; `put` upserts on `(tenant_id, namespace)`; a stored row that is not a valid binding is `authorization.stored_data_invalid` |
 | `PgPasswordStore` | `impl PasswordStore for PgPasswordStore` (`credential.rs`, `hodor_credential::api`) | `credential.password`, `credential.password_history` |
 | `PgAccessTokenStore` | `impl AccessTokenStore for PgAccessTokenStore` (`credential.rs`, `hodor_credential::api`) | `credential.access_token` |
 | `PgTotpStore` | `impl TotpStore for PgTotpStore` (`credential.rs`, `hodor_credential::api`); `activate` locks the pending row with `FOR UPDATE`, `use_step` is one conditional `UPDATE` | `credential.totp` |

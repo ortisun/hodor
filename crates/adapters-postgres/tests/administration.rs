@@ -1,8 +1,8 @@
 //! The stores behind the administration interface, on PostgreSQL.
 
 use hodor_adapters_postgres::testing::TestDatabase;
-use hodor_adapters_postgres::{PgAccessTokenStore, PgRoleAssignmentStore};
-use hodor_authorization::testing::{Ports, run_contract};
+use hodor_adapters_postgres::{PgAccessTokenStore, PgEngineBindingStore, PgRoleAssignmentStore};
+use hodor_authorization::testing::{BindingPorts, Ports, run_binding_contract, run_contract};
 use hodor_credential::testing::{AccessTokenPorts, run_access_token_contract};
 
 #[tokio::test]
@@ -13,6 +13,55 @@ async fn the_postgres_role_assignment_store_passes_the_contract() {
         assignments: &PgRoleAssignmentStore,
     })
     .await;
+}
+
+#[tokio::test]
+async fn the_postgres_binding_store_passes_the_contract() {
+    let database = TestDatabase::start().await;
+    run_binding_contract(BindingPorts {
+        units_of_work: database.app(),
+        bindings: &PgEngineBindingStore,
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn the_database_refuses_a_binding_that_breaks_its_rules() {
+    let database = TestDatabase::start().await;
+    let insert = |namespace: &'static str,
+                  timeout: i32,
+                  sensitive: bool,
+                  actions: &'static [&'static str]| {
+        let owner = database.owner().clone();
+        async move {
+            sqlx::query(
+                "INSERT INTO \"authorization\".engine_binding (tenant_id, namespace, engine,
+                     timeout_milliseconds, sensitive, fail_open_actions, trust_asserted,
+                     created_at, updated_at)
+                 VALUES (gen_random_uuid(), $1, 'native', $2, $3, $4, false, now(), now())",
+            )
+            .bind(namespace)
+            .bind(timeout)
+            .bind(sensitive)
+            .bind(actions)
+            .execute(&owner)
+            .await
+        }
+    };
+    assert!(
+        insert("https://documents.example.com", 200, false, &["read"])
+            .await
+            .is_ok()
+    );
+    for refused in [
+        insert("hodor:admin", 200, true, &[]).await,
+        insert("documents", 200, false, &[]).await,
+        insert("https://documents.example.com", 0, false, &[]).await,
+        insert("https://documents.example.com", 5001, false, &[]).await,
+        insert("https://documents.example.com", 200, true, &["read"]).await,
+    ] {
+        assert!(refused.is_err());
+    }
 }
 
 #[tokio::test]
