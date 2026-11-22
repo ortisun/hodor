@@ -100,6 +100,11 @@ Both implement the `Authenticator` trait from [`../domain/EGM.md`](../domain/EGM
   `kind()` is `"password"`; traits `identifies: false`,
   `factor: Some(Factor::Knowledge)`, `method: Some("password")`.
   `new(credentials, identity, tenants, guard)`.
+- `TotpAuthenticator` (`authenticators.rs:TotpAuthenticator`): `kind()` is
+  `TotpAuthenticator::KIND`, `"totp"`; traits `identifies: false`,
+  `factor: Some(Factor::Possession)`, `method: Some("totp")`.
+  `new(totp: TotpService, tenants, guard)`. `has_means` asks
+  `TotpService::has_totp` for the candidate, and is `false` without one.
 
 ## Invariants
 
@@ -142,6 +147,11 @@ Both implement the `Authenticator` trait from [`../domain/EGM.md`](../domain/EGM
   answer nor timing tells the cases apart; it answers `Proven` only when the
   password is verified, the user may sign in and a candidate exists
   (`authenticators.rs:PasswordAuthenticator::perform`).
+- `TotpAuthenticator` takes only `StepInput::Totp`, rejects when there is no
+  identifier key, admits the attempt through the guard with the tenant's
+  lockout rules first (shared with the password by `lockout_rules`), and
+  clears the identifier's count when the code is verified
+  (`authenticators.rs:TotpAuthenticator::perform`).
 - Registration is refused with `Forbidden` code
   `authentication.registration_closed` unless the tenant's registration
   policy is `RegistrationPolicy::Open`, checked before anything is counted

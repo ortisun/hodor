@@ -59,6 +59,8 @@ pub enum StepInput {
     Identifier(String),
     /// The password, as typed.
     Password(Secret<String>),
+    /// A code of the person's authenticator application, as typed.
+    Totp(Secret<String>),
     /// What an alternative needs, in its own terms.
     External(ExternalInput),
 }
@@ -70,6 +72,7 @@ impl StepInput {
         match self {
             Self::Identifier(_) => "identifier",
             Self::Password(_) => "password",
+            Self::Totp(_) => "totp",
             Self::External(input) => &input.step,
         }
     }

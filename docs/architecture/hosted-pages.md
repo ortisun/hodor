@@ -40,7 +40,8 @@ stateDiagram-v2
 The page is a renderer for the answer of the interaction interface:
 
 - On opening, it asks who is signed in. If nobody is, it asks where the current sign-in stands, and starts one if there is none. A reloaded page therefore continues where it was.
-- It shows the form for the `step` in the answer: `identifier` or `password`. A step the page does not know is shown as "this page cannot continue this sign-in", never guessed at.
+- It shows the form for the `step` in the answer: `identifier`, `password` or `totp`. A step the page does not know is shown as "this page cannot continue this sign-in", never guessed at.
+- The `totp` form asks for the code the person's authenticator application shows, in one field with `autocomplete="one-time-code"` and a numeric keyboard on phones, and offers to start again with another identifier.
 - A `rejected` answer shows the same form again with one message, "that did not work", whatever the reason. The page has no way of knowing the reason and does not try.
 - "Use another address" on the password step abandons the sign-in and starts a new one.
 - A sign-in that expired while the person was typing is started again, and the page says so.
@@ -111,7 +112,7 @@ Both are files with the content in their name, kept by the browser for good afte
 - Every page can be used with the keyboard alone, in the order a person reads it.
 - When a page opens or shows something else, focus moves to its heading, so that a screen reader announces it. When a form asks for something to be typed first, focus moves to that field instead: a person types the address, presses Enter, types the password and presses Enter.
 - Every field has a visible label. An error about a field is tied to the field; an error about the whole form is announced as an alert.
-- Fields carry the `autocomplete` values password managers rely on: `username`, `current-password`, `new-password`, `email`, `name`.
+- Fields carry the `autocomplete` values password managers rely on: `username`, `current-password`, `new-password`, `email`, `name`, `one-time-code`.
 - The pages are checked by an automated accessibility checker in the browser tests, against Web Content Accessibility Guidelines 2.2 level AA.
 
 ## How the pages are served

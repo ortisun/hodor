@@ -41,6 +41,7 @@ Tables created, by file:
 | `0022_federation_saml_answer.sql` | keeps only the answer of a SAML response in `federation.pending_authorization`, never the response |
 | `0023_keys.sql` | schema `keys`; table `keys.key_version` with the partial unique index `key_version_one_active` (one `active` row per tenant, use and algorithm) |
 | `0024_oauth_clients.sql` | schema `oauth`; `oauth.application`; `oauth.client`; `oauth.client_secret`; `oauth.client_key`; `oauth.resource_server`; `oauth.resource_server_scope` |
+| `0026_credential_totp.sql` | `credential.totp`: authenticator applications, with the secret sealed (`totp_one_per_status`, `totp_confirmed_when_active`) |
 
 No migration creates a type, an extension or seed rows; enumerations are text
 columns with `CHECK ... IN (...)` constraints.

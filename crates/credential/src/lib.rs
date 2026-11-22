@@ -17,6 +17,7 @@ pub mod api {
     pub use crate::application::access_tokens::{AccessTokenService, AccessTokenStore};
     pub use crate::application::ports::{PasswordHasher, PasswordStore, PasswordVerification};
     pub use crate::application::service::{CredentialService, NewPassword, PasswordCheck};
+    pub use crate::application::totp::{HmacSha1, TotpCheck, TotpService, TotpStore, totp_code_at};
     pub use crate::domain::access_token::{
         AccessToken, AccessTokenEvent, AccessTokenHash, AccessTokenId, AccessTokenSecret,
         AccessTokenSnapshot,
@@ -25,5 +26,9 @@ pub mod api {
     pub use crate::domain::password::{
         HistoricHash, MAX_PASSWORD_BYTES, PasswordHash, PasswordRecord, PasswordRules,
         check_acceptable,
+    };
+    pub use crate::domain::totp::{
+        ENROLLMENT_LIFETIME, SEALING_PURPOSE as TOTP_SEALING_PURPOSE, STEP_SECONDS, Totp,
+        TotpEnrollment, TotpEvent, TotpId, TotpSnapshot, TotpStatus,
     };
 }

@@ -16,6 +16,8 @@ export const ptBR: Messages = {
   signIn: "Entrar",
   signingInAs: (identifier) => `Entrando como ${identifier}`,
   useAnotherIdentifier: "Usar outro endereço",
+  totpLabel: "Código do seu aplicativo autenticador",
+  totpHint: "Seis dígitos. Eles mudam a cada trinta segundos.",
   forgotPassword: "Esqueceu a senha?",
   noAccountYet: "Ainda não tem conta?",
   register: "Criar conta",

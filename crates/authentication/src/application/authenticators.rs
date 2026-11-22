@@ -1,4 +1,5 @@
-//! The built-in authenticators: login identifier and password.
+//! The built-in authenticators: login identifier, password and
+//! authenticator application.
 
 use crate::application::guard::AttemptGuard;
 use crate::domain::attempt::LockoutRules;
@@ -6,12 +7,34 @@ use crate::domain::authenticator::{
     Authenticator, AuthenticatorTraits, Factor, StepInput, StepOutcome,
 };
 use crate::domain::transaction::AuthTransaction;
-use hodor_credential::api::{CredentialService, PasswordCheck};
+use hodor_credential::api::{CredentialService, PasswordCheck, TotpCheck, TotpService};
 use hodor_identity::api::{IdentityService, NormalizedIdentifier};
 use hodor_kernel::{Caller, Digest, DomainError, ErrorKind, TenantContext, UserId};
 use hodor_tenant::api::TenantService;
 use std::sync::Arc;
 use time::Duration;
+
+/// The tenant's lockout rules, which the password and the code of an
+/// authenticator application are both counted by.
+async fn lockout_rules(
+    tenants: &TenantService,
+    tenant: &TenantContext,
+) -> Result<LockoutRules, DomainError> {
+    let settings = tenants
+        .get(tenant)
+        .await?
+        .snapshot()
+        .settings
+        .lockout
+        .clone();
+    let seconds = |value: u32| Duration::seconds(i64::from(value));
+    Ok(LockoutRules {
+        max_failures: u32::from(settings.max_failures),
+        window: seconds(settings.window_seconds),
+        first_lockout: seconds(settings.first_lockout_seconds),
+        longest_lockout: seconds(settings.longest_lockout_seconds),
+    })
+}
 
 /// Takes what the person typed as their login identifier and remembers
 /// who, if anyone, it belongs to.
@@ -118,24 +141,6 @@ impl PasswordAuthenticator {
             guard,
         }
     }
-
-    async fn lockout_rules(&self, tenant: &TenantContext) -> Result<LockoutRules, DomainError> {
-        let settings = self
-            .tenants
-            .get(tenant)
-            .await?
-            .snapshot()
-            .settings
-            .lockout
-            .clone();
-        let seconds = |value: u32| Duration::seconds(i64::from(value));
-        Ok(LockoutRules {
-            max_failures: u32::from(settings.max_failures),
-            window: seconds(settings.window_seconds),
-            first_lockout: seconds(settings.first_lockout_seconds),
-            longest_lockout: seconds(settings.longest_lockout_seconds),
-        })
-    }
 }
 
 #[async_trait::async_trait]
@@ -168,7 +173,7 @@ impl Authenticator for PasswordAuthenticator {
         // The attempt is counted before the password is looked at. While a
         // lockout is in force this returns the "too many attempts" error
         // and nothing else happens.
-        let rules = self.lockout_rules(tenant).await?;
+        let rules = lockout_rules(&self.tenants, tenant).await?;
         let address = transaction.snapshot().client.address.as_deref();
         self.guard
             .admit(tenant, &rules, identifier_key, address, Caller::system())
@@ -196,6 +201,97 @@ impl Authenticator for PasswordAuthenticator {
             Ok(StepOutcome::Proven)
         } else {
             Ok(StepOutcome::Rejected)
+        }
+    }
+}
+
+/// Checks a code of the candidate's authenticator application: something
+/// the person has. See `docs/architecture/contexts/authentication.md`,
+/// "The authenticator application step".
+///
+/// The code is checked only once the attempt is admitted, with the same
+/// counts and lockouts as the password. A wrong code, a used code and
+/// something that is not a code get the same rejection.
+#[derive(Clone)]
+pub struct TotpAuthenticator {
+    totp: TotpService,
+    tenants: TenantService,
+    guard: AttemptGuard,
+}
+
+impl std::fmt::Debug for TotpAuthenticator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TotpAuthenticator").finish_non_exhaustive()
+    }
+}
+
+impl TotpAuthenticator {
+    /// The kind flows name it by, and the method recorded for it.
+    pub const KIND: &'static str = "totp";
+
+    /// Wires the authenticator to the contexts it asks.
+    #[must_use]
+    pub fn new(totp: TotpService, tenants: TenantService, guard: AttemptGuard) -> Self {
+        Self {
+            totp,
+            tenants,
+            guard,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Authenticator for TotpAuthenticator {
+    fn kind(&self) -> &'static str {
+        Self::KIND
+    }
+
+    fn traits(&self) -> AuthenticatorTraits {
+        AuthenticatorTraits {
+            identifies: false,
+            factor: Some(Factor::Possession),
+            method: Some(Self::KIND),
+        }
+    }
+
+    async fn perform(
+        &self,
+        tenant: &TenantContext,
+        transaction: &AuthTransaction,
+        input: &StepInput,
+    ) -> Result<StepOutcome, DomainError> {
+        let StepInput::Totp(code) = input else {
+            return Ok(StepOutcome::Rejected);
+        };
+        let Some(identifier_key) = transaction.snapshot().identifier_key else {
+            return Ok(StepOutcome::Rejected);
+        };
+        let rules = lockout_rules(&self.tenants, tenant).await?;
+        let address = transaction.snapshot().client.address.as_deref();
+        self.guard
+            .admit(tenant, &rules, identifier_key, address, Caller::system())
+            .await?;
+        match self
+            .totp
+            .verify(tenant, transaction.candidate(), code)
+            .await?
+        {
+            TotpCheck::Verified => {
+                self.guard.succeeded(tenant, identifier_key).await?;
+                Ok(StepOutcome::Proven)
+            }
+            TotpCheck::Rejected => Ok(StepOutcome::Rejected),
+        }
+    }
+
+    async fn has_means(
+        &self,
+        tenant: &TenantContext,
+        transaction: &AuthTransaction,
+    ) -> Result<bool, DomainError> {
+        match transaction.candidate() {
+            Some(user) => self.totp.has_totp(tenant, user).await,
+            None => Ok(false),
         }
     }
 }

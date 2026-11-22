@@ -23,7 +23,7 @@ Bounded contexts:
 
 - tenant: [./tenant/EGM.md](./tenant/EGM.md) - `TenantService`, the tenant lifecycle (`Provisioning`, `Active`, `Suspended`, `PendingDeletion`, `Deleted`), slug rules and `TenantSettings`. Ports `TenantRepository` (bound to a tenant) and `TenantDirectory` (installation-wide lookup by slug).
 - identity: [./identity/EGM.md](./identity/EGM.md) - `IdentityService` and the `User` aggregate with its status lifecycle and normalized login identifiers (username, email). Port `UserRepository`.
-- credential: [./credential/EGM.md](./credential/EGM.md) - `CredentialService` (passwords with rules and history) and `AccessTokenService` (`hodor_at_` tokens for the administration interface). Ports `PasswordHasher`, `PasswordStore`, `AccessTokenStore`.
+- credential: [./credential/EGM.md](./credential/EGM.md) - `CredentialService` (passwords with rules and history), `AccessTokenService` (`hodor_at_` tokens for the administration interface) and `TotpService` (authenticator applications: time-based one-time passwords). Ports `PasswordHasher`, `PasswordStore`, `AccessTokenStore`, `TotpStore`, `HmacSha1`.
 - session: [./session/EGM.md](./session/EGM.md) - `SessionService`: starts, finds by token, lists, revokes and re-tokens browser sessions. Only the SHA-256 hash of a session token is stored. Port `SessionStore`.
 - keys: [./keys/EGM.md](./keys/EGM.md) - `KeyService`: key sets per tenant and use (`sig`, `enc`, `data`), key versions with states `pending`, `active`, `retiring`, `retired` and `revoked`, one active version per algorithm, and signing with it. Ports `KeyStore` and `KeyProvider`; the key material is never read by the context.
 - authorization: [./authorization/EGM.md](./authorization/EGM.md) - `AuthorizationService`: fixed roles (`TenantAdministrator`, `TenantAuditor`), fixed permissions, deny by default. Port `RoleAssignmentStore`.
@@ -37,7 +37,7 @@ Bounded contexts:
 Adapters:
 
 - adapters-postgres: [./adapters-postgres/EGM.md](./adapters-postgres/EGM.md) - PostgreSQL implementations of every bounded context's storage ports, `PgUnitOfWork` (tenant-bound transaction that writes recorded events to `platform.outbox`), `OutboxDispatcher`, and `migrate`, which embeds `migrations/`.
-- adapters-crypto: [./adapters-crypto/EGM.md](./adapters-crypto/EGM.md) - `Sha256Digest`, `OsRandom`, `SecretKeys` (AES-256-GCM sealing bound to tenant and purpose), `LocalKeyProvider` (implements the keys `KeyProvider`), `AwsLcVerifier`, and `Argon2idHasher` (implements the credential `PasswordHasher`).
+- adapters-crypto: [./adapters-crypto/EGM.md](./adapters-crypto/EGM.md) - `Sha256Digest`, `OsRandom`, `SecretKeys` (AES-256-GCM sealing bound to tenant and purpose), `LocalKeyProvider` (implements the keys `KeyProvider`), `AwsLcVerifier`, `AwsLcHmacSha1` (implements the credential `HmacSha1`), and `Argon2idHasher` (implements the credential `PasswordHasher`).
 - adapters-http: [./adapters-http/EGM.md](./adapters-http/EGM.md) - `GuardedHttpClient`, the kernel `HttpClient`: public addresses only, HTTPS except listed development hosts, no redirects, size and time limits.
 - adapters-ldap: [./adapters-ldap/EGM.md](./adapters-ldap/EGM.md) - `LdapDirectoryClient`, the federation `DirectoryClient`, limited to allowed hosts.
 - adapters-smtp: [./adapters-smtp/EGM.md](./adapters-smtp/EGM.md) - `SmtpSender`, the notification `EmailSender`.

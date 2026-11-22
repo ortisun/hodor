@@ -15,7 +15,9 @@ pub mod testing;
 /// What other crates may use from this context.
 pub mod api {
     pub use crate::application::account::{AccountRequest, AccountService};
-    pub use crate::application::authenticators::{IdentifierAuthenticator, PasswordAuthenticator};
+    pub use crate::application::authenticators::{
+        IdentifierAuthenticator, PasswordAuthenticator, TotpAuthenticator,
+    };
     pub use crate::application::guard::AttemptGuard;
     pub use crate::application::ports::{AttemptStore, TransactionStore, VerificationTokenStore};
     pub use crate::application::service::{AuthenticationService, SignIn, StartedSignIn};

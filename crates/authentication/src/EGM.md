@@ -16,7 +16,7 @@ The modules `application` and `domain` are private (`mod application;`,
 ### `lib.rs: pub mod api`
 
 - Application: `AccountRequest`, `AccountService`, `IdentifierAuthenticator`,
-  `PasswordAuthenticator`, `AttemptGuard`, the port traits `AttemptStore`,
+  `PasswordAuthenticator`, `TotpAuthenticator`, `AttemptGuard`, the port traits `AttemptStore`,
   `TransactionStore`, `VerificationTokenStore`, and `AuthenticationService`,
   `SignIn`, `StartedSignIn`.
 - Domain: `AttemptCounter`, `AttemptSubject`, `LockoutRules`, `Authenticator`,

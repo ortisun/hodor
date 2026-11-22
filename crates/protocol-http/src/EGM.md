@@ -77,6 +77,7 @@ routes and the whole router.
 | POST, GET, DELETE | `/sign-in` | `start_sign_in`, `describe_sign_in`, `cancel_sign_in` |
 | POST | `/sign-in/steps/identifier` | `submit_identifier` |
 | POST | `/sign-in/steps/password` | `submit_password` |
+| POST | `/sign-in/steps/totp` | `submit_totp` (body `{ "code" }`) |
 | GET | `/sign-in/providers` | `offered_providers` |
 | POST | `/sign-in/providers/{alias}` | `choose_provider` |
 | POST | `/sign-in/providers/{alias}/callback` | `finish_with_provider` |

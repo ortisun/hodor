@@ -25,7 +25,8 @@ An **authenticator** performs one step. It receives what the person submitted an
 | `identifier` | Takes what the person typed as their login identifier and remembers who, if anyone, it belongs to | Who is trying to sign in | Milestone 1 |
 | `password` | Checks the password of the person named by the identifier step | One factor: something the person knows | Milestone 1 |
 | An external identity provider, a directory | Takes what came back from somewhere else that knows the person, checks it, and answers who the person is | Who is signing in and one factor, in a single step | Milestone 2, in the federation context |
-| One-time password, passkey and others | — | — | Later phases |
+| `totp` | Checks a code of the candidate's [authenticator application](credential.md#authenticator-applications). The person has the means for it when they have an application in use | One factor: something the person has | Milestone 4 |
+| Passkey and others | — | — | Later issues |
 
 Each step has a requirement:
 
@@ -87,8 +88,22 @@ What a person submits to an alternative is a set of named values that only its a
 |---|---|---|
 | 1 | `identifier` | Required |
 | 2 | `password` | Required |
+| 3 | `totp` | Optional |
 
 Minimum assurance: single factor.
+
+A person who put an authenticator application in use is always asked for a code after the password, whether or not the tenant requires a second factor: they chose a second factor, and a stolen password alone must not let anyone in. A person without one signs in with the password, unless the tenant requires a second factor, in which case the sign-in fails at completion.
+
+The third step needs a place to keep secrets. An installation without `HODOR_SECRET_KEYS` runs the flow without it, and nobody there can have an authenticator application.
+
+### The authenticator application step
+
+| Rule | Why |
+|---|---|
+| The code is checked only once an attempt has been admitted, with the same counts and lockouts as the password, against the identifier typed and the address | Six digits are guessed by repetition; the lockout stops that. A lockout reached on the code also stops the password, and the other way round |
+| An accepted code clears the identifier's count, as a right password does | The person proved both factors |
+| A rejected code looks the same whatever the reason: a wrong code, a code already used, something that is not six digits | Nothing in the answer helps someone guessing |
+| Five rejections end the sign-in, as for every step | Whoever holds the password starts again, and their attempts keep counting towards the lockout |
 
 ### What makes a flow valid
 
@@ -380,8 +395,7 @@ All three are tenant tables under row-level security.
 | Item | Planned in |
 |---|---|
 | Editing flows and simulating them | Phase 4 |
-| A second factor in the built-in flow. Until one exists, a tenant whose policy requires a second factor refuses every sign-in | Issue-65, TOTP |
-| Setting the tenant's second factor policy from the command-line tool, the administration interface or the console. Today it is a setting of the tenant context only, so that nobody can turn it on before a second factor exists | Issue-65 and Issue-70 |
+| Setting the tenant's second factor policy from the administration interface or the console. Today the command-line tool sets it | Issue-70 |
 | Enrolling a second factor during a sign-in, for a person whose tenant requires one and who has none. Today their sign-in fails at completion | Issue-70 |
 | Offering a choice between several second factors at one step. Today each is its own step, and a person enrolled in two would be asked for both, unless they are conditional on the assurance not being reached | Issue-67, WebAuthn |
 | A reason in `authentication.failed` that tells a missing second factor from a rejected step | With the step-up of Issue-69 |

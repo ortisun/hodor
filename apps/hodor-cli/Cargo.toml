@@ -23,6 +23,7 @@ tokio.workspace = true
 
 [dev-dependencies]
 hodor-adapters-postgres = { workspace = true, features = ["testing"] }
+hodor-credential = { workspace = true, features = ["testing"] }
 sqlx.workspace = true
 tokio.workspace = true
 

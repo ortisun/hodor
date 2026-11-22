@@ -11,6 +11,8 @@ interface FieldProps {
   name: string;
   type?: "text" | "email" | "password";
   autoComplete: string;
+  /** Which keyboard a phone shows: digits only, for a code. */
+  inputMode?: "numeric";
   autoFocus?: boolean;
   /** Names and addresses are typed as they are: no capital letters or corrections are offered. */
   verbatim?: boolean;

@@ -14,6 +14,8 @@ export const en = {
   signIn: "Sign in",
   signingInAs: (identifier: string) => `Signing in as ${identifier}`,
   useAnotherIdentifier: "Use another address",
+  totpLabel: "Code from your authenticator application",
+  totpHint: "Six digits. They change every thirty seconds.",
   forgotPassword: "Forgot your password?",
   noAccountYet: "No account yet?",
   register: "Register",

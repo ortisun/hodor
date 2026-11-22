@@ -3,3 +3,4 @@
 pub(crate) mod access_token;
 pub(crate) mod event;
 pub(crate) mod password;
+pub(crate) mod totp;

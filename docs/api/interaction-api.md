@@ -12,6 +12,7 @@ All paths are relative to the tenant: `https://{host}/t/{slug}`. Requests and re
 | `GET /interaction/sign-in` | Ask where the current sign-in stands, for example after the page was reloaded |
 | `POST /interaction/sign-in/steps/identifier` | Submit the login identifier |
 | `POST /interaction/sign-in/steps/password` | Submit the password |
+| `POST /interaction/sign-in/steps/totp` | Submit a code of the person's authenticator application |
 | `DELETE /interaction/sign-in` | Abandon the sign-in |
 | `GET /interaction/session` | Say who is signed in |
 
@@ -43,7 +44,9 @@ Every response about a sign-in has the same shape:
 | `failed` | `200` | The sign-in is over; offer to start again |
 | `completed` | `200` | The person is signed in; the session cookie has been set |
 
-A rejection is a normal answer, not an error: the request was understood and the sign-in simply did not advance. Nothing in it says why, and it is the same whether the password was wrong, the identifier belongs to nobody, or the user may not sign in.
+A rejection is a normal answer, not an error: the request was understood and the sign-in simply did not advance. Nothing in it says why, and it is the same whether the password was wrong, the identifier belongs to nobody, or the user may not sign in. For the `totp` step it is the same whether the code was wrong, already used or not six digits.
+
+The `totp` step comes after the password only for a person who has an authenticator application in use ([the built-in flow](../architecture/contexts/authentication.md#the-built-in-flow)). The answer to the password then names `totp` as the next step instead of completing.
 
 ### Request bodies
 
@@ -51,6 +54,7 @@ A rejection is a normal answer, not an error: the request was understood and the
 |---|---|
 | `identifier` | `{ "identifier": "ana@example.com" }` |
 | `password` | `{ "password": "…" }` |
+| `totp` | `{ "code": "123456" }` |
 
 Submitting a step other than the one the sign-in is waiting for is an error (`422`, `authentication.unexpected_step`), and changes nothing.
 
@@ -62,7 +66,7 @@ Submitting a step other than the one the sign-in is waiting for is an error (`42
 | The sign-in has ended | `409` | `authentication.transaction_not_active` |
 | Another request advanced the sign-in at the same moment | `409` | `authentication.transaction_modified_concurrently` |
 | The wrong step was submitted | `422` | `authentication.unexpected_step` |
-| Attempts are being limited | `429`, with `Retry-After` | `authentication.too_many_attempts` |
+| Attempts are being limited, on the password or the code | `429`, with `Retry-After` | `authentication.too_many_attempts` |
 | The server is too busy to check a password | `503`, with `Retry-After` when known | `credential.hashing_overloaded` |
 | The CSRF token is missing or wrong | `403` | `request.csrf_token_invalid` |
 | The request comes from another site | `403` | `request.cross_origin` |
