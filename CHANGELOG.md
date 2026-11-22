@@ -2,11 +2,11 @@
 
 Every release of Hodor, newest first. The rules for versions and releases are in [the conventions](docs/development/conventions.md#releases).
 
-## [0.1.0] - 2026-11-22
+## [Unreleased]
 
-The first release: the walking skeleton of [Milestone 1](docs/product/epics.md#milestone-1-walking-skeleton) and signing in with external identities, [Milestone 2](docs/product/epics.md#milestone-2-signing-in-with-external-identities).
+What is built and waits for the first release. That release comes when three more parts are built as well: the OAuth 2.x authorization server and OpenID Provider, multi-factor authentication with passkeys and step-up, and the authorization engine with Open Policy Agent. Until now: the walking skeleton of [Milestone 1](docs/product/epics.md#milestone-1-walking-skeleton) and signing in with external identities, [Milestone 2](docs/product/epics.md#milestone-2-signing-in-with-external-identities).
 
-**This is a pre-release. It is not ready to hold real accounts.** What stands in the way:
+**What is built is not ready to hold real accounts.** What stands in the way:
 
 - the development stack's passwords and keys are written in the repository, and it speaks plain HTTP: see [before anything real](docs/operations/quick-start.md#before-anything-real);
 - behind a load balancer every person shares one limit of attempts, since a forwarded address is not trusted yet;
@@ -34,4 +34,4 @@ The [progress](docs/product/progress.md) page lists every known gap.
 - **Two demonstrations**, one per milestone, run in continuous integration against the image.
 - **The documentation site**, published from `docs/` at <https://ortisun.github.io/hodor/>.
 
-[0.1.0]: https://github.com/ortisun/hodor/releases/tag/v0.1.0
+[Unreleased]: https://github.com/ortisun/hodor/compare/32b616a...develop
