@@ -110,6 +110,7 @@ fn world() -> World {
         key: key.to_owned(),
         authenticator: key.to_owned(),
         requirement: Requirement::Required,
+        substitutes: Vec::new(),
     };
     let flow = AuthFlow {
         name: "under-test".to_owned(),

@@ -7,8 +7,8 @@ use hodor_credential::api::{
     AccessToken, AccessTokenHash, AccessTokenId, AccessTokenSnapshot, AccessTokenStore, Challenge,
     CoseAlgorithm, HistoricHash, PasswordHash, PasswordRecord, PasswordStore, PendingRegistration,
     PendingRegistrationSnapshot, RecoveryCodeSet, RecoveryCodeStore, Totp, TotpId, TotpSnapshot,
-    TotpStatus, TotpStore, WebAuthnCredential, WebAuthnCredentialId, WebAuthnCredentialSnapshot, WebAuthnRegistrationId,
-    WebAuthnStore,
+    TotpStatus, TotpStore, WebAuthnCredential, WebAuthnCredentialId, WebAuthnCredentialSnapshot,
+    WebAuthnRegistrationId, WebAuthnStore,
 };
 use hodor_kernel::{DomainError, SealedSecret, TenantId, Timestamp, UnitOfWork, UserId};
 use sqlx::PgConnection;
