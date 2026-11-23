@@ -5,6 +5,7 @@
 //! See `docs/architecture/contexts/authorization.md`, "Native role-based
 //! access control".
 
+use crate::domain::condition::Condition;
 use crate::domain::request::{Action, ApplicationReference, Namespace, Subject, is_name};
 use crate::domain::role::{Permission, Role};
 use hodor_kernel::{DomainError, Timestamp};
@@ -211,6 +212,27 @@ pub struct RoleContents {
     pub permissions: BTreeSet<PermissionName>,
     /// The roles it includes.
     pub includes: BTreeSet<RoleKey>,
+    /// The conditions some of its permissions are held with: each key is
+    /// one of `permissions`.
+    pub conditions: BTreeMap<PermissionName, Condition>,
+}
+
+impl RoleContents {
+    /// Contents with these permissions and included roles, and no
+    /// condition.
+    #[must_use]
+    pub fn unconditional(
+        description: &str,
+        permissions: BTreeSet<PermissionName>,
+        includes: BTreeSet<RoleKey>,
+    ) -> Self {
+        Self {
+            description: description.to_owned(),
+            permissions,
+            includes,
+            conditions: BTreeMap::new(),
+        }
+    }
 }
 
 /// A role: a named set of permissions of one resource server, that may
@@ -295,6 +317,7 @@ impl RoleDefinition {
                     .map(|permission| PermissionName::fixed(*permission))
                     .collect(),
                 includes: BTreeSet::new(),
+                conditions: BTreeMap::new(),
             },
             created_at: Timestamp::UNIX_EPOCH,
             updated_at: Timestamp::UNIX_EPOCH,
@@ -325,6 +348,17 @@ impl RoleDefinition {
         }
         if contents.includes.contains(key) {
             return Err(cycle());
+        }
+        if let Some(stray) = contents
+            .conditions
+            .keys()
+            .find(|permission| !contents.permissions.contains(*permission))
+        {
+            return Err(invalid(
+                "authorization.condition_without_permission",
+                "a condition is given only for a permission the role holds",
+            )
+            .with_detail(stray.as_str()));
         }
         Ok(RoleContents {
             description,
@@ -457,11 +491,23 @@ impl RoleGraph {
         Ok(())
     }
 
-    /// Every permission of `namespace` that holding `start` gives: its own
-    /// and those of every role it includes, as far as inclusion goes.
-    /// Included roles the graph does not have give nothing.
+    /// Every permission that holding `start` gives: its own and those of
+    /// every role it includes, as far as inclusion goes. Included roles the
+    /// graph does not have give nothing.
     #[must_use]
     pub fn permissions_held(&self, start: &RoleKey) -> BTreeSet<(Namespace, PermissionName)> {
+        self.holdings(start)
+            .into_iter()
+            .map(|holding| (holding.namespace, holding.permission))
+            .collect()
+    }
+
+    /// Every permission that holding `start` gives, each with the condition
+    /// the role holding it attaches, if any. The same permission held with
+    /// different conditions, or with and without one, appears once for
+    /// each.
+    #[must_use]
+    pub fn holdings(&self, start: &RoleKey) -> BTreeSet<Holding> {
         let mut held = BTreeSet::new();
         let mut seen = BTreeSet::new();
         let mut waiting = vec![start];
@@ -472,16 +518,26 @@ impl RoleGraph {
             let Some(role) = self.roles.get(key) else {
                 continue;
             };
-            held.extend(
-                role.contents
-                    .permissions
-                    .iter()
-                    .map(|permission| (key.namespace.clone(), permission.clone())),
-            );
+            held.extend(role.contents.permissions.iter().map(|permission| Holding {
+                namespace: key.namespace.clone(),
+                permission: permission.clone(),
+                condition: role.contents.conditions.get(permission).cloned(),
+            }));
             waiting.extend(role.contents.includes.iter());
         }
         held
     }
+}
+
+/// A permission held through a role, with the condition it is held with.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Holding {
+    /// The resource server of the permission.
+    pub namespace: Namespace,
+    /// The permission.
+    pub permission: PermissionName,
+    /// The condition that must also hold, if any.
+    pub condition: Option<Condition>,
 }
 
 /// How deep inclusion goes from `key`: zero for a role that includes
@@ -646,6 +702,8 @@ pub struct Grant {
     pub namespace: Namespace,
     /// The permission.
     pub permission: PermissionName,
+    /// The condition that must also hold, if any.
+    pub condition: Option<Condition>,
     /// The assignment that gives it.
     pub assignment: RoleAssignment,
 }
@@ -656,10 +714,11 @@ pub struct Grant {
 pub(crate) fn grants_of(assignments: &[RoleAssignment], graph: &RoleGraph) -> Vec<Grant> {
     let mut grants = Vec::new();
     for assignment in assignments {
-        for (namespace, permission) in graph.permissions_held(&assignment.role) {
+        for holding in graph.holdings(&assignment.role) {
             grants.push(Grant {
-                namespace,
-                permission,
+                namespace: holding.namespace,
+                permission: holding.permission,
+                condition: holding.condition,
                 assignment: assignment.clone(),
             });
         }
@@ -667,26 +726,20 @@ pub(crate) fn grants_of(assignments: &[RoleAssignment], graph: &RoleGraph) -> Ve
     grants
 }
 
-/// The assigned roles that allow `permission` of `namespace` at `now` for a
-/// request made for `application`, ordered and without repetition.
+/// Whether `grant` gives `permission` of `namespace` at `now` for a request
+/// made for `application`, its condition aside.
 #[must_use]
-pub(crate) fn allowing_roles<'a>(
-    grants: &'a [Grant],
+pub(crate) fn grant_applies(
+    grant: &Grant,
     namespace: &Namespace,
     permission: &PermissionName,
     application: Option<&ApplicationReference>,
     now: Timestamp,
-) -> BTreeSet<&'a RoleKey> {
-    grants
-        .iter()
-        .filter(|grant| {
-            &grant.namespace == namespace
-                && &grant.permission == permission
-                && grant.assignment.scope.applies_to(application)
-                && grant.assignment.in_force_at(now)
-        })
-        .map(|grant| &grant.assignment.role)
-        .collect()
+) -> bool {
+    &grant.namespace == namespace
+        && &grant.permission == permission
+        && grant.assignment.scope.applies_to(application)
+        && grant.assignment.in_force_at(now)
 }
 
 #[cfg(test)]
@@ -718,6 +771,7 @@ mod tests {
                 description: String::new(),
                 permissions: permissions.iter().map(|p| permission(p)).collect(),
                 includes: includes.iter().cloned().collect(),
+                conditions: BTreeMap::new(),
             },
             Timestamp::UNIX_EPOCH,
         )
@@ -765,6 +819,7 @@ mod tests {
             description: String::new(),
             permissions: BTreeSet::new(),
             includes: BTreeSet::new(),
+            conditions: BTreeMap::new(),
         };
         assert!(
             RoleDefinition::new(
@@ -806,6 +861,7 @@ mod tests {
             description: String::new(),
             permissions: many.iter().map(|p| permission(p)).collect(),
             includes: BTreeSet::new(),
+            conditions: BTreeMap::new(),
         };
         assert_eq!(
             RoleDefinition::new(key(DOCS, "big"), contents, Timestamp::UNIX_EPOCH)
@@ -818,6 +874,7 @@ mod tests {
             includes: (0..=MAX_INCLUDED_ROLES)
                 .map(|i| key(DOCS, &format!("r{i}")))
                 .collect(),
+            conditions: BTreeMap::new(),
         };
         assert_eq!(
             RoleDefinition::new(key(DOCS, "wide"), contents, Timestamp::UNIX_EPOCH)
@@ -828,6 +885,7 @@ mod tests {
             description: "x".repeat(MAX_DESCRIPTION_LENGTH + 1),
             permissions: BTreeSet::new(),
             includes: BTreeSet::new(),
+            conditions: BTreeMap::new(),
         };
         assert!(RoleDefinition::new(key(DOCS, "wordy"), contents, Timestamp::UNIX_EPOCH).is_err());
     }
@@ -838,6 +896,7 @@ mod tests {
             description: String::new(),
             permissions: BTreeSet::new(),
             includes: [key(DOCS, "self")].into(),
+            conditions: BTreeMap::new(),
         };
         assert_eq!(
             RoleDefinition::new(key(DOCS, "self"), contents, Timestamp::UNIX_EPOCH)
@@ -942,6 +1001,56 @@ mod tests {
             [&key(DOCS, "editor")]
         );
         assert!(graph.permissions_held(&key(DOCS, "nobody")).is_empty());
+    }
+
+    fn condition(text: &str) -> Condition {
+        Condition::parse(text).expect("condition")
+    }
+
+    #[test]
+    fn a_condition_is_given_only_for_a_permission_the_role_holds() {
+        let contents = RoleContents {
+            description: String::new(),
+            permissions: [permission("document:read")].into(),
+            includes: BTreeSet::new(),
+            conditions: [(permission("document:write"), condition("true"))].into(),
+        };
+        assert_eq!(
+            RoleDefinition::new(key(DOCS, "odd"), contents, Timestamp::UNIX_EPOCH)
+                .map_err(|e| e.code().to_owned()),
+            Err("authorization.condition_without_permission".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_permission_is_held_with_the_condition_of_the_role_that_holds_it() {
+        let same_department = condition("subject.attributes.department == 'sales'");
+        let editor = RoleDefinition::new(
+            key(DOCS, "editor"),
+            RoleContents {
+                description: String::new(),
+                permissions: [permission("document:read"), permission("document:write")].into(),
+                includes: BTreeSet::new(),
+                conditions: [(permission("document:write"), same_department.clone())].into(),
+            },
+            Timestamp::UNIX_EPOCH,
+        )
+        .expect("role");
+        let owner = role(DOCS, "owner", &["document:write"], &[key(DOCS, "editor")]);
+        let graph = RoleGraph::new([editor, owner]);
+        let held = graph.holdings(&key(DOCS, "owner"));
+        let write = |condition: Option<Condition>| Holding {
+            namespace: ns(DOCS),
+            permission: permission("document:write"),
+            condition,
+        };
+        assert!(held.contains(&write(None)), "the owner's own, without");
+        assert!(
+            held.contains(&write(Some(same_department))),
+            "the editor's, with its condition"
+        );
+        assert_eq!(held.len(), 3);
+        assert_eq!(graph.permissions_held(&key(DOCS, "owner")).len(), 2);
     }
 
     #[test]

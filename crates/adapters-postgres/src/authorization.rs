@@ -4,7 +4,7 @@
 
 use crate::uow::{connection, database_error};
 use hodor_authorization::api::{
-    Action, ApplicationReference, AssignmentScope, BindingSettings, EngineBinding,
+    Action, ApplicationReference, AssignmentScope, BindingSettings, Condition, EngineBinding,
     EngineBindingStore, EngineId, Namespace, NativeRoleStore, PermissionDefinition, PermissionName,
     Role, RoleAssignment, RoleAssignmentStore, RoleContents, RoleDefinition, RoleKey, RoleName,
     Subject, SubjectKind,
@@ -446,14 +446,22 @@ impl NativeRoleStore for PgNativeRoleStore {
             .iter()
             .map(PermissionName::as_str)
             .collect();
+        let conditions: Vec<Option<&str>> = contents
+            .permissions
+            .iter()
+            .map(|permission| contents.conditions.get(permission).map(Condition::as_str))
+            .collect();
         sqlx::query(
-            "INSERT INTO \"authorization\".role_permission (tenant_id, namespace, role, permission)
-             SELECT $1, $2, $3, permission FROM unnest($4::text[]) AS permission",
+            "INSERT INTO \"authorization\".role_permission
+                 (tenant_id, namespace, role, permission, condition)
+             SELECT $1, $2, $3, held.permission, held.condition
+             FROM unnest($4::text[], $5::text[]) AS held (permission, condition)",
         )
         .bind(tenant.as_uuid())
         .bind(key.namespace.as_str())
         .bind(key.name.as_str())
         .bind(&permissions)
+        .bind(&conditions)
         .execute(connection(uow)?)
         .await
         .map_err(|e| database_error(&e))?;
@@ -489,8 +497,8 @@ impl NativeRoleStore for PgNativeRoleStore {
         .fetch_all(connection(uow)?)
         .await
         .map_err(|e| database_error(&e))?;
-        let held: Vec<(String, String, String)> = sqlx::query_as(
-            "SELECT namespace, role, permission FROM \"authorization\".role_permission
+        let held: Vec<(String, String, String, Option<String>)> = sqlx::query_as(
+            "SELECT namespace, role, permission, condition FROM \"authorization\".role_permission
              WHERE tenant_id = $1",
         )
         .bind(tenant.as_uuid())
@@ -511,16 +519,21 @@ impl NativeRoleStore for PgNativeRoleStore {
             for (namespace, name, description, _, _) in &rows {
                 contents.insert(
                     (namespace.clone(), name.clone()),
-                    RoleContents {
-                        description: description.clone(),
-                        permissions: std::collections::BTreeSet::new(),
-                        includes: std::collections::BTreeSet::new(),
-                    },
+                    RoleContents::unconditional(
+                        description,
+                        std::collections::BTreeSet::new(),
+                        std::collections::BTreeSet::new(),
+                    ),
                 );
             }
-            for (namespace, role, permission) in held {
+            for (namespace, role, permission, condition) in held {
                 if let Some(role) = contents.get_mut(&(namespace, role)) {
-                    role.permissions.insert(PermissionName::parse(&permission)?);
+                    let permission = PermissionName::parse(&permission)?;
+                    if let Some(condition) = condition {
+                        role.conditions
+                            .insert(permission.clone(), Condition::parse(&condition)?);
+                    }
+                    role.permissions.insert(permission);
                 }
             }
             for (namespace, role, included_namespace, included_role) in included {
@@ -533,10 +546,12 @@ impl NativeRoleStore for PgNativeRoleStore {
                 .map(|(namespace, name, _, created, updated)| {
                     let role_contents = contents
                         .remove(&(namespace.clone(), name.clone()))
-                        .unwrap_or_else(|| RoleContents {
-                            description: String::new(),
-                            permissions: std::collections::BTreeSet::new(),
-                            includes: std::collections::BTreeSet::new(),
+                        .unwrap_or_else(|| {
+                            RoleContents::unconditional(
+                                "",
+                                std::collections::BTreeSet::new(),
+                                std::collections::BTreeSet::new(),
+                            )
                         });
                     RoleDefinition::restore(
                         role_key(namespace, name)?,

@@ -18,6 +18,7 @@ hodor-adapters-smtp = { path = "crates/adapters-smtp" }
 hodor-audit = { path = "crates/audit" }
 hodor-authentication = { path = "crates/authentication" }
 hodor-authorization = { path = "crates/authorization" }
+hodor-authorization-native = { path = "crates/authorization-native" }
 hodor-authorization-opa = { path = "crates/authorization-opa" }
 hodor-credential = { path = "crates/credential" }
 hodor-federation = { path = "crates/federation" }

@@ -97,13 +97,13 @@ Evaluation order, first decisive step wins:
 5. **Relationship-based access control**: if the resource type has a relation model, check `resource#relation@subject` by bounded graph traversal.
 6. No rule matched → `Deny` with reason `no_matching_policy`.
 
-What is built (Issue-73) is step 3, without groups and organizations: assignments to users and clients, scoped to the tenant or to one application, roles with hierarchy and composites, and `no_matching_role` as the reason of a deny. Steps 1, 2 and 5 are not built ([Decision 0023](../decisions/0023-what-0.2.0-holds.md)); step 4 comes with Issue-74. The exact rules are in [the authorization context](contexts/authorization.md#native-role-based-access-control).
+What is built (Issue-73) is step 3, without groups and organizations: assignments to users and clients, scoped to the tenant or to one application, roles with hierarchy and composites, and `no_matching_role` as the reason of a deny. Step 4 is built (Issue-74) for the conditions a role's permission carries; conditions on policies that target a resource kind are not. Steps 1, 2 and 5 are not built ([Decision 0023](../decisions/0023-what-0.2.0-holds.md)). The exact rules are in [the authorization context](contexts/authorization.md#native-role-based-access-control).
 
 | Model | Implementation notes |
 |---|---|
 | Role-based access control | The role closure per (tenant, principal, scope) is cached and invalidated by `RoleAssigned`/`RoleRevoked`/group events |
 | Access control list | Indexed by `(tenant, resource_type, resource_id)` |
-| Attribute-based access control | Conditions in Common Expression Language, compiled at publish time; no I/O, bounded cost. The interpreter crate is chosen by spike in Phase 5 |
+| Attribute-based access control | Conditions in Common Expression Language, checked and compiled when a role is defined; no input or output, bounded cost. The interpreter is `cel`, in `hodor-authorization-native` ([Decision 0025](../decisions/0025-condition-language.md)) |
 | Relationship-based access control | Zanzibar-style tuples; depth and fan-out limits; no consistency tokens in v1 |
 
 Native relationship-based access control is optional. A full Zanzibar implementation is a product on its own; if the need outgrows bounded checks, the path is `OpenFgaAuthorizationAdapter`, not a larger native engine.

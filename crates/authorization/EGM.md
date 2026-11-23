@@ -28,8 +28,9 @@ The specification is `docs/architecture/contexts/authorization.md`
   `testing` module, and links to `application` and `domain`.
 - Port traits implemented by adapters: `RoleAssignmentStore`,
   `EngineBindingStore` and `NativeRoleStore` (all in
-  `crates/adapters-postgres/src/authorization.rs`); `SubjectAttributeSource`
-  (no implementation yet outside `testing`).
+  `crates/adapters-postgres/src/authorization.rs`); `ConditionLanguage`
+  (implemented by `CelConditionLanguage` in `crates/authorization-native`);
+  `SubjectAttributeSource` (no implementation yet outside `testing`).
 - Engine traits implemented by engines: `AuthorizationEngine`,
   `PolicySimulator`; `NativeEngine` is the one in this crate.
 - Service entry points: `AuthorizationService` (`assign`, `revoke`,

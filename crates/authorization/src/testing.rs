@@ -3,11 +3,11 @@
 
 use crate::api::{
     Action, ApplicationReference, AssignmentScope, Attributes, AuthorizationEngine,
-    BindingSettings, EngineAnswer, EngineBinding, EngineBindingStore, EngineCapabilities, EngineId,
-    EvaluationInput, Namespace, NativeRoleStore, PermissionDefinition, PermissionName,
-    PolicySelection, PolicySimulator, Role, RoleAssignment, RoleAssignmentStore, RoleContents,
-    RoleDefinition, RoleKey, RoleName, SimulationAnswer, Subject, SubjectAttributeSource,
-    SubjectKind,
+    BindingSettings, CompiledCondition, Condition, ConditionInput, ConditionLanguage, EngineAnswer,
+    EngineBinding, EngineBindingStore, EngineCapabilities, EngineId, EvaluationInput, Namespace,
+    NativeRoleStore, PermissionDefinition, PermissionName, PolicySelection, PolicySimulator, Role,
+    RoleAssignment, RoleAssignmentStore, RoleContents, RoleDefinition, RoleKey, RoleName,
+    SimulationAnswer, Subject, SubjectAttributeSource, SubjectKind,
 };
 use hodor_kernel::clock::testing::FixedClock;
 use hodor_kernel::{
@@ -658,6 +658,7 @@ impl NativeRoleStore for InMemoryNativeRoles {
             {
                 let mut contents = role.contents().clone();
                 contents.permissions.remove(permission);
+                contents.conditions.remove(permission);
                 *role = RoleDefinition::restore(
                     key.clone(),
                     contents,
@@ -856,6 +857,7 @@ fn contract_role(
             description: "a role".to_owned(),
             permissions: permissions.iter().map(|p| contract_permission(p)).collect(),
             includes: includes.iter().cloned().collect(),
+            conditions: BTreeMap::new(),
         },
         at,
     )
@@ -1040,6 +1042,14 @@ pub async fn run_native_role_contract(ports: NativeRolePorts<'_>) {
                 ]
                 .into(),
                 includes: std::collections::BTreeSet::new(),
+                conditions: [(
+                    contract_permission("document:write"),
+                    Condition::parse(
+                        "has(resource.attributes.department)\n  && resource.attributes.department == \"sales\"",
+                    )
+                    .expect("condition"),
+                )]
+                .into(),
             },
             later,
         )
@@ -1256,4 +1266,56 @@ pub async fn run_native_role_contract(ports: NativeRolePorts<'_>) {
             .iter()
             .all(|role| role.key() != &RoleKey::built_in(Role::TenantAdministrator))
     );
+}
+
+/// A stand-in for the condition language, for the tests of this context.
+/// It knows five conditions: `true` and `false` hold or do not, `fail`
+/// fails when it runs, `invalid` and `costly` are refused when compiled
+/// with `authorization.condition_invalid` and
+/// `authorization.condition_too_costly`. Any other text is refused as
+/// invalid. It counts how many times conditions ran.
+#[derive(Debug, Clone, Default)]
+pub struct FakeConditionLanguage {
+    runs: Arc<Mutex<usize>>,
+}
+
+impl FakeConditionLanguage {
+    /// How many times a condition it compiled ran.
+    #[must_use]
+    pub fn runs(&self) -> usize {
+        *self.runs.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+struct FakeCompiled {
+    text: String,
+    runs: Arc<Mutex<usize>>,
+}
+
+impl CompiledCondition for FakeCompiled {
+    fn holds(&self, _input: &ConditionInput, _time_limit: Duration) -> Result<bool, DomainError> {
+        *self.runs.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+        match self.text.as_str() {
+            "true" => Ok(true),
+            "false" => Ok(false),
+            _ => Err(crate::api::condition_failed(
+                "the stand-in was told to fail",
+            )),
+        }
+    }
+}
+
+impl ConditionLanguage for FakeConditionLanguage {
+    fn compile(&self, condition: &Condition) -> Result<Arc<dyn CompiledCondition>, DomainError> {
+        match condition.as_str() {
+            "true" | "false" | "fail" => Ok(Arc::new(FakeCompiled {
+                text: condition.as_str().to_owned(),
+                runs: Arc::clone(&self.runs),
+            })),
+            "costly" => Err(crate::api::condition_too_costly("the stand-in says so")),
+            _ => Err(crate::api::condition_invalid(
+                "the stand-in knows only five conditions",
+            )),
+        }
+    }
 }

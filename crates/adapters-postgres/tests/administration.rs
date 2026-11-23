@@ -208,6 +208,37 @@ async fn the_database_refuses_native_roles_that_break_its_rules() {
     ] {
         assert!(refused.is_err());
     }
+    run(
+        "INSERT INTO \"authorization\".permission (tenant_id, namespace, name, description,
+             created_at) VALUES ($1, 'urn:example:documents', 'document:read', '', now())",
+    )
+    .await
+    .expect("permission");
+    for refused in [
+        // An empty condition.
+        run(
+            "INSERT INTO \"authorization\".role_permission (tenant_id, namespace, role,
+                 permission, condition)
+             VALUES ($1, 'urn:example:documents', 'viewer', 'document:read', '')",
+        )
+        .await,
+        // A condition longer than 1000 characters.
+        run(
+            "INSERT INTO \"authorization\".role_permission (tenant_id, namespace, role,
+                 permission, condition)
+             VALUES ($1, 'urn:example:documents', 'viewer', 'document:read', repeat('x', 1001))",
+        )
+        .await,
+    ] {
+        assert!(refused.is_err());
+    }
+    run(
+        "INSERT INTO \"authorization\".role_permission (tenant_id, namespace, role, permission,
+             condition)
+         VALUES ($1, 'urn:example:documents', 'viewer', 'document:read', repeat('x', 1000))",
+    )
+    .await
+    .expect("a condition of 1000 characters");
 }
 
 async fn uuid_of(owner: &sqlx::PgPool) -> sqlx::types::Uuid {
@@ -280,6 +311,7 @@ async fn a_change_on_one_instance_takes_effect_on_another_at_the_next_decision()
                 description: String::new(),
                 permissions: [PermissionName::parse("document:read").expect("permission")].into(),
                 includes: std::collections::BTreeSet::new(),
+                conditions: std::collections::BTreeMap::new(),
             },
             Caller::system(),
         )
@@ -293,6 +325,7 @@ async fn a_change_on_one_instance_takes_effect_on_another_at_the_next_decision()
                 description: String::new(),
                 permissions: std::collections::BTreeSet::new(),
                 includes: [role_key("viewer")].into(),
+                conditions: std::collections::BTreeMap::new(),
             },
             Caller::system(),
         )
@@ -350,6 +383,7 @@ async fn a_change_on_one_instance_takes_effect_on_another_at_the_next_decision()
                 description: String::new(),
                 permissions: std::collections::BTreeSet::new(),
                 includes: [role_key("editor")].into(),
+                conditions: std::collections::BTreeMap::new(),
             },
             Caller::system(),
         )

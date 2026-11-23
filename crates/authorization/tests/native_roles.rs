@@ -88,6 +88,7 @@ fn contents(permissions: &[&str], includes: &[RoleKey]) -> RoleContents {
         description: String::new(),
         permissions: permissions.iter().map(|p| permission(p)).collect(),
         includes: includes.iter().cloned().collect(),
+        conditions: std::collections::BTreeMap::new(),
     }
 }
 

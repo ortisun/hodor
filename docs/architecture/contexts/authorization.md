@@ -248,7 +248,38 @@ A role belongs to one resource server, its namespace, and has a name, unique in 
 - **Inclusion never makes a cycle.** A role that would include itself, directly or through other roles, is refused with `authorization.role_cycle`. Inclusion is at most 10 roles deep; a deeper chain is refused with `authorization.role_inclusion_too_deep`.
 - **A role cannot include a built-in role**, and no role can be defined in `hodor:admin`: what a tenant defines never reaches Hodor's administration.
 - **A role holds only permissions declared for its namespace.** An undeclared permission or an included role that does not exist is refused when the role is defined.
-- **Defining a role again replaces it**: its description, its permissions and what it includes. **A role that another role includes cannot be removed** (`authorization.role_in_use`); removing a role removes its assignments.
+- **Defining a role again replaces it**: its description, its permissions, their conditions and what it includes. **A role that another role includes cannot be removed** (`authorization.role_in_use`); removing a role removes its assignments.
+
+### Conditions
+
+A permission a role holds may carry a **condition**: an expression in [Common Expression Language](https://cel.dev) that must also hold for the role to allow it. The condition belongs to the role's holding of the permission, not to the permission: `editor` may hold `document:write` only for documents of the subject's department, while `owner` holds it without a condition. A role that includes `editor` holds `document:write` with `editor`'s condition. The interpreter and its limits are in [Decision 0025](../../decisions/0025-condition-language.md).
+
+A condition reads four variables:
+
+| Variable | What it holds |
+|---|---|
+| `subject` | `kind` (`user` or `client`), `id`, `attributes` (what Hodor resolved), `asserted` (what the caller claims, empty unless the binding trusts it) |
+| `resource` | `kind`, `id` (or `null`), `attributes` |
+| `action` | The action, a string |
+| `context` | `attributes` of the moment, `application` (or `null`), and `time`, the moment of the decision by Hodor's clock, as RFC 3339 text in UTC to the second (`2024-10-04T00:00:00Z`): comparing the text compares the moments |
+
+```text
+subject.attributes.department == resource.attributes.department
+  && context.time < "2027-01-01T00:00:00Z"
+```
+
+**When a role is defined, every condition is checked**, and the role is refused if one fails:
+
+| Refused with | When |
+|---|---|
+| `authorization.condition_invalid` | It is empty, longer than 1000 characters, holds a control character other than a line break or a tab, does not parse, names a variable other than the four above, or writes a message literal. The detail says what is wrong |
+| `authorization.condition_too_costly` | It has more than 256 nodes, or comprehensions (`all`, `exists`, `exists_one`, `map`, `filter`) nested more than two deep |
+| `authorization.condition_without_permission` | It is given for a permission the role does not hold |
+| `authorization.conditions_unavailable` | The binary was started without the condition language |
+
+**Every run of a condition is bounded**: at most 1000 iterations across its comprehensions, and a deadline of 10 milliseconds or what is left of the engine's time limit, whichever comes first. At most 32 conditions are run for one decision.
+
+A condition holds only when it gives `true`. One that gives anything else, names an attribute the request does not carry, goes past its bounds or fails in any other way, **fails**: it never allows. Guard optional attributes with `has(resource.attributes.department)`.
 
 ### Assignments
 
@@ -269,17 +300,20 @@ For a request about the resource server `namespace`, with the resource kind `kin
 
 1. The principal is the request's subject. Its assignments in the tenant are read.
 2. An assignment counts when it is in force at the moment of the decision and its scope is the whole tenant or the application named by the request's context.
-3. From each assignment that counts, the role and every role it includes are followed. Every permission of `namespace` they hold is collected.
-4. If `kind:action` is among them, the answer is **allow** with the reason `matching_role`. It names the assigned roles that led there, written `namespace#role`, and reports the tenant's role revision.
-5. Otherwise the answer is **deny** with the reason `no_matching_role`. An undeclared permission, an unknown subject and a subject with no assignment get the same answer, so the answer does not reveal what exists.
+3. From each assignment that counts, the role and every role it includes are followed. Every permission of `namespace` they hold is collected, each with the condition it is held with, if any.
+4. If `kind:action` is held **without a condition** through any assignment, the answer is **allow** with the reason `matching_role`. It names the assigned roles that led there, written `namespace#role`, and reports the tenant's role revision.
+5. Otherwise the conditions it is held with are run, at most 32. If one holds, the answer is **allow** with `matching_role`, naming the assigned roles whose condition held.
+6. If none holds and at least one failed, the answer is **indeterminate** with the reason `condition_failed`: the engine could not tell. The evaluation treats it as any failure of an engine, so it denies unless the binding lets the action fail open.
+7. If every condition ran and gave `false`, the answer is **deny** with the reason `condition_not_met`.
+8. If `kind:action` is not held at all, the answer is **deny** with the reason `no_matching_role`. An undeclared permission, an unknown subject and a subject with no assignment get the same answer, so the answer does not reveal what exists.
 
-For `hodor:admin` the built-in roles are used, the subject must be a user, and the answer is the one of [the check](#the-check): the reason is the name of the first role that allows, and the revision is `fixed_roles`.
+An allow from one assignment is not undone by a condition that failed on another: each assignment is a reason to allow on its own.
 
-Conditions on attributes come with Issue-74; then a role's permission may carry a condition that must also hold.
+For `hodor:admin` the built-in roles are used, the subject must be a user, and the answer is the one of [the check](#the-check): the reason is the name of the first role that allows, and the revision is `fixed_roles`. Built-in roles have no conditions.
 
 ### Caching and the role revision
 
-The native engine keeps, per tenant and principal, what the principal's assignments come to: the permissions, with the role, the scope, the start and the end of each assignment that gives them. Every change to a tenant's permissions, roles or assignments raises **the tenant's role revision** in the same transaction. Before using what it keeps, the engine reads the revision: when it has changed, it reads everything again. So **a change takes effect on the next decision**, whichever instance of Hodor answers it. The start and end of assignments are checked at every decision, so time passing needs no change. `hodor:admin` is not cached.
+The native engine keeps, per tenant and principal, what the principal's assignments come to: the permissions, with the role, the scope, the start and the end of each assignment that gives them, and each condition compiled. A stored condition that no longer compiles, after an upgrade of the interpreter, is kept as failing: the decisions it takes part in are indeterminate. Every change to a tenant's permissions, roles or assignments raises **the tenant's role revision** in the same transaction. Before using what it keeps, the engine reads the revision: when it has changed, it reads everything again. So **a change takes effect on the next decision**, whichever instance of Hodor answers it. The start and end of assignments are checked at every decision, so time passing needs no change. `hodor:admin` is not cached.
 
 ### Operations of native role-based access control
 
@@ -313,6 +347,7 @@ They are not reachable through the administration interface, the command-line to
 | Port | Purpose |
 |---|---|
 | `NativeRoleStore` | Store, read and remove a tenant's permissions, roles and assignments, and read and raise its role revision |
+| `ConditionLanguage` | Check and compile a condition; a compiled condition runs against one request. Implemented by `CelConditionLanguage` in `hodor-authorization-native` |
 
 ### Storage of native role-based access control
 
@@ -320,7 +355,7 @@ They are not reachable through the administration interface, the command-line to
 |---|---|---|
 | `authorization.permission` | `tenant_id`, `namespace`, `name` | The declared permissions, with a description |
 | `authorization.role` | `tenant_id`, `namespace`, `name` | The roles, with a description |
-| `authorization.role_permission` | `tenant_id`, `namespace`, `role`, `permission` | What each role holds. Goes with its role and with its permission |
+| `authorization.role_permission` | `tenant_id`, `namespace`, `role`, `permission` | What each role holds, with the condition's text when it has one (1 to 1000 characters). Goes with its role and with its permission |
 | `authorization.role_inclusion` | `tenant_id`, `namespace`, `role`, `included_namespace`, `included_role` | What each role includes. Goes with the including role; the included role cannot be removed while it is there |
 | `authorization.role_revision` | `tenant_id` | The tenant's role revision |
 | `authorization.role_assignment` | See [above](#authorizationrole_assignment) | Who holds which role |
@@ -560,7 +595,7 @@ The instance table is the second platform table after the tenant directory. It h
 |---|---|
 | Roles given through groups and organizations | When groups and organizations exist ([Decision 0023](../../decisions/0023-what-0.2.0-holds.md)) |
 | Assigning and revoking roles through the administration interface. Today the only way to give a role is [the bootstrap command](../../api/admin-api.md#the-first-administrator), and there is no way to take one away | Phase 2 |
-| Conditions on attributes in Common Expression Language | Issue-74 |
+| Conditions on per-resource access control lists, on policies that target a resource kind, and static type checking of conditions | Not planned before 0.2.0 ([Decision 0023](../../decisions/0023-what-0.2.0-holds.md), [Decision 0025](../../decisions/0025-condition-language.md)) |
 | The authorization interface for applications, which calls the evaluation; and an implementation of `SubjectAttributeSource`. Until then no binary evaluates through the engine contract, and the administration interface still asks the check above | Issue-75 |
 | The record of decisions | Issue-76 |
 | A decision from an instance that runs a revision older than the published one, by more than an allowed lag, answered `indeterminate` | Issue-79, with activation tracking |

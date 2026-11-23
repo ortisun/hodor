@@ -4,7 +4,7 @@
 //! See `docs/architecture/contexts/authorization.md`, "Operations of native
 //! role-based access control".
 
-use crate::application::ports::NativeRoleStore;
+use crate::application::ports::{ConditionLanguage, NativeRoleStore};
 use crate::domain::event::AuthorizationEvent;
 use crate::domain::native::{
     AssignmentScope, PermissionDefinition, PermissionName, RoleAssignment, RoleContents,
@@ -33,6 +33,7 @@ pub struct RoleService {
     units_of_work: Arc<dyn UnitOfWorkFactory>,
     store: Arc<dyn NativeRoleStore>,
     clock: Arc<dyn Clock>,
+    conditions: Option<Arc<dyn ConditionLanguage>>,
 }
 
 impl std::fmt::Debug for RoleService {
@@ -97,7 +98,40 @@ impl RoleService {
             units_of_work,
             store,
             clock,
+            conditions: None,
         }
+    }
+
+    /// The same use cases, checking conditions in `language`. Without it, a
+    /// role with a condition is refused.
+    #[must_use]
+    pub fn with_condition_language(mut self, language: Arc<dyn ConditionLanguage>) -> Self {
+        self.conditions = Some(language);
+        self
+    }
+
+    /// Checks and compiles every condition of `contents`.
+    fn check_conditions(&self, contents: &RoleContents) -> Result<(), DomainError> {
+        if contents.conditions.is_empty() {
+            return Ok(());
+        }
+        let Some(language) = &self.conditions else {
+            return Err(DomainError::invalid(
+                "authorization.conditions_unavailable",
+                "conditions cannot be used here",
+            ));
+        };
+        for (permission, condition) in &contents.conditions {
+            language.compile(condition).map_err(|error| {
+                let detail = format!(
+                    "{}: {}",
+                    permission.as_str(),
+                    error.detail().unwrap_or_default()
+                );
+                error.with_detail(detail)
+            })?;
+        }
+        Ok(())
     }
 
     /// Opens a unit of work that changes roles: it raises the tenant's role
@@ -205,8 +239,15 @@ impl RoleService {
     ///
     /// # Errors
     ///
-    /// The errors of [`RoleDefinition::new`] and [`RoleGraph::check`], such
-    /// as `authorization.role_cycle`, and storage errors.
+    /// - The errors of [`RoleDefinition::new`] and [`RoleGraph::check`], such
+    ///   as `authorization.role_cycle`.
+    /// - `authorization.condition_invalid` and
+    ///   `authorization.condition_too_costly` from the condition language,
+    ///   for a condition that cannot be used; the detail names the
+    ///   permission.
+    /// - `authorization.conditions_unavailable` for a condition when no
+    ///   language was given.
+    /// - Storage errors.
     pub async fn define_role(
         &self,
         tenant: &TenantContext,
@@ -217,6 +258,7 @@ impl RoleService {
         let now = self.clock.now();
         // Checks the role on its own before anything is read.
         let fresh = RoleDefinition::new(key.clone(), contents.clone(), now)?;
+        self.check_conditions(fresh.contents())?;
         let mut uow = self.changing(tenant).await?;
         let graph = RoleGraph::new(self.store.roles(uow.as_mut()).await?);
         let role = match graph.get(&key) {
