@@ -3,7 +3,9 @@
 ## Overview
 
 The operations tool of a Hodor installation: `main.rs`, and
-`applications.rs` for the application, client and resource server commands. It parses
+`applications.rs` for the application, client and resource server commands, and
+`decisions.rs` for `hodor-cli authorization decision-log show|set` and
+`hodor-cli authorization decisions`. It parses
 the command line with clap (`Cli`, `Command`), connects to PostgreSQL and calls
 the services of the domain crates directly. It applies migrations, manages
 tenants, makes the first administrator of a tenant, verifies the audit chain,

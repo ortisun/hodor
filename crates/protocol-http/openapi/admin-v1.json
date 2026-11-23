@@ -3,7 +3,7 @@
   "info": {
     "title": "Hodor administration interface",
     "version": "1.0.0",
-    "description": "Users, their sessions and second factors, the audit log, the identity providers, the keys, the applications and the assurance levels of a tenant, for the people who run it. Paths are relative to https://{host}/t/{slug}/api/v1/admin. Every operation needs an access token whose user holds a role with the permission named in `x-hodor-permission`."
+    "description": "Users, their sessions and second factors, the audit log, the identity providers, the keys, the applications, the assurance levels and the record of decisions of a tenant, for the people who run it. Paths are relative to https://{host}/t/{slug}/api/v1/admin. Every operation needs an access token whose user holds a role with the permission named in `x-hodor-permission`."
   },
   "servers": [
     {
@@ -3579,6 +3579,266 @@
           }
         }
       }
+    },
+    "/decision-log": {
+      "get": {
+        "operationId": "readDecisionLogSettings",
+        "summary": "Read the settings of the record of decisions",
+        "x-hodor-permission": "decisions:read",
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The settings in force, the defaults when none were set.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionLogSettings"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "replaceDecisionLogSettings",
+        "summary": "Replace the settings of the record of decisions",
+        "x-hodor-permission": "decision-log:write",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecisionLogSettings"
+              }
+            }
+          }
+        },
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The settings now in force.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionLogSettings"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A body that is not this document or names an unknown mode (`request.body_invalid`), or settings out of bounds (`authorization.decision_log_invalid`): a share outside 1 to 99, a share without `sampled` or `sampled` without one, more than 32 masks, a mask outside the paths the record accepts, or a retention outside 1 to 400 days.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/decisions": {
+      "get": {
+        "operationId": "listDecisions",
+        "summary": "List recorded decisions, newest first",
+        "x-hodor-permission": "decisions:read",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "description": "Decided at or after this time."
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "description": "Decided before this time."
+          },
+          {
+            "name": "effect",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "deny",
+                "indeterminate"
+              ]
+            },
+            "description": "With this effect."
+          },
+          {
+            "name": "namespace",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "About this resource server."
+          },
+          {
+            "name": "subject_kind",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "user",
+                "client"
+              ]
+            },
+            "description": "The subject's kind, with `subject_id`."
+          },
+          {
+            "name": "subject_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "The subject's identifier, with `subject_kind`."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "The `next_cursor` of the page before."
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "A page of recorded decisions.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "items"
+                  ],
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/DecisionRecord"
+                      }
+                    },
+                    "next_cursor": {
+                      "type": "string",
+                      "description": "Present when more records follow."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A filter, limit or cursor that cannot be read (`request.query_invalid`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -5051,6 +5311,142 @@
           "expires_at": {
             "type": "string",
             "format": "date-time"
+          }
+        }
+      },
+      "DecisionLogSettings": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "mode",
+          "retention_days"
+        ],
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "full",
+              "sampled",
+              "deny_only",
+              "off"
+            ]
+          },
+          "allow_sample_percent": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 99,
+            "description": "The share of allows kept, with `sampled` and only then."
+          },
+          "masks": {
+            "type": "array",
+            "maxItems": 32,
+            "items": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "description": "Paths erased from the input before a record is stored: `subject.attributes.…`, `asserted.…`, `resource.attributes.…` or `context.attributes.…`, with `*` alone as the last segment."
+          },
+          "retention_days": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 400
+          }
+        }
+      },
+      "DecisionRecord": {
+        "type": "object",
+        "required": [
+          "decision_id",
+          "namespace",
+          "subject",
+          "action",
+          "resource",
+          "effect",
+          "reason",
+          "decided_at",
+          "duration_microseconds",
+          "input",
+          "masked"
+        ],
+        "properties": {
+          "decision_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "namespace": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "object",
+            "required": [
+              "kind",
+              "id"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "user",
+                  "client"
+                ]
+              },
+              "id": {
+                "type": "string"
+              }
+            }
+          },
+          "action": {
+            "type": "string"
+          },
+          "resource": {
+            "type": "object",
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              }
+            }
+          },
+          "effect": {
+            "type": "string",
+            "enum": [
+              "allow",
+              "deny",
+              "indeterminate"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "engine": {
+            "type": "string"
+          },
+          "policy_version": {
+            "type": "string"
+          },
+          "decided_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "duration_microseconds": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "input": {
+            "type": "object",
+            "description": "What the engine was given, after the tenant's masks."
+          },
+          "masked": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The masks that erased something."
           }
         }
       }

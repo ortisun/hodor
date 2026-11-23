@@ -52,19 +52,21 @@ Symbols:
   `PgPendingMessages::new(platform)`, `SmtpSender`, `SystemClock`),
   `AuditService` (with `PgAuditLog`, `Sha256Digest`), and
   `PendingAuthorizationCleanup::new(platform, database)`,
-  `AccessTokenCleanup::new(platform, database)` and
+  `AccessTokenCleanup::new(platform, database)`,
+  `DecisionLogMaintenance::new(platform, database)` and
   `OutboxDispatcher::new(platform, database, [AuditHandler])`, and, with
   `HODOR_SECRET_KEYS`, `KeyRotationJob::new(platform, KeyService, policy)`
   over `PgKeyStore` and `LocalKeyProvider`, and, with
   `HODOR_OPEN_POLICY_AGENT_BINARY`, `OpaProcessChecker::verified` (the worker
   does not start with a binary it refuses) and
   `PolicyCheckJob::new(platform, policy_service(database), checker)`; then
-  serves `ops_router(health)` and joins the six loops.
+  serves `ops_router(health)` and joins the seven loops.
 - `dispatch_loop` calls `OutboxDispatcher::dispatch_batch(batch_size)`.
 - `delivery_loop` calls `DeliveryService::deliver_pending(batch_size)`.
 - `cleanup_loop` calls `CleanupJob::run(now, batch_size)`: `CleanupJob` is
   `PendingAuthorizations(PendingAuthorizationCleanup)` or
-  `AccessTokens(AccessTokenCleanup)`, and `name` is its `job` attribute.
+  `AccessTokens(AccessTokenCleanup)` or `DecisionLog(DecisionLogMaintenance)`,
+  and `name` is its `job` attribute.
 - `rotation_loop` calls `KeyRotationJob::run(now)`.
 - `policy_check_loop` calls `PolicyCheckJob::run()`; `policy_service` builds
   `PolicyService` over the PostgreSQL stores.
@@ -118,7 +120,10 @@ Symbols:
   tenant, through `PendingAuthorizationCleanup` (`cleanup_loop`), and logs
   how many when any were removed; and deletes the records of access tokens
   whose token expired, from `oauth.access_token`, through
-  `AccessTokenCleanup` (`cleanup_loop`).
+  `AccessTokenCleanup` (`cleanup_loop`); and prepares the partitions of the
+  record of decisions, drops those past 400 days and removes each tenant's
+  records past its retention, through `DecisionLogMaintenance`
+  (`cleanup_loop`, job `decision_log`).
 - Makes, activates and retires signing key versions inside each tenant
   through `KeyRotationJob` (`rotation_loop`), and logs what changed and
   each tenant whose step failed.

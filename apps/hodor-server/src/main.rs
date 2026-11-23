@@ -14,13 +14,13 @@ use hodor_adapters_ldap::LdapDirectoryClient;
 use hodor_adapters_postgres::{
     Database, PgAccessTokenRecordStore, PgAccessTokenStore, PgApplicationStore, PgAttemptStore,
     PgAuditLog, PgAuthorizationCodeStore, PgAuthorizationRequestStore, PgBundleStore,
-    PgClientAssertionStore, PgClientStore, PgConsentStore, PgEngineBindingStore, PgGrantStore,
-    PgInstanceStatusStore, PgInstanceStore, PgKeyStore, PgLinkStore, PgMessageQueue,
-    PgNativeRoleStore, PgPasswordStore, PgPendingAuthorizationStore, PgProviderStore,
-    PgRecoveryCodeStore, PgRefreshTokenStore, PgResourceServerStore, PgRoleAssignmentStore,
-    PgSealingStateStore, PgSessionStore, PgTenantDirectory, PgTenantRepository, PgTotpStore,
-    PgTransactionStore, PgUploadedDecisionStore, PgUserRepository, PgVerificationTokenStore,
-    PgWebAuthnStore,
+    PgClientAssertionStore, PgClientStore, PgConsentStore, PgDecisionLogStore,
+    PgEngineBindingStore, PgGrantStore, PgInstanceStatusStore, PgInstanceStore, PgKeyStore,
+    PgLinkStore, PgMessageQueue, PgNativeRoleStore, PgPasswordStore, PgPendingAuthorizationStore,
+    PgProviderStore, PgRecoveryCodeStore, PgRefreshTokenStore, PgResourceServerStore,
+    PgRoleAssignmentStore, PgSealingStateStore, PgSessionStore, PgTenantDirectory,
+    PgTenantRepository, PgTotpStore, PgTransactionStore, PgUploadedDecisionStore, PgUserRepository,
+    PgVerificationTokenStore, PgWebAuthnStore,
 };
 use hodor_audit::api::AuditService;
 use hodor_authentication::api::{
@@ -29,7 +29,7 @@ use hodor_authentication::api::{
     RecoveryCodeAuthenticator, Requirement, TotpAuthenticator, WebAuthnAuthenticator,
 };
 use hodor_authorization::api::{
-    AuthorizationService, EngineRegistry, EvaluationService, NativeEngine,
+    AuthorizationService, DecisionLog, EngineRegistry, EvaluationService, NativeEngine,
 };
 use hodor_authorization_native::CelConditionLanguage;
 use hodor_authorization_opa::api::{
@@ -776,9 +776,21 @@ fn authorization_api(
             }),
             engines,
             clock,
-        ),
+        )
+        .with_decision_log(decision_log(database)),
         public_url: config.public_url.clone(),
     }
+}
+
+/// The record of decisions, written by the Authorization API and read by
+/// the administration interface.
+fn decision_log(database: &Database) -> DecisionLog {
+    DecisionLog::new(
+        Arc::new(database.clone()),
+        Arc::new(PgDecisionLogStore),
+        Arc::new(OsRandom),
+        Arc::new(SystemClock),
+    )
 }
 
 /// Builds everything the end-session endpoint needs. A hint is checked
@@ -1139,6 +1151,7 @@ fn administration(config: &Config, database: &Database) -> Result<AdminState, Do
             factor_service(config, database, &identity, &tenants, webauthn)?
         },
         consents: consents(database),
+        decisions: decision_log(database),
         public_url: config.public_url.clone(),
     })
 }

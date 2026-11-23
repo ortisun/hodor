@@ -217,6 +217,12 @@ fn world() -> World {
             ),
         )
         .0,
+        decisions: hodor_authorization::api::DecisionLog::new(
+            Arc::new(units_of_work.clone()),
+            Arc::new(hodor_authorization::testing::InMemoryDecisionLog::default()),
+            Arc::new(SequentialRandom::default()),
+            clock.clone(),
+        ),
         public_url: "https://auth.example".to_owned(),
     };
     let router = public_router(

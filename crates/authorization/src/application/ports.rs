@@ -3,12 +3,13 @@
 
 use crate::domain::binding::EngineBinding;
 use crate::domain::condition::{Condition, ConditionInput};
+use crate::domain::decision_log::{DecisionFilter, DecisionLogSettings, DecisionRecord};
 use crate::domain::native::{
     AssignmentScope, PermissionDefinition, PermissionName, RoleAssignment, RoleDefinition, RoleKey,
 };
 use crate::domain::request::{Attributes, Namespace, Subject};
 use crate::domain::role::Role;
-use hodor_kernel::{DomainError, TenantContext, Timestamp, UnitOfWork, UserId};
+use hodor_kernel::{DomainError, Page, PageRequest, TenantContext, Timestamp, UnitOfWork, UserId};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -276,4 +277,56 @@ pub trait CompiledCondition: Send + Sync {
     /// boolean, reads what the input does not carry, goes past its bounds
     /// or fails in any other way.
     fn holds(&self, input: &ConditionInput, time_limit: Duration) -> Result<bool, DomainError>;
+}
+
+/// Stores the record of decisions and the tenant's settings for it. Every
+/// method works inside the tenant the unit of work is bound to.
+#[async_trait::async_trait]
+pub trait DecisionLogStore: Send + Sync {
+    /// The tenant's settings; `None` when it never set any.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails or what is stored is not valid.
+    async fn settings(
+        &self,
+        uow: &mut dyn UnitOfWork,
+    ) -> Result<Option<DecisionLogSettings>, DomainError>;
+
+    /// Replaces the tenant's settings.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn put_settings(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        settings: &DecisionLogSettings,
+        now: Timestamp,
+    ) -> Result<(), DomainError>;
+
+    /// Adds records. A record whose decision is already recorded is kept
+    /// once.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn append(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        records: &[DecisionRecord],
+    ) -> Result<(), DomainError>;
+
+    /// One page of the records that pass `filter`, newest first.
+    ///
+    /// # Errors
+    ///
+    /// `request.query_invalid` for a cursor this store did not make, and
+    /// storage errors.
+    async fn page(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        filter: &DecisionFilter,
+        page: &PageRequest,
+    ) -> Result<Page<DecisionRecord>, DomainError>;
 }

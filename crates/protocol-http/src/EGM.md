@@ -59,6 +59,8 @@ provider is offered), `digest: Arc<dyn Digest>` and `clock: Arc<dyn Clock>`
 `audit: AuditService` (`hodor_audit`),
 `factors: FactorService` (`hodor_authentication`; what an administrator sees
 and removes of a user's factors, `admin/factors.rs`),
+`decisions: DecisionLog` (`hodor_authorization`; the record of decisions and
+its settings, `admin/decisions.rs`),
 `federation: Option<FederationService>` (`None` when the installation has no
 keys to keep provider secrets with), `keys: Option<KeyService>`
 (`hodor_keys`; `None` makes the key routes answer `503`

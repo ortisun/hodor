@@ -52,6 +52,19 @@ Implemented by `CelConditionLanguage` in `crates/authorization-native` and
 `attributes_of(tenant, subject) -> Attributes`; an unknown subject has none.
 Implemented only by `StaticSubjectAttributes` in `../testing.rs` so far.
 
+### The record of decisions (`decision_log.rs`)
+
+`DecisionLog::new(units_of_work, store: DecisionLogStore, random, clock)`:
+`settings(tenant)` (the defaults when none were set),
+`replace_settings(tenant, settings, caller)` (announces
+`authorization.decision_log_changed` only when something changed),
+`page(tenant, filter, page)`, and `record(tenant, &[Decided])`, which drops
+decisions about `hodor:admin`, keeps what the tenant's mode keeps (drawing
+from `random` for `sampled`), reduces each input by the masks and appends
+them in one unit of work. Port `DecisionLogStore` (`ports.rs`): `settings`,
+`put_settings`, `append` (a decision already recorded is kept once),
+`page` (newest first; `request.query_invalid` for a foreign cursor).
+
 ### Engines (`engine.rs`, `native.rs`)
 
 - `AuthorizationEngine`: `id`, `capabilities`, `evaluate(tenant, input)`,
@@ -120,7 +133,10 @@ Implemented only by `StaticSubjectAttributes` in `../testing.rs` so far.
 
 `EvaluationService` (`evaluation.rs:EvaluationService`), `Clone`:
 
-- `new(units_of_work, assignments, bindings, subjects, registry, clock)`.
+- `new(units_of_work, assignments, bindings, subjects, registry, clock)`;
+  `with_decision_log(log)` records every `evaluate` and `evaluate_batch`
+  after deciding (`keep_record`), never `simulate`; a failure to record is
+  counted in `unrecorded()` and changes no answer.
 - `bind(tenant, settings, caller) -> EngineBinding`,
   `unbind(tenant, namespace, caller) -> bool`, `binding(tenant, namespace)`,
   `bindings(tenant)`.

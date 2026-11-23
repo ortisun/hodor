@@ -3,6 +3,7 @@
 //! applications, recovery codes and checking the audit log.
 
 mod applications;
+mod decisions;
 mod policies;
 
 use clap::{Parser, Subcommand, ValueEnum};
@@ -154,6 +155,21 @@ enum Command {
         public_url: String,
         #[command(subcommand)]
         command: ProviderCommand,
+    },
+
+    /// Read and set the record of decisions an application's questions
+    /// leave.
+    Authorization {
+        /// Connection URL of the application role.
+        #[arg(
+            long,
+            env = "HODOR_DATABASE_URL",
+            hide_env_values = true,
+            global = true
+        )]
+        database_url: Option<String>,
+        #[command(subcommand)]
+        command: decisions::AuthorizationCommand,
     },
 
     /// Manage a tenant's applications.
@@ -1834,6 +1850,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
             if !output.is_empty() {
                 writeln!(std::io::stdout(), "{output}")?;
             }
+        }
+        Command::Authorization {
+            database_url,
+            command,
+        } => {
+            let database = connect(database_url).await?;
+            print(decisions::run_authorization(&database, command).await)?;
         }
         Command::Application {
             database_url,

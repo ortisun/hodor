@@ -2,6 +2,7 @@
 //!
 //! See `docs/architecture/contexts/authorization.md`, "Evaluating".
 
+use crate::application::decision_log::{Decided, DecisionLog};
 use crate::application::engine::{
     AuthorizationEngine, EngineRegistry, EvaluationInput, PolicySelection,
 };
@@ -20,6 +21,7 @@ use hodor_kernel::{
 };
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The most requests one batch may hold.
 pub const MAX_BATCH: usize = 100;
@@ -68,6 +70,8 @@ pub struct EvaluationService {
     administration: Arc<dyn AuthorizationEngine>,
     registry: EngineRegistry,
     clock: Arc<dyn Clock>,
+    log: Option<DecisionLog>,
+    unrecorded: Arc<AtomicU64>,
 }
 
 impl std::fmt::Debug for EvaluationService {
@@ -102,7 +106,24 @@ impl EvaluationService {
             administration,
             registry,
             clock,
+            log: None,
+            unrecorded: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// Records every decision made after this through `log`, as the
+    /// tenant's settings say. Simulations are never recorded.
+    #[must_use]
+    pub fn with_decision_log(mut self, log: DecisionLog) -> Self {
+        self.log = Some(log);
+        self
+    }
+
+    /// How many decisions could not be recorded because storage failed.
+    /// Their answers were given as decided.
+    #[must_use]
+    pub fn unrecorded(&self) -> u64 {
+        self.unrecorded.load(Ordering::Relaxed)
     }
 
     /// Binds a resource server to an engine, or changes its binding.
@@ -399,7 +420,40 @@ impl EvaluationService {
             let outcome = self.apply_failure_policy(tenant, request, outcome).await;
             decisions.push(self.decision(outcome, start));
         }
+        self.keep_record(tenant, requests, &subjects, &decisions)
+            .await;
         decisions
+    }
+
+    /// Records the decisions, if there is a record. A failure to record
+    /// is counted and changes no answer.
+    async fn keep_record(
+        &self,
+        tenant: &TenantContext,
+        requests: &[AuthorizationRequest],
+        subjects: &BTreeMap<Subject, Result<Attributes, ()>>,
+        decisions: &[AuthorizationDecision],
+    ) {
+        let Some(log) = &self.log else {
+            return;
+        };
+        let unknown = Attributes::none();
+        let decided: Vec<Decided<'_>> = requests
+            .iter()
+            .zip(decisions)
+            .map(|(request, decision)| Decided {
+                request,
+                subject_attributes: match subjects.get(&request.subject) {
+                    Some(Ok(attributes)) => attributes,
+                    _ => &unknown,
+                },
+                decision,
+            })
+            .collect();
+        if log.record(tenant, &decided).await.is_err() {
+            let lost = u64::try_from(decided.len()).unwrap_or(u64::MAX);
+            self.unrecorded.fetch_add(lost, Ordering::Relaxed);
+        }
     }
 
     fn engine_for(&self, binding: &EngineBinding) -> Option<Arc<dyn AuthorizationEngine>> {

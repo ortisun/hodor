@@ -6,7 +6,7 @@ The domain model of the authorization context: the fixed permissions, the
 fixed roles that hold them, the answer to a check (`role.rs`); the request an
 engine answers (`request.rs`); the decision (`decision.rs`); the binding of a
 resource server to an engine (`binding.rs`); native role-based access
-control (`native.rs`); and the context's events (`event.rs`). The code is pure. Both modules are `pub(crate)`; the public names
+control (`native.rs`); the record of decisions (`decision_log.rs`); and the context's events (`event.rs`). The code is pure. Both modules are `pub(crate)`; the public names
 reach other crates through `hodor_authorization::api`.
 
 ## Interface
@@ -100,6 +100,25 @@ reach other crates through `hodor_authorization::api`.
 - `AssignmentScope` (`Tenant`, `Application`), `RoleAssignment` (`new`,
   `in_force_at`, `same_grant`), `Grant { namespace, permission, condition,
   assignment }`; crate-private `grants_of` and `grant_applies`.
+
+### The record of decisions (`decision_log.rs`)
+
+- `DecisionLogMode` (`Full`, `Sampled { allow_percent }` from 1 to 99,
+  `DenyOnly`, `Off`): `parse(name, share)`, `as_str`, `allow_percent`,
+  `keeps(effect, draw)`; `sampled` keeps every refusal and indeterminate
+  decision and allows whose draw (0 to 99) is below the share.
+- `MaskPath::parse`: `subject.attributes.…`, `asserted.…`,
+  `resource.attributes.…` or `context.attributes.…`, at most 200
+  characters, `*` only alone as the last segment.
+- `DecisionLogSettings::new(mode, masks, retention_days)`: at most 32 masks
+  (`MAX_MASKS`), kept sorted and once; retention from 1 to 400 days
+  (`MIN_RETENTION_DAYS`, `MAX_RETENTION_DAYS`); `Default` is `Full`, no
+  mask, 30 days. `reduced_input(request, subject_attributes,
+  asserted_trusted)` gives the stored input and the masks that erased
+  something.
+- `DecisionRecord::of(settings, request, subject_attributes, decision)`;
+  `DecisionFilter { from, to, effect, namespace, subject }` with `matches`.
+- Every refusal of a setting is `authorization.decision_log_invalid`.
 
 ### Conditions (`condition.rs`)
 
