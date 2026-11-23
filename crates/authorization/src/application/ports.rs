@@ -2,12 +2,15 @@
 //! contexts.
 
 use crate::domain::binding::EngineBinding;
+use crate::domain::condition::{Condition, ConditionInput};
 use crate::domain::native::{
     AssignmentScope, PermissionDefinition, PermissionName, RoleAssignment, RoleDefinition, RoleKey,
 };
 use crate::domain::request::{Attributes, Namespace, Subject};
 use crate::domain::role::Role;
 use hodor_kernel::{DomainError, TenantContext, Timestamp, UnitOfWork, UserId};
+use std::sync::Arc;
+use std::time::Duration;
 
 /// Stores which user holds which role. Every method works inside the
 /// tenant the unit of work is bound to.
@@ -244,4 +247,33 @@ pub trait NativeRoleStore: Send + Sync {
         uow: &mut dyn UnitOfWork,
         principal: &Subject,
     ) -> Result<Vec<RoleAssignment>, DomainError>;
+}
+
+/// Checks and compiles conditions. The native engine and `RoleService`
+/// know conditions only through this port; `hodor-authorization-native`
+/// implements it over Common Expression Language (Decision 0025).
+pub trait ConditionLanguage: Send + Sync {
+    /// Checks a condition and compiles it.
+    ///
+    /// # Errors
+    ///
+    /// - `authorization.condition_invalid` if it does not parse, names a
+    ///   variable other than `subject`, `resource`, `action` and `context`,
+    ///   or uses what conditions do not offer.
+    /// - `authorization.condition_too_costly` if it is too large or nests
+    ///   comprehensions too deep.
+    fn compile(&self, condition: &Condition) -> Result<Arc<dyn CompiledCondition>, DomainError>;
+}
+
+/// A condition ready to run any number of times.
+pub trait CompiledCondition: Send + Sync {
+    /// Runs the condition against `input`, giving up at `time_limit`.
+    /// Gives whether it holds.
+    ///
+    /// # Errors
+    ///
+    /// `authorization.condition_failed` if it gives something other than a
+    /// boolean, reads what the input does not carry, goes past its bounds
+    /// or fails in any other way.
+    fn holds(&self, input: &ConditionInput, time_limit: Duration) -> Result<bool, DomainError>;
 }

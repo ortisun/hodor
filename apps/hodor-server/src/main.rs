@@ -28,6 +28,7 @@ use hodor_authentication::api::{
     RecoveryCodeAuthenticator, Requirement, TotpAuthenticator, WebAuthnAuthenticator,
 };
 use hodor_authorization::api::{AuthorizationService, EngineRegistry, NativeEngine};
+use hodor_authorization_native::CelConditionLanguage;
 use hodor_authorization_opa::api::{BundleService, Instances, OpenPolicyAgentEngine};
 use hodor_credential::api::{
     AccessTokenService, CredentialService, RecoveryCodeService, RelyingParty, TotpService,
@@ -697,12 +698,15 @@ fn authorization_engines(
         engine = engine.with_token(Secret::from(token.clone()));
     }
     let mut registry = EngineRegistry::new();
-    registry.register(Arc::new(NativeEngine::new(
-        Arc::new(database.clone()),
-        Arc::new(PgRoleAssignmentStore),
-        Arc::new(PgNativeRoleStore),
-        Arc::new(SystemClock),
-    )))?;
+    registry.register(Arc::new(
+        NativeEngine::new(
+            Arc::new(database.clone()),
+            Arc::new(PgRoleAssignmentStore),
+            Arc::new(PgNativeRoleStore),
+            Arc::new(SystemClock),
+        )
+        .with_condition_language(Arc::new(CelConditionLanguage::new())),
+    ))?;
     registry.register(Arc::new(engine))?;
     Ok(registry)
 }

@@ -84,13 +84,34 @@ reach other crates through `hodor_authorization::api`.
 - `PermissionDefinition { namespace, name, description }`.
 - `RoleName` (`authorization.role_name_invalid`), `RoleKey { namespace, name
   }` with `built_in(Role)` and `reference()` (`namespace#name`).
-- `RoleContents { description, permissions, includes }`,
-  `RoleDefinition` (`new`, `replaced`, `restore`, `built_in(Role)`).
+- `RoleContents { description, permissions, includes, conditions }` with
+  `unconditional(description, permissions, includes)`; a key of
+  `conditions` that is not in `permissions` is
+  `authorization.condition_without_permission`. `RoleDefinition` (`new`,
+  `replaced`, `restore`, `built_in(Role)`).
 - `RoleGraph`: `new`, `built_in`, `get`, `roles`, `including`,
-  `check(candidate, declared)`, `permissions_held(start)`.
+  `check(candidate, declared)`, `permissions_held(start)`, and
+  `holdings(start)`: each `Holding { namespace, permission, condition }`,
+  the condition being the one of the role that holds the permission.
 - `AssignmentScope` (`Tenant`, `Application`), `RoleAssignment` (`new`,
-  `in_force_at`, `same_grant`), `Grant`; crate-private `grants_of` and
-  `allowing_roles`.
+  `in_force_at`, `same_grant`), `Grant { namespace, permission, condition,
+  assignment }`; crate-private `grants_of` and `grant_applies`.
+
+### Conditions (`condition.rs`)
+
+- `Condition`: the text of a condition, 1 to 1000 characters
+  (`MAX_CONDITION_LENGTH`), not blank, no control character but a line break
+  or a tab (`authorization.condition_invalid`).
+- `ConditionInput { subject, resource, action, context }` with
+  `ConditionSubject { kind, id, attributes, asserted }`,
+  `ConditionResource { kind, id, attributes }` and
+  `ConditionContext { attributes, application, time }`;
+  `ConditionInput::of(request, subject_attributes, now)`.
+- `invalid(detail)`, `too_costly(detail)` and `failed(detail)` make the
+  errors `authorization.condition_invalid`,
+  `authorization.condition_too_costly` and `authorization.condition_failed`;
+  `api` exports them as `condition_invalid`, `condition_too_costly` and
+  `condition_failed`.
 
 ### Domain events (`event.rs`)
 

@@ -41,6 +41,13 @@ of the same namespace), `find`, `list` (ordered by namespace), `remove`
 `remove_role` (`authorization.role_in_use` when included), `put_assignment`,
 `remove_assignment`, `assignments_of` (never the built-in roles).
 
+`ConditionLanguage` (`ports.rs:ConditionLanguage`): `compile(&Condition) ->
+Arc<dyn CompiledCondition>`, refusing with `authorization.condition_invalid`
+or `authorization.condition_too_costly`; `CompiledCondition::holds(&input,
+time_limit) -> bool`, failing with `authorization.condition_failed`.
+Implemented by `CelConditionLanguage` in `crates/authorization-native` and
+`FakeConditionLanguage` in `../testing.rs`.
+
 `SubjectAttributeSource` (`ports.rs:SubjectAttributeSource`):
 `attributes_of(tenant, subject) -> Attributes`; an unknown subject has none.
 Implemented only by `StaticSubjectAttributes` in `../testing.rs` so far.
@@ -63,8 +70,18 @@ Implemented only by `StaticSubjectAttributes` in `../testing.rs` so far.
   allowing role as reason and matched policy; a subject that is not a user
   holds no role. For any other namespace it answers from the tenant's
   roles: allow with `matching_role`, the assigned roles that led there
-  written `namespace#role` (at most 64), and the tenant's role revision;
-  otherwise deny with `no_matching_role`.
+  written `namespace#role` (at most 64), and the tenant's role revision.
+  A grant without a condition allows without running any condition; else
+  each different condition runs once, at most `MAX_CONDITIONS_PER_DECISION`
+  (32), each within `MAX_CONDITION_TIME` (10 milliseconds) or what is left
+  of the input's time limit. One that holds allows; none holding with one
+  failed (or the 33rd needed) is indeterminate with `condition_failed`
+  (`CONDITION_FAILED`); all false is deny with `condition_not_met`
+  (`CONDITION_NOT_MET`); nothing held is deny with `no_matching_role`.
+- `NativeEngine::with_condition_language(language)`: compiles the
+  conditions of a principal's grants once, when their grants are cached.
+  Without a language, or for a condition that no longer compiles, the
+  condition fails.
 - `NativeEngine::administration(units_of_work, assignments)`: the same for
   `hodor:admin` only; any other namespace is an error. `EvaluationService`
   uses it for `hodor:admin`.
@@ -82,11 +99,15 @@ Implemented only by `StaticSubjectAttributes` in `../testing.rs` so far.
 
 `RoleService` (`roles.rs:RoleService`), `Clone`:
 
-- `new(units_of_work, store, clock)`.
+- `new(units_of_work, store, clock)`;
+  `with_condition_language(language)` lets roles carry conditions.
 - `declare_permission(tenant, namespace, name, description, caller)`,
   `remove_permission(tenant, namespace, name, caller) -> bool`,
   `permissions(tenant, namespace)`.
-- `define_role(tenant, key, contents, caller)`, `remove_role(tenant, key,
+- `define_role(tenant, key, contents, caller)` compiles every condition
+  first: the language's error, with the permission at the head of the
+  detail, or `authorization.conditions_unavailable` without a language.
+  `remove_role(tenant, key,
   caller) -> bool`, `roles(tenant)`, `role(tenant, key)`.
 - `assign(tenant, principal, role, scope, validity, caller)`,
   `revoke(tenant, principal, role, scope, caller) -> bool`,

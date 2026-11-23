@@ -26,15 +26,22 @@ The modules `application` and `domain` are private; other crates use only
 - Engines and bindings: `AuthorizationEngine`, `PolicySimulator`,
   `EngineCapabilities`, `EvaluationInput`, `PolicySelection`,
   `SimulationAnswer`, `EngineRegistry`, `NativeEngine`,
-  `FIXED_ROLES_REVISION`, `MATCHING_ROLE`, `EngineBinding`,
+  `FIXED_ROLES_REVISION`, `MATCHING_ROLE`, `CONDITION_NOT_MET`,
+  `CONDITION_FAILED`, `MAX_CONDITIONS_PER_DECISION`, `MAX_CONDITION_TIME`,
+  `EngineBinding`,
   `BindingSettings`, `DEFAULT_TIME_LIMIT`, `EngineBindingStore`,
   `SubjectAttributeSource`, `EvaluationService`, `Simulation`, `MAX_BATCH`,
   `ApplicationReference`.
 - Native role-based access control: `NativeRoleStore` (port trait),
   `RoleService`, `Validity`, `PermissionName`, `PermissionDefinition`,
   `RoleName`, `RoleKey`, `RoleContents`, `RoleDefinition`, `RoleGraph`,
-  `AssignmentScope`, `RoleAssignment`, `Grant`, `MAX_DESCRIPTION_LENGTH`,
-  `MAX_ROLE_PERMISSIONS`, `MAX_INCLUDED_ROLES`, `MAX_INCLUSION_DEPTH`.
+  `AssignmentScope`, `RoleAssignment`, `Grant`, `Holding`,
+  `MAX_DESCRIPTION_LENGTH`, `MAX_ROLE_PERMISSIONS`, `MAX_INCLUDED_ROLES`,
+  `MAX_INCLUSION_DEPTH`.
+- Conditions: `ConditionLanguage` and `CompiledCondition` (port traits),
+  `Condition`, `ConditionInput`, `ConditionSubject`, `ConditionResource`,
+  `ConditionContext`, `MAX_CONDITION_LENGTH`, `condition_invalid`,
+  `condition_too_costly`, `condition_failed`.
 
 ### `testing.rs` (public test support)
 
@@ -53,6 +60,9 @@ is, with the crate feature `testing`.
   assignment of a missing role, and removing an included role),
   `NativeRolePorts { units_of_work, roles }`,
   `run_native_role_contract(ports)`.
+- `FakeConditionLanguage` (implements `ConditionLanguage`): knows `true`,
+  `false` and `fail`, refuses `costly` as too costly and anything else as
+  invalid; `runs()` counts how many times its conditions ran.
 - `ScriptedEngine` (implements `AuthorizationEngine` and `PolicySimulator`):
   answers with a closure, remembers what it was given (`seen`, `batches`),
   can move a `FixedClock` forward on every call (`take`) and answer a batch
