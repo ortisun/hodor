@@ -172,6 +172,7 @@ nav:
       - api/interaction-api.md
       - api/admin-api.md
       - api/admin-reference.md
+      - api/authorization-reference.md
       - api/console-interface.md
       - protocols/sequences.md
   - Security:

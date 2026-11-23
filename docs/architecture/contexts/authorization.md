@@ -226,6 +226,45 @@ A batch holds at most 100 requests and gives one answer per request, in order; a
 | `authorization.engine_unbound` | A binding was removed; carries the namespace |
 | `authorization.failed_open` | A failure allowed because the binding lets the action fail open; carries the namespace, the action, the engine and the cause |
 
+## The Authorization API
+
+Applications ask through [the Authorization API](../../api/api-spec.md#authorization-api): `evaluate`, `batch` and `simulate` under `/t/{slug}/api/v1/authorization`. The context owns what is decided; the API only reads the caller's token, builds the request and writes the answer.
+
+### Who may ask
+
+The caller presents an **access token of the tenant**, issued by [Hodor's token endpoint](oauth.md#token-endpoint-and-client-authentication) and checked as UserInfo checks one: signed by a published key of the tenant, from the tenant's issuer, not expired, and still in force in [the register of access tokens](oauth.md#revocation-introspection-and-metadata), so a revoked token is refused at once.
+
+- **Its audience must include `urn:hodor:authorization`**, the Authorization API's audience. A tenant opens the API by registering, once, a resource server with this audience and the scopes `authz:evaluate`, `authz:simulate` and `authz:explain`, on an application of its own (for example one named for the API), with [the administration interface](../../api/admin-api.md) or `hodor-cli resource-server add`. A client asks for a token with `resource=urn:hodor:authorization` and the scopes it needs; most callers use client credentials.
+- **`authz:evaluate`** opens `evaluate` and `batch`; **`authz:simulate`** opens `simulate`.
+- **`authz:explain`** adds the policies that decided, and a simulation's trace, to the answer. Without it the caller gets the stable reason code only.
+
+A token of another tenant fails the signature and issuer checks, whatever its body says.
+
+### What is asked about
+
+**The resource server asked about is the one of the application the token's client belongs to.** An application has at most one resource server, so the caller never names a namespace: it asks about its own resources and no other application's. A client whose application has no resource server is refused with `authorization.no_resource_server`. Hodor's administration namespace is never reachable through the API.
+
+**The application of the request is the token client's application.** It is what an assignment scoped to an application is compared with.
+
+The body names the subject, the asserted attributes, the resource, the action and the context's attributes, as in [the request](#the-request). It never names a tenant.
+
+### What Hodor knows about a subject
+
+The binaries resolve a subject's attributes through the identity and OAuth contexts:
+
+| Subject | Attributes |
+|---|---|
+| A user | `status` (`active`, `suspended`, …) and `kind` (`human`, …) |
+| A client | `application` (its application's identifier), `client_type` (`confidential` or `public`) and `enabled` |
+
+A subject Hodor does not know, including an identifier that is not one of its own, has no attributes, as for any engine. The attributes are given to the engine and never written back to the caller.
+
+### Simulating
+
+`simulate` takes the same request and the policies to evaluate against: what is published, one revision, or a draft. It answers at once. Nothing is recorded, and nothing fails open. The native engine simulates against what is published only, and says how it decided; a revision or a draft of the native engine, and any selection for an engine that cannot simulate, are refused with `authorization.simulation_unsupported`.
+
+Open Policy Agent has no simulator behind this route yet. A version of a tenant's Rego is simulated through [the policy lifecycle](#the-policy-lifecycle) instead: `hodor-cli policy simulate` asks the worker to evaluate a validated or tested version against inputs the operator writes, and the answer comes back when the worker has run `opa eval`. The route answers `authorization.simulation_unsupported` for a resource server bound to Open Policy Agent.
+
 ## Native role-based access control
 
 The native engine answers for the resource servers a tenant binds to it, `native`, and always for `hodor:admin`. It answers from **permissions**, **roles** and **assignments** kept in this context, and needs nothing outside it.
@@ -720,7 +759,8 @@ All three are tenant tables under row-level security. The files and the reports 
 | Roles given through groups and organizations | When groups and organizations exist ([Decision 0023](../../decisions/0023-what-0.2.0-holds.md)) |
 | Assigning and revoking roles through the administration interface. Today the only way to give a role is [the bootstrap command](../../api/admin-api.md#the-first-administrator), and there is no way to take one away | Phase 2 |
 | Conditions on per-resource access control lists, on policies that target a resource kind, and static type checking of conditions | Not planned before 0.2.0 ([Decision 0023](../../decisions/0023-what-0.2.0-holds.md), [Decision 0025](../../decisions/0025-condition-language.md)) |
-| The authorization interface for applications, which calls the evaluation; and an implementation of `SubjectAttributeSource`. Until then no binary evaluates through the engine contract, and the administration interface still asks the check above | Issue-75 |
+| The administration interface asking through the engine contract instead of the check above | With the management of Issue-80 |
+| Limits on the number of requests to the Authorization API, per client | When the limits of the OAuth endpoints are built |
 | The record of decisions | Issue-76 |
 | Retention of the decisions instances upload, and joining them to the record of decisions | Issue-76 |
 | A discovery bundle, so that a shared instance learns the tenants it answers without listing them in its configuration | When the number of tenants calls for it |

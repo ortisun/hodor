@@ -128,6 +128,17 @@ Custom actions use the `:verb` suffix so that they never collide with resource i
 
 ## Authorization API
 
+Applications ask Hodor whether a subject may do an action to one of their resources. Specified in [the authorization context](../architecture/contexts/authorization.md#the-authorization-api); [the reference](authorization-reference.md) shows every operation.
+
+| Method and path, under `/t/{slug}/api/v1/authorization` | Purpose | Scope |
+|---|---|---|
+| `POST /evaluate` | One decision | `authz:evaluate` |
+| `POST /batch` | Up to 100 decisions, one per request, in order | `authz:evaluate` |
+| `POST /simulate` | What would be decided against chosen policies; never recorded as a real decision | `authz:simulate` |
+| `GET /openapi.json` | The OpenAPI document of this API, without authentication | |
+
+The caller sends `Authorization: Bearer` with an access token of the tenant whose audience includes `urn:hodor:authorization`. The resource server asked about is the one of the token client's application; the body never names it, and never names a tenant.
+
 ```http
 POST /t/acme/api/v1/authorization/evaluate
 Authorization: Bearer <token with authz:evaluate>
@@ -151,13 +162,26 @@ Content-Type: application/json
   "decision": "ALLOW",
   "decision_id": "0193f1c9-...",
   "evaluated_at": "2026-11-20T14:03:11Z",
-  "engine": "opa",
-  "policy_version": "rev-42",
-  "reason": "policy_matched"
+  "engine": "native",
+  "policy_version": null,
+  "reason": "matching_role"
 }
 ```
 
-Differences from the example in the specification: there is no `tenant_id` in the body (the tenant is the URL's), and roles sent by the caller go under `asserted` so that policy can distinguish them from roles Hodor resolved. `/batch` takes `{ "requests": [...] }` and returns `{ "results": [...] }` in the same order, each item either a decision or a problem object. `/simulate` adds `"against": { "policy_version": "draft" }`.
+- `subject.type` is `user` or `client`; `asserted`, `resource.id`, `resource.attributes` and `context` may be left out.
+- `decision` is `ALLOW`, `DENY` or `INDETERMINATE`; only `ALLOW` permits, and `INDETERMINATE` means the engine could not decide.
+- With `authz:explain` the answer also holds `matched_policies`, and a simulation holds `trace`.
+- `/batch` takes `{ "requests": [...] }` and answers `{ "results": [...] }` in the same order. A request that cannot be read is answered by a problem object in its place; the others are decided.
+- `/simulate` takes the request's fields and `"against"`: `{ "published": true }`, `{ "revision": "rev-42" }` or `{ "draft": "policy-reference" }`. The engines that cannot simulate that selection answer `authorization.simulation_unsupported`.
+
+Differences from the example in the specification: there is no `tenant_id` in the body (the tenant is the URL's), roles sent by the caller go under `asserted` so that policy can distinguish them from roles Hodor resolved, and the resource server is the caller's own.
+
+| Answer | When |
+|---|---|
+| `401` with `WWW-Authenticate: Bearer` | No token, or a token that is not good here: another tenant's, expired, revoked, or without the API's audience |
+| `403` with `error="insufficient_scope"` | The token lacks the route's scope |
+| `403` `authorization.no_resource_server` | The token client's application has no resource server |
+| `422` | The body cannot be read; the problem's `code` says why |
 
 ## SCIM 2.0
 
