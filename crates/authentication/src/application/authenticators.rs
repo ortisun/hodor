@@ -576,6 +576,7 @@ impl Authenticator for RecoveryCodeAuthenticator {
         AuthenticatorTraits {
             identifies: false,
             factor: Some(Factor::Possession),
+            second_factor: None,
             method: Some(Self::KIND),
         }
     }

@@ -24,8 +24,7 @@ use hodor_audit::api::AuditService;
 use hodor_authentication::api::{
     AccountService, AttemptGuard, AuthFlow, AuthenticationService, Condition, FactorService,
     FlowEngine, IdentifierAuthenticator, LockoutRules, PasskeyAuthenticator, PasswordAuthenticator,
-    RecoveryCodeAuthenticator,
-    Requirement, TotpAuthenticator, WebAuthnAuthenticator,
+    RecoveryCodeAuthenticator, Requirement, TotpAuthenticator, WebAuthnAuthenticator,
 };
 use hodor_authorization::api::{AuthorizationService, EngineRegistry, NativeEngine};
 use hodor_authorization_opa::api::{Instances, OpenPolicyAgentEngine};
@@ -477,7 +476,11 @@ fn interaction(config: &Config, database: &Database) -> Result<InteractionState,
             guard.clone(),
         )));
         flow = flow
-            .with_step(TotpAuthenticator::KIND, TotpAuthenticator::KIND, second_factor)
+            .with_step(
+                TotpAuthenticator::KIND,
+                TotpAuthenticator::KIND,
+                second_factor,
+            )
             .with_substitute(TotpAuthenticator::KIND, RecoveryCodeAuthenticator::KIND);
     }
     let external = external_sign_in(config, database, &identity, &tenants, &guard)?;

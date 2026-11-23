@@ -11,8 +11,7 @@ use hodor_adapters_crypto::testing::webauthn::SoftwareAuthenticator;
 use hodor_authentication::api::{
     AccountService, AttemptGuard, AuthFlow, AuthenticationService, Condition, FactorService,
     FlowEngine, IdentifierAuthenticator, PasskeyAuthenticator, PasswordAuthenticator,
-    RecoveryCodeAuthenticator, Requirement,
-    WebAuthnAuthenticator,
+    RecoveryCodeAuthenticator, Requirement, WebAuthnAuthenticator,
 };
 use hodor_authentication::testing::{
     InMemoryAttempts, InMemoryTransactions, InMemoryVerificationTokens,

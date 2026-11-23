@@ -1293,6 +1293,7 @@ fn the_validity_rules_of_substitutes_are_enforced() {
         traits: AuthenticatorTraits {
             identifies: false,
             factor: None,
+            second_factor: None,
             method: None,
         },
     }));
@@ -1301,6 +1302,7 @@ fn the_validity_rules_of_substitutes_are_enforced() {
         traits: AuthenticatorTraits {
             identifies: true,
             factor: Some(Factor::Possession),
+            second_factor: None,
             method: Some("badge"),
         },
     }));
