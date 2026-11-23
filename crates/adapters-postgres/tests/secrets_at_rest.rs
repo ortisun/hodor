@@ -413,6 +413,11 @@ const NOT_SEALED_SECRETS: &[(&str, &str, &str)] = &[
         "a hash of the secret the browser holds",
     ),
     (
+        "credential.recovery_code",
+        "code_hash",
+        "the SHA-256 of a recovery code, never the code",
+    ),
+    (
         "public._sqlx_migrations",
         "checksum",
         "the checksum of a migration",

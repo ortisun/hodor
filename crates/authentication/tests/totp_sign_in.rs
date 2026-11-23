@@ -1,19 +1,21 @@
-//! Signing in with a password and a code of an authenticator application:
-//! the real authenticators, the attempt guard and the use cases, over the
+//! Signing in with a password and a code of an authenticator application,
+//! or a recovery code in its place: the real authenticators, the attempt guard and the use cases, over the
 //! real identity, credential, session and tenant contexts running on their
 //! in-memory ports.
 
 use hodor_authentication::api::{
     AttemptGuard, AuthFlow, AuthenticationService, FlowEngine, IdentifierAuthenticator,
-    PasswordAuthenticator, Requirement, SignIn, StepInput, TotpAuthenticator, TransactionId,
+    PasswordAuthenticator, RecoveryCodeAuthenticator, Requirement, SignIn, StepInput,
+    TotpAuthenticator, TransactionId,
 };
 use hodor_authentication::testing::{InMemoryAttempts, InMemoryTransactions};
 use hodor_credential::api::{
-    CredentialService, NewPassword, PasswordRules, STEP_SECONDS, TotpEnrollment, TotpService,
-    totp_code_at,
+    CredentialService, NewPassword, PasswordRules, RecoveryCodeService, RecoveryCodes,
+    STEP_SECONDS, TotpEnrollment, TotpService, totp_code_at,
 };
 use hodor_credential::testing::{
-    FakeHasher, FakeHmacSha1, InMemoryPasswords, InMemoryTotps, base32_secret,
+    FakeHasher, FakeHmacSha1, InMemoryPasswords, InMemoryRecoveryCodes, InMemoryTotps,
+    base32_secret,
 };
 use hodor_identity::api::{CreateUser, IdentifierKind, IdentityService, Profile, UserKind};
 use hodor_identity::testing::InMemoryUsers;
@@ -36,6 +38,7 @@ struct World {
     service: AuthenticationService,
     sessions: SessionService,
     totp: TotpService,
+    recovery_codes: RecoveryCodeService,
     tenants: TenantService,
     clock: Arc<FixedClock>,
     tenant: TenantContext,
@@ -74,6 +77,13 @@ async fn world() -> World {
         Arc::new(CountingRandom::default()),
         clock.clone(),
     );
+    let recovery_codes = RecoveryCodeService::new(
+        factory(),
+        Arc::new(InMemoryRecoveryCodes::default()),
+        digest.clone(),
+        Arc::new(CountingRandom::default()),
+        clock.clone(),
+    );
     let sessions = SessionService::new(
         factory(),
         Arc::new(InMemorySessions::default()),
@@ -101,13 +111,20 @@ async fn world() -> World {
         .with(Arc::new(TotpAuthenticator::new(
             totp.clone(),
             tenants.clone(),
+            guard.clone(),
+        )))
+        .with(Arc::new(RecoveryCodeAuthenticator::new(
+            recovery_codes.clone(),
+            tenants.clone(),
             guard,
         )));
-    let flow = AuthFlow::built_in().with_step(
-        TotpAuthenticator::KIND,
-        TotpAuthenticator::KIND,
-        Requirement::Optional,
-    );
+    let flow = AuthFlow::built_in()
+        .with_step(
+            TotpAuthenticator::KIND,
+            TotpAuthenticator::KIND,
+            Requirement::Optional,
+        )
+        .with_substitute(TotpAuthenticator::KIND, RecoveryCodeAuthenticator::KIND);
     let service = AuthenticationService::new(
         factory(),
         Arc::new(InMemoryTransactions::default()),
@@ -173,6 +190,7 @@ async fn world() -> World {
         service,
         sessions,
         totp,
+        recovery_codes,
         tenants,
         clock,
         tenant,
@@ -243,6 +261,18 @@ impl World {
             .await
             .expect("password");
         (id, answer)
+    }
+
+    async fn recovery_codes(&self) -> RecoveryCodes {
+        self.recovery_codes
+            .generate(&self.tenant, self.ana, Caller::system())
+            .await
+            .expect("recovery codes")
+    }
+
+    async fn recovery_code(&self, id: TransactionId, typed: &str) -> Result<SignIn, DomainError> {
+        self.submit(id, StepInput::RecoveryCode(Secret::from(typed.to_owned())))
+            .await
     }
 
     async fn code(&self, id: TransactionId, typed: &str) -> Result<SignIn, DomainError> {
@@ -405,4 +435,140 @@ async fn a_code_is_not_accepted_at_the_password_step_nor_a_password_at_the_code_
         .await
         .expect_err("not the step waited for");
     assert_eq!(error.code(), "authentication.unexpected_step");
+}
+
+fn first(codes: &RecoveryCodes) -> String {
+    codes.codes().next().expect("a code").to_owned()
+}
+
+#[tokio::test]
+async fn with_the_policy_on_a_recovery_code_stands_in_for_the_code_of_the_application() {
+    let world = world().await;
+    world.enroll().await;
+    let codes = world.recovery_codes().await;
+    world.require_second_factor().await;
+
+    let (id, after_password) = world.after_password().await;
+    assert_eq!(step_of(&after_password), "totp");
+    let wrong = world
+        .recovery_code(id, "0000-0000-0000-0000")
+        .await
+        .expect("answered");
+    assert!(matches!(wrong, SignIn::Rejected { .. }), "{wrong:?}");
+    assert_eq!(
+        step_of(&wrong),
+        "totp",
+        "the sign-in still waits for the step"
+    );
+    let outcome = world
+        .recovery_code(id, &first(&codes))
+        .await
+        .expect("answered");
+    let SignIn::Completed { session, .. } = outcome else {
+        panic!("a recovery code completes the sign-in: {outcome:?}");
+    };
+    assert_eq!(session.snapshot().assurance, Assurance::MultiFactor);
+    assert_eq!(session.snapshot().methods, ["password", "recovery_code"]);
+}
+
+#[tokio::test]
+async fn a_recovery_code_that_signed_someone_in_does_not_sign_in_again() {
+    let world = world().await;
+    world.enroll().await;
+    let codes = world.recovery_codes().await;
+    let code = first(&codes);
+
+    let (first_sign_in, _) = world.after_password().await;
+    let outcome = world
+        .recovery_code(first_sign_in, &code)
+        .await
+        .expect("answered");
+    assert!(matches!(outcome, SignIn::Completed { .. }), "{outcome:?}");
+    let (second_sign_in, _) = world.after_password().await;
+    let outcome = world
+        .recovery_code(second_sign_in, &code)
+        .await
+        .expect("answered");
+    assert!(matches!(outcome, SignIn::Rejected { .. }), "{outcome:?}");
+}
+
+#[tokio::test]
+async fn a_recovery_code_is_not_accepted_in_place_of_the_password() {
+    let world = world().await;
+    world.enroll().await;
+    let codes = world.recovery_codes().await;
+    let id = world.start().await;
+    world
+        .submit(id, StepInput::Identifier("ana@example.com".to_owned()))
+        .await
+        .expect("identifier");
+    let error = world
+        .recovery_code(id, &first(&codes))
+        .await
+        .expect_err("not a substitute of the password");
+    assert_eq!(error.code(), "authentication.unexpected_step");
+    // The code was not used by the refused attempt.
+    assert_eq!(
+        world
+            .recovery_codes
+            .unused(&world.tenant, world.ana)
+            .await
+            .expect("unused"),
+        10
+    );
+}
+
+#[tokio::test]
+async fn recovery_codes_alone_are_never_asked_for() {
+    let world = world().await;
+    world.recovery_codes().await;
+    let (_, outcome) = world.after_password().await;
+    let SignIn::Completed { session, .. } = outcome else {
+        panic!("without an application the third step is passed over: {outcome:?}");
+    };
+    assert_eq!(session.snapshot().methods, ["password"]);
+
+    // With the policy on, recovery codes do not make up for the missing
+    // application.
+    world.require_second_factor().await;
+    let (_, outcome) = world.after_password().await;
+    assert!(matches!(outcome, SignIn::Failed), "{outcome:?}");
+}
+
+#[tokio::test]
+async fn wrong_recovery_codes_count_towards_the_lockout_of_the_identifier() {
+    let world = world().await;
+    world.enroll().await;
+    let codes = world.recovery_codes().await;
+    let (id, _) = world.after_password().await;
+    let mut locked = false;
+    for _ in 0..5 {
+        match world.recovery_code(id, "0000-0000-0000-0000").await {
+            Ok(SignIn::Rejected { .. } | SignIn::Failed) => {}
+            Err(error) if error.code() == "authentication.too_many_attempts" => {
+                locked = true;
+                break;
+            }
+            other => panic!("unexpected answer: {other:?}"),
+        }
+    }
+    let id = world.start().await;
+    world
+        .submit(id, StepInput::Identifier("ana@example.com".to_owned()))
+        .await
+        .expect("identifier");
+    let error = world
+        .submit(id, StepInput::Password(Secret::from(PASSWORD.to_owned())))
+        .await
+        .expect_err("locked out");
+    assert_eq!(error.code(), "authentication.too_many_attempts", "{locked}");
+    // Guessing used no code.
+    assert_eq!(
+        world
+            .recovery_codes
+            .unused(&world.tenant, world.ana)
+            .await
+            .expect("unused"),
+        u32::try_from(codes.len()).expect("ten")
+    );
 }

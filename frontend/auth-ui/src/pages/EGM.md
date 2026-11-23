@@ -30,12 +30,23 @@ address.
     input for password managers.
   - `totp` - `client.submitTotp`, one field (`text.totpLabel`, hint
     `text.totpHint`) with `autocomplete="one-time-code"` and
-    `inputmode="numeric"`, and "use another address".
+    `inputmode="numeric"`, "use a recovery code instead" and "use another
+    address". "Use a recovery code instead" shows, in its place, one field
+    (`text.recoveryCodeLabel`, hint `text.recoveryCodeHint`) with
+    `autocomplete="off"`, no numeric keyboard and no capitals or corrections,
+    sent with `client.submitRecoveryCode`, and "use the code of your
+    application instead" to go back; a rejection keeps the recovery code
+    form. "Start again" returns to the code of the application. After each
+    switch the field shown takes the focus, in a task of its own once the
+    press has been handled (`switches`, `codeField`): `autoFocus` alone
+    leaves it on the button.
   - `webauthn` - a button that asks `client.webAuthnOptions()`, then the
     authenticator through `askAuthenticator`, and sends its answer with
     `client.submitWebAuthn`. When the authenticator gives no answer nothing
     is sent and `text.securityKeyNoAnswer` is shown; a browser without
-    WebAuthn is told `text.securityKeyUnavailable`.
+    WebAuthn is told `text.securityKeyUnavailable`. It also offers "use a
+    recovery code instead", the same recovery code form, with "use the
+    security key instead" to go back.
   - Any other step - `text.unknownStep` and "start again".
   - Answer `completed` means `go("account")`; `failed` shows `signInEnded`;
     `rejected` shows `rejected` and `attemptsLeft`. "Start again" and "use

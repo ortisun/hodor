@@ -61,6 +61,8 @@ pub enum StepInput {
     Password(Secret<String>),
     /// A code of the person's authenticator application, as typed.
     Totp(Secret<String>),
+    /// One of the person's recovery codes, as typed.
+    RecoveryCode(Secret<String>),
     /// What an alternative needs, in its own terms.
     External(ExternalInput),
 }
@@ -73,6 +75,7 @@ impl StepInput {
             Self::Identifier(_) => "identifier",
             Self::Password(_) => "password",
             Self::Totp(_) => "totp",
+            Self::RecoveryCode(_) => "recovery_code",
             Self::External(input) => &input.step,
         }
     }

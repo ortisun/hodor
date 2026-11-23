@@ -92,6 +92,51 @@ describe("the sign-in page", () => {
     expect(sent.at(-1)?.body).toEqual({ code: "123 456" });
   });
 
+  it("lets a person who lost their application give a recovery code instead, and go back", async () => {
+    const { props, sent, go, user } = page({
+      "GET /session": [nobody],
+      "GET /sign-in": [noSignIn],
+      "POST /sign-in": [pending("identifier")],
+      "POST /sign-in/steps/identifier": [pending("password")],
+      "POST /sign-in/steps/password": [pending("totp")],
+      "POST /sign-in/steps/recovery_code": [
+        json(200, { status: "rejected", step: "totp", attempts_left: 4, csrf_token: "token" }),
+        json(200, { status: "completed" }),
+      ],
+    });
+    render(<SignInPage {...props} notice={null} />);
+    await user.type(await screen.findByLabelText(en.identifierLabel), "ana@example.com{Enter}");
+    await user.type(await screen.findByLabelText(en.passwordLabel), "correct horse{Enter}");
+    await screen.findByLabelText(en.totpLabel, { exact: false });
+
+    await user.click(screen.getByRole("button", { name: en.useRecoveryCode }));
+    const field = await screen.findByLabelText<HTMLInputElement>(en.recoveryCodeLabel, { exact: false });
+    await waitFor(() => expect(document.activeElement).toBe(field));
+    expect(field.getAttribute("inputmode")).toBeNull();
+    expect(field.getAttribute("autocapitalize")).toBe("none");
+    expect(screen.getByText(en.recoveryCodeHint)).toBeTruthy();
+    expect(screen.queryByLabelText(en.totpLabel, { exact: false })).toBeNull();
+
+    // Going back shows the code of the application again.
+    await user.click(screen.getByRole("button", { name: en.useAuthenticatorApplication }));
+    const back = await screen.findByLabelText<HTMLInputElement>(en.totpLabel, { exact: false });
+    await waitFor(() => expect(document.activeElement).toBe(back));
+    await user.click(screen.getByRole("button", { name: en.useRecoveryCode }));
+
+    await user.type(
+      await screen.findByLabelText(en.recoveryCodeLabel, { exact: false }),
+      "aaaa-aaaa-aaaa-aaaa{Enter}",
+    );
+    const alert = await alertShown();
+    expect(alert.textContent).toBe(`${en.rejected} ${en.attemptsLeft(4)}`);
+    const again = screen.getByLabelText<HTMLInputElement>(en.recoveryCodeLabel, { exact: false });
+    expect(again.value).toBe("");
+    await user.type(again, "7k2m qx9d 4hvn r8ta{Enter}");
+
+    await waitFor(() => expect(go).toHaveBeenCalledWith("account"));
+    expect(sent.at(-1)?.body).toEqual({ code: "7k2m qx9d 4hvn r8ta" });
+  });
+
   it("continues a sign-in that is already in progress", async () => {
     const { props } = page({ "GET /session": [nobody], "GET /sign-in": [pending("password")] });
     render(<SignInPage {...props} notice={null} />);
@@ -207,6 +252,35 @@ describe("the sign-in page", () => {
       signature: "BQ",
       user_handle: null,
     });
+    vi.unstubAllGlobals();
+  });
+
+  it("lets a person who lost their security key give a recovery code, and the choice ends with the step", async () => {
+    vi.stubGlobal("PublicKeyCredential", function PublicKeyCredential() {});
+    const { props, sent, user } = page({
+      "GET /session": [nobody],
+      "GET /sign-in": [pending("webauthn")],
+      "POST /sign-in/steps/recovery_code": [pending("totp")],
+    });
+    render(<SignInPage {...props} notice={null} />);
+    await user.click(await screen.findByRole("button", { name: en.useRecoveryCode }));
+    const field = await screen.findByLabelText<HTMLInputElement>(en.recoveryCodeLabel, { exact: false });
+    await waitFor(() => expect(document.activeElement).toBe(field));
+    expect(screen.queryByRole("button", { name: en.useSecurityKey })).toBeNull();
+
+    // Back to the key, and to the code again.
+    await user.click(screen.getByRole("button", { name: en.useSecurityKeyInstead }));
+    expect(await screen.findByRole("button", { name: en.useSecurityKey })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: en.useRecoveryCode }));
+
+    await user.type(
+      await screen.findByLabelText(en.recoveryCodeLabel, { exact: false }),
+      "7K2M-QX9D-4HVN-R8TA{Enter}",
+    );
+    expect(sent.at(-1)?.path).toBe("/sign-in/steps/recovery_code");
+    // The next step is asked for as it is, not with a recovery code.
+    expect(await screen.findByLabelText(en.totpLabel, { exact: false })).toBeTruthy();
+    expect(screen.queryByLabelText(en.recoveryCodeLabel, { exact: false })).toBeNull();
     vi.unstubAllGlobals();
   });
 

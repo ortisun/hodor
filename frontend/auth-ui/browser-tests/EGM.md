@@ -90,7 +90,11 @@ watched page and the steps a person repeats.
     `COMPOSE_PROJECT_NAME`) is asked for a code after the password, is
     refused with a wrong code, and signs in with the next one; the same with
     the keyboard alone. The codes are computed with `node:crypto` as RFC 6238
-    says.
+    says. With the recovery codes `totp confirm` prints, the person signs in
+    with one of them, typed in lowercase with spaces, after a code that is
+    not theirs is refused; the same code is refused the next time and
+    `hodor-cli recovery-codes count` says nine are left; the switch to the
+    recovery code form and back works with the keyboard alone.
   - `webauthn.spec.ts` (a virtual authenticator of Chromium, added through
     the DevTools protocol) - a person registers, signs in with a password,
     registers a key through the interaction interface from a page of

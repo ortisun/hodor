@@ -1,6 +1,6 @@
 //! Operations tool: migrations, tenant management, the first
 //! administrator, identity providers, applications, authenticator
-//! applications and checking the audit log.
+//! applications, recovery codes and checking the audit log.
 
 mod applications;
 
@@ -8,12 +8,12 @@ use clap::{Parser, Subcommand, ValueEnum};
 use hodor_adapters_crypto::{AwsLcHmacSha1, LocalKeyProvider, OsRandom, SecretKeys, Sha256Digest};
 use hodor_adapters_postgres::{
     Database, PgAccessTokenStore, PgAuditLog, PgKeyStore, PgLinkStore, PgPool, PgProviderStore,
-    PgRoleAssignmentStore, PgSealingStateStore, PgTenantDirectory, PgTenantRepository, PgTotpStore,
-    PgUserRepository, reseal_tenant,
+    PgRecoveryCodeStore, PgRoleAssignmentStore, PgSealingStateStore, PgTenantDirectory,
+    PgTenantRepository, PgTotpStore, PgUserRepository, reseal_tenant,
 };
 use hodor_audit::api::AuditService;
 use hodor_authorization::api::{AuthorizationService, Role};
-use hodor_credential::api::{AccessTokenService, TotpService};
+use hodor_credential::api::{AccessTokenService, RecoveryCodeService, RecoveryCodes, TotpService};
 use hodor_federation::api::{
     CreateProvider, DirectorySettings, FederationService, IdentityProvider, ProviderKind,
     ProviderSettings, ProviderStatus, SamlSettings, callback_address, saml_metadata_address,
@@ -238,6 +238,21 @@ enum Command {
         key_overlap_hours: i64,
         #[command(subcommand)]
         command: KeysCommand,
+    },
+
+    /// Manage people's recovery codes, until people can do it themselves
+    /// from the account pages.
+    RecoveryCodes {
+        /// Connection URL of the application role.
+        #[arg(
+            long,
+            env = "HODOR_DATABASE_URL",
+            hide_env_values = true,
+            global = true
+        )]
+        database_url: Option<String>,
+        #[command(subcommand)]
+        command: RecoveryCodeCommand,
     },
 
     /// Work with the keys that keep secrets encrypted at rest.
@@ -518,6 +533,38 @@ enum TotpCommand {
     },
 }
 
+#[derive(Subcommand)]
+enum RecoveryCodeCommand {
+    /// Make a new set of ten recovery codes for a person, in place of any
+    /// earlier set, and print it once.
+    Generate {
+        /// The tenant's slug.
+        #[arg(long)]
+        tenant: String,
+        /// The person's login identifier.
+        #[arg(long)]
+        login: String,
+    },
+    /// Say how many unused recovery codes a person has.
+    Count {
+        /// The tenant's slug.
+        #[arg(long)]
+        tenant: String,
+        /// The person's login identifier.
+        #[arg(long)]
+        login: String,
+    },
+    /// Remove a person's recovery codes.
+    Remove {
+        /// The tenant's slug.
+        #[arg(long)]
+        tenant: String,
+        /// The person's login identifier.
+        #[arg(long)]
+        login: String,
+    },
+}
+
 #[derive(Clone, Copy, ValueEnum)]
 enum SecondFactorArg {
     /// Every sign-in must prove a second factor.
@@ -713,26 +760,12 @@ async fn run_totp(
         Arc::new(OsRandom),
         clock.clone(),
     );
-    let identity = IdentityService::new(units(), Arc::new(PgUserRepository), clock);
     let (slug, login) = match &command {
         TotpCommand::Enroll { tenant, login }
         | TotpCommand::Confirm { tenant, login, .. }
         | TotpCommand::Remove { tenant, login } => (tenant.clone(), login.clone()),
     };
-    let entry = existing(&tenants, &slug).await?;
-    // The command-line tool is one of the places allowed to establish a
-    // tenant context: the operator names the tenant.
-    let tenant = TenantContext::assume(entry.tenant_id);
-    let user = identity
-        .find_by_login(&tenant, &login)
-        .await?
-        .ok_or_else(|| {
-            DomainError::not_found(
-                "identity.user_not_found",
-                "no person of this tenant has this login identifier",
-            )
-        })?
-        .id();
+    let (tenant, user) = person(database, &tenants, &slug, &login).await?;
 
     match command {
         TotpCommand::Enroll { .. } => {
@@ -749,9 +782,101 @@ async fn run_totp(
         TotpCommand::Confirm { code, .. } => {
             totp.confirm_enrollment(&tenant, user, &Secret::from(code), caller())
                 .await?;
-            Ok("confirmed".to_owned())
+            // A first second factor comes with recovery codes, shown once;
+            // a person who still has unused codes keeps them.
+            let codes = recovery_code_service(database)
+                .generate_if_none(&tenant, user, caller())
+                .await?;
+            Ok(match codes {
+                Some(codes) => format!("confirmed\n{}", code_lines(&codes)),
+                None => "confirmed".to_owned(),
+            })
         }
         TotpCommand::Remove { .. } => Ok(if totp.remove(&tenant, user, caller()).await? {
+            "removed".to_owned()
+        } else {
+            "nothing to remove".to_owned()
+        }),
+    }
+}
+
+/// The tenant a slug names and the person of that tenant a login
+/// identifier names.
+async fn person(
+    database: &Database,
+    tenants: &TenantService,
+    slug: &str,
+    login: &str,
+) -> Result<(TenantContext, hodor_kernel::UserId), DomainError> {
+    let entry = existing(tenants, slug).await?;
+    // The command-line tool is one of the places allowed to establish a
+    // tenant context: the operator names the tenant.
+    let tenant = TenantContext::assume(entry.tenant_id);
+    let identity = IdentityService::new(
+        Arc::new(database.clone()),
+        Arc::new(PgUserRepository),
+        Arc::new(SystemClock),
+    );
+    let user = identity
+        .find_by_login(&tenant, login)
+        .await?
+        .ok_or_else(|| {
+            DomainError::not_found(
+                "identity.user_not_found",
+                "no person of this tenant has this login identifier",
+            )
+        })?
+        .id();
+    Ok((tenant, user))
+}
+
+fn recovery_code_service(database: &Database) -> RecoveryCodeService {
+    RecoveryCodeService::new(
+        Arc::new(database.clone()),
+        Arc::new(PgRecoveryCodeStore),
+        Arc::new(Sha256Digest),
+        Arc::new(OsRandom),
+        Arc::new(SystemClock),
+    )
+}
+
+/// The codes of a set, one per line after a line that says what they are.
+fn code_lines(codes: &RecoveryCodes) -> String {
+    let mut lines = format!("recovery codes, shown once: {}", codes.len());
+    for code in codes.codes() {
+        lines.push('\n');
+        lines.push_str(code);
+    }
+    lines
+}
+
+/// Runs a command about recovery codes against a person of a tenant, both
+/// named by the operator.
+async fn run_recovery_codes(
+    database: &Database,
+    command: RecoveryCodeCommand,
+) -> Result<String, DomainError> {
+    let tenants = TenantService::new(
+        Arc::new(database.clone()),
+        Arc::new(PgTenantRepository),
+        Arc::new(PgTenantDirectory::new(database.clone())),
+        Arc::new(SystemClock),
+    );
+    let (slug, login) = match &command {
+        RecoveryCodeCommand::Generate { tenant, login }
+        | RecoveryCodeCommand::Count { tenant, login }
+        | RecoveryCodeCommand::Remove { tenant, login } => (tenant.clone(), login.clone()),
+    };
+    let (tenant, user) = person(database, &tenants, &slug, &login).await?;
+    let codes = recovery_code_service(database);
+    match command {
+        RecoveryCodeCommand::Generate { .. } => {
+            Ok(code_lines(&codes.generate(&tenant, user, caller()).await?))
+        }
+        RecoveryCodeCommand::Count { .. } => {
+            Ok(format!("unused {}", codes.unused(&tenant, user).await?))
+        }
+        RecoveryCodeCommand::Remove { .. } => Ok(if codes.remove(&tenant, user, caller()).await? {
             "removed".to_owned()
         } else {
             "nothing to remove".to_owned()
@@ -1416,6 +1541,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
             if !output.is_empty() {
                 writeln!(std::io::stdout(), "{output}")?;
             }
+        }
+        Command::RecoveryCodes {
+            database_url,
+            command,
+        } => {
+            let url = database_url.ok_or("HODOR_DATABASE_URL or --database-url is required")?;
+            let database = Database::connect(&Secret::from(url), 2).await?;
+            let output = run_recovery_codes(&database, command)
+                .await
+                .map_err(|error| format!("{}: {}", error.code(), error.message()))?;
+            writeln!(std::io::stdout(), "{output}")?;
         }
         Command::Secrets {
             command: SecretsCommand::GenerateKey,

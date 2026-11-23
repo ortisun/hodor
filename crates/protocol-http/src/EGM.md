@@ -87,6 +87,7 @@ routes and the whole router.
 | POST | `/sign-in/steps/totp` | `submit_totp` (body `{ "code" }`) |
 | POST | `/sign-in/steps/webauthn/options` | `webauthn_options` (the challenge of the WebAuthn step) |
 | POST | `/sign-in/steps/webauthn` | `submit_webauthn` |
+| POST | `/sign-in/steps/recovery_code` | `submit_recovery_code` (body `{ "code" }`), a substitute of the `webauthn` and `totp` steps |
 | GET | `/sign-in/providers` | `offered_providers` |
 | POST | `/sign-in/providers/{alias}` | `choose_provider` |
 | POST | `/sign-in/providers/{alias}/callback` | `finish_with_provider` |

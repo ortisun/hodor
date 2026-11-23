@@ -1,4 +1,4 @@
-import { type FormEvent, useCallback, useEffect, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import type { NoticeName } from "../address";
 import type { Client, Failure, OfferedProvider, SignInAnswer } from "../client";
 import { describe, type Messages } from "../messages";
@@ -84,6 +84,9 @@ interface SignInPageProps extends PageProps {
   signInAgain?: boolean;
 }
 
+/** The steps a recovery code can stand in for. */
+const SECOND_FACTORS = ["webauthn", "totp"];
+
 /**
  * Signing in. The page shows the form for the step the server names and
  * sends back what was typed; it decides nothing.
@@ -96,6 +99,24 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice, sign
   const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
+  /** Whether the person chose to give a recovery code where the code of their application is asked. */
+  const [recovering, setRecovering] = useState(false);
+  /** How many times the person switched between the two; the field shown after a switch takes the focus. */
+  const [switches, setSwitches] = useState(0);
+  const codeField = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    if (switches === 0) {
+      return undefined;
+    }
+    // After the press that switched has been handled whole: the button keeps the focus otherwise.
+    const timer = setTimeout(() => codeField.current?.focus(), 0);
+    return () => clearTimeout(timer);
+  }, [switches]);
+  const switchTo = (recovery: boolean) => {
+    setCode("");
+    setRecovering(recovery);
+    setSwitches((count) => count + 1);
+  };
   const [providers, setProviders] = useState<OfferedProvider[]>([]);
   /** The directory the person chose to sign in through, if any. */
   const [directory, setDirectory] = useState<OfferedProvider | null>(null);
@@ -116,13 +137,19 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice, sign
         setView({ kind: "ended" });
         return;
       }
-      setView((before) => ({
-        kind: "step",
-        step: answer.step ?? "",
-        rejected: answer.status === "rejected",
-        attemptsLeft: answer.attemptsLeft,
-        shown: before.kind === "step" ? before.shown + 1 : 0,
-      }));
+      setView((before) => {
+        // A choice made for one step does not carry over to the next.
+        if (before.kind !== "step" || before.step !== (answer.step ?? "")) {
+          setRecovering(false);
+        }
+        return {
+          kind: "step",
+          step: answer.step ?? "",
+          rejected: answer.status === "rejected",
+          attemptsLeft: answer.attemptsLeft,
+          shown: before.kind === "step" ? before.shown + 1 : 0,
+        };
+      });
     },
     [go, leave],
   );
@@ -204,6 +231,7 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice, sign
     setExpired(false);
     setPassword("");
     setCode("");
+    setRecovering(false);
     try {
       await client.abandonSignIn();
       await open(true);
@@ -408,7 +436,31 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice, sign
         </Form>
       ) : null}
 
-      {view.kind === "step" && view.step === "totp" ? (
+      {view.kind === "step" && SECOND_FACTORS.includes(view.step) && recovering ? (
+        <Form key={view.shown} onSubmit={(event) => submit(event, () => client.submitRecoveryCode(code))}>
+          {identifier !== "" ? <Words quiet>{text.signingInAs(identifier)}</Words> : null}
+          <Field
+            label={text.recoveryCodeLabel}
+            hint={text.recoveryCodeHint}
+            name="recovery-code"
+            autoComplete="off"
+            autoFocus
+            verbatim
+            inputRef={codeField}
+            value={code}
+            onChange={setCode}
+          />
+          <Submit label={text.signIn} busy={busy} text={text} />
+          <Action
+            variant="ghost"
+            label={view.step === "webauthn" ? text.useSecurityKeyInstead : text.useAuthenticatorApplication}
+            onClick={() => switchTo(false)}
+          />
+          <Action variant="ghost" label={text.useAnotherIdentifier} onClick={() => void startAgain()} />
+        </Form>
+      ) : null}
+
+      {view.kind === "step" && view.step === "totp" && !recovering ? (
         <Form key={view.shown} onSubmit={(event) => submit(event, () => client.submitTotp(code))}>
           {identifier !== "" ? <Words quiet>{text.signingInAs(identifier)}</Words> : null}
           <Field
@@ -419,15 +471,21 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice, sign
             inputMode="numeric"
             autoFocus
             verbatim
+            inputRef={codeField}
             value={code}
             onChange={setCode}
           />
           <Submit label={text.signIn} busy={busy} text={text} />
+          <Action
+            variant="ghost"
+            label={text.useRecoveryCode}
+            onClick={() => switchTo(true)}
+          />
           <Action variant="ghost" label={text.useAnotherIdentifier} onClick={() => void startAgain()} />
         </Form>
       ) : null}
 
-      {view.kind === "step" && view.step === "webauthn" ? (
+      {view.kind === "step" && view.step === "webauthn" && !recovering ? (
         <Form
           key={view.shown}
           onSubmit={(event) => {
@@ -444,6 +502,7 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice, sign
           ) : (
             <Notice kind="danger">{text.securityKeyUnavailable}</Notice>
           )}
+          <Action variant="ghost" label={text.useRecoveryCode} onClick={() => switchTo(true)} />
           <Action variant="ghost" label={text.startAgain} onClick={() => void startAgain()} />
         </Form>
       ) : null}

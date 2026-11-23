@@ -275,6 +275,11 @@ export class Client {
     return this.#signIn(await this.#send("POST", "/sign-in/steps/webauthn", answer));
   }
 
+  /** Sends one of the person's recovery codes, in place of their security key or the code of their application. */
+  async submitRecoveryCode(code: string): Promise<SignInAnswer> {
+    return this.#signIn(await this.#send("POST", "/sign-in/steps/recovery_code", { code }));
+  }
+
   /** Abandons the sign-in. One that is already gone is not an error. */
   async abandonSignIn(): Promise<void> {
     try {

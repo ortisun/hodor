@@ -16,9 +16,10 @@ width, accessible roles). None of them talk to the server.
 - `Form.tsx:Form({ onSubmit, children })` - `<form method="post" noValidate>`
   with its children in a `VStack`.
 - `Field.tsx:Field({ label, hint, error, name, type, autoComplete, autoFocus,
-  verbatim, value, onChange })` - an Astryx `TextInput` (`size="lg"`,
-  `width="100%"`); `hint` becomes its description and `error` its detached
-  error status. `type` is `"text" | "email" | "password"`, default `"text"`.
+  verbatim, inputRef, value, onChange })` - an Astryx `TextInput`
+  (`size="lg"`, `width="100%"`); `hint` becomes its description and `error`
+  its detached error status. `type` is `"text" | "email" | "password"`,
+  default `"text"`. `inputRef` is forwarded to the input.
 - `Field.tsx:PasswordField({ text, ...field })` - a verbatim `Field` plus a
   `CheckboxInput` labelled `text.showPassword` that switches the field
   between `password` and `text`.

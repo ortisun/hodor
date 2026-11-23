@@ -46,6 +46,10 @@ pub struct FlowStep {
     pub authenticator: String,
     /// How the step is required.
     pub requirement: Requirement,
+    /// Kinds of authenticator that may satisfy the step in its place, each
+    /// submitted under its own kind as key. Only for a step that is not
+    /// required.
+    pub substitutes: Vec<String>,
 }
 
 /// A sign-in procedure: an ordered list of steps interpreted by the
@@ -76,6 +80,7 @@ impl AuthFlow {
             key: key.to_owned(),
             authenticator: key.to_owned(),
             requirement: Requirement::Required,
+            substitutes: Vec::new(),
         };
         Self {
             name: "sign-in".to_owned(),
@@ -104,7 +109,19 @@ impl AuthFlow {
             key: key.to_owned(),
             authenticator: authenticator.to_owned(),
             requirement,
+            substitutes: Vec::new(),
         });
+        self
+    }
+
+    /// The same flow with one more substitute for the step with this key:
+    /// an authenticator of this kind may satisfy it in its place. A key
+    /// that names no step changes nothing; validation then still holds.
+    #[must_use]
+    pub fn with_substitute(mut self, key: &str, authenticator: &str) -> Self {
+        if let Some(step) = self.steps.iter_mut().find(|step| step.key == key) {
+            step.substitutes.push(authenticator.to_owned());
+        }
         self
     }
 
@@ -116,6 +133,7 @@ impl AuthFlow {
             key: key.to_owned(),
             authenticator: authenticator.to_owned(),
             requirement: Requirement::Required,
+            substitutes: Vec::new(),
         });
         self
     }

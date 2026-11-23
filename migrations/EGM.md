@@ -2,7 +2,7 @@
 
 ## Overview
 
-The PostgreSQL schema, as thirty numbered SQL files. A number is
+The PostgreSQL schema, as thirty-one numbered SQL files. A number is
 reserved when a piece of work starts, so a number can be missing until that
 work merges; every file not yet applied is applied, in order. They are
 embedded in the binaries by `static MIGRATOR: Migrator = sqlx::migrate!("../../migrations")`
@@ -47,6 +47,7 @@ Tables created, by file:
 | `0027_credential_webauthn.sql` | `credential.webauthn_credential` (unique `webauthn_credential_id_unique` on tenant and credential identifier); `credential.webauthn_registration`; adds the column `challenge` to `authentication.transaction` |
 | `0029_oauth_authorization.sql` | `oauth.authorization_request`; `oauth.authorization_grant`; `oauth.authorization_code` (a code lives at most 60 seconds; an S256 challenge is 43 base64url characters) |
 | `0030_authorization_engine_binding.sql` | `"authorization".engine_binding`: which engine answers for a resource server, never `hodor:admin` |
+| `0031_credential_recovery_codes.sql` | `credential.recovery_code_set` (`recovery_code_set_one_per_user`) and `credential.recovery_code`, with only the SHA-256 of each code (`recovery_code_hash_length`, `recovery_code_unique_in_set`) |
 | `0032_keys_sealing_state.sql` | `keys.sealing_state`: whether a tenant refuses secrets of the first format; `hodor_app` may insert and read, never update or delete |
 | `0035_oauth_client_assertion.sql` | `oauth.client_assertion`: the `jti` of every client assertion until it expires, once per client (`client_assertion_jti_shape`) |
 

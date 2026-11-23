@@ -69,6 +69,7 @@ its header); the pages see plain values.
     | `submitTotp(code)` | `POST /sign-in/steps/totp` |
     | `webAuthnOptions()` | `POST /sign-in/steps/webauthn/options` (answers `public_key`) |
     | `submitWebAuthn(answer)` | `POST /sign-in/steps/webauthn` |
+    | `submitRecoveryCode(code)` | `POST /sign-in/steps/recovery_code` |
     | `askToRegister(email, locale)` | `POST /registration` |
     | `completeRegistration(token, password, displayName)` | `POST /registration/complete` |
     | `askToRecover(email, locale)` | `POST /recovery` |

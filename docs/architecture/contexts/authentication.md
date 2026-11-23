@@ -27,6 +27,7 @@ An **authenticator** performs one step. It receives what the person submitted an
 | An external identity provider, a directory | Takes what came back from somewhere else that knows the person, checks it, and answers who the person is | Who is signing in and one factor, in a single step | Milestone 2, in the federation context |
 | `totp` | Checks a code of the candidate's [authenticator application](credential.md#authenticator-applications). The person has the means for it when they have an application in use | One factor: something the person has | Milestone 4 |
 | `webauthn` | Checks the answer of a security key or a platform authenticator to a challenge, with the [credential context](credential.md#checking-a-credential). The person has the means when they registered at least one credential | One factor: something the person has | Milestone 4 |
+| `recovery_code` | Checks one of the candidate's [recovery codes](credential.md#recovery-codes). Used only as a [substitute](#substitutes) for a second factor | One factor: something the person has, written down | Milestone 4 |
 | Passkey and others | — | — | Later issues |
 
 Each step has a requirement:
@@ -69,6 +70,19 @@ The highest of them is what the sign-in must reach. It is checked when the sign-
 
 The tenant's policy is read again on every step and at completion, so a change to it applies to sign-ins already in progress.
 
+### Substitutes
+
+A step that is not required may list **substitutes**: authenticators that satisfy the step in its place. This is how a person who lost their phone signs in with a recovery code where the code of their authenticator application is asked for.
+
+| Rule | Why |
+|---|---|
+| Whether the step is performed is decided by the step's own authenticator, as for any step. A substitute only offers another way to satisfy a step that is performed | The step exists for what the person enrolled; a substitute does not make the server ask for more than that |
+| A substitute is submitted under its own key, which is the kind of its authenticator, while the sign-in waits for the step it stands in for | The pages show the step, and offer the substitute as another way through it |
+| What a satisfied substitute records is its own method, not the step's | The session, the audit log and later the `amr` claim say that a recovery code was used, not a code of the application |
+| A rejected substitute counts as a rejection of the step, and the sign-in still waits for the step | The same tolerance applies whichever way is tried |
+| A substitute stands only for a step that is not required, proves a factor, and does not establish who is signing in | It replaces a second factor, never the identifier or the first factor, and the flow's minimum assurance is reached by the required steps alone |
+| A substitute's key is no step's and no alternative's key. The same substitute may stand for several steps | Recovery codes stand for every second factor, one step at a time |
+
 ### Alternatives
 
 A flow may also list **alternatives**: steps that, satisfied at the very start of a sign-in, take the place of all its required steps. The optional and conditional steps after them still apply. This is how a person signs in with an external identity instead of an identifier and a password, and how a second factor can still be asked of them.
@@ -105,14 +119,16 @@ What a person submits to such a step is a set of named values, like the input of
 |---|---|---|
 | 1 | `identifier` | Required |
 | 2 | `password` | Required |
-| 3 | `webauthn` | Optional |
-| 4 | `totp` | Optional |
+| 3 | `webauthn` | Optional, with the substitute `recovery_code` |
+| 4 | `totp` | Optional, with the substitute `recovery_code` |
 
 Minimum assurance: single factor.
 
 A person who registered a security key is always asked for it after the password, and a person who put an authenticator application in use for a code, whether or not the tenant requires a second factor: they chose a second factor, and a stolen password alone must not let anyone in. A person without one signs in with the password, unless the tenant requires a second factor, in which case the sign-in fails at completion.
 
 The fourth step needs a place to keep secrets. An installation without `HODOR_SECRET_KEYS` runs the flow without it, and nobody there can have an authenticator application.
+
+A person asked for their security key or for the code of their application can give one of their recovery codes instead. Without a security key or an application in use the third and fourth steps are passed over, so recovery codes alone never let anyone in and are never asked for. Recovery codes need no place to keep secrets: they stand in for the security key in an installation without `HODOR_SECRET_KEYS` too.
 
 ### The authenticator application step
 
@@ -122,6 +138,9 @@ The fourth step needs a place to keep secrets. An installation without `HODOR_SE
 | An accepted code clears the identifier's count, as a right password does | The person proved both factors |
 | A rejected code looks the same whatever the reason: a wrong code, a code already used, something that is not six digits | Nothing in the answer helps someone guessing |
 | Five rejections end the sign-in, as for every step | Whoever holds the password starts again, and their attempts keep counting towards the lockout |
+
+The recovery code substitute follows the same rules: it is checked only once the attempt is admitted, against the same counts; an accepted code clears the identifier's count; a wrong code, a used code, a code of an earlier set and something that is not a code are rejected alike.
+
 ### What makes a flow valid
 
 A flow is checked before it can be used. It is valid when:
@@ -132,7 +151,8 @@ A flow is checked before it can be used. It is valid when:
 - the factors established by its required steps reach its minimum assurance;
 - every step that establishes who is signing in is required;
 - every step that is not required comes after every required step, and proves a factor;
-- every alternative has a key no step or other alternative has, names an authenticator the engine knows that both establishes who is signing in and proves it, and reaches the minimum assurance by itself.
+- every alternative has a key no step or other alternative has, names an authenticator the engine knows that both establishes who is signing in and proves it, and reaches the minimum assurance by itself;
+- every substitute stands for a step that is not required, names an authenticator the engine knows that proves a factor and does not establish who is signing in, and has a key no step and no alternative has.
 
 An invalid flow is rejected as a whole. The engine never runs one.
 
@@ -420,7 +440,7 @@ All three are tenant tables under row-level security.
 | Setting the tenant's second factor policy from the administration interface or the console. Today the command-line tool sets it | Issue-70 |
 | Registering a security key from the pages, and proving oneself again first. Today a key is registered through the interaction interface only, by a person already signed in | Issue-70 |
 | Enrolling a second factor during a sign-in, for a person whose tenant requires one and who has none. Today their sign-in fails at completion | Issue-70 |
-| Offering a choice between several second factors at one step. Today each is its own step: a person with both a security key and an authenticator application is asked for both | Issue-70 |
+| Offering a choice between several second factors at one step. Today each is its own step: a person with both a security key and an authenticator application is asked for both. A recovery code is a substitute, not a choice of factor | Issue-70 |
 | A reason in `authentication.failed` that tells a missing second factor from a rejected step | With the step-up of Issue-69 |
 | Further authenticators, risk signals, recognizing a user's own device | Phases 3 and 4 |
 | Making a user choose a new password when the current one is marked as temporary. The mark is stored and returned by the credential context, but sign-in does not act on it yet | With the administration interface, Issue-29, which is what sets the mark |

@@ -18,8 +18,12 @@ reach other crates only through `hodor_authentication::api` in `../lib.rs`.
   version 1, with steps `identifier` then `password` and minimum assurance
   `Assurance::SingleFactor`; `with_step(key, authenticator, requirement)` adds
   a step at the end; `with_alternative(key, authenticator)` adds an
-  alternative step; `required_steps()` counts the leading required steps.
-- `FlowStep { key, authenticator, requirement }` (`flow.rs:FlowStep`).
+  alternative step; `with_substitute(key, authenticator)` lets the kind of
+  authenticator satisfy the step with that key in its place;
+  `required_steps()` counts the leading required steps.
+- `FlowStep { key, authenticator, requirement, substitutes }`
+  (`flow.rs:FlowStep`); `substitutes` are kinds of authenticator, each
+  submitted under its own kind as key.
 - `Requirement` (`flow.rs:Requirement`): `Required`, `Optional` (performed when
   the authenticator's `has_means` says yes), `Conditional(Condition)`
   (performed when the condition holds and `has_means` says yes);
@@ -57,8 +61,9 @@ reach other crates only through `hodor_authentication::api` in `../lib.rs`.
 - `AuthenticatorTraits { identifies, factor, method }`.
 - `Factor`: `Knowledge`, `Possession`, `Inherence`.
 - `StepInput`: `Identifier(String)`, `Password(Secret<String>)`,
-  `Totp(Secret<String>)`, `External(ExternalInput)`; `step_key()` gives
-  `"identifier"`, `"password"`, `"totp"` or the external input's step.
+  `Totp(Secret<String>)`, `RecoveryCode(Secret<String>)`,
+  `External(ExternalInput)`; `step_key()` gives `"identifier"`,
+  `"password"`, `"totp"`, `"recovery_code"` or the external input's step.
 - `ExternalInput { step, fields }` with `field(name)`.
 - `StepOutcome`: `Identified { candidate, identifier_key }`, `Proven`,
   `Authenticated { user }`, `Rejected`.
@@ -121,9 +126,15 @@ implements `hodor_kernel::DomainEvent`:
 - `FlowEngine::validate` returns `Invalid` code `authentication.flow_invalid`
   when a flow has no steps, repeats a step key, names an unknown
   authenticator, proves an identity before any step established whose, has
-  no identifying step, does not reach its minimum assurance, or has an
-  alternative that does not both identify and prove at that assurance
-  (`engine.rs:FlowEngine::validate`).
+  no identifying step, does not reach its minimum assurance, has an
+  alternative that does not both identify and prove at that assurance, or
+  has a substitute that stands for a required step, belongs to an
+  alternative, repeats a key, names an unknown authenticator, identifies or
+  proves nothing (`engine.rs:FlowEngine::validate`,
+  `validate_substitutes`).
+- A substitute is accepted only while the sign-in waits for its step; what it
+  proves is recorded under its own method, and a rejected substitute counts
+  as a rejection of the step, which still waits (`engine.rs:FlowEngine::submit`).
 - Assurance: one kind of factor is single-factor, two different kinds are
   multi-factor, none is `None` (`engine.rs:assurance_of`).
 - `FlowEngine::submit` requires the transaction to be in progress, accepts an

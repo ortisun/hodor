@@ -15,6 +15,7 @@ All paths are relative to the tenant: `https://{host}/t/{slug}`. Requests and re
 | `POST /interaction/sign-in/steps/totp` | Submit a code of the person's authenticator application |
 | `POST /interaction/sign-in/steps/webauthn/options` | Ask for the challenge of the WebAuthn step |
 | `POST /interaction/sign-in/steps/webauthn` | Submit what the authenticator answered |
+| `POST /interaction/sign-in/steps/recovery_code` | Submit one of the person's recovery codes, while the sign-in waits for the `webauthn` or the `totp` step |
 | `DELETE /interaction/sign-in` | Abandon the sign-in |
 | `GET /interaction/session` | Say who is signed in |
 
@@ -51,6 +52,8 @@ A rejection is a normal answer, not an error: the request was understood and the
 
 The `totp` step comes after the password only for a person who has an authenticator application in use ([the built-in flow](../architecture/contexts/authentication.md#the-built-in-flow)). The answer to the password then names `totp` as the next step instead of completing.
 
+While the sign-in waits for `webauthn` or for `totp`, a recovery code can be submitted in its place: `recovery_code` is a [substitute](../architecture/contexts/authentication.md#substitutes) of both steps. The answer has the same shape. When the recovery code is rejected, `step` is still the step it stood in for; the rejection is the same whether the code was wrong, already used, from an earlier set or not a code at all.
+
 ### Request bodies
 
 | Step | Body |
@@ -59,8 +62,9 @@ The `totp` step comes after the password only for a person who has an authentica
 | `password` | `{ "password": "…" }` |
 | `totp` | `{ "code": "123456" }` |
 | `webauthn` | `{ "credential_id": "…", "client_data": "…", "authenticator_data": "…", "signature": "…", "user_handle": "…" }`, each the bytes the authenticator gave, in base64url without padding. `user_handle` may be left out or `null` |
+| `recovery_code` | `{ "code": "7K2M-QX9D-4HVN-R8TA" }` |
 
-Submitting a step other than the one the sign-in is waiting for is an error (`422`, `authentication.unexpected_step`), and changes nothing.
+Submitting a step other than the one the sign-in is waiting for, or than one of its substitutes, is an error (`422`, `authentication.unexpected_step`), and changes nothing.
 
 ### The WebAuthn step
 
