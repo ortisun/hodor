@@ -2,7 +2,7 @@
 
 ## Overview
 
-The PostgreSQL schema, as thirty-four numbered SQL files. A number is
+The PostgreSQL schema, as thirty-five numbered SQL files. A number is
 reserved when a piece of work starts, so a number can be missing until that
 work merges; every file not yet applied is applied, in order. They are
 embedded in the binaries by `static MIGRATOR: Migrator = sqlx::migrate!("../../migrations")`
@@ -53,6 +53,7 @@ Tables created, by file:
 | `0035_oauth_client_assertion.sql` | `oauth.client_assertion`: the `jti` of every client assertion until it expires, once per client (`client_assertion_jti_shape`) |
 | `0036_credential_passkey_registration.sql` | adds the column `passkey` to `credential.webauthn_registration` |
 | `0037_authorization_policy_bundles.sql` | `platform.policy_agent_instance` (a platform table: Open Policy Agent instances with the digest of each credential; the application role may not delete); `"authorization".policy_bundle` (append only for the application role); `"authorization".policy_agent_status`; `"authorization".policy_agent_decision` |
+| `0038_oauth_refresh_token.sql` | `oauth.refresh_token_family`: each family of refresh tokens with its grant, scopes, sealed secret, generation, the hash of its newest token, what its last move asked for and its lifetimes, under the bounds of the token policy; `oauth.refresh_token`: the hash of every token a family has had, one per generation |
 
 No migration creates a type, an extension or seed rows; enumerations are text
 columns with `CHECK ... IN (...)` constraints.

@@ -195,12 +195,28 @@ async fn client(
     client_type: ClientType,
     method: AuthenticationMethod,
 ) -> (ClientId, Option<String>) {
-    let mut settings = ClientSettings::new(
-        "Payroll",
+    client_with(
+        tenant,
         client_type,
+        method,
         vec![GrantType::AuthorizationCode],
-        vec![REDIRECT.to_owned()],
-    );
+    )
+    .await
+}
+
+/// A client allowed `grants`, with its secret if it has one.
+async fn client_with(
+    tenant: &Tenant,
+    client_type: ClientType,
+    method: AuthenticationMethod,
+    grants: Vec<GrantType>,
+) -> (ClientId, Option<String>) {
+    let redirects = if grants.contains(&GrantType::AuthorizationCode) {
+        vec![REDIRECT.to_owned()]
+    } else {
+        Vec::new()
+    };
+    let mut settings = ClientSettings::new("Payroll", client_type, grants, redirects);
     settings.authentication_method = method;
     settings.allowed_scopes = vec!["openid".to_owned(), "payroll:read".to_owned()];
     let (client, secret) = tenant
@@ -569,4 +585,245 @@ async fn a_confidential_client_proves_who_it_is_its_own_way() {
         .await
         .expect("response");
     assert_eq!(get.status(), StatusCode::METHOD_NOT_ALLOWED);
+}
+
+/// Checks `token` against the tenant's published key set, for `AUDIENCE`.
+async fn checked(server: &Server, slug: &str, token: &str) -> Value {
+    let key_set: JwkSet = reqwest::get(format!("{}/t/{slug}/oauth2/jwks", server.base))
+        .await
+        .expect("key set")
+        .json()
+        .await
+        .expect("JSON");
+    let kid = decode_header(token).expect("header").kid.expect("kid");
+    let mut validation = Validation::new(Algorithm::ES256);
+    validation.set_audience(&[AUDIENCE]);
+    validation.set_issuer(&[issuer(slug)]);
+    decode::<Value>(
+        token,
+        &DecodingKey::from_jwk(key_set.find(&kid).expect("published")).expect("key"),
+        &validation,
+    )
+    .expect("the token checks")
+    .claims
+}
+
+#[tokio::test]
+async fn a_refresh_token_moves_at_every_use_and_its_reuse_ends_it() {
+    let database = TestDatabase::start().await;
+    let acme = tenant(&database, "acme").await;
+    let (client_id, _) = client_with(
+        &acme,
+        ClientType::Public,
+        AuthenticationMethod::None,
+        vec![GrantType::AuthorizationCode, GrantType::RefreshToken],
+    )
+    .await;
+    let server = start_server_with(
+        &database,
+        &[
+            ("HODOR_SECRET_KEYS", ROOT_KEY),
+            ("HODOR_REFRESH_RETRY_SECONDS", "1"),
+        ],
+    )
+    .await;
+    let mut browser = Browser::not_following(&server);
+    browser.sign_in("acme", "ana@example.com", PASSWORD).await;
+    let id = client_id.to_string();
+    let code = code(&mut browser, "acme", client_id).await;
+    let first = token(&server, "acme", None, &redeem(&code, &[("client_id", &id)])).await;
+    assert_eq!(first.status, StatusCode::OK, "{}", first.body);
+    let one = first.body["refresh_token"]
+        .as_str()
+        .expect("a refresh token")
+        .to_owned();
+    let refresh = |token: String| {
+        let id = id.clone();
+        let server = &server;
+        async move {
+            self::token(
+                server,
+                "acme",
+                None,
+                &[
+                    ("grant_type", "refresh_token"),
+                    ("refresh_token", &token),
+                    ("client_id", &id),
+                ],
+            )
+            .await
+        }
+    };
+
+    // Two refreshes with the same token at the same moment: one moves the
+    // family, the other is answered as a retry, with the same next token.
+    let (left, right) = tokio::join!(refresh(one.clone()), refresh(one.clone()));
+    assert_eq!(left.status, StatusCode::OK, "{}", left.body);
+    assert_eq!(right.status, StatusCode::OK, "{}", right.body);
+    assert_eq!(left.headers["cache-control"], "no-store");
+    let two = left.body["refresh_token"]
+        .as_str()
+        .expect("next")
+        .to_owned();
+    assert_eq!(right.body["refresh_token"], two.as_str());
+    assert_ne!(two, one);
+    let access = left.body["access_token"].as_str().expect("access token");
+    let claims = checked(&server, "acme", access).await;
+    assert_eq!(claims["scope"], "openid payroll:read");
+    assert_eq!(claims["client_id"], id);
+
+    // Past the window, the first token again is reuse: the family ends.
+    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+    let reused = refresh(one.clone()).await;
+    assert_eq!(reused.status, StatusCode::BAD_REQUEST);
+    assert_eq!(reused.body["error"], "invalid_grant");
+    let newest = refresh(two.clone()).await;
+    assert_eq!(newest.body["error"], "invalid_grant", "the family is over");
+
+    let (status, reason): (String, Option<String>) =
+        sqlx::query_as("SELECT status, revocation_reason FROM oauth.refresh_token_family")
+            .fetch_one(database.owner())
+            .await
+            .expect("the family");
+    assert_eq!(status, "revoked");
+    assert_eq!(reason.as_deref(), Some("refresh_token_reused"));
+    let everything: String = sqlx::query_scalar(
+        r#"SELECT concat(
+               (SELECT string_agg(to_jsonb(t)::text, '') FROM oauth.refresh_token_family t),
+               (SELECT string_agg(to_jsonb(t)::text, '') FROM oauth.refresh_token t),
+               (SELECT string_agg(to_jsonb(t)::text, '') FROM platform.outbox t))"#,
+    )
+    .fetch_one(database.owner())
+    .await
+    .expect("dump");
+    for token in [&one, &two] {
+        assert!(!everything.contains(token.as_str()), "no token is stored");
+    }
+    assert!(everything.contains("oauth.refresh_token_family_revoked"));
+}
+
+#[tokio::test]
+async fn a_refresh_token_without_offline_access_ends_with_the_session() {
+    let database = TestDatabase::start().await;
+    let acme = tenant(&database, "acme").await;
+    let (client_id, _) = client_with(
+        &acme,
+        ClientType::Public,
+        AuthenticationMethod::None,
+        vec![GrantType::AuthorizationCode, GrantType::RefreshToken],
+    )
+    .await;
+    let server = server(&database).await;
+    let mut browser = Browser::not_following(&server);
+    browser.sign_in("acme", "ana@example.com", PASSWORD).await;
+    let id = client_id.to_string();
+    let code = code(&mut browser, "acme", client_id).await;
+    let first = token(&server, "acme", None, &redeem(&code, &[("client_id", &id)])).await;
+    let one = first.body["refresh_token"].as_str().expect("refresh token");
+
+    // The session ends, as signing out ends it.
+    let ended = sqlx::query(
+        "UPDATE session.session SET revoked_at = now(), revocation_reason = 'signed_out'",
+    )
+    .execute(database.owner())
+    .await
+    .expect("ended");
+    assert_eq!(ended.rows_affected(), 1);
+    let after = token(
+        &server,
+        "acme",
+        None,
+        &[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", one),
+            ("client_id", &id),
+        ],
+    )
+    .await;
+    assert_eq!(after.status, StatusCode::BAD_REQUEST);
+    assert_eq!(after.body["error"], "invalid_grant");
+}
+
+#[tokio::test]
+async fn a_service_gets_a_token_for_itself_with_its_credentials() {
+    let database = TestDatabase::start().await;
+    let acme = tenant(&database, "acme").await;
+    let globex = tenant(&database, "globex").await;
+    let (service, secret) = client_with(
+        &acme,
+        ClientType::Confidential,
+        AuthenticationMethod::ClientSecretBasic,
+        vec![GrantType::ClientCredentials],
+    )
+    .await;
+    let secret = secret.expect("a secret");
+    let (public, _) = client(&acme, ClientType::Public, AuthenticationMethod::None).await;
+    let (globex_service, _) = client_with(
+        &globex,
+        ClientType::Confidential,
+        AuthenticationMethod::ClientSecretBasic,
+        vec![GrantType::ClientCredentials],
+    )
+    .await;
+    let server = server(&database).await;
+    let id = service.to_string();
+
+    let answer = token(
+        &server,
+        "acme",
+        Some((&id, &secret)),
+        &[("grant_type", "client_credentials")],
+    )
+    .await;
+    assert_eq!(answer.status, StatusCode::OK, "{}", answer.body);
+    assert!(answer.body.get("refresh_token").is_none());
+    assert_eq!(answer.body["scope"], "payroll:read");
+    let claims = checked(
+        &server,
+        "acme",
+        answer.body["access_token"].as_str().expect("token"),
+    )
+    .await;
+    assert_eq!(claims["sub"], id);
+    assert_eq!(claims["client_id"], id);
+    assert!(claims.get("auth_time").is_none());
+
+    let openid = token(
+        &server,
+        "acme",
+        Some((&id, &secret)),
+        &[("grant_type", "client_credentials"), ("scope", "openid")],
+    )
+    .await;
+    assert_eq!(openid.body["error"], "invalid_scope");
+    let public_id = public.to_string();
+    let refused = token(
+        &server,
+        "acme",
+        None,
+        &[
+            ("grant_type", "client_credentials"),
+            ("client_id", &public_id),
+        ],
+    )
+    .await;
+    assert_eq!(refused.body["error"], "unauthorized_client");
+    // Acme's service is unknown at Globex, and Globex's at Acme.
+    let elsewhere = token(
+        &server,
+        "globex",
+        Some((&id, &secret)),
+        &[("grant_type", "client_credentials")],
+    )
+    .await;
+    assert_eq!(elsewhere.status, StatusCode::UNAUTHORIZED);
+    let globex_id = globex_service.to_string();
+    let foreign = token(
+        &server,
+        "acme",
+        Some((&globex_id, &secret)),
+        &[("grant_type", "client_credentials")],
+    )
+    .await;
+    assert_eq!(foreign.status, StatusCode::UNAUTHORIZED);
 }

@@ -21,7 +21,7 @@ pub mod api {
     };
     pub use crate::application::ports::{
         ApplicationStore, AuthorizationCodeStore, AuthorizationRequestStore, ClientAssertionStore,
-        ClientStore, GrantStore, ResourceServerStore,
+        ClientStore, GrantStore, PersonStanding, RefreshTokenStore, ResourceServerStore,
     };
     pub use crate::application::service::{
         ApplicationPorts, ApplicationService, CreateClient, CreateResourceServer, RotateSecret,
@@ -51,6 +51,11 @@ pub mod api {
         authentication_methods, check_access_token, discovery_document, id_token_claims,
         is_multi_factor, userinfo_claims,
     };
+    pub use crate::domain::refresh::{
+        DEFAULT_RETRY_WINDOW, FAMILY_SECRET_PURPOSE, FamilySecret, FamilyStatus,
+        LONGEST_RETRY_WINDOW, OFFLINE_ACCESS, RefreshAsk, RefreshDecision, RefreshFamily,
+        RefreshFamilyId, RefreshRefusal, RefreshTokenHash, RefreshTokenRecord, RefreshTokenValue,
+    };
     pub use crate::domain::resource_server::{
         Audience, OPENID_SCOPES, ResourceServer, ResourceServerId, ResourceServerSettings,
         ResourceServerSnapshot, ScopeDefinition,
@@ -63,6 +68,6 @@ pub mod api {
         ASSERTION_LONGEST_AHEAD, ASSERTION_TYPE, AccessTokenClaims, AssertionAudience,
         BasicCredentials, CLOCK_ALLOWANCE, CheckedAssertion, GrantRequest, MAX_ASSERTION_BYTES,
         MAX_ASSERTION_ID_LENGTH, PresentedClient, SUPPORTED_GRANT_TYPES, TokenError, TokenRequest,
-        access_token_claims, assertion_issuer, check_assertion,
+        TokenSubject, access_token_claims, assertion_issuer, check_assertion, claims_for,
     };
 }

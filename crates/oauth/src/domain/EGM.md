@@ -46,14 +46,18 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
 - `token.rs`: the token endpoint. `TokenRequest::parse(basic, pairs)`
   (a parameter given twice, more than one way of proving who the client
   is, or a missing `grant_type`, `code` or `redirect_uri` is
-  `invalid_request`; no client named is `invalid_client`; `refresh_token`,
-  `client_credentials` and unknown grants are `unsupported_grant_type`);
+  `invalid_request`; no client named is `invalid_client`; unknown grants
+  are `unsupported_grant_type`; `GrantRequest` has `AuthorizationCode`,
+  `RefreshToken` with the token as a `Secret` and `ClientCredentials`, each
+  with the optional `scope` and `resource` where they apply);
   `PresentedClient` and its `method`; `TokenError` with `error`,
   `description` and a `reason` for logs only; `check_assertion`, the checks
   of RFC 7523 in the specification's order; `assertion_issuer`, the `iss`
   read before the signature only to find the client;
-  `access_token_claims` (RFC 9068; the issuer is the audience when the code
-  has none, and one of the audiences when the scopes hold `openid`);
+  `claims_for` over a `TokenSubject` and `access_token_claims` for a code
+  (RFC 9068; the issuer is the audience when there is none, and one of the
+  audiences when the scopes hold `openid`; no `auth_time` without a
+  person); `TokenError` also has `invalid_scope` and `invalid_target`;
   `SUPPORTED_GRANT_TYPES`, the grants the discovery document names; and,
   inside the crate, `access_token_header`, `decode_json`, `signing_input`
   and `compact`. Its cases are in `token/tests.rs`.
@@ -65,7 +69,18 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   `PublishedKey`s; `BearerRefusal`, `CheckedAccessToken`), `PersonClaims`
   and `userinfo_claims` (the claims of `profile` and `email`), and
   `discovery_document`. Its cases are in `openid/tests.rs`.
-- `event.rs`: `OauthEvent`, seventeen variants, each named `oauth.*`.
+- `refresh.rs`: refresh tokens. `RefreshFamily` (`start` from a redeemed
+  code and the client's `TokenPolicy`, `decide`, `is_newest`, `revoke`,
+  `started_event`, `first_record`), `RefreshFamilyId`, `RefreshTokenHash`
+  (`of_presented` answers `None` for a value without the shape of a token),
+  `RefreshTokenValue`, `RefreshTokenRecord`, `FamilySecret` (`next_after`:
+  the SHA-256 of the secret and the presented token, so the same token
+  always leads to the same next one), `FamilyStatus`, `RefreshAsk`,
+  `RefreshDecision` (`Move` or `Retry`), `RefreshRefusal` (with
+  `revokes_the_family` and `revokes_the_grant`), and `OFFLINE_ACCESS`,
+  `FAMILY_SECRET_PURPOSE`, `DEFAULT_RETRY_WINDOW`, `LONGEST_RETRY_WINDOW`.
+  Its cases are in `refresh/tests.rs`.
+- `event.rs`: `OauthEvent`, twenty-one variants, each named `oauth.*`.
 - `text.rs`: the rules of names and of scopes (`is_scope`).
 
 ## Invariants

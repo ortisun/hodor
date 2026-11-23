@@ -82,6 +82,7 @@ The tables are listed in one place in `hodor-adapters-postgres`, each with its p
 | `federation.identity_provider` | `client_secret` | `federation.client_secret` |
 | `federation.pending_authorization` | `code_verifier` | `federation.code_verifier` |
 | `credential.totp` | `sealed_secret` | `credential.totp_secret` |
+| `oauth.refresh_token_family` | `sealed_secret` | `oauth.refresh_token_family_secret` |
 
 ### Moving the secrets of an earlier version
 

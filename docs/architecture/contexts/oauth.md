@@ -370,7 +370,7 @@ All three are tenant tables under row-level security. The request and the code r
 
 ## Token endpoint and client authentication
 
-Issue-56 builds the token endpoint, the four ways a client proves who it is there, and the access token issued for a code. Refresh tokens and client credentials are Issue-57; the ID token is Issue-59. The endpoint is at `/t/{slug}/oauth2/token` and answers `POST` with a form (`application/x-www-form-urlencoded`) only ([RFC 6749, section 3.2](https://www.rfc-editor.org/rfc/rfc6749#section-3.2)).
+Issue-56 builds the token endpoint, the four ways a client proves who it is there, and the access token issued for a code. Issue-57 adds [refresh tokens](#refresh-tokens) and [client credentials](#client-credentials); the ID token is Issue-59. The endpoint is at `/t/{slug}/oauth2/token` and answers `POST` with a form (`application/x-www-form-urlencoded`) only ([RFC 6749, section 3.2](https://www.rfc-editor.org/rfc/rfc6749#section-3.2)).
 
 ### The request
 
@@ -379,9 +379,9 @@ Issue-56 builds the token endpoint, the four ways a client proves who it is ther
 - A parameter given more than once is `invalid_request`, since the specification forbids it.
 - `grant_type` is required:
   - missing: `invalid_request`;
-  - `authorization_code`: built here;
-  - `refresh_token` and `client_credentials`: answered `unsupported_grant_type` until Issue-57;
+  - `authorization_code`, `refresh_token` and `client_credentials`: answered as the sections below say;
   - anything else: `unsupported_grant_type`.
+- A client that is not allowed the grant it asks for is answered `unauthorized_client`.
 
 ### How a client proves who it is
 
@@ -441,19 +441,84 @@ The access token is a JSON Web Token per [RFC 9068](https://www.rfc-editor.org/r
 |---|---|
 | Header | `alg` `ES256`, `typ` `at+jwt`, `kid` the identifier of the key version that signed, as the [published key set](keys.md) names it |
 | `iss` | The tenant's issuer |
-| `sub` | The person's user identifier |
+| `sub` | The person's user identifier; for [client credentials](#client-credentials), the client's identifier |
 | `aud` | The audiences of the code: the resource servers of the request. When the scopes hold `openid`, the issuer is one of the audiences too, so that the same token reads [UserInfo](#userinfo); a request that named no resource server gets the issuer alone |
 | `client_id` | The client |
 | `scope` | The scopes of the code, separated by spaces |
 | `iat`, `exp` | When it was issued, and that plus the client's access token lifetime |
 | `jti` | 16 random bytes, base64url, unique to this token |
-| `auth_time` | When the person signed in |
+| `auth_time` | When the person signed in; absent for client credentials, where nobody signed in |
 
 `acr` and `amr` are in the [ID token](#the-id-token), not in the access token, which is for resource servers. `sid` comes with logout (Issue-60).
 
 **No signed token outlives the rotation overlap.** The keys context keeps a retiring key published for `RotationPolicy::LONGEST_SIGNED_LIFETIME`, one hour, after it stops signing. The token policy therefore refuses an access or ID token lifetime longer than that, and the token endpoint refuses to sign one: a token checked after its key left the key set would be refused by everyone.
 
 A tenant without an active signing key cannot issue tokens. The worker makes the first key ([keys](keys.md)), and the answer is `500` with `server_error` until it has.
+
+### Refresh tokens
+
+A refresh token lets a client get new access tokens for a grant without the person, until the token, its grant or the person's standing ends ([Decision 0004](../../decisions/0004-token-formats.md), [RFC 9700, section 4.14](https://www.rfc-editor.org/rfc/rfc9700#section-4.14)).
+
+**When one is issued.** A code is exchanged for a refresh token as well when the client is allowed the `refresh_token` grant. Every refresh token of a grant belongs to one **family**, which starts with the code and moves one **generation** at each use.
+
+**Whether it outlives the session.** OpenID Connect gives `offline_access` for access that goes on after the person has left ([OpenID Connect Core, section 11](https://openid.net/specs/openid-connect-core-1_0.html#OfflineAccess)):
+
+- **With `offline_access`** among the scopes of the code, the family does not depend on the session it was made in.
+- **Without it**, the family lasts only as long as that session. A refresh after the session has ended, been revoked or expired is refused.
+
+Either way the person must still be allowed to sign in: a suspended, deactivated or deleted user's families stop working.
+
+**What a refresh token is.** 32 bytes, written as base64url without padding, 43 characters, like a code. Hodor keeps only the SHA-256 hash of each, with its family and generation.
+
+- The first token of a family is 32 random bytes.
+- Each next one is derived from the one before: the SHA-256 of the family's secret followed by the presented token. The family's secret is 32 random bytes, made when the family starts and kept sealed by the tenant's secret box ([secrets at rest](../../security/secrets-at-rest.md)). Without that secret, a stolen token tells nothing about the tokens after it, and without the token, the sealed secret tells nothing either.
+
+**A refresh**, `grant_type=refresh_token` with `refresh_token` and, if the client wants fewer scopes, `scope`. The checks, in order:
+
+1. The client must be allowed the `refresh_token` grant; otherwise `unauthorized_client`.
+2. The token is found by the hash of what was presented. An unknown token, a token of another tenant and a malformed one are all `invalid_grant`.
+3. The family must still stand: not revoked, before its absolute lifetime and used within its idle time, both from the client's [token policy](#token-policy) when the family started. Otherwise `invalid_grant`.
+4. **The client must be the one the family was issued to.** A token presented by another client has leaked: the family is revoked, and the answer is `invalid_grant`.
+5. **A token that is not the newest of its family has been used before.** Within the retry window it may be [a retry](#a-retry-of-the-same-request). Otherwise this is reuse: the family and its grant are revoked, and everything issued from them with them, and the answer is `invalid_grant`.
+6. The grant must still be active, the person allowed to sign in and, without `offline_access`, the session still active; otherwise `invalid_grant`.
+7. `scope`, when given, must hold only scopes of the family; otherwise `invalid_scope`. A refresh can narrow the scopes of its access token and never widen them. The family keeps its own scopes, so a later refresh can ask for all of them again ([RFC 6749, section 6](https://www.rfc-editor.org/rfc/rfc6749#section-6)).
+8. `resource`, when given, must be one of the family's audiences; the access token is then for it alone. Otherwise `invalid_target`.
+
+Then the family moves one generation, the presented token stops being the newest, and the answer carries a new access token and the next refresh token. It carries no ID token: nobody signed in again. With `openid` among the scopes the access token asks for, the issuer is one of its audiences, as with a code. Moving is one conditional change in storage that names the generation it moves from. Of two refreshes with the same token at the same moment, exactly one moves the family; the other finds the token one generation old and is answered as a retry.
+
+#### A retry of the same request
+
+A client whose answer was lost, by a network that failed after Hodor answered, presents the same token again. Treating that as reuse would end a family that nobody stole. So within the **retry window**, 10 seconds by default and 0 to 60 as configured with `HODOR_REFRESH_RETRY_SECONDS`, a token one generation old is answered again instead, when:
+
+- it is presented by the same client, which has authenticated again;
+- it asks for the same scopes and resource as the request that moved the family;
+- the family has not moved again since.
+
+The answer is a new access token, with a new `jti`, and **the same next refresh token** as before: Hodor derives it again from the presented token and the family's secret, and checks that its hash is the newest of the family. Nothing of an answer is ever stored, neither the access token nor the refresh token.
+
+What the window allows: someone who stole the token one generation old and presents it within those seconds gets what the client got, a token of the same family. Without the window, that thief would end the family instead; with it, the thief and the client share the newest token, and the first time either uses it, the other's next use is reuse and ends the family. A window of 0 turns retries off.
+
+#### What ends a family
+
+| Event | How |
+|---|---|
+| Reuse of a token, or a token presented by another client | The family is revoked; on reuse its grant as well |
+| The grant revoked, such as by a second use of its code | The family's next refresh is refused |
+| The session ended, without `offline_access` | The family's next refresh is refused |
+| The person may no longer sign in | The family's next refresh is refused |
+| The client or its application disabled, or the client no longer allowed the `refresh_token` grant | The family's next refresh is refused |
+| The absolute lifetime or the idle time passed | The family's next refresh is refused |
+
+Revoking a refresh token through the revocation endpoint, which revokes its family, comes with Issue-58.
+
+### Client credentials
+
+With `grant_type=client_credentials`, a confidential client gets an access token for itself, with nobody signed in ([RFC 6749, section 4.4](https://www.rfc-editor.org/rfc/rfc6749#section-4.4)).
+
+- **The client** must be allowed the `client_credentials` grant, which only confidential clients can be. A public client is answered `unauthorized_client`.
+- **`scope`** holds scopes the client is allowed, none of OpenID Connect's: those are about a person. Without `scope`, the token carries every scope the client is allowed that a resource server defines.
+- **`resource`**, when given, names one resource server of the tenant, and every scope must be one it defines. Without it, the token is for every resource server that defines one of the scopes. A scope no resource server defines is `invalid_scope`, and an unknown resource is `invalid_target`.
+- **The access token** has the client's identifier as `sub` and `client_id`, and no `auth_time`. **No refresh token** is issued: the client can always authenticate again.
 
 ### The answer
 
@@ -462,32 +527,49 @@ A tenant without an active signing key cannot issue tokens. The worker makes the
   "access_token": "eyJ…",
   "token_type": "Bearer",
   "expires_in": 300,
-  "scope": "openid orders:read"
+  "scope": "openid orders:read",
+  "refresh_token": "Vt3…"
 }
 ```
 
 - **Caching:** the answer carries `Cache-Control: no-store` and `Pragma: no-cache`.
 - **Errors:** they are JSON with `error` and `error_description` ([RFC 6749, section 5.2](https://www.rfc-editor.org/rfc/rfc6749#section-5.2)).
-- **Refresh token:** `refresh_token` is added by Issue-57.
+- **Refresh token:** `refresh_token` is there when one was issued: with a code, for a client allowed the `refresh_token` grant, and at every refresh.
 - **ID token:** `id_token` is added when the scopes hold `openid`, as [the ID token](#the-id-token) says.
 
 ### Events
 
 | Event type | When |
 |---|---|
-| `oauth.access_token_issued` | An access token was issued. It carries the client, the grant, the user, the token's `jti` and when it expires, never the token |
+| `oauth.access_token_issued` | An access token was issued for a person. It carries the client, the grant, the user, the token's `jti` and when it expires, never the token |
+| `oauth.client_access_token_issued` | An access token was issued to a client for itself. It carries the client, the token's `jti` and when it expires |
+| `oauth.refresh_token_family_started` | A family started with a code. It carries the family, the grant, the client, the user and whether it is for offline access |
+| `oauth.refresh_token_rotated` | A family moved to the generation it carries |
+| `oauth.refresh_token_family_revoked` | A family was revoked. It carries the family, the grant, the client and the reason: `refresh_token_reused` or `other_client` |
+
+No event carries a token or its hash.
 
 ### Ports
 
 | Port | Purpose |
 |---|---|
 | `ClientAssertionStore` | Remember a client assertion's `jti` until it expires. It answers whether this was the first time, so that of two requests with the same assertion at the same moment exactly one goes on |
+| `RefreshTokenStore` | Start a family with its first token; find a token's family and generation by the token's hash; move a family one generation only from the generation named, with the next token; revoke a family |
+| `PersonStanding` | Whether a session of the person is still active, and whether the person may still sign in. The server implements it over the session and identity contexts |
+| `SecretBox` | Seals and opens a family's secret, from the kernel |
 | `SignatureVerifier` | Checks a client's assertion, from the kernel |
 | `KeyService` | Signs the access token with the tenant's active key, from the keys context |
 
 ### Storage
 
 `oauth.client_assertion` holds `tenant_id`, `client_id`, `jti` and `expires_at`, with the tenant, the client and the `jti` as primary key. It is a tenant table under row-level security, and its client is referenced with the tenant, so its rows go when the client goes.
+
+| Table | Holds |
+|---|---|
+| `oauth.refresh_token_family` | `tenant_id`, `id`, `grant_id`, `client_id`, `user_id`, `session_id`, `scopes`, `audiences`, `offline`, `signed_in_at`, `methods`, the sealed family secret as `sealed_secret`, `generation`, `current_hash` (32 bytes), when the last move happened as `moved_at`, the scopes and resource that move asked for, `status` (`active` or `revoked`), `created_at`, `expires_at`, `idle_seconds`, `last_used_at`, `revoked_at`, `revocation_reason` |
+| `oauth.refresh_token` | `tenant_id`, `token_hash` (32 bytes, the key with the tenant), `family_id`, `generation`, `issued_at`: every token a family has had, so that any earlier one is known as reuse |
+
+Both are tenant tables under row-level security. A family references its grant and its client with the tenant, and a token its family. They hold hashes and a sealed secret, never a token.
 
 ## Revocation, introspection and metadata
 
@@ -602,7 +684,7 @@ It names only what is built:
 | `authorization_endpoint`, `token_endpoint`, `userinfo_endpoint`, `jwks_uri` | The four addresses under `{issuer}/oauth2` |
 | `response_types_supported` | `code` |
 | `response_modes_supported` | `query` |
-| `grant_types_supported` | The grants the token endpoint answers: `authorization_code` |
+| `grant_types_supported` | The grants the token endpoint answers: `authorization_code`, `refresh_token` and `client_credentials` |
 | `code_challenge_methods_supported` | `S256` |
 | `token_endpoint_auth_methods_supported` | `client_secret_basic`, `client_secret_post`, `private_key_jwt`, `none` |
 | `token_endpoint_auth_signing_alg_values_supported` | `ES256`, `RS256`, `PS256` |
@@ -634,11 +716,13 @@ Issue-62.
 
 | Item | Planned in |
 |---|---|
-| Refresh tokens and the client credentials grant | Issue-57 |
-| Revocation, introspection and the end-session endpoint | Issue-58 and Issue-60 |
+| Revocation, among them revoking a refresh token and its family; introspection that refuses the access tokens of a revoked family or grant; and the end-session endpoint | Issue-58 and Issue-60 |
 | The metadata at the address RFC 8414 prefers for an issuer with a path, `/.well-known/oauth-authorization-server/t/{slug}`: it is outside the tenant's addresses, so only the address after the issuer is served | When a client needs it |
 | Calling UserInfo from a browser on another origin | With origins in the client settings |
 | The person's claims in the ID token when asked for with the `claims` parameter | Not planned for 0.2.0 |
+| Asking for consent before `offline_access` is granted ([OpenID Connect Core, section 11](https://openid.net/specs/openid-connect-core-1_0.html#OfflineAccess)) | Issue-62 |
+| More than one `resource` in a refresh or client credentials request: a parameter may be given once | With resource indicators given more than once at the token endpoint |
+| Removing refresh token families after they expire, with their tokens | A cleanup job, with the other expired rows |
 | Calling the token endpoint from a browser on another origin: clients have no registered origins yet, so no cross-origin headers are sent | With origins in the client settings |
 | Client assertions signed with `ES384` or `EdDSA`, which client keys on P-384 and Ed25519 would need | When the kernel's signature checking covers them |
 | Limits on requests to the token endpoint per address | With the other limits per address |

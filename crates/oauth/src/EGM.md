@@ -11,7 +11,7 @@ follows is `docs/architecture/contexts/oauth.md`.
 - `api` re-exports:
   - Ports: `ApplicationStore`, `ClientStore`, `ResourceServerStore`,
     `AuthorizationRequestStore`, `GrantStore`, `AuthorizationCodeStore`,
-    `ClientAssertionStore`.
+    `ClientAssertionStore`, `RefreshTokenStore`, `PersonStanding`.
   - Services: `ApplicationService`, `ApplicationPorts`, `CreateClient`,
     `RotateSecret`, `CreateResourceServer`; `AuthorizationCodeService`,
     `AuthorizationCodePorts`, `ResumedRequest`, `RedeemedCode`;
@@ -20,7 +20,8 @@ follows is `docs/architecture/contexts/oauth.md`.
   - The token endpoint's domain: `TokenRequest` (with `parse`),
     `PresentedClient`, `BasicCredentials`, `GrantRequest`, `TokenError`,
     `check_assertion`, `assertion_issuer`, `AssertionAudience`,
-    `CheckedAssertion`, `access_token_claims`, `AccessTokenClaims`, and
+    `CheckedAssertion`, `access_token_claims`, `claims_for`,
+    `TokenSubject`, `AccessTokenClaims`, and
     `ASSERTION_TYPE`, `MAX_ASSERTION_BYTES`, `MAX_ASSERTION_ID_LENGTH`,
     `ASSERTION_LONGEST_AHEAD`, `CLOCK_ALLOWANCE`, `SUPPORTED_GRANT_TYPES`.
   - The OpenID Provider's domain: `id_token_claims`, `access_token_hash`,
@@ -36,6 +37,11 @@ follows is `docs/architecture/contexts/oauth.md`.
     `Grant`, `GrantId`, `GrantStatus`, `AuthorizationCode`, `CodeHash`,
     `CodeValue`, `CodePresentation`, `CodeRefusal`, `s256_challenge`, and
     `CODE_LIFETIME`, `PENDING_LIFETIME`, `MAX_RESOURCES`.
+  - Refresh tokens: `RefreshFamily`, `RefreshFamilyId`, `RefreshTokenHash`,
+    `RefreshTokenValue`, `RefreshTokenRecord`, `FamilySecret`,
+    `FamilyStatus`, `RefreshAsk`, `RefreshDecision`, `RefreshRefusal`, and
+    `OFFLINE_ACCESS`, `FAMILY_SECRET_PURPOSE`, `DEFAULT_RETRY_WINDOW`,
+    `LONGEST_RETRY_WINDOW`.
   - Event: `OauthEvent`.
   - Domain: `Application`, `ApplicationId`, `ApplicationSettings`,
     `ApplicationSnapshot`, `Status`, `Client`, `ClientId`, `ClientType`,
@@ -64,6 +70,13 @@ follows is `docs/architecture/contexts/oauth.md`.
   - `testing/token.rs`: `InMemoryClientAssertions::new(&clients)`;
     `FakeVerifier` and `fake_signature`, a stand-in for signature checking
     in tests only; `AssertionStorePorts` and `run_assertion_contract(ports)`.
+  - `testing/refresh.rs`: `InMemoryRefreshTokens::new(&grants)`, which
+    refuses a family whose grant the tenant does not have, with `all(tenant)`;
+    `StandingOf`, a stand-in `PersonStanding` whose `end_session` and `bar`
+    end a session or bar a person; `RefreshStorePorts` and
+    `run_refresh_token_contract(ports)`: a family stored whole and found by
+    its token, a move once from a generation that keeps the earlier tokens
+    known, a revocation that stops moves, and tenants apart.
 - Subdirectories:
   - [application](./application/EGM.md): the ports and the use cases.
   - [domain](./domain/EGM.md): the aggregates and their rules.

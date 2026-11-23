@@ -108,12 +108,17 @@ fn a_malformed_request_is_refused_for_its_own_reason() {
         (
             None,
             pairs(&[("grant_type", "refresh_token"), ("client_id", "one")]),
-            "unsupported_grant_type",
+            "invalid_request",
         ),
         (
             None,
-            pairs(&[("grant_type", "client_credentials"), ("client_id", "one")]),
-            "unsupported_grant_type",
+            pairs(&[
+                ("grant_type", "refresh_token"),
+                ("refresh_token", "a"),
+                ("refresh_token", "b"),
+                ("client_id", "one"),
+            ]),
+            "invalid_request",
         ),
         (
             Some(basic("one")),
@@ -542,4 +547,64 @@ fn a_signed_token_is_written_as_a_compact_signature() {
     assert_eq!(parts.len(), 3);
     assert_eq!(format!("{}.{}", parts[0], parts[1]), input);
     assert_eq!(parts[2], "AQID");
+}
+
+#[test]
+fn a_refresh_and_client_credentials_are_read() {
+    let request = TokenRequest::parse(
+        Some(basic("one")),
+        pairs(&[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", "the-token"),
+            ("scope", "read"),
+            ("resource", "https://api.example.com"),
+        ]),
+    )
+    .expect("refresh");
+    assert_eq!(
+        request.grant,
+        GrantRequest::RefreshToken {
+            refresh_token: Secret::from("the-token".to_owned()),
+            scope: Some("read".to_owned()),
+            resource: Some("https://api.example.com".to_owned()),
+        }
+    );
+    assert!(
+        !format!("{:?}", request.grant).contains("the-token"),
+        "the token is never in debug output"
+    );
+    let request = TokenRequest::parse(
+        Some(basic("one")),
+        pairs(&[("grant_type", "client_credentials")]),
+    )
+    .expect("client credentials");
+    assert_eq!(
+        request.grant,
+        GrantRequest::ClientCredentials {
+            scope: None,
+            resource: None,
+        }
+    );
+}
+
+#[test]
+fn a_token_about_a_client_has_no_auth_time() {
+    let client = ClientId::generate();
+    let subject = TokenSubject {
+        subject: client.to_string(),
+        scopes: vec!["read".to_owned()],
+        audiences: vec!["https://api.example.com".to_owned()],
+        signed_in_at: None,
+    };
+    let claims = super::claims_for(
+        ISSUER,
+        &subject,
+        client,
+        Duration::minutes(5),
+        now(),
+        &DistinctRandom,
+    );
+    assert_eq!(claims.claims["sub"], client.to_string());
+    assert_eq!(claims.claims["client_id"], client.to_string());
+    assert!(claims.claims.get("auth_time").is_none());
 }
