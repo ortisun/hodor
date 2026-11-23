@@ -30,3 +30,4 @@ All records below are **Proposed** unless marked otherwise: they become Accepted
 | [0022](0022-installation-packages.md) | Hodor is installed from two packages kept apart from the development stack, and neither holds a secret |
 | [0023](0023-what-0.2.0-holds.md) | 0.2.0 holds the OAuth server, strong authentication and the authorization engine, each cut to what makes it whole (Accepted) |
 | [0024](0024-webauthn-checks.md) | WebAuthn is checked by Hodor's own code, over the cryptography it already has (Accepted) |
+| [0025](0025-condition-language.md) | Conditions are Common Expression Language, interpreted by the `cel` crate in a crate of their own (Accepted) |
