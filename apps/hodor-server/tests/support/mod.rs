@@ -65,7 +65,10 @@ pub(crate) async fn start_server_with(
         base: format!("http://127.0.0.1:{public}"),
     };
     let ready = format!("http://127.0.0.1:{ops}/readyz");
-    for _ in 0..100 {
+    // Up to thirty seconds: a test file starts a server and a database per
+    // test, all at once, and on a busy machine ten seconds were not always
+    // enough.
+    for _ in 0..300 {
         if reqwest::get(&ready)
             .await
             .is_ok_and(|r| r.status().is_success())
@@ -229,4 +232,23 @@ impl Browser {
         )
         .await
     }
+}
+
+/// The bytes of a secret written in base32 without padding (RFC 4648).
+pub(crate) fn base32(text: &str) -> Vec<u8> {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+    let (mut bytes, mut buffer, mut bits) = (Vec::new(), 0_u32, 0_u32);
+    for character in text.bytes() {
+        let value = ALPHABET
+            .iter()
+            .position(|&c| c == character)
+            .expect("base32");
+        buffer = (buffer << 5) | u32::try_from(value).expect("small");
+        bits += 5;
+        if bits >= 8 {
+            bits -= 8;
+            bytes.push(u8::try_from((buffer >> bits) & 0xff).expect("a byte"));
+        }
+    }
+    bytes
 }

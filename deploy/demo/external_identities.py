@@ -28,7 +28,7 @@ from pathlib import Path
 
 from demo import (
     CLI_DATABASE_URL,
-    COMPOSE_FILE,
+    compose,
     MAIL,
     SERVER,
     Browser,
@@ -57,7 +57,7 @@ def cli(*arguments, environment=()):
     environment variables such as the client secret."""
     extra = [part for name, value in environment for part in ("-e", f"{name}={value}")]
     command = [
-        "docker", "compose", "-f", str(COMPOSE_FILE), "run", "--rm", "--no-deps", "-T",
+        *compose(), "run", "--rm", "--no-deps", "-T",
         "--entrypoint", "/usr/local/bin/hodor-cli",
         "-e", f"HODOR_DATABASE_URL={CLI_DATABASE_URL}", *extra,
         "server", *arguments,

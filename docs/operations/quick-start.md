@@ -160,6 +160,31 @@ python3 deploy/demo/external_identities.py
 
 It ends with `The demonstration passed.` It can be run again and again, and runs in continuous integration after the one of Milestone 1. The variables of [the first demonstration](#the-demonstration) tell it where the stack is, and `HODOR_SAML_PROVIDER_URL` where the SAML identity provider is, `http://localhost:9500` unless set.
 
+## The demonstration of Milestone 4
+
+[Milestone 4](../product/epics.md#milestone-4-strong-authentication) lets a person prove who they are with more than a password, a tenant require it, and an application ask for more in the middle of a session. Its demonstration plays the person, their authenticator application, their passkey, an application of the tenant and an administrator:
+
+```bash
+python3 deploy/demo/strong_authentication.py
+```
+
+| Step | What it shows |
+|---|---|
+| A tenant, and a person in it | A new tenant with a signing key and three assurance levels, one of them phishing-resistant; a person registers with a password |
+| An application | The operator registers a first-party application and a confidential client with the command-line tool |
+| Signed in with a password | The application gets a code at once; its ID token and access token, checked against the tenant's key set, say `amr` `pwd` and the single-factor level |
+| An authenticator application | The person sets one up from their own session and confirms it with a code; ten recovery codes come with it |
+| A step-up | The application asks for the multi-factor level in the middle of the same session: the person is asked for the code of the application and nothing else, and the new tokens say `pwd`, `otp` and `mfa` |
+| A tenant that requires a second factor | With the policy turned on, the password alone no longer completes a sign-in; the code does |
+| A recovery code | A recovery code stands in for the code once, and is refused the second time |
+| A passkey | The person registers one, then signs in with it alone, with no identifier and no password. Asked for the phishing-resistant level, the application gets a code at once, and the tokens say `pop`, `user` and `mfa` |
+| Tenants apart | The same passkey is refused by a second tenant |
+| An administrator removes the person's factors | The administrator sees the factors and no secret, removes the passkey and the application, and the recovery codes go with them; the person's password no longer signs them in to a tenant that requires a second factor, and the audit log names the administrator |
+
+The passkey is a software authenticator written into the script, with the arithmetic of P-256 done by hand so that the demonstration still needs nothing outside the standard library. It answers as a device does after the person unlocked it, and keeps its key in memory for as long as the script runs. A code of an authenticator application is good once, so the script waits for the next one when it needs a third within a minute.
+
+It ends with `The demonstration passed.` It can be run again and again, and runs in continuous integration after the other two. The variables of [the first demonstration](#the-demonstration) tell it where the stack is.
+
 ## Stop
 
 Stop the stack and delete its data:

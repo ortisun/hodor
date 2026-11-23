@@ -54,6 +54,13 @@ watched page and the steps a person repeats.
     `en.continueWith(PROVIDER_NAME)` and fills the development provider's
     page (`Subject`, `Email address`, "The provider vouches for this address",
     default vouched).
+  - `operator(...arguments)` - runs `hodor-cli` in the stack through
+    `docker compose run … server` from the root of the repository, honoring
+    `COMPOSE_FILE` and `COMPOSE_PROJECT_NAME`, and returns what it printed.
+  - `fromBase32(text)` (RFC 4648, spaces ignored) and `phone(secret, steps
+    = 0)` - the code an authenticator application shows, computed with
+    `node:crypto` as RFC 6238 says, `steps` periods of thirty seconds from
+    now.
   - `at(page)` (path of a page of `TENANT`), `newAddress()`
     (`person-{uuid}@example.com`), `PASSWORD`, `PROVIDER_NAME`
     (`"Development provider"`), and re-exports `en`, `PROVIDER`, `TENANT`.
@@ -119,6 +126,15 @@ watched page and the steps a person repeats.
     code at once; withdrawing the application on the account page makes it
     ask again. A person who denies sends the application `access_denied`,
     and the consent page then has nothing to answer.
+  - `step-up.spec.ts` - an application of the tenant, registered with
+    `hodor-cli application add --first-party` and `client add` after
+    `keys rotate`, waits for the browser at a page of its own on
+    `127.0.0.1`, served by the test on a free port. A person signed in
+    through the development identity provider sets up an authenticator
+    application; the application asks for `urn:hodor:acr:mfa`; the sign-in
+    page asks for the code and nothing else, no identifier; the browser
+    goes back with a code, and the tokens it is exchanged for say the
+    multi-factor level, with `otp` and `mfa` in `amr`.
   - `webauthn.spec.ts` (a virtual authenticator of Chromium, added through
     the DevTools protocol) - a person registers, signs in with a password,
     registers a key through the interaction interface from a page of
@@ -137,8 +153,9 @@ watched page and the steps a person repeats.
   `HODOR_URL`, the development mail server at `HODOR_MAIL_URL`, and a tenant
   `HODOR_TENANT` with open registration that offers the three development
   providers (commands in `stack.ts:HELP`). Otherwise `checkTheStack` stops
-  the run before any test. `totp.spec.ts` and `consent.spec.ts` also need `docker compose` on the
-  machine that runs the tests, to run `hodor-cli` in the stack.
+  the run before any test. `totp.spec.ts`, `consent.spec.ts` and
+  `step-up.spec.ts` also need `docker compose` on the machine that runs the
+  tests, to run `hodor-cli` in the stack.
 - Tests run one at a time (`workers: 1`, `fullyParallel: false`), because
   the server limits attempts by the address requests come from and every test
   comes from the same one (comment in `../playwright.config.ts`).

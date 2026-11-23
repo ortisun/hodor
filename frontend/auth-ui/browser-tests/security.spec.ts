@@ -1,43 +1,17 @@
 import { expect, type Page } from "@playwright/test";
-import { createHmac, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import {
   at,
   en,
   expectAccessible,
+  fromBase32,
   type Identity,
   newAddress,
+  phone,
   PROVIDER_NAME,
   signInThroughProvider,
   test,
 } from "./support";
-
-/** Base32 of RFC 4648, as the key is shown, without the spaces between groups. */
-function fromBase32(text: string): Buffer {
-  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-  const bytes: number[] = [];
-  let buffer = 0;
-  let bits = 0;
-  for (const character of text.replace(/\s/g, "")) {
-    buffer = (buffer << 5) | alphabet.indexOf(character);
-    bits += 5;
-    if (bits >= 8) {
-      bits -= 8;
-      bytes.push((buffer >> bits) & 0xff);
-    }
-  }
-  return Buffer.from(bytes);
-}
-
-/** What an authenticator application shows for this secret, `steps` steps of thirty seconds from now. */
-function phone(secret: Buffer, steps = 0): string {
-  const step = Math.floor(Date.now() / 1000 / 30) + steps;
-  const counter = Buffer.alloc(8);
-  counter.writeBigUInt64BE(BigInt(step));
-  const mac = createHmac("sha1", secret).update(counter).digest();
-  const offset = mac.readUInt8(19) & 0x0f;
-  const binary = mac.readUInt32BE(offset) & 0x7fffffff;
-  return String(binary % 1_000_000).padStart(6, "0");
-}
 
 /** The authenticator built into a device, in Chromium: it keeps passkeys and verifies the person. */
 async function addVirtualPlatformAuthenticator(page: Page): Promise<void> {
