@@ -457,11 +457,29 @@ fn redeemed(audiences: &[&str]) -> AuthorizationCode {
         session_id: SessionId::generate(),
         user_id: UserId::generate(),
         signed_in_at: now() - Duration::minutes(3),
-        methods: vec!["password".to_owned()],
+        methods: vec!["password".to_owned(), "webauthn".to_owned()],
+        acr: Some("urn:hodor:acr:mfa".to_owned()),
         issued_at: now(),
         expires_at: now() + Duration::seconds(60),
         redeemed_at: Some(now()),
     }
+}
+
+#[test]
+fn an_access_token_names_no_level_the_code_did_not_reach() {
+    let mut code = redeemed(&[]);
+    code.acr = None;
+    code.methods = vec!["external".to_owned()];
+    let token = access_token_claims(
+        ISSUER,
+        &code,
+        ClientId::generate(),
+        Duration::minutes(5),
+        now(),
+        &DistinctRandom,
+    );
+    assert!(token.claims.get("acr").is_none());
+    assert!(token.claims.get("amr").is_none(), "no name in RFC 8176");
 }
 
 #[test]
@@ -493,8 +511,9 @@ fn the_access_token_says_who_for_whom_and_until_when() {
     );
     assert_eq!(claims["auth_time"], code.signed_in_at.unix_timestamp());
     assert_eq!(claims["jti"], token.token_id.as_str());
+    assert_eq!(claims["acr"], "urn:hodor:acr:mfa", "the level of the code");
+    assert_eq!(claims["amr"], json!(["pwd", "pop", "mfa"]));
     assert_eq!(token.token_id.len(), 22, "16 bytes of base64url");
-    assert!(claims.get("amr").is_none() && claims.get("acr").is_none());
 
     let many = access_token_claims(
         ISSUER,
@@ -595,6 +614,8 @@ fn a_token_about_a_client_has_no_auth_time() {
         scopes: vec!["read".to_owned()],
         audiences: vec!["https://api.example.com".to_owned()],
         signed_in_at: None,
+        acr: None,
+        methods: Vec::new(),
     };
     let claims = super::claims_for(
         ISSUER,

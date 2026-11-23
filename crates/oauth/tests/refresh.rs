@@ -276,6 +276,7 @@ fn person(world: &World) -> SignedInPerson {
         session_id: SessionId::generate(),
         signed_in_at: world.clock.now() - Duration::minutes(2),
         methods: vec!["password".to_owned()],
+        acr: Some("urn:hodor:acr:single-factor".to_owned()),
     }
 }
 
@@ -429,6 +430,11 @@ async fn a_code_comes_with_a_refresh_token_that_moves_at_every_use() {
         claims["auth_time"].as_i64(),
         Some(person.signed_in_at.unix_timestamp())
     );
+    assert_eq!(
+        claims["acr"], "urn:hodor:acr:single-factor",
+        "the level of the sign-in the family came from, never more"
+    );
+    assert_eq!(claims["amr"], serde_json::json!(["pwd"]));
     assert_eq!(second.scope, "openid read");
 
     let third = refresh(&world, &tenant, &client, &two, &[])
@@ -805,6 +811,10 @@ async fn a_confidential_client_gets_a_token_for_itself() {
     assert_eq!(token["client_id"], service.id.to_string());
     assert_eq!(token["aud"], serde_json::json!([AUDIENCE, OTHER_AUDIENCE]));
     assert!(token.get("auth_time").is_none());
+    assert!(
+        token.get("acr").is_none() && token.get("amr").is_none(),
+        "nobody signed in"
+    );
 
     let one = ask(&world, &tenant, &service, grant(&[("scope", "read")]))
         .await

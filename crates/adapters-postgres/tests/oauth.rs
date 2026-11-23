@@ -148,6 +148,7 @@ async fn of_two_moves_of_one_family_at_the_same_moment_exactly_one_moves_it() {
         user_id: grant.user_id,
         signed_in_at: now,
         methods: vec!["password".to_owned()],
+        acr: Some("urn:hodor:acr:mfa".to_owned()),
         issued_at: now,
         expires_at: now + Duration::seconds(60),
         redeemed_at: Some(now),
@@ -506,6 +507,7 @@ async fn of_two_redemptions_at_the_same_moment_one_wins_and_the_grant_is_revoked
                 session_id: SessionId::generate(),
                 signed_in_at: now,
                 methods: vec!["password".to_owned()],
+                acr: Some("urn:hodor:acr:single-factor".to_owned()),
             },
             Caller::system(),
         )

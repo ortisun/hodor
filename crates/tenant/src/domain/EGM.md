@@ -39,7 +39,15 @@ about. The domain is pure; time is passed in. All modules are `pub(crate)` in
   `idle_timeout()` and `absolute_timeout()` as `time::Duration`.
 - `LockoutPolicy { max_failures, window_seconds, first_lockout_seconds, longest_lockout_seconds }`.
 - `RegistrationPolicy { Closed (default), Open }`, serialized in snake case.
-- `AuthenticationPolicy { second_factor }` and
+- `AuthenticationPolicy { second_factor, assurance_levels }`. `assurance_levels`
+  is `AssuranceLevels` (`settings.rs:AssuranceLevels`), one to three
+  `AssuranceLevel { acr, requirement }` with `AssuranceRequirement`
+  `SingleFactor < MultiFactor < PhishingResistant` (snake case); `new` sorts
+  weakest first and validates, `levels()` lists weakest first, `asked(acr_values)`
+  is the weakest level a request names, `reached(requirement)` the name of the
+  strongest level at or below it. The default is `ACR_SINGLE_FACTOR` and
+  `ACR_MULTI_FACTOR`; settings stored without the field read it.
+- The second factor policy is
   `SecondFactorPolicy { NotRequired (default), Required }`, serialized in snake
   case. Read by the authentication context when a sign-in advances and completes.
 

@@ -9,7 +9,7 @@ use hodor_authentication::api::{
     VerificationTokenHash, VerificationTokenId, VerificationTokenSnapshot, VerificationTokenStore,
 };
 use hodor_kernel::{DomainError, Timestamp, UnitOfWork, UserId};
-use hodor_session::api::ClientInfo;
+use hodor_session::api::{Assurance, ClientInfo, SessionId};
 use sqlx::Row as _;
 use sqlx::postgres::PgRow;
 use sqlx::types::Uuid;
@@ -146,6 +146,8 @@ fn to_transaction(row: &PgRow) -> Result<AuthTransaction, DomainError> {
     let status: String = row.try_get("status").map_err(get)?;
     let binding: Vec<u8> = row.try_get("binding").map_err(get)?;
     let version: i32 = row.try_get("version").map_err(get)?;
+    let demanded: Option<String> = row.try_get("demanded_assurance").map_err(get)?;
+    let raised: Option<Uuid> = row.try_get("raised_session_id").map_err(get)?;
     Ok(AuthTransaction::from_snapshot(TransactionSnapshot {
         id: TransactionId::from_uuid(row.try_get("id").map_err(get)?),
         flow_name: row.try_get("flow_name").map_err(get)?,
@@ -157,6 +159,12 @@ fn to_transaction(row: &PgRow) -> Result<AuthTransaction, DomainError> {
             .map(|key| bytes_32(key, "identifier key is not 32 bytes"))
             .transpose()?,
         satisfied_methods: row.try_get("satisfied_methods").map_err(get)?,
+        carried_methods: row.try_get("carried_methods").map_err(get)?,
+        demanded: demanded
+            .as_deref()
+            .map(Assurance::from_stored)
+            .transpose()?,
+        raised_session: raised.map(SessionId::from_uuid),
         challenge: challenge
             .map(|challenge| bytes_32(challenge, "challenge is not 32 bytes"))
             .transpose()?,
@@ -186,9 +194,10 @@ impl TransactionStore for PgTransactionStore {
             "INSERT INTO authentication.transaction
                  (tenant_id, id, flow_name, flow_version, current_step, identified, candidate_user_id,
                   identifier_key, satisfied_methods, rejections, status, started_at, expires_at,
-                  client_address, client_description, binding, version, challenge)
+                  client_address, client_description, binding, version, challenge, carried_methods,
+                  demanded_assurance, raised_session_id)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
-                     $18)",
+                     $18, $19, $20, $21)",
         )
         .bind(tenant.as_uuid())
         .bind(state.id.as_uuid())
@@ -208,6 +217,9 @@ impl TransactionStore for PgTransactionStore {
         .bind(state.binding.as_slice())
         .bind(stored(state.version)?)
         .bind(state.challenge.map(|challenge| challenge.to_vec()))
+        .bind(&state.carried_methods)
+        .bind(state.demanded.map(Assurance::as_str))
+        .bind(state.raised_session.map(|session| session.as_uuid()))
         .execute(connection(uow)?)
         .await
         .map_err(|e| database_error(&e))?;
@@ -223,7 +235,8 @@ impl TransactionStore for PgTransactionStore {
         let row: Option<PgRow> = sqlx::query(
             "SELECT id, flow_name, flow_version, current_step, identified, candidate_user_id,
                     identifier_key, satisfied_methods, challenge, rejections, status, started_at,
-                    expires_at, client_address, client_description, binding, version
+                    expires_at, client_address, client_description, binding, version,
+                    carried_methods, demanded_assurance, raised_session_id
              FROM authentication.transaction
              WHERE tenant_id = $1 AND id = $2",
         )

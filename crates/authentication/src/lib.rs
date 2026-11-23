@@ -22,7 +22,9 @@ pub mod api {
     pub use crate::application::factors::FactorService;
     pub use crate::application::guard::AttemptGuard;
     pub use crate::application::ports::{AttemptStore, TransactionStore, VerificationTokenStore};
-    pub use crate::application::service::{AuthenticationService, SignIn, StartedSignIn};
+    pub use crate::application::service::{
+        AuthenticationService, SignIn, StartedSignIn, StepUp, StepUpRequest,
+    };
     pub use crate::domain::attempt::{AttemptCounter, AttemptSubject, LockoutRules};
     pub use crate::domain::authenticator::{
         Authenticator, AuthenticatorTraits, ExternalInput, Factor, StepChallenge, StepInput,

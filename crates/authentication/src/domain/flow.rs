@@ -12,6 +12,10 @@ pub enum Condition {
     /// The methods satisfied so far are not yet multi-factor: a further
     /// factor adds nothing to a sign-in that already is.
     MultiFactorNotReached,
+    /// The methods satisfied so far are not yet multi-factor, or do not
+    /// reach the assurance the sign-in must reach: the condition of a step
+    /// that can make a sign-in phishing-resistant.
+    StrongerAssuranceNeeded,
 }
 
 /// How a step is required.

@@ -47,6 +47,12 @@ the tenant the unit of work is bound to.
   - `new(units_of_work, transactions, engine, flow, identity, sessions, tenants, digest, random, clock)`:
     wires the use cases; returns `Invalid` if `FlowEngine::validate` rejects
     the flow.
+  - `start_step_up(tenant, client, StepUpRequest { session_id, user_id, carried, demanded }) -> StepUp`
+    (`Started(StartedSignIn)`, `Unreachable`, `NotNeeded`): a step-up of a
+    session, counted against the person's primary identifier; completing it
+    raises the session through `SessionService::raise` instead of starting one
+    (`service.rs:start_step_up`, `complete`). `assurance_of(methods)` asks the
+    engine.
   - `start(tenant, client) -> StartedSignIn`: starts a sign-in and returns its
     identifier, the browser secret and the first step.
   - `describe(tenant, id, secret) -> SignIn`: says which step a sign-in is

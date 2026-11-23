@@ -6,13 +6,14 @@ use crate::domain::engine::{FlowEngine, Progress};
 use crate::domain::event::AuthenticationEvent;
 use crate::domain::flow::AuthFlow;
 use crate::domain::transaction::{AuthTransaction, TransactionId, TransactionState};
-use hodor_identity::api::IdentityService;
+use hodor_identity::api::{IdentifierKind, IdentityService};
 use hodor_kernel::{
     Caller, Clock, Digest, DomainError, ErrorKind, EventEnvelope, EventMetadata, RandomSource,
     Secret, TenantContext, UnitOfWork, UnitOfWorkFactory, UserId,
 };
 use hodor_session::api::{
-    Assurance, ClientInfo, Session, SessionService, SessionTimeouts, SessionToken, StartSession,
+    Assurance, ClientInfo, Session, SessionId, SessionService, SessionTimeouts, SessionToken,
+    StartSession,
 };
 use hodor_tenant::api::{SecondFactorPolicy, TenantService};
 use std::sync::Arc;
@@ -59,6 +60,33 @@ pub struct StartedSignIn {
     pub secret: Secret<String>,
     /// The key of the first step.
     pub step: String,
+}
+
+/// What a step-up is asked to do: raise this session of this person,
+/// carrying the methods that still count, to the assurance an application
+/// asked for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StepUpRequest {
+    /// The session to raise.
+    pub session_id: SessionId,
+    /// Whose session it is.
+    pub user_id: UserId,
+    /// The methods of the session that still count.
+    pub carried: Vec<String>,
+    /// The assurance the application asked for, if it asked for one.
+    pub demanded: Option<Assurance>,
+}
+
+/// What starting a step-up led to.
+#[derive(Debug)]
+pub enum StepUp {
+    /// The step-up waits for its first step.
+    Started(StartedSignIn),
+    /// The person cannot reach what the step-up must reach with the
+    /// factors they have; nothing was started.
+    Unreachable,
+    /// What is carried reaches it already; nothing was started.
+    NotNeeded,
 }
 
 /// The use cases of the authentication context.
@@ -153,6 +181,89 @@ impl AuthenticationService {
         })
     }
 
+    /// Starts a step-up of a session, as
+    /// `docs/architecture/contexts/authentication.md`, "Step-up", says.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage or an authenticator fails.
+    pub async fn start_step_up(
+        &self,
+        tenant: &TenantContext,
+        client: ClientInfo,
+        request: StepUpRequest,
+    ) -> Result<StepUp, DomainError> {
+        let user = match self.identity.get(tenant, request.user_id).await {
+            Ok(user) if user.may_sign_in() => user,
+            Ok(_) => return Ok(StepUp::Unreachable),
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(StepUp::Unreachable),
+            Err(error) => return Err(error),
+        };
+        // Counted as the identifier step counts what is typed, so that a
+        // step-up shares the counts of the person's own identifier.
+        let counted = user
+            .primary_identifier(IdentifierKind::Email)
+            .or_else(|| user.primary_identifier(IdentifierKind::Username))
+            .map_or_else(
+                || format!("user:{}", user.id()),
+                |identifier| {
+                    format!(
+                        "{}:{}",
+                        identifier.value.kind().as_str(),
+                        identifier.value.normalized()
+                    )
+                },
+            );
+        let mut bytes = [0_u8; 32];
+        self.random.fill(&mut bytes);
+        let secret: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+        let binding = self.digest.sha256(secret.as_bytes());
+        let satisfied = self.engine.satisfied_by(&self.flow, &request.carried);
+        let mut transaction = AuthTransaction::start_step_up(
+            &self.flow,
+            client,
+            binding,
+            self.clock.now(),
+            request.session_id,
+            request.user_id,
+            self.digest.sha256(counted.as_bytes()),
+            request.carried,
+            satisfied,
+            request.demanded,
+        );
+        let demanded = self.demanded(tenant, &transaction).await?;
+        let must_reach = self.flow.minimum_assurance.max(demanded);
+        if !self
+            .engine
+            .reachable(tenant, &self.flow, &transaction, must_reach)
+            .await?
+        {
+            return Ok(StepUp::Unreachable);
+        }
+        self.engine
+            .settle(tenant, &self.flow, &mut transaction, demanded)
+            .await?;
+        if transaction.all_steps_satisfied(&self.flow) {
+            return Ok(StepUp::NotNeeded);
+        }
+        let mut uow = self.units_of_work.begin(tenant).await?;
+        self.transactions.insert(uow.as_mut(), &transaction).await?;
+        uow.commit().await?;
+        Ok(StepUp::Started(StartedSignIn {
+            transaction_id: transaction.id(),
+            secret: Secret::from(secret),
+            step: self.pending_step(&transaction)?,
+        }))
+    }
+
+    /// The assurance a list of methods amounts to, or `None` when none of
+    /// them proves anything: the one table of methods and factors, for
+    /// the other contexts.
+    #[must_use]
+    pub fn assurance_of(&self, methods: &[String]) -> Option<Assurance> {
+        self.engine.assurance_of_methods(methods)
+    }
+
     /// Says which step a sign-in is waiting for, so that its page can be
     /// shown again.
     ///
@@ -218,7 +329,7 @@ impl AuthenticationService {
         let now = self.clock.now();
         let step = input.step_key().to_owned();
         let step = step.as_str();
-        let demanded = self.demanded(tenant).await?;
+        let demanded = self.demanded(tenant, &transaction).await?;
         let progress = self
             .engine
             .submit(tenant, &self.flow, &mut transaction, &input, demanded, now)
@@ -287,7 +398,7 @@ impl AuthenticationService {
         let must_reach = self
             .flow
             .minimum_assurance
-            .max(self.demanded(tenant).await?);
+            .max(self.demanded(tenant, &transaction).await?);
         let assurance = self
             .engine
             .assurance(&transaction)
@@ -309,9 +420,31 @@ impl AuthenticationService {
         self.store(tenant, &transaction, None).await?;
 
         let methods = transaction.snapshot().satisfied_methods.clone();
-        let (session, token) = self
-            .start_session(tenant, &transaction, user_id, assurance, methods.clone())
-            .await?;
+        let started = match transaction.snapshot().raised_session {
+            // A step-up raises its session, only while it is still active
+            // and still the person's.
+            Some(session_id) => match self
+                .sessions
+                .raise(
+                    tenant,
+                    user_id,
+                    session_id,
+                    &methods,
+                    assurance,
+                    Caller::system(),
+                )
+                .await
+            {
+                Ok(raised) => raised,
+                Err(error) if error.kind() == ErrorKind::NotFound => return Ok(SignIn::Failed),
+                Err(error) => return Err(error),
+            },
+            None => {
+                self.start_session(tenant, &transaction, user_id, assurance, methods.clone())
+                    .await?
+            }
+        };
+        let (session, token) = started;
 
         let mut uow = self.units_of_work.begin(tenant).await?;
         let event = AuthenticationEvent::Succeeded {
@@ -356,9 +489,14 @@ impl AuthenticationService {
         self.sessions.start(tenant, command, Caller::system()).await
     }
 
-    /// The assurance the tenant's policy demands of every sign-in, beyond
-    /// the flow's own minimum.
-    async fn demanded(&self, tenant: &TenantContext) -> Result<Assurance, DomainError> {
+    /// The assurance a sign-in must reach beyond the flow's own minimum:
+    /// the tenant's policy, raised by what an application asked of a
+    /// step-up.
+    async fn demanded(
+        &self,
+        tenant: &TenantContext,
+        transaction: &AuthTransaction,
+    ) -> Result<Assurance, DomainError> {
         let policy = self
             .tenants
             .get(tenant)
@@ -367,10 +505,14 @@ impl AuthenticationService {
             .settings
             .authentication
             .second_factor;
-        Ok(match policy {
+        let by_policy = match policy {
             SecondFactorPolicy::NotRequired => Assurance::SingleFactor,
             SecondFactorPolicy::Required => Assurance::MultiFactor,
-        })
+        };
+        Ok(transaction
+            .snapshot()
+            .demanded
+            .map_or(by_policy, |asked| asked.max(by_policy)))
     }
 
     async fn may_sign_in(

@@ -83,6 +83,8 @@ Every route of the [administration interface](admin-api.md#routes) exists here a
 | `POST /resource-servers` | `applications:write` |
 | `GET /resource-servers/{resource_server_id}` | `applications:read` |
 | `PATCH /resource-servers/{resource_server_id}` | `applications:write` |
+| `GET /assurance-levels` | `assurance-levels:read` |
+| `PUT /assurance-levels` | `assurance-levels:write` |
 
 The two interfaces are answered by the same handlers and the same table of permissions; a route added to one is added to the other. The OpenAPI document is not served here: this interface has one client, which ships with the server.
 

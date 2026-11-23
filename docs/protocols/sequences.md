@@ -97,7 +97,7 @@ Security properties enforced here: PKCE S256 only (`plain` rejected), exact redi
 
 ## 3. OpenID Provider
 
-Built by Issue-59, without `sid`, which comes with logout (Issue-60), and with `acr_values` kept but not yet enforced (Issue-69). [The OAuth context](../architecture/contexts/oauth.md#openid-provider) holds the details.
+Built by Issue-59, without `sid`, which comes with logout (Issue-60). `acr_values` and `max_age` are met by a step-up, built by Issue-69 and drawn below. [The OAuth context](../architecture/contexts/oauth.md#openid-provider) holds the details.
 
 ```mermaid
 sequenceDiagram
@@ -133,6 +133,39 @@ sequenceDiagram
     Server->>Server: revoke SsoSession, enqueue back-channel logout
     Server-->>Browser: 302 post_logout_redirect_uri?state
     Server->>RelyingParty: POST backchannel_logout_uri {logout_token} from the worker
+```
+
+### Step-up
+
+A person signed in with a password, and an application asking for a multi-factor level ([assurance and step-up](../architecture/contexts/oauth.md#assurance-and-step-up)):
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Browser as Browser
+    participant Server as hodor-server
+    participant OAuth as oauth
+    participant Authentication as authentication
+    participant Session as session
+
+    Browser->>Server: GET /t/acme/oauth2/authorize?acr_values=urn:hodor:acr:mfa (session cookie)
+    Server->>OAuth: check the request; the level asked for is multi_factor
+    Server->>Authentication: assurance of the session's methods: single factor
+    Server->>Authentication: start a step-up of the session, carrying password, demanding multi_factor
+    alt the person has no second factor
+        Authentication-->>Server: cannot be reached
+        Server-->>Browser: 302 redirect_uri?error=unmet_authentication_requirements
+    else
+        Authentication-->>Server: step-up waiting for the webauthn step
+        Server->>OAuth: keep the request pending
+        Server-->>Browser: 302 sign-in page, with the sign-in and authorization cookies
+        Browser->>Server: the security key's answer, through the interaction interface
+        Authentication->>Session: raise the session: webauthn added, multi_factor, new token
+        Server-->>Browser: completed, continue to /oauth2/authorize/resume
+        Browser->>Server: GET /oauth2/authorize/resume
+        Server->>OAuth: issue a code with acr urn:hodor:acr:mfa
+        Server-->>Browser: 302 redirect_uri?code&state&iss
+    end
 ```
 
 ## 4. Social login over OpenID Connect

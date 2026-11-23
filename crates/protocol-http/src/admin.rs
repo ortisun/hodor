@@ -42,6 +42,7 @@ use hodor_kernel::{
 use hodor_keys::api::{KeyAlgorithm, KeyService, KeyUse, KeyVersion, KeyVersionId, RotationPolicy};
 use hodor_oauth::api::ApplicationService;
 use hodor_session::api::{Session, SessionId, SessionService};
+use hodor_tenant::api::{AssuranceLevel, AssuranceLevels, AssuranceRequirement, TenantService};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -190,6 +191,8 @@ pub const ADMIN_OPERATIONS: &[(&str, &str, Permission)] = &[
         "/resource-servers/{resource_server_id}",
         Permission::ApplicationsWrite,
     ),
+    ("GET", "/assurance-levels", Permission::AssuranceLevelsRead),
+    ("PUT", "/assurance-levels", Permission::AssuranceLevelsWrite),
 ];
 
 /// What the administration handlers need.
@@ -215,6 +218,8 @@ pub struct AdminState {
     pub key_rotation: RotationPolicy,
     /// The applications, their clients and resource servers.
     pub applications: ApplicationService,
+    /// The tenant, for its assurance levels.
+    pub tenants: TenantService,
     /// The address people reach this installation at, without a path.
     pub public_url: String,
 }
@@ -304,7 +309,93 @@ fn shared_routes() -> Router<Shared> {
             "/keys/{key_set}/versions/{version}",
             axum::routing::post(key_version_action),
         )
+        .route(
+            "/assurance-levels",
+            get(read_assurance_levels).put(replace_assurance_levels),
+        )
         .merge(applications::routes())
+}
+
+/// One assurance level, as the interface writes it.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AssuranceLevelBody {
+    acr: String,
+    requirement: AssuranceRequirement,
+}
+
+/// The tenant's assurance levels, weakest first.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AssuranceLevelsBody {
+    levels: Vec<AssuranceLevelBody>,
+}
+
+impl From<&AssuranceLevels> for AssuranceLevelsBody {
+    fn from(levels: &AssuranceLevels) -> Self {
+        Self {
+            levels: levels
+                .levels()
+                .into_iter()
+                .map(|level| AssuranceLevelBody {
+                    acr: level.acr.clone(),
+                    requirement: level.requirement,
+                })
+                .collect(),
+        }
+    }
+}
+
+async fn read_assurance_levels(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+) -> Response {
+    respond(
+        async {
+            authorize(&state, &tenant, &headers, "GET", "/assurance-levels").await?;
+            let found = state.tenants.get(&tenant).await.map_err(failed)?;
+            let levels = &found.snapshot().settings.authentication.assurance_levels;
+            Ok(Json(AssuranceLevelsBody::from(levels)).into_response())
+        }
+        .await,
+    )
+}
+
+async fn replace_assurance_levels(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+    bytes: Bytes,
+) -> Response {
+    respond(
+        async {
+            let caller = authorize(&state, &tenant, &headers, "PUT", "/assurance-levels").await?;
+            let asked: AssuranceLevelsBody = body(&bytes)?;
+            let levels = AssuranceLevels::new(
+                asked
+                    .levels
+                    .into_iter()
+                    .map(|level| AssuranceLevel {
+                        acr: level.acr,
+                        requirement: level.requirement,
+                    })
+                    .collect(),
+            )
+            .map_err(failed)?;
+            let found = state.tenants.get(&tenant).await.map_err(failed)?;
+            let mut settings = found.snapshot().settings.clone();
+            settings.authentication.assurance_levels = levels;
+            let changed = state
+                .tenants
+                .change_settings(&tenant, settings, caller)
+                .await
+                .map_err(failed)?;
+            let levels = &changed.snapshot().settings.authentication.assurance_levels;
+            Ok(Json(AssuranceLevelsBody::from(levels)).into_response())
+        }
+        .await,
+    )
 }
 
 /// The routes of the administration interface, to be mounted under a

@@ -416,29 +416,128 @@ impl FlowEngine {
             Condition::MultiFactorNotReached => {
                 self.assurance(transaction) < Some(Assurance::MultiFactor)
             }
+            Condition::StrongerAssuranceNeeded => {
+                self.assurance(transaction) < Some(must_reach.max(Assurance::MultiFactor))
+            }
         }
     }
 
-    /// The assurance a transaction's satisfied methods amount to, or
-    /// `None` if nothing was proved.
+    /// The assurance a transaction amounts to, from the methods carried
+    /// from a session and those satisfied in it, or `None` if nothing was
+    /// proved.
     #[must_use]
     pub fn assurance(&self, transaction: &AuthTransaction) -> Option<Assurance> {
-        let factors: BTreeSet<Factor> = self
+        self.assurance_of_methods(&transaction.counted_methods())
+    }
+
+    /// The assurance a list of methods amounts to, or `None` if none of
+    /// them proves anything. The one table of methods and factors, which
+    /// other contexts ask through the service.
+    #[must_use]
+    pub fn assurance_of_methods(&self, methods: &[String]) -> Option<Assurance> {
+        let used: Vec<&Arc<dyn Authenticator>> = self
             .authenticators
             .values()
-            .map(|a| a.traits())
-            .filter(|t| {
-                t.method.is_some_and(|m| {
-                    transaction
-                        .snapshot()
-                        .satisfied_methods
-                        .iter()
-                        .any(|s| s == m)
-                })
+            .filter(|a| {
+                a.traits()
+                    .method
+                    .is_some_and(|m| methods.iter().any(|given| given == m))
             })
+            .collect();
+        let factors: BTreeSet<Factor> = used
+            .iter()
+            .map(|a| a.traits())
             .flat_map(|t| t.factor.into_iter().chain(t.second_factor))
             .collect();
-        assurance_of(&factors)
+        let resists = used.iter().any(|a| a.resists_phishing());
+        assurance_of(&factors).map(|reached| {
+            if reached == Assurance::MultiFactor && resists {
+                Assurance::PhishingResistant
+            } else {
+                reached
+            }
+        })
+    }
+
+    /// How many steps of `flow`, from the start, a step-up carrying
+    /// `carried` has satisfied already: the steps that only establish who
+    /// is signing in, and the required steps whose method is carried. When
+    /// a carried method is that of an alternative, every required step is
+    /// satisfied, as the alternative itself satisfied them.
+    #[must_use]
+    pub fn satisfied_by(&self, flow: &AuthFlow, carried: &[String]) -> usize {
+        let method_of = |step: &FlowStep| {
+            self.authenticators
+                .get(step.authenticator.as_str())
+                .and_then(|a| a.traits().method)
+        };
+        let through_alternative = flow.alternatives.iter().any(|alternative| {
+            method_of(alternative).is_some_and(|m| carried.iter().any(|given| given == m))
+        });
+        if through_alternative {
+            return flow.required_steps();
+        }
+        flow.steps
+            .iter()
+            .take(flow.required_steps())
+            .take_while(|step| {
+                let traits = self
+                    .authenticators
+                    .get(step.authenticator.as_str())
+                    .map(|a| a.traits());
+                match traits {
+                    Some(traits) if traits.factor.is_none() => true,
+                    Some(_) => {
+                        method_of(step).is_some_and(|m| carried.iter().any(|given| given == m))
+                    }
+                    None => false,
+                }
+            })
+            .count()
+    }
+
+    /// Whether a transaction can still reach `must_reach`: the methods it
+    /// counts, together with those of every remaining step the person has
+    /// the means for, amount to it.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever error an authenticator reports when asked whether
+    /// the person has the means for its step.
+    pub async fn reachable(
+        &self,
+        tenant: &TenantContext,
+        flow: &AuthFlow,
+        transaction: &AuthTransaction,
+        must_reach: Assurance,
+    ) -> Result<bool, DomainError> {
+        let mut methods = transaction.counted_methods();
+        for step in flow.steps.iter().skip(transaction.snapshot().current_step) {
+            let authenticator = self.authenticator(step)?;
+            let performed = step.requirement.is_required()
+                || authenticator.has_means(tenant, transaction).await?;
+            if performed && let Some(method) = authenticator.traits().method {
+                methods.push(method.to_owned());
+            }
+        }
+        Ok(self.assurance_of_methods(&methods) >= Some(must_reach))
+    }
+
+    /// Passes over the steps of a step-up that was just started that are
+    /// not to be performed, as when a step is satisfied.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever error an authenticator reports.
+    pub async fn settle(
+        &self,
+        tenant: &TenantContext,
+        flow: &AuthFlow,
+        transaction: &mut AuthTransaction,
+        demanded: Assurance,
+    ) -> Result<(), DomainError> {
+        let must_reach = flow.minimum_assurance.max(demanded);
+        self.pass_over(tenant, flow, transaction, must_reach).await
     }
 
     fn authenticator(&self, step: &FlowStep) -> Result<&Arc<dyn Authenticator>, DomainError> {

@@ -26,9 +26,9 @@ An **authenticator** performs one step. It receives what the person submitted an
 | `password` | Checks the password of the person named by the identifier step | One factor: something the person knows | Milestone 1 |
 | An external identity provider, a directory | Takes what came back from somewhere else that knows the person, checks it, and answers who the person is | Who is signing in and one factor, in a single step | Milestone 2, in the federation context |
 | `totp` | Checks a code of the candidate's [authenticator application](credential.md#authenticator-applications). The person has the means for it when they have an application in use | One factor: something the person has | Milestone 4 |
-| `webauthn` | Checks the answer of a security key or a platform authenticator to a challenge, with the [credential context](credential.md#checking-a-credential). The person has the means when they registered at least one credential | One factor: something the person has | Milestone 4 |
+| `webauthn` | Checks the answer of a security key or a platform authenticator to a challenge, with the [credential context](credential.md#checking-a-credential). The person has the means when they registered at least one credential | One factor: something the person has, and one that resists phishing | Milestone 4 |
 | `recovery_code` | Checks one of the candidate's [recovery codes](credential.md#recovery-codes). Used only as a [substitute](#substitutes) for a second factor | One factor: something the person has, written down | Milestone 4 |
-| `passkey` | Checks the answer of a [passkey](credential.md#passkeys) to a challenge that names no credential, and answers who the person is from the credential that answered. Used as an alternative | Who is signing in, and two factors in one step: something the person has, unlocked by something they know or are | Milestone 4 |
+| `passkey` | Checks the answer of a [passkey](credential.md#passkeys) to a challenge that names no credential, and answers who the person is from the credential that answered. Used as an alternative | Who is signing in, and two factors in one step: something the person has, unlocked by something they know or are. It resists phishing | Milestone 4 |
 | Others | — | — | Later issues |
 
 Each step has a requirement:
@@ -47,6 +47,7 @@ Conditions are a small closed set, not a language ([Decision 0013](../../decisio
 |---|---|
 | Assurance not reached | The methods satisfied so far do not reach the assurance the sign-in must reach (see [what a sign-in must reach](#what-a-sign-in-must-reach)) |
 | Multi-factor not reached | The methods satisfied so far are not yet multi-factor. A further factor adds nothing to a sign-in that already is |
+| Stronger assurance needed | The methods satisfied so far are not yet multi-factor, or do not reach the assurance the sign-in must reach. This is the condition of a step that can make a sign-in phishing-resistant: it is asked for whenever a second factor is, and also when an application asked for more than multi-factor |
 
 Rules for the steps that are not required:
 
@@ -57,18 +58,29 @@ Rules for the steps that are not required:
 | Every step that is not required comes after every required step | A step that may be passed over happens once the person is identified and has proved a first factor, so asking whether they have the means for it reveals nothing to someone who has not |
 | Whether the person has the means for a step is asked of the step's authenticator. An authenticator that has nothing to enroll, such as the password, always has the means | Only the authenticator knows what the person enrolled |
 
-Further conditions, such as the assurance an application asks for and risk signals, are added to the same set by later issues.
+Further conditions, such as risk signals, are added to the same set by later issues.
 
 ### What a sign-in must reach
 
-A sign-in must reach an **assurance**: single factor or multi-factor. Two factors of the same kind, such as two passwords, are still one. One step may prove two kinds at once: a passkey is something the person has, and the authenticator verified something they know or are before it answered. Hodor cannot tell a PIN from a fingerprint, and counts the verification as the second kind either way.
+A sign-in must reach an **assurance**. There are three, each stronger than the one before:
+
+| Assurance | Reached when the satisfied methods |
+|---|---|
+| Single factor | Prove one kind of factor |
+| Multi-factor | Prove two kinds of factor |
+| Phishing-resistant | Prove two kinds of factor, and one of the steps resists phishing: a key held by the person answered a challenge bound to this tenant's address. The `webauthn` step and the `passkey` alternative resist phishing; a password, a code of an application and a recovery code do not, since whoever tricked the person into typing them can type them too |
+
+Two factors of the same kind, such as two passwords, are still one. One step may prove two kinds at once: a passkey is something the person has, and the authenticator verified something they know or are before it answered. Hodor cannot tell a PIN from a fingerprint, and counts the verification as the second kind either way. A passkey alone is therefore phishing-resistant, and so are a password and a security key together.
 
 | Source | Assurance it requires |
 |---|---|
 | The flow's minimum assurance | Whatever the flow says; single factor for the built-in flow |
 | The tenant's [second factor policy](tenant.md#authentication-policy), when it requires a second factor | Multi-factor |
+| An application's request, for a [step-up](#step-up) | The requirement of the level it asked for |
 
 The highest of them is what the sign-in must reach. It is checked when the sign-in completes, whatever steps were performed or passed over: a sign-in whose satisfied methods do not reach it fails, and no session starts. With the policy on, no sign-in completes with one factor, including a sign-in through an alternative.
+
+Which assurance a list of methods amounts to is asked of this context by the others: the OAuth context names the `acr` of a token from it ([assurance levels](tenant.md#assurance-levels)), so there is one table of methods and factors, here.
 
 The tenant's policy is read again on every step and at completion, so a change to it applies to sign-ins already in progress.
 
@@ -121,7 +133,7 @@ What a person submits to such a step is a set of named values, like the input of
 |---|---|---|
 | 1 | `identifier` | Required |
 | 2 | `password` | Required |
-| 3 | `webauthn` | Conditional: multi-factor not reached, with the substitute `recovery_code` |
+| 3 | `webauthn` | Conditional: stronger assurance needed, with the substitute `recovery_code` |
 | 4 | `totp` | Conditional: multi-factor not reached, with the substitute `recovery_code` |
 
 | Alternative | Authenticator |
@@ -131,7 +143,7 @@ What a person submits to such a step is a set of named values, like the input of
 
 Minimum assurance: single factor.
 
-A person who registered a security key is always asked for it after the password, and a person who put an authenticator application in use for a code, whether or not the tenant requires a second factor: they chose a second factor, and a stolen password alone must not let anyone in. A person with both is asked for the first one only: once the key has answered, the sign-in is multi-factor, and the code would add nothing. A person without one signs in with the password, unless the tenant requires a second factor, in which case the sign-in fails at completion.
+A person who registered a security key is always asked for it after the password, and a person who put an authenticator application in use for a code, whether or not the tenant requires a second factor: they chose a second factor, and a stolen password alone must not let anyone in. A person with both is asked for the first one only: once the key has answered, the sign-in is multi-factor and phishing-resistant, and the code would add nothing. In a [step-up](#step-up) that asks for a phishing-resistant sign-in, a person who proved a code earlier is asked for their key, and never for the code again. A person without one signs in with the password, unless the tenant requires a second factor, in which case the sign-in fails at completion.
 
 A person who signs in with a passkey is asked for nothing more: the passkey alone is multi-factor, so the third and fourth steps are passed over, and it satisfies a tenant's policy that requires a second factor. A person who signs in through an identity provider has one factor, and is asked for their second factor after it.
 
@@ -188,7 +200,10 @@ Each execution of a flow is a **transaction**: the server-side record of how far
 | Current step | The next step to be satisfied. Steps passed over are behind it |
 | Candidate | Who is trying to sign in, once the identifier step has run. Empty when the identifier belongs to nobody, which the person signing in must not be able to tell |
 | Identifier key | A digest of the normalized identifier typed, used to count attempts. The identifier itself is not kept |
-| Satisfied methods | Which methods have been satisfied so far. They are passed on to the session, which is where the `amr` of a token will come from |
+| Satisfied methods | Which methods have been satisfied so far in this transaction. They are passed on to the session, which is where the `amr` of a token comes from |
+| Carried methods | For a [step-up](#step-up) only: the methods the session proved earlier that still count. Together with the satisfied methods they make the assurance of the sign-in |
+| Demanded assurance | For a step-up only: what the application asked for. Empty for every other sign-in |
+| Session raised | For a step-up only: the session the sign-in raises instead of starting one |
 | Challenge | The challenge the current step asked for, if it needs one. Empty again once the step is submitted |
 | Rejections | How many times a step was rejected in this transaction |
 | Expires at | Ten minutes after the start |
@@ -253,7 +268,7 @@ When the last step is satisfied:
 1. The candidate is loaded again and must be allowed to sign in. This is the last check, made at the moment of completion.
 2. The satisfied methods must reach [what the sign-in must reach](#what-a-sign-in-must-reach), with the tenant's policy as it is now. If they do not, the sign-in fails as in step 1: `authentication.failed` is recorded and no session starts.
 3. The transaction is marked completed. Only one request can do this.
-4. A session is started for the user, with the methods that were satisfied, the assurance they amount to, the tenant's session timeouts and the client details.
+4. A session is started for the user, with the methods that were satisfied, the assurance they amount to, the tenant's session timeouts and the client details. A [step-up](#step-up) raises its session instead.
 5. `authentication.succeeded` is recorded.
 
 The session token is returned to the caller, which hands it to the browser. Nothing else about the session leaves the server.
@@ -272,6 +287,33 @@ Marking the transaction completed and starting the session are two separate writ
 | `authentication.password_reset` | A person chose a new password with a recovery link; carries the user |
 
 No event carries an email address, a token or a link.
+
+## Step-up
+
+A person who is signed in can be asked to prove more without signing in again from the start: a **step-up**. An application asks for it with `acr_values` or `max_age` ([the OAuth context](oauth.md#assurance-and-step-up)); the step-up asks only for what the session lacks, and then **raises** the session: the same session, with the new methods, a stronger assurance and a new token.
+
+A step-up is a transaction like any other, through the same flow and the same engine, started in a state a sign-in could have reached by itself:
+
+| Part of the transaction | At the start of a step-up |
+|---|---|
+| Candidate | The person the session belongs to. Nobody else can be signed in by it |
+| Identifier key | The digest of the person's primary login identifier, made as the identifier step makes it, so that what they get wrong is counted together with what is typed for them |
+| Carried methods | The methods of the session that still count: all of them, or, when the request gave `max_age`, those proven within it |
+| Current step | The first required step whose method is not carried. The identifier step needs no method and is never asked again. When a carried method came from an alternative, such as an identity provider or a passkey, every required step is satisfied, as the alternative itself satisfied them |
+| Demanded assurance | The requirement of the level the application asked for, or nothing when it asked only for a fresh sign-in |
+| Session raised | The session |
+
+From there the steps that are not required are performed or passed over by their conditions as in any sign-in, with what the sign-in must reach raised to the demanded assurance. A person with a password session who is asked for a multi-factor sign-in is asked for their security key or their code, and nothing else; asked for a phishing-resistant one, for their security key.
+
+| Rule | Why |
+|---|---|
+| A step-up is started by the authorization endpoint, for the session the browser holds, never by the person | The browser cannot ask for a step-up of a session it does not hold, nor choose what is carried |
+| An alternative is never accepted in a step-up: it is accepted only while no step of the flow has been satisfied | The person is already identified. A person who wants to sign in as someone else signs in again (`prompt=login`) |
+| A step-up whose demanded assurance the person cannot reach is not started. It can be reached when the carried methods together with the methods of every remaining step the person has the means for amount to it | A person with no security key is not asked for a code that cannot help; the application is told at once (`unmet_authentication_requirements`) |
+| A step-up whose carried methods already reach what it must reach is not started either | There would be nothing to ask |
+| The completion of a step-up raises the session it was started for, only if that session is still active and still the person's | A session ended meanwhile is not brought back |
+| Raising gives the session a new token, as [the session context](session.md#lifecycle) does whenever what a session may do increases | A token captured before the step-up does not ride along |
+| `authentication.succeeded` is recorded for a step-up like for any sign-in, with the methods proven in it | The audit log shows each time the person proved something |
 
 ## Registration and password recovery
 
@@ -379,6 +421,8 @@ Finishing spans several contexts, each of which commits on its own. The order ab
 | Use case | What it does |
 |---|---|
 | Start sign-in | Creates a transaction for the tenant's flow and returns its identifier, its secret and the first step |
+| Start step-up | For a session and the assurance an application asked for: creates a [step-up](#step-up) transaction, or answers that the assurance cannot be reached, or that the session already reaches it |
+| Assurance of methods | Says which assurance a list of methods amounts to, for the OAuth context |
 | Submit step | Runs the current step's authenticator with what was submitted. Returns the next step, a rejection, or completion with a session token |
 | Describe sign-in | Returns the current step of a transaction, so that a page can be shown again after a reload |
 | Challenge for a step | Asks the current step's authenticator for a challenge, keeps it in the transaction and returns the options for the browser |
@@ -414,6 +458,9 @@ This context calls the `identity`, `credential`, `session`, `tenant` and `notifi
 | `candidate_user_id` | `uuid` | Null until the identifier step, and when the identifier belongs to nobody |
 | `identifier_key` | `bytea` | SHA-256 of the normalized identifier typed |
 | `satisfied_methods` | `text[]` | |
+| `carried_methods` | `text[]` | Empty unless the transaction is a step-up |
+| `demanded_assurance` | `text` | Null unless the transaction is a step-up that an application asked an assurance of |
+| `raised_session_id` | `uuid` | Null unless the transaction is a step-up. The session of the session context; not a database foreign key |
 | `challenge` | `bytea` | Null unless the current step asked for one |
 | `rejections` | `integer` | |
 | `status` | `text` | `in_progress`, `completed`, `failed`, `cancelled` |
@@ -461,7 +508,7 @@ All three are tenant tables under row-level security.
 | Registering a security key from the pages, and proving oneself again first. Today a key is registered through the interaction interface only, by a person already signed in | Issue-70 |
 | Enrolling a second factor during a sign-in, for a person whose tenant requires one and who has none. Today their sign-in fails at completion | Issue-70 |
 | Offering a choice between several second factors at one step. Today a person with both a security key and an authenticator application is asked for the key, which comes first, and cannot choose the code instead. A recovery code is a substitute, not a choice of factor | Issue-70 |
-| A reason in `authentication.failed` that tells a missing second factor from a rejected step | With the step-up of Issue-69 |
+| A reason in `authentication.failed` that tells a missing second factor, or a step-up that did not reach what was asked, from a rejected step | With the audit views of Phase 5 |
 | Further authenticators, risk signals, recognizing a user's own device | Phases 3 and 4 |
 | Making a user choose a new password when the current one is marked as temporary. The mark is stored and returned by the credential context, but sign-in does not act on it yet | With the administration interface, Issue-29, which is what sets the mark |
 | Signing the person in at the end of registration or recovery. Today the person signs in with the password just chosen | With the account console, Phase 2 |

@@ -141,7 +141,7 @@ pub struct AuthorizationRequest {
     pub login_hint: Option<String>,
     /// Kept for Issue-59.
     pub ui_locales: Option<String>,
-    /// Kept for Issue-69.
+    /// The levels asked for, separated by spaces, as given.
     pub acr_values: Option<String>,
 }
 
@@ -464,26 +464,43 @@ pub fn check_request(
     })
 }
 
-/// A person signed in to the tenant, as the session context says.
+/// A person signed in to the tenant, as the session context says, with
+/// what the code issued for them will carry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignedInPerson {
     /// Who.
     pub user_id: UserId,
     /// In which session.
     pub session_id: SessionId,
-    /// When they signed in.
+    /// When they last proved something that counts.
     pub signed_in_at: Timestamp,
-    /// The methods they signed in with, the future `amr`.
+    /// The methods that count, the `amr` of the tokens.
     pub methods: Vec<String>,
+    /// The tenant's level these methods reach, the `acr` of the tokens.
+    pub acr: Option<String>,
+}
+
+/// One method of a session, with when it was last proven.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Proof {
+    /// The method.
+    pub method: String,
+    /// When it was last proven.
+    pub proven_at: Timestamp,
 }
 
 /// What a request needs before a code can be issued.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionDecision {
     /// The session is enough: issue a code now.
     Issue,
     /// The person must sign in first.
     SignIn,
+    /// The session is not enough: step it up, carrying these methods.
+    StepUp {
+        /// The methods of the session that still count.
+        carried: Vec<String>,
+    },
     /// The client asked that nobody be asked anything, and the session is
     /// not enough: `login_required`.
     LoginRequired,
@@ -499,42 +516,58 @@ impl AuthorizationRequest {
         self.prompts("login") || self.prompts("select_account")
     }
 
-    fn young_enough(&self, person: &SignedInPerson, now: Timestamp) -> bool {
-        self.max_age.is_none_or(|seconds| {
-            now - person.signed_in_at <= Duration::seconds(i64::from(seconds))
-        })
+    /// The proofs of a session that count for this request: all of them,
+    /// or with `max_age` those proven within it. A proof made after
+    /// `received_at`, when the request was kept while the person signed in,
+    /// was made for this request and always counts.
+    #[must_use]
+    pub fn counting<'a>(
+        &self,
+        proofs: &'a [Proof],
+        now: Timestamp,
+        received_at: Option<Timestamp>,
+    ) -> Vec<&'a Proof> {
+        proofs
+            .iter()
+            .filter(|proof| {
+                received_at.is_some_and(|received| proof.proven_at >= received)
+                    || self.max_age.is_none_or(|seconds| {
+                        now - proof.proven_at <= Duration::seconds(i64::from(seconds))
+                    })
+            })
+            .collect()
     }
 
-    /// What the request needs, when it arrives, given the browser's
-    /// session.
+    /// What the request needs, given the browser's session. `counting`
+    /// are the methods of the session that count for the request, and
+    /// `enough` says whether they reach the level it asked for. See
+    /// `docs/architecture/contexts/oauth.md`, "Assurance and step-up".
     #[must_use]
-    pub fn decide(&self, person: Option<&SignedInPerson>, now: Timestamp) -> SessionDecision {
-        let enough = person
-            .is_some_and(|person| !self.asks_for_a_new_sign_in() && self.young_enough(person, now));
-        if enough {
+    pub fn decide(&self, signed_in: bool, counting: &[String], enough: bool) -> SessionDecision {
+        let none = self.prompts("none");
+        if !signed_in || self.asks_for_a_new_sign_in() {
+            if none {
+                SessionDecision::LoginRequired
+            } else {
+                SessionDecision::SignIn
+            }
+        } else if !counting.is_empty() && enough {
             SessionDecision::Issue
-        } else if self.prompts("none") {
+        } else if none {
             SessionDecision::LoginRequired
         } else {
-            SessionDecision::SignIn
+            SessionDecision::StepUp {
+                carried: counting.to_vec(),
+            }
         }
     }
 
-    /// Whether the session the person has after signing in is enough for
-    /// a request that arrived at `received_at`. A request that asked for a
-    /// new sign-in needs a session that signed in after it arrived.
+    /// Whether a person who comes back to a request that arrived at
+    /// `received_at` signed in as it asked: a request that asked for a new
+    /// sign-in needs a session that signed in after it arrived.
     #[must_use]
-    pub fn satisfied_after_sign_in(
-        &self,
-        person: Option<&SignedInPerson>,
-        received_at: Timestamp,
-        now: Timestamp,
-    ) -> bool {
-        person.is_some_and(|person| {
-            let fresh = person.signed_in_at >= received_at;
-            let needed_new = self.asks_for_a_new_sign_in() || self.max_age.is_some();
-            (fresh || !needed_new) && self.young_enough(person, now)
-        })
+    pub fn signed_in_as_asked(&self, signed_in_at: Timestamp, received_at: Timestamp) -> bool {
+        !self.asks_for_a_new_sign_in() || signed_in_at >= received_at
     }
 }
 
@@ -789,6 +822,9 @@ pub struct AuthorizationCode {
     pub signed_in_at: Timestamp,
     /// The methods they signed in with.
     pub methods: Vec<String>,
+    /// The tenant's level the methods reached, if any: the `acr` of its
+    /// tokens.
+    pub acr: Option<String>,
     /// When it was issued.
     pub issued_at: Timestamp,
     /// When it stops being redeemable.
@@ -879,6 +915,7 @@ impl AuthorizationCode {
             user_id: person.user_id,
             signed_in_at: person.signed_in_at,
             methods: person.methods.clone(),
+            acr: person.acr.clone(),
             issued_at: now,
             expires_at: now + CODE_LIFETIME,
             redeemed_at: None,

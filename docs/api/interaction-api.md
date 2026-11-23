@@ -200,6 +200,12 @@ Only then is the answer used: the person is signed in, or the reason it was refu
 | The provider cannot be reached or describes itself wrongly | `503` | `federation.provider_unavailable` |
 | The server has no keys to keep secrets with (`HODOR_SECRET_KEYS`) | No provider is offered, and each of these routes answers `404` with `federation.provider_not_found` | |
 
+### A step-up
+
+When an application asks for more than the session has, the [authorization endpoint](../architecture/contexts/oauth.md#assurance-and-step-up) starts a [step-up](../architecture/contexts/authentication.md#step-up) itself: it gives the browser the sign-in cookie of the step-up and sends it to the sign-in page. The page finds the step-up with `GET /interaction/sign-in`, as it finds any sign-in in progress, and shows the step it names: the WebAuthn step, the code of the application, or the password when only the identifier is still known. The steps are submitted to the same routes as any sign-in.
+
+Nothing starts a step-up through this interface: `POST /interaction/sign-in` always starts a new sign-in, from the first step, and replaces the cookie of a step-up in progress. When a step-up completes, the answer is the answer of a completed sign-in: the session cookie carries the session's new token, and `continue` names the authorization endpoint's resume address.
+
 ## How a sign-in is tied to one browser
 
 A sign-in belongs to the browser that started it. Nobody else can continue it, even knowing its identifier.
@@ -287,7 +293,7 @@ Answers who is signed in:
 }
 ```
 
-`expires_at` is the moment the session ends if it is not used again. `csrf_token` is the value to send back in the `X-CSRF-Token` header of the requests below that change something.
+`assurance` is `single_factor`, `multi_factor` or `phishing_resistant` ([what a sign-in must reach](../architecture/contexts/authentication.md#what-a-sign-in-must-reach)); after a [step-up](#a-step-up) it is what the raised session reached. `expires_at` is the moment the session ends if it is not used again. `csrf_token` is the value to send back in the `X-CSRF-Token` header of the requests below that change something.
 
 ### Signing out
 

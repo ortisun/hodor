@@ -2,7 +2,7 @@
 
 use crate::domain::flow::AuthFlow;
 use hodor_kernel::{DomainError, Timestamp, UserId};
-use hodor_session::api::ClientInfo;
+use hodor_session::api::{Assurance, ClientInfo, SessionId};
 use time::Duration;
 
 hodor_kernel::define_id!(
@@ -89,8 +89,15 @@ pub struct TransactionSnapshot {
     pub candidate: Option<UserId>,
     /// A digest of the normalized identifier typed.
     pub identifier_key: Option<[u8; 32]>,
-    /// The methods satisfied so far.
+    /// The methods satisfied so far in this transaction.
     pub satisfied_methods: Vec<String>,
+    /// For a step-up only: the methods the session proved earlier that
+    /// still count.
+    pub carried_methods: Vec<String>,
+    /// For a step-up only: the assurance the application asked for.
+    pub demanded: Option<Assurance>,
+    /// For a step-up only: the session it raises instead of starting one.
+    pub raised_session: Option<SessionId>,
     /// The challenge the current step asked for, if it needs one. Used
     /// once: submitting the step removes it.
     pub challenge: Option<[u8; 32]>,
@@ -145,6 +152,9 @@ impl AuthTransaction {
                 candidate: None,
                 identifier_key: None,
                 satisfied_methods: Vec::new(),
+                carried_methods: Vec::new(),
+                demanded: None,
+                raised_session: None,
                 challenge: None,
                 rejections: 0,
                 status: TransactionStatus::InProgress,
@@ -155,6 +165,49 @@ impl AuthTransaction {
                 version: 0,
             },
         }
+    }
+
+    /// Starts a step-up of `session`, for its user: the identifier is known
+    /// as `identifier_key`, the `carried` methods count already, and the
+    /// first `satisfied_steps` steps of the flow are satisfied. See
+    /// `docs/architecture/contexts/authentication.md`, "Step-up".
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_step_up(
+        flow: &AuthFlow,
+        client: ClientInfo,
+        binding: [u8; 32],
+        now: Timestamp,
+        session: SessionId,
+        user: UserId,
+        identifier_key: [u8; 32],
+        carried: Vec<String>,
+        satisfied_steps: usize,
+        demanded: Option<Assurance>,
+    ) -> Self {
+        let mut transaction = Self::start(flow, client, binding, now);
+        let state = &mut transaction.state;
+        state.current_step = satisfied_steps;
+        state.identified = true;
+        state.candidate = Some(user);
+        state.identifier_key = Some(identifier_key);
+        state.carried_methods = carried;
+        state.demanded = demanded;
+        state.raised_session = Some(session);
+        transaction
+    }
+
+    /// The methods that count for the assurance of the sign-in: those
+    /// carried from the session and those satisfied in this transaction.
+    #[must_use]
+    pub fn counted_methods(&self) -> Vec<String> {
+        let mut methods = self.state.carried_methods.clone();
+        for method in &self.state.satisfied_methods {
+            if !methods.contains(method) {
+                methods.push(method.clone());
+            }
+        }
+        methods
     }
 
     /// Rebuilds a transaction from stored state.

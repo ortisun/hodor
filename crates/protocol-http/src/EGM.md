@@ -27,11 +27,11 @@ the set of re-exports in `lib.rs`.
 | `Problem` | `problem.rs` | Error response body, `application/problem+json`. `Problem::new(status, code, detail)`, `status()`, `impl From<DomainError>`, `impl IntoResponse`. |
 | `ClientAddress(pub Option<IpAddr>)` | `request.rs` | The address of the connection, inserted as a request extension. |
 | `interaction_routes(state)`, `InteractionState` | `interaction.rs` | The interaction interface: browser sign-in, sessions, registration and password recovery. |
-| `authorization_routes(state)`, `AuthorizationState` | `authorize.rs` | The OAuth authorization endpoint: checks a request, issues a code to a signed-in browser or keeps the request while the person signs in, sending them to `/account/sign-in?continue=authorization` with the request's `login_hint` and `ui_locales`. `AuthorizationState { authorization: AuthorizationCodeService, sessions, public_url }`. |
+| `authorization_routes(state)`, `AuthorizationState` | `authorize.rs` | The OAuth authorization endpoint: checks a request, issues a code to a signed-in browser whose methods that count (`max_age`) reach the tenant level `acr_values` asks for, starts a step-up of the session when they do not (`AuthenticationService::start_step_up`, giving the browser the sign-in cookie; `unmet_authentication_requirements` when it cannot be reached), or keeps the request while the person signs in, sending them to `/account/sign-in?continue=authorization` with the request's `login_hint` and `ui_locales`. The code carries the `acr` of the tenant's levels the counted methods reach. `AuthorizationState { authorization: AuthorizationCodeService, sessions, authentication: AuthenticationService, tenants: TenantService, public_url }`. |
 | `token_routes(state)`, `TokenState` | `token.rs` | The OAuth token endpoint: reads the form and the `Basic` credentials, and answers what `TokenService` decides in the JSON of RFC 6749. `TokenState { tokens: TokenService, public_url }`. |
 | `userinfo_routes(state)`, `UserInfoState` | `openid.rs` | UserInfo at `GET` and `POST /oauth2/userinfo`, mounted under a tenant: reads `Authorization: Bearer` only and answers what `UserInfoService` decides, with `Cache-Control: no-store`; a refusal is `401` with `WWW-Authenticate: Bearer` (with `error="invalid_token"` when a token was sent) or `403` with `error="insufficient_scope"`. `UserInfoState { userinfo, public_url }`. |
 | `logout_routes(state)`, `LogoutState` | `logout.rs` | The end-session endpoint at `GET` and `POST /oauth2/logout` and `GET /oauth2/logout/finish`, mounted under a tenant. A refused request is the page of `error_page` (status `400`), never a redirect. A `GET` whose hint names the browser's session revokes it (`relying_party_logout`) and forgets the cookie; otherwise, and always for a form, the checked return address is kept in `__Secure-hodor_logout` (`SameSite=Strict`, 600 seconds) and the browser goes to `/account/sign-out`. The finish sends a browser still signed in to `/account`, else to the return address checked again (`LogoutService::still_returns`) with `state`, else to `/account/sign-in?notice=signed-out`. Every answer is `Cache-Control: no-store`. `LogoutState { logout, sessions, public_url }`. |
-| `discovery_routes(public_url)` | `openid.rs` | `GET /.well-known/openid-configuration` and `GET /.well-known/oauth-authorization-server`, mounted under a tenant: the same `discovery_document`, with `Cache-Control: public, max-age=300` and `Access-Control-Allow-Origin: *`. |
+| `discovery_routes(DiscoveryState { public_url, tenants })` | `openid.rs` | `GET /.well-known/openid-configuration` and `GET /.well-known/oauth-authorization-server`, mounted under a tenant: the same `discovery_document`, naming the tenant's assurance levels in `acr_values_supported`, with `Cache-Control: public, max-age=300` and `Access-Control-Allow-Origin: *`. |
 | `admin_routes(state)`, `AdminState` | `admin.rs` | The administration interface, authenticated by bearer access token. |
 | `console_routes(state)`, `ConsoleState` | `admin.rs` | The same handlers for the admin console, authenticated by session cookie, plus `/me`. |
 | `ADMIN_OPENAPI` | `admin.rs` | `include_str!("../openapi/admin-v1.json")`, served at `/openapi.json`. |
@@ -58,7 +58,9 @@ provider is offered), `digest: Arc<dyn Digest>` and `clock: Arc<dyn Clock>`
 keys to keep provider secrets with), `keys: Option<KeyService>`
 (`hodor_keys`; `None` makes the key routes answer `503`
 `keys.not_configured`), `key_rotation: RotationPolicy` (whose overlap a
-rotation by hand uses) and `public_url: String`.
+rotation by hand uses), `applications: ApplicationService`,
+`tenants: TenantService` (`hodor_tenant`, for the assurance levels) and
+`public_url: String`.
 `ConsoleState` holds an `AdminState` plus `digest` and `clock`.
 
 ### Routes
@@ -160,6 +162,7 @@ Administration and console handlers, shared by both routers
 | PUT | `/identity-providers/{provider}/client-secret` | `change_provider_secret` |
 | GET, POST | `/keys/{key_set}` | `list_key_versions`, `key_set_action` (`POST /keys/{key_set}:rotate` arrives here) |
 | POST | `/keys/{key_set}/versions/{version}` | `key_version_action` (`:revoke` arrives here) |
+| GET, PUT | `/assurance-levels` | `read_assurance_levels`, `replace_assurance_levels` (`{ "levels": [{ "acr", "requirement" }] }`, weakest first; `tenant.settings_invalid` for levels that break a rule) |
 | GET, POST | `/applications` | `applications::list_applications`, `create_application` |
 | GET, PATCH, POST | `/applications/{application}` | `get_application`, `change_application`, `application_action` (`:disable` and `:enable` arrive here) |
 | GET, POST | `/applications/{application}/clients` | `list_clients`, `create_client` |

@@ -305,6 +305,7 @@ fn person() -> SignedInPerson {
         session_id: SessionId::generate(),
         signed_in_at: moment(),
         methods: vec!["password".to_owned(), "otp".to_owned()],
+        acr: Some("urn:hodor:acr:mfa".to_owned()),
     }
 }
 

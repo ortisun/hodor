@@ -24,6 +24,7 @@ fn code(scopes: &[&str]) -> AuthorizationCode {
         user_id: UserId::generate(),
         signed_in_at: now() - Duration::minutes(2),
         methods: vec!["password".to_owned()],
+        acr: Some("urn:hodor:acr:mfa".to_owned()),
         issued_at: now(),
         expires_at: now() + Duration::seconds(60),
         redeemed_at: Some(now()),

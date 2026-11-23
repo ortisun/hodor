@@ -293,6 +293,7 @@ fn family_of(grant: &Grant, client: ClientId) -> (RefreshFamily, RefreshTokenHas
         user_id: grant.user_id,
         signed_in_at: moment() - Duration::minutes(3),
         methods: vec!["password".to_owned(), "totp".to_owned()],
+        acr: Some("urn:hodor:acr:mfa".to_owned()),
         issued_at: moment(),
         expires_at: moment() + Duration::seconds(60),
         redeemed_at: Some(moment()),

@@ -3,7 +3,7 @@
   "info": {
     "title": "Hodor administration interface",
     "version": "1.0.0",
-    "description": "Users, sessions, the audit log, the identity providers, the keys and the applications of a tenant, for the people who run it. Paths are relative to https://{host}/t/{slug}/api/v1/admin. Every operation needs an access token whose user holds a role with the permission named in `x-hodor-permission`."
+    "description": "Users, sessions, the audit log, the identity providers, the keys, the applications and the assurance levels of a tenant, for the people who run it. Paths are relative to https://{host}/t/{slug}/api/v1/admin. Every operation needs an access token whose user holds a role with the permission named in `x-hodor-permission`."
   },
   "servers": [
     {
@@ -3066,6 +3066,116 @@
           }
         }
       }
+    },
+    "/assurance-levels": {
+      "get": {
+        "operationId": "readAssuranceLevels",
+        "summary": "Read the tenant's assurance levels, weakest first",
+        "x-hodor-permission": "assurance-levels:read",
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The levels in force, weakest first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssuranceLevels"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "replaceAssuranceLevels",
+        "summary": "Replace the tenant's assurance levels",
+        "x-hodor-permission": "assurance-levels:write",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssuranceLevels"
+              }
+            }
+          }
+        },
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The levels now in force, weakest first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssuranceLevels"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A body that is not this document or names an unknown requirement (`request.body_invalid`), or levels that break a rule of the tenant context: none, more than three, a name that is empty, longer than 255 characters or holds a space or a character outside printable ASCII, two with the same name or the same requirement (`tenant.settings_invalid`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -4372,6 +4482,44 @@
             "maxItems": 100,
             "items": {
               "$ref": "#/components/schemas/Scope"
+            }
+          }
+        }
+      },
+      "AssuranceLevels": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "levels"
+        ],
+        "properties": {
+          "levels": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 3,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "acr",
+                "requirement"
+              ],
+              "properties": {
+                "acr": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 255,
+                  "description": "The name applications ask for in `acr_values` and tokens carry in `acr`."
+                },
+                "requirement": {
+                  "type": "string",
+                  "enum": [
+                    "single_factor",
+                    "multi_factor",
+                    "phishing_resistant"
+                  ]
+                }
+              }
             }
           }
         }

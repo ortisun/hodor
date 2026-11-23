@@ -51,6 +51,7 @@ fn family_from(row: &PgRow) -> Result<RefreshFamily, DomainError> {
         offline: row.try_get("offline").map_err(get)?,
         signed_in_at: row.try_get("signed_in_at").map_err(get)?,
         methods: row.try_get("methods").map_err(get)?,
+        acr: row.try_get("acr").map_err(get)?,
         sealed_secret: SealedSecret::from_stored(row.try_get("sealed_secret").map_err(get)?),
         generation: row.try_get("generation").map_err(get)?,
         current_hash: hash_of(row, "current_hash")?,
@@ -109,9 +110,9 @@ impl RefreshTokenStore for PgRefreshTokenStore {
                  (tenant_id, id, grant_id, client_id, user_id, session_id, scopes, audiences,
                   offline, signed_in_at, methods, sealed_secret, generation, current_hash,
                   moved_at, moved_scopes, moved_resource, status, created_at, expires_at,
-                  idle_seconds, last_used_at, revoked_at, revocation_reason)
+                  idle_seconds, last_used_at, revoked_at, revocation_reason, acr)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
-                     $18, $19, $20, $21, $22, $23, $24)",
+                     $18, $19, $20, $21, $22, $23, $24, $25)",
         )
         .bind(tenant.as_uuid())
         .bind(family.id.as_uuid())
@@ -137,6 +138,7 @@ impl RefreshTokenStore for PgRefreshTokenStore {
         .bind(family.last_used_at)
         .bind(family.revoked_at)
         .bind(family.revocation_reason.as_deref())
+        .bind(family.acr.as_deref())
         .execute(connection(uow)?)
         .await
         .map_err(|error| match &error {
@@ -166,7 +168,7 @@ impl RefreshTokenStore for PgRefreshTokenStore {
                     family.current_hash, family.moved_at, family.moved_scopes,
                     family.moved_resource, family.status, family.created_at, family.expires_at,
                     family.idle_seconds, family.last_used_at, family.revoked_at,
-                    family.revocation_reason,
+                    family.revocation_reason, family.acr,
                     token.generation AS token_generation, token.issued_at AS token_issued_at
              FROM oauth.refresh_token AS token
              JOIN oauth.refresh_token_family AS family

@@ -288,7 +288,7 @@ A client of another tenant is unknown here: the client is looked up only in the 
 
 **Only first-party applications until consent exists.** Consent is Issue-62. Until then, a person would be giving a third-party application access to their account without being asked, so the clients of an application that is not first party are refused with `access_denied`. The administrator of a tenant decides which applications are first party.
 
-Parameters this issue does not use are kept with the request for the issues that do: `nonce` (Issue-59), `acr_values` (Issue-69), `login_hint` and `ui_locales` (Issue-59). Parameters the endpoint does not know are ignored, as RFC 6749 requires.
+`nonce`, `login_hint` and `ui_locales` are kept with the request for the [ID token and the pages](#what-a-request-may-ask-of-the-sign-in); `acr_values` and `max_age` decide [the assurance and the step-up](#assurance-and-step-up). Parameters the endpoint does not know are ignored, as RFC 6749 requires; `claims` is one of them, so an `acr` asked for through it asks for nothing.
 
 ### Whether the person must sign in
 
@@ -296,12 +296,36 @@ A checked request needs a person signed in to the tenant. The session cookie of 
 
 | Situation | What happens |
 |---|---|
-| No valid session, and `prompt` holds `none` | Error `login_required` at the redirect address |
-| A valid session older than `max_age`, and `prompt` holds `none` | Error `login_required` |
-| A valid session, `prompt` neither `login` nor `select_account`, and not older than `max_age` when it is given | A code is issued at once |
-| No valid session; or `prompt` holds `login` or `select_account`; or the session is older than `max_age` | The person signs in, then the request goes on |
+| No valid session, or `prompt` holds `login` or `select_account` | The person signs in, then the request goes on. With `prompt=none`, error `login_required` instead |
+| A valid session that is [enough](#assurance-and-step-up) for the request | A code is issued at once |
+| A valid session that is not enough: too old for `max_age`, or below the level asked for | A [step-up](#assurance-and-step-up) asks the person for what the session lacks, then the request goes on. With `prompt=none`, error `login_required` instead |
+| A valid session that is not enough, and the person cannot reach the level asked for with the factors they have | Error `unmet_authentication_requirements` at the redirect address ([OpenID Connect Unmet Authentication Requirements](https://openid.net/specs/openid-connect-unmet-authentication-requirements-1_0.html)) |
 
 `select_account` is treated as `login`: a browser holds one session per tenant, so the only way to choose another account is to sign in as it. `consent` asks for nothing more until consent exists.
+
+### Assurance and step-up
+
+An application asks how strongly the person must have proved who they are with `acr_values`, a list of the [assurance levels](tenant.md#assurance-levels) of the tenant, separated by spaces, and how recently with `max_age`.
+
+**The level asked for.** The names of `acr_values` that are not levels of this tenant are ignored; a request that names none of its levels asks for no level. Of the levels it names, the weakest is what the request asks for: OpenID Connect lists the values the client accepts in order of preference, and any of them is acceptable, so the weakest is enough and a stronger one is more than enough. Hodor treats the request as one that must be met: a session below it is stepped up, and a person who cannot reach it gets `unmet_authentication_requirements` rather than a token with less.
+
+**The methods that count.** Without `max_age`, every method of the session counts. With it, only the methods proven within `max_age` seconds count ([the session context](session.md#the-facts-a-session-carries)): a method proven earlier is stale, as if it had not been proven. When the request was kept while the person signed in or stepped up, a method proven after the request arrived was proven for it and counts whatever `max_age` says, so that `max_age=0` is met by the sign-in it asks for.
+
+**When a session is enough.** It is enough when at least one of its methods counts, and the [assurance](authentication.md#what-a-sign-in-must-reach) that the methods that count amount to reaches the requirement of the level asked for, if any. The authentication context says what the methods amount to.
+
+**The step-up.** When the session is not enough, the authorization endpoint asks the authentication context to start a [step-up](authentication.md#step-up) of the session, carrying the methods that count and demanding the requirement of the level asked for. Only what is missing is asked:
+
+| Session | Request | The person is asked for |
+|---|---|---|
+| A password | `acr_values` of a multi-factor level | Their security key, or the code of their application |
+| A password and a code of the application | `acr_values` of a phishing-resistant level | Their security key, or a passkey through it |
+| A password and a code of the application | `acr_values` of a phishing-resistant level, and they have no security key | Nothing: `unmet_authentication_requirements` |
+| A password proven two hours ago and a security key a minute ago | `max_age=600` | Their password, since the key alone is one factor and the password is stale |
+| A password proven two hours ago | `max_age=600` | Their password. The identifier is not asked again: to sign in as someone else, the application sends `prompt=login` |
+
+The authorization endpoint starts the step-up itself, keeps the request pending as for a sign-in, gives the browser the sign-in cookie of the step-up, and sends it to the sign-in page, which shows the step the step-up waits for. When the step-up completes, the session is raised, with a new token, and the request goes on.
+
+**What the code says.** A code issued for a session carries only the methods that count, the time of the latest of them as when the person signed in, and the name of the strongest level of the tenant they reach, the `acr` of its tokens. A sign-in that reaches no level of the tenant has no `acr`. A token never names a level the methods it carries did not reach.
 
 ### Signing in and coming back
 
@@ -311,7 +335,7 @@ When the person must sign in, the request is kept and the browser is sent to the
 2. The browser is redirected to `/t/{slug}/account/sign-in?continue=authorization`. That address tells the sign-in page to start a sign-in even when the browser is signed in already, since the request asked for a new one.
 3. The person signs in with any way the tenant offers, an identity provider included. When the sign-in completes, the interaction interface sees the cookie and adds `"continue": "/t/{slug}/oauth2/authorize/resume"` to its answer ([the interaction interface](../../api/interaction-api.md#what-a-sign-in-response-looks-like)). The page goes there instead of to the account page.
 4. `GET /t/{slug}/oauth2/authorize/resume` reads the cookie, takes the pending request, which can therefore be resumed once, and removes the cookie. Without the cookie, with a wrong secret or after ten minutes, it answers with Hodor's own error page, `oauth.authorization_request_not_found`.
-5. The session is checked again against the request. A request that asked for a new sign-in (`prompt=login` or `select_account`, or `max_age` that the old session did not meet) needs a session that signed in after the request arrived. When the session is enough, a code is issued; when it is not, because the person did not sign in again, the answer is `access_denied` at the redirect address.
+5. The session is checked again against the request. A request that asked for a new sign-in (`prompt=login` or `select_account`) needs a session that signed in after the request arrived; otherwise the answer is `access_denied` at the redirect address, because the person did not sign in again. Then the session must be [enough](#assurance-and-step-up): when it is, a code is issued. When it is not, after a new sign-in that did not reach the level asked for, a step-up is started as when the request arrived, and the request is kept again; when the person cannot reach the level, the answer is `unmet_authentication_requirements`. A step-up demands the level, so its completion is always enough, and the request does not go round twice.
 
 The cookie:
 
@@ -331,7 +355,7 @@ A browser has one pending authorization request per tenant at a time: a new one 
 When the person is signed in and the session is enough, a **grant** and an **authorization code** are made.
 
 - **The grant** records that this person let this client act for them, with the scopes and audiences of the request and the session it was made in. It is what the refresh tokens of Issue-57 belong to, and it can be revoked; revoking it ends whatever was issued from it.
-- **The code** is 32 random bytes from the operating system, written as base64url without padding. Hodor keeps only its SHA-256 hash ([Decision 0004](../../decisions/0004-token-formats.md)), with the grant, the client, the redirect address, the code challenge, the scopes, the audiences, the `nonce`, the session, the user, when they signed in and with which methods. It lives **60 seconds**.
+- **The code** is 32 random bytes from the operating system, written as base64url without padding. Hodor keeps only its SHA-256 hash ([Decision 0004](../../decisions/0004-token-formats.md)), with the grant, the client, the redirect address, the code challenge, the scopes, the audiences, the `nonce`, the session, the user, when they signed in, with which methods and the `acr` they reached ([what the code says](#assurance-and-step-up)). It lives **60 seconds**.
 - The browser is redirected to the redirect address with `code`, `state` when the request had one, and `iss`. The redirect address keeps its own query, and the parameters are added after it.
 
 Every answer of the endpoint, a redirect included, carries `Cache-Control: no-store`, so that no code or error is kept by a cache.
@@ -368,7 +392,7 @@ A refusal of any kind is one answer to the client, `invalid_grant`; the reason i
 |---|---|
 | `oauth.authorization_request` | `tenant_id`, `id`, `secret_hash` (32 bytes), `client_id`, the checked request as `request` (`jsonb`), `received_at`, `expires_at` |
 | `oauth.authorization_grant` | `tenant_id`, `id`, `client_id`, `user_id`, `session_id`, `scopes`, `audiences`, `status` (`active` or `revoked`), `created_at`, `revoked_at`, `revocation_reason` |
-| `oauth.authorization_code` | `tenant_id`, `code_hash` (32 bytes, the key), `grant_id`, `client_id`, `redirect_uri`, `scopes`, `audiences`, `code_challenge`, `nonce`, `session_id`, `user_id`, `signed_in_at`, `methods`, `issued_at`, `expires_at`, `redeemed_at` |
+| `oauth.authorization_code` | `tenant_id`, `code_hash` (32 bytes, the key), `grant_id`, `client_id`, `redirect_uri`, `scopes`, `audiences`, `code_challenge`, `nonce`, `session_id`, `user_id`, `signed_in_at`, `methods`, `acr` (null when no level was reached), `issued_at`, `expires_at`, `redeemed_at` |
 
 All three are tenant tables under row-level security. The request and the code reference their client, and the code its grant, with the tenant in the reference. A pending request and a code hold the hash of a secret, never the secret.
 
@@ -452,8 +476,10 @@ The access token is a JSON Web Token per [RFC 9068](https://www.rfc-editor.org/r
 | `iat`, `exp` | When it was issued, and that plus the client's access token lifetime |
 | `jti` | 16 random bytes, base64url, unique to this token |
 | `auth_time` | When the person signed in; absent for client credentials, where nobody signed in |
+| `acr` | The level the sign-in reached, as the code says, and for a refreshed token as the code the refresh tokens came from says. Left out when it reached none, and for client credentials |
+| `amr` | The methods of the sign-in, named as [methods and assurance](#methods-and-assurance) says. Left out when none of them has a name in RFC 8176, and for client credentials |
 
-`acr`, `amr` and `sid` are in the [ID token](#the-id-token), not in the access token, which is for resource servers.
+`acr`, `amr` and `auth_time` are the authentication claims of [RFC 9068, section 2.2.1](https://www.rfc-editor.org/rfc/rfc9068#section-2.2.1): a resource server that guards an operation behind a strong sign-in reads them from the token. `sid` is in the [ID token](#the-id-token) only.
 
 **No signed token outlives the rotation overlap.** The keys context keeps a retiring key published for `RotationPolicy::LONGEST_SIGNED_LIFETIME`, one hour, after it stops signing. The token policy therefore refuses an access or ID token lifetime longer than that, and the token endpoint refuses to sign one: a token checked after its key left the key set would be refused by everyone.
 
@@ -596,7 +622,7 @@ When the scopes of a code hold `openid`, the token endpoint answers with an `id_
 | `iat`, `exp` | When it was issued, and that plus the client's ID token lifetime |
 | `auth_time` | When the person signed in |
 | `nonce` | The `nonce` of the authorization request, exactly as it was sent. Left out when the request had none |
-| `acr` | The assurance the sign-in reached, as the next section says |
+| `acr` | The level the sign-in reached, as the code says ([assurance and step-up](#assurance-and-step-up)). Left out when it reached no level of the tenant |
 | `amr` | The methods of the sign-in, as the next section says. Left out when none of them has a name in RFC 8176 |
 | `at_hash` | The base64url of the left half of the SHA-256 of the access token, so that the client can tell the two belong together |
 | `sid` | The identifier of the session the person signed in with: a UUID that names the session, never its token. [Logout](#logout-initiated-by-the-relying-party) uses it to know whether an ID token names the browser's current session |
@@ -620,14 +646,14 @@ A session records the methods of its sign-in by Hodor's own names, such as `pass
 
 `mfa` is added when the sign-in proved two kinds of factor: something known and something held, or a passkey. Each value appears once, in a fixed order.
 
-`acr` names the assurance reached. Until a tenant can define its own levels with step-up (Issue-69), every tenant has two:
+`acr` names the strongest [assurance level](tenant.md#assurance-levels) of the tenant that the sign-in reached. Every tenant starts with two:
 
-| `acr` | When |
+| `acr` | Requirement |
 |---|---|
-| `urn:hodor:acr:mfa` | The sign-in proved two kinds of factor, as for `mfa` |
-| `urn:hodor:acr:single-factor` | Any other sign-in |
+| `urn:hodor:acr:single-factor` | `single_factor` |
+| `urn:hodor:acr:mfa` | `multi_factor` |
 
-A request's `acr_values` is kept and not yet enforced (Issue-69); the ID token always says what was reached, never what was asked.
+A tenant may rename them, leave out the first, and add a level for `phishing_resistant`. The `acr` is chosen when the code is issued, from the methods it carries, and the ID token and the access token say the same. A request's `acr_values` decides what the person is asked for ([assurance and step-up](#assurance-and-step-up)); the token says what was reached, which is never less than what was asked.
 
 ### UserInfo
 
@@ -668,7 +694,8 @@ The authorization endpoint already checks and keeps these parameters ([checking 
 | `prompt=none` | No page is shown. Without a session that is enough, the answer is `login_required` at the redirect address |
 | `prompt=login`, `prompt=select_account` | The person signs in again, even with a session |
 | `prompt=consent` | Nothing more until consent exists (Issue-62); only clients of first-party applications are answered |
-| `max_age` | A session that signed in longer ago than this has the person sign in again, and `auth_time` in the ID token says when they did |
+| `max_age` | Only the methods proven within this many seconds count. A session with none, or whose recent methods are not enough, is [stepped up](#assurance-and-step-up), and `auth_time` in the tokens says when the person last proved something |
+| `acr_values` | The weakest of the tenant's levels named here is what the person must reach; the session is [stepped up](#assurance-and-step-up) to it, or the answer is `unmet_authentication_requirements` |
 | `login_hint` | The sign-in page starts with the identifier filled in. The person can change it; it is a hint, never a claim |
 | `ui_locales` | The pages use the first of these languages they have, before the browser's own |
 
@@ -697,7 +724,7 @@ It names only what is built:
 | `subject_types_supported` | `public` |
 | `scopes_supported` | `openid`, `profile`, `email`. A tenant's own scopes belong to its resource servers and are not listed |
 | `claims_supported` | The claims of the ID token and of UserInfo |
-| `acr_values_supported` | The two values of [methods and assurance](#methods-and-assurance) |
+| `acr_values_supported` | The names of the tenant's [assurance levels](tenant.md#assurance-levels), weakest first |
 | `prompt_values_supported` | `none`, `login`, `consent`, `select_account` |
 | `ui_locales_supported` | `en`, `pt-BR` |
 | `authorization_response_iss_parameter_supported` | `true` |
@@ -809,7 +836,7 @@ Issue-62.
 | Limits on requests to the token endpoint per address | With the other limits per address |
 | Removing remembered client assertions after they expire | A cleanup job, with the other expired rows |
 | Asking a person for consent; until then only clients of first-party applications are answered | Issue-62 |
-| Enforcing `acr_values` | Issue-69 |
+| Asking for an `acr` with the `claims` parameter. `acr_values` is the way to ask | Not planned for 0.2.0 |
 | Limits on requests to the authorization endpoint per address | With the other limits per address, before any deployment behind a load balancer |
 | Removing expired pending requests, codes and revoked grants | A cleanup job, with the other expired rows |
 | Request objects (`request`, `request_uri`) and pushed authorization requests | Phase 4, after 0.2.0 |

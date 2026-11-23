@@ -17,6 +17,7 @@ pub mod api {
     pub use crate::application::service::{CreateTenant, TenantService};
     pub use crate::domain::event::TenantEvent;
     pub use crate::domain::settings::{
+        ACR_MULTI_FACTOR, ACR_SINGLE_FACTOR, AssuranceLevel, AssuranceLevels, AssuranceRequirement,
         AuthenticationPolicy, LockoutPolicy, PasswordPolicy, RegistrationPolicy,
         SecondFactorPolicy, SessionPolicy, TenantSettings,
     };

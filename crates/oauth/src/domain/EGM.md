@@ -38,7 +38,10 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   order, answering `NotRedirectable(code)` until the client and its
   redirect address are trusted and `Redirect(AuthorizationError)` after;
   `AuthorizationRequest` (serializable, stored while the person signs in)
-  with `decide` and `satisfied_after_sign_in`; `PendingAuthorization`
+  with `counting(proofs, now, received_at)`, `decide(signed_in, counting, enough) -> SessionDecision`
+  (`Issue`, `SignIn`, `StepUp { carried }`, `LoginRequired`) and
+  `signed_in_as_asked`; `SignedInPerson` carries the `acr` the code and its
+  tokens name, and `Proof { method, proven_at }` a session's method; `PendingAuthorization`
   (`hold`, `belongs_to`, `is_live_at`); `Grant` (`make`, `revoke`);
   `AuthorizationCode` (`issue`, `check_redemption`); `CodeHash`
   (`of_presented` answers `None` for a value without the shape of a code);
@@ -63,12 +66,12 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   and `compact`. Its cases are in `token/tests.rs`.
 - `openid.rs`: the OpenID Provider. `authentication_methods` (Hodor's
   method names as RFC 8176 `amr`, each once, in a fixed order, with `mfa`),
-  `assurance` (`ACR_MULTI_FACTOR` or `ACR_SINGLE_FACTOR`),
+  the code's `acr` when it has one,
   `is_multi_factor`, `access_token_hash` (`at_hash`), `id_token_claims`,
   `check_access_token` (the checks of UserInfo, in order, against
   `PublishedKey`s; `BearerRefusal`, `CheckedAccessToken`), `PersonClaims`
   and `userinfo_claims` (the claims of `profile` and `email`), and
-  `discovery_document`. Its cases are in `openid/tests.rs`.
+  `discovery_document(issuer, acr_values)`. Its cases are in `openid/tests.rs`.
 - `refresh.rs`: refresh tokens. `RefreshFamily` (`start` from a redeemed
   code and the client's `TokenPolicy`, `decide`, `is_newest`, `revoke`,
   `started_event`, `first_record`), `RefreshFamilyId`, `RefreshTokenHash`

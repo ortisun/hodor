@@ -97,6 +97,8 @@ It needs `HODOR_DATABASE_URL`, like the tenant commands.
 | `POST /resource-servers` | `applications:write` | Register the resource server of an application |
 | `GET /resource-servers/{resource_server_id}` | `applications:read` | Read one resource server |
 | `PATCH /resource-servers/{resource_server_id}` | `applications:write` | Change its name or its scopes |
+| `GET /assurance-levels` | `assurance-levels:read` | Read the tenant's assurance levels |
+| `PUT /assurance-levels` | `assurance-levels:write` | Replace the tenant's assurance levels |
 
 ### A user
 
@@ -417,6 +419,27 @@ A resource server:
 | Someone else changed it at the same moment | `409` | `oauth.application_modified_concurrently`, `oauth.client_modified_concurrently`, `oauth.resource_server_modified_concurrently` |
 
 What an administrator does here is in the audit log, through [the events of the OAuth context](../architecture/contexts/oauth.md#events), which never carry a secret or its hash.
+
+### Assurance levels
+
+The levels an application names in `acr_values`, and which every token names in `acr` ([the tenant context](../architecture/contexts/tenant.md#assurance-levels)):
+
+```json
+{
+  "levels": [
+    { "acr": "urn:hodor:acr:single-factor", "requirement": "single_factor" },
+    { "acr": "urn:hodor:acr:mfa", "requirement": "multi_factor" },
+    { "acr": "urn:example:phishing-resistant", "requirement": "phishing_resistant" }
+  ]
+}
+```
+
+`GET /assurance-levels` answers the levels in force, weakest first. `PUT /assurance-levels` takes the same document and replaces them all; the answer is `200` with the levels as they are now, weakest first. A change applies to requests that arrive after it, and is recorded as `tenant.settings_changed`.
+
+| Situation | Status | Code |
+|---|---|---|
+| No level, more than three, a name that is empty, longer than 255 characters or holds a space or a character outside printable ASCII, or two levels with the same name or the same requirement | `422` | `tenant.settings_invalid` |
+| A requirement other than `single_factor`, `multi_factor` and `phishing_resistant`, or a body that is not that document | `422` | `request.body_invalid` |
 
 ## Not built yet
 

@@ -14,6 +14,7 @@ use axum::routing::get;
 use axum::{Extension, Json, Router};
 use hodor_kernel::TenantContext;
 use hodor_oauth::api::{BearerRefusal, UserInfoService, discovery_document};
+use hodor_tenant::api::TenantService;
 
 /// What UserInfo needs.
 #[derive(Clone)]
@@ -41,19 +42,53 @@ pub fn userinfo_routes(state: UserInfoState) -> Router {
         .with_state(state)
 }
 
+/// What the discovery document needs.
+#[derive(Clone)]
+pub struct DiscoveryState {
+    /// The address people reach this installation at, without a path.
+    pub public_url: String,
+    /// The tenant's assurance levels, which the document names.
+    pub tenants: TenantService,
+}
+
+impl std::fmt::Debug for DiscoveryState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DiscoveryState").finish_non_exhaustive()
+    }
+}
+
 /// The discovery document, to be mounted under a tenant.
-pub fn discovery_routes(public_url: String) -> Router {
+pub fn discovery_routes(state: DiscoveryState) -> Router {
     Router::new()
         .route("/.well-known/openid-configuration", get(discovery))
         .route("/.well-known/oauth-authorization-server", get(discovery))
-        .with_state(public_url)
+        .with_state(state)
 }
 
 async fn discovery(
-    State(public_url): State<String>,
+    State(state): State<DiscoveryState>,
+    Extension(tenant): Extension<TenantContext>,
     Extension(TenantSlug(slug)): Extension<TenantSlug>,
 ) -> Response {
-    let mut response = Json(discovery_document(&issuer(&public_url, &slug))).into_response();
+    let levels = match state.tenants.get(&tenant).await {
+        Ok(found) => found
+            .snapshot()
+            .settings
+            .authentication
+            .assurance_levels
+            .clone(),
+        Err(error) => return crate::problem::Problem::from(error).into_response(),
+    };
+    let names: Vec<&str> = levels
+        .levels()
+        .iter()
+        .map(|level| level.acr.as_str())
+        .collect();
+    let mut response = Json(discovery_document(
+        &issuer(&state.public_url, &slug),
+        &names,
+    ))
+    .into_response();
     let headers = response.headers_mut();
     headers.insert(
         header::CACHE_CONTROL,

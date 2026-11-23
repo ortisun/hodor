@@ -208,3 +208,67 @@ async fn an_operator_turns_the_second_factor_policy_on_and_off() {
     );
     assert_eq!(policy().await, "not_required");
 }
+
+#[tokio::test]
+async fn an_operator_reads_and_replaces_the_assurance_levels() {
+    let database = TestDatabase::start().await;
+    let tool = Tool {
+        database: &database,
+        keys: None,
+    };
+    assert!(
+        tool.run(&["tenant", "create", "--slug", "acme", "--name", "Acme"])
+            .status
+            .success()
+    );
+
+    let defaults = tool.run(&["tenant", "assurance-levels", "--slug", "acme"]);
+    assert_eq!(
+        text(&defaults.stdout),
+        "acme urn:hodor:acr:single-factor single_factor\nacme urn:hodor:acr:mfa multi_factor",
+        "{defaults:?}"
+    );
+
+    let replaced = tool.run(&[
+        "tenant",
+        "assurance-levels",
+        "--slug",
+        "acme",
+        "--level",
+        "urn:acme:strong=phishing_resistant",
+        "--level",
+        "urn:acme:mfa=multi_factor",
+    ]);
+    assert_eq!(
+        text(&replaced.stdout),
+        "acme urn:acme:mfa multi_factor\nacme urn:acme:strong phishing_resistant",
+        "{replaced:?}"
+    );
+    let stored: String = sqlx::query_scalar(
+        "SELECT settings #>> '{authentication,assurance_levels,1,acr}' FROM tenant.tenant",
+    )
+    .fetch_one(database.owner())
+    .await
+    .expect("settings");
+    assert_eq!(stored, "urn:acme:strong", "stored weakest first");
+
+    for wrong in ["no-requirement", "x=very_strong", "same=single_factor"] {
+        let mut arguments = vec![
+            "tenant",
+            "assurance-levels",
+            "--slug",
+            "acme",
+            "--level",
+            wrong,
+        ];
+        if wrong.starts_with("same") {
+            arguments.extend(["--level", "same=multi_factor"]);
+        }
+        let refused = tool.run(&arguments);
+        assert!(!refused.status.success(), "{wrong}: {refused:?}");
+        assert!(
+            text(&refused.stderr).contains("tenant.settings_invalid"),
+            "{wrong}: {refused:?}"
+        );
+    }
+}

@@ -496,7 +496,10 @@ async fn a_person_with_a_key_signs_in_with_the_password_and_the_key() {
     let done = browser.answer(&world, key.answer(public_key)).await;
     assert_eq!(done.body["status"], "completed", "{:?}", done.body);
     let session = browser.session(&world, "acme").await;
-    assert_eq!(session.body["assurance"], "multi_factor");
+    assert_eq!(
+        session.body["assurance"], "phishing_resistant",
+        "a password and a security key resist phishing"
+    );
     assert_eq!(
         session.body["methods"],
         serde_json::json!(["password", "webauthn"])
@@ -812,7 +815,7 @@ async fn a_person_signs_in_with_a_passkey_alone() {
         .await;
     assert_eq!(done.body["status"], "completed", "{:?}", done.body);
     let session = browser.session(&world, "acme").await;
-    assert_eq!(session.body["assurance"], "multi_factor");
+    assert_eq!(session.body["assurance"], "phishing_resistant");
     assert_eq!(session.body["methods"], serde_json::json!(["passkey"]));
 }
 
