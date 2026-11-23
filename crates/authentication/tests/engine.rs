@@ -28,6 +28,7 @@ impl Authenticator for Directory {
         AuthenticatorTraits {
             identifies: true,
             factor: None,
+            second_factor: None,
             method: None,
         }
     }
@@ -65,6 +66,7 @@ impl Authenticator for Secrets {
         AuthenticatorTraits {
             identifies: false,
             factor: Some(Factor::Knowledge),
+            second_factor: None,
             method: Some("password"),
         }
     }
@@ -136,6 +138,7 @@ fn world() -> World {
             traits: AuthenticatorTraits {
                 identifies: false,
                 factor: Some(factor),
+                second_factor: None,
                 method: Some(kind),
             },
         })
@@ -623,6 +626,7 @@ impl Authenticator for Outside {
         AuthenticatorTraits {
             identifies: true,
             factor: Some(Factor::Possession),
+            second_factor: None,
             method: Some("outside"),
         }
     }
@@ -911,6 +915,7 @@ impl Authenticator for Enrollable {
         AuthenticatorTraits {
             identifies: false,
             factor: Some(self.factor),
+            second_factor: None,
             method: Some(self.kind),
         }
     }
@@ -983,6 +988,7 @@ fn the_validity_rules_of_steps_that_are_not_required_are_enforced() {
         traits: AuthenticatorTraits {
             identifies: false,
             factor: None,
+            second_factor: None,
             method: None,
         },
     }));
@@ -1225,6 +1231,7 @@ async fn a_failure_to_learn_the_means_leaves_the_sign_in_unchanged() {
             AuthenticatorTraits {
                 identifies: false,
                 factor: Some(Factor::Possession),
+                second_factor: None,
                 method: Some("key"),
             }
         }
@@ -1286,6 +1293,7 @@ fn the_validity_rules_of_substitutes_are_enforced() {
         traits: AuthenticatorTraits {
             identifies: false,
             factor: None,
+            second_factor: None,
             method: None,
         },
     }));
@@ -1294,6 +1302,7 @@ fn the_validity_rules_of_substitutes_are_enforced() {
         traits: AuthenticatorTraits {
             identifies: true,
             factor: Some(Factor::Possession),
+            second_factor: None,
             method: Some("badge"),
         },
     }));

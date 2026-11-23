@@ -17,13 +17,29 @@ async function addVirtualKey(page: Page): Promise<void> {
   });
 }
 
+/** The authenticator built into a device, in Chromium: it keeps passkeys and verifies the person. */
+async function addVirtualPlatformAuthenticator(page: Page): Promise<void> {
+  const session = await page.context().newCDPSession(page);
+  await session.send("WebAuthn.enable");
+  await session.send("WebAuthn.addVirtualAuthenticator", {
+    options: {
+      protocol: "ctap2",
+      transport: "internal",
+      hasResidentKey: true,
+      hasUserVerification: true,
+      isUserVerified: true,
+      automaticPresenceSimulation: true,
+    },
+  });
+}
+
 /**
  * Registers the key through the interaction interface, from a page of
  * Hodor's origin, as the pages of Issue-70 will. Answers the status of the
  * request that finishes.
  */
-async function registerKey(page: Page): Promise<number> {
-  return page.evaluate(async (base) => {
+async function registerKey(page: Page, passkey = false): Promise<number> {
+  return page.evaluate(async ([base, passkey]) => {
     const encode = (bytes: ArrayBuffer) =>
       btoa(String.fromCharCode(...new Uint8Array(bytes)))
         .replace(/\+/g, "-")
@@ -35,7 +51,9 @@ async function registerKey(page: Page): Promise<number> {
       );
     const session = await (await fetch(`${base}/session`)).json();
     const headers = { "Content-Type": "application/json", "X-CSRF-Token": session.csrf_token };
-    const begun = await (await fetch(`${base}/webauthn/registrations`, { method: "POST", headers })).json();
+    const begun = await (
+      await fetch(`${base}/webauthn/registrations`, { method: "POST", headers, body: JSON.stringify({ passkey }) })
+    ).json();
     const options = begun.public_key;
     const credential = (await navigator.credentials.create({
       publicKey: {
@@ -61,7 +79,7 @@ async function registerKey(page: Page): Promise<number> {
       }),
     });
     return finished.status;
-  }, `/t/${TENANT}/interaction`);
+  }, [`/t/${TENANT}/interaction`, passkey] as const);
 }
 
 test("a person with a security key signs in with the password and the key", async ({ page }) => {
@@ -87,4 +105,60 @@ test("a person with a security key signs in with the password and the key", asyn
     `/t/${TENANT}/interaction`,
   );
   expect(methods).toEqual(["password", "webauthn"]);
+});
+
+/** Registers a person and a passkey, and signs them out. */
+async function registeredWithPasskey(page: Page): Promise<void> {
+  const address = newAddress();
+  await register(page, address);
+  await signIn(page, address, PASSWORD);
+  await expect(page.getByRole("heading", { name: en.accountTitle })).toBeVisible();
+  expect(await registerKey(page, true)).toBe(201);
+  await page.getByRole("button", { name: en.signOut }).click();
+}
+
+async function sessionOf(page: Page): Promise<{ methods: string[]; assurance: string }> {
+  return page.evaluate(
+    async (base) => (await (await fetch(`${base}/session`)).json()) as { methods: string[]; assurance: string },
+    `/t/${TENANT}/interaction`,
+  );
+}
+
+test("a person with a passkey signs in with it alone, from the button", async ({ page }) => {
+  // The virtual authenticator answers a passkey offered in the field at once, as if the person
+  // chose it; here the browser is made to offer none, so that the button is what is tried.
+  await page.addInitScript(() => {
+    Object.defineProperty(window.PublicKeyCredential, "isConditionalMediationAvailable", {
+      value: () => Promise.resolve(false),
+    });
+  });
+  await addVirtualPlatformAuthenticator(page);
+  await registeredWithPasskey(page);
+  await expect(page.getByText(en.noticeSignedOut)).toBeVisible();
+
+  // No identifier and no password: the passkey names the person and is enough.
+  await expectAccessible(page);
+  await page.getByRole("button", { name: en.signInWithPasskey }).click();
+  await expect(page.getByRole("heading", { name: en.accountTitle })).toBeVisible();
+  const session = await sessionOf(page);
+  expect(session.methods).toEqual(["passkey"]);
+  expect(session.assurance).toBe("multi_factor");
+});
+
+test("a person with a passkey signs in with the one the browser offers in the field", async ({ page }) => {
+  await addVirtualPlatformAuthenticator(page);
+  await registeredWithPasskey(page);
+  // The sign-in page offers the passkey in the identifier field, and the virtual authenticator
+  // takes the offer: the person is signed in again without typing anything. Until then the session
+  // is the one of the password, or none, and the page may still be moving.
+  await expect
+    .poll(async () => {
+      try {
+        return (await sessionOf(page)).methods ?? null;
+      } catch {
+        return null;
+      }
+    })
+    .toEqual(["passkey"]);
+  await expect(page.getByRole("heading", { name: en.accountTitle })).toBeVisible();
 });

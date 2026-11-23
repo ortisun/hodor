@@ -622,13 +622,14 @@ impl WebAuthnStore for PgWebAuthnStore {
         let state = registration.snapshot();
         sqlx::query(
             "INSERT INTO credential.webauthn_registration
-                 (tenant_id, id, user_id, challenge, created_at, expires_at)
-             VALUES ($1, $2, $3, $4, $5, $6)",
+                 (tenant_id, id, user_id, challenge, passkey, created_at, expires_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
         )
         .bind(tenant.as_uuid())
         .bind(state.id.as_uuid())
         .bind(state.user_id.as_uuid())
         .bind(state.challenge.0.as_slice())
+        .bind(state.passkey)
         .bind(state.created_at)
         .bind(state.expires_at)
         .execute(connection(uow)?)
@@ -645,17 +646,17 @@ impl WebAuthnStore for PgWebAuthnStore {
         let tenant = uow.tenant().tenant_id();
         // Deleting and returning in one statement: of any number of
         // requests at once, one gets the row.
-        let row: Option<(Uuid, Vec<u8>, Timestamp, Timestamp)> = sqlx::query_as(
+        let row: Option<(Uuid, Vec<u8>, bool, Timestamp, Timestamp)> = sqlx::query_as(
             "DELETE FROM credential.webauthn_registration
              WHERE tenant_id = $1 AND id = $2
-             RETURNING user_id, challenge, created_at, expires_at",
+             RETURNING user_id, challenge, passkey, created_at, expires_at",
         )
         .bind(tenant.as_uuid())
         .bind(id.as_uuid())
         .fetch_optional(connection(uow)?)
         .await
         .map_err(|e| database_error(&e))?;
-        row.map(|(user_id, challenge, created_at, expires_at)| {
+        row.map(|(user_id, challenge, passkey, created_at, expires_at)| {
             let challenge: [u8; 32] = challenge
                 .try_into()
                 .map_err(|_| out_of_range("challenge is not 32 bytes"))?;
@@ -664,6 +665,7 @@ impl WebAuthnStore for PgWebAuthnStore {
                     id,
                     user_id: UserId::from_uuid(user_id),
                     challenge: Challenge(challenge),
+                    passkey,
                     created_at,
                     expires_at,
                 },
@@ -733,6 +735,24 @@ impl WebAuthnStore for PgWebAuthnStore {
         .await
         .map_err(|e| database_error(&e))?;
         rows.into_iter().map(to_webauthn).collect()
+    }
+
+    async fn find_by_credential_id(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        credential_id: &[u8],
+    ) -> Result<Option<WebAuthnCredential>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let row: Option<WebAuthnRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT {WEBAUTHN_COLUMNS} FROM credential.webauthn_credential
+             WHERE tenant_id = $1 AND credential_id = $2"
+        )))
+        .bind(tenant.as_uuid())
+        .bind(credential_id)
+        .fetch_optional(connection(uow)?)
+        .await
+        .map_err(|e| database_error(&e))?;
+        row.map(to_webauthn).transpose()
     }
 
     async fn record_use(

@@ -54,6 +54,7 @@ bound to.
   - `take_registration(uow, id) -> Option<PendingRegistration>`: removes and returns it; of any number of callers at once, one gets it.
   - `insert(uow, credential)`: `Conflict` `credential.webauthn_credential_exists` when the tenant has the credential identifier.
   - `list_for_user(uow, user_id)`: oldest first.
+  - `find_by_credential_id(uow, credential_id)`: the tenant's credential with the identifier the authenticator made, whoever it belongs to.
   - `record_use(uow, credential, previous_count) -> bool`: stores the counter, backup state and last use only if the stored counter is still `previous_count`.
 
 ### Service entry points
@@ -84,10 +85,13 @@ bound to.
   - `revoke(tenant, id: AccessTokenId, caller)`.
 - `WebAuthnService::new(units_of_work, store: Arc<dyn WebAuthnStore>, relying_party: RelyingParty, digest, verifier: Arc<dyn SignatureVerifier>, random, clock)`.
   - `begin_registration(tenant, user_id, name, display_name) -> BegunRegistration { id, options }`: stores a pending registration of five minutes.
+  - `begin_passkey_registration(tenant, user_id, name, display_name)`: the same for a passkey: a discoverable credential and user verification required, both checked when it is finished.
   - `finish_registration(tenant, user_id, id, response, caller) -> WebAuthnCredential`: takes the pending registration first; `NotFound` `credential.webauthn_registration_not_found` if it is unknown, another user's, used or expired; `Invalid` `credential.webauthn_registration_refused` with the reason in the detail; records `credential.webauthn_registered`.
   - `list(tenant, user_id)`, `has_credentials(tenant, user_id) -> bool`.
   - `challenge(tenant, user_id) -> AssertionChallenge { challenge, options }`: stores nothing; the caller keeps the challenge.
   - `verify(tenant, user_id, challenge, response) -> bool`: `false` for any refused check; a counter that did not grow records `credential.webauthn_counter_not_increased`; `true` only when the use was stored over the counter that was read.
+  - `passkey_challenge() -> AssertionChallenge`: a challenge naming no credential, with user verification required; reads nothing.
+  - `verify_passkey(tenant, challenge, response) -> Option<UserId>`: finds the credential in the tenant by the identifier the answer names, needs the user handle and user verification, and answers the user it belongs to under the same rules as `verify`.
 - The services are `Clone`. `CredentialService`, `AccessTokenService` and `TotpService` show no fields in `Debug`; `WebAuthnService` shows its relying party.
 
 ## Invariants

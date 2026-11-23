@@ -99,7 +99,13 @@ watched page and the steps a person repeats.
     the DevTools protocol) - a person registers, signs in with a password,
     registers a key through the interaction interface from a page of
     Hodor's origin, signs out, and signs in again with the password and the
-    key; the session's methods are `password` and `webauthn`.
+    key; the session's methods are `password` and `webauthn`. With a
+    virtual platform authenticator that verifies the person, a person
+    registers a passkey, signs out and signs in with it alone: once with
+    "sign in with a passkey", with the browser made to offer no passkey in
+    the field (the virtual authenticator takes such an offer at once), and
+    once through the offer in the identifier field; the session's methods
+    are `passkey`, multi-factor.
 
 ## Invariants
 

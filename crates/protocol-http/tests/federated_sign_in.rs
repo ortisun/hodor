@@ -338,6 +338,7 @@ async fn world_with(directory: Option<(String, Arc<dyn DirectoryClient>)>) -> Wo
         sessions,
         factors: hodor_authentication::api::FactorService::new(
             identity.clone(),
+            tenants.clone(),
             webauthn_service(units_of_work.clone(), clock.clone()),
         ),
         external: Some(external),

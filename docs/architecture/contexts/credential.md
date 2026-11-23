@@ -4,7 +4,7 @@ The `credential` context owns what a user proves their identity with. It stores 
 
 It does not decide whether a sign-in succeeds. That belongs to the `authentication` context, which also counts failed attempts and locks accounts. The credential context only says whether a secret is right.
 
-This page specifies passwords (Milestone 1), access tokens, and authenticator applications, security keys and recovery codes (Milestone 4). Passkeys and keys for programs are credentials too and are specified here when their turn comes.
+This page specifies passwords (Milestone 1), access tokens, and authenticator applications, security keys, passkeys and recovery codes (Milestone 4). Keys for programs are credentials too and are specified here when their turn comes.
 
 ## Passwords
 
@@ -190,6 +190,46 @@ A counter that does not grow means two authenticators answer for one credential:
 
 When every check passes, the counter, whether the credential is backed up and when it was last used are stored.
 
+### Passkeys
+
+A **passkey** is a WebAuthn credential that signs a person in on its own: it is discoverable, so the authenticator keeps it and offers it without being told which credential to use, and the authenticator verifies the person, with a PIN, a fingerprint or a face, before it answers. The person holds the key and unlocked it; that is two factors in one gesture.
+
+**Registering a passkey** is a registration as above, asked for as a passkey. What changes:
+
+| Part | For a passkey |
+|---|---|
+| What is asked of the authenticator | A discoverable credential **required**, and user verification **required** |
+| The user, as the authenticator is told | The display name is followed by the tenant's name in brackets, `Ana Lima (Acme)`, so that a person with accounts in several tenants of one installation can tell their passkeys apart: every tenant shares one relying party |
+| The checks of the answer | Every check above, and: the authenticator data must say the user was verified; the browser must not say the credential is not discoverable |
+| What is stored | The credential, marked discoverable |
+
+Whether a registration is for a passkey is kept with the pending registration, so the person cannot ask for one kind and finish as the other.
+
+**Checking a passkey's answer** comes before anyone is identified, so the challenge names no credentials:
+
+1. **The challenge.** 32 random bytes, and the options for the browser: the challenge, the relying party identifier, **no** list of credentials, and user verification required. Making it reads nothing from storage.
+2. **The answer.** The credential is found by the identifier the answer names, **within the tenant** only. Then, in order, anything that fails is a rejection, and the rejections are not told apart:
+
+| Check | Rejected when |
+|---|---|
+| The credential | The tenant has no credential with this identifier |
+| The user handle | It is missing, or it is not the handle of the user the credential belongs to |
+| Everything of [checking a credential](#checking-a-credential) | As there: the client data, the authenticator data, the signature and the counter |
+| User verification | The authenticator data does not say the user was verified |
+
+When every check passes, the counter is stored as for any answer, and the answer is the user the credential belongs to.
+
+Any discoverable credential can answer this challenge, including a security key registered as a second factor that happened to be made discoverable, as long as its authenticator verifies the person. The user handle is the user's identifier, so the answer names who is signing in without anyone typing anything.
+
+### What keeps tenants apart
+
+Every tenant of an installation is served under one public address, so every tenant has the same relying party, and a browser may offer a person every passkey it holds for that relying party, whichever tenant it was registered in. Hodor cannot hide those: it gives the browser no list to choose from. What it guarantees is the other half:
+
+- a credential is looked up only in the tenant of the sign-in, under row-level security, so a passkey of another tenant is unknown there, and its answer is a rejection like any other;
+- a challenge belongs to one sign-in of one tenant.
+
+The tenant's name in the display name is what lets the person pick the right one.
+
 ## Recovery codes
 
 Recovery codes let a person in who has lost their second factor: the phone with the authenticator application, or the security key. They are written down or printed when the person enrolls, and each is used in place of the second factor once.
@@ -248,6 +288,9 @@ Removing takes away the user's set. Removing the last second factor does not rem
 | WebAuthn challenge | Makes a challenge for a user's credentials and returns it with the options for the browser |
 | Verify WebAuthn assertion | Answers "verified" or "rejected" for an answer to a challenge, and stores the new counter |
 | Has WebAuthn credentials | Says whether a user has at least one credential, for the authentication context to know whether a step can be performed |
+| Begin passkey registration | Makes a pending registration for a passkey and returns the options for the browser |
+| Passkey challenge | Makes a challenge that any discoverable credential may answer, with the options for the browser |
+| Verify passkey assertion | Answers which user signed in, or nothing, for an answer to a passkey challenge, and stores the new counter |
 | Generate recovery codes | Makes a set of ten codes in place of the user's set, if any, and returns it once |
 | Generate recovery codes if none | The same, only when the user has no set with an unused code; answers nothing otherwise. Asked when a first second factor is enrolled |
 | Verify recovery code | Answers "verified", with the number of unused codes left, or "rejected", and marks an accepted code as used |
@@ -286,7 +329,7 @@ Events carry the user's identifier and nothing derived from the password, from a
 | `TotpStore` | Store a user's authenticator application and the enrollment waiting to be confirmed; put one in use; mark a step used only if it is later than the last one, in one statement |
 | `HmacSha1` | Compute HMAC-SHA-1, from which the codes are made |
 | `SecretBox` | The kernel's port that seals and opens the secret of an authenticator application |
-| `WebAuthnStore` | Keep pending registrations and use one up exactly once; store credentials, list a user's, find one by its identifier, store a new counter only over the one that was read |
+| `WebAuthnStore` | Keep pending registrations and use one up exactly once; store credentials, list a user's, find one in the tenant by the identifier the authenticator made, store a new counter only over the one that was read |
 | `SignatureVerifier` (kernel) | Check a signature made with a WebAuthn credential's key |
 | `RecoveryCodeStore` | Store a user's set of recovery codes in place of the earlier one; mark a code used only if it is unused, in one statement; count the unused codes; remove the set |
 | `Digest` | The kernel's port that computes the SHA-256 of a recovery code |
@@ -362,6 +405,7 @@ The hasher is a port because the choice of library is an infrastructure decision
 | `tenant_id`, `id` | `uuid` | Primary key |
 | `user_id` | `uuid` | Who asked |
 | `challenge` | `bytea` | 32 bytes |
+| `passkey` | `boolean` | Whether a passkey was asked for |
 | `created_at`, `expires_at` | `timestamptz` | Five minutes apart |
 
 A pending registration is deleted when it is used.
@@ -395,7 +439,7 @@ The design's data model has a general `credential` table with one row per creden
 | A secret key mixed into every hash, kept outside the database | With the keys context, Phase 2 |
 | Enrolling and removing an authenticator application, and seeing and generating recovery codes, from the account pages, after proving oneself again | Issue-70 |
 | HOTP, the counter-based codes of RFC 4226, and codes sent by email or text message | Phase 4, outside the plan of 0.2.0 |
-| Signing in with a WebAuthn credential alone, without an identifier first: passkeys | Issue-68 |
+| A relying party of each tenant's own, so that a browser offers only that tenant's passkeys | With custom domains for tenants, Phase 3 |
 | Listing, renaming and removing WebAuthn credentials, and proving oneself again before registering one | Issue-70 |
 | Removing pending WebAuthn registrations that were never finished | With the other cleanup jobs |
 | Checking attestation, EdDSA keys | When someone needs them ([Decision 0024](../../decisions/0024-webauthn-checks.md)) |

@@ -27,6 +27,7 @@ impl Authenticator for Anyone {
         AuthenticatorTraits {
             identifies: true,
             factor: None,
+            second_factor: None,
             method: None,
         }
     }
@@ -61,6 +62,7 @@ impl Authenticator for Signer {
         AuthenticatorTraits {
             identifies: false,
             factor: Some(Factor::Possession),
+            second_factor: None,
             method: Some("signer"),
         }
     }

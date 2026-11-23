@@ -8,7 +8,7 @@ import { Frame } from "../parts/Frame";
 import { Notice } from "../parts/Notice";
 import { Action, Submit } from "../parts/Submit";
 import { PageLink, Ways, Words } from "../parts/Words";
-import { askAuthenticator, webAuthnAvailable } from "../webauthn";
+import { askAuthenticator, conditionalMediationAvailable, webAuthnAvailable } from "../webauthn";
 import { asFailure, type PageProps } from "./shared";
 
 type View =
@@ -122,6 +122,10 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice, sign
   const [directory, setDirectory] = useState<OfferedProvider | null>(null);
   /** The security key gave no answer the last time it was asked. */
   const [noAnswer, setNoAnswer] = useState(false);
+  /** The passkey gave no answer the last time the person asked for it. */
+  const [passkeyNoAnswer, setPasskeyNoAnswer] = useState(false);
+  /** The conditional request that offers passkeys in the identifier field, while it waits. */
+  const offering = useRef<AbortController | null>(null);
 
   const show = useCallback(
     (answer: SignInAnswer) => {
@@ -289,6 +293,67 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice, sign
     });
   }
 
+  /** Stops offering passkeys in the identifier field. */
+  function stopOffering() {
+    offering.current?.abort();
+    offering.current = null;
+  }
+
+  /**
+   * Signs in with a passkey: asks for the challenge, then the authenticator.
+   * When it gives no answer, nothing is submitted and the identifier is
+   * still asked for.
+   */
+  async function askPasskey() {
+    stopOffering();
+    setPasskeyNoAnswer(false);
+    await send(async () => {
+      const answer = await askAuthenticator(await client.passkeyOptions());
+      if (answer === null) {
+        setPasskeyNoAnswer(true);
+        return { status: "pending", step: "identifier", attemptsLeft: null };
+      }
+      return client.submitPasskey(answer);
+    });
+  }
+
+  const asksIdentifier = view.kind === "step" && view.step === "identifier" && directory === null;
+  const shownAt = view.kind === "step" ? view.shown : -1;
+
+  // Where the browser can, the passkeys it holds are offered in the
+  // identifier field. The request is abandoned when the step is left.
+  useEffect(() => {
+    if (!asksIdentifier) {
+      return undefined;
+    }
+    const controller = new AbortController();
+    offering.current = controller;
+    void (async () => {
+      if (!(await conditionalMediationAvailable()) || controller.signal.aborted) {
+        return;
+      }
+      try {
+        const options = await client.passkeyOptions();
+        if (controller.signal.aborted) {
+          return;
+        }
+        const answer = await askAuthenticator(options, navigator.credentials, {
+          mediation: "conditional",
+          signal: controller.signal,
+        });
+        if (answer !== null && !controller.signal.aborted) {
+          offering.current = null;
+          await send(() => client.submitPasskey(answer));
+        }
+      } catch {
+        // Offering passkeys is a convenience: the identifier is still asked for.
+      }
+    })();
+    return () => controller.abort();
+    // `send` is the same procedure on every render; the request starts once per step shown.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [asksIdentifier, shownAt, client]);
+
   function submit(event: FormEvent, request: () => Promise<SignInAnswer>) {
     event.preventDefault();
     void send(request);
@@ -369,18 +434,25 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice, sign
       {view.kind === "step" && view.step === "identifier" && directory === null ? (
         <Form
           key={view.shown}
-          onSubmit={(event) => submit(event, () => client.submitIdentifier(identifier))}
+          onSubmit={(event) => {
+            stopOffering();
+            submit(event, () => client.submitIdentifier(identifier));
+          }}
         >
+          {passkeyNoAnswer ? <Notice kind="danger">{text.passkeyNoAnswer}</Notice> : null}
           <Field
             label={text.identifierLabel}
             name="identifier"
-            autoComplete="username"
+            autoComplete="username webauthn"
             verbatim
             autoFocus
             value={identifier}
             onChange={setIdentifier}
           />
           <Submit label={text.continue} busy={busy} text={text} />
+          {webAuthnAvailable() ? (
+            <Action label={text.signInWithPasskey} busy={busy} onClick={() => void askPasskey()} />
+          ) : null}
         </Form>
       ) : null}
 

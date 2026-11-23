@@ -51,6 +51,7 @@ Tables created, by file:
 | `0032_keys_sealing_state.sql` | `keys.sealing_state`: whether a tenant refuses secrets of the first format; `hodor_app` may insert and read, never update or delete |
 | `0033_authorization_native_roles.sql` | `"authorization".permission`, `role`, `role_permission`, `role_inclusion`, `role_revision`; changes `"authorization".role_assignment` to hold users and clients, roles of any namespace, a scope and a start and end, with the earlier rows as built-in assignments of `hodor:admin` |
 | `0035_oauth_client_assertion.sql` | `oauth.client_assertion`: the `jti` of every client assertion until it expires, once per client (`client_assertion_jti_shape`) |
+| `0036_credential_passkey_registration.sql` | adds the column `passkey` to `credential.webauthn_registration` |
 
 No migration creates a type, an extension or seed rows; enumerations are text
 columns with `CHECK ... IN (...)` constraints.

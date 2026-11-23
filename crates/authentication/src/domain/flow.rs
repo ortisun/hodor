@@ -9,6 +9,9 @@ pub enum Condition {
     /// The methods satisfied so far do not reach the assurance the sign-in
     /// must reach: the flow's minimum, raised by the tenant's policy.
     AssuranceNotReached,
+    /// The methods satisfied so far are not yet multi-factor: a further
+    /// factor adds nothing to a sign-in that already is.
+    MultiFactorNotReached,
 }
 
 /// How a step is required.

@@ -300,6 +300,107 @@ describe("the sign-in page", () => {
     vi.unstubAllGlobals();
   });
 
+  it("offers a passkey on the identifier step and signs in with it alone", async () => {
+    const bytes = (...values: number[]) => new Uint8Array(values).buffer;
+    const get = vi.fn().mockResolvedValue({
+      rawId: bytes(1, 2),
+      response: { clientDataJSON: bytes(3), authenticatorData: bytes(4), signature: bytes(5), userHandle: bytes(6) },
+    });
+    vi.stubGlobal("PublicKeyCredential", function PublicKeyCredential() {});
+    Object.defineProperty(navigator, "credentials", { value: { get }, configurable: true });
+    const { props, sent, go, user } = page({
+      "GET /session": [nobody],
+      "GET /sign-in": [pending("identifier")],
+      "POST /sign-in/steps/passkey/options": [
+        json(200, {
+          public_key: { challenge: "AQI", rpId: "auth.example", allowCredentials: [], userVerification: "required" },
+        }),
+      ],
+      "POST /sign-in/steps/passkey": [json(200, { status: "completed" })],
+    });
+    render(<SignInPage {...props} notice={null} />);
+    const identifier = await screen.findByLabelText(en.identifierLabel);
+    expect(identifier.getAttribute("autocomplete")).toBe("username webauthn");
+    await user.click(screen.getByRole("button", { name: en.signInWithPasskey }));
+    await waitFor(() => expect(go).toHaveBeenCalledWith("account"));
+    expect(get).toHaveBeenCalledOnce();
+    expect(get.mock.calls[0]?.[0].publicKey.userVerification).toBe("required");
+    expect(sent.at(-1)).toMatchObject({
+      path: "/sign-in/steps/passkey",
+      body: { credential_id: "AQI", client_data: "Aw", authenticator_data: "BA", signature: "BQ", user_handle: "Bg" },
+    });
+    vi.unstubAllGlobals();
+  });
+
+  it("sends nothing and still asks for the identifier when the passkey gives no answer", async () => {
+    const get = vi.fn().mockRejectedValue(new DOMException("cancelled", "NotAllowedError"));
+    vi.stubGlobal("PublicKeyCredential", function PublicKeyCredential() {});
+    Object.defineProperty(navigator, "credentials", { value: { get }, configurable: true });
+    const { props, sent, user } = page({
+      "GET /session": [nobody],
+      "GET /sign-in": [pending("identifier")],
+      "POST /sign-in/steps/passkey/options": [json(200, { public_key: { challenge: "AQI", rpId: "auth.example" } })],
+    });
+    render(<SignInPage {...props} notice={null} />);
+    await user.click(await screen.findByRole("button", { name: en.signInWithPasskey }));
+    expect((await alertShown()).textContent).toContain(en.passkeyNoAnswer);
+    expect(screen.getByLabelText(en.identifierLabel)).toBeTruthy();
+    expect(sent.some((request) => request.path === "/sign-in/steps/passkey")).toBe(false);
+    vi.unstubAllGlobals();
+  });
+
+  it("offers the passkeys the browser holds in the identifier field, where it can", async () => {
+    const bytes = (...values: number[]) => new Uint8Array(values).buffer;
+    const get = vi.fn().mockResolvedValue({
+      rawId: bytes(1, 2),
+      response: { clientDataJSON: bytes(3), authenticatorData: bytes(4), signature: bytes(5), userHandle: bytes(6) },
+    });
+    const PublicKeyCredential = Object.assign(function PublicKeyCredential() {}, {
+      isConditionalMediationAvailable: () => Promise.resolve(true),
+    });
+    vi.stubGlobal("PublicKeyCredential", PublicKeyCredential);
+    Object.defineProperty(navigator, "credentials", { value: { get }, configurable: true });
+    const { props, go } = page({
+      "GET /session": [nobody],
+      "GET /sign-in": [pending("identifier")],
+      "POST /sign-in/steps/passkey/options": [json(200, { public_key: { challenge: "AQI", rpId: "auth.example" } })],
+      "POST /sign-in/steps/passkey": [json(200, { status: "completed" })],
+    });
+    render(<SignInPage {...props} notice={null} />);
+    await waitFor(() => expect(go).toHaveBeenCalledWith("account"));
+    expect(get.mock.calls[0]?.[0].mediation).toBe("conditional");
+    expect(get.mock.calls[0]?.[0].signal).toBeInstanceOf(AbortSignal);
+    vi.unstubAllGlobals();
+  });
+
+  it("abandons offering passkeys once the person types an identifier", async () => {
+    let signal: AbortSignal | undefined;
+    const get = vi.fn().mockImplementation((asked: { signal?: AbortSignal }) => {
+      signal = asked.signal;
+      return new Promise((_, reject) =>
+        asked.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))),
+      );
+    });
+    const PublicKeyCredential = Object.assign(function PublicKeyCredential() {}, {
+      isConditionalMediationAvailable: () => Promise.resolve(true),
+    });
+    vi.stubGlobal("PublicKeyCredential", PublicKeyCredential);
+    Object.defineProperty(navigator, "credentials", { value: { get }, configurable: true });
+    const { props, sent, user } = page({
+      "GET /session": [nobody],
+      "GET /sign-in": [pending("identifier")],
+      "POST /sign-in/steps/passkey/options": [json(200, { public_key: { challenge: "AQI", rpId: "auth.example" } })],
+      "POST /sign-in/steps/identifier": [pending("password")],
+    });
+    render(<SignInPage {...props} notice={null} />);
+    await waitFor(() => expect(get).toHaveBeenCalledOnce());
+    await user.type(screen.getByLabelText(en.identifierLabel), "ana@example.com{Enter}");
+    await screen.findByLabelText(en.passwordLabel);
+    expect(signal?.aborted).toBe(true);
+    expect(sent.some((request) => request.path === "/sign-in/steps/passkey")).toBe(false);
+    vi.unstubAllGlobals();
+  });
+
   it("says so when the browser cannot use security keys", async () => {
     const { props } = page({ "GET /session": [nobody], "GET /sign-in": [pending("webauthn")] });
     render(<SignInPage {...props} notice={null} />);

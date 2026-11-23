@@ -1,5 +1,5 @@
 //! The built-in authenticators: login identifier, password, authenticator
-//! application, WebAuthn and recovery code.
+//! application, WebAuthn, recovery code and passkeys.
 
 use crate::application::guard::AttemptGuard;
 use crate::domain::attempt::LockoutRules;
@@ -76,6 +76,7 @@ impl Authenticator for IdentifierAuthenticator {
         AuthenticatorTraits {
             identifies: true,
             factor: None,
+            second_factor: None,
             method: None,
         }
     }
@@ -156,6 +157,7 @@ impl Authenticator for PasswordAuthenticator {
         AuthenticatorTraits {
             identifies: false,
             factor: Some(Factor::Knowledge),
+            second_factor: None,
             method: Some("password"),
         }
     }
@@ -253,6 +255,7 @@ impl Authenticator for TotpAuthenticator {
         AuthenticatorTraits {
             identifies: false,
             factor: Some(Factor::Possession),
+            second_factor: None,
             method: Some(Self::KIND),
         }
     }
@@ -347,6 +350,7 @@ impl Authenticator for WebAuthnAuthenticator {
         AuthenticatorTraits {
             identifies: false,
             factor: Some(Factor::Possession),
+            second_factor: None,
             method: Some(Self::KIND),
         }
     }
@@ -398,16 +402,128 @@ impl Authenticator for WebAuthnAuthenticator {
             return Ok(None);
         };
         let made = self.webauthn.challenge(tenant, user).await?;
-        let options = serde_json::to_value(&made.options).map_err(|error| {
-            DomainError::internal(
-                "authentication.challenge_not_serializable",
-                "the sign-in could not continue",
-            )
-            .with_detail(error.to_string())
-        })?;
         Ok(Some(StepChallenge {
             challenge: made.challenge.0,
-            options,
+            options: options_json(&made.options)?,
+        }))
+    }
+}
+
+fn options_json(options: &impl serde::Serialize) -> Result<serde_json::Value, DomainError> {
+    serde_json::to_value(options).map_err(|error| {
+        DomainError::internal(
+            "authentication.challenge_not_serializable",
+            "the sign-in could not continue",
+        )
+        .with_detail(error.to_string())
+    })
+}
+
+/// Signs a person in with a passkey alone, as an alternative of the flow:
+/// the credential that answers names the person, and its authenticator
+/// verified them. See `docs/architecture/contexts/authentication.md`, "The
+/// passkey alternative".
+///
+/// Every answer is counted against the address it comes from before it is
+/// checked. A wrong answer, a passkey of another tenant and a user who may
+/// not sign in all get the same rejection.
+#[derive(Clone)]
+pub struct PasskeyAuthenticator {
+    webauthn: WebAuthnService,
+    identity: IdentityService,
+    tenants: TenantService,
+    guard: AttemptGuard,
+}
+
+impl std::fmt::Debug for PasskeyAuthenticator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PasskeyAuthenticator")
+            .finish_non_exhaustive()
+    }
+}
+
+impl PasskeyAuthenticator {
+    /// The kind flows name it by, the key of its alternative in the flow
+    /// the server runs, and the method recorded for it.
+    pub const KIND: &'static str = "passkey";
+
+    /// Wires the authenticator to the contexts it asks.
+    #[must_use]
+    pub const fn new(
+        webauthn: WebAuthnService,
+        identity: IdentityService,
+        tenants: TenantService,
+        guard: AttemptGuard,
+    ) -> Self {
+        Self {
+            webauthn,
+            identity,
+            tenants,
+            guard,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Authenticator for PasskeyAuthenticator {
+    fn kind(&self) -> &'static str {
+        Self::KIND
+    }
+
+    fn traits(&self) -> AuthenticatorTraits {
+        AuthenticatorTraits {
+            identifies: true,
+            factor: Some(Factor::Possession),
+            // The authenticator verified the person with a PIN or with
+            // their body; Hodor cannot tell which, and either is a second
+            // kind of evidence.
+            second_factor: Some(Factor::Inherence),
+            method: Some(Self::KIND),
+        }
+    }
+
+    async fn perform(
+        &self,
+        tenant: &TenantContext,
+        transaction: &AuthTransaction,
+        input: &StepInput,
+    ) -> Result<StepOutcome, DomainError> {
+        let rules = lockout_rules(&self.tenants, tenant).await?;
+        let address = transaction.snapshot().client.address.as_deref();
+        self.guard
+            .admit_address(tenant, &rules, address, Caller::system())
+            .await?;
+        let (Some(challenge), Some(answer)) = (transaction.challenge(), answer_of(input)) else {
+            return Ok(StepOutcome::Rejected);
+        };
+        let Some(user) = self
+            .webauthn
+            .verify_passkey(tenant, &Challenge(*challenge), &answer)
+            .await?
+        else {
+            return Ok(StepOutcome::Rejected);
+        };
+        let may_sign_in = match self.identity.get(tenant, user).await {
+            Ok(found) => found.may_sign_in(),
+            Err(error) if error.kind() == ErrorKind::NotFound => false,
+            Err(error) => return Err(error),
+        };
+        Ok(if may_sign_in {
+            StepOutcome::Authenticated { user }
+        } else {
+            StepOutcome::Rejected
+        })
+    }
+
+    async fn challenge(
+        &self,
+        _tenant: &TenantContext,
+        _transaction: &AuthTransaction,
+    ) -> Result<Option<StepChallenge>, DomainError> {
+        let made = self.webauthn.passkey_challenge();
+        Ok(Some(StepChallenge {
+            challenge: made.challenge.0,
+            options: options_json(&made.options)?,
         }))
     }
 }
@@ -460,6 +576,7 @@ impl Authenticator for RecoveryCodeAuthenticator {
         AuthenticatorTraits {
             identifies: false,
             factor: Some(Factor::Possession),
+            second_factor: None,
             method: Some(Self::KIND),
         }
     }

@@ -106,6 +106,7 @@ impl FlowEngine {
                 }
                 identified |= traits.identifies;
                 factors.extend(traits.factor);
+                factors.extend(traits.second_factor);
             } else {
                 past_required = true;
                 if traits.identifies {
@@ -150,7 +151,10 @@ impl FlowEngine {
                     alternative.key
                 )));
             };
-            if assurance_of(&BTreeSet::from([factor])) < Some(flow.minimum_assurance) {
+            let proved: BTreeSet<Factor> = std::iter::once(factor)
+                .chain(traits.second_factor)
+                .collect();
+            if assurance_of(&proved) < Some(flow.minimum_assurance) {
                 return Err(invalid_flow(format!(
                     "the alternative `{}` does not reach the flow's minimum assurance",
                     alternative.key
@@ -308,13 +312,15 @@ impl FlowEngine {
 
     /// Asks the current step's authenticator for a challenge, keeps it in
     /// the transaction in place of any earlier one, and returns what the
-    /// browser needs. The caller stores the transaction.
+    /// browser needs. While no step has been satisfied, `step` may also be
+    /// an alternative. The caller stores the transaction.
     ///
     /// # Errors
     ///
     /// Returns `Conflict` if the transaction is not in progress, `Invalid`
-    /// if `step` is not the current step or needs no challenge, and
-    /// whatever error the authenticator reports.
+    /// if `step` is neither the current step nor an alternative that may
+    /// still be taken, or needs no challenge, and whatever error the
+    /// authenticator reports.
     pub async fn challenge(
         &self,
         tenant: &TenantContext,
@@ -324,21 +330,34 @@ impl FlowEngine {
         now: Timestamp,
     ) -> Result<serde_json::Value, DomainError> {
         transaction.require_in_progress(now)?;
-        let current = flow
-            .steps
-            .get(transaction.snapshot().current_step)
-            .ok_or_else(|| {
-                DomainError::conflict(
-                    "authentication.no_step_pending",
-                    "every step of this sign-in is already satisfied",
-                )
-            })?;
-        if current.key != step {
-            return Err(DomainError::invalid(
-                "authentication.unexpected_step",
-                format!("this sign-in is waiting for the `{}` step", current.key),
-            ));
-        }
+        let alternative = (transaction.snapshot().current_step == 0)
+            .then(|| {
+                flow.alternatives
+                    .iter()
+                    .find(|alternative| alternative.key == step)
+            })
+            .flatten();
+        let current = match alternative {
+            Some(alternative) => alternative,
+            None => {
+                let current = flow
+                    .steps
+                    .get(transaction.snapshot().current_step)
+                    .ok_or_else(|| {
+                        DomainError::conflict(
+                            "authentication.no_step_pending",
+                            "every step of this sign-in is already satisfied",
+                        )
+                    })?;
+                if current.key != step {
+                    return Err(DomainError::invalid(
+                        "authentication.unexpected_step",
+                        format!("this sign-in is waiting for the `{}` step", current.key),
+                    ));
+                }
+                current
+            }
+        };
         let made = self
             .authenticator(current)?
             .challenge(tenant, transaction)
@@ -394,6 +413,9 @@ impl FlowEngine {
     ) -> bool {
         match condition {
             Condition::AssuranceNotReached => self.assurance(transaction) < Some(must_reach),
+            Condition::MultiFactorNotReached => {
+                self.assurance(transaction) < Some(Assurance::MultiFactor)
+            }
         }
     }
 
@@ -414,7 +436,7 @@ impl FlowEngine {
                         .any(|s| s == m)
                 })
             })
-            .filter_map(|t| t.factor)
+            .flat_map(|t| t.factor.into_iter().chain(t.second_factor))
             .collect();
         assurance_of(&factors)
     }

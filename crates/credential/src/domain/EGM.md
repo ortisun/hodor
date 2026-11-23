@@ -82,6 +82,7 @@ The four enums implement `hodor_kernel::DomainEvent` and serialize untagged.
   - A password equal to one of `own_names`, ignoring case, is refused (`credential.password_is_own_name`).
   - Nothing else is checked: there are no composition rules and the value is not trimmed. Reuse needs the stored hashes and is checked elsewhere.
 - `PasswordRecord::hashes_barred_from_reuse(depth)` yields the current hash and then the newest `depth` historic hashes.
+- A pending registration knows whether it is for a passkey; a passkey's registration needs the user verified and is refused when the browser says the credential is not discoverable. A passkey's answer (`AssertionKind::Passkey`) needs the user handle and the user verified.
 - The WebAuthn checks run in the order of `docs/architecture/contexts/credential.md`. Attestation statements are not checked; only ES256 and RS256 keys of 2,048 bits or more are accepted; an ES256 signature must be strict DER; a counter that is not zero on either side must grow.
 - The CBOR reader accepts integers, byte and text strings, definite arrays and maps, true, false and null, at most eight deep; it refuses everything else, a duplicate map key, and any length beyond the input.
 - `PasswordRecord::replace` moves the current hash to the front of the history, trims the history to `history_depth`, and sets `must_change` and `changed_at`. `renew_hash` changes only the hash: the history, `changed_at` and `must_change` stay as they are.

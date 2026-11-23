@@ -83,16 +83,39 @@ export function webAuthnAvailable(): boolean {
   return typeof window !== "undefined" && typeof window.PublicKeyCredential === "function";
 }
 
+/** Whether this browser can offer passkeys in a field, as a conditional request. */
+export async function conditionalMediationAvailable(): Promise<boolean> {
+  if (!webAuthnAvailable()) {
+    return false;
+  }
+  const probe = (
+    window.PublicKeyCredential as unknown as { isConditionalMediationAvailable?: () => Promise<boolean> }
+  ).isConditionalMediationAvailable;
+  try {
+    return typeof probe === "function" ? await probe.call(window.PublicKeyCredential) : false;
+  } catch {
+    return false;
+  }
+}
+
+/** How the authenticator is asked: by the person pressing a button, or offered in a field. */
+export interface Asking {
+  mediation?: CredentialMediationRequirement;
+  signal?: AbortSignal;
+}
+
 /**
  * Asks the person's authenticator to answer the challenge. Answers `null`
- * when it gave no answer: the person cancelled, or it timed out.
+ * when it gave no answer: the person cancelled, it timed out, or the
+ * request was abandoned.
  */
 export async function askAuthenticator(
   options: Record<string, unknown>,
   credentials: Pick<CredentialsContainer, "get"> = navigator.credentials,
+  asking: Asking = {},
 ): Promise<WebAuthnAnswer | null> {
   try {
-    const credential = await credentials.get({ publicKey: requestOptions(options) });
+    const credential = await credentials.get({ publicKey: requestOptions(options), ...asking });
     return credential !== null && "rawId" in credential ? answerOf(credential as PublicKeyCredential) : null;
   } catch (thrown) {
     if (thrown instanceof DOMException) {

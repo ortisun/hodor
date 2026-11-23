@@ -16,6 +16,8 @@ All paths are relative to the tenant: `https://{host}/t/{slug}`. Requests and re
 | `POST /interaction/sign-in/steps/webauthn/options` | Ask for the challenge of the WebAuthn step |
 | `POST /interaction/sign-in/steps/webauthn` | Submit what the authenticator answered |
 | `POST /interaction/sign-in/steps/recovery_code` | Submit one of the person's recovery codes, while the sign-in waits for the `webauthn` or the `totp` step |
+| `POST /interaction/sign-in/steps/passkey/options` | Ask for the challenge of signing in with a passkey |
+| `POST /interaction/sign-in/steps/passkey` | Submit what the passkey answered, in place of the identifier and the password |
 | `DELETE /interaction/sign-in` | Abandon the sign-in |
 | `GET /interaction/session` | Say who is signed in |
 
@@ -63,6 +65,7 @@ While the sign-in waits for `webauthn` or for `totp`, a recovery code can be sub
 | `totp` | `{ "code": "123456" }` |
 | `webauthn` | `{ "credential_id": "…", "client_data": "…", "authenticator_data": "…", "signature": "…", "user_handle": "…" }`, each the bytes the authenticator gave, in base64url without padding. `user_handle` may be left out or `null` |
 | `recovery_code` | `{ "code": "7K2M-QX9D-4HVN-R8TA" }` |
+| `passkey` | The same as `webauthn`, and `user_handle` is needed: an answer without it is a rejection |
 
 Submitting a step other than the one the sign-in is waiting for, or than one of its substitutes, is an error (`422`, `authentication.unexpected_step`), and changes nothing.
 
@@ -91,6 +94,31 @@ The `webauthn` step needs a challenge before it can be submitted, so the pages a
 | The sign-in is not waiting for the `webauthn` step | `422` | `authentication.unexpected_step` |
 
 A wrong answer, a value that is not base64url, an answer to another challenge, from another credential or from another site is a rejection like a wrong password: `200` with `"status": "rejected"`.
+
+### Signing in with a passkey
+
+A passkey takes the place of the identifier and the password, as an [alternative](../architecture/contexts/authentication.md#the-passkey-alternative): only while the sign-in is waiting for the `identifier` step. `POST /interaction/sign-in/steps/passkey/options`, with the CSRF token and no body, answers `200` with options that name no credential and require user verification:
+
+```json
+{
+  "public_key": {
+    "challenge": "c0Fq…",
+    "rpId": "id.example.com",
+    "allowCredentials": [],
+    "userVerification": "required",
+    "timeout": 300000
+  }
+}
+```
+
+The pages pass them to `navigator.credentials.get`, either when the person presses "sign in with a passkey" or as a conditional request that lets the browser offer passkeys in the identifier field, and send the answer to `POST /interaction/sign-in/steps/passkey`. The answer to it is `completed` when the passkey is accepted, since a passkey is multi-factor and nothing more is asked. Asking again replaces the challenge; submitting the passkey or the identifier uses it up.
+
+| Situation | Status | Code |
+|---|---|---|
+| The sign-in has gone past the `identifier` step | `422` | `authentication.unexpected_step` |
+| Attempts from this address are being limited | `429`, with `Retry-After` | `authentication.too_many_attempts` |
+
+A wrong answer, an answer without a user handle or without user verification, a passkey of another tenant or of a user who may not sign in is a rejection: `200` with `"status": "rejected"`, and the sign-in goes on waiting for the identifier.
 
 ### Errors
 
@@ -301,7 +329,7 @@ Signing out ends one session. The person's sessions in other browsers continue.
 
 A signed-in person registers a security key or a platform authenticator in two requests. Both change something and carry the session's CSRF token.
 
-`POST /interaction/webauthn/registrations`, with no body, answers `201`:
+`POST /interaction/webauthn/registrations`, with no body or with `{ "passkey": false }`, registers a security key, and with `{ "passkey": true }` a [passkey](../architecture/contexts/credential.md#passkeys). It answers `201`:
 
 ```json
 {
@@ -323,7 +351,7 @@ A signed-in person registers a security key or a platform authenticator in two r
 }
 ```
 
-`public_key` is the `PublicKeyCredentialCreationOptionsJSON` of the WebAuthn specification. The registration can be finished within five minutes, once.
+`public_key` is the `PublicKeyCredentialCreationOptionsJSON` of the WebAuthn specification. The registration can be finished within five minutes, once. For a passkey, `authenticatorSelection` is `{ "residentKey": "required", "userVerification": "required" }`, and `displayName` is followed by the tenant's name in brackets.
 
 `POST /interaction/webauthn/registrations/{registration_id}` with what `navigator.credentials.create` answered:
 

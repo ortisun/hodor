@@ -4,7 +4,7 @@ The `authentication` context decides whether someone has proved who they are. It
 
 It owns no users, credentials or sessions. It asks the `identity` context who a login identifier belongs to, asks the `credential` context whether a secret is right, and asks the `session` context to start a session. What it owns is the procedure: which steps, in which order, with which protections.
 
-This page specifies signing in with a login identifier and a password (Milestone 1), with an external identity (Milestone 2), and the steps a flow may require only sometimes, which carry the second factors of Milestone 4, starting with WebAuthn. The same mechanism carries every later method.
+This page specifies signing in with a login identifier and a password (Milestone 1), with an external identity (Milestone 2), the steps a flow may require only sometimes, which carry the second factors of Milestone 4, and signing in with a passkey alone. The same mechanism carries every later method.
 
 ## Flows
 
@@ -28,7 +28,8 @@ An **authenticator** performs one step. It receives what the person submitted an
 | `totp` | Checks a code of the candidate's [authenticator application](credential.md#authenticator-applications). The person has the means for it when they have an application in use | One factor: something the person has | Milestone 4 |
 | `webauthn` | Checks the answer of a security key or a platform authenticator to a challenge, with the [credential context](credential.md#checking-a-credential). The person has the means when they registered at least one credential | One factor: something the person has | Milestone 4 |
 | `recovery_code` | Checks one of the candidate's [recovery codes](credential.md#recovery-codes). Used only as a [substitute](#substitutes) for a second factor | One factor: something the person has, written down | Milestone 4 |
-| Passkey and others | — | — | Later issues |
+| `passkey` | Checks the answer of a [passkey](credential.md#passkeys) to a challenge that names no credential, and answers who the person is from the credential that answered. Used as an alternative | Who is signing in, and two factors in one step: something the person has, unlocked by something they know or are | Milestone 4 |
+| Others | — | — | Later issues |
 
 Each step has a requirement:
 
@@ -45,6 +46,7 @@ Conditions are a small closed set, not a language ([Decision 0013](../../decisio
 | Condition | Holds when |
 |---|---|
 | Assurance not reached | The methods satisfied so far do not reach the assurance the sign-in must reach (see [what a sign-in must reach](#what-a-sign-in-must-reach)) |
+| Multi-factor not reached | The methods satisfied so far are not yet multi-factor. A further factor adds nothing to a sign-in that already is |
 
 Rules for the steps that are not required:
 
@@ -59,7 +61,7 @@ Further conditions, such as the assurance an application asks for and risk signa
 
 ### What a sign-in must reach
 
-A sign-in must reach an **assurance**: single factor or multi-factor. Two factors of the same kind, such as two passwords, are still one.
+A sign-in must reach an **assurance**: single factor or multi-factor. Two factors of the same kind, such as two passwords, are still one. One step may prove two kinds at once: a passkey is something the person has, and the authenticator verified something they know or are before it answered. Hodor cannot tell a PIN from a fingerprint, and counts the verification as the second kind either way.
 
 | Source | Assurance it requires |
 |---|---|
@@ -106,7 +108,7 @@ Some authenticators can check an answer only to a question they asked: a WebAuth
 
 | Rule | Why |
 |---|---|
-| A challenge is asked for only for the current step | Like any input, a question for another step is refused |
+| A challenge is asked for only for the current step, or for an alternative while no step has been satisfied | Like any input, a question for another step is refused |
 | A challenge is used once. Submitting the step removes it from the transaction, whether the answer is accepted or rejected | An answer that was seen once cannot be sent again |
 | A challenge belongs to one transaction, so to one browser and one tenant | It is stored with the transaction, under its binding |
 | Submitting with no challenge asked for is a rejection, counted like any other | There is nothing the answer can be checked against |
@@ -119,16 +121,34 @@ What a person submits to such a step is a set of named values, like the input of
 |---|---|---|
 | 1 | `identifier` | Required |
 | 2 | `password` | Required |
-| 3 | `webauthn` | Optional, with the substitute `recovery_code` |
-| 4 | `totp` | Optional, with the substitute `recovery_code` |
+| 3 | `webauthn` | Conditional: multi-factor not reached, with the substitute `recovery_code` |
+| 4 | `totp` | Conditional: multi-factor not reached, with the substitute `recovery_code` |
+
+| Alternative | Authenticator |
+|---|---|
+| `passkey` | `passkey` |
+| `external`, when the installation has identity providers | The federation context's |
 
 Minimum assurance: single factor.
 
-A person who registered a security key is always asked for it after the password, and a person who put an authenticator application in use for a code, whether or not the tenant requires a second factor: they chose a second factor, and a stolen password alone must not let anyone in. A person without one signs in with the password, unless the tenant requires a second factor, in which case the sign-in fails at completion.
+A person who registered a security key is always asked for it after the password, and a person who put an authenticator application in use for a code, whether or not the tenant requires a second factor: they chose a second factor, and a stolen password alone must not let anyone in. A person with both is asked for the first one only: once the key has answered, the sign-in is multi-factor, and the code would add nothing. A person without one signs in with the password, unless the tenant requires a second factor, in which case the sign-in fails at completion.
+
+A person who signs in with a passkey is asked for nothing more: the passkey alone is multi-factor, so the third and fourth steps are passed over, and it satisfies a tenant's policy that requires a second factor. A person who signs in through an identity provider has one factor, and is asked for their second factor after it.
 
 The fourth step needs a place to keep secrets. An installation without `HODOR_SECRET_KEYS` runs the flow without it, and nobody there can have an authenticator application.
 
 A person asked for their security key or for the code of their application can give one of their recovery codes instead. Without a security key or an application in use the third and fourth steps are passed over, so recovery codes alone never let anyone in and are never asked for. Recovery codes need no place to keep secrets: they stand in for the security key in an installation without `HODOR_SECRET_KEYS` too.
+
+### The passkey alternative
+
+| Rule | Why |
+|---|---|
+| A passkey is accepted only at the very start of a sign-in, like every alternative | A person who typed an identifier goes on with the steps |
+| Its challenge is asked for before anything else, and names no credential | Nobody is identified yet, so there is no list to give; any passkey the browser holds may answer |
+| The person it signs in is the user the answering credential belongs to, found in the tenant of the sign-in only | A passkey of another tenant is unknown here, and its answer is a rejection |
+| Every answer, right or wrong, is counted against the address it comes from, before it is checked, with the tenant's lockout rules: the address's limit, [ten times the identifier's](#protection-against-guessing) | There is no identifier to count against. Guessing a signature is hopeless, but each answer costs a lookup and a check |
+| A user who may not sign in is rejected like a wrong answer | The answer tells nothing about the account |
+| The method recorded is `passkey` | The `amr` of a token will say a key held by the person was used, the person was verified, and that this is multi-factor: `pop`, `user` and `mfa` of RFC 8176, once tokens carry it (Issue-69) |
 
 ### The authenticator application step
 
@@ -440,7 +460,7 @@ All three are tenant tables under row-level security.
 | Setting the tenant's second factor policy from the administration interface or the console. Today the command-line tool sets it | Issue-70 |
 | Registering a security key from the pages, and proving oneself again first. Today a key is registered through the interaction interface only, by a person already signed in | Issue-70 |
 | Enrolling a second factor during a sign-in, for a person whose tenant requires one and who has none. Today their sign-in fails at completion | Issue-70 |
-| Offering a choice between several second factors at one step. Today each is its own step: a person with both a security key and an authenticator application is asked for both. A recovery code is a substitute, not a choice of factor | Issue-70 |
+| Offering a choice between several second factors at one step. Today a person with both a security key and an authenticator application is asked for the key, which comes first, and cannot choose the code instead. A recovery code is a substitute, not a choice of factor | Issue-70 |
 | A reason in `authentication.failed` that tells a missing second factor from a rejected step | With the step-up of Issue-69 |
 | Further authenticators, risk signals, recognizing a user's own device | Phases 3 and 4 |
 | Making a user choose a new password when the current one is marked as temporary. The mark is stored and returned by the credential context, but sign-in does not act on it yet | With the administration interface, Issue-29, which is what sets the mark |
