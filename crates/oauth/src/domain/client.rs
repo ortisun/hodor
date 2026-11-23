@@ -1,6 +1,9 @@
 //! Clients: what asks Hodor for tokens on behalf of an application.
 
 use crate::domain::application::{ApplicationId, Status, stored_data_invalid};
+use crate::domain::consent::{
+    DEFAULT_CONSENT_LIFETIME, LONGEST_CONSENT_LIFETIME, SHORTEST_CONSENT_LIFETIME,
+};
 use crate::domain::event::OauthEvent;
 use crate::domain::key::{ClientKey, MAX_KEYS};
 use crate::domain::secret::{ClientSecret, ClientSecretHash, ClientSecretId, ClientSecretValue};
@@ -171,6 +174,9 @@ pub struct TokenPolicy {
     pub refresh_token: Duration,
     /// How long a refresh token lasts unused.
     pub refresh_idle: Duration,
+    /// How long a person's consent to the client lasts before they are
+    /// asked again.
+    pub consent: Duration,
 }
 
 impl Default for TokenPolicy {
@@ -180,6 +186,7 @@ impl Default for TokenPolicy {
             id_token: Duration::minutes(5),
             refresh_token: Duration::days(30),
             refresh_idle: Duration::days(7),
+            consent: DEFAULT_CONSENT_LIFETIME,
         }
     }
 }
@@ -197,14 +204,15 @@ impl TokenPolicy {
             && short.contains(&self.id_token)
             && long.contains(&self.refresh_token)
             && self.refresh_idle >= Duration::hours(1)
-            && self.refresh_idle <= self.refresh_token;
+            && self.refresh_idle <= self.refresh_token
+            && (SHORTEST_CONSENT_LIFETIME..=LONGEST_CONSENT_LIFETIME).contains(&self.consent);
         if fits {
             Ok(self)
         } else {
             Err(DomainError::invalid(
                 "oauth.token_policy_invalid",
                 "access and ID tokens live 1 minute to 1 hour; a refresh token 1 hour to 365 \
-                 days, and lasts unused from 1 hour up to its lifetime",
+                 days, and lasts unused from 1 hour up to its lifetime; a consent 1 to 730 days",
             ))
         }
     }
@@ -1250,6 +1258,14 @@ mod tests {
             },
             TokenPolicy {
                 refresh_idle: Duration::days(31),
+                ..default
+            },
+            TokenPolicy {
+                consent: Duration::hours(23),
+                ..default
+            },
+            TokenPolicy {
+                consent: Duration::days(731),
                 ..default
             },
         ];

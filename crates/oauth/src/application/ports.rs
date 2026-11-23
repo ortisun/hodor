@@ -6,6 +6,7 @@ use crate::domain::authorization::{
     AuthorizationCode, CodeHash, Grant, GrantId, PendingAuthorization, PendingAuthorizationId,
 };
 use crate::domain::client::{Client, ClientId};
+use crate::domain::consent::{Consent, ConsentAnswer, ConsentHistoryEntry};
 use crate::domain::introspection::AccessTokenRecord;
 use crate::domain::refresh::{
     RefreshAsk, RefreshFamily, RefreshFamilyId, RefreshTokenHash, RefreshTokenRecord,
@@ -198,6 +199,21 @@ pub trait AuthorizationRequestStore: Send + Sync {
         uow: &mut dyn UnitOfWork,
         id: PendingAuthorizationId,
     ) -> Result<bool, DomainError>;
+
+    /// Records the answer to a request that waits for consent. Returns
+    /// whether this call recorded it: false when the request is gone, does
+    /// not wait for consent, or was answered already, so that a request is
+    /// answered once.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn answer(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: PendingAuthorizationId,
+        answer: ConsentAnswer,
+    ) -> Result<bool, DomainError>;
 }
 
 /// Stores grants.
@@ -227,6 +243,65 @@ pub trait GrantStore: Send + Sync {
     ///
     /// Returns `oauth.grant_not_found` if the tenant has no such grant.
     async fn update(&self, uow: &mut dyn UnitOfWork, grant: &Grant) -> Result<(), DomainError>;
+
+    /// The active grants of a person for a client.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn list_active_for(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        user: UserId,
+        client: ClientId,
+    ) -> Result<Vec<Grant>, DomainError>;
+}
+
+/// Stores consents and their history.
+#[async_trait::async_trait]
+pub trait ConsentStore: Send + Sync {
+    /// The person's consent for the client, withdrawn or expired included.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn get(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        user: UserId,
+        client: ClientId,
+    ) -> Result<Option<Consent>, DomainError>;
+
+    /// Stores the consent, replacing the person's one for the client.
+    ///
+    /// # Errors
+    ///
+    /// Returns `oauth.client_not_found` if the tenant has no such client.
+    async fn save(&self, uow: &mut dyn UnitOfWork, consent: &Consent) -> Result<(), DomainError>;
+
+    /// The person's consents that stand at `now`, the most recently given
+    /// first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn list_standing(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        user: UserId,
+        now: Timestamp,
+    ) -> Result<Vec<Consent>, DomainError>;
+
+    /// Adds an entry to the history. Entries are never changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns `oauth.client_not_found` if the tenant has no such client.
+    async fn record(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        entry: &ConsentHistoryEntry,
+    ) -> Result<(), DomainError>;
 }
 
 /// Stores authorization codes, by the hash of the code.

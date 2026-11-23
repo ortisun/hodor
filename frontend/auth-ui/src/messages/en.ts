@@ -70,6 +70,28 @@ export const en = {
   accountTitle: "You are signed in",
   signedInSince: (moment: string) => `Signed in since ${moment}.`,
   signOut: "Sign out",
+  givenConsentsTitle: "Applications you let in",
+  givenConsentsNone: "You have not let any application into your account.",
+  givenConsent: (application: string, until: string) => `${application}, until ${until}`,
+  withdrawConsent: (application: string) => `Withdraw ${application}`,
+  consentWithdrawn: (application: string) =>
+    `${application} no longer has access. It will ask you again if it needs it.`,
+
+  consentTitle: (application: string) => `${application} wants to access your account`,
+  consentLead: "If you allow it, it will be able to:",
+  consentOffline: "Keep this access when you are not using it",
+  consentScopeOpenid: "Know who you are",
+  consentScopeProfile: "See your name and username",
+  consentScopeEmail: "See your email address",
+  consentScopeAddress: "See your postal address",
+  consentScopePhone: "See your phone number",
+  consentScopeOfResource: (description: string, resourceServer: string) =>
+    resourceServer === "" ? description : `${description} (${resourceServer})`,
+  consentAllow: "Allow",
+  consentDeny: "Deny",
+  consentNothingTitle: "Nothing to answer",
+  consentNothing: "No application is waiting for your answer in this browser.",
+  goToAccount: "Go to your account",
 
   signOutTitle: "Sign out?",
   signOutQuestion: (tenant: string) => `An application asked to sign you out of ${tenant}. Sign out here too?`,

@@ -7,6 +7,7 @@ import { empty, json, problem, scripted } from "../testing";
 import { AccountPage } from "./AccountPage";
 import { AskPage } from "./AskPage";
 import { ComingBackPage } from "./ComingBackPage";
+import { ConsentPage } from "./ConsentPage";
 import { FinishPage } from "./FinishPage";
 import { SecurityPage } from "./SecurityPage";
 import { SignInPage } from "./SignInPage";
@@ -579,12 +580,143 @@ describe("the account page", () => {
   });
 
   it("signs out and says so on the sign-in page", async () => {
-    const { props, sent, go, user } = page({ "GET /session": [session], "DELETE /session": [empty(204)] });
+    const { props, sent, go, user } = page({
+      "GET /session": [session],
+      "GET /consents": [json(200, { consents: [] })],
+      "DELETE /session": [empty(204)],
+    });
     render(<AccountPage {...props} />);
     await user.click(await screen.findByRole("button", { name: en.signOut }));
 
     await waitFor(() => expect(go).toHaveBeenCalledWith("sign-in", "signed-out"));
     expect(sent.at(-1)).toMatchObject({ method: "DELETE", path: "/session", csrfToken: "of-the-session" });
+  });
+
+  it("lists the applications the person let in and withdraws one", async () => {
+    const { props, sent, user } = page({
+      "GET /session": [session],
+      "GET /consents": [
+        json(200, {
+          consents: [
+            {
+              client_id: "c-1",
+              application: "Billing",
+              scopes: ["openid", "invoices:read"],
+              given_at: "2026-11-20T14:03:11Z",
+              expires_at: "2027-11-20T14:03:11Z",
+            },
+          ],
+        }),
+      ],
+      "DELETE /consents/c-1": [empty(204)],
+    });
+    render(<AccountPage {...props} />);
+    await user.click(await screen.findByRole("button", { name: en.withdrawConsent("Billing") }));
+
+    expect(await screen.findByText(en.consentWithdrawn("Billing"))).toBeTruthy();
+    expect(screen.getByText(en.givenConsentsNone)).toBeTruthy();
+    expect(sent.at(-1)).toMatchObject({ method: "DELETE", path: "/consents/c-1", csrfToken: "of-the-session" });
+  });
+
+  it("says when no application was let in", async () => {
+    const { props } = page({ "GET /session": [session], "GET /consents": [json(200, { consents: [] })] });
+    render(<AccountPage {...props} />);
+    expect(await screen.findByText(en.givenConsentsNone)).toBeTruthy();
+  });
+});
+
+describe("the consent page", () => {
+  const session = () =>
+    json(200, {
+      user_id: "u",
+      session_id: "s",
+      signed_in_at: "2026-11-20T14:03:11Z",
+      expires_at: "2026-11-20T15:03:11Z",
+      csrf_token: "of-the-session",
+    });
+  const question = (offline = false) =>
+    json(200, {
+      application: "Billing",
+      scopes: [
+        { scope: "openid", kind: "openid" },
+        { scope: "email", kind: "openid" },
+        {
+          scope: "invoices:read",
+          kind: "resource",
+          description: "<b>Read your invoices</b>",
+          resource_server: "Invoices",
+        },
+      ],
+      offline_access: offline,
+      csrf_token: "of-the-session",
+    });
+
+  it("names the application and what it asks for, then goes where the answer says", async () => {
+    const { props, sent, leave, user } = page({
+      "GET /session": [session],
+      "GET /consent": [question(true)],
+      "POST /consent": [json(200, { continue: "/t/acme/oauth2/authorize/resume" })],
+    });
+    render(<ConsentPage {...props} />);
+
+    const heading = await screen.findByRole("heading", { name: en.consentTitle("Billing") });
+    expect(document.activeElement).toBe(heading);
+    expect(screen.getByText(en.consentScopeOpenid)).toBeTruthy();
+    expect(screen.getByText(en.consentScopeEmail)).toBeTruthy();
+    // The administrator's words are text, never markup.
+    expect(screen.getByText(en.consentScopeOfResource("<b>Read your invoices</b>", "Invoices"))).toBeTruthy();
+    expect(document.querySelector("main b")).toBeNull();
+    expect(screen.getByText(en.consentOffline)).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: en.consentAllow }));
+    await waitFor(() => expect(leave).toHaveBeenCalledWith("/t/acme/oauth2/authorize/resume"));
+    expect(sent.at(-1)).toMatchObject({
+      method: "POST",
+      path: "/consent",
+      body: { decision: "allow" },
+      csrfToken: "of-the-session",
+    });
+  });
+
+  it("sends a refusal and goes back to the application", async () => {
+    const { props, sent, leave, user } = page({
+      "GET /session": [session],
+      "GET /consent": [question()],
+      "POST /consent": [json(200, { continue: "/t/acme/oauth2/authorize/resume" })],
+    });
+    render(<ConsentPage {...props} />);
+    expect(screen.queryByText(en.consentOffline)).toBeNull();
+    await user.click(await screen.findByRole("button", { name: en.consentDeny }));
+    await waitFor(() => expect(leave).toHaveBeenCalledWith("/t/acme/oauth2/authorize/resume"));
+    expect(sent.at(-1)?.body).toEqual({ decision: "deny" });
+  });
+
+  it("goes nowhere that is not the tenant's own authorization endpoint", async () => {
+    const { props, leave, user } = page({
+      "GET /session": [session],
+      "GET /consent": [question()],
+      "POST /consent": [json(200, { continue: "https://evil.example/steal" })],
+    });
+    render(<ConsentPage {...props} />);
+    await user.click(await screen.findByRole("button", { name: en.consentAllow }));
+    expect(await alertShown()).toBeTruthy();
+    expect(leave).not.toHaveBeenCalled();
+  });
+
+  it("says there is nothing to answer when no request waits", async () => {
+    const { props } = page({
+      "GET /session": [session],
+      "GET /consent": [problem(404, "oauth.consent_request_not_found")],
+    });
+    render(<ConsentPage {...props} />);
+    expect(await screen.findByRole("heading", { name: en.consentNothingTitle })).toBeTruthy();
+    expect(screen.getByRole("link", { name: en.goToAccount }).getAttribute("href")).toBe("/t/acme/account");
+  });
+
+  it("sends a person who is not signed in to sign in", async () => {
+    const { props, go } = page({ "GET /session": [nobody] });
+    render(<ConsentPage {...props} />);
+    await waitFor(() => expect(go).toHaveBeenCalledWith("sign-in"));
   });
 });
 

@@ -42,7 +42,9 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   (`Issue`, `SignIn`, `StepUp { carried }`, `LoginRequired`) and
   `signed_in_as_asked`; `SignedInPerson` carries the `acr` the code and its
   tokens name, and `Proof { method, proven_at }` a session's method; `PendingAuthorization`
-  (`hold`, `belongs_to`, `is_live_at`); `Grant` (`make`, `revoke`);
+  (`hold`, `hold_for_consent`, `belongs_to`, `is_live_at`, and `consent`,
+  whom it waits for); `first_party` reads as `false` when a stored request
+  lacks it, and `prompts` says whether `prompt` holds a value; `Grant` (`make`, `revoke`);
   `AuthorizationCode` (`issue`, `check_redemption`); `CodeHash`
   (`of_presented` answers `None` for a value without the shape of a code);
   `s256_challenge`. Its cases are in `authorization/tests.rs`.
@@ -105,7 +107,19 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   addresses, at most 10, only with `authorization_code`
   (`oauth.client_post_logout_redirect_uri_invalid`);
   `accepts_post_logout_redirect_uri`.
-- `event.rs`: `OauthEvent`, twenty-two variants, each named `oauth.*`.
+- `consent.rs`: consent. `Consent` (`stands_at`, `covers`: every scope and
+  audience of a request, never `offline_access`; `give`, which adds to a
+  consent that stands and starts over one that does not; `withdraw`,
+  `given_event`), `must_ask` (first party unless `prompt=consent`; then
+  `prompt=consent` and `offline_access` always ask; otherwise unless a
+  consent covers the request), `ConsentAnswer`, `ConsentWait` (whom a
+  pending request waits for, in which session, and the answer),
+  `ConsentActor`, `ConsentAction`, `ConsentHistoryEntry`, and
+  `DEFAULT_CONSENT_LIFETIME` (365 days), `SHORTEST_CONSENT_LIFETIME`,
+  `LONGEST_CONSENT_LIFETIME` (1 and 730 days). `TokenPolicy::consent` is
+  the client's lifetime, checked against those bounds. Its cases are in
+  `consent/tests.rs`.
+- `event.rs`: `OauthEvent`, twenty-five variants, each named `oauth.*`.
 - `text.rs`: the rules of names and of scopes (`is_scope`).
 
 ## Invariants

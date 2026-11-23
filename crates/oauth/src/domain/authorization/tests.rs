@@ -536,19 +536,32 @@ fn resources_decide_the_audiences_and_must_define_the_scopes() {
 }
 
 #[test]
-fn only_first_party_applications_are_answered_until_consent_exists() {
-    let application = application(false);
-    let client = client_of(&application, ClientType::Public);
-    let servers = vec![server(&application, AUDIENCE, &["read"])];
-    let setting = Setting {
-        application,
-        client,
-        servers,
-    };
-    assert_eq!(
-        error_of(check(&setting, good(&setting.client))),
-        "access_denied"
-    );
+fn a_request_says_whether_its_application_is_first_party() {
+    for first_party in [true, false] {
+        let application = application(first_party);
+        let client = client_of(&application, ClientType::Public);
+        let servers = vec![server(&application, AUDIENCE, &["read"])];
+        let setting = Setting {
+            application,
+            client,
+            servers,
+        };
+        let request = check(&setting, good(&setting.client)).expect("accepted");
+        assert_eq!(request.first_party, first_party);
+    }
+}
+
+#[test]
+fn a_request_kept_before_consent_existed_reads_as_third_party() {
+    let setting = setting();
+    let request = check(&setting, good(&setting.client)).expect("accepted");
+    let mut written = serde_json::to_value(&request).expect("written");
+    written
+        .as_object_mut()
+        .expect("an object")
+        .remove("first_party");
+    let read: AuthorizationRequest = serde_json::from_value(written).expect("read");
+    assert!(!read.first_party);
 }
 
 fn person(signed_in_at: Timestamp) -> SignedInPerson {

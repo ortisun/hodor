@@ -346,6 +346,7 @@ struct TokenPolicyBody {
     id_token_seconds: i64,
     refresh_token_seconds: i64,
     refresh_idle_seconds: i64,
+    consent_seconds: i64,
 }
 
 /// A token policy as given: what is left out is what it was, or the
@@ -357,6 +358,7 @@ struct TokenPolicyInput {
     id_token_seconds: Option<u32>,
     refresh_token_seconds: Option<u32>,
     refresh_idle_seconds: Option<u32>,
+    consent_seconds: Option<u32>,
 }
 
 impl TokenPolicyInput {
@@ -369,6 +371,7 @@ impl TokenPolicyInput {
             id_token: seconds(self.id_token_seconds, on.id_token),
             refresh_token: seconds(self.refresh_token_seconds, on.refresh_token),
             refresh_idle: seconds(self.refresh_idle_seconds, on.refresh_idle),
+            consent: seconds(self.consent_seconds, on.consent),
         }
     }
 }
@@ -431,6 +434,7 @@ impl From<&Client> for ClientBody {
                 id_token_seconds: policy.id_token.whole_seconds(),
                 refresh_token_seconds: policy.refresh_token.whole_seconds(),
                 refresh_idle_seconds: policy.refresh_idle.whole_seconds(),
+                consent_seconds: policy.consent.whole_seconds(),
             },
             secrets: state
                 .secrets

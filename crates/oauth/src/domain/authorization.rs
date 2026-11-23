@@ -7,6 +7,7 @@
 
 use crate::domain::application::Application;
 use crate::domain::client::{Client, ClientId, GrantType};
+use crate::domain::consent::ConsentWait;
 use crate::domain::event::OauthEvent;
 use crate::domain::resource_server::{OPENID_SCOPES, ResourceServer};
 use crate::domain::text::is_scope;
@@ -143,6 +144,11 @@ pub struct AuthorizationRequest {
     pub ui_locales: Option<String>,
     /// The levels asked for, separated by spaces, as given.
     pub acr_values: Option<String>,
+    /// Whether the client's application is first party: its person is not
+    /// asked for consent unless `prompt` says so. A request kept before
+    /// consent existed reads as third party, and asks.
+    #[serde(default)]
+    pub first_party: bool,
 }
 
 /// An error that may be sent back to the client at its redirect address.
@@ -438,13 +444,6 @@ pub fn check_request(
         ));
     }
 
-    if !application.snapshot().settings.first_party {
-        return Err(refuse(
-            "access_denied",
-            "only first-party applications are answered until consent can be asked",
-        ));
-    }
-
     Ok(AuthorizationRequest {
         client_id: client.id(),
         redirect_uri,
@@ -461,6 +460,7 @@ pub fn check_request(
         login_hint,
         ui_locales,
         acr_values,
+        first_party: application.snapshot().settings.first_party,
     })
 }
 
@@ -507,7 +507,9 @@ pub enum SessionDecision {
 }
 
 impl AuthorizationRequest {
-    fn prompts(&self, value: &str) -> bool {
+    /// Whether `prompt` holds `value`.
+    #[must_use]
+    pub fn prompts(&self, value: &str) -> bool {
         self.prompt.iter().any(|given| given == value)
     }
 
@@ -612,6 +614,8 @@ pub struct PendingAuthorization {
     pub received_at: Timestamp,
     /// When it can no longer be resumed.
     pub expires_at: Timestamp,
+    /// When it waits for a person's consent rather than for a sign-in.
+    pub consent: Option<ConsentWait>,
 }
 
 impl PendingAuthorization {
@@ -630,8 +634,28 @@ impl PendingAuthorization {
             request,
             received_at: now,
             expires_at: now + PENDING_LIFETIME,
+            consent: None,
         };
         (pending, BrowserSecret(Secret::from(secret)))
+    }
+
+    /// Keeps `request` while `person` is asked for consent; the browser
+    /// gets the secret.
+    #[must_use]
+    pub fn hold_for_consent(
+        request: AuthorizationRequest,
+        person: &SignedInPerson,
+        now: Timestamp,
+        random: &dyn RandomSource,
+        digest: &dyn Digest,
+    ) -> (Self, BrowserSecret) {
+        let (mut pending, secret) = Self::hold(request, now, random, digest);
+        pending.consent = Some(ConsentWait {
+            user_id: person.user_id,
+            session_id: person.session_id,
+            answer: None,
+        });
+        (pending, secret)
     }
 
     /// Whether `presented` is the secret of the browser it was kept for.

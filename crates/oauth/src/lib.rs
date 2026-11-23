@@ -20,12 +20,15 @@ pub mod api {
     pub use crate::application::authorization::{
         AuthorizationCodePorts, AuthorizationCodeService, RedeemedCode, ResumedRequest,
     };
+    pub use crate::application::consent::{
+        AskedScope, ConsentPorts, ConsentQuestion, ConsentService, ListedConsent,
+    };
     pub use crate::application::introspection::AccessTokenRegister;
     pub use crate::application::logout::{LogoutPorts, LogoutRefusal, LogoutService};
     pub use crate::application::ports::{
         AccessTokenRecordStore, ApplicationStore, AuthorizationCodeStore,
-        AuthorizationRequestStore, ClientAssertionStore, ClientStore, GrantStore, PersonStanding,
-        RefreshTokenStore, ResourceServerStore,
+        AuthorizationRequestStore, ClientAssertionStore, ClientStore, ConsentStore, GrantStore,
+        PersonStanding, RefreshTokenStore, ResourceServerStore,
     };
     pub use crate::application::resource_access::{
         ResourceAccessPorts, ResourceAccessService, ResourceCaller,
@@ -49,6 +52,10 @@ pub mod api {
     pub use crate::domain::client::{
         AuthenticationMethod, Client, ClientId, ClientSettings, ClientSnapshot, ClientType,
         GrantType, MAX_CLIENTS, MAX_REDIRECT_URIS, MAX_SCOPES, TokenPolicy,
+    };
+    pub use crate::domain::consent::{
+        Consent, ConsentAction, ConsentActor, ConsentAnswer, ConsentHistoryEntry, ConsentWait,
+        DEFAULT_CONSENT_LIFETIME, LONGEST_CONSENT_LIFETIME, SHORTEST_CONSENT_LIFETIME, must_ask,
     };
     pub use crate::domain::event::OauthEvent;
     pub use crate::domain::introspection::{

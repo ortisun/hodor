@@ -87,6 +87,28 @@ export interface BegunKey {
   publicKey: Record<string, unknown>;
 }
 
+/** A scope an application asks for, as the consent page shows it. */
+export type AskedScope =
+  | { kind: "openid"; scope: string }
+  | { kind: "resource"; scope: string; description: string; resourceServer: string };
+
+/** What an application's request asks the person to agree to. */
+export interface ConsentQuestion {
+  application: string;
+  scopes: AskedScope[];
+  /** Whether it asks to keep access when the person is not there. */
+  offlineAccess: boolean;
+}
+
+/** An application the person agreed to. */
+export interface GivenConsent {
+  clientId: string;
+  application: string;
+  scopes: string[];
+  givenAt: string;
+  expiresAt: string;
+}
+
 type Fetch = typeof globalThis.fetch;
 
 function keyOf(value: unknown): Key | null {
@@ -354,6 +376,89 @@ export class Client {
       }
     } finally {
       this.#csrfToken = null;
+    }
+  }
+
+  /** What the request waiting in this browser asks for; `null` when none waits for this person. */
+  async consentQuestion(): Promise<ConsentQuestion | null> {
+    let reply: Reply;
+    try {
+      reply = await this.#send("GET", "/consent");
+    } catch (failure) {
+      if (failure instanceof Failure && failure.status === 404) {
+        return null;
+      }
+      throw failure;
+    }
+    const application = text(reply.body["application"]);
+    const listed = reply.body["scopes"];
+    if (application === null || !Array.isArray(listed)) {
+      throw new Failure(null, reply.status);
+    }
+    const scopes = listed.flatMap((entry: unknown): AskedScope[] => {
+      const fields = typeof entry === "object" && entry !== null ? (entry as Record<string, unknown>) : {};
+      const scope = text(fields["scope"]);
+      if (scope === null) {
+        return [];
+      }
+      if (fields["kind"] === "openid") {
+        return [{ kind: "openid", scope }];
+      }
+      return [
+        {
+          kind: "resource",
+          scope,
+          description: text(fields["description"]) ?? scope,
+          resourceServer: text(fields["resource_server"]) ?? "",
+        },
+      ];
+    });
+    return { application, scopes, offlineAccess: reply.body["offline_access"] === true };
+  }
+
+  /**
+   * Sends the person's answer. Answers where to go: an address of this
+   * tenant's authorization endpoint, and nothing else.
+   */
+  async answerConsent(decision: "allow" | "deny"): Promise<string> {
+    const reply = await this.#send("POST", "/consent", { decision });
+    const next = text(reply.body["continue"]);
+    if (next === null || !this.#isOwnAuthorization(next)) {
+      throw new Failure(null, reply.status);
+    }
+    return next;
+  }
+
+  /** The applications the person agreed to. Needs `session()` to have answered first to withdraw one. */
+  async consents(): Promise<GivenConsent[]> {
+    const reply = await this.#send("GET", "/consents");
+    const listed = reply.body["consents"];
+    if (!Array.isArray(listed)) {
+      return [];
+    }
+    return listed.flatMap((entry: unknown): GivenConsent[] => {
+      const fields = typeof entry === "object" && entry !== null ? (entry as Record<string, unknown>) : {};
+      const clientId = text(fields["client_id"]);
+      const application = text(fields["application"]);
+      const givenAt = text(fields["given_at"]);
+      const expiresAt = text(fields["expires_at"]);
+      const scopes = Array.isArray(fields["scopes"])
+        ? fields["scopes"].filter((scope): scope is string => typeof scope === "string")
+        : [];
+      return clientId !== null && application !== null && givenAt !== null && expiresAt !== null
+        ? [{ clientId, application, scopes, givenAt, expiresAt }]
+        : [];
+    });
+  }
+
+  /** Withdraws the person's agreement to one application. One already withdrawn is not an error. */
+  async withdrawConsent(clientId: string): Promise<void> {
+    try {
+      await this.#send("DELETE", `/consents/${encodeURIComponent(clientId)}`);
+    } catch (failure) {
+      if (!(failure instanceof Failure) || failure.status !== 404) {
+        throw failure;
+      }
     }
   }
 

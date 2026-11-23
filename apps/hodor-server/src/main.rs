@@ -14,7 +14,7 @@ use hodor_adapters_ldap::LdapDirectoryClient;
 use hodor_adapters_postgres::{
     Database, PgAccessTokenRecordStore, PgAccessTokenStore, PgApplicationStore, PgAttemptStore,
     PgAuditLog, PgAuthorizationCodeStore, PgAuthorizationRequestStore, PgBundleStore,
-    PgClientAssertionStore, PgClientStore, PgEngineBindingStore, PgGrantStore,
+    PgClientAssertionStore, PgClientStore, PgConsentStore, PgEngineBindingStore, PgGrantStore,
     PgInstanceStatusStore, PgInstanceStore, PgKeyStore, PgLinkStore, PgMessageQueue,
     PgNativeRoleStore, PgPasswordStore, PgPendingAuthorizationStore, PgProviderStore,
     PgRecoveryCodeStore, PgRefreshTokenStore, PgResourceServerStore, PgRoleAssignmentStore,
@@ -49,17 +49,18 @@ use hodor_keys::api::{KeyService, RotationPolicy, TenantSecretBox};
 use hodor_notification::api::Notifier;
 use hodor_oauth::api::{
     AccessTokenRegister, ApplicationPorts, ApplicationService, AuthorizationCodePorts,
-    AuthorizationCodeService, LogoutPorts, LogoutService, ResourceAccessPorts,
-    ResourceAccessService, TokenPorts, TokenService, UserInfoPorts, UserInfoService,
+    AuthorizationCodeService, ConsentPorts, ConsentService, LogoutPorts, LogoutService,
+    ResourceAccessPorts, ResourceAccessService, TokenPorts, TokenService, UserInfoPorts,
+    UserInfoService,
 };
 use hodor_observability::{LogFormat, Telemetry};
 use hodor_protocol_http::{
-    AdminState, AuthorizationApiState, AuthorizationState, ConsoleState, DiscoveryState, Health,
-    InteractionState, Limits, LogoutState, Pages, ReadinessCheck, ResolvedTenant, TenantResolver,
-    TenantStatus as HttpTenantStatus, TokenState, UserInfoState, admin_routes,
-    authorization_api_routes, authorization_routes, console_routes, discovery_routes,
-    interaction_routes, key_set_routes, logout_routes, ops_router, policy_agent_routes,
-    public_router, serve, token_routes, userinfo_routes,
+    AdminState, AuthorizationApiState, AuthorizationState, ConsentState, ConsoleState,
+    DiscoveryState, Health, InteractionState, Limits, LogoutState, Pages, ReadinessCheck,
+    ResolvedTenant, TenantResolver, TenantStatus as HttpTenantStatus, TokenState, UserInfoState,
+    admin_routes, authorization_api_routes, authorization_routes, consent_routes, console_routes,
+    discovery_routes, interaction_routes, key_set_routes, logout_routes, ops_router,
+    policy_agent_routes, public_router, serve, token_routes, userinfo_routes,
 };
 use hodor_session::api::SessionService;
 use hodor_tenant::api::{TenantDirectory as _, TenantService, TenantStatus};
@@ -324,7 +325,14 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
         )));
     }
     let mut tenant_routes = axum::Router::new()
-        .nest("/interaction", interaction_routes(interaction))
+        .nest(
+            "/interaction",
+            interaction_routes(interaction).merge(consent_routes(ConsentState {
+                consents: authorization.consents.clone(),
+                sessions: authorization.sessions.clone(),
+                digest: Arc::new(Sha256Digest),
+            })),
+        )
         .nest("/oauth2", oauth2)
         .nest(
             "/api/v1/admin",
@@ -604,6 +612,22 @@ fn tenant_service(database: &Database) -> TenantService {
     )
 }
 
+/// Builds the use cases of consent.
+fn consents(database: &Database) -> ConsentService {
+    ConsentService::new(ConsentPorts {
+        units_of_work: Arc::new(database.clone()),
+        consents: Arc::new(PgConsentStore),
+        requests: Arc::new(PgAuthorizationRequestStore),
+        grants: Arc::new(PgGrantStore),
+        clients: Arc::new(PgClientStore),
+        applications: Arc::new(PgApplicationStore),
+        resource_servers: Arc::new(PgResourceServerStore),
+        digest: Arc::new(Sha256Digest),
+        random: Arc::new(OsRandom),
+        clock: Arc::new(SystemClock),
+    })
+}
+
 /// Builds everything the authorization endpoint needs.
 fn authorization(
     config: &Config,
@@ -627,6 +651,7 @@ fn authorization(
             random: random.clone(),
             clock: clock.clone(),
         }),
+        consents: consents(database),
         sessions: SessionService::new(units, Arc::new(PgSessionStore), digest, random, clock),
         authentication,
         tenants: tenant_service(database),
@@ -1113,6 +1138,7 @@ fn administration(config: &Config, database: &Database) -> Result<AdminState, Do
             );
             factor_service(config, database, &identity, &tenants, webauthn)?
         },
+        consents: consents(database),
         public_url: config.public_url.clone(),
     })
 }

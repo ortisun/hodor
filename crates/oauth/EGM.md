@@ -13,9 +13,10 @@ code for a JWT access token signed through the keys context;
 Issue-57: refresh tokens in families that move at every use, and client
 credentials; Issue-59: the OpenID Provider, with the ID token, UserInfo
 and the discovery document; Issue-60: logout initiated by the relying
-party, with post-logout redirect addresses on clients; and Issue-58:
+party, with post-logout redirect addresses on clients; Issue-58:
 revocation, introspection and the register of access tokens they and
-UserInfo ask. Storage,
+UserInfo ask; and Issue-62: consent, with the question asked of a person,
+their answer, their consents and withdrawing one. Storage,
 randomness, hashing, signature checking and time are reached through ports
 and kernel traits.
 
@@ -34,9 +35,13 @@ and kernel traits.
   `PgRefreshTokenStore` in `crates/adapters-postgres/src/oauth_refresh.rs`;
   `AccessTokenRecordStore`, by `PgAccessTokenRecordStore` in
   `crates/adapters-postgres/src/oauth_access_token.rs`;
+  `ConsentStore`, by `PgConsentStore` in
+  `crates/adapters-postgres/src/oauth_consent.rs`;
   `PersonStanding`, by `ServerStanding` in `apps/hodor-server/src/standing.rs`.
 - Used by `crates/protocol-http/src/authorize.rs`,
-  `crates/protocol-http/src/token.rs` and
+  `crates/protocol-http/src/consent.rs` (the consent routes of the
+  interaction interface), `crates/protocol-http/src/admin.rs` (a user's
+  consents), `crates/protocol-http/src/token.rs` and
   `crates/protocol-http/src/openid.rs` (UserInfo and discovery) and
   `crates/protocol-http/src/logout.rs` (the end-session endpoint) over HTTP.
 - Workspace dependencies: `hodor-identity` (`IdentityService` reads the
@@ -77,6 +82,11 @@ and kernel traits.
 - No access or ID token lifetime exceeds
   `TokenPolicy::LONGEST_SIGNED_LIFETIME`, which is
   `RotationPolicy::LONGEST_SIGNED_LIFETIME`.
+- A client of a third-party application gets no code until its person
+  agreed, through `ConsentService::answer`, to every scope and audience of
+  the request (`must_ask`); `offline_access` is asked every time and never
+  kept. Withdrawing a consent revokes every active grant of the person for
+  the client.
 - Every store call is scoped to the tenant of the unit of work (see
   [application](./src/application/EGM.md)).
 
@@ -84,8 +94,8 @@ and kernel traits.
 
 - Through the stores: reads and writes applications, clients, resource
   servers, pending authorization requests, grants, codes, the `jti`s of
-  client assertions, refresh token families with their tokens' hashes, and
-  the records of access tokens by `jti`. Through `KeyService`: signs access and ID tokens, and lists the
+  client assertions, refresh token families with their tokens' hashes,
+  the records of access tokens by `jti`, and consents with their history. Through `KeyService`: signs access and ID tokens, and lists the
   published keys. Through `SecretBox`: seals and opens the secrets of
   refresh token families. Through `IdentityService`: reads people. Through
   `UnitOfWork::record_event`: records the `oauth.*` events.
@@ -96,5 +106,6 @@ and kernel traits.
   `cargo test -p hodor-adapters-postgres --test oauth` for PostgreSQL;
   `cargo test -p hodor-server --test authorization` and
   `cargo test -p hodor-server --test token` and
-  `cargo test -p hodor-server --test openid` for the endpoints on the real
+  `cargo test -p hodor-server --test openid` and
+  `cargo test -p hodor-server --test consent` for the endpoints on the real
   binary.

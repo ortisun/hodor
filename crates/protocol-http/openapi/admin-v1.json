@@ -433,6 +433,153 @@
         }
       }
     },
+    "/users/{user_id}/consents": {
+      "get": {
+        "operationId": "listUserConsents",
+        "summary": "List the consents a user gave that stand, the most recently given first",
+        "x-hodor-permission": "users:read",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The user's consents.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "items"
+                  ],
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Consent"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "A problem document",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/users/{user_id}/consents/{client_id}": {
+      "delete": {
+        "operationId": "withdrawUserConsent",
+        "summary": "Withdraw a user's consent for a client, and revoke the grants made under it",
+        "x-hodor-permission": "users:write",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "client_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "Withdrawn."
+          },
+          "404": {
+            "description": "A problem document",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/users/{user_id}/factors": {
       "get": {
         "operationId": "listUserFactors",
@@ -4319,7 +4466,8 @@
           "access_token_seconds",
           "id_token_seconds",
           "refresh_token_seconds",
-          "refresh_idle_seconds"
+          "refresh_idle_seconds",
+          "consent_seconds"
         ],
         "properties": {
           "access_token_seconds": {
@@ -4337,6 +4485,11 @@
           "refresh_idle_seconds": {
             "type": "integer",
             "minimum": 0
+          },
+          "consent_seconds": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "How long a person's consent to the client lasts before they are asked again."
           }
         }
       },
@@ -4359,6 +4512,12 @@
           "refresh_idle_seconds": {
             "type": "integer",
             "minimum": 0
+          },
+          "consent_seconds": {
+            "type": "integer",
+            "minimum": 86400,
+            "maximum": 63072000,
+            "description": "1 to 730 days; 365 days unless given."
           }
         }
       },
@@ -4857,6 +5016,41 @@
                 }
               }
             }
+          }
+        }
+      },
+      "Consent": {
+        "type": "object",
+        "required": [
+          "client_id",
+          "application",
+          "scopes",
+          "given_at",
+          "expires_at"
+        ],
+        "properties": {
+          "client_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "application": {
+            "type": "string",
+            "description": "The name of the client's application."
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The scopes agreed to, never offline_access."
+          },
+          "given_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
           }
         }
       }

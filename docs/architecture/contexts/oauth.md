@@ -4,7 +4,7 @@ The `oauth` context makes Hodor an OAuth 2.x authorization server and an OpenID 
 
 It does not sign anyone in. When a request needs a person, it hands the request to the `authentication` context and takes the session that comes back. The two contexts do not depend on each other: the HTTP layer joins them ([crates.md](../crates.md)).
 
-This page specifies what Issue-53 builds: applications, clients and resource servers, and the rules they keep; what Issue-55 builds: the authorization endpoint, grants and authorization codes; what Issue-56 builds: the token endpoint, client authentication and access tokens; what Issue-59 builds: the OpenID Provider; and what Issue-60 builds: logout initiated by the relying party. The other endpoints, the other tokens and consent are added by Issue-57 to Issue-62, under the headings at the end of this page.
+This page specifies what Issue-53 builds: applications, clients and resource servers, and the rules they keep; what Issue-55 builds: the authorization endpoint, grants and authorization codes; what Issue-56 builds: the token endpoint, client authentication and access tokens; what Issue-59 builds: the OpenID Provider; what Issue-60 builds: logout initiated by the relying party; and what Issue-62 builds: [consent](#consent). The other endpoints and tokens are added by Issue-57 and Issue-58, under the headings at the end of this page.
 
 ## Applications
 
@@ -14,7 +14,7 @@ An application is what a tenant's administrator registers: a web site, a mobile 
 |---|---|
 | Identifier | An `ApplicationId` |
 | Name | Shown to people, for example on the consent page. 1 to 100 characters, without control characters; spaces at either end are removed |
-| First party | Whether the application belongs to whoever runs the tenant. A first-party application is not asked for consent (Issue-62) |
+| First party | Whether the application belongs to whoever runs the tenant. A person is not asked for [consent](#consent) for a first-party application |
 | Status | `enabled` or `disabled`. The clients of a disabled application get no tokens |
 
 A tenant has at most 100 applications.
@@ -106,6 +106,7 @@ How an assertion is checked against these keys is in [checking a client assertio
 | ID token lifetime | 1 minute to 1 hour | 5 minutes |
 | Refresh token lifetime | 1 hour to 365 days; the most a refresh token family can live | 30 days |
 | Refresh token idle time | 1 hour up to the refresh token lifetime; how long a refresh token lasts unused | 7 days |
+| Consent lifetime | 1 to 730 days; how long a person's [consent](#consent) to the client lasts before they are asked again | 365 days |
 
 ## Resource servers
 
@@ -203,7 +204,7 @@ Every table is a tenant table under row-level security, in the schema `oauth`. R
 | `name`, `client_type`, `authentication_method`, `status` | `text` | A check constraint keeps a public client on `none` |
 | `grant_types`, `redirect_uris`, `post_logout_redirect_uris`, `allowed_scopes` | `text[]` | Redirect addresses of both kinds are compared byte for byte (`COLLATE "C"`) |
 | `require_pkce` | `boolean` | A check constraint keeps it true for a public client |
-| `access_token_seconds`, `id_token_seconds`, `refresh_token_seconds`, `refresh_idle_seconds` | `integer` | The token policy |
+| `access_token_seconds`, `id_token_seconds`, `refresh_token_seconds`, `refresh_idle_seconds`, `consent_seconds` | `integer` | The token policy |
 | `created_at`, `updated_at` | `timestamptz` | |
 | `version` | `integer` | For optimistic locking; secrets and keys are stored with the client under the same version |
 
@@ -282,11 +283,8 @@ A client of another tenant is unknown here: the client is looked up only in the 
 | `login_hint`, `ui_locales` or `acr_values` is longer than 255 characters | `invalid_request` |
 | `scope` is missing or empty, holds a scope the client may not ask for, or a scope that neither OpenID Connect nor a resource server of the request defines | `invalid_scope` |
 | More than 10 `resource` values; a `resource` that is not an absolute address without a fragment; or one that is not the audience of a resource server of this tenant ([RFC 8707](https://www.rfc-editor.org/rfc/rfc8707)) | `invalid_target` |
-| The client belongs to an application that is not first party | `access_denied` |
 
 **The resource servers of a request.** When the request names resources, they are the resource servers whose audiences it names, and every scope that is not one of OpenID Connect's must be defined by one of them. When it names none, they are the resource servers of the tenant that define the scopes asked for. The resource servers become the audiences of the tokens issued from the code (Issue-56).
-
-**Only first-party applications until consent exists.** Consent is Issue-62. Until then, a person would be giving a third-party application access to their account without being asked, so the clients of an application that is not first party are refused with `access_denied`. The administrator of a tenant decides which applications are first party.
 
 `nonce`, `login_hint` and `ui_locales` are kept with the request for the [ID token and the pages](#what-a-request-may-ask-of-the-sign-in); `acr_values` and `max_age` decide [the assurance and the step-up](#assurance-and-step-up). Parameters the endpoint does not know are ignored, as RFC 6749 requires; `claims` is one of them, so an `acr` asked for through it asks for nothing.
 
@@ -297,11 +295,11 @@ A checked request needs a person signed in to the tenant. The session cookie of 
 | Situation | What happens |
 |---|---|
 | No valid session, or `prompt` holds `login` or `select_account` | The person signs in, then the request goes on. With `prompt=none`, error `login_required` instead |
-| A valid session that is [enough](#assurance-and-step-up) for the request | A code is issued at once |
+| A valid session that is [enough](#assurance-and-step-up) for the request | [Consent](#when-a-person-is-asked) is decided; when nobody needs to be asked, a code is issued at once |
 | A valid session that is not enough: too old for `max_age`, or below the level asked for | A [step-up](#assurance-and-step-up) asks the person for what the session lacks, then the request goes on. With `prompt=none`, error `login_required` instead |
 | A valid session that is not enough, and the person cannot reach the level asked for with the factors they have | Error `unmet_authentication_requirements` at the redirect address ([OpenID Connect Unmet Authentication Requirements](https://openid.net/specs/openid-connect-unmet-authentication-requirements-1_0.html)) |
 
-`select_account` is treated as `login`: a browser holds one session per tenant, so the only way to choose another account is to sign in as it. `consent` asks for nothing more until consent exists.
+`select_account` is treated as `login`: a browser holds one session per tenant, so the only way to choose another account is to sign in as it. `consent` asks the person for [consent](#consent) again.
 
 ### Assurance and step-up
 
@@ -335,7 +333,7 @@ When the person must sign in, the request is kept and the browser is sent to the
 2. The browser is redirected to `/t/{slug}/account/sign-in?continue=authorization`. That address tells the sign-in page to start a sign-in even when the browser is signed in already, since the request asked for a new one.
 3. The person signs in with any way the tenant offers, an identity provider included. When the sign-in completes, the interaction interface sees the cookie and adds `"continue": "/t/{slug}/oauth2/authorize/resume"` to its answer ([the interaction interface](../../api/interaction-api.md#what-a-sign-in-response-looks-like)). The page goes there instead of to the account page.
 4. `GET /t/{slug}/oauth2/authorize/resume` reads the cookie, takes the pending request, which can therefore be resumed once, and removes the cookie. Without the cookie, with a wrong secret or after ten minutes, it answers with Hodor's own error page, `oauth.authorization_request_not_found`.
-5. The session is checked again against the request. A request that asked for a new sign-in (`prompt=login` or `select_account`) needs a session that signed in after the request arrived; otherwise the answer is `access_denied` at the redirect address, because the person did not sign in again. Then the session must be [enough](#assurance-and-step-up): when it is, a code is issued. When it is not, after a new sign-in that did not reach the level asked for, a step-up is started as when the request arrived, and the request is kept again; when the person cannot reach the level, the answer is `unmet_authentication_requirements`. A step-up demands the level, so its completion is always enough, and the request does not go round twice.
+5. The session is checked again against the request. A request that asked for a new sign-in (`prompt=login` or `select_account`) needs a session that signed in after the request arrived; otherwise the answer is `access_denied` at the redirect address, because the person did not sign in again. Then the session must be [enough](#assurance-and-step-up): when it is, [consent](#when-a-person-is-asked) is decided and, when nobody needs to be asked, a code is issued. When it is not, after a new sign-in that did not reach the level asked for, a step-up is started as when the request arrived, and the request is kept again; when the person cannot reach the level, the answer is `unmet_authentication_requirements`. A step-up demands the level, so its completion is always enough, and the request does not go round twice.
 
 The cookie:
 
@@ -806,7 +804,7 @@ The authorization endpoint already checks and keeps these parameters ([checking 
 |---|---|
 | `prompt=none` | No page is shown. Without a session that is enough, the answer is `login_required` at the redirect address |
 | `prompt=login`, `prompt=select_account` | The person signs in again, even with a session |
-| `prompt=consent` | Nothing more until consent exists (Issue-62); only clients of first-party applications are answered |
+| `prompt=consent` | The person is asked for [consent](#consent), even for a first-party application and with a consent that stands |
 | `max_age` | Only the methods proven within this many seconds count. A session with none, or whose recent methods are not enough, is [stepped up](#assurance-and-step-up), and `auth_time` in the tokens says when the person last proved something |
 | `acr_values` | The weakest of the tenant's levels named here is what the person must reach; the session is [stepped up](#assurance-and-step-up) to it, or the answer is `unmet_authentication_requirements` |
 | `login_hint` | The sign-in page starts with the identifier filled in. The person can change it; it is a hint, never a claim |
@@ -930,7 +928,97 @@ The session is looked up and ended by the HTTP layer through the session context
 
 ## Consent
 
-Issue-62.
+Issue-62. A person is asked before a third-party application gets access to their account, and what they agreed to is remembered, can be withdrawn, and runs out ([Requirement-OAuth-09](../../product/requirements.md)). Clients of first-party applications are not asked: the tenant runs them, and its administrator decided that when the application was registered.
+
+### What a consent is
+
+A **consent** is what one person agreed to for one client: a set of scopes and the audiences of the resource servers they are for. A person has at most one consent per client.
+
+| Field | Meaning |
+|---|---|
+| User, client | Whose and for which client. Together they identify the consent |
+| Scopes | The scopes agreed to. `offline_access` is never kept: it is asked every time, as the next section says |
+| Audiences | The audiences of the resource servers the scopes were agreed for |
+| Given at | When the person last agreed |
+| Expires at | Given at plus the client's consent lifetime |
+| Withdrawn at, withdrawn by | When it was withdrawn, and whether by the `person` or an `administrator` |
+
+**Agreeing again** to a consent that stands adds the new scopes and audiences to the old ones, and its expiry starts again from that moment. Agreeing after a consent expired or was withdrawn starts it over with only what was asked for.
+
+**The consent lifetime** is part of the client's [token policy](#token-policy): 365 days unless an administrator changes it, from 1 to 730 days.
+
+**Every change is kept in a history**: each time a person agrees, refuses, or a consent is withdrawn, one row records who, which client, what scopes and audiences, by whom and when. The history is never changed or removed by the application.
+
+### When a person is asked
+
+A checked request for a person who is signed in and whose session is enough then decides whether to ask:
+
+| Situation | What happens |
+|---|---|
+| The client's application is first party, and `prompt` does not hold `consent` | No question: a code is issued |
+| `prompt` holds `consent` | The person is asked, whatever they agreed to before |
+| The scopes hold `offline_access`, for a third-party client | The person is asked, every time ([OpenID Connect Core, section 11](https://openid.net/specs/openid-connect-core-1_0.html#OfflineAccess)): letting an application go on without the person is decided each time it is asked for |
+| The person's consent for the client stands, has not expired, and holds every scope and audience of the request | No question: a code is issued |
+| Anything else | The person is asked |
+
+A request that must ask, with `prompt=none`, is answered `consent_required` at the redirect address ([OpenID Connect Core, section 3.1.2.6](https://openid.net/specs/openid-connect-core-1_0.html#AuthError)).
+
+### Asking
+
+Asking uses the same pending request as signing in ([signing in and coming back](#signing-in-and-coming-back)), with the person it is for:
+
+1. The checked request is stored as a pending authorization request that **waits for consent**, with the user and the session it is for, and the browser gets the `__Secure-hodor_authorization` cookie as for a sign-in.
+2. The browser is sent to the consent page, `/t/{slug}/account/consent`, of [the hosted pages](../hosted-pages.md#asking-for-consent).
+3. The page reads what to show from `GET /t/{slug}/interaction/consent` and sends the person's answer to `POST /t/{slug}/interaction/consent` ([the interaction interface](../../api/interaction-api.md#consent)). Both need the browser's cookie and its session to be the one the request waits for; the answer needs the session's CSRF token and passes the origin check.
+4. The answer is recorded on the pending request, once: a second answer is refused. Agreeing records the consent at once. The interface answers `{"continue": "/t/{slug}/oauth2/authorize/resume"}` either way.
+5. The resume address takes the pending request as for a sign-in. A request that waits for consent is answered by its answer: agreed, a code is issued; refused or never answered, `access_denied` at the redirect address. The person must still be signed in with the same session; another session, or none, is `access_denied` as well.
+
+When the person must sign in first, they sign in, the request is resumed, and only then is the question decided: the request is kept again, waiting for consent, for the person who signed in.
+
+### What the page shows
+
+`GET /interaction/consent` gives the page:
+
+- the name of the **application**, as its administrator registered it;
+- each **scope** asked for: for a scope of OpenID Connect, its name, which the page words in the person's language; for a scope of a resource server, the description the resource server gives, as written by the tenant's administrator, with the resource server's name;
+- whether the request asks for **offline access**, so that the page says the application will keep access when the person is not there.
+
+It never shows the redirect address or anything else the client chose, so that a client cannot put words on Hodor's page.
+
+### Withdrawing a consent
+
+A consent is withdrawn by the person, at `DELETE /t/{slug}/interaction/consents/{client_id}`, or by an administrator of the tenant, at `DELETE /api/v1/admin/users/{user_id}/consents/{client_id}` ([the administration interface](../../api/admin-api.md#consents)).
+
+Withdrawing a consent **revokes every active grant of the person for that client**, with the reason `consent_withdrawn`. A refresh token family stops working when its grant is revoked ([what ends a family](#what-ends-a-family)), so no refresh token of those grants is accepted again; and an access token whose grant is revoked is no longer in force, so introspection answers it inactive and UserInfo refuses it ([the register of access tokens](#revocation-introspection-and-metadata)). A resource server that checks tokens on its own, without introspection, accepts one until it expires, five minutes unless the client's policy says otherwise.
+
+The next request of the client for that person asks again.
+
+### Events
+
+| Event type | When |
+|---|---|
+| `oauth.consent_given` | A person agreed. It carries the client, the user and the scopes agreed to |
+| `oauth.consent_refused` | A person refused. It carries the client and the user |
+| `oauth.consent_withdrawn` | A consent was withdrawn. It carries the client, the user and `by`: `person` or `administrator` |
+
+Withdrawing also records `oauth.grant_revoked` for each grant it revokes. No event carries more of the person than their identifier.
+
+### Ports
+
+| Port | Purpose |
+|---|---|
+| `ConsentStore` | Load a person's consent for a client; store it; list a person's consents; append to the history |
+| `AuthorizationRequestStore` | As for a sign-in, and record the answer to a request that waits for consent, only if it has none |
+| `GrantStore` | As before, and list a person's active grants for a client |
+
+### Storage
+
+| Table | Holds |
+|---|---|
+| `oauth.consent` | `tenant_id`, `user_id`, `client_id` (the key, with the tenant), `scopes`, `audiences`, `given_at`, `expires_at`, `withdrawn_at`, `withdrawn_by` |
+| `oauth.consent_history` | `tenant_id`, `id`, `user_id`, `client_id`, `action` (`given`, `refused` or `withdrawn`), `scopes`, `audiences`, `by_whom` (`person` or `administrator`), `at`. The application may add rows and read them, never change or remove them |
+
+Both are tenant tables under row-level security, and reference their client with the tenant. `oauth.authorization_request` gains the user and the session a request waits for consent for, and the answer, `agreed` or `refused`. `oauth.client` gains `consent_seconds`, the consent lifetime.
 
 ## Not built yet
 
@@ -944,14 +1032,14 @@ Issue-62.
 | The metadata at the address RFC 8414 prefers for an issuer with a path, `/.well-known/oauth-authorization-server/t/{slug}`: it is outside the tenant's addresses, so only the address after the issuer is served | When a client needs it |
 | Calling UserInfo from a browser on another origin | With origins in the client settings |
 | The person's claims in the ID token when asked for with the `claims` parameter | Not planned for 0.2.0 |
-| Asking for consent before `offline_access` is granted ([OpenID Connect Core, section 11](https://openid.net/specs/openid-connect-core-1_0.html#OfflineAccess)) | Issue-62 |
 | More than one `resource` in a refresh or client credentials request: a parameter may be given once | With resource indicators given more than once at the token endpoint |
 | Removing refresh token families after they expire, with their tokens | A cleanup job, with the other expired rows |
 | Calling the token endpoint from a browser on another origin: clients have no registered origins yet, so no cross-origin headers are sent | With origins in the client settings |
 | Client assertions signed with `ES384` or `EdDSA`, which client keys on P-384 and Ed25519 would need | When the kernel's signature checking covers them |
 | Removing remembered client assertions after they expire | A cleanup job, with the other expired rows |
-| Asking a person for consent; until then only clients of first-party applications are answered | Issue-62 |
 | Asking for an `acr` with the `claims` parameter. `acr_values` is the way to ask | Not planned for 0.2.0 |
+| A page where a person sees the history of their consents | The account console, Phase 2 |
+| Removing withdrawn and expired consents | A cleanup job, with the other expired rows |
 | Limits on requests to the authorization endpoint per address | With the other limits per address, before any deployment behind a load balancer |
 | Removing expired pending requests, codes and revoked grants | A cleanup job, with the other expired rows |
 | Request objects (`request`, `request_uri`) and pushed authorization requests | Phase 4, after 0.2.0 |

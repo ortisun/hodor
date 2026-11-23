@@ -41,7 +41,7 @@ use hodor_kernel::{
     TenantContext, UserId,
 };
 use hodor_keys::api::{KeyAlgorithm, KeyService, KeyUse, KeyVersion, KeyVersionId, RotationPolicy};
-use hodor_oauth::api::ApplicationService;
+use hodor_oauth::api::{ApplicationService, ClientId, ConsentActor, ConsentService};
 use hodor_session::api::{Session, SessionId, SessionService};
 use hodor_tenant::api::{AssuranceLevel, AssuranceLevels, AssuranceRequirement, TenantService};
 use serde::de::DeserializeOwned;
@@ -65,6 +65,12 @@ pub const ADMIN_OPERATIONS: &[(&str, &str, Permission)] = &[
     ("GET", "/users/{user_id}", Permission::UsersRead),
     ("POST", "/users/{user_id}:suspend", Permission::UsersWrite),
     ("GET", "/users/{user_id}/sessions", Permission::SessionsRead),
+    ("GET", "/users/{user_id}/consents", Permission::UsersRead),
+    (
+        "DELETE",
+        "/users/{user_id}/consents/{client_id}",
+        Permission::UsersWrite,
+    ),
     (
         "GET",
         "/users/{user_id}/factors",
@@ -244,6 +250,8 @@ pub struct AdminState {
     pub tenants: TenantService,
     /// The users' second factors, which an administrator sees and removes.
     pub factors: FactorService,
+    /// The consents people gave applications.
+    pub consents: ConsentService,
     /// The address people reach this installation at, without a path.
     pub public_url: String,
 }
@@ -306,6 +314,11 @@ fn shared_routes() -> Router<Shared> {
         // is part of the last segment.
         .route("/users/{user}", get(get_user).post(user_action))
         .route("/users/{user}/sessions", get(list_user_sessions))
+        .route("/users/{user}/consents", get(list_user_consents))
+        .route(
+            "/users/{user}/consents/{client}",
+            delete(withdraw_user_consent),
+        )
         .route("/sessions/{session}", delete(revoke_session))
         .route("/audit-records", get(list_audit_records))
         .route(
@@ -1022,6 +1035,90 @@ async fn list_user_sessions(
                 next_cursor: None,
             };
             Ok(Json(body).into_response())
+        }
+        .await,
+    )
+}
+
+#[derive(Debug, Serialize)]
+struct ConsentBody {
+    client_id: String,
+    application: String,
+    scopes: Vec<String>,
+    given_at: String,
+    expires_at: String,
+}
+
+async fn list_user_consents(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+    parameters: RawPathParams,
+) -> Response {
+    respond(
+        async {
+            authorize(
+                &state,
+                &tenant,
+                &headers,
+                "GET",
+                "/users/{user_id}/consents",
+            )
+            .await?;
+            let id: UserId = parameter(&parameters, "user").ok_or_else(user_not_found)?;
+            // A user that does not exist has no consents to list.
+            state.identity.get(&tenant, id).await.map_err(failed)?;
+            let consents = state.consents.list(&tenant, id).await.map_err(failed)?;
+            let body = PageBody {
+                items: consents
+                    .into_iter()
+                    .map(|listed| ConsentBody {
+                        client_id: listed.consent.client_id.to_string(),
+                        application: listed.application,
+                        scopes: listed.consent.scopes,
+                        given_at: written(listed.consent.given_at),
+                        expires_at: written(listed.consent.expires_at),
+                    })
+                    .collect(),
+                next_cursor: None,
+            };
+            Ok(Json(body).into_response())
+        }
+        .await,
+    )
+}
+
+async fn withdraw_user_consent(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+    parameters: RawPathParams,
+) -> Response {
+    respond(
+        async {
+            let caller = authorize(
+                &state,
+                &tenant,
+                &headers,
+                "DELETE",
+                "/users/{user_id}/consents/{client_id}",
+            )
+            .await?;
+            let id: UserId = parameter(&parameters, "user").ok_or_else(user_not_found)?;
+            state.identity.get(&tenant, id).await.map_err(failed)?;
+            let not_found = || {
+                failed(DomainError::not_found(
+                    "oauth.consent_not_found",
+                    "there is no such consent",
+                ))
+            };
+            let client: ClientId = parameter(&parameters, "client").ok_or_else(not_found)?;
+            state
+                .consents
+                .withdraw(&tenant, id, client, ConsentActor::Administrator, caller)
+                .await
+                .map_err(failed)?;
+            Ok(StatusCode::NO_CONTENT.into_response())
         }
         .await,
     )

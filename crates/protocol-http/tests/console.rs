@@ -76,17 +76,27 @@ struct SignedIn {
 fn applications(
     units_of_work: &InMemoryUnitOfWorkFactory,
     clock: Arc<FixedClock>,
-) -> hodor_oauth::api::ApplicationService {
+) -> (
+    hodor_oauth::api::ApplicationService,
+    hodor_oauth::api::ConsentService,
+) {
     let stores = hodor_oauth::testing::InMemoryStores::default();
-    hodor_oauth::api::ApplicationService::new(hodor_oauth::api::ApplicationPorts {
-        units_of_work: Arc::new(units_of_work.clone()),
-        applications: Arc::new(stores.applications),
-        clients: Arc::new(stores.clients),
-        resource_servers: Arc::new(stores.resource_servers),
-        digest: Arc::new(FakeDigest),
-        random: Arc::new(hodor_oauth::testing::DistinctRandom),
-        clock,
-    })
+    let consents = hodor_oauth::testing::consent_service(
+        Arc::new(units_of_work.clone()),
+        &stores,
+        clock.clone(),
+    );
+    let applications =
+        hodor_oauth::api::ApplicationService::new(hodor_oauth::api::ApplicationPorts {
+            units_of_work: Arc::new(units_of_work.clone()),
+            applications: Arc::new(stores.applications),
+            clients: Arc::new(stores.clients),
+            resource_servers: Arc::new(stores.resource_servers),
+            digest: Arc::new(FakeDigest),
+            random: Arc::new(hodor_oauth::testing::DistinctRandom),
+            clock,
+        });
+    (applications, consents)
 }
 
 /// The use cases of people's factors on in-memory stores, with
@@ -174,6 +184,7 @@ fn world() -> World {
 
     let acme = TenantContext::assume(TenantId::generate());
     let globex = TenantContext::assume(TenantId::generate());
+    let oauth = applications(&units_of_work, clock.clone());
     let administration = AdminState {
         tokens: tokens.clone(),
         authorization: authorization.clone(),
@@ -184,7 +195,8 @@ fn world() -> World {
         federation: None,
         keys: None,
         key_rotation: hodor_keys::api::RotationPolicy::DEFAULT,
-        applications: applications(&units_of_work, clock.clone()),
+        applications: oauth.0,
+        consents: oauth.1,
         tenants: TenantService::new(
             Arc::new(units_of_work.clone()),
             Arc::new(InMemoryTenants::default()),

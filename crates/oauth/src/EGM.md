@@ -12,14 +12,15 @@ follows is `docs/architecture/contexts/oauth.md`.
   - Ports: `ApplicationStore`, `ClientStore`, `ResourceServerStore`,
     `AuthorizationRequestStore`, `GrantStore`, `AuthorizationCodeStore`,
     `ClientAssertionStore`, `RefreshTokenStore`, `AccessTokenRecordStore`,
-    `PersonStanding`.
+    `PersonStanding`, `ConsentStore`.
   - Services: `ApplicationService`, `ApplicationPorts`, `CreateClient`,
     `RotateSecret`, `CreateResourceServer`; `AuthorizationCodeService`,
     `AuthorizationCodePorts`, `ResumedRequest`, `RedeemedCode`;
     `TokenService`, `TokenPorts`, `Issuer`, `IssuedTokens`, with
     `TokenService::revoke`, `introspect` and `register`;
     `AccessTokenRegister`; `UserInfoService`, `UserInfoPorts`;
-    `LogoutService`, `LogoutPorts`, `LogoutRefusal`.
+    `LogoutService`, `LogoutPorts`, `LogoutRefusal`; `ConsentService`,
+    `ConsentPorts`, `ConsentQuestion`, `AskedScope`, `ListedConsent`.
   - The end-session endpoint's domain: `LogoutParameters`,
     `check_id_token_hint`, `IdTokenHint`, `LogoutRequest` (with `decide`),
     `LogoutDecision`, `CurrentSession`, `ReturnAddress`, `logout_refusal`
@@ -53,6 +54,10 @@ follows is `docs/architecture/contexts/oauth.md`.
   - Revocation and introspection: `TokenQuery` (with `parse`),
     `TokenTypeHint`, `AccessTokenRecord`, `ActiveRefreshToken`, `inactive`,
     `active_access_token`, `active_refresh_token`, `REVOKED_BY_CLIENT`.
+  - Consent: `Consent`, `ConsentAnswer`, `ConsentWait`, `ConsentActor`,
+    `ConsentAction`, `ConsentHistoryEntry`, `must_ask`, and
+    `DEFAULT_CONSENT_LIFETIME`, `SHORTEST_CONSENT_LIFETIME`,
+    `LONGEST_CONSENT_LIFETIME`.
   - Event: `OauthEvent`.
   - Domain: `Application`, `ApplicationId`, `ApplicationSettings`,
     `ApplicationSnapshot`, `Status`, `Client`, `ClientId`, `ClientType`,
@@ -93,6 +98,11 @@ follows is `docs/architecture/contexts/oauth.md`.
     which refuses a record whose client the tenant does not have, with
     `all(tenant)`; `AccessTokenRecordStorePorts` and
     `run_access_token_record_contract(ports)`.
+  - `testing/consent.rs`: `InMemoryConsents::new(&clients)`, which refuses
+    a consent or a history entry whose client the tenant does not have,
+    with `history(tenant)`; `consent_service(units, &stores, clock)`, a
+    `ConsentService` on in-memory stores for the layers above;
+    `ConsentStorePorts` and `run_consent_contract(ports)`.
 - Subdirectories:
   - [application](./application/EGM.md): the ports and the use cases.
   - [domain](./domain/EGM.md): the aggregates and their rules.
@@ -113,6 +123,18 @@ follows is `docs/architecture/contexts/oauth.md`.
   redeemed once (the second call answers `false`); and that a row cannot
   name a client (`oauth.client_not_found`) or grant
   (`oauth.grant_not_found`) of another tenant.
+- The authorization contract also requires that a request waiting for
+  consent loads back with whom it waits for, and is answered once
+  (`AuthorizationRequestStore::answer` answers `false` the second time, for
+  a request that waits for a sign-in, and from another tenant); and that
+  `GrantStore::list_active_for` lists only the active grants of that person
+  for that client, in that tenant.
+- The consent contract requires that a consent loads back whole and is
+  replaced by the next save; that `list_standing` lists only the person's
+  consents that are neither withdrawn nor expired, the most recently given
+  first; that the history takes the same entry twice; and that no consent
+  is read across tenants or names another tenant's client
+  (`oauth.client_not_found`).
 - The assertion contract requires that a `jti` is remembered once per
   client (the second call answers `false`), that the same `jti` of another
   client is another assertion, and that a row cannot name a client of

@@ -72,6 +72,28 @@ export const ptBR: Messages = {
   accountTitle: "Você entrou",
   signedInSince: (moment) => `Conectado desde ${moment}.`,
   signOut: "Sair",
+  givenConsentsTitle: "Aplicativos que você deixou entrar",
+  givenConsentsNone: "Você não deixou nenhum aplicativo entrar na sua conta.",
+  givenConsent: (application: string, until: string) => `${application}, até ${until}`,
+  withdrawConsent: (application: string) => `Retirar ${application}`,
+  consentWithdrawn: (application: string) =>
+    `${application} não tem mais acesso. Ele vai pedir de novo se precisar.`,
+
+  consentTitle: (application: string) => `${application} quer acessar a sua conta`,
+  consentLead: "Se você permitir, ele vai poder:",
+  consentOffline: "Manter este acesso quando você não estiver usando",
+  consentScopeOpenid: "Saber quem você é",
+  consentScopeProfile: "Ver o seu nome e o seu nome de usuário",
+  consentScopeEmail: "Ver o seu endereço de email",
+  consentScopeAddress: "Ver o seu endereço postal",
+  consentScopePhone: "Ver o seu número de telefone",
+  consentScopeOfResource: (description: string, resourceServer: string) =>
+    resourceServer === "" ? description : `${description} (${resourceServer})`,
+  consentAllow: "Permitir",
+  consentDeny: "Negar",
+  consentNothingTitle: "Nada para responder",
+  consentNothing: "Nenhum aplicativo está esperando a sua resposta neste navegador.",
+  goToAccount: "Ir para a sua conta",
 
   signOutTitle: "Sair?",
   signOutQuestion: (tenant) => `Uma aplicação pediu para você sair de ${tenant}. Sair aqui também?`,

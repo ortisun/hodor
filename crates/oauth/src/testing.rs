@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use time::Duration;
 
 mod authorization;
+mod consent;
 mod refresh;
 mod register;
 mod token;
@@ -22,6 +23,7 @@ pub use authorization::{
     AuthorizationStorePorts, InMemoryAuthorizationCodes, InMemoryAuthorizationRequests,
     InMemoryGrants, run_authorization_contract,
 };
+pub use consent::{ConsentStorePorts, InMemoryConsents, consent_service, run_consent_contract};
 pub use refresh::{
     InMemoryRefreshTokens, RefreshStorePorts, StandingOf, run_refresh_token_contract,
 };

@@ -22,8 +22,8 @@ use hodor_authentication::api::{AuthenticationService, StepUp, StepUpRequest};
 use hodor_kernel::{Actor, Caller, CorrelationId, TenantContext, Timestamp};
 use hodor_oauth::api::{
     AuthorizationCodeService, AuthorizationError, AuthorizationParameters, AuthorizationRefusal,
-    AuthorizationRequest, PENDING_LIFETIME, PendingAuthorizationId, Proof, SessionDecision,
-    SignedInPerson,
+    AuthorizationRequest, ConsentAnswer, ConsentService, PENDING_LIFETIME, PendingAuthorizationId,
+    Proof, SessionDecision, SignedInPerson,
 };
 use hodor_session::api::{Assurance, ClientInfo, Session, SessionService};
 use hodor_tenant::api::{AssuranceLevels, AssuranceRequirement, TenantService};
@@ -37,6 +37,8 @@ pub(crate) const AUTHORIZATION_COOKIE: &str = "__Secure-hodor_authorization";
 pub struct AuthorizationState {
     /// The use cases of the endpoint.
     pub authorization: AuthorizationCodeService,
+    /// The use cases of consent, to decide whether the person is asked.
+    pub consents: ConsentService,
     /// The session use cases, to find who the browser is signed in as.
     pub sessions: SessionService,
     /// Says what a session's methods amount to, and starts step-ups.
@@ -270,6 +272,62 @@ async fn issue(
     }
 }
 
+/// Issues a code for a person whose session is enough, or, when they must
+/// be asked first, keeps the request and sends the browser to the consent
+/// page. Returns the answer and whether it set the cookie of a request it
+/// keeps.
+async fn proceed(
+    state: &AuthorizationState,
+    tenant: &TenantContext,
+    slug: &str,
+    request: AuthorizationRequest,
+    person: &SignedInPerson,
+) -> (Response, bool) {
+    let ask = match state.consents.must_ask(tenant, &request, person).await {
+        Ok(ask) => ask,
+        Err(error) => return (Problem::from(error).into_response(), false),
+    };
+    if !ask {
+        return (issue(state, tenant, slug, &request, person).await, false);
+    }
+    if request.prompts("none") {
+        let error = error_for(
+            &request,
+            "consent_required",
+            "the person must be asked for consent",
+        );
+        return (redirect_error(&error, &issuer(state, slug)), false);
+    }
+    let location = consent_address(slug, &request);
+    match state.consents.hold(tenant, request, person).await {
+        Ok((id, secret)) => {
+            let mut response = redirect_to_path(&location);
+            set_cookie(
+                &mut response,
+                &authorization_cookie(
+                    slug,
+                    &format!("{id}.{}", secret.expose()),
+                    PENDING_LIFETIME.whole_seconds(),
+                ),
+            );
+            (response, true)
+        }
+        Err(error) => (Problem::from(error).into_response(), false),
+    }
+}
+
+/// The consent page, given the request's `ui_locales`.
+fn consent_address(slug: &str, request: &AuthorizationRequest) -> String {
+    match &request.ui_locales {
+        Some(locales) => {
+            let mut query = form_urlencoded::Serializer::new(String::new());
+            query.append_pair("ui_locales", locales);
+            format!("/t/{slug}/account/consent?{}", query.finish())
+        }
+        None => format!("/t/{slug}/account/consent"),
+    }
+}
+
 fn authorization_cookie(slug: &str, value: &str, max_age: i64) -> String {
     format!(
         "{AUTHORIZATION_COOKIE}={value}; Path=/t/{slug}; Max-Age={max_age}; HttpOnly; Secure; SameSite=Strict"
@@ -363,8 +421,11 @@ async fn step_up(
         }
         // The session reaches what the step-up would demand: nothing to ask.
         Ok(StepUp::NotNeeded) => {
-            let mut response = issue(state, tenant, slug, &request, &standing.person).await;
-            forget_authorization(&mut response, slug);
+            let (mut response, kept) =
+                proceed(state, tenant, slug, request, &standing.person).await;
+            if !kept {
+                forget_authorization(&mut response, slug);
+            }
             response
         }
         Err(error) => Problem::from(error).into_response(),
@@ -408,7 +469,9 @@ async fn authorize(
     );
     match (decision, session, standing) {
         (SessionDecision::Issue, Some(_), Some(standing)) => {
-            issue(state, tenant, slug, &request, &standing.person).await
+            proceed(state, tenant, slug, request, &standing.person)
+                .await
+                .0
         }
         (SessionDecision::StepUp { carried }, Some(session), Some(standing)) => {
             step_up(
@@ -524,14 +587,33 @@ async fn resume(
     };
     let now = state.authorization.now();
     let request = resumed.request;
-    let denied = |state: &AuthorizationState| {
+    let denied = |state: &AuthorizationState, description: &'static str| {
         redirect_error(
-            &error_for(&request, "access_denied", "the person did not sign in"),
+            &error_for(&request, "access_denied", description),
             &issuer(state, &slug),
         )
     };
-    let mut response = match session {
-        Some(session)
+    let (mut response, kept) = match (resumed.consent, session) {
+        // A request that waited for consent is answered by the answer, for
+        // the session it was asked in.
+        (Some(wait), Some(session)) if wait.session_id == session.id() => match wait.answer {
+            Some(ConsentAnswer::Agreed) => {
+                match standing(&state, &tenant, &request, &session, now, None).await {
+                    Ok(standing) => (
+                        issue(&state, &tenant, &slug, &request, &standing.person).await,
+                        false,
+                    ),
+                    Err(response) => (*response, false),
+                }
+            }
+            Some(ConsentAnswer::Refused) => (denied(&state, "the person refused"), false),
+            None => (denied(&state, "the person did not answer"), false),
+        },
+        (Some(_), _) => (
+            denied(&state, "the person is not signed in as they were asked"),
+            false,
+        ),
+        (None, Some(session))
             if request.signed_in_as_asked(session.snapshot().signed_in_at, resumed.received_at) =>
         {
             match standing(
@@ -544,9 +626,9 @@ async fn resume(
             )
             .await
             {
-                Err(response) => *response,
+                Err(response) => (*response, false),
                 Ok(standing) if !standing.person.methods.is_empty() && standing.enough => {
-                    issue(&state, &tenant, &slug, &request, &standing.person).await
+                    proceed(&state, &tenant, &slug, request.clone(), &standing.person).await
                 }
                 // A new sign-in that did not reach what was asked: the
                 // session is stepped up, and the request kept again. A
@@ -569,8 +651,10 @@ async fn resume(
                 }
             }
         }
-        _ => denied(&state),
+        (None, _) => (denied(&state, "the person did not sign in"), false),
     };
-    forget_authorization(&mut response, &slug);
+    if !kept {
+        forget_authorization(&mut response, &slug);
+    }
     response
 }
