@@ -61,6 +61,13 @@ provider is offered), `digest: Arc<dyn Digest>` and `clock: Arc<dyn Clock>`
 and removes of a user's factors, `admin/factors.rs`),
 `decisions: DecisionLog` (`hodor_authorization`; the record of decisions and
 its settings, `admin/decisions.rs`),
+`roles: RoleService` and `evaluation: EvaluationService` (`hodor_authorization`;
+permissions, roles, assignments and bindings, `admin/authorization.rs`, a
+resource server named in the path by its identifier and standing for its
+audience), `policies: Option<PolicyService>` (`hodor_authorization_opa`; policy
+versions drafted, checked, tested and simulated, and the publication status;
+`None` answers `404` `authorization.policies_unavailable`; publishing is not a
+route, since only the command line holds the key that signs bundles),
 `federation: Option<FederationService>` (`None` when the installation has no
 keys to keep provider secrets with), `keys: Option<KeyService>`
 (`hodor_keys`; `None` makes the key routes answer `503`

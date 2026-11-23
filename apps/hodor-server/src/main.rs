@@ -17,10 +17,11 @@ use hodor_adapters_postgres::{
     PgClientAssertionStore, PgClientStore, PgConsentStore, PgDecisionLogStore,
     PgEngineBindingStore, PgGrantStore, PgInstanceStatusStore, PgInstanceStore, PgKeyStore,
     PgLinkStore, PgMessageQueue, PgNativeRoleStore, PgPasswordStore, PgPendingAuthorizationStore,
-    PgProviderStore, PgRecoveryCodeStore, PgRefreshTokenStore, PgResourceServerStore,
-    PgRoleAssignmentStore, PgSealingStateStore, PgSessionStore, PgTenantDirectory,
-    PgTenantRepository, PgTotpStore, PgTransactionStore, PgUploadedDecisionStore, PgUserRepository,
-    PgVerificationTokenStore, PgWebAuthnStore,
+    PgPolicyVersionStore, PgProviderStore, PgPublicationStore, PgRecoveryCodeStore,
+    PgRefreshTokenStore, PgResourceServerStore, PgRoleAssignmentStore, PgSealingStateStore,
+    PgSessionStore, PgSimulationStore, PgTenantDirectory, PgTenantRepository, PgTotpStore,
+    PgTransactionStore, PgUploadedDecisionStore, PgUserRepository, PgVerificationTokenStore,
+    PgWebAuthnStore,
 };
 use hodor_audit::api::AuditService;
 use hodor_authentication::api::{
@@ -29,11 +30,11 @@ use hodor_authentication::api::{
     RecoveryCodeAuthenticator, Requirement, TotpAuthenticator, WebAuthnAuthenticator,
 };
 use hodor_authorization::api::{
-    AuthorizationService, DecisionLog, EngineRegistry, EvaluationService, NativeEngine,
+    AuthorizationService, DecisionLog, EngineRegistry, EvaluationService, NativeEngine, RoleService,
 };
 use hodor_authorization_native::CelConditionLanguage;
 use hodor_authorization_opa::api::{
-    BundleService, Instances, OpenPolicyAgentEngine, StoredRevisions,
+    BundleService, Instances, OpenPolicyAgentEngine, PolicyService, StoredRevisions,
 };
 use hodor_credential::api::{
     AccessTokenService, CredentialService, RecoveryCodeService, RelyingParty, TotpService,
@@ -336,12 +337,12 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
         .nest("/oauth2", oauth2)
         .nest(
             "/api/v1/admin",
-            admin_routes(administration(&config, &database)?),
+            admin_routes(administration(&config, &database, &engines)?),
         )
         .nest(
             "/console/api",
             console_routes(ConsoleState {
-                administration: administration(&config, &database)?,
+                administration: administration(&config, &database, &engines)?,
                 digest: Arc::new(Sha256Digest),
                 clock: Arc::new(SystemClock),
             }),
@@ -1073,7 +1074,11 @@ fn factor_service(
 }
 
 /// Builds everything the administration interface needs.
-fn administration(config: &Config, database: &Database) -> Result<AdminState, DomainError> {
+fn administration(
+    config: &Config,
+    database: &Database,
+    engines: &EngineRegistry,
+) -> Result<AdminState, DomainError> {
     let units = || Arc::new(database.clone());
     let clock = Arc::new(SystemClock);
     let digest = Arc::new(Sha256Digest);
@@ -1103,6 +1108,7 @@ fn administration(config: &Config, database: &Database) -> Result<AdminState, Do
         random: random.clone(),
         clock: clock.clone(),
     });
+    let applications_for_subjects = applications.clone();
     Ok(AdminState {
         tokens: AccessTokenService::new(
             units(),
@@ -1152,6 +1158,37 @@ fn administration(config: &Config, database: &Database) -> Result<AdminState, Do
         },
         consents: consents(database),
         decisions: decision_log(database),
+        roles: RoleService::new(units(), Arc::new(PgNativeRoleStore), clock.clone())
+            .with_condition_language(Arc::new(CelConditionLanguage::new())),
+        evaluation: EvaluationService::new(
+            units(),
+            Arc::new(PgRoleAssignmentStore),
+            Arc::new(PgEngineBindingStore),
+            Arc::new(subjects::ServerSubjects {
+                identity: IdentityService::new(units(), Arc::new(PgUserRepository), clock.clone()),
+                applications: applications_for_subjects,
+            }),
+            engines.clone(),
+            clock.clone(),
+        ),
+        policies: Some(PolicyService::new(
+            Arc::new(PgPolicyVersionStore),
+            Arc::new(PgPublicationStore),
+            Arc::new(PgSimulationStore),
+            BundleService::new(
+                Arc::new(PgInstanceStore::new(database.clone())),
+                Arc::new(PgBundleStore),
+                Arc::new(PgInstanceStatusStore),
+                Arc::new(PgUploadedDecisionStore),
+                Arc::new(database.clone()),
+                Arc::new(Sha256Digest),
+                Arc::new(OsRandom),
+                Arc::new(SystemClock),
+            ),
+            Arc::new(database.clone()),
+            Arc::new(Sha256Digest),
+            Arc::new(SystemClock),
+        )),
         public_url: config.public_url.clone(),
     })
 }

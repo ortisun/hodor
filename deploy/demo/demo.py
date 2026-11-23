@@ -150,12 +150,22 @@ def compose():
     return ["docker", "compose", "-f", str(COMPOSE_FILE)]
 
 
-def cli(*arguments):
-    """Runs `hodor-cli` in the stack, as an operator would."""
+def cli(*arguments, volumes=(), environment=()):
+    """Runs `hodor-cli` in the stack, as an operator would.
+
+    `volumes` are `host:container` directories to mount, and `environment`
+    `NAME=value` settings, for a command that reads a file the operator
+    holds, such as the key that signs bundles."""
+    options = []
+    for volume in volumes:
+        options += ["-v", volume]
+    for setting in environment:
+        options += ["-e", setting]
     command = [
         *compose(), "run", "--rm", "--no-deps", "-T",
         "--entrypoint", "/usr/local/bin/hodor-cli",
         "-e", f"HODOR_DATABASE_URL={CLI_DATABASE_URL}",
+        *options,
         "server", *arguments,
     ]
     done = subprocess.run(command, capture_output=True, text=True, check=False)

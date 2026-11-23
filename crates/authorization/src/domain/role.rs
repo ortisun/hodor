@@ -41,11 +41,27 @@ pub enum Permission {
     DecisionsRead,
     /// Replacing the settings of the record of decisions.
     DecisionLogWrite,
+    /// Seeing the permissions of resource servers, the tenant's roles and
+    /// who holds them.
+    RolesRead,
+    /// Declaring and removing permissions, defining and removing roles,
+    /// and giving and taking away roles.
+    RolesWrite,
+    /// Seeing which engine answers for each resource server.
+    BindingsRead,
+    /// Binding a resource server to an engine and removing the binding.
+    BindingsWrite,
+    /// Seeing the tenant's policy versions, reports, simulations and what
+    /// is published.
+    PoliciesRead,
+    /// Drafting policy versions and asking for checks, tests and
+    /// simulations.
+    PoliciesWrite,
 }
 
 impl Permission {
     /// Every permission.
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 23] = [
         Self::UsersRead,
         Self::UsersWrite,
         Self::SessionsRead,
@@ -63,6 +79,12 @@ impl Permission {
         Self::CredentialsWrite,
         Self::DecisionsRead,
         Self::DecisionLogWrite,
+        Self::RolesRead,
+        Self::RolesWrite,
+        Self::BindingsRead,
+        Self::BindingsWrite,
+        Self::PoliciesRead,
+        Self::PoliciesWrite,
     ];
 
     /// The permission written as `resource:action`.
@@ -86,6 +108,12 @@ impl Permission {
             Self::CredentialsWrite => "credentials:write",
             Self::DecisionsRead => "decisions:read",
             Self::DecisionLogWrite => "decision-log:write",
+            Self::RolesRead => "roles:read",
+            Self::RolesWrite => "roles:write",
+            Self::BindingsRead => "bindings:read",
+            Self::BindingsWrite => "bindings:write",
+            Self::PoliciesRead => "policies:read",
+            Self::PoliciesWrite => "policies:write",
         }
     }
 
@@ -149,6 +177,9 @@ impl Role {
                 Permission::AssuranceLevelsRead,
                 Permission::CredentialsRead,
                 Permission::DecisionsRead,
+                Permission::RolesRead,
+                Permission::BindingsRead,
+                Permission::PoliciesRead,
             ],
         }
     }

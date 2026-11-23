@@ -50,6 +50,7 @@ use std::sync::Arc;
 use time::format_description::well_known::Rfc3339;
 
 mod applications;
+mod authorization;
 mod decisions;
 mod factors;
 
@@ -225,6 +226,89 @@ pub const ADMIN_OPERATIONS: &[(&str, &str, Permission)] = &[
     ("GET", "/decision-log", Permission::DecisionsRead),
     ("PUT", "/decision-log", Permission::DecisionLogWrite),
     ("GET", "/decisions", Permission::DecisionsRead),
+    (
+        "GET",
+        "/resource-servers/{resource_server_id}/permissions",
+        Permission::RolesRead,
+    ),
+    (
+        "PUT",
+        "/resource-servers/{resource_server_id}/permissions/{permission}",
+        Permission::RolesWrite,
+    ),
+    (
+        "DELETE",
+        "/resource-servers/{resource_server_id}/permissions/{permission}",
+        Permission::RolesWrite,
+    ),
+    ("GET", "/roles", Permission::RolesRead),
+    (
+        "GET",
+        "/resource-servers/{resource_server_id}/roles/{role}",
+        Permission::RolesRead,
+    ),
+    (
+        "PUT",
+        "/resource-servers/{resource_server_id}/roles/{role}",
+        Permission::RolesWrite,
+    ),
+    (
+        "DELETE",
+        "/resource-servers/{resource_server_id}/roles/{role}",
+        Permission::RolesWrite,
+    ),
+    (
+        "GET",
+        "/users/{user_id}/role-assignments",
+        Permission::RolesRead,
+    ),
+    (
+        "GET",
+        "/clients/{client_id}/role-assignments",
+        Permission::RolesRead,
+    ),
+    ("POST", "/role-assignments", Permission::RolesWrite),
+    ("POST", "/role-assignments:revoke", Permission::RolesWrite),
+    ("GET", "/bindings", Permission::BindingsRead),
+    (
+        "GET",
+        "/resource-servers/{resource_server_id}/binding",
+        Permission::BindingsRead,
+    ),
+    (
+        "PUT",
+        "/resource-servers/{resource_server_id}/binding",
+        Permission::BindingsWrite,
+    ),
+    (
+        "DELETE",
+        "/resource-servers/{resource_server_id}/binding",
+        Permission::BindingsWrite,
+    ),
+    ("GET", "/policy-versions", Permission::PoliciesRead),
+    ("POST", "/policy-versions", Permission::PoliciesWrite),
+    ("GET", "/policy-versions/{number}", Permission::PoliciesRead),
+    (
+        "POST",
+        "/policy-versions/{number}:validate",
+        Permission::PoliciesWrite,
+    ),
+    (
+        "POST",
+        "/policy-versions/{number}:test",
+        Permission::PoliciesWrite,
+    ),
+    (
+        "POST",
+        "/policy-versions/{number}/simulations",
+        Permission::PoliciesWrite,
+    ),
+    (
+        "GET",
+        "/policy-simulations/{simulation_id}",
+        Permission::PoliciesRead,
+    ),
+    ("GET", "/policy-status", Permission::PoliciesRead),
 ];
 
 /// What the administration handlers need.
@@ -258,6 +342,13 @@ pub struct AdminState {
     pub consents: ConsentService,
     /// The record of decisions and its settings.
     pub decisions: DecisionLog,
+    /// The tenant's permissions, roles and who holds them.
+    pub roles: hodor_authorization::api::RoleService,
+    /// The bindings of resource servers to engines.
+    pub evaluation: hodor_authorization::api::EvaluationService,
+    /// The tenant's policy versions for Open Policy Agent. `None` when the
+    /// installation does not run it.
+    pub policies: Option<hodor_authorization_opa::api::PolicyService>,
     /// The address people reach this installation at, without a path.
     pub public_url: String,
 }
@@ -359,6 +450,7 @@ fn shared_routes() -> Router<Shared> {
         .merge(applications::routes())
         .merge(factors::routes())
         .merge(decisions::routes())
+        .merge(authorization::routes())
 }
 
 /// One assurance level, as the interface writes it.

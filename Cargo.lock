@@ -1769,11 +1769,13 @@ dependencies = [
 name = "hodor-cli"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "clap",
  "hodor-adapters-crypto",
  "hodor-adapters-postgres",
  "hodor-audit",
  "hodor-authorization",
+ "hodor-authorization-native",
  "hodor-authorization-opa",
  "hodor-credential",
  "hodor-federation",

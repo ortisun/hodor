@@ -138,8 +138,10 @@ Every case has the same shape. First something is shown to work in the tenant it
 | A refresh token, at the token, revocation and introspection endpoints of the other tenant's client | Refused; nothing revoked; not active. It still refreshes where it belongs |
 | A client's secret, asking for a token for itself | Not authenticated: the client is unknown there |
 | The client of a consent the person gave, withdrawn by the other tenant's person or administrator | No such consent; the consent still stands where it belongs |
+| Another tenant's administrator naming a resource server, a role, a person's roles, a binding or a policy version | Not found |
+| Another tenant's administrator giving or taking away a role of the first tenant's person | Not found |
 
-It also checks what must not be shared: one tenant's list of users and audit log name nothing of the other's; locking a person out by failed attempts in one tenant does not lock out the person with the same address in the other; a person with an authenticator application in one tenant signs in to the other with the password alone; and each tenant's discovery document names its own assurance levels only.
+It also checks what must not be shared: one tenant's list of users and audit log name nothing of the other's; locking a person out by failed attempts in one tenant does not lock out the person with the same address in the other; a person with an authenticator application in one tenant signs in to the other with the password alone; each tenant's discovery document names its own assurance levels only; and one tenant's lists of roles, bindings and policy versions name nothing of the other's.
 
 In a browser, a cookie of one tenant is not even sent to another: cookies are limited to the tenant's path. The suite sends them anyway, because the server must not rely on the browser.
 
