@@ -630,6 +630,26 @@ impl ApplicationService {
             .ok_or_else(resource_server_not_found)
     }
 
+    /// The resource server of an application, if it has one: an
+    /// application has at most one.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    pub async fn resource_server_of(
+        &self,
+        tenant: &TenantContext,
+        application_id: ApplicationId,
+    ) -> Result<Option<ResourceServer>, DomainError> {
+        let mut uow = self.units_of_work.begin(tenant).await?;
+        Ok(self
+            .resource_servers
+            .list(uow.as_mut())
+            .await?
+            .into_iter()
+            .find(|server| server.snapshot().application_id == application_id))
+    }
+
     /// The tenant's resource servers, oldest first.
     ///
     /// # Errors

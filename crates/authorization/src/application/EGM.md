@@ -82,6 +82,11 @@ Implemented only by `StaticSubjectAttributes` in `../testing.rs` so far.
   conditions of a principal's grants once, when their grants are cached.
   Without a language, or for a condition that no longer compiles, the
   condition fails.
+- `impl PolicySimulator for NativeEngine`: `PolicySelection::Published`
+  only, answering as `evaluate` does with a trace in words (the question,
+  each matched role, the answer); `Revision` and `Draft` are
+  `authorization.simulation_unsupported`. Its capabilities say
+  `simulation: true`.
 - `NativeEngine::administration(units_of_work, assignments)`: the same for
   `hodor:admin` only; any other namespace is an error. `EvaluationService`
   uses it for `hodor:admin`.

@@ -49,6 +49,13 @@ Routers, as assembled in `run`:
 - `/api/v1/admin` nests `hodor_protocol_http::admin_routes` with the
   `AdminState` built by `administration`.
 - `/console/api` nests `hodor_protocol_http::console_routes`.
+- `/api/v1/authorization` nests `hodor_protocol_http::authorization_api_routes`
+  with the `AuthorizationApiState` built by `authorization_api`, only when
+  `keys` built a `KeyService`: a `ResourceAccessService` over the register
+  of access tokens, and an `EvaluationService` over `PgRoleAssignmentStore`,
+  `PgEngineBindingStore`, `ServerSubjects` and the registry of
+  `authorization_engines` (the native engine with its simulator, and Open
+  Policy Agent).
 - `/oauth2/jwks`: `hodor_protocol_http::key_set_routes(KeyService)` is merged
   into the tenant routes when `keys` built a `KeyService` (`PgKeyStore`,
   `LocalKeyProvider` over `HODOR_SECRET_KEYS`); otherwise a warning is logged
@@ -71,6 +78,11 @@ Adapters implemented here:
   name `database`, calling `Database::ping`.
 - `TenantLockout` implements `hodor_federation::api::LockoutPolicy`, reading
   the tenant's lockout settings into `LockoutRules`.
+- `ServerSubjects` (`subjects.rs`) implements
+  `hodor_authorization::api::SubjectAttributeSource`: a user's `status` and
+  `kind` through `IdentityService::get`, a client's `application`,
+  `client_type` and `enabled` through `ApplicationService::client`; an
+  identifier that does not parse or is not found has no attributes.
 - `ServerStanding` (`standing.rs`) implements
   `hodor_oauth::api::PersonStanding` over `SessionService::list_for_user`
   (a session is active when it is among the person's active sessions) and

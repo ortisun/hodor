@@ -5,6 +5,7 @@
 //! These handlers translate between HTTP and the OAuth context; the rules
 //! are the context's.
 
+use crate::bearer::{bearer, not_cached, refused};
 use crate::tenant::TenantSlug;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -13,7 +14,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Extension, Json, Router};
 use hodor_kernel::TenantContext;
-use hodor_oauth::api::{BearerRefusal, UserInfoService, discovery_document};
+use hodor_oauth::api::{BearerRefusal, OPENID_SCOPE, UserInfoService, discovery_document};
 use hodor_tenant::api::TenantService;
 
 /// What UserInfo needs.
@@ -101,55 +102,6 @@ async fn discovery(
     response
 }
 
-/// The token of `Authorization: Bearer`, or nothing. A header with another
-/// scheme carries no bearer token.
-fn bearer(headers: &HeaderMap) -> Result<Option<&str>, ()> {
-    let Some(value) = headers.get(header::AUTHORIZATION) else {
-        return Ok(None);
-    };
-    let value = value.to_str().map_err(|_| ())?;
-    let (scheme, token) = value.trim().split_once(' ').ok_or(())?;
-    if !scheme.eq_ignore_ascii_case("bearer") {
-        return Err(());
-    }
-    let token = token.trim();
-    if token.is_empty() {
-        return Err(());
-    }
-    Ok(Some(token))
-}
-
-fn not_cached(mut response: Response) -> Response {
-    response
-        .headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    response
-}
-
-fn refused(refusal: BearerRefusal) -> Response {
-    let (status, challenge) = match refusal {
-        BearerRefusal::Missing => (StatusCode::UNAUTHORIZED, "Bearer".to_owned()),
-        BearerRefusal::InvalidToken(reason) => {
-            tracing::info!(reason, "UserInfo refused a token");
-            (
-                StatusCode::UNAUTHORIZED,
-                "Bearer error=\"invalid_token\"".to_owned(),
-            )
-        }
-        BearerRefusal::InsufficientScope => (
-            StatusCode::FORBIDDEN,
-            "Bearer error=\"insufficient_scope\", scope=\"openid\"".to_owned(),
-        ),
-    };
-    let mut response = status.into_response();
-    if let Ok(value) = HeaderValue::from_str(&challenge) {
-        response
-            .headers_mut()
-            .insert(header::WWW_AUTHENTICATE, value);
-    }
-    not_cached(response)
-}
-
 async fn userinfo(
     State(state): State<UserInfoState>,
     Extension(tenant): Extension<TenantContext>,
@@ -157,9 +109,11 @@ async fn userinfo(
     headers: HeaderMap,
 ) -> Response {
     let Ok(token) = bearer(&headers) else {
-        return refused(BearerRefusal::InvalidToken(
-            "the Authorization header is not a bearer token",
-        ));
+        return refused(
+            BearerRefusal::InvalidToken("the Authorization header is not a bearer token"),
+            OPENID_SCOPE,
+            "UserInfo",
+        );
     };
     match state
         .userinfo
@@ -167,34 +121,10 @@ async fn userinfo(
         .await
     {
         Ok(Ok(claims)) => not_cached(Json(claims).into_response()),
-        Ok(Err(refusal)) => refused(refusal),
+        Ok(Err(refusal)) => refused(refusal, OPENID_SCOPE, "UserInfo"),
         Err(error) => {
             tracing::error!(%error, "UserInfo could not answer");
             not_cached(StatusCode::INTERNAL_SERVER_ERROR.into_response())
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn with(value: &str) -> HeaderMap {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            header::AUTHORIZATION,
-            HeaderValue::from_str(value).expect("header"),
-        );
-        headers
-    }
-
-    #[test]
-    fn a_bearer_token_is_read_from_its_header_only() {
-        assert_eq!(bearer(&HeaderMap::new()), Ok(None));
-        assert_eq!(bearer(&with("Bearer abc.def.ghi")), Ok(Some("abc.def.ghi")));
-        assert_eq!(bearer(&with("bearer abc")), Ok(Some("abc")));
-        assert_eq!(bearer(&with("Basic abc")), Err(()));
-        assert_eq!(bearer(&with("Bearer ")), Err(()));
-        assert_eq!(bearer(&with("Bearer")), Err(()));
     }
 }
