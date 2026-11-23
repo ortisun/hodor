@@ -160,6 +160,30 @@ python3 deploy/demo/external_identities.py
 
 It ends with `The demonstration passed.` It can be run again and again, and runs in continuous integration after the one of Milestone 1. The variables of [the first demonstration](#the-demonstration) tell it where the stack is, and `HODOR_SAML_PROVIDER_URL` where the SAML identity provider is, `http://localhost:9500` unless set.
 
+## The demonstration of Milestone 3
+
+[Milestone 3](../product/epics.md#milestone-3-applications-ask-hodor-who-someone-is) lets an application registered in a tenant sign a person in through Hodor and use the tokens it gets. Its demonstration plays the operator, the person and a third-party application:
+
+```bash
+python3 deploy/demo/applications.py
+```
+
+| Step | What it shows |
+|---|---|
+| Two tenants, and a person in one of them | Two tenants made with the command-line tool; a person registers in the first with a password |
+| A third-party application, registered with the command-line tool | The operator registers a third-party application, its resource server with the scope `invoices:read`, and a confidential client allowed a code, refresh tokens and a token for itself. The secret is shown once |
+| Signed in from the application, and asked once | The person signs in, and the application's request goes to the consent page, which names the application, each scope in plain words and that access is kept when the person is away. After the person allows it, the code and PKCE give an ID token and an access token, both checked against the tenant's key set. Asked again for the same scopes without `offline_access`, the application gets a code at once; with `offline_access`, which is never agreed to for good, the person is asked again |
+| UserInfo | The access token gives the same person as the ID token, with the email address the scope `email` allows |
+| A refresh token moves at every use | A refresh gives the next refresh token. Past the window in which a retried refresh is answered again, the first token comes back and is refused, the newest one is refused as well, and introspection calls it not active: reuse ended the whole family |
+| A token a service gets for itself | With its own credentials the client gets an access token whose subject is the client, and no refresh token |
+| Revocation and introspection | An access token is active, is revoked by the application, and is then not active for introspection and refused by UserInfo long before it expires |
+| The tenant's key is rotated | After `hodor-cli keys rotate`, new tokens name the new key, and the old key stays in the key set so that what it signed can still be checked |
+| Tenants apart | The client of one tenant is no client in the other, which shows its own error page and sends nothing to the client's address; a code, an access token and the client's secret of one tenant are refused by the other; the code still redeems where it belongs |
+
+The refresh step waits eleven seconds, past the development stack's window for a retried refresh (`HODOR_REFRESH_RETRY_SECONDS`, ten seconds by default). Every token's signature is checked with the P-256 arithmetic of [the demonstration of Milestone 4](#the-demonstration-of-milestone-4), written into the scripts so that they need nothing outside the standard library.
+
+It ends with `The demonstration passed.` It can be run again and again, and runs in continuous integration after the demonstration of Milestone 2. The variables of [the first demonstration](#the-demonstration) tell it where the stack is.
+
 ## The demonstration of Milestone 4
 
 [Milestone 4](../product/epics.md#milestone-4-strong-authentication) lets a person prove who they are with more than a password, a tenant require it, and an application ask for more in the middle of a session. Its demonstration plays the person, their authenticator application, their passkey, an application of the tenant and an administrator:
@@ -183,7 +207,7 @@ python3 deploy/demo/strong_authentication.py
 
 The passkey is a software authenticator written into the script, with the arithmetic of P-256 done by hand so that the demonstration still needs nothing outside the standard library. It answers as a device does after the person unlocked it, and keeps its key in memory for as long as the script runs. A code of an authenticator application is good once, so the script waits for the next one when it needs a third within a minute.
 
-It ends with `The demonstration passed.` It can be run again and again, and runs in continuous integration after the other two. The variables of [the first demonstration](#the-demonstration) tell it where the stack is.
+It ends with `The demonstration passed.` It can be run again and again, and runs in continuous integration after the other three. The variables of [the first demonstration](#the-demonstration) tell it where the stack is.
 
 ## Stop
 
