@@ -170,6 +170,9 @@ jobs:
       - name: Run the demonstration of Milestone 4
         working-directory: .
         run: python3 deploy/demo/strong_authentication.py
+      - name: Run the demonstration of Milestone 5
+        working-directory: .
+        run: python3 deploy/demo/authorization.py
       - name: Show what the stack logged
         if: failure()
         working-directory: .

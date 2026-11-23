@@ -207,7 +207,31 @@ python3 deploy/demo/strong_authentication.py
 
 The passkey is a software authenticator written into the script, with the arithmetic of P-256 done by hand so that the demonstration still needs nothing outside the standard library. It answers as a device does after the person unlocked it, and keeps its key in memory for as long as the script runs. A code of an authenticator application is good once, so the script waits for the next one when it needs a third within a minute.
 
-It ends with `The demonstration passed.` It can be run again and again, and runs in continuous integration after the other three. The variables of [the first demonstration](#the-demonstration) tell it where the stack is.
+It ends with `The demonstration passed.` It can be run again and again, and runs in continuous integration after the other four. The variables of [the first demonstration](#the-demonstration) tell it where the stack is.
+
+## The demonstration of Milestone 5
+
+[Milestone 5](../product/epics.md#milestone-5-the-authorization-engine) lets an application ask Hodor whether someone may do something, and get an answer from Hodor's native engine or from Open Policy Agent. Its demonstration plays an administrator, an operator and two applications of one tenant:
+
+```bash
+python3 deploy/demo/authorization.py
+```
+
+| Step | What it shows |
+|---|---|
+| Two tenants, and an administrator | Two tenants, each with a signing key; the first administrator of the first, made with the command-line tool |
+| Permissions and roles | Through the administration interface: an application for the Authorization API, a Payroll application with its resource server and a service client, two permissions, a `clerk` role and an `approver` role that includes it, `approver` given to a person and `clerk` to the client for its own application, and Payroll bound to the native engine |
+| The application asks | With a client-credentials token: the approver may approve an invoice, the client may read one and may not approve one, each with its reason |
+| A condition changes the answer | `approver` gains the condition `resource.attributes.amount <= 1000`: approving 5000 is now denied with `condition_not_met`, approving 500 is allowed. A condition that does not compile is refused when the role is saved |
+| A resource server bound to Open Policy Agent | The operator makes a key that signs bundles and registers a shared instance, which the script starts next to the stack with its configuration. A Ledger application is bound to Open Policy Agent; a policy the operator wrote is drafted, checked and tested by the worker, published with the command-line tool, and the instance runs it: reading is allowed and deleting denied |
+| A draft simulated, published, rolled back | A second version that also allows deleting is simulated on two inputs, which shows it differs from the published one on deleting; it is tested and published as revision 2, which allows deleting; rolling back to revision 1 publishes revision 3, which denies it again |
+| A stopped instance is never an allow | With the instance stopped, reading is answered `INDETERMINATE`, which denies |
+| The record of decisions | The administrator reads the decisions of both engines, the indeterminate one among them |
+| Tenants apart | The application's token is refused by the second tenant |
+
+The instance is shared, so it is served only what the operator wrote ([Decision 0010](../decisions/0010-opa-integration.md)): a tenant's own Rego runs only in an instance of the tenant's own, which an operator registers for one tenant and names in `HODOR_OPEN_POLICY_AGENT_TENANT_ADDRESSES`. The stack sets `HODOR_OPEN_POLICY_AGENT_ADDRESS` to the address the script starts its instance at; nothing answers there otherwise. Publishing and rolling back are commands, because only the command line holds the key that signs bundles.
+
+It ends with `The demonstration of Milestone 5 passed.` It can be run again and again, starts and removes its own instance, and runs in continuous integration after the other four. The variables of [the first demonstration](#the-demonstration) tell it where the stack is.
 
 ## Stop
 

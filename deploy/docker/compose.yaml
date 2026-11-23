@@ -169,6 +169,12 @@ services:
       HODOR_OUTBOUND_DEVELOPMENT_HOSTS: provider:9400,localhost:${HODOR_PROVIDER_PORT:-9400},directory:389,localhost:${HODOR_SAML_PROVIDER_PORT:-9500}
       # The development directory, the one directory this stack may use.
       HODOR_DIRECTORY_HOSTS: directory:389
+      # The shared Open Policy Agent instance resource servers bound to it
+      # are asked. Nothing runs there until the demonstration of Milestone 5
+      # starts one, with the configuration it writes: the instance's
+      # credential and the tenant's bundle are only known once the tenant
+      # exists. Until then such a resource server is denied everything.
+      HODOR_OPEN_POLICY_AGENT_ADDRESS: http://policy-agent:8181
       HODOR_LOG_FORMAT: pretty
       HODOR_OTLP_METRICS_ENDPOINT: http://victoriametrics:8428/opentelemetry/v1/metrics
       HODOR_OTLP_TRACES_ENDPOINT: http://victoriatraces:10428/insert/opentelemetry/v1/traces
