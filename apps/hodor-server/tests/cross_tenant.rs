@@ -782,3 +782,341 @@ async fn a_tenants_key_set_names_none_of_another_tenants_keys() {
     assert_eq!(body["code"], "keys.version_not_found");
     assert_eq!(key_set(acme).await, vec![made[0].clone()]);
 }
+
+/// A code of an authenticator application with this secret, for a moment
+/// `steps` periods of thirty seconds from now. The server's window takes
+/// one period either way, and refuses a period it has seen.
+fn application_code(secret: &[u8], steps: i64) -> String {
+    use hodor_adapters_crypto::AwsLcHmacSha1;
+    use hodor_credential::api::totp_code_at;
+    let moment = hodor_kernel::Clock::now(&SystemClock) + time::Duration::seconds(30 * steps);
+    totp_code_at(&AwsLcHmacSha1, secret, moment)
+}
+
+/// Puts an authenticator application in use for the signed-in person, the
+/// way the person's own pages do, and answers its secret and the recovery
+/// codes that came with it.
+async fn enroll_application(browser: &mut Browser, tenant: &Tenant) -> (Vec<u8>, Vec<String>) {
+    let base = format!(
+        "/t/{}/interaction/factors/authenticator-application",
+        tenant.slug
+    );
+    let (status, begun) = browser.send(Method::POST, &base, None).await;
+    assert_eq!(status, StatusCode::CREATED, "{begun}");
+    let secret = support::base32(begun["secret"].as_str().expect("secret"));
+    let (status, confirmed) = browser
+        .send(
+            Method::POST,
+            &format!("{base}/confirmation"),
+            Some(serde_json::json!({ "code": application_code(&secret, 0) })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{confirmed}");
+    let codes = confirmed["recovery_codes"]
+        .as_array()
+        .expect("recovery codes")
+        .iter()
+        .map(|code| code.as_str().expect("code").to_owned())
+        .collect();
+    (secret, codes)
+}
+
+/// Registers a WebAuthn credential for the signed-in person with a
+/// software authenticator, and answers the credential's identifier.
+async fn register_key(
+    browser: &mut Browser,
+    tenant: &Tenant,
+    authenticator: &hodor_adapters_crypto::testing::webauthn::SoftwareAuthenticator,
+    passkey: bool,
+) -> String {
+    let base = format!("/t/{}/interaction/webauthn/registrations", tenant.slug);
+    let (status, begun) = browser
+        .send(
+            Method::POST,
+            &base,
+            Some(serde_json::json!({ "passkey": passkey })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{begun}");
+    let registration = begun["registration_id"].as_str().expect("registration");
+    let (status, made) = browser
+        .send(
+            Method::POST,
+            &format!("{base}/{registration}"),
+            Some(authenticator.register(&begun["public_key"])),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{made}");
+    made["id"].as_str().expect("id").to_owned()
+}
+
+/// Signs the shared person in up to the step after the password.
+async fn waiting_after_password(world: &World, tenant: &Tenant) -> (Browser, serde_json::Value) {
+    let mut browser = Browser::new(&world.server);
+    let (_, body) = browser.sign_in(tenant.slug, EMAIL, PASSWORD).await;
+    (browser, body)
+}
+
+#[tokio::test]
+async fn an_authenticator_application_and_recovery_codes_of_one_tenant_mean_nothing_in_another() {
+    let world = world_with(&[("HODOR_SECRET_KEYS", ROOT_KEY)]).await;
+    let (acme, globex) = (&world.acme, &world.globex);
+
+    // In Acme the application is in use, and a recovery code stands in for
+    // its code.
+    let (mut browser, _, _) = signed_in(&world, acme).await;
+    let (acme_secret, acme_codes) = enroll_application(&mut browser, acme).await;
+    let (mut browser, body) = waiting_after_password(&world, acme).await;
+    assert_eq!(body["step"], "totp", "{body}");
+    let (_, body) = browser
+        .send(
+            Method::POST,
+            "/t/acme/interaction/sign-in/steps/recovery_code",
+            Some(serde_json::json!({ "code": acme_codes[0] })),
+        )
+        .await;
+    assert_eq!(body["status"], "completed", "{body}");
+
+    // Globex knows nothing of it: the same person signs in with the
+    // password alone.
+    let (mut browser, body) = waiting_after_password(&world, globex).await;
+    assert_eq!(body["status"], "completed", "{body}");
+    let (_, session) = browser
+        .send(Method::GET, "/t/globex/interaction/session", None)
+        .await;
+    assert_eq!(session["methods"], serde_json::json!(["password"]));
+
+    // With an application of its own, Globex asks for a code, and refuses
+    // Acme's codes and Acme's recovery codes.
+    let (globex_secret, _) = enroll_application(&mut browser, globex).await;
+    assert_ne!(acme_secret, globex_secret);
+    let (mut browser, body) = waiting_after_password(&world, globex).await;
+    assert_eq!(body["step"], "totp", "{body}");
+    for (step, code) in [
+        ("recovery_code", acme_codes[1].clone()),
+        ("totp", application_code(&acme_secret, 1)),
+    ] {
+        let (status, body) = browser
+            .send(
+                Method::POST,
+                &format!("/t/globex/interaction/sign-in/steps/{step}"),
+                Some(serde_json::json!({ "code": code })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["status"], "rejected", "{step}: {body}");
+    }
+
+    // The factors of a person are reached only in their own tenant.
+    let path = |user: UserId| format!("/users/{}/factors", user.as_uuid());
+    let (status, _) = world
+        .admin(
+            globex,
+            &acme.administrator_token,
+            Method::GET,
+            &path(globex.ana),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, body) = world
+        .admin(
+            globex,
+            &globex.administrator_token,
+            Method::DELETE,
+            &format!("{}/authenticator-application", path(acme.ana)),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["code"], "identity.user_not_found");
+
+    // Acme is as it was: its application in use, nine codes left, and the
+    // codes Globex refused still good here.
+    let (status, factors) = world
+        .admin(
+            acme,
+            &acme.administrator_token,
+            Method::GET,
+            &path(acme.ana),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{factors}");
+    assert_eq!(factors["authenticator_application"]["in_use"], true);
+    assert_eq!(factors["recovery_codes"]["remaining"], 9);
+    let (mut browser, _) = waiting_after_password(&world, acme).await;
+    let (_, body) = browser
+        .send(
+            Method::POST,
+            "/t/acme/interaction/sign-in/steps/recovery_code",
+            Some(serde_json::json!({ "code": acme_codes[1] })),
+        )
+        .await;
+    assert_eq!(body["status"], "completed", "{body}");
+}
+
+#[tokio::test]
+async fn a_passkey_or_a_security_key_of_one_tenant_is_refused_by_another() {
+    use hodor_adapters_crypto::testing::webauthn::SoftwareAuthenticator;
+    let world = world_with(&[("HODOR_SECRET_KEYS", ROOT_KEY)]).await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    // The relying party of the server, as `HODOR_PUBLIC_URL` leaves it.
+    let origin = "http://localhost:8080";
+    let passkey = SoftwareAuthenticator::passkey(origin);
+    let acme_key = SoftwareAuthenticator::new(origin);
+    let globex_key = SoftwareAuthenticator::new(origin);
+
+    let (mut browser, _, _) = signed_in(&world, acme).await;
+    register_key(&mut browser, acme, &passkey, true).await;
+    let acme_key_id = register_key(&mut browser, acme, &acme_key, false).await;
+    let (mut browser, _, _) = signed_in(&world, globex).await;
+    register_key(&mut browser, globex, &globex_key, false).await;
+
+    let with_passkey = |tenant: &'static str| {
+        let mut browser = Browser::new(&world.server);
+        let passkey = &passkey;
+        async move {
+            browser
+                .send(
+                    Method::POST,
+                    &format!("/t/{tenant}/interaction/sign-in"),
+                    None,
+                )
+                .await;
+            let (_, options) = browser
+                .send(
+                    Method::POST,
+                    &format!("/t/{tenant}/interaction/sign-in/steps/passkey/options"),
+                    None,
+                )
+                .await;
+            let (_, body) = browser
+                .send(
+                    Method::POST,
+                    &format!("/t/{tenant}/interaction/sign-in/steps/passkey"),
+                    Some(passkey.answer(&options["public_key"])),
+                )
+                .await;
+            body
+        }
+    };
+    assert_eq!(with_passkey("acme").await["status"], "completed");
+    let refused = with_passkey("globex").await;
+    assert_eq!(refused["status"], "rejected", "{refused}");
+    assert_eq!(refused["step"], "identifier", "{refused}");
+
+    // Globex offers only its own key, and refuses Acme's key's answer.
+    let (mut browser, body) = waiting_after_password(&world, globex).await;
+    assert_eq!(body["step"], "webauthn", "{body}");
+    let (_, options) = browser
+        .send(
+            Method::POST,
+            "/t/globex/interaction/sign-in/steps/webauthn/options",
+            None,
+        )
+        .await;
+    let offered: Vec<&str> = options["public_key"]["allowCredentials"]
+        .as_array()
+        .expect("credentials")
+        .iter()
+        .map(|credential| credential["id"].as_str().expect("id"))
+        .collect();
+    assert_eq!(offered, vec![globex_key.credential_id().as_str()]);
+    let (_, body) = browser
+        .send(
+            Method::POST,
+            "/t/globex/interaction/sign-in/steps/webauthn",
+            Some(acme_key.answer(&options["public_key"])),
+        )
+        .await;
+    assert_eq!(body["status"], "rejected", "{body}");
+
+    // Globex's administrator cannot remove Acme's key by naming it.
+    let (status, body) = world
+        .admin(
+            globex,
+            &globex.administrator_token,
+            Method::DELETE,
+            &format!("/users/{}/factors/keys/{acme_key_id}", globex.ana.as_uuid()),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["code"], "credential.webauthn_credential_not_found");
+
+    // Acme's key still answers in Acme.
+    let (mut browser, body) = waiting_after_password(&world, acme).await;
+    assert_eq!(body["step"], "webauthn", "{body}");
+    let (_, options) = browser
+        .send(
+            Method::POST,
+            "/t/acme/interaction/sign-in/steps/webauthn/options",
+            None,
+        )
+        .await;
+    let (_, body) = browser
+        .send(
+            Method::POST,
+            "/t/acme/interaction/sign-in/steps/webauthn",
+            Some(acme_key.answer(&options["public_key"])),
+        )
+        .await;
+    assert_eq!(body["status"], "completed", "{body}");
+}
+
+#[tokio::test]
+async fn one_tenants_assurance_levels_are_not_another_tenants() {
+    let world = world_with(&[("HODOR_SECRET_KEYS", ROOT_KEY)]).await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    let levels = serde_json::json!({ "levels": [
+        { "acr": "urn:hodor:acr:mfa", "requirement": "multi_factor" },
+        { "acr": "urn:acme:strong", "requirement": "phishing_resistant" },
+    ] });
+    let (status, body) = world
+        .admin(
+            acme,
+            &acme.administrator_token,
+            Method::PUT,
+            "/assurance-levels",
+            Some(levels.clone()),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, _) = world
+        .admin(
+            globex,
+            &acme.administrator_token,
+            Method::PUT,
+            "/assurance-levels",
+            Some(levels),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let supported = |tenant: &'static str| {
+        let url = format!(
+            "{}/t/{tenant}/.well-known/openid-configuration",
+            world.server.base
+        );
+        async move {
+            let body: serde_json::Value = Client::new()
+                .get(url)
+                .send()
+                .await
+                .expect("response")
+                .json()
+                .await
+                .expect("JSON");
+            body["acr_values_supported"].clone()
+        }
+    };
+    assert_eq!(
+        supported("acme").await,
+        serde_json::json!(["urn:hodor:acr:mfa", "urn:acme:strong"])
+    );
+    assert_eq!(
+        supported("globex").await,
+        serde_json::json!(["urn:hodor:acr:single-factor", "urn:hodor:acr:mfa"])
+    );
+}

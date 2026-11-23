@@ -32,7 +32,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 mod support;
-use support::{Browser, MEMORY_KIBIBYTES, PASSES, Server, start_server_with};
+use support::{Browser, MEMORY_KIBIBYTES, PASSES, Server, base32, start_server_with};
 
 const PASSWORD: &str = "correct horse battery staple";
 const REDIRECT: &str = "https://payroll.example.com/callback";
@@ -599,25 +599,6 @@ async fn ana_of(database: &TestDatabase, slug: &str) -> (TenantContext, hodor_ke
         .expect("Ana")
         .id();
     (tenant, ana)
-}
-
-/// The bytes of a secret written in base32 without padding (RFC 4648).
-fn base32(text: &str) -> Vec<u8> {
-    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-    let (mut bytes, mut buffer, mut bits) = (Vec::new(), 0_u32, 0_u32);
-    for character in text.bytes() {
-        let value = ALPHABET
-            .iter()
-            .position(|&c| c == character)
-            .expect("base32");
-        buffer = (buffer << 5) | u32::try_from(value).expect("small");
-        bits += 5;
-        if bits >= 8 {
-            bits -= 8;
-            bytes.push(u8::try_from((buffer >> bits) & 0xff).expect("a byte"));
-        }
-    }
-    bytes
 }
 
 /// Gives Ana an authenticator application, with the server's own way of

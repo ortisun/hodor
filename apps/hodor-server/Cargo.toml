@@ -38,6 +38,8 @@ tracing.workspace = true
 
 [dev-dependencies]
 aws-lc-rs.workspace = true
+# The software authenticator, for the factors of the cross-tenant suite.
+hodor-adapters-crypto = { workspace = true, features = ["testing"] }
 base64.workspace = true
 form_urlencoded.workspace = true
 jsonwebtoken = { workspace = true, features = ["aws_lc_rs"] }

@@ -126,9 +126,14 @@ Every case has the same shape. First something is shown to work in the tenant it
 | An administrator's access token, on every operation in the OpenAPI document | Not authenticated |
 | A registration link's token and a recovery link's token | The link does not work; it still works where it belongs |
 | The identifier of a user or of a session, asked for by the other tenant's own administrator | No such user, no such session |
+| A code of the person's authenticator application, and one of their recovery codes | Rejected, as any wrong code; both still work where they belong |
+| A passkey, in place of the identifier | Rejected: the credential is unknown there |
+| A security key's answer to the other tenant's challenge | Rejected; the challenge names only the other tenant's own keys |
+| The identifier of a security key or a passkey, given by the other tenant's own administrator to remove it | No such credential |
+| An administrator's token changing the assurance levels | Not authenticated |
 
-It also checks what must not be shared: one tenant's list of users and audit log name nothing of the other's, and locking a person out by failed attempts in one tenant does not lock out the person with the same address in the other.
+It also checks what must not be shared: one tenant's list of users and audit log name nothing of the other's; locking a person out by failed attempts in one tenant does not lock out the person with the same address in the other; a person with an authenticator application in one tenant signs in to the other with the password alone; and each tenant's discovery document names its own assurance levels only.
 
 In a browser, a cookie of one tenant is not even sent to another: cookies are limited to the tenant's path. The suite sends them anyway, because the server must not rely on the browser.
 
-What the suite cannot cover yet is listed with the progress of the work: OAuth tokens and codes do not exist yet, and the pages are not built.
+What the suite cannot cover yet is listed with the progress of the work: the authorization codes, tokens and clients of OAuth are added by the acceptance of [Milestone 3](../product/epics.md#milestone-3-applications-ask-hodor-who-someone-is), and the pages are tried in a browser by their own tests, not by this suite.

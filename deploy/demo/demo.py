@@ -141,10 +141,19 @@ class Browser:
         return self.call("POST", f"{base}/steps/password", {"password": password})
 
 
+def compose():
+    """`docker compose` for the development stack: the file next to these
+    scripts, unless `COMPOSE_FILE` names others, as for a copy of the stack
+    run under another project name with `COMPOSE_PROJECT_NAME`."""
+    if os.environ.get("COMPOSE_FILE"):
+        return ["docker", "compose"]
+    return ["docker", "compose", "-f", str(COMPOSE_FILE)]
+
+
 def cli(*arguments):
     """Runs `hodor-cli` in the stack, as an operator would."""
     command = [
-        "docker", "compose", "-f", str(COMPOSE_FILE), "run", "--rm", "--no-deps", "-T",
+        *compose(), "run", "--rm", "--no-deps", "-T",
         "--entrypoint", "/usr/local/bin/hodor-cli",
         "-e", f"HODOR_DATABASE_URL={CLI_DATABASE_URL}",
         "server", *arguments,
