@@ -106,6 +106,7 @@ test("a person sets up an authenticator application and is asked for its code fr
   // application after it.
   await page.goto(at(""));
   await page.getByRole("button", { name: en.signOut }).click();
+  await expect(page.getByText(en.noticeSignedOut)).toBeVisible();
   await signInThroughProvider(page, identity);
   // The page the provider sends the person back to goes on to the sign-in
   // page, which asks for the code; nothing says the provider did not work.
