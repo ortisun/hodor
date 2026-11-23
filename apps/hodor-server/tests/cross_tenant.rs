@@ -1485,3 +1485,163 @@ async fn an_applications_codes_tokens_clients_and_consents_mean_nothing_in_anoth
         "the consent stands in Acme: {consents}"
     );
 }
+
+/// A request of the tenant's own administrator, through the
+/// administration interface.
+async fn call(
+    world: &World,
+    tenant: &Tenant,
+    method: Method,
+    path: String,
+    body: Option<serde_json::Value>,
+) -> (StatusCode, serde_json::Value) {
+    world
+        .admin(tenant, &tenant.administrator_token, method, &path, body)
+        .await
+}
+
+#[tokio::test]
+async fn one_tenants_roles_bindings_and_policies_are_invisible_and_unusable_from_another() {
+    let world = world().await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    let (status, application) = call(
+        &world,
+        acme,
+        Method::POST,
+        "/applications".to_owned(),
+        Some(serde_json::json!({ "name": "Documents", "first_party": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{application}");
+    let application = application["id"].as_str().expect("id").to_owned();
+    let (status, server) = call(
+        &world,
+        acme,
+        Method::POST,
+        "/resource-servers".to_owned(),
+        Some(serde_json::json!({
+            "application_id": application,
+            "audience": "https://api.documents.example.com",
+            "name": "Documents interface",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{server}");
+    let server = server["id"].as_str().expect("id").to_owned();
+    let namespace = "https://api.documents.example.com";
+    for (method, path, body) in [
+        (
+            Method::PUT,
+            format!("/resource-servers/{server}/permissions/document:read"),
+            serde_json::json!({ "description": "Read" }),
+        ),
+        (
+            Method::PUT,
+            format!("/resource-servers/{server}/roles/reader"),
+            serde_json::json!({ "permissions": [{ "name": "document:read" }] }),
+        ),
+        (
+            Method::POST,
+            "/role-assignments".to_owned(),
+            serde_json::json!({
+                "principal": { "kind": "user", "id": acme.ana.to_string() },
+                "role": { "namespace": namespace, "name": "reader" },
+            }),
+        ),
+        (
+            Method::PUT,
+            format!("/resource-servers/{server}/binding"),
+            serde_json::json!({ "engine": "native" }),
+        ),
+    ] {
+        let (status, body) = call(&world, acme, method, path.clone(), Some(body)).await;
+        assert!(status.is_success(), "{path}: {status} {body}");
+    }
+
+    // Globex's administrator, naming Acme's resource server and Acme's
+    // person, reaches nothing of them.
+    for path in [
+        format!("/resource-servers/{server}/permissions"),
+        format!("/resource-servers/{server}/roles/reader"),
+        format!("/resource-servers/{server}/binding"),
+        format!("/users/{}/role-assignments", acme.ana),
+    ] {
+        let (status, body) = call(&world, globex, Method::GET, path.clone(), None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{path}: {body}");
+    }
+    let (status, _) = call(
+        &world,
+        globex,
+        Method::PUT,
+        format!("/resource-servers/{server}/roles/reader"),
+        Some(serde_json::json!({ "permissions": [] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = call(
+        &world,
+        globex,
+        Method::POST,
+        "/role-assignments:revoke".to_owned(),
+        Some(serde_json::json!({
+            "principal": { "kind": "user", "id": acme.ana.to_string() },
+            "role": { "namespace": namespace, "name": "reader" },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    // A role of Globex's own cannot be given to Acme's person.
+    let (status, _) = call(
+        &world,
+        globex,
+        Method::POST,
+        "/role-assignments".to_owned(),
+        Some(serde_json::json!({
+            "principal": { "kind": "user", "id": acme.ana.to_string() },
+            "role": { "namespace": namespace, "name": "reader" },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    for path in ["/roles", "/bindings", "/policy-versions"] {
+        let (status, body) = call(&world, globex, Method::GET, path.to_owned(), None).await;
+        assert_eq!(status, StatusCode::OK, "{path}: {body}");
+        assert_eq!(body["items"], serde_json::json!([]), "{path}");
+    }
+
+    // A policy version of Acme's is no version of Globex's.
+    let (status, drafted) = call(
+        &world,
+        acme,
+        Method::POST,
+        "/policy-versions".to_owned(),
+        Some(serde_json::json!({ "files": [{
+            "path": "policy.rego",
+            "contents": format!(
+                "package hodor.tenants.t{}\n\ndefault allow := false\n",
+                acme.context.tenant_id().to_string().replace('-', "")
+            ),
+        }] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{drafted}");
+    let number = drafted["number"].as_u64().expect("number");
+    let (status, _) = call(
+        &world,
+        globex,
+        Method::GET,
+        format!("/policy-versions/{number}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = call(
+        &world,
+        globex,
+        Method::POST,
+        format!("/policy-versions/{number}:validate"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
