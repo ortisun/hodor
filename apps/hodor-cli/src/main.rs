@@ -3,6 +3,7 @@
 //! applications, recovery codes and checking the audit log.
 
 mod applications;
+mod policies;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use hodor_adapters_crypto::{
@@ -16,7 +17,7 @@ use hodor_adapters_postgres::{
 };
 use hodor_audit::api::AuditService;
 use hodor_authorization::api::{AuthorizationService, Namespace, Role};
-use hodor_authorization_opa::api::{Author, BundleFile, BundleService, bundle_name, decision_path};
+use hodor_authorization_opa::api::{BundleFile, BundleService, bundle_name, decision_path};
 use hodor_credential::api::{AccessTokenService, RecoveryCodeService, RecoveryCodes, TotpService};
 use hodor_federation::api::{
     CreateProvider, DirectorySettings, FederationService, IdentityProvider, ProviderKind,
@@ -281,6 +282,21 @@ enum Command {
         command: PolicyAgentCommand,
     },
 
+    /// Draft, check, test, simulate, publish and roll back a tenant's
+    /// policy for Open Policy Agent.
+    Policy {
+        /// Connection URL of the application role.
+        #[arg(
+            long,
+            env = "HODOR_DATABASE_URL",
+            hide_env_values = true,
+            global = true
+        )]
+        database_url: Option<String>,
+        #[command(subcommand)]
+        command: policies::PolicyCommand,
+    },
+
     /// Check a health endpoint and exit non-zero unless it answers 200.
     ///
     /// For container health checks: the runtime image has no shell or HTTP
@@ -317,33 +333,6 @@ enum PolicyAgentCommand {
         #[command(subcommand)]
         command: InstanceCommand,
     },
-    /// Check, sign and publish a tenant's next bundle from a directory.
-    ///
-    /// Every file under the directory goes into the bundle at the same
-    /// path under the tenant's tree: `.rego` policy modules and
-    /// `data.json` data documents.
-    Publish {
-        /// The tenant's slug.
-        #[arg(long)]
-        tenant: String,
-        /// The directory that holds the files.
-        #[arg(long)]
-        directory: std::path::PathBuf,
-        /// Who wrote the files. Only a bundle written by the operator is
-        /// served to a shared instance.
-        #[arg(long, value_enum, default_value = "tenant")]
-        written_by: WrittenByArg,
-        /// The file that holds the key that signs bundles.
-        #[arg(long, env = "HODOR_OPEN_POLICY_AGENT_SIGNING_KEY_FILE")]
-        signing_key_file: std::path::PathBuf,
-        /// The name instances know the key by.
-        #[arg(
-            long,
-            env = "HODOR_OPEN_POLICY_AGENT_SIGNING_KEY_ID",
-            default_value = "hodor"
-        )]
-        signing_key_id: String,
-    },
     /// Show which revision each instance reports for a tenant's bundle.
     Status {
         /// The tenant's slug.
@@ -375,7 +364,7 @@ enum InstanceCommand {
 }
 
 #[derive(Clone, Copy, ValueEnum)]
-enum WrittenByArg {
+pub(crate) enum WrittenByArg {
     Operator,
     Tenant,
 }
@@ -1286,7 +1275,7 @@ fn key_line(version: &KeyVersion) -> String {
 /// Runs a keys command against a tenant named by its slug.
 /// The files of a bundle: every file under `directory`, at its path
 /// relative to it.
-fn bundle_files(directory: &std::path::Path) -> Result<Vec<BundleFile>, DomainError> {
+pub(crate) fn bundle_files(directory: &std::path::Path) -> Result<Vec<BundleFile>, DomainError> {
     let unreadable = |error: std::io::Error| {
         DomainError::invalid(
             "authorization.bundle_directory_unreadable",
@@ -1325,7 +1314,7 @@ fn bundle_files(directory: &std::path::Path) -> Result<Vec<BundleFile>, DomainEr
     Ok(files)
 }
 
-fn bundle_service(database: &Database) -> BundleService {
+pub(crate) fn bundle_service(database: &Database) -> BundleService {
     BundleService::new(
         Arc::new(PgInstanceStore::new(database.clone())),
         Arc::new(PgBundleStore),
@@ -1441,38 +1430,6 @@ async fn run_policy_agent(
                     "no enabled instance has this name",
                 ))
             }
-        }
-        PolicyAgentCommand::Publish {
-            tenant,
-            directory,
-            written_by,
-            signing_key_file,
-            signing_key_id,
-        } => {
-            let entry = existing(&tenants, &tenant).await?;
-            let key = std::fs::read_to_string(&signing_key_file).map_err(|error| {
-                DomainError::invalid(
-                    "authorization.bundle_signing_key_unreadable",
-                    "the file of the key that signs bundles could not be read",
-                )
-                .with_detail(error.to_string())
-            })?;
-            let signer = BundleSigningKey::from_pem(&key, &signing_key_id)?;
-            let author = match written_by {
-                WrittenByArg::Operator => Author::Operator,
-                WrittenByArg::Tenant => Author::Tenant,
-            };
-            let files = bundle_files(&directory)?;
-            let bundle = bundles
-                .publish(
-                    &TenantContext::assume(entry.tenant_id),
-                    author,
-                    &files,
-                    &signer,
-                    caller(),
-                )
-                .await?;
-            Ok(format!("{}\t{}", bundle.revision, bundle.entity_tag()))
         }
         PolicyAgentCommand::Status { tenant } => {
             let entry = existing(&tenants, &tenant).await?;
@@ -1944,6 +1901,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let output = run_policy_agent(database_url, command)
                 .await
                 .map_err(|error| format!("{}: {}", error.code(), error.message()))?;
+            if !output.is_empty() {
+                writeln!(std::io::stdout(), "{output}")?;
+            }
+        }
+        Command::Policy {
+            database_url,
+            command,
+        } => {
+            let output = policies::run_policy(database_url, command)
+                .await
+                .map_err(|error| match error.detail() {
+                    Some(detail) if !detail.is_empty() => {
+                        format!("{}: {}\n{detail}", error.code(), error.message())
+                    }
+                    _ => format!("{}: {}", error.code(), error.message()),
+                })?;
             if !output.is_empty() {
                 writeln!(std::io::stdout(), "{output}")?;
             }

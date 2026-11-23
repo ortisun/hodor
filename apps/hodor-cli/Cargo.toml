@@ -12,8 +12,8 @@ clap.workspace = true
 hodor-adapters-crypto.workspace = true
 hodor-adapters-postgres.workspace = true
 hodor-audit.workspace = true
-hodor-authorization.workspace = true
 hodor-authorization-opa.workspace = true
+hodor-authorization.workspace = true
 hodor-credential.workspace = true
 hodor-federation.workspace = true
 hodor-identity.workspace = true
@@ -21,11 +21,13 @@ hodor-kernel.workspace = true
 hodor-keys.workspace = true
 hodor-oauth.workspace = true
 hodor-tenant.workspace = true
+serde_json.workspace = true
 time.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
 hodor-adapters-postgres = { workspace = true, features = ["testing"] }
+hodor-authorization-opa = { workspace = true, features = ["testing"] }
 hodor-credential = { workspace = true, features = ["testing"] }
 sqlx.workspace = true
 tokio.workspace = true

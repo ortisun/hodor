@@ -13,11 +13,12 @@ use hodor_authorization::api::{
 };
 use hodor_authorization_opa::api::{
     Author, BundleFile, BundleService, BundleStore as _, Instances, OpenPolicyAgentEngine,
-    PublishedBundle, bundle_name, decision_path, gzip,
+    PolicyService, PublishedBundle, bundle_name, decision_path, gzip,
 };
 use hodor_authorization_opa::testing::{
-    FakeSigner, InMemoryBundles, InMemoryInstances, InMemoryStatuses, InMemoryUploadedDecisions,
-    pack, unpack,
+    FakeChecker, FakeSigner, InMemoryBundles, InMemoryInstances, InMemoryPolicyVersions,
+    InMemoryPublications, InMemorySimulations, InMemoryStatuses, InMemoryUploadedDecisions, pack,
+    unpack,
 };
 use hodor_kernel::uow::testing::InMemoryUnitOfWorkFactory;
 use hodor_kernel::{
@@ -145,18 +146,19 @@ async fn store_as_is(world: &World, tenant: &TenantContext, revision: u64, archi
     uow.commit().await.expect("commit");
 }
 
-#[tokio::test]
-async fn an_instance_runs_only_bundles_hodor_signed_and_reports_what_it_runs() {
-    let world = world();
-    let tenant = TenantContext::assume(TenantId::generate());
-    let (private, public) = BundleSigningKey::generate().expect("key");
-    let signer = BundleSigningKey::from_pem(&private, "hodor").expect("signer");
-    let (instance, credential) = world
-        .service
-        .register("own", Some(tenant.tenant_id()))
-        .await
-        .expect("register");
-
+/// Serves Hodor's service interface where a container can reach it, and
+/// starts an Open Policy Agent instance that pulls `tenant`'s bundle with
+/// `credential` and checks it with `public`, polling every second. Returns
+/// the container and an engine that asks it.
+async fn start_instance(
+    world: &World,
+    tenant: &TenantContext,
+    credential: &hodor_kernel::Secret<String>,
+    public: &str,
+) -> (
+    testcontainers::ContainerAsync<GenericImage>,
+    OpenPolicyAgentEngine,
+) {
     // Hodor's service interface, where the container can reach it.
     let listener = tokio::net::TcpListener::bind("0.0.0.0:0")
         .await
@@ -164,18 +166,6 @@ async fn an_instance_runs_only_bundles_hodor_signed_and_reports_what_it_runs() {
     let port = listener.local_addr().expect("address").port();
     let router = policy_agent_routes(world.service.clone());
     tokio::spawn(async move { axum::serve(listener, router).await });
-
-    world
-        .service
-        .publish(
-            &tenant,
-            Author::Tenant,
-            &files(&tenant, true),
-            &signer,
-            Caller::system(),
-        )
-        .await
-        .expect("first revision");
 
     let name = bundle_name(tenant.tenant_id());
     let indented: String = public
@@ -241,6 +231,34 @@ decision_logs:
         Arc::new(SystemClock),
         Instances::parse(None, &format!("{}={origin}", tenant.tenant_id())).expect("instances"),
     );
+    (container, engine)
+}
+
+#[tokio::test]
+async fn an_instance_runs_only_bundles_hodor_signed_and_reports_what_it_runs() {
+    let world = world();
+    let tenant = TenantContext::assume(TenantId::generate());
+    let (private, public) = BundleSigningKey::generate().expect("key");
+    let signer = BundleSigningKey::from_pem(&private, "hodor").expect("signer");
+    let (instance, credential) = world
+        .service
+        .register("own", Some(tenant.tenant_id()))
+        .await
+        .expect("register");
+
+    world
+        .service
+        .publish(
+            &tenant,
+            Author::Tenant,
+            &files(&tenant, true),
+            &signer,
+            Caller::system(),
+        )
+        .await
+        .expect("first revision");
+    let (container, engine) = start_instance(&world, &tenant, &credential, &public).await;
+    let name = bundle_name(tenant.tenant_id());
     let answer = |wanted: &'static str| {
         let engine = &engine;
         let tenant = &tenant;
@@ -552,4 +570,96 @@ async fn over_http_an_instance_reaches_only_what_it_may() {
         send(&router, request).await.status(),
         StatusCode::UNAUTHORIZED
     );
+}
+
+/// Drafts `files`, and has the worker validate and test them with a checker
+/// that stands in for `opa`.
+async fn tested(policies: &PolicyService, tenant: &TenantContext, files: &[BundleFile]) -> u64 {
+    let checker = FakeChecker::default();
+    let version = policies
+        .draft(tenant, Author::Tenant, files, Caller::system())
+        .await
+        .expect("draft");
+    policies
+        .validate(tenant, version.number)
+        .await
+        .expect("validate");
+    policies.run_waiting(tenant, &checker).await.expect("check");
+    policies.test(tenant, version.number).await.expect("test");
+    policies.run_waiting(tenant, &checker).await.expect("tests");
+    version.number
+}
+
+#[tokio::test]
+async fn a_rollback_is_what_an_instance_runs_after_its_next_pull() {
+    let world = world();
+    let policies = PolicyService::new(
+        Arc::new(InMemoryPolicyVersions::default()),
+        Arc::new(InMemoryPublications::default()),
+        Arc::new(InMemorySimulations::default()),
+        world.service.clone(),
+        world.units.clone(),
+        Arc::new(Sha256Digest),
+        Arc::new(SystemClock),
+    );
+    let tenant = TenantContext::assume(TenantId::generate());
+    let (private, public) = BundleSigningKey::generate().expect("key");
+    let signer = BundleSigningKey::from_pem(&private, "hodor").expect("signer");
+    let (_, credential) = world
+        .service
+        .register("own", Some(tenant.tenant_id()))
+        .await
+        .expect("register");
+
+    let reading = tested(&policies, &tenant, &files(&tenant, true)).await;
+    let not_reading = tested(&policies, &tenant, &files(&tenant, false)).await;
+    policies
+        .publish(&tenant, reading, &signer, Caller::system())
+        .await
+        .expect("revision 1");
+    let (container, engine) = start_instance(&world, &tenant, &credential, &public).await;
+    let answer = |wanted: &'static str| {
+        let engine = &engine;
+        let tenant = &tenant;
+        move || async move {
+            let answer = engine
+                .evaluate(tenant, &read_input())
+                .await
+                .expect("answer");
+            (answer.policy_version.as_ref().map(|r| r.as_str()) == Some(wanted)).then_some(answer)
+        }
+    };
+    assert_eq!(
+        eventually("revision 1", answer("1")).await.effect,
+        Effect::Allow
+    );
+
+    policies
+        .publish(&tenant, not_reading, &signer, Caller::system())
+        .await
+        .expect("revision 2");
+    assert_eq!(
+        eventually("revision 2", answer("2")).await.effect,
+        Effect::Deny
+    );
+
+    // The rollback to 1 is revision 3, with the files of 1.
+    let rollback = policies
+        .roll_back(&tenant, 1, &signer, Caller::system())
+        .await
+        .expect("roll back");
+    assert_eq!((rollback.revision, rollback.version), (3, reading));
+    let rolled_back = eventually("revision 3", answer("3")).await;
+    assert_eq!(rolled_back.effect, Effect::Allow);
+    assert_eq!(rolled_back.reason.as_str(), "everyone_reads");
+
+    // And the status says the instance runs it.
+    let active = eventually("revision 3 to be reported", || async {
+        let status = policies.status(&tenant).await.expect("status");
+        (!status.pending_activation).then_some(status)
+    })
+    .await;
+    assert_eq!(active.instances.len(), 1);
+    assert_eq!(active.instances[0].active_revision.as_deref(), Some("3"));
+    drop(container);
 }

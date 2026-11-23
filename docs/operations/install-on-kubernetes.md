@@ -156,7 +156,7 @@ kubectl exec --namespace hodor deployment/hodor-server -- /usr/local/bin/hodor-c
 | `server.replicas` | `3` | Servers, when autoscaling is off |
 | `server.autoscaling.enabled` | `false` | Adds servers between `minReplicas` and `maxReplicas` as average processor use passes `targetProcessorUtilizationPercentage`. Needs the cluster's metrics server |
 | `server.passwordHashConcurrency` | `4` | Password hashes one server computes at once. Each uses about 19 MiB, so this value times 19 MiB must fit under `server.resources.limits.memory` with room for the rest |
-| `server.resources`, `worker.resources` | 500m and 256Mi to 512Mi; 100m and 128Mi to 256Mi | Requests and limits |
+| `server.resources`, `worker.resources` | 500m and 256Mi to 512Mi; 100m and 128Mi to 512Mi | Requests and limits. The worker's limit leaves room for one run of `opa`, which checks policies and is bounded only by it |
 | `worker.replicas` | `2` | Workers |
 | `mail.enabled`, `mail.from` | `false` | Whether messages are delivered, and the address they come from |
 | `directoryHosts` | Empty | The LDAP directories identity providers may name, each as `host:port` |

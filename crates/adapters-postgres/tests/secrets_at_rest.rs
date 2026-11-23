@@ -321,6 +321,11 @@ async fn the_secrets_of_0_1_0_are_sealed_again_and_then_the_first_format_is_refu
 /// The `bytea` columns that hold no secret sealed with the secret box,
 /// each with the reason.
 const NOT_SEALED_SECRETS: &[(&str, &str, &str)] = &[
+    (
+        "authorization.policy_version",
+        "digest",
+        "the SHA-256 of a policy version's files",
+    ),
     ("session.session", "token_hash", "a hash of a random token"),
     (
         "oauth.refresh_token_family",

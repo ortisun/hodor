@@ -2,7 +2,7 @@
 
 ## Overview
 
-The PostgreSQL schema, as thirty-nine numbered SQL files. A number is
+The PostgreSQL schema, as forty numbered SQL files. A number is
 reserved when a piece of work starts, so a number can be missing until that
 work merges; every file not yet applied is applied, in order. They are
 embedded in the binaries by `static MIGRATOR: Migrator = sqlx::migrate!("../../migrations")`
@@ -57,6 +57,7 @@ Tables created, by file:
 | `0040_authorization_role_conditions.sql` | Adds `condition` to `"authorization".role_permission`: the text of a role's condition on the permission, or `NULL`, 1 to 1000 characters (`role_permission_condition_length`) |
 | `0042_oauth_post_logout_redirect_uris.sql` | adds `post_logout_redirect_uris` to `oauth.client`, compared byte for byte, at most 10 (`client_post_logout_at_most_ten`) and only with `authorization_code` (`client_post_logout_needs_code`) |
 | `0043_assurance_levels_and_step_up.sql` | lets `session.session` be `phishing_resistant` and adds `method_proven_at`; adds `carried_methods`, `demanded_assurance` and `raised_session_id` to `authentication.transaction`; adds `acr` to `oauth.authorization_code` and `oauth.refresh_token_family` |
+| `0044_authorization_policy_lifecycle.sql` | `"authorization".policy_version` (a tenant's policy versions: files as JSON, digest, state, last report; never deleted by the application role), `"authorization".policy_publication` (the version each bundle revision came from; append only), `"authorization".policy_simulation` (inputs only while waiting, results once done); all under row-level security, with partial indexes on what waits for the worker |
 | `0045_oauth_access_token.sql` | `oauth.access_token`: the register of access tokens, a record of each one by its `jti` with its client, grant and refresh token family (referenced with the tenant), when it expires and whether and why it was revoked; never the token; the index `access_token_expiry_idx` on `expires_at`, for the cleanup job |
 
 No migration creates a type, an extension or seed rows; enumerations are text

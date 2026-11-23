@@ -160,6 +160,54 @@ fn declared_package(module: &str) -> Option<&str> {
     None
 }
 
+/// Whether a file is a test of the policy: a module whose name ends in
+/// `_test.rego`. Tests are checked and run, and never published.
+#[must_use]
+pub fn is_test(path: &str) -> bool {
+    path.rsplit('/')
+        .next()
+        .is_some_and(|name| name.ends_with("_test.rego"))
+}
+
+/// Checks `files` as a bundle of `tenant` holds them, and returns them in
+/// the form they are kept and archived in: sorted by path, with data
+/// documents in canonical form.
+///
+/// # Errors
+///
+/// Returns `authorization.bundle_file_invalid` for a file that is
+/// refused, `authorization.bundle_too_large` for too many files or bytes,
+/// and `authorization.bundle_empty` for no file.
+pub fn normalize(tenant: TenantId, files: &[BundleFile]) -> Result<Vec<BundleFile>, DomainError> {
+    if files.is_empty() {
+        return Err(DomainError::invalid(
+            "authorization.bundle_empty",
+            "a bundle holds at least one file",
+        ));
+    }
+    let total: usize = files.iter().map(|file| file.contents.len()).sum();
+    if files.len() > MAX_FILES || total > MAX_TOTAL_BYTES {
+        return Err(DomainError::invalid(
+            "authorization.bundle_too_large",
+            "a bundle holds at most 1000 files and 8 mebibytes",
+        ));
+    }
+    let mut seen = BTreeSet::new();
+    let mut normalized = Vec::with_capacity(files.len());
+    for file in files {
+        if !seen.insert(file.path.clone()) {
+            return Err(file_error(format!("`{}` is given twice", file.path)));
+        }
+        let (_, contents) = checked(tenant, file)?;
+        normalized.push(BundleFile {
+            path: file.path.clone(),
+            contents,
+        });
+    }
+    normalized.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(normalized)
+}
+
 /// Checks one file and returns what goes into the archive.
 fn checked(tenant: TenantId, file: &BundleFile) -> Result<(String, Vec<u8>), DomainError> {
     if !well_formed_path(&file.path) {
@@ -254,28 +302,11 @@ pub(crate) fn build(
     signer: &dyn BundleSigner,
     digest: &dyn Digest,
 ) -> Result<Vec<u8>, DomainError> {
-    if files.is_empty() {
-        return Err(DomainError::invalid(
-            "authorization.bundle_empty",
-            "a bundle holds at least one file",
-        ));
-    }
-    let total: usize = files.iter().map(|file| file.contents.len()).sum();
-    if files.len() > MAX_FILES || total > MAX_TOTAL_BYTES {
-        return Err(DomainError::invalid(
-            "authorization.bundle_too_large",
-            "a bundle holds at most 1000 files and 8 mebibytes",
-        ));
-    }
-    let mut seen = BTreeSet::new();
-    let mut contents = Vec::with_capacity(files.len());
-    for file in files {
-        if !seen.insert(file.path.clone()) {
-            return Err(file_error(format!("`{}` is given twice", file.path)));
-        }
-        contents.push(checked(tenant, file)?);
-    }
-    contents.sort();
+    let root = tenant_root(tenant);
+    let contents: Vec<(String, Vec<u8>)> = normalize(tenant, files)?
+        .into_iter()
+        .map(|file| (format!("{root}/{}", file.path), file.contents))
+        .collect();
 
     let manifest = to_canonical(&json!({
         "revision": revision.to_string(),

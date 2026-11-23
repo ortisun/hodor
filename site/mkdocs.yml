@@ -217,6 +217,7 @@ nav:
       - decisions/0023-what-0.2.0-holds.md
       - decisions/0024-webauthn-checks.md
       - decisions/0025-condition-language.md
+      - decisions/0026-policy-checks-in-a-sandbox.md
   - Contributing:
       - development/conventions.md
       - development/documentation-site.md

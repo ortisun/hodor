@@ -207,6 +207,32 @@ impl BundleStore for PgBundleStore {
         .map_err(|e| database_error(&e))?;
         row.map(to_bundle).transpose()
     }
+
+    async fn latest_revision(
+        &self,
+        uow: &mut dyn UnitOfWork,
+    ) -> Result<Option<(u64, Timestamp)>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let row: Option<(i64, Timestamp)> = sqlx::query_as(
+            "SELECT revision, published_at FROM \"authorization\".policy_bundle
+             WHERE tenant_id = $1 ORDER BY revision DESC LIMIT 1",
+        )
+        .bind(tenant.as_uuid())
+        .fetch_optional(connection(uow)?)
+        .await
+        .map_err(|e| database_error(&e))?;
+        row.map(|(revision, at)| {
+            u64::try_from(revision)
+                .map(|revision| (revision, at))
+                .map_err(|_| {
+                    corrupted(&DomainError::invalid(
+                        "authorization.policy_bundle_row",
+                        "a stored bundle is not valid",
+                    ))
+                })
+        })
+        .transpose()
+    }
 }
 
 /// [`InstanceStatusStore`] on `authorization.policy_agent_status`.

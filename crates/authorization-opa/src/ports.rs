@@ -1,8 +1,12 @@
 //! What the bundles need from storage.
 
-use crate::bundle::PublishedBundle;
+use crate::bundle::{BundleFile, PublishedBundle};
 use crate::instance::{Instance, InstanceId, InstanceName};
-use hodor_kernel::{DomainError, Timestamp, UnitOfWork};
+use crate::policy::{
+    PolicyVersion, Report, SimulatedAnswer, Simulation, SimulationId, SimulationState, VersionState,
+};
+use hodor_kernel::{DomainError, TenantId, Timestamp, UnitOfWork};
+use serde_json::Value;
 
 /// The instances of the installation. Not bound to a tenant: a shared
 /// instance serves several, and a credential is checked before any tenant
@@ -74,6 +78,22 @@ pub trait BundleStore: Send + Sync {
         &self,
         uow: &mut dyn UnitOfWork,
     ) -> Result<Option<PublishedBundle>, DomainError>;
+
+    /// The latest revision and when it was published, without its
+    /// archive. The engine asks it on every decision it checks for lag.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn latest_revision(
+        &self,
+        uow: &mut dyn UnitOfWork,
+    ) -> Result<Option<(u64, Timestamp)>, DomainError> {
+        Ok(self
+            .latest(uow)
+            .await?
+            .map(|bundle| (bundle.revision, bundle.published_at)))
+    }
 }
 
 /// The last status an instance reported for a tenant's bundle.
@@ -159,4 +179,211 @@ pub trait UploadedDecisionStore: Send + Sync {
         uow: &mut dyn UnitOfWork,
         limit: u32,
     ) -> Result<Vec<UploadedDecision>, DomainError>;
+}
+
+/// A tenant's policy versions. Bound to the tenant of the unit of work.
+#[async_trait::async_trait]
+pub trait PolicyVersionStore: Send + Sync {
+    /// Stores a new version.
+    ///
+    /// # Errors
+    ///
+    /// Returns `authorization.policy_version_taken` if its number exists,
+    /// or an error if storage fails.
+    async fn create(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        version: &PolicyVersion,
+    ) -> Result<(), DomainError>;
+
+    /// The version of a number.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn find(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        number: u64,
+    ) -> Result<Option<PolicyVersion>, DomainError>;
+
+    /// The highest number taken, if any.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn latest_number(&self, uow: &mut dyn UnitOfWork) -> Result<Option<u64>, DomainError>;
+
+    /// The latest `limit` versions, newest first, without their files.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn list(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        limit: u32,
+    ) -> Result<Vec<PolicyVersion>, DomainError>;
+
+    /// The versions waiting for the worker, oldest first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn waiting(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        limit: u32,
+    ) -> Result<Vec<PolicyVersion>, DomainError>;
+
+    /// Moves a version from `from` to `to` with `report`, at `at`, if it is
+    /// still in `from`. Returns whether it was.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn transition(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        number: u64,
+        from: VersionState,
+        to: VersionState,
+        report: Option<&Report>,
+        at: Timestamp,
+    ) -> Result<bool, DomainError>;
+}
+
+/// Which version each revision was built from. Bound to the tenant of the
+/// unit of work.
+#[async_trait::async_trait]
+pub trait PublicationStore: Send + Sync {
+    /// Records that `revision` was built from version `version`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `authorization.policy_publication_taken` if the revision is
+    /// recorded, or an error if storage fails.
+    async fn record(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        revision: u64,
+        version: u64,
+    ) -> Result<(), DomainError>;
+
+    /// The version `revision` was built from, if it was built from one.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn version_of(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        revision: u64,
+    ) -> Result<Option<u64>, DomainError>;
+
+    /// The latest `limit` publications as (revision, version), newest
+    /// first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn list(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        limit: u32,
+    ) -> Result<Vec<(u64, u64)>, DomainError>;
+}
+
+/// A tenant's simulations. Bound to the tenant of the unit of work.
+#[async_trait::async_trait]
+pub trait SimulationStore: Send + Sync {
+    /// Stores a new simulation, waiting.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn create(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        simulation: &Simulation,
+    ) -> Result<(), DomainError>;
+
+    /// The simulation of an identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn find(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: SimulationId,
+    ) -> Result<Option<Simulation>, DomainError>;
+
+    /// The simulations waiting, oldest first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn waiting(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        limit: u32,
+    ) -> Result<Vec<Simulation>, DomainError>;
+
+    /// Ends a waiting simulation in `state`: keeps the results or the
+    /// report, and erases its inputs. Returns whether it was waiting.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    #[allow(clippy::too_many_arguments)]
+    async fn finish(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: SimulationId,
+        state: SimulationState,
+        compared_with: Option<u64>,
+        results: &[SimulatedAnswer],
+        report: Option<&Report>,
+        at: Timestamp,
+    ) -> Result<bool, DomainError>;
+}
+
+/// Runs the `opa` binary on a version's files. Specified in Decision 0026.
+///
+/// Every method answers `Ok` with what the policy did, even when it did
+/// not compile or a run took too long: that is a fault of the policy, in
+/// the report. `Err` is only for a run that could not start, which is
+/// tried again later.
+#[async_trait::async_trait]
+pub trait PolicyChecker: Send + Sync {
+    /// Compiles `files`, placed under `tenant`'s tree, in strict mode
+    /// against the capabilities file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the check could not run.
+    async fn check(&self, tenant: TenantId, files: &[BundleFile]) -> Result<Report, DomainError>;
+
+    /// Runs the tests among `files`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the tests could not run.
+    async fn test(&self, tenant: TenantId, files: &[BundleFile]) -> Result<Report, DomainError>;
+
+    /// Evaluates the rule `decision` of `package` for each of `inputs`.
+    /// Returns, input by input, the answer or `None` where it is not
+    /// defined; or the report of why the files did not compile.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the evaluation could not run.
+    async fn evaluate(
+        &self,
+        tenant: TenantId,
+        files: &[BundleFile],
+        package: &str,
+        inputs: &[Value],
+    ) -> Result<Result<Vec<Option<Value>>, Report>, DomainError>;
 }

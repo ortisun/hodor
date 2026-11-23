@@ -1,8 +1,17 @@
 //! The commands about Open Policy Agent instances and their bundles, run
 //! as the real binary against a real database.
 
+use hodor_adapters_crypto::{OsRandom, Sha256Digest};
 use hodor_adapters_postgres::testing::TestDatabase;
+use hodor_adapters_postgres::{
+    PgBundleStore, PgInstanceStatusStore, PgInstanceStore, PgPolicyVersionStore,
+    PgPublicationStore, PgSimulationStore, PgUploadedDecisionStore, PolicyCheckJob,
+};
+use hodor_authorization_opa::api::{BundleService, PolicyService};
+use hodor_authorization_opa::testing::FakeChecker;
+use hodor_kernel::SystemClock;
 use std::process::{Command, Output};
+use std::sync::Arc;
 
 fn run(database: &TestDatabase, arguments: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_hodor-cli"))
@@ -15,12 +24,51 @@ fn run(database: &TestDatabase, arguments: &[&str]) -> Output {
         .expect("the command-line tool should run")
 }
 
+fn policy(database: &TestDatabase, arguments: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_hodor-cli"))
+        .args(["policy"])
+        .args(arguments)
+        .env("HODOR_DATABASE_URL", database.app_url())
+        .env_remove("HODOR_OPEN_POLICY_AGENT_SIGNING_KEY_FILE")
+        .env_remove("HODOR_OPEN_POLICY_AGENT_SIGNING_KEY_ID")
+        .output()
+        .expect("the command-line tool should run")
+}
+
+/// The worker's policy check job, with a checker that stands in for `opa`.
+fn worker(database: &TestDatabase) -> PolicyCheckJob {
+    let bundles = BundleService::new(
+        Arc::new(PgInstanceStore::new(database.app().clone())),
+        Arc::new(PgBundleStore),
+        Arc::new(PgInstanceStatusStore),
+        Arc::new(PgUploadedDecisionStore),
+        Arc::new(database.app().clone()),
+        Arc::new(Sha256Digest),
+        Arc::new(OsRandom),
+        Arc::new(SystemClock),
+    );
+    let policies = PolicyService::new(
+        Arc::new(PgPolicyVersionStore),
+        Arc::new(PgPublicationStore),
+        Arc::new(PgSimulationStore),
+        bundles,
+        Arc::new(database.app().clone()),
+        Arc::new(Sha256Digest),
+        Arc::new(SystemClock),
+    );
+    PolicyCheckJob::new(
+        database.platform().clone(),
+        policies,
+        Arc::new(FakeChecker::default()),
+    )
+}
+
 fn text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).trim().to_owned()
 }
 
 #[tokio::test]
-async fn an_operator_registers_an_instance_and_publishes_a_signed_bundle() {
+async fn an_operator_registers_an_instance_and_publishes_a_tested_policy() {
     let database = TestDatabase::start().await;
     let made = Command::new(env!("CARGO_BIN_EXE_hodor-cli"))
         .args(["tenant", "create", "--slug", "acme", "--name", "Acme Inc"])
@@ -92,22 +140,20 @@ async fn an_operator_registers_an_instance_and_publishes_a_signed_bundle() {
         "{package}"
     );
 
-    // Publishing checks the files: a module outside the tenant is refused.
+    // Drafting checks the files: a module outside the tenant is refused.
     std::fs::write(
         files.join("other.rego"),
         "package hodor.tenants.someone_else\n",
     )
     .expect("file");
-    let refused = run(
+    let refused = policy(
         &database,
         &[
-            "publish",
+            "draft",
             "--tenant",
             "acme",
             "--directory",
             files.to_str().expect("path"),
-            "--signing-key-file",
-            key_file.to_str().expect("path"),
         ],
     );
     assert!(!refused.status.success());
@@ -124,24 +170,96 @@ async fn an_operator_registers_an_instance_and_publishes_a_signed_bundle() {
         format!("package {package}\n\ndecision := {{\"allow\": true}}\n"),
     )
     .expect("policy");
+    let drafted = policy(
+        &database,
+        &[
+            "draft",
+            "--tenant",
+            "acme",
+            "--directory",
+            files.to_str().expect("path"),
+            "--written-by",
+            "operator",
+        ],
+    );
+    assert!(drafted.status.success(), "{drafted:?}");
+    assert!(text(&drafted.stdout).starts_with("1\t"), "{drafted:?}");
+
+    // Only a tested version is published; the worker checks and tests.
+    let early = policy(
+        &database,
+        &[
+            "publish",
+            "--tenant",
+            "acme",
+            "--version",
+            "1",
+            "--signing-key-file",
+            key_file.to_str().expect("path"),
+        ],
+    );
+    assert!(!early.status.success());
+    assert!(
+        text(&early.stderr).contains("authorization.policy_version_state"),
+        "{early:?}"
+    );
+    let job = worker(&database);
+    for step in ["validate", "test"] {
+        let asked = policy(
+            &database,
+            &[step, "--tenant", "acme", "--version", "1", "--wait", "0"],
+        );
+        assert!(asked.status.success(), "{asked:?}");
+        job.run().await.expect("the worker's pass");
+        let shown = policy(&database, &["show", "--tenant", "acme", "--version", "1"]);
+        assert!(
+            text(&shown.stdout).starts_with(&format!(
+                "1\t{}",
+                if step == "validate" {
+                    "validated"
+                } else {
+                    "tested"
+                }
+            )),
+            "{shown:?}"
+        );
+    }
     for expected in ["1", "2"] {
-        let published = run(
+        let published = policy(
             &database,
             &[
                 "publish",
                 "--tenant",
                 "acme",
-                "--directory",
-                files.to_str().expect("path"),
-                "--written-by",
-                "operator",
+                "--version",
+                "1",
                 "--signing-key-file",
                 key_file.to_str().expect("path"),
             ],
         );
         assert!(published.status.success(), "{published:?}");
-        assert!(text(&published.stdout).starts_with(&format!("{expected}\t\"")));
+        assert!(
+            text(&published.stdout).starts_with(&format!("{expected}\t1\t\"")),
+            "{published:?}"
+        );
     }
+    let rolled_back = policy(
+        &database,
+        &[
+            "rollback",
+            "--tenant",
+            "acme",
+            "--revision",
+            "1",
+            "--signing-key-file",
+            key_file.to_str().expect("path"),
+        ],
+    );
+    assert!(rolled_back.status.success(), "{rolled_back:?}");
+    assert!(
+        text(&rolled_back.stdout).starts_with("3\t1\t"),
+        "{rolled_back:?}"
+    );
     let kept: Vec<(i64, String)> = sqlx::query_as(
         "SELECT revision, written_by FROM \"authorization\".policy_bundle ORDER BY revision",
     )
@@ -150,8 +268,17 @@ async fn an_operator_registers_an_instance_and_publishes_a_signed_bundle() {
     .expect("bundles");
     assert_eq!(
         kept,
-        vec![(1, "operator".to_owned()), (2, "operator".to_owned())]
+        vec![
+            (1, "operator".to_owned()),
+            (2, "operator".to_owned()),
+            (3, "operator".to_owned())
+        ]
     );
+    let status = text(&policy(&database, &["status", "--tenant", "acme"]).stdout);
+    assert!(status.starts_with("revision 3\toperator\t"), "{status}");
+    assert!(status.contains("version 1"), "{status}");
+    let versions = text(&policy(&database, &["versions", "--tenant", "acme"]).stdout);
+    assert!(versions.starts_with("1\ttested\toperator\t"), "{versions}");
 
     // Listed, then disabled.
     let listed = text(&run(&database, &["instance", "list"]).stdout);

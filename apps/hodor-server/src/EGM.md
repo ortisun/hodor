@@ -34,6 +34,7 @@ Configuration (`Config`, clap, command name `hodor-server`):
 | `--open-policy-agent-address` | `HODOR_OPEN_POLICY_AGENT_ADDRESS` | unset |
 | `--open-policy-agent-tenant-addresses` | `HODOR_OPEN_POLICY_AGENT_TENANT_ADDRESSES` | empty, comma separated `tenant-identifier=origin` |
 | `--open-policy-agent-token` | `HODOR_OPEN_POLICY_AGENT_TOKEN` | unset; its value is hidden from the help text |
+| `--open-policy-agent-revision-lag-seconds` | `HODOR_OPEN_POLICY_AGENT_REVISION_LAG_SECONDS` | 300; the engine refuses decisions of an older revision after that (`StoredRevisions` over `PgBundleStore`) |
 | `--directory-hosts` | `HODOR_DIRECTORY_HOSTS` | empty, comma separated `host:port` |
 | `--password-hash-memory-kibibytes` | `HODOR_PASSWORD_HASH_MEMORY_KIBIBYTES` | `19 * 1024` |
 | `--password-hash-passes` | `HODOR_PASSWORD_HASH_PASSES` | 2 |

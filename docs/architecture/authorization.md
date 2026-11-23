@@ -216,13 +216,14 @@ See [Decision 0010](../decisions/0010-opa-integration.md).
 
 A failure in Open Policy Agent never produces an `Allow` unless an administrator configured `fail_open` for that specific action.
 
-What is built (Issue-77) is specified in [the authorization context](contexts/authorization.md#open-policy-agent-as-an-engine). It departs from this table in three places:
+What is built (Issue-77) is specified in [the authorization context](contexts/authorization.md#open-policy-agent-as-an-engine). It departs from this table in two places:
 
 - The retry is made at once, without jitter, because the engine's crate has no timer.
 - There is no health check yet. An instance's health is known from the decisions it answers, through its circuit.
-- A decision carries the revision of the bundle it was made with (Issue-78), but a decision from an instance behind the published revision is not refused yet: that waits for activation tracking (Issue-79).
 
-The bundles, their signatures and the service interface are specified in [the authorization context](contexts/authorization.md#bundles). Bundles are built and signed by the command-line tool, not by a job of the worker, until the policy lifecycle exists (Issue-79).
+Revision tracking is built as the table says: a decision from an instance that runs an older revision than the published one for longer than the allowed lag is `indeterminate` ([a lagging instance](contexts/authorization.md#a-lagging-instance)).
+
+The bundles, their signatures and the service interface are specified in [the authorization context](contexts/authorization.md#bundles). Bundles are built and signed by the command-line tool, from a version the worker checked and tested: see [the policy lifecycle](contexts/authorization.md#the-policy-lifecycle).
 
 Open Policy Agent cannot limit the built-ins of a running instance, so the capabilities file is enforced when policies are checked and built.
 
@@ -256,6 +257,13 @@ stateDiagram-v2
 | 9. Roll back | Publish a previous version as a new revision; history is never rewritten | New `policy_bundle` |
 
 Native policies follow the same lifecycle minus distribution: publishing swaps the active revision in the database and invalidates caches.
+
+What is built (Issue-79) is specified in [the authorization context](contexts/authorization.md#the-policy-lifecycle). It departs from this design in four places:
+
+- A version never changes: editing is drafting a new version, so there is no way back from `validated` or `tested` to `draft`.
+- A version that does not compile or fails a test is `rejected`, a state of its own, and a simulation is not a step of the state machine: it may be run on any validated or tested version.
+- There is no approval by a second person before publishing, and no automatic rollback when instances report an error. The status shows the error; rolling back is done by the operator.
+- Simulation replays requests given by whoever runs it, not recorded decisions, because recorded decisions keep no input.
 
 ## Authorization API
 

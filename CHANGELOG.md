@@ -7,8 +7,11 @@ Every release of Hodor, newest first. The rules for versions and releases are in
 ### Added
 
 - **Assurance levels and step-up**: a tenant names the `acr` levels applications ask for, single-factor, multi-factor and phishing-resistant; an application asks with `acr_values` or `max_age`, and a person signed in is asked only for what their session lacks. Tokens say the level reached. Set the levels with `hodor-cli tenant assurance-levels` or the administration interface.
+- **The policy lifecycle for Open Policy Agent.** A tenant's policy is drafted as a version, which the worker validates and tests with the `opa` binary, now part of the image, and which can be simulated against made-up requests. Only a tested version is published, and a rollback publishes an earlier version as a new revision: `hodor-cli policy draft|validate|test|simulate|publish|rollback|status`. The status says when every instance runs the latest revision. A decision from an instance that still runs an older revision five minutes after a new one is published is `indeterminate`.
 
 ### Changed
+
+- **`hodor-cli policy-agent publish` is gone.** Bundles are published only from tested policy versions, with `hodor-cli policy publish`.
 
 - **Secrets are kept under a data key of their tenant**, a key version of the keys context, and the keys of `HODOR_SECRET_KEYS` only wrap keys. After upgrading from 0.1.0, run `hodor-cli secrets reseal` once: it moves the secrets 0.1.0 kept and then refuses their old format. Until it runs, they open as before.
 

@@ -1623,6 +1623,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "hodor-adapters-policy-check"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "hodor-adapters-crypto",
+ "hodor-authorization-opa",
+ "hodor-kernel",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "hodor-adapters-postgres"
 version = "0.1.0"
 dependencies = [
@@ -1769,6 +1782,7 @@ dependencies = [
  "hodor-keys",
  "hodor-oauth",
  "hodor-tenant",
+ "serde_json",
  "sqlx",
  "time",
  "tokio",
@@ -2020,9 +2034,11 @@ dependencies = [
  "async-trait",
  "clap",
  "hodor-adapters-crypto",
+ "hodor-adapters-policy-check",
  "hodor-adapters-postgres",
  "hodor-adapters-smtp",
  "hodor-audit",
+ "hodor-authorization-opa",
  "hodor-kernel",
  "hodor-keys",
  "hodor-notification",

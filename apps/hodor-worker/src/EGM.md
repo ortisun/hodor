@@ -2,12 +2,13 @@
 
 ## Overview
 
-The background process, in one file, `main.rs`. It runs five loops side by
+The background process, in one file, `main.rs`. It runs six loops side by
 side: the outbox dispatch loop, which turns every outbox event into an audit
 record, the mail delivery loop, which sends queued messages over SMTP, two
 cleanup loops, one removing pending authorizations that expired and one
-removing the records of access tokens that expired, and the rotation loop,
-which rotates the tenants' signing keys. It
+removing the records of access tokens that expired, the rotation loop,
+which rotates the tenants' signing keys, and the policy check loop, which
+checks, tests and simulates policy versions with `opa`. It
 holds two PostgreSQL pools: one as the application role, to handle each piece
 of work inside its tenant, and one as the platform role, used only to find
 pending work across tenants. An operations listener serves health endpoints.
@@ -35,6 +36,11 @@ Configuration (`Config`, clap, command name `hodor-worker`):
 | `--key-publication-hours` | `HODOR_KEY_PUBLICATION_HOURS` | 24 |
 | `--key-overlap-hours` | `HODOR_KEY_OVERLAP_HOURS` | 24 |
 | `--key-rotation-interval-ms` | `HODOR_KEY_ROTATION_INTERVAL_MS` | 600000 |
+| `--open-policy-agent-binary` | `HODOR_OPEN_POLICY_AGENT_BINARY` | unset: no version is checked; the image sets `/usr/local/bin/opa` |
+| `--open-policy-agent-binary-sha256` | `HODOR_OPEN_POLICY_AGENT_BINARY_SHA256` | unset: only the version is checked |
+| `--policy-check-time-limit-seconds` | `HODOR_POLICY_CHECK_TIME_LIMIT_SECONDS` | 30 |
+| `--policy-check-memory-mebibytes` | `HODOR_POLICY_CHECK_MEMORY_MEBIBYTES` | 256 |
+| `--policy-check-interval-ms` | `HODOR_POLICY_CHECK_INTERVAL_MS` | 2000 |
 | `--log-format` (`json`, `pretty`) | `HODOR_LOG_FORMAT` | `json` |
 | `--log-filter` | `HODOR_LOG_FILTER` | `info` |
 | `--otlp-traces-endpoint` | `HODOR_OTLP_TRACES_ENDPOINT` | unset: no export |
@@ -49,14 +55,19 @@ Symbols:
   `AccessTokenCleanup::new(platform, database)` and
   `OutboxDispatcher::new(platform, database, [AuditHandler])`, and, with
   `HODOR_SECRET_KEYS`, `KeyRotationJob::new(platform, KeyService, policy)`
-  over `PgKeyStore` and `LocalKeyProvider`; then serves
-  `ops_router(health)` and joins the five loops.
+  over `PgKeyStore` and `LocalKeyProvider`, and, with
+  `HODOR_OPEN_POLICY_AGENT_BINARY`, `OpaProcessChecker::verified` (the worker
+  does not start with a binary it refuses) and
+  `PolicyCheckJob::new(platform, policy_service(database), checker)`; then
+  serves `ops_router(health)` and joins the six loops.
 - `dispatch_loop` calls `OutboxDispatcher::dispatch_batch(batch_size)`.
 - `delivery_loop` calls `DeliveryService::deliver_pending(batch_size)`.
 - `cleanup_loop` calls `CleanupJob::run(now, batch_size)`: `CleanupJob` is
   `PendingAuthorizations(PendingAuthorizationCleanup)` or
   `AccessTokens(AccessTokenCleanup)`, and `name` is its `job` attribute.
 - `rotation_loop` calls `KeyRotationJob::run(now)`.
+- `policy_check_loop` calls `PolicyCheckJob::run()`; `policy_service` builds
+  `PolicyService` over the PostgreSQL stores.
 - `mail_sender` builds the optional `SmtpSender`.
 - `PoolCheck` implements `hodor_protocol_http::ReadinessCheck` over
   `ping_pool`; the checks are named `database` and `platform_database`.
@@ -117,7 +128,11 @@ Symbols:
   `activated`, `retired`), `hodor.outbox.events`, `hodor.outbox.passes`,
   `hodor.notification.messages`, `hodor.notification.passes`,
   `hodor.cleanup.removed` and `hodor.cleanup.passes` (attribute `job` =
-  `pending_authorizations` or `access_tokens`).
+  `pending_authorizations` or `access_tokens`), `hodor.policy.check.passes`
+  (attribute `outcome`) and `hodor.policy.check.done` (attribute `kind`:
+  `version`, `simulation`).
+- Runs the `opa` binary as a child process for each check, test and
+  simulation, through `OpaProcessChecker` (`policy_check_loop`).
 - Logs and, when the endpoints are set, exports traces and metrics through
   `hodor_observability::Telemetry::init` (`main`).
 - Binds a TCP listener on `HODOR_OPS_ADDR` for health endpoints (`run`).
