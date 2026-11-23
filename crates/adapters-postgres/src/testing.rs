@@ -182,6 +182,11 @@ const PLATFORM_TABLES: &[&str] = &[
     // Routing data only: slug, identifier and status. Justified in
     // docs/architecture/contexts/tenant.md, "Storage".
     "platform.tenant_directory",
+    // The Open Policy Agent instances of the installation, checked by
+    // credential before any tenant is known; only a digest of each
+    // credential. Justified in docs/architecture/contexts/authorization.md,
+    // "Storage of bundles".
+    "platform.policy_agent_instance",
 ];
 
 /// Checks every table in the database against the tenant isolation rules of

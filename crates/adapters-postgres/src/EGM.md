@@ -51,6 +51,10 @@ Each store is a unit struct (except where noted) that runs its queries on
 | `PgRoleAssignmentStore` | `impl RoleAssignmentStore for PgRoleAssignmentStore` (`authorization.rs`, `hodor_authorization::api`) | `"authorization".role_assignment`, only the built-in roles of `hodor:admin` given to users (`principal_kind` `user`, `application` empty) |
 | `PgNativeRoleStore` | `impl NativeRoleStore for PgNativeRoleStore` (`authorization.rs`, `hodor_authorization::api`) | `"authorization".permission`, `role`, `role_permission`, `role_inclusion`, `role_revision` and the assignments of `role_assignment` outside `hodor:admin`; `raise_revision` upserts and returns the new revision, locking the row until commit; `put_role` replaces what the role holds and includes; a removal blocked by `role_inclusion_included_exists` gives `authorization.role_in_use` |
 | `PgEngineBindingStore` | `impl EngineBindingStore for PgEngineBindingStore` (`authorization.rs`, `hodor_authorization::api`) | `"authorization".engine_binding`; `put` upserts on `(tenant_id, namespace)`; a stored row that is not a valid binding is `authorization.stored_data_invalid` |
+| `PgInstanceStore` | `impl InstanceStore for PgInstanceStore` (`policy_bundles.rs`, `hodor_authorization_opa::api`); `new(Database)`, queries through the pool, not a unit of work; a taken name or credential is `authorization.policy_agent_instance_exists` | `platform.policy_agent_instance` |
+| `PgBundleStore` | `impl BundleStore for PgBundleStore` (`policy_bundles.rs`); a taken revision is `authorization.bundle_revision_taken` | `"authorization".policy_bundle` |
+| `PgInstanceStatusStore` | `impl InstanceStatusStore for PgInstanceStatusStore` (`policy_bundles.rs`); `record` upserts on `(tenant_id, instance_id)` | `"authorization".policy_agent_status` |
+| `PgUploadedDecisionStore` | `impl UploadedDecisionStore for PgUploadedDecisionStore` (`policy_bundles.rs`); `record` inserts with `ON CONFLICT DO NOTHING` and counts the new rows | `"authorization".policy_agent_decision` |
 | `PgPasswordStore` | `impl PasswordStore for PgPasswordStore` (`credential.rs`, `hodor_credential::api`) | `credential.password`, `credential.password_history` |
 | `PgAccessTokenStore` | `impl AccessTokenStore for PgAccessTokenStore` (`credential.rs`, `hodor_credential::api`) | `credential.access_token` |
 | `PgTotpStore` | `impl TotpStore for PgTotpStore` (`credential.rs`, `hodor_credential::api`); `activate` locks the pending row with `FOR UPDATE`, `use_step` is one conditional `UPDATE` | `credential.totp` |
@@ -94,8 +98,8 @@ Compiled only with the `testing` feature (`lib.rs`:
   (`STARTS` semaphore). The container is removed when the value is dropped.
 - `schema_violations(owner)` reads the catalog and returns one message per
   table that breaks the tenant isolation rules (see Invariants). Only
-  `public._sqlx_migrations` and `platform.tenant_directory` are exempt
-  (`PLATFORM_TABLES`).
+  `public._sqlx_migrations`, `platform.tenant_directory` and
+  `platform.policy_agent_instance` are exempt (`PLATFORM_TABLES`).
 
 ## Invariants
 

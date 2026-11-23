@@ -181,6 +181,8 @@ Differences from the example in the specification: there is no `tenant_id` in th
 | `POST /opa/logs` | Upload decision log batches |
 | `POST /opa/status` | Report bundle activation and health |
 
+Every request carries the credential of the instance as a bearer token, issued when the instance is registered. What an instance may pull, and what is kept of its reports, is in [the authorization context](../architecture/contexts/authorization.md#bundles).
+
 ## Platform API
 
 `/platform/v1/tenants` (create, list, suspend, reactivate, delete), `/platform/v1/operations/{id}`, `/platform/v1/support-grants`, `/platform/v1/system/health`, `/platform/v1/system/config`.

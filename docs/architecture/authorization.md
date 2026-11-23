@@ -220,7 +220,9 @@ What is built (Issue-77) is specified in [the authorization context](contexts/au
 
 - The retry is made at once, without jitter, because the engine's crate has no timer.
 - There is no health check yet. An instance's health is known from the decisions it answers, through its circuit.
-- There is no revision tracking before bundles exist (Issue-78).
+- A decision carries the revision of the bundle it was made with (Issue-78), but a decision from an instance behind the published revision is not refused yet: that waits for activation tracking (Issue-79).
+
+The bundles, their signatures and the service interface are specified in [the authorization context](contexts/authorization.md#bundles). Bundles are built and signed by the command-line tool, not by a job of the worker, until the policy lifecycle exists (Issue-79).
 
 Open Policy Agent cannot limit the built-ins of a running instance, so the capabilities file is enforced when policies are checked and built.
 

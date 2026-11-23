@@ -16,6 +16,7 @@ mod interaction;
 mod key_set;
 mod openid;
 mod pages;
+mod policy_agent;
 mod problem;
 mod request;
 mod server;
@@ -35,6 +36,7 @@ pub use pages::{
     CONSOLE_ASSETS_PATH, CONSOLE_PATHS, PAGE_ASSETS_PATH, PAGE_PATHS,
     PAGES_CONTENT_SECURITY_POLICY, PROVIDER_CALLBACK_PAGE, Pages,
 };
+pub use policy_agent::policy_agent_routes;
 pub use problem::Problem;
 pub use request::ClientAddress;
 pub use server::{Limits, public_router, serve};

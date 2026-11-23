@@ -1,9 +1,10 @@
 //! `OpenPolicyAgentEngine`: one request, one question to one instance.
 
 use crate::answer::{
-    ERROR, NOT_CONFIGURED, TIMED_OUT, UNAVAILABLE, UNREACHABLE, indeterminate, read,
+    ERROR, NOT_CONFIGURED, TIMED_OUT, UNAVAILABLE, UNREACHABLE, indeterminate, read, revision,
 };
 use crate::breaker::{Admission, Breaker, BreakerSettings};
+use crate::bundle::bundle_name;
 use crate::instances::Instances;
 use crate::path::decision_path;
 use hodor_authorization::api::{
@@ -100,7 +101,13 @@ impl OpenPolicyAgentEngine {
 
     /// One request to the instance, with one retry when the first could
     /// not connect and time is left.
-    async fn exchange(&self, url: &str, body: &[u8], input: &EvaluationInput) -> Exchange {
+    async fn exchange(
+        &self,
+        url: &str,
+        body: &[u8],
+        input: &EvaluationInput,
+        bundle: &str,
+    ) -> Exchange {
         let Ok(budget) = time::Duration::try_from(input.time_limit) else {
             return Exchange::Failed(TIMED_OUT);
         };
@@ -121,7 +128,9 @@ impl OpenPolicyAgentEngine {
             }
             match self.http.send(request).await {
                 Ok(response) if response.status == 200 => {
-                    return Exchange::Answered(read(&response.body));
+                    let mut answer = read(&response.body);
+                    answer.policy_version = revision(&response.body, bundle);
+                    return Exchange::Answered(answer);
                 }
                 Ok(_) => return Exchange::Failed(ERROR),
                 Err(error) if error.code() == "http.timed_out" => {
@@ -187,8 +196,9 @@ impl AuthorizationEngine for OpenPolicyAgentEngine {
             return Ok(indeterminate(NOT_CONFIGURED));
         };
         let instance = instance.to_owned();
+        // With provenance, the answer names the revision of each bundle.
         let url = format!(
-            "{instance}{}",
+            "{instance}{}?provenance=true",
             decision_path(tenant, &input.request.namespace, self.digest.as_ref())
         );
         let body = serde_json::to_vec(&input_document(input)).map_err(|error| {
@@ -201,7 +211,10 @@ impl AuthorizationEngine for OpenPolicyAgentEngine {
         if self.admit(&instance) == Admission::Refused {
             return Ok(indeterminate(UNAVAILABLE));
         }
-        match self.exchange(&url, &body, input).await {
+        match self
+            .exchange(&url, &body, input, &bundle_name(tenant.tenant_id()))
+            .await
+        {
             Exchange::Answered(answer) => {
                 // An undefined or malformed answer is the policy's fault,
                 // not the instance's: the instance answered.

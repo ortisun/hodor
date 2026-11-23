@@ -10,13 +10,14 @@ It implements these ports:
   - `impl Digest for Sha256Digest` (`src/digest.rs:10`)
   - `impl RandomSource for OsRandom` (`src/random.rs:10`)
   - `impl SignatureVerifier for AwsLcVerifier` (`src/signature.rs:14`)
+- Bundles of Open Policy Agent: `impl BundleSigner for BundleSigningKey` (`src/bundle_signing.rs`), the trait `hodor_authorization_opa::api::BundleSigner`.
 - Keys context ports: `impl KeyProvider for LocalKeyProvider` (`src/keys.rs`) and `impl FirstFormatSecrets for SecretKeys` (`src/sealing.rs:253`), the traits `hodor_keys::api::KeyProvider` and `hodor_keys::api::FirstFormatSecrets` from `crates/keys`. Secrets at rest are sealed by `hodor_keys::api::TenantSecretBox`, not by this crate.
 - Credential context ports: `impl PasswordHasher for Argon2idHasher` (`src/password.rs:228`) and `impl HmacSha1 for AwsLcHmacSha1` (`src/hmac.rs`), the traits `hodor_credential::api::PasswordHasher` and `hodor_credential::api::HmacSha1` from `crates/credential`.
 - Test support only: `impl HttpClient for TestProvider` (`src/testing.rs:241`).
 
 ## Subdirectories & Boundaries
 
-- `src`: [./src/EGM.md](./src/EGM.md) - `Sha256Digest`, `OsRandom`, `Argon2idHasher` with `Argon2Parameters` and `HashingLimits`, `SecretKeys`, `LocalKeyProvider`, `AwsLcVerifier` and `AwsLcHmacSha1`, plus the `testing` module (`SigningKey`, `TestProvider`). Its side effects are operating system randomness and the `tokio` blocking thread pool; it does no network or file access.
+- `src`: [./src/EGM.md](./src/EGM.md) - `Sha256Digest`, `OsRandom`, `Argon2idHasher` with `Argon2Parameters` and `HashingLimits`, `SecretKeys`, `LocalKeyProvider`, `BundleSigningKey`, `AwsLcVerifier` and `AwsLcHmacSha1`, plus the `testing` module (`SigningKey`, `TestProvider`). Its side effects are operating system randomness and the `tokio` blocking thread pool; it does no network or file access.
 - `tests`: integration tests (not documented here).
 
 ## Workspace Dependencies

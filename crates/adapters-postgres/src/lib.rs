@@ -21,6 +21,7 @@ mod oauth;
 mod oauth_authorization;
 mod oauth_token;
 mod outbox;
+mod policy_bundles;
 mod resealing;
 mod session;
 mod tenant;
@@ -48,6 +49,9 @@ pub use oauth_authorization::{
 };
 pub use oauth_token::PgClientAssertionStore;
 pub use outbox::{DispatchReport, OutboxDispatcher};
+pub use policy_bundles::{
+    PgBundleStore, PgInstanceStatusStore, PgInstanceStore, PgUploadedDecisionStore,
+};
 pub use resealing::{ResealReport, SEALED_COLUMNS, SealedColumn, reseal_tenant};
 pub use session::PgSessionStore;
 pub use sqlx::migrate::MigrateError;
