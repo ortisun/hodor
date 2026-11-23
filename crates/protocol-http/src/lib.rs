@@ -10,7 +10,9 @@
 //! composition root implements.
 
 mod admin;
+mod authorization_api;
 mod authorize;
+mod bearer;
 mod health;
 mod interaction;
 mod key_set;
@@ -27,6 +29,10 @@ mod token;
 pub use admin::{
     ADMIN_OPENAPI, ADMIN_OPERATIONS, AdminState, CONSOLE_SESSION_HOURS, ConsoleState, admin_routes,
     console_routes,
+};
+pub use authorization_api::{
+    AUTHORIZATION_API_AUDIENCE, AUTHORIZATION_OPENAPI, AUTHORIZATION_OPERATIONS,
+    AuthorizationApiState, EVALUATE_SCOPE, EXPLAIN_SCOPE, SIMULATE_SCOPE, authorization_api_routes,
 };
 pub use authorize::{AuthorizationState, authorization_routes};
 pub use health::{Health, ReadinessCheck, ops_router};

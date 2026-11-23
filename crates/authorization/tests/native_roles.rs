@@ -5,8 +5,8 @@ use hodor_authorization::api::{
     Action, ApplicationReference, AssignmentScope, Attributes, AuthorizationEngine,
     AuthorizationRequest, AuthorizationService, BindingSettings, Effect, EngineId, EngineRegistry,
     EvaluationContext, EvaluationInput, EvaluationService, MATCHING_ROLE, Namespace, NativeEngine,
-    Permission, PermissionName, Resource, Role, RoleContents, RoleKey, RoleName, RoleService,
-    Subject, SubjectKind, Validity,
+    Permission, PermissionName, PolicyRevision, PolicySelection, PolicySimulator, Resource, Role,
+    RoleContents, RoleKey, RoleName, RoleService, Subject, SubjectKind, Validity,
 };
 use hodor_authorization::testing::{
     InMemoryEngineBindings, InMemoryNativeRoles, InMemoryRoleAssignments, NativeRolePorts,
@@ -874,4 +874,53 @@ async fn an_administration_only_engine_answers_nothing_else() {
         time_limit: Duration::from_millis(200),
     };
     assert!(only.evaluate(&world.tenant, &input).await.is_err());
+}
+
+#[tokio::test]
+async fn the_native_engine_simulates_against_what_is_published_only() {
+    let world = world();
+    world.documents().await;
+    let ana = user("ana");
+    world
+        .assign(&ana, key(DOCUMENTS, "viewer"), AssignmentScope::Tenant)
+        .await;
+    let input = EvaluationInput {
+        request: request(DOCUMENTS, &ana, "document", "read"),
+        subject_attributes: Attributes::none(),
+        time_limit: Duration::from_millis(200),
+    };
+    let simulated = world
+        .engine
+        .simulate(&world.tenant, &input, &PolicySelection::Published)
+        .await
+        .expect("simulated");
+    assert_eq!(simulated.answer.effect, Effect::Allow);
+    assert_eq!(simulated.answer.reason.as_str(), MATCHING_ROLE);
+    assert!(
+        simulated.trace.iter().any(|step| step.contains("viewer")),
+        "{:?}",
+        simulated.trace
+    );
+    assert!(
+        simulated
+            .trace
+            .last()
+            .is_some_and(|step| step.contains("allow")),
+        "{:?}",
+        simulated.trace
+    );
+
+    let revision = PolicySelection::Revision(PolicyRevision::parse("rev-1").expect("revision"));
+    let refused = world
+        .engine
+        .simulate(&world.tenant, &input, &revision)
+        .await
+        .expect_err("no revisions");
+    assert_eq!(refused.code(), "authorization.simulation_unsupported");
+    // A simulation is not an event.
+    assert!(
+        !world.events().iter().any(|event| event.contains("simulat")),
+        "{:?}",
+        world.events()
+    );
 }

@@ -269,11 +269,11 @@ What is built (Issue-79) is specified in [the authorization context](contexts/au
 
 | Endpoint | Purpose | Required scope |
 |---|---|---|
-| `POST /api/v1/authorization/evaluate` | One decision | `authz:evaluate` |
-| `POST /api/v1/authorization/batch` | Up to 100 decisions | `authz:evaluate` |
-| `POST /api/v1/authorization/simulate` | Evaluate against a draft or a chosen version; never logged as a real decision | `authz:simulate` |
+| `POST /t/{slug}/api/v1/authorization/evaluate` | One decision | `authz:evaluate` |
+| `POST /t/{slug}/api/v1/authorization/batch` | Up to 100 decisions | `authz:evaluate` |
+| `POST /t/{slug}/api/v1/authorization/simulate` | Evaluate against a draft or a chosen version; never logged as a real decision | `authz:simulate` |
 
-The response contains `decision`, `decision_id`, `evaluated_at`, `engine`, `policy_version` and `reason`. `matched_policies` and trace detail are returned only to callers holding `authz:explain`; everyone else gets the stable reason code. Sensitive attributes are never echoed back.
+The response contains `decision`, `decision_id`, `evaluated_at`, `engine`, `policy_version` and `reason`. `matched_policies` and trace detail are returned only to callers holding `authz:explain`; everyone else gets the stable reason code. Sensitive attributes are never echoed back. The caller, the resource server asked about and the subject's attributes are specified in [the authorization context](contexts/authorization.md#the-authorization-api).
 
 ## Decision log
 

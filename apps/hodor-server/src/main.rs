@@ -14,12 +14,13 @@ use hodor_adapters_ldap::LdapDirectoryClient;
 use hodor_adapters_postgres::{
     Database, PgAccessTokenRecordStore, PgAccessTokenStore, PgApplicationStore, PgAttemptStore,
     PgAuditLog, PgAuthorizationCodeStore, PgAuthorizationRequestStore, PgBundleStore,
-    PgClientAssertionStore, PgClientStore, PgGrantStore, PgInstanceStatusStore, PgInstanceStore,
-    PgKeyStore, PgLinkStore, PgMessageQueue, PgNativeRoleStore, PgPasswordStore,
-    PgPendingAuthorizationStore, PgProviderStore, PgRecoveryCodeStore, PgRefreshTokenStore,
-    PgResourceServerStore, PgRoleAssignmentStore, PgSealingStateStore, PgSessionStore,
-    PgTenantDirectory, PgTenantRepository, PgTotpStore, PgTransactionStore,
-    PgUploadedDecisionStore, PgUserRepository, PgVerificationTokenStore, PgWebAuthnStore,
+    PgClientAssertionStore, PgClientStore, PgEngineBindingStore, PgGrantStore,
+    PgInstanceStatusStore, PgInstanceStore, PgKeyStore, PgLinkStore, PgMessageQueue,
+    PgNativeRoleStore, PgPasswordStore, PgPendingAuthorizationStore, PgProviderStore,
+    PgRecoveryCodeStore, PgRefreshTokenStore, PgResourceServerStore, PgRoleAssignmentStore,
+    PgSealingStateStore, PgSessionStore, PgTenantDirectory, PgTenantRepository, PgTotpStore,
+    PgTransactionStore, PgUploadedDecisionStore, PgUserRepository, PgVerificationTokenStore,
+    PgWebAuthnStore,
 };
 use hodor_audit::api::AuditService;
 use hodor_authentication::api::{
@@ -27,7 +28,9 @@ use hodor_authentication::api::{
     FlowEngine, IdentifierAuthenticator, LockoutRules, PasskeyAuthenticator, PasswordAuthenticator,
     RecoveryCodeAuthenticator, Requirement, TotpAuthenticator, WebAuthnAuthenticator,
 };
-use hodor_authorization::api::{AuthorizationService, EngineRegistry, NativeEngine};
+use hodor_authorization::api::{
+    AuthorizationService, EngineRegistry, EvaluationService, NativeEngine,
+};
 use hodor_authorization_native::CelConditionLanguage;
 use hodor_authorization_opa::api::{
     BundleService, Instances, OpenPolicyAgentEngine, StoredRevisions,
@@ -46,17 +49,17 @@ use hodor_keys::api::{KeyService, RotationPolicy, TenantSecretBox};
 use hodor_notification::api::Notifier;
 use hodor_oauth::api::{
     AccessTokenRegister, ApplicationPorts, ApplicationService, AuthorizationCodePorts,
-    AuthorizationCodeService, LogoutPorts, LogoutService, TokenPorts, TokenService, UserInfoPorts,
-    UserInfoService,
+    AuthorizationCodeService, LogoutPorts, LogoutService, ResourceAccessPorts,
+    ResourceAccessService, TokenPorts, TokenService, UserInfoPorts, UserInfoService,
 };
 use hodor_observability::{LogFormat, Telemetry};
 use hodor_protocol_http::{
-    AdminState, AuthorizationState, ConsoleState, DiscoveryState, Health, InteractionState, Limits,
-    LogoutState, Pages, ReadinessCheck, ResolvedTenant, TenantResolver,
+    AdminState, AuthorizationApiState, AuthorizationState, ConsoleState, DiscoveryState, Health,
+    InteractionState, Limits, LogoutState, Pages, ReadinessCheck, ResolvedTenant, TenantResolver,
     TenantStatus as HttpTenantStatus, TokenState, UserInfoState, admin_routes,
-    authorization_routes, console_routes, discovery_routes, interaction_routes, key_set_routes,
-    logout_routes, ops_router, policy_agent_routes, public_router, serve, token_routes,
-    userinfo_routes,
+    authorization_api_routes, authorization_routes, console_routes, discovery_routes,
+    interaction_routes, key_set_routes, logout_routes, ops_router, policy_agent_routes,
+    public_router, serve, token_routes, userinfo_routes,
 };
 use hodor_session::api::SessionService;
 use hodor_tenant::api::{TenantDirectory as _, TenantService, TenantStatus};
@@ -70,6 +73,7 @@ use tokio::net::TcpListener;
 use tokio::sync::watch;
 
 mod standing;
+mod subjects;
 
 #[derive(Clone, Copy, ValueEnum)]
 enum LogFormatArg {
@@ -296,8 +300,8 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
     .await?;
     let health = Health::new(vec![Arc::new(DatabaseCheck(database.clone()))]);
     // Checked now, so that a wrong address stops the server at startup.
-    // The Authorization API (Issue-75) evaluates through these engines.
-    let _engines = authorization_engines(&config, &database)?;
+    // The Authorization API evaluates through these engines.
+    let engines = authorization_engines(&config, &database)?;
 
     let keys = keys(&config, &database)?;
     let interaction = interaction(&config, &database)?;
@@ -337,6 +341,15 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
     match keys {
         Some(keys) => {
             tenant_routes = tenant_routes
+                .nest(
+                    "/api/v1/authorization",
+                    authorization_api_routes(authorization_api(
+                        &config,
+                        &database,
+                        keys.clone(),
+                        engines,
+                    )),
+                )
                 .merge(key_set_routes(keys))
                 .merge(discovery_routes(DiscoveryState {
                     public_url: config.public_url.clone(),
@@ -695,6 +708,54 @@ fn userinfo(config: &Config, database: &Database, keys: KeyService) -> UserInfoS
     }
 }
 
+/// Builds everything the Authorization API needs. It checks access tokens
+/// against the tenants' keys, so there is no Authorization API without
+/// them.
+fn authorization_api(
+    config: &Config,
+    database: &Database,
+    keys: KeyService,
+    engines: EngineRegistry,
+) -> AuthorizationApiState {
+    let clock = Arc::new(SystemClock);
+    let units = || -> Arc<dyn hodor_kernel::UnitOfWorkFactory> { Arc::new(database.clone()) };
+    let applications = ApplicationService::new(ApplicationPorts {
+        units_of_work: units(),
+        applications: Arc::new(PgApplicationStore),
+        clients: Arc::new(PgClientStore),
+        resource_servers: Arc::new(PgResourceServerStore),
+        digest: Arc::new(Sha256Digest),
+        random: Arc::new(OsRandom),
+        clock: clock.clone(),
+    });
+    AuthorizationApiState {
+        access: ResourceAccessService::new(ResourceAccessPorts {
+            keys,
+            verifier: Arc::new(AwsLcVerifier),
+            register: AccessTokenRegister::new(
+                units(),
+                Arc::new(PgAccessTokenRecordStore),
+                Arc::new(PgGrantStore),
+                Arc::new(PgRefreshTokenStore),
+            ),
+            applications: applications.clone(),
+            clock: clock.clone(),
+        }),
+        evaluation: EvaluationService::new(
+            units(),
+            Arc::new(PgRoleAssignmentStore),
+            Arc::new(PgEngineBindingStore),
+            Arc::new(subjects::ServerSubjects {
+                identity: IdentityService::new(units(), Arc::new(PgUserRepository), clock.clone()),
+                applications,
+            }),
+            engines,
+            clock,
+        ),
+        public_url: config.public_url.clone(),
+    }
+}
+
 /// Builds everything the end-session endpoint needs. A hint is checked
 /// against the tenant's keys, so there is no end-session endpoint without
 /// them, as there is no ID token.
@@ -775,7 +836,7 @@ fn authorization_engines(
         time::Duration::seconds(i64::from(config.open_policy_agent_revision_lag_seconds)),
     );
     let mut registry = EngineRegistry::new();
-    registry.register(Arc::new(
+    let native = Arc::new(
         NativeEngine::new(
             Arc::new(database.clone()),
             Arc::new(PgRoleAssignmentStore),
@@ -783,7 +844,8 @@ fn authorization_engines(
             Arc::new(SystemClock),
         )
         .with_condition_language(Arc::new(CelConditionLanguage::new())),
-    ))?;
+    );
+    registry.register_with_simulator(native.clone(), native)?;
     registry.register(Arc::new(engine))?;
     Ok(registry)
 }

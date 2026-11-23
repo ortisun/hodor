@@ -37,7 +37,8 @@ clients, resource_servers, digest, random, clock })`:
 - Resource servers: `create_resource_server(CreateResourceServer)`,
   `change_resource_server`, `resource_server`,
   `resource_server_by_audience` (`oauth.resource_server_not_found` also for
-  a value that cannot be an audience), `resource_servers`.
+  a value that cannot be an audience), `resource_server_of(application_id)`
+  (the application's one, if any), `resource_servers`.
 
 ### Authorization endpoint (`authorization.rs`)
 
@@ -156,6 +157,20 @@ clock })`:
   `InvalidToken`. Answers `userinfo_claims` for the token's scopes.
 - `published_keys(keys, tenant)` (crate-visible): the tenant's published
   signing keys as `PublishedKey`s, shared with logout.
+
+### Callers of Hodor's own resource servers (`resource_access.rs`)
+
+`ResourceAccessService::new(ResourceAccessPorts { keys, verifier, register,
+applications, clock })`:
+
+- `caller(tenant, issuer, audience, token)`: the outer `Result` is storage;
+  the inner one a `BearerRefusal`. Reads the token with `read_access_token`
+  against the tenant's published keys, then requires `audience` among its
+  audiences, the register's `in_force`, an enabled client of the tenant and
+  an enabled application; each failure is `InvalidToken`. Answers a
+  `ResourceCaller` (client, application, subject, scopes, the
+  application's resource server). Checks no scope: `has_scope` is for the
+  resource server. The Authorization API is its caller.
 
 ### Logout (`logout.rs`)
 

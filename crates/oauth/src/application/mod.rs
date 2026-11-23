@@ -4,6 +4,7 @@ pub(crate) mod authorization;
 pub(crate) mod introspection;
 pub(crate) mod logout;
 pub(crate) mod ports;
+pub(crate) mod resource_access;
 pub(crate) mod service;
 pub(crate) mod token;
 pub(crate) mod userinfo;

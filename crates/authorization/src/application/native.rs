@@ -5,7 +5,10 @@
 //! See `docs/architecture/contexts/authorization.md`, "How the native
 //! engine decides" and "Caching and the role revision".
 
-use crate::application::engine::{AuthorizationEngine, EngineCapabilities, EvaluationInput};
+use crate::application::engine::{
+    AuthorizationEngine, EngineCapabilities, EvaluationInput, PolicySelection, PolicySimulator,
+    SimulationAnswer,
+};
 use crate::application::ports::{
     CompiledCondition, ConditionLanguage, NativeRoleStore, RoleAssignmentStore,
 };
@@ -352,7 +355,7 @@ impl AuthorizationEngine for NativeEngine {
 
     fn capabilities(&self) -> EngineCapabilities {
         EngineCapabilities {
-            simulation: false,
+            simulation: true,
             explanation: true,
         }
     }
@@ -368,4 +371,57 @@ impl AuthorizationEngine for NativeEngine {
             self.tenant_answer(tenant, input).await
         }
     }
+}
+
+/// The native engine simulates against what is published only: its roles
+/// have no drafts and no revisions to choose. The simulated answer is the
+/// one a real decision would give, with the steps in words.
+#[async_trait::async_trait]
+impl PolicySimulator for NativeEngine {
+    async fn simulate(
+        &self,
+        tenant: &TenantContext,
+        input: &EvaluationInput,
+        against: &PolicySelection,
+    ) -> Result<SimulationAnswer, DomainError> {
+        if *against != PolicySelection::Published {
+            return Err(DomainError::invalid(
+                "authorization.simulation_unsupported",
+                "the native engine simulates against what is published only",
+            ));
+        }
+        let answer = self.evaluate(tenant, input).await?;
+        Ok(SimulationAnswer {
+            trace: simulation_trace(input, &answer),
+            answer,
+        })
+    }
+}
+
+/// How a native decision was reached, in words.
+fn simulation_trace(input: &EvaluationInput, answer: &EngineAnswer) -> Vec<String> {
+    let request = &input.request;
+    let mut trace = vec![format!(
+        "asked whether {} {} may {} a {}",
+        request.subject.kind().as_str(),
+        request.subject.id(),
+        request.action.as_str(),
+        request.resource.kind()
+    )];
+    if answer.matched_policies.is_empty() {
+        trace.push("no role of the subject decided".to_owned());
+    }
+    for policy in &answer.matched_policies {
+        trace.push(format!("the role {} decided", policy.as_str()));
+    }
+    trace.push(format!(
+        "the answer is {} for the reason {}",
+        match answer.effect {
+            Effect::Allow => "allow",
+            Effect::Deny => "deny",
+            Effect::Indeterminate => "indeterminate",
+        },
+        answer.reason.as_str()
+    ));
+    trace
 }

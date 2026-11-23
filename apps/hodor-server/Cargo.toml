@@ -31,6 +31,7 @@ hodor-observability.workspace = true
 hodor-protocol-http.workspace = true
 hodor-session.workspace = true
 hodor-tenant.workspace = true
+serde_json.workspace = true
 time.workspace = true
 tokio.workspace = true
 tracing.workspace = true
