@@ -2,7 +2,7 @@
 
 ## Overview
 
-The PostgreSQL schema, as thirty numbered SQL files. A number is
+The PostgreSQL schema, as thirty-one numbered SQL files. A number is
 reserved when a piece of work starts, so a number can be missing until that
 work merges; every file not yet applied is applied, in order. They are
 embedded in the binaries by `static MIGRATOR: Migrator = sqlx::migrate!("../../migrations")`
