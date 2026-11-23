@@ -6,8 +6,12 @@ use crate::domain::authorization::{
     AuthorizationCode, CodeHash, Grant, GrantId, PendingAuthorization, PendingAuthorizationId,
 };
 use crate::domain::client::{Client, ClientId};
+use crate::domain::refresh::{
+    RefreshAsk, RefreshFamily, RefreshFamilyId, RefreshTokenHash, RefreshTokenRecord,
+};
 use crate::domain::resource_server::{Audience, ResourceServer, ResourceServerId};
-use hodor_kernel::{DomainError, Timestamp, UnitOfWork};
+use hodor_kernel::{DomainError, TenantContext, Timestamp, UnitOfWork, UserId};
+use hodor_session::api::SessionId;
 
 /// Stores applications.
 #[async_trait::async_trait]
@@ -283,4 +287,86 @@ pub trait ClientAssertionStore: Send + Sync {
         assertion_id: &str,
         expires_at: Timestamp,
     ) -> Result<bool, DomainError>;
+}
+
+/// Stores refresh token families and every token they have had, by the
+/// hash of the token.
+#[async_trait::async_trait]
+pub trait RefreshTokenStore: Send + Sync {
+    /// Stores a new family with its first token.
+    ///
+    /// # Errors
+    ///
+    /// Returns `oauth.grant_not_found` if the tenant has no such grant.
+    async fn start(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        family: &RefreshFamily,
+    ) -> Result<(), DomainError>;
+
+    /// The family of the token with this hash, and the token's record, if
+    /// the tenant has it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn find(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        hash: &RefreshTokenHash,
+    ) -> Result<Option<(RefreshFamily, RefreshTokenRecord)>, DomainError>;
+
+    /// Moves the family one generation, from `from_generation`, to the
+    /// token `next`, for what `asked` asked, at `at`; only if it is still
+    /// active and at that generation. Returns whether this call moved it,
+    /// so that of two refreshes at the same moment exactly one does.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn advance(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        family: RefreshFamilyId,
+        from_generation: i32,
+        next: &RefreshTokenHash,
+        asked: &RefreshAsk,
+        at: Timestamp,
+    ) -> Result<bool, DomainError>;
+
+    /// Stores a family's revocation.
+    ///
+    /// # Errors
+    ///
+    /// Returns `oauth.refresh_token_family_not_found` if the tenant has no
+    /// such family.
+    async fn revoke(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        family: &RefreshFamily,
+    ) -> Result<(), DomainError>;
+}
+
+/// What the OAuth context needs to know of a person, from the session and
+/// identity contexts.
+#[async_trait::async_trait]
+pub trait PersonStanding: Send + Sync {
+    /// Whether the session `session` of `user` is still active.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn session_is_active(
+        &self,
+        tenant: &TenantContext,
+        user: UserId,
+        session: SessionId,
+    ) -> Result<bool, DomainError>;
+
+    /// Whether `user` may still sign in.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn may_sign_in(&self, tenant: &TenantContext, user: UserId) -> Result<bool, DomainError>;
 }

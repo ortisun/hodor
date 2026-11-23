@@ -16,10 +16,10 @@ use hodor_adapters_postgres::{
     PgAuthorizationCodeStore, PgAuthorizationRequestStore, PgBundleStore, PgClientAssertionStore,
     PgClientStore, PgGrantStore, PgInstanceStatusStore, PgInstanceStore, PgKeyStore, PgLinkStore,
     PgMessageQueue, PgNativeRoleStore, PgPasswordStore, PgPendingAuthorizationStore,
-    PgProviderStore, PgRecoveryCodeStore, PgResourceServerStore, PgRoleAssignmentStore,
-    PgSealingStateStore, PgSessionStore, PgTenantDirectory, PgTenantRepository, PgTotpStore,
-    PgTransactionStore, PgUploadedDecisionStore, PgUserRepository, PgVerificationTokenStore,
-    PgWebAuthnStore,
+    PgProviderStore, PgRecoveryCodeStore, PgRefreshTokenStore, PgResourceServerStore,
+    PgRoleAssignmentStore, PgSealingStateStore, PgSessionStore, PgTenantDirectory,
+    PgTenantRepository, PgTotpStore, PgTransactionStore, PgUploadedDecisionStore, PgUserRepository,
+    PgVerificationTokenStore, PgWebAuthnStore,
 };
 use hodor_audit::api::AuditService;
 use hodor_authentication::api::{
@@ -55,6 +55,7 @@ use hodor_protocol_http::{
 };
 use hodor_session::api::SessionService;
 use hodor_tenant::api::{TenantDirectory as _, TenantService, TenantStatus};
+use standing::ServerStanding;
 use std::error::Error;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -62,6 +63,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
+
+mod standing;
 
 #[derive(Clone, Copy, ValueEnum)]
 enum LogFormatArg {
@@ -136,6 +139,11 @@ struct Config {
     /// identity provider can be used.
     #[arg(long, env = "HODOR_SECRET_KEYS", hide_env_values = true)]
     secret_keys: Option<String>,
+
+    /// How long a refresh token one generation old is answered again with
+    /// the same next token, in seconds: 0 to 60. 0 turns retries off.
+    #[arg(long, env = "HODOR_REFRESH_RETRY_SECONDS", default_value_t = 10)]
+    refresh_retry_seconds: i64,
 
     /// How long a signing key replaced by hand stays published, in hours.
     /// The worker's rotation reads the same setting.
@@ -279,13 +287,14 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
     let keys = keys(&config, &database)?;
     let authorization = authorization(&config, &database);
     let mut oauth2 = authorization_routes(authorization.clone());
-    if let Some(keys) = &keys {
+    if let (Some(keys), Some(setting)) = (&keys, &config.secret_keys) {
         oauth2 = oauth2.merge(token_routes(token(
             &config,
             &database,
             keys.clone(),
             authorization.authorization,
-        )));
+            secret_box(setting, &database)?,
+        )?));
         oauth2 = oauth2.merge(userinfo_routes(userinfo(&config, &database, keys.clone())));
     }
     let mut tenant_routes = axum::Router::new()
@@ -572,29 +581,51 @@ fn authorization(config: &Config, database: &Database) -> AuthorizationState {
 }
 
 /// Builds everything the token endpoint needs. Tokens are signed with the
-/// tenants' keys, so there is no token endpoint without them.
+/// tenants' keys, so there is no token endpoint without them; the secrets
+/// of refresh token families are sealed with the same keys.
 fn token(
     config: &Config,
     database: &Database,
     keys: KeyService,
     codes: AuthorizationCodeService,
-) -> TokenState {
-    TokenState {
-        tokens: TokenService::new(TokenPorts {
-            units_of_work: Arc::new(database.clone()),
-            applications: Arc::new(PgApplicationStore),
-            clients: Arc::new(PgClientStore),
-            grants: Arc::new(PgGrantStore),
-            assertions: Arc::new(PgClientAssertionStore),
-            codes,
-            keys,
-            verifier: Arc::new(AwsLcVerifier),
-            digest: Arc::new(Sha256Digest),
-            random: Arc::new(OsRandom),
-            clock: Arc::new(SystemClock),
-        }),
+    secrets: Arc<dyn SecretBox>,
+) -> Result<TokenState, DomainError> {
+    let units = Arc::new(database.clone());
+    let clock = Arc::new(SystemClock);
+    let digest = Arc::new(Sha256Digest);
+    let random = Arc::new(OsRandom);
+    let standing = ServerStanding {
+        sessions: SessionService::new(
+            units.clone(),
+            Arc::new(PgSessionStore),
+            digest.clone(),
+            random.clone(),
+            clock.clone(),
+        ),
+        identity: IdentityService::new(units.clone(), Arc::new(PgUserRepository), clock.clone()),
+    };
+    let tokens = TokenService::new(TokenPorts {
+        units_of_work: units,
+        applications: Arc::new(PgApplicationStore),
+        clients: Arc::new(PgClientStore),
+        resource_servers: Arc::new(PgResourceServerStore),
+        grants: Arc::new(PgGrantStore),
+        assertions: Arc::new(PgClientAssertionStore),
+        refresh_tokens: Arc::new(PgRefreshTokenStore),
+        standing: Arc::new(standing),
+        secrets,
+        codes,
+        keys,
+        verifier: Arc::new(AwsLcVerifier),
+        digest,
+        random,
+        clock,
+    })
+    .with_retry_window(time::Duration::seconds(config.refresh_retry_seconds))?;
+    Ok(TokenState {
+        tokens,
         public_url: config.public_url.clone(),
-    }
+    })
 }
 
 /// Builds everything UserInfo needs. It checks access tokens against the

@@ -323,6 +323,16 @@ async fn the_secrets_of_0_1_0_are_sealed_again_and_then_the_first_format_is_refu
 const NOT_SEALED_SECRETS: &[(&str, &str, &str)] = &[
     ("session.session", "token_hash", "a hash of a random token"),
     (
+        "oauth.refresh_token_family",
+        "current_hash",
+        "a hash of the newest refresh token",
+    ),
+    (
+        "oauth.refresh_token",
+        "token_hash",
+        "a hash of a refresh token",
+    ),
+    (
         "credential.access_token",
         "token_hash",
         "a hash of a random token",

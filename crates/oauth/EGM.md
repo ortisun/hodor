@@ -9,9 +9,10 @@ their clients with secrets and keys, and resource servers with their
 scopes; Issue-55: the rules and use cases of the authorization
 endpoint, with pending requests, grants and authorization codes; and
 Issue-56: the token endpoint, which authenticates clients and exchanges a
-code for a JWT access token signed through the keys context; and
-Issue-59: the OpenID Provider, with the ID token, UserInfo and the
-discovery document. Storage,
+code for a JWT access token signed through the keys context;
+Issue-57: refresh tokens in families that move at every use, and client
+credentials; and Issue-59: the OpenID Provider, with the ID token, UserInfo
+and the discovery document. Storage,
 randomness, hashing, signature checking and time are reached through ports
 and kernel traits.
 
@@ -26,7 +27,9 @@ and kernel traits.
   `PgAuthorizationCodeStore` in
   `crates/adapters-postgres/src/oauth_authorization.rs`;
   `ClientAssertionStore`, by `PgClientAssertionStore` in
-  `crates/adapters-postgres/src/oauth_token.rs`.
+  `crates/adapters-postgres/src/oauth_token.rs`; `RefreshTokenStore`, by
+  `PgRefreshTokenStore` in `crates/adapters-postgres/src/oauth_refresh.rs`;
+  `PersonStanding`, by `ServerStanding` in `apps/hodor-server/src/standing.rs`.
 - Used by `crates/protocol-http/src/authorize.rs`,
   `crates/protocol-http/src/token.rs` and
   `crates/protocol-http/src/openid.rs` (UserInfo and discovery) over HTTP.
@@ -57,6 +60,9 @@ and kernel traits.
   carries only the access token's `jti`.
 - UserInfo uses nothing an access token says before its signature has been
   checked against a key the tenant publishes (`check_access_token`).
+- A refresh token leaves the crate from `TokenService::token` only; only
+  its SHA-256 hash is stored, the family's secret only sealed, and events
+  carry neither.
 - No access or ID token lifetime exceeds
   `TokenPolicy::LONGEST_SIGNED_LIFETIME`, which is
   `RotationPolicy::LONGEST_SIGNED_LIFETIME`.
@@ -66,9 +72,11 @@ and kernel traits.
 ## Side Effects
 
 - Through the stores: reads and writes applications, clients, resource
-  servers, pending authorization requests, grants, codes and the `jti`s of
-  client assertions. Through `KeyService`: signs access and ID tokens, and
-  lists the published keys. Through `IdentityService`: reads people. Through
+  servers, pending authorization requests, grants, codes, the `jti`s of
+  client assertions, and refresh token families with their tokens'
+  hashes. Through `KeyService`: signs access and ID tokens, and lists the
+  published keys. Through `SecretBox`: seals and opens the secrets of
+  refresh token families. Through `IdentityService`: reads people. Through
   `UnitOfWork::record_event`: records the `oauth.*` events.
 
 ## Verification

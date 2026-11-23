@@ -65,12 +65,17 @@ random, clock })`:
 ### Token endpoint (`token.rs`)
 
 `TokenService::new(TokenPorts { units_of_work, applications, clients,
-grants, assertions, codes, keys, verifier, digest, random, clock })`, with
-`codes` the `AuthorizationCodeService` and `keys` the `KeyService`:
+resource_servers, grants, assertions, refresh_tokens, standing, secrets,
+codes, keys, verifier, digest, random, clock })`, with `codes` the
+`AuthorizationCodeService`, `keys` the `KeyService`, `standing` a
+`PersonStanding` and `secrets` the kernel `SecretBox`. The retry window of
+refresh tokens is `DEFAULT_RETRY_WINDOW`, 10 seconds;
+`with_retry_window(window)` sets another, 0 to 60 seconds, or answers
+`oauth.retry_window_invalid`.
 
 - `token(tenant, Issuer { issuer, token_endpoint }, request,
-  correlation_id)`: the outer `Result` is storage or signing; the inner one
-  a `TokenError` to answer with.
+  correlation_id)`: the outer `Result` is storage, sealing or signing; the
+  inner one a `TokenError` to answer with.
   - Authentication: the client named by `client_id`, the `Basic`
     credentials or, without either, the assertion's `iss`; it and its
     application must be enabled; the request's method must be the one it
@@ -79,12 +84,31 @@ grants, assertions, codes, keys, verifier, digest, random, clock })`, with
     once. Every failure is `invalid_client`.
   - `authorization_code`: `unauthorized_client` without that grant;
     `AuthorizationCodeService::redeem_code` (any `oauth.code_refused` is
-    `invalid_grant`); the grant must still be `active`.
-  - The access token: claims from `access_token_claims`, signed with
-    `KeyAlgorithm::DEFAULT_SIGNING` through `KeyService::sign_naming_key`
-    so that the header's `kid` is the version that signs;
-    `keys.no_active_version` is `server_error`. Records
-    `oauth.access_token_issued` with the user as the actor.
+    `invalid_grant`); the grant must still be `active`. With the
+    `refresh_token` grant, a family starts: a `FamilySecret` sealed for
+    `FAMILY_SECRET_PURPOSE`, `RefreshFamily::start`, stored with
+    `oauth.refresh_token_family_started` in the unit of work of
+    `oauth.access_token_issued`.
+  - `refresh_token`: `unauthorized_client` without that grant; a malformed
+    or unknown token is `invalid_grant`. `RefreshFamily::decide` in its own
+    unit of work; a refusal that revokes (`OtherClient`, `Reused`) revokes
+    the family, and on reuse the grant (`oauth.grant_revoked`), and commits
+    that. Then the grant must be active, `PersonStanding::may_sign_in`, and
+    without offline access `session_is_active`. The family's secret is
+    opened and the next token derived. A move is `RefreshTokenStore::advance`
+    from the family's generation, with `oauth.refresh_token_rotated`; a move
+    lost to another refresh looks the token up again, at most twice. A retry
+    answers the derived token only if `RefreshFamily::is_newest`, otherwise
+    it is reuse. Records `oauth.access_token_issued` with the user as actor.
+  - `client_credentials`: `unauthorized_client` without that grant; scopes
+    from `scope`, or every scope the client is allowed that a resource
+    server defines; OpenID Connect's scopes are `invalid_scope`; `resource`
+    names one resource server or is `invalid_target`. Records
+    `oauth.client_access_token_issued`. No refresh token.
+  - The access token: claims from `claims_for` with a `TokenSubject`,
+    signed with `KeyAlgorithm::DEFAULT_SIGNING` through
+    `KeyService::sign_naming_key` so that the header's `kid` is the version
+    that signs; `keys.no_active_version` is `server_error`.
   - The ID token, when the scopes hold `openid`: claims from
     `id_token_claims`, signed the same way with the client's ID token
     lifetime, header `typ` `JWT`.
@@ -109,6 +133,7 @@ grants, assertions, codes, keys, verifier, digest, random, clock })`, with
 ## Verification
 
 - Run: `cargo test -p hodor-oauth --test service`,
-  `cargo test -p hodor-oauth --test authorization` and
-  `cargo test -p hodor-oauth --test token`; `cargo test -p hodor-oauth
+  `cargo test -p hodor-oauth --test authorization`,
+  `cargo test -p hodor-oauth --test token` and
+  `cargo test -p hodor-oauth --test refresh`; `cargo test -p hodor-oauth
   --lib openid` for the OpenID Provider's domain

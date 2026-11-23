@@ -19,6 +19,7 @@ mod migrate;
 mod notification;
 mod oauth;
 mod oauth_authorization;
+mod oauth_refresh;
 mod oauth_token;
 mod outbox;
 mod policy_bundles;
@@ -47,6 +48,7 @@ pub use oauth::{PgApplicationStore, PgClientStore, PgResourceServerStore};
 pub use oauth_authorization::{
     PgAuthorizationCodeStore, PgAuthorizationRequestStore, PgGrantStore,
 };
+pub use oauth_refresh::PgRefreshTokenStore;
 pub use oauth_token::PgClientAssertionStore;
 pub use outbox::{DispatchReport, OutboxDispatcher};
 pub use policy_bundles::{

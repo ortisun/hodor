@@ -47,7 +47,7 @@ const MAX_AGE_SECONDS: u32 = 31_536_000;
 const CHALLENGE_LENGTH: usize = 43;
 /// The length of a code, and of a pending request's secret: 32 bytes in
 /// base64url without padding.
-const TOKEN_LENGTH: usize = 43;
+pub(crate) const TOKEN_LENGTH: usize = 43;
 
 /// The parameters of an authorization request, as they arrived, in order.
 /// A parameter sent without a value is treated as if it were omitted, as
@@ -173,7 +173,7 @@ fn is_printable(value: &str) -> bool {
     value.bytes().all(|b| (0x20..=0x7e).contains(&b))
 }
 
-fn is_base64url(value: &str) -> bool {
+pub(crate) fn is_base64url(value: &str) -> bool {
     value
         .bytes()
         .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
@@ -538,13 +538,13 @@ impl AuthorizationRequest {
     }
 }
 
-fn random_token(random: &dyn RandomSource) -> String {
+pub(crate) fn random_token(random: &dyn RandomSource) -> String {
     let mut bytes = [0_u8; 32];
     random.fill(&mut bytes);
     URL_SAFE_NO_PAD.encode(bytes)
 }
 
-fn same_bytes(a: &[u8], b: &[u8]) -> bool {
+pub(crate) fn same_bytes(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0_u8, |d, (x, y)| d | (x ^ y)) == 0
 }
 

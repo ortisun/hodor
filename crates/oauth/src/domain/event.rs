@@ -4,6 +4,7 @@
 use crate::domain::application::ApplicationId;
 use crate::domain::authorization::GrantId;
 use crate::domain::client::ClientId;
+use crate::domain::refresh::RefreshFamilyId;
 use crate::domain::resource_server::ResourceServerId;
 use crate::domain::secret::ClientSecretId;
 use hodor_kernel::{DomainEvent, Timestamp, UserId};
@@ -143,6 +144,51 @@ pub enum OauthEvent {
         #[serde(with = "time::serde::rfc3339")]
         expires_at: Timestamp,
     },
+    /// An access token was issued to a client for itself, with client
+    /// credentials. Never carries the token.
+    ClientAccessTokenIssued {
+        /// The client.
+        client_id: ClientId,
+        /// The token's `jti`.
+        token_id: String,
+        /// When it expires.
+        #[serde(with = "time::serde::rfc3339")]
+        expires_at: Timestamp,
+    },
+    /// A family of refresh tokens started with a code. Never carries a
+    /// token or its hash.
+    RefreshTokenFamilyStarted {
+        /// The family.
+        family_id: RefreshFamilyId,
+        /// The grant it belongs to.
+        grant_id: GrantId,
+        /// The client.
+        client_id: ClientId,
+        /// The person.
+        user_id: UserId,
+        /// Whether it outlives its session.
+        offline: bool,
+    },
+    /// A family of refresh tokens moved one generation.
+    RefreshTokenRotated {
+        /// The family.
+        family_id: RefreshFamilyId,
+        /// The client.
+        client_id: ClientId,
+        /// The generation it moved to.
+        generation: i32,
+    },
+    /// A family of refresh tokens was revoked.
+    RefreshTokenFamilyRevoked {
+        /// The family.
+        family_id: RefreshFamilyId,
+        /// The grant it belongs to.
+        grant_id: GrantId,
+        /// The client.
+        client_id: ClientId,
+        /// Why: `refresh_token_reused` or `other_client`.
+        reason: &'static str,
+    },
 }
 
 impl DomainEvent for OauthEvent {
@@ -165,6 +211,10 @@ impl DomainEvent for OauthEvent {
             Self::AuthorizationCodeIssued { .. } => "oauth.authorization_code_issued",
             Self::GrantRevoked { .. } => "oauth.grant_revoked",
             Self::AccessTokenIssued { .. } => "oauth.access_token_issued",
+            Self::ClientAccessTokenIssued { .. } => "oauth.client_access_token_issued",
+            Self::RefreshTokenFamilyStarted { .. } => "oauth.refresh_token_family_started",
+            Self::RefreshTokenRotated { .. } => "oauth.refresh_token_rotated",
+            Self::RefreshTokenFamilyRevoked { .. } => "oauth.refresh_token_family_revoked",
         }
     }
 }

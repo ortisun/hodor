@@ -92,6 +92,7 @@ services:
       # Optional settings: passed on when `.env` sets them, left to Hodor's defaults otherwise.
       HODOR_DIRECTORY_HOSTS:
       HODOR_KEY_OVERLAP_HOURS:
+      HODOR_REFRESH_RETRY_SECONDS:
       HODOR_DATABASE_MAX_CONNECTIONS:
       HODOR_PASSWORD_HASH_CONCURRENCY:
       HODOR_LOG_FORMAT:

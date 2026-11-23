@@ -4,6 +4,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use hodor_kernel::clock::testing::FixedClock;
 use hodor_kernel::random::testing::FakeDigest;
+use hodor_kernel::sealing::testing::FakeSecretBox;
 use hodor_kernel::uow::testing::InMemoryUnitOfWorkFactory;
 use hodor_kernel::{
     Caller, Clock as _, CorrelationId, PublicKey, SignatureAlgorithm, TenantContext, TenantId,
@@ -21,8 +22,8 @@ use hodor_oauth::api::{
 };
 use hodor_oauth::testing::{
     AssertionStorePorts, DistinctRandom, FakeVerifier, InMemoryAuthorizationCodes,
-    InMemoryAuthorizationRequests, InMemoryClientAssertions, InMemoryGrants, InMemoryStores,
-    fake_signature, run_assertion_contract,
+    InMemoryAuthorizationRequests, InMemoryClientAssertions, InMemoryGrants, InMemoryRefreshTokens,
+    InMemoryStores, StandingOf, fake_signature, run_assertion_contract,
 };
 use hodor_session::api::SessionId;
 use serde_json::{Value, json};
@@ -78,8 +79,12 @@ fn world() -> World {
         units_of_work: Arc::new(units.clone()),
         applications: Arc::new(stores.applications.clone()),
         clients: Arc::new(stores.clients.clone()),
+        resource_servers: Arc::new(stores.resource_servers.clone()),
         grants: Arc::new(grants.clone()),
         assertions: Arc::new(assertions),
+        refresh_tokens: Arc::new(InMemoryRefreshTokens::new(&grants)),
+        standing: Arc::new(StandingOf::default()),
+        secrets: Arc::new(FakeSecretBox),
         codes: codes.clone(),
         keys: keys.clone(),
         verifier: Arc::new(FakeVerifier),

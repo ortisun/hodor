@@ -97,7 +97,7 @@ impl InMemoryGrants {
         }
     }
 
-    fn exists(&self, tenant: TenantId, id: GrantId) -> bool {
+    pub(super) fn exists(&self, tenant: TenantId, id: GrantId) -> bool {
         lock(&self.rows).contains_key(&(tenant, id))
     }
 

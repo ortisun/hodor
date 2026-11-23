@@ -29,6 +29,7 @@ Configuration (`Config`, clap, command name `hodor-server`):
 | `--console-directory` | `HODOR_CONSOLE_DIRECTORY` | unset |
 | `--secret-keys` | `HODOR_SECRET_KEYS` | unset |
 | `--key-overlap-hours` | `HODOR_KEY_OVERLAP_HOURS` | 24 |
+| `--refresh-retry-seconds` | `HODOR_REFRESH_RETRY_SECONDS` | 10, checked by `TokenService::with_retry_window` (0 to 60) |
 | `--outbound-development-hosts` | `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` | empty, comma separated |
 | `--open-policy-agent-address` | `HODOR_OPEN_POLICY_AGENT_ADDRESS` | unset |
 | `--open-policy-agent-tenant-addresses` | `HODOR_OPEN_POLICY_AGENT_TENANT_ADDRESSES` | empty, comma separated `tenant-identifier=origin` |
@@ -69,6 +70,10 @@ Adapters implemented here:
   name `database`, calling `Database::ping`.
 - `TenantLockout` implements `hodor_federation::api::LockoutPolicy`, reading
   the tenant's lockout settings into `LockoutRules`.
+- `ServerStanding` (`standing.rs`) implements
+  `hodor_oauth::api::PersonStanding` over `SessionService::list_for_user`
+  (a session is active when it is among the person's active sessions) and
+  `IdentityService::get` (`may_sign_in`; an unknown user may not).
 
 Wiring functions: `interaction` (Argon2id hashing, identity, credential,
 WebAuthn with the relying party of `HODOR_PUBLIC_URL`, session, attempt
@@ -78,7 +83,9 @@ can be kept, both conditional on the sign-in not being multi-factor yet, and
 the alternative `passkey`),
 `external_sign_in` (`ExternalSignIn` with OpenID Connect, GitHub, SAML and,
 through `with_directories`, `LdapDirectoryClient`), `keys`, `key_rotation`
-(the default policy with `HODOR_KEY_OVERLAP_HOURS`), `administration`,
+(the default policy with `HODOR_KEY_OVERLAP_HOURS`), `token` (the token
+endpoint, with `PgRefreshTokenStore`, `ServerStanding`, the secret box and
+the retry window of `HODOR_REFRESH_RETRY_SECONDS`), `administration`,
 `development_hosts`, `directory_hosts`, `wait_for`, `stop_signal`, `main`
 and `run`.
 
@@ -91,7 +98,11 @@ and `run`.
   (`external_sign_in` returns `None`) and has no identity providers to manage
   (`administration`). A malformed value aborts startup through
   `SecretKeys::parse`.
-- Every context that keeps secrets (federation, authenticator applications)
+- The token endpoint is mounted only with both a key service and
+  `HODOR_SECRET_KEYS`; a retry window outside 0 to 60 seconds aborts startup
+  (`token`).
+- Every context that keeps secrets (federation, authenticator applications,
+  refresh token families)
   gets the same kind of `TenantSecretBox`, built by `secret_box` with
   `PgKeyStore`, `LocalKeyProvider` over the root keys, `PgSealingStateStore`
   and the root keys to open the first format.

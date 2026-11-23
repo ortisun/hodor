@@ -3,7 +3,8 @@
 use hodor_adapters_postgres::testing::TestDatabase;
 use hodor_adapters_postgres::{
     PgApplicationStore, PgAuthorizationCodeStore, PgAuthorizationRequestStore,
-    PgClientAssertionStore, PgClientStore, PgGrantStore, PgResourceServerStore,
+    PgClientAssertionStore, PgClientStore, PgGrantStore, PgRefreshTokenStore,
+    PgResourceServerStore,
 };
 use hodor_kernel::clock::testing::FixedClock;
 use hodor_kernel::random::testing::FakeDigest;
@@ -14,8 +15,8 @@ use hodor_oauth::api::{
     CreateClient, GrantType, RotateSecret,
 };
 use hodor_oauth::testing::{
-    AssertionStorePorts, AuthorizationStorePorts, DistinctRandom, Ports, run_assertion_contract,
-    run_authorization_contract, run_contract,
+    AssertionStorePorts, AuthorizationStorePorts, DistinctRandom, Ports, RefreshStorePorts,
+    run_assertion_contract, run_authorization_contract, run_contract, run_refresh_token_contract,
 };
 use std::sync::Arc;
 use time::Duration;
@@ -56,6 +57,170 @@ async fn the_postgres_assertion_store_passes_the_contract() {
         assertions: &PgClientAssertionStore,
     })
     .await;
+}
+
+#[tokio::test]
+async fn the_postgres_refresh_token_store_passes_the_contract() {
+    let database = TestDatabase::start().await;
+    run_refresh_token_contract(RefreshStorePorts {
+        units_of_work: database.app(),
+        applications: &PgApplicationStore,
+        clients: &PgClientStore,
+        grants: &PgGrantStore,
+        refresh_tokens: &PgRefreshTokenStore,
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn of_two_moves_of_one_family_at_the_same_moment_exactly_one_moves_it() {
+    use hodor_kernel::{SealedSecret, UnitOfWorkFactory, UserId};
+    use hodor_oauth::api::{
+        AuthorizationCode, CodeHash, Grant, GrantId, GrantStatus, GrantStore as _, RefreshAsk,
+        RefreshFamily, RefreshTokenHash, RefreshTokenStore as _, TokenPolicy,
+    };
+    use hodor_session::api::SessionId;
+
+    let database = TestDatabase::start().await;
+    let now = Timestamp::UNIX_EPOCH + Duration::days(20_000);
+    let clock = Arc::new(FixedClock::at(now));
+    let applications = ApplicationService::new(ApplicationPorts {
+        units_of_work: Arc::new(database.app().clone()),
+        applications: Arc::new(PgApplicationStore),
+        clients: Arc::new(PgClientStore),
+        resource_servers: Arc::new(PgResourceServerStore),
+        digest: Arc::new(FakeDigest),
+        random: Arc::new(DistinctRandom),
+        clock,
+    });
+    let tenant = TenantContext::assume(TenantId::generate());
+    let application = applications
+        .create_application(
+            &tenant,
+            ApplicationSettings {
+                name: "Payroll".to_owned(),
+                first_party: true,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("application");
+    let (client, _) = applications
+        .create_client(
+            &tenant,
+            CreateClient {
+                application_id: application.id(),
+                client_type: ClientType::Public,
+                settings: ClientSettings::new(
+                    "Payroll mobile",
+                    ClientType::Public,
+                    vec![GrantType::AuthorizationCode, GrantType::RefreshToken],
+                    vec!["com.example.payroll:/callback".to_owned()],
+                ),
+                secret_lifetime: None,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("client");
+    let grant = Grant {
+        id: GrantId::generate(),
+        client_id: client.id(),
+        user_id: UserId::generate(),
+        session_id: SessionId::generate(),
+        scopes: vec!["openid".to_owned()],
+        audiences: Vec::new(),
+        status: GrantStatus::Active,
+        created_at: now,
+        revoked_at: None,
+        revocation_reason: None,
+    };
+    let code = AuthorizationCode {
+        hash: CodeHash::from_stored([1; 32]),
+        grant_id: grant.id,
+        client_id: client.id(),
+        redirect_uri: "com.example.payroll:/callback".to_owned(),
+        scopes: grant.scopes.clone(),
+        audiences: Vec::new(),
+        code_challenge: None,
+        nonce: None,
+        session_id: grant.session_id,
+        user_id: grant.user_id,
+        signed_in_at: now,
+        methods: vec!["password".to_owned()],
+        issued_at: now,
+        expires_at: now + Duration::seconds(60),
+        redeemed_at: Some(now),
+    };
+    let (family, _) = RefreshFamily::start(
+        &code,
+        &TokenPolicy::default(),
+        SealedSecret::from_stored(vec![2; 48]),
+        now,
+        &DistinctRandom,
+        &FakeDigest,
+    );
+    let mut uow = UnitOfWorkFactory::begin(database.app(), &tenant)
+        .await
+        .expect("begin");
+    PgGrantStore
+        .insert(uow.as_mut(), &grant)
+        .await
+        .expect("grant");
+    PgRefreshTokenStore
+        .start(uow.as_mut(), &family)
+        .await
+        .expect("family");
+    uow.commit().await.expect("commit");
+
+    let move_to = |byte: u8| {
+        let tenant = tenant.clone();
+        let database = database.app().clone();
+        async move {
+            let mut uow = UnitOfWorkFactory::begin(&database, &tenant)
+                .await
+                .expect("begin");
+            let moved = PgRefreshTokenStore
+                .advance(
+                    uow.as_mut(),
+                    family.id,
+                    1,
+                    &RefreshTokenHash::from_stored([byte; 32]),
+                    &RefreshAsk::default(),
+                    now + Duration::minutes(1),
+                )
+                .await
+                .expect("advance");
+            uow.commit().await.expect("commit");
+            moved
+        }
+    };
+    let (one, two) = tokio::join!(move_to(3), move_to(4));
+    assert!(one ^ two, "exactly one moves the family: {one} {two}");
+
+    let mut uow = UnitOfWorkFactory::begin(database.app(), &tenant)
+        .await
+        .expect("begin");
+    let (_, newest) = PgRefreshTokenStore
+        .find(
+            uow.as_mut(),
+            &RefreshTokenHash::from_stored(if one { [3; 32] } else { [4; 32] }),
+        )
+        .await
+        .expect("find")
+        .expect("the winner's token");
+    assert_eq!(newest.generation, 2);
+    assert!(
+        PgRefreshTokenStore
+            .find(
+                uow.as_mut(),
+                &RefreshTokenHash::from_stored(if one { [4; 32] } else { [3; 32] }),
+            )
+            .await
+            .expect("find")
+            .is_none(),
+        "the loser left no token"
+    );
 }
 
 #[tokio::test]

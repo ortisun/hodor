@@ -15,10 +15,14 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use time::Duration;
 
 mod authorization;
+mod refresh;
 mod token;
 pub use authorization::{
     AuthorizationStorePorts, InMemoryAuthorizationCodes, InMemoryAuthorizationRequests,
     InMemoryGrants, run_authorization_contract,
+};
+pub use refresh::{
+    InMemoryRefreshTokens, RefreshStorePorts, StandingOf, run_refresh_token_contract,
 };
 pub use token::{
     AssertionStorePorts, FakeVerifier, InMemoryClientAssertions, fake_signature,

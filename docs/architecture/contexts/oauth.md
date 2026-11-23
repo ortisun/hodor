@@ -484,7 +484,7 @@ Either way the person must still be allowed to sign in: a suspended, deactivated
 7. `scope`, when given, must hold only scopes of the family; otherwise `invalid_scope`. A refresh can narrow the scopes of its access token and never widen them. The family keeps its own scopes, so a later refresh can ask for all of them again ([RFC 6749, section 6](https://www.rfc-editor.org/rfc/rfc6749#section-6)).
 8. `resource`, when given, must be one of the family's audiences; the access token is then for it alone. Otherwise `invalid_target`.
 
-Then the family moves one generation, the presented token stops being the newest, and the answer carries a new access token and the next refresh token. Moving is one conditional change in storage that names the generation it moves from. Of two refreshes with the same token at the same moment, exactly one moves the family; the other finds the token one generation old and is answered as a retry.
+Then the family moves one generation, the presented token stops being the newest, and the answer carries a new access token and the next refresh token. It carries no ID token: nobody signed in again. With `openid` among the scopes the access token asks for, the issuer is one of its audiences, as with a code. Moving is one conditional change in storage that names the generation it moves from. Of two refreshes with the same token at the same moment, exactly one moves the family; the other finds the token one generation old and is answered as a retry.
 
 #### A retry of the same request
 
@@ -684,7 +684,7 @@ It names only what is built:
 | `authorization_endpoint`, `token_endpoint`, `userinfo_endpoint`, `jwks_uri` | The four addresses under `{issuer}/oauth2` |
 | `response_types_supported` | `code` |
 | `response_modes_supported` | `query` |
-| `grant_types_supported` | The grants the token endpoint answers: `authorization_code` |
+| `grant_types_supported` | The grants the token endpoint answers: `authorization_code`, `refresh_token` and `client_credentials` |
 | `code_challenge_methods_supported` | `S256` |
 | `token_endpoint_auth_methods_supported` | `client_secret_basic`, `client_secret_post`, `private_key_jwt`, `none` |
 | `token_endpoint_auth_signing_alg_values_supported` | `ES256`, `RS256`, `PS256` |

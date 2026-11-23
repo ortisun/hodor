@@ -84,6 +84,22 @@ impl TokenError {
         )
     }
 
+    /// A scope asked for cannot be given.
+    #[must_use]
+    pub const fn invalid_scope(reason: &'static str) -> Self {
+        Self::new("invalid_scope", "a scope asked for cannot be given", reason)
+    }
+
+    /// The resource asked for cannot be given (RFC 8707).
+    #[must_use]
+    pub const fn invalid_target(reason: &'static str) -> Self {
+        Self::new(
+            "invalid_target",
+            "the resource asked for cannot be given",
+            reason,
+        )
+    }
+
     /// The grant is not one this endpoint answers.
     #[must_use]
     pub const fn unsupported_grant_type(reason: &'static str) -> Self {
@@ -174,10 +190,11 @@ impl PresentedClient {
 
 /// The grants the token endpoint answers, as the discovery document names
 /// them. A grant added to [`GrantRequest`] is added here too.
-pub const SUPPORTED_GRANT_TYPES: [&str; 1] = ["authorization_code"];
+pub const SUPPORTED_GRANT_TYPES: [&str; 3] =
+    ["authorization_code", "refresh_token", "client_credentials"];
 
 /// What the client asks for.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum GrantRequest {
     /// Tokens for an authorization code.
     AuthorizationCode {
@@ -188,7 +205,72 @@ pub enum GrantRequest {
         /// The PKCE verifier, when the code has a challenge.
         verifier: Option<String>,
     },
+    /// New tokens for a refresh token.
+    RefreshToken {
+        /// The refresh token.
+        refresh_token: Secret<String>,
+        /// The scopes asked for, when fewer than the family's.
+        scope: Option<String>,
+        /// The one resource asked for, when fewer than the family's.
+        resource: Option<String>,
+    },
+    /// A token for the client itself.
+    ClientCredentials {
+        /// The scopes asked for.
+        scope: Option<String>,
+        /// The one resource asked for.
+        resource: Option<String>,
+    },
 }
+
+impl PartialEq for GrantRequest {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Self::AuthorizationCode {
+                    code,
+                    redirect_uri,
+                    verifier,
+                },
+                Self::AuthorizationCode {
+                    code: other_code,
+                    redirect_uri: other_redirect_uri,
+                    verifier: other_verifier,
+                },
+            ) => {
+                code == other_code
+                    && redirect_uri == other_redirect_uri
+                    && verifier == other_verifier
+            }
+            (
+                Self::RefreshToken {
+                    refresh_token,
+                    scope,
+                    resource,
+                },
+                Self::RefreshToken {
+                    refresh_token: other_token,
+                    scope: other_scope,
+                    resource: other_resource,
+                },
+            ) => {
+                refresh_token.expose() == other_token.expose()
+                    && scope == other_scope
+                    && resource == other_resource
+            }
+            (
+                Self::ClientCredentials { scope, resource },
+                Self::ClientCredentials {
+                    scope: other_scope,
+                    resource: other_resource,
+                },
+            ) => scope == other_scope && resource == other_resource,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for GrantRequest {}
 
 /// A request to the token endpoint, read but not yet checked against any
 /// client.
@@ -249,11 +331,18 @@ impl TokenRequest {
                     .ok_or(TokenError::invalid_request("redirect_uri is missing"))?,
                 verifier: text("code_verifier"),
             },
-            Some("refresh_token" | "client_credentials") => {
-                return Err(TokenError::unsupported_grant_type(
-                    "the grant is not built yet",
-                ));
-            }
+            Some("refresh_token") => GrantRequest::RefreshToken {
+                refresh_token: Secret::from(
+                    text("refresh_token")
+                        .ok_or(TokenError::invalid_request("refresh_token is missing"))?,
+                ),
+                scope: text("scope"),
+                resource: text("resource"),
+            },
+            Some("client_credentials") => GrantRequest::ClientCredentials {
+                scope: text("scope"),
+                resource: text("resource"),
+            },
             Some(_) => {
                 return Err(TokenError::unsupported_grant_type("the grant is unknown"));
             }
@@ -485,11 +574,58 @@ pub struct AccessTokenClaims {
     pub claims: Value,
 }
 
+/// Whom an access token is about and what it allows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TokenSubject {
+    /// Its `sub`: a user's identifier, or the client's for client
+    /// credentials.
+    pub subject: String,
+    /// The scopes.
+    pub scopes: Vec<String>,
+    /// The audiences; none means the issuer itself.
+    pub audiences: Vec<String>,
+    /// When the person signed in; none for client credentials.
+    pub signed_in_at: Option<Timestamp>,
+}
+
+impl TokenSubject {
+    /// The person and the grant of a redeemed `code`.
+    #[must_use]
+    pub fn of_code(code: &AuthorizationCode) -> Self {
+        Self {
+            subject: code.user_id.to_string(),
+            scopes: code.scopes.clone(),
+            audiences: code.audiences.clone(),
+            signed_in_at: Some(code.signed_in_at),
+        }
+    }
+}
+
 /// The claims of the access token for a redeemed `code` (RFC 9068).
 #[must_use]
 pub fn access_token_claims(
     issuer: &str,
     code: &AuthorizationCode,
+    client_id: ClientId,
+    lifetime: Duration,
+    now: Timestamp,
+    random: &dyn RandomSource,
+) -> AccessTokenClaims {
+    claims_for(
+        issuer,
+        &TokenSubject::of_code(code),
+        client_id,
+        lifetime,
+        now,
+        random,
+    )
+}
+
+/// The claims of an access token about `subject` (RFC 9068).
+#[must_use]
+pub fn claims_for(
+    issuer: &str,
+    subject: &TokenSubject,
     client_id: ClientId,
     lifetime: Duration,
     now: Timestamp,
@@ -501,8 +637,8 @@ pub fn access_token_claims(
     let expires_at = now + lifetime;
     // With `openid`, the issuer is an audience too, so that the token
     // reads UserInfo.
-    let mut audiences = code.audiences.clone();
-    if code.scopes.iter().any(|scope| scope == "openid")
+    let mut audiences = subject.audiences.clone();
+    if subject.scopes.iter().any(|scope| scope == "openid")
         && !audiences.iter().any(|audience| audience == issuer)
     {
         audiences.push(issuer.to_owned());
@@ -512,17 +648,19 @@ pub fn access_token_claims(
         [one] => json!(one),
         many => json!(many),
     };
-    let claims = json!({
+    let mut claims = json!({
         "iss": issuer,
-        "sub": code.user_id.to_string(),
+        "sub": subject.subject,
         "aud": audience,
         "client_id": client_id.to_string(),
-        "scope": code.scopes.join(" "),
+        "scope": subject.scopes.join(" "),
         "iat": now.unix_timestamp(),
         "exp": expires_at.unix_timestamp(),
         "jti": token_id,
-        "auth_time": code.signed_in_at.unix_timestamp(),
     });
+    if let (Some(signed_in_at), Some(object)) = (subject.signed_in_at, claims.as_object_mut()) {
+        object.insert("auth_time".to_owned(), json!(signed_in_at.unix_timestamp()));
+    }
     AccessTokenClaims {
         token_id,
         expires_at,

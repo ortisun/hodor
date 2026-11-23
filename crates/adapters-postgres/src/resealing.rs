@@ -46,6 +46,12 @@ pub const SEALED_COLUMNS: &[SealedColumn] = &[
         column: "sealed_secret",
         purpose: hodor_credential::api::TOTP_SEALING_PURPOSE,
     },
+    SealedColumn {
+        table: "oauth.refresh_token_family",
+        key: "id",
+        column: "sealed_secret",
+        purpose: hodor_oauth::api::FAMILY_SECRET_PURPOSE,
+    },
 ];
 
 /// What sealing a tenant's secrets again did.
