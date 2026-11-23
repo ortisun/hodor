@@ -35,6 +35,7 @@ A client is what talks to Hodor's endpoints. Its identifier is the `client_id` o
 | Post-logout redirect addresses | Where [logout](#logout-initiated-by-the-relying-party) may send a person back to. At most 10 |
 | Scopes | The scopes it may ask for. At most 50 |
 | PKCE | Whether it must send a code challenge. Always for a public client; on by default for a confidential one |
+| ID token algorithm | How its [ID tokens](#the-id-token) are signed, its `id_token_signed_response_alg` of OpenID Connect Registration: `ES256` unless changed, or `RS256` |
 | Token policy | How long its tokens live |
 | Secrets | Its secrets, kept only as hashes. Only with `client_secret_basic` or `client_secret_post` |
 | Keys | Its public keys, for `private_key_jwt`. Only with that method |
@@ -149,7 +150,7 @@ For an operator who can reach the database, as for tenants and identity provider
 | `hodor-cli application add --tenant acme --name Billing [--first-party]` | Registers an application, enabled; third party unless `--first-party` is given. Prints its identifier |
 | `hodor-cli application list --tenant acme` | One line per application: identifier, status, first or third party, name |
 | `hodor-cli application disable --tenant acme --id …`, `enable` | |
-| `hodor-cli client add --tenant acme --application … --name … --type confidential --grant authorization_code --redirect-uri https://… --scope openid` | Creates a client. `--grant`, `--redirect-uri`, `--post-logout-redirect-uri` and `--scope` are given once per value; `--method` chooses the authentication method and `--secret-days` the lifetime of the first secret. Prints the `client_id` and, for a client with a secret method, the secret, once |
+| `hodor-cli client add --tenant acme --application … --name … --type confidential --grant authorization_code --redirect-uri https://… --scope openid` | Creates a client. `--grant`, `--redirect-uri`, `--post-logout-redirect-uri` and `--scope` are given once per value; `--method` chooses the authentication method, `--secret-days` the lifetime of the first secret, `--without-pkce` lets a confidential client redeem a code without PKCE and `--id-token-algorithm` signs its ID tokens with `RS256` instead of `ES256`. Prints the `client_id` and, for a client with a secret method, the secret, once |
 | `hodor-cli client list --tenant acme --application …` | One line per client: `client_id`, status, type, authentication method, name |
 | `hodor-cli client rotate-secret --tenant acme --id … [--lifetime-days 365] [--keep-previous-days 7]` | Gives a client a new secret and prints it, once |
 | `hodor-cli client disable --tenant acme --id …`, `enable` | |
@@ -204,6 +205,7 @@ Every table is a tenant table under row-level security, in the schema `oauth`. R
 | `name`, `client_type`, `authentication_method`, `status` | `text` | A check constraint keeps a public client on `none` |
 | `grant_types`, `redirect_uris`, `post_logout_redirect_uris`, `allowed_scopes` | `text[]` | Redirect addresses of both kinds are compared byte for byte (`COLLATE "C"`) |
 | `require_pkce` | `boolean` | A check constraint keeps it true for a public client |
+| `id_token_algorithm` | `text` | `ES256` or `RS256`, by a check constraint; `ES256` for a client made before it existed |
 | `access_token_seconds`, `id_token_seconds`, `refresh_token_seconds`, `refresh_idle_seconds`, `consent_seconds` | `integer` | The token policy |
 | `created_at`, `updated_at` | `timestamptz` | |
 | `version` | `integer` | For optimistic locking; secrets and keys are stored with the client under the same version |
@@ -720,11 +722,13 @@ Issue-59 makes Hodor an OpenID Provider ([OpenID Connect Core 1.0](https://openi
 
 ### The ID token
 
-When the scopes of a code hold `openid`, the token endpoint answers with an `id_token` beside the access token. It is a JSON Web Token signed by the [keys context](keys.md) exactly as the access token is, with the tenant's active `ES256` key, and it lives the client's ID token lifetime (five minutes unless changed, never more than `TokenPolicy::LONGEST_SIGNED_LIFETIME`).
+When the scopes of a code hold `openid`, the token endpoint answers with an `id_token` beside the access token. It is a JSON Web Token signed by the [keys context](keys.md) with the tenant's active key of the client's ID token algorithm, and it lives the client's ID token lifetime (five minutes unless changed, never more than `TokenPolicy::LONGEST_SIGNED_LIFETIME`).
+
+**Which algorithm.** A client's ID tokens are signed with `ES256`, the algorithm Hodor signs with unless told otherwise ([Decision 0004](../../decisions/0004-token-formats.md)), or with `RS256` when an administrator chose it for the client. OpenID Connect Discovery requires every OpenID Provider to offer `RS256` for ID tokens, and some relying parties understand nothing else; OpenID Connect Registration makes `RS256` the default for a client that names none, while Hodor keeps `ES256`, a choice the specification leaves to the provider ("SHOULD"). A tenant that has never signed with `RS256` has no such key: the first ID token a client asks for with it makes the key at once, through `KeyService::ensure_active` (see [the keys context](keys.md#rotation)), and from then on the key rotates like the default. The access token is always signed with `ES256`.
 
 | Part | Value |
 |---|---|
-| Header | `alg` `ES256`, `typ` `JWT`, `kid` the key version that signed |
+| Header | `alg` the client's ID token algorithm, `typ` `JWT`, `kid` the key version that signed |
 | `iss` | The tenant's issuer |
 | `sub` | The person's user identifier. Subjects are public: the same for every client of the tenant. Pairwise subjects are left to Phase 2 ([Decision 0023](../../decisions/0023-what-0.2.0-holds.md)) |
 | `aud` | The client's identifier, alone |
@@ -834,7 +838,7 @@ It names only what is built:
 | `revocation_endpoint_auth_methods_supported` | The four of the token endpoint: a public client may revoke its own tokens |
 | `introspection_endpoint_auth_methods_supported` | `client_secret_basic`, `client_secret_post`, `private_key_jwt`: a public client may not introspect |
 | `revocation_endpoint_auth_signing_alg_values_supported`, `introspection_endpoint_auth_signing_alg_values_supported` | `ES256`, `RS256`, `PS256` |
-| `id_token_signing_alg_values_supported` | `ES256` |
+| `id_token_signing_alg_values_supported` | `ES256`, `RS256` |
 | `subject_types_supported` | `public` |
 | `scopes_supported` | `openid`, `profile`, `email`. A tenant's own scopes belong to its resource servers and are not listed |
 | `claims_supported` | The claims of the ID token and of UserInfo |
@@ -877,7 +881,7 @@ The request is checked before anything happens. A request that fails is answered
 | Failure | Code |
 |---|---|
 | A parameter is given more than once; `state` is longer than 1024 characters or holds characters outside printable ASCII; `ui_locales` is longer than 255 characters | `oauth.logout_request_invalid` |
-| `id_token_hint` is not an ID token of this tenant: not three parts, a header that is not `typ` `JWT` and `alg` `ES256`, a `kid` the tenant does not publish, a signature that does not verify, or an `iss` that is not the tenant's issuer | `oauth.logout_id_token_hint_invalid` |
+| `id_token_hint` is not an ID token of this tenant: not three parts, a header that is not `typ` `JWT` and `alg` `ES256` or `RS256`, a `kid` the tenant does not publish, a signature that does not verify, or an `iss` that is not the tenant's issuer | `oauth.logout_id_token_hint_invalid` |
 | `client_id` is not a client of this tenant, or the client or its application is disabled; or `post_logout_redirect_uri` is given and the request names no client, by `client_id` or by the hint's `aud` | `oauth.logout_client_unknown` |
 | `client_id` and the hint's `aud` name different clients | `oauth.logout_client_mismatch` |
 | `post_logout_redirect_uri` is not one of the client's post-logout redirect addresses | `oauth.logout_redirect_uri_unregistered` |

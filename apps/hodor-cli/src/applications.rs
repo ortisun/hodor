@@ -16,7 +16,8 @@ use hodor_kernel::{DomainError, SystemClock, TenantContext};
 use hodor_oauth::api::{
     Application, ApplicationId, ApplicationPorts, ApplicationService, ApplicationSettings,
     AuthenticationMethod, Client, ClientId, ClientSettings, ClientType, CreateClient,
-    CreateResourceServer, GrantType, ResourceServerSettings, RotateSecret, ScopeDefinition, Status,
+    CreateResourceServer, GrantType, IdTokenAlgorithm, ResourceServerSettings, RotateSecret,
+    ScopeDefinition, Status,
 };
 use hodor_tenant::api::TenantService;
 use std::fmt::Write as _;
@@ -103,6 +104,14 @@ pub(crate) enum ClientCommand {
         /// How many days its first secret lives.
         #[arg(long, default_value_t = 365)]
         secret_days: u32,
+        /// Let a confidential client redeem a code without PKCE. Every
+        /// client uses PKCE unless this is given; a public client always
+        /// does.
+        #[arg(long)]
+        without_pkce: bool,
+        /// How its ID tokens are signed: `ES256` unless given, or `RS256`.
+        #[arg(long)]
+        id_token_algorithm: Option<String>,
     },
     /// List an application's clients.
     List {
@@ -344,6 +353,8 @@ pub(crate) async fn run_client(
             scopes,
             method,
             secret_days,
+            without_pkce,
+            id_token_algorithm,
         } => {
             let (tenant, service) = open(database, &tenant).await?;
             let kind = client_type(&kind)?;
@@ -357,6 +368,10 @@ pub(crate) async fn run_client(
             }
             settings.post_logout_redirect_uris = post_logout_redirect_uris;
             settings.allowed_scopes = scopes;
+            settings.require_pkce = !without_pkce;
+            if let Some(algorithm) = id_token_algorithm {
+                settings.id_token_algorithm = IdTokenAlgorithm::parse(&algorithm)?;
+            }
             let (client, secret) = service
                 .create_client(
                     &tenant,

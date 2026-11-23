@@ -56,6 +56,7 @@ recognizes the secrets 0.1.0 sealed directly with a root key.
 | `create_version(tenant, algorithm, caller) -> KeyVersion` | Asks the provider for a key; stores it pending. |
 | `activate(tenant, id, overlap: Duration, caller) -> KeyVersion` | Pending to active; the replaced version retires after `now + overlap`. |
 | `activate_first(tenant, id, caller) -> KeyVersion` | Pending to active only if the algorithm has no active version; `Conflict` `keys.already_active` otherwise. |
+| `ensure_active(tenant, algorithm, caller) -> KeyVersion` | The active version of a signing algorithm, made with `create_version` and `activate_first` when there is none; the version that loses a race is revoked with `LOST_FIRST_RACE`. Called by the `oauth` context when it signs and by `GET /oauth2/jwks`. |
 | `retire(tenant, id, caller) -> KeyVersion` | Retiring to retired, once its time has passed. |
 | `revoke(tenant, id, reason, caller) -> KeyVersion` | Revokes; again changes nothing and records nothing. |
 | `key_set(tenant, KeyUse) -> KeySet` | The versions of one use. |

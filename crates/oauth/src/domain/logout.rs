@@ -140,16 +140,20 @@ pub fn check_id_token_hint(
     if header.get("typ").and_then(Value::as_str) != Some("JWT") {
         return Err("the hint is not an ID token");
     }
-    if header.get("alg").and_then(Value::as_str) != Some("ES256") {
-        return Err("the hint names another algorithm");
-    }
+    // An ID token of Hodor's is signed with one of the algorithms a client
+    // may choose for them, and nothing else.
+    let algorithm = match header.get("alg").and_then(Value::as_str) {
+        Some("ES256") => SignatureAlgorithm::Es256,
+        Some("RS256") => SignatureAlgorithm::Rs256,
+        _ => return Err("the hint names another algorithm"),
+    };
     let kid = header
         .get("kid")
         .and_then(Value::as_str)
         .ok_or("the hint names no key")?;
     let key = keys
         .iter()
-        .find(|key| key.key_id == kid && key.algorithm == SignatureAlgorithm::Es256)
+        .find(|key| key.key_id == kid && key.algorithm == algorithm)
         .ok_or("the hint's key is not published by this tenant")?;
     let signature = URL_SAFE_NO_PAD
         .decode(signature_part)

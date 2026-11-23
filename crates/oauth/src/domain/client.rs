@@ -9,7 +9,7 @@ use crate::domain::key::{ClientKey, MAX_KEYS};
 use crate::domain::secret::{ClientSecret, ClientSecretHash, ClientSecretId, ClientSecretValue};
 use crate::domain::text;
 use hodor_kernel::{Digest, DomainError, RandomSource, Timestamp};
-use hodor_keys::api::RotationPolicy;
+use hodor_keys::api::{KeyAlgorithm, RotationPolicy};
 use time::Duration;
 
 hodor_kernel::define_id!(
@@ -26,6 +26,58 @@ pub const MAX_REDIRECT_URIS: usize = 10;
 pub(crate) const MAX_REDIRECT_URI_LENGTH: usize = 2000;
 /// The most scopes a client may ask for.
 pub const MAX_SCOPES: usize = 50;
+
+/// How a client's ID tokens are signed: its `id_token_signed_response_alg`
+/// of OpenID Connect Registration.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum IdTokenAlgorithm {
+    /// ECDSA on P-256, the algorithm Hodor signs with unless told otherwise
+    /// ([Decision 0004](../../../../docs/decisions/0004-token-formats.md)).
+    #[default]
+    Es256,
+    /// RSA with PKCS#1 version 1.5 padding, which every OpenID Provider must
+    /// offer and every relying party understands.
+    Rs256,
+}
+
+impl IdTokenAlgorithm {
+    /// Every algorithm a client may choose, as discovery lists them.
+    pub const ALL: [Self; 2] = [Self::Es256, Self::Rs256];
+
+    /// The name JSON Web Signature gives it, which is also the stored name.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Es256 => "ES256",
+            Self::Rs256 => "RS256",
+        }
+    }
+
+    /// The key that signs with it.
+    #[must_use]
+    pub const fn key_algorithm(self) -> KeyAlgorithm {
+        match self {
+            Self::Es256 => KeyAlgorithm::Es256,
+            Self::Rs256 => KeyAlgorithm::Rs256,
+        }
+    }
+
+    /// Reads the name JSON Web Signature gives it.
+    ///
+    /// # Errors
+    ///
+    /// Returns `oauth.client_id_token_algorithm_invalid` for any other name.
+    pub fn parse(value: &str) -> Result<Self, DomainError> {
+        match value {
+            "ES256" => Ok(Self::Es256),
+            "RS256" => Ok(Self::Rs256),
+            _ => Err(DomainError::invalid(
+                "oauth.client_id_token_algorithm_invalid",
+                "a client's ID tokens are signed with `ES256` or `RS256`",
+            )),
+        }
+    }
+}
 
 /// Whether a client can keep a secret.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -237,6 +289,8 @@ pub struct ClientSettings {
     /// Whether it must send a code challenge. Always true for a public
     /// client.
     pub require_pkce: bool,
+    /// How its ID tokens are signed.
+    pub id_token_algorithm: IdTokenAlgorithm,
     /// How long its tokens live.
     pub token_policy: TokenPolicy,
 }
@@ -378,6 +432,7 @@ impl ClientSettings {
             post_logout_redirect_uris: Vec::new(),
             allowed_scopes: Vec::new(),
             require_pkce: true,
+            id_token_algorithm: IdTokenAlgorithm::default(),
             token_policy: TokenPolicy::default(),
         }
     }
@@ -470,6 +525,7 @@ impl ClientSettings {
             post_logout_redirect_uris,
             allowed_scopes,
             require_pkce: self.require_pkce,
+            id_token_algorithm: self.id_token_algorithm,
             token_policy: self.token_policy.checked()?,
         })
     }
@@ -999,6 +1055,23 @@ mod tests {
         let (client, value) = create(ClientType::Confidential, jwt).expect("valid");
         assert!(value.is_none());
         assert!(client.snapshot().secrets.is_empty());
+    }
+
+    #[test]
+    fn an_id_token_algorithm_is_es256_unless_rs256_is_chosen() {
+        assert_eq!(IdTokenAlgorithm::default(), IdTokenAlgorithm::Es256);
+        for algorithm in IdTokenAlgorithm::ALL {
+            assert_eq!(IdTokenAlgorithm::parse(algorithm.as_str()), Ok(algorithm));
+        }
+        assert_eq!(IdTokenAlgorithm::Rs256.key_algorithm(), KeyAlgorithm::Rs256);
+        for refused in ["PS256", "HS256", "none", "rs256", ""] {
+            assert_eq!(
+                IdTokenAlgorithm::parse(refused)
+                    .expect_err("refused")
+                    .code(),
+                "oauth.client_id_token_algorithm_invalid"
+            );
+        }
     }
 
     #[test]

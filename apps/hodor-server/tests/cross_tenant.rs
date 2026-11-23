@@ -738,7 +738,9 @@ async fn a_tenants_key_set_names_none_of_another_tenants_keys() {
                 .collect::<Vec<_>>()
         }
     };
-    assert!(key_set(acme).await.is_empty());
+    // The first read gives each tenant keys of its own.
+    let (first_acme, first_globex) = (key_set(acme).await, key_set(globex).await);
+    assert!(first_acme.iter().all(|key| !first_globex.contains(key)));
 
     let mut made = Vec::new();
     for tenant in [acme, globex] {
@@ -754,8 +756,9 @@ async fn a_tenants_key_set_names_none_of_another_tenants_keys() {
         assert_eq!(status, StatusCode::OK, "{version}");
         made.push(version["id"].as_str().expect("id").to_owned());
     }
-    assert_eq!(key_set(acme).await, vec![made[0].clone()]);
-    assert_eq!(key_set(globex).await, vec![made[1].clone()]);
+    let (acme_keys, globex_keys) = (key_set(acme).await, key_set(globex).await);
+    assert!(acme_keys.contains(&made[0]) && !acme_keys.contains(&made[1]));
+    assert!(globex_keys.contains(&made[1]) && !globex_keys.contains(&made[0]));
 
     // Acme's administrator cannot rotate or revoke Globex's keys, and a
     // version of Acme's is not found in Globex.
@@ -780,7 +783,10 @@ async fn a_tenants_key_set_names_none_of_another_tenants_keys() {
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(body["code"], "keys.version_not_found");
-    assert_eq!(key_set(acme).await, vec![made[0].clone()]);
+    assert!(
+        key_set(acme).await.contains(&made[0]),
+        "Acme's key is untouched"
+    );
 }
 
 /// A code of an authenticator application with this secret, for a moment

@@ -126,7 +126,9 @@ The worker runs a step for every tenant that has something due. A step looks at 
 3. **Prepares the next version.** For each algorithm with an active version older than the period less the publication time, a pending version is made, unless one is pending already. It is published from that moment.
 4. **Activates it when its time comes.** When the active version is older than the period and the pending one has been published for the publication time, the pending one is activated; the one it replaces starts retiring with the overlap.
 
-Each change is its own transaction with its own event, as with every other use of the operations above. An algorithm other than the default rotates only while it has an active version: a tenant that revokes its RS256 key and makes no other has chosen to stop signing with RS256.
+Each change is its own transaction with its own event, as with every other use of the operations above. An algorithm other than the default rotates only while it has an active version.
+
+**A first key is also made when something must sign and finds none.** The worker passes every ten minutes unless told otherwise (`HODOR_KEY_ROTATION_INTERVAL_MS`), so a tenant made a moment ago, or one whose active key was just revoked, may have nothing to sign with until it does. `KeyService::ensure_active` returns the active version of an algorithm, or makes one and activates it at once, as step 2 does for ES256. The `oauth` context calls it whenever it signs a token and the tenant has no active key of the algorithm: for ES256, which signs every access token, and for RS256, the first time a client whose ID tokens are signed with it asks for one. The OpenID Provider says it supports RS256, as OpenID Connect Discovery requires, and a tenant must not fail the first token a client asks for. A revoked key is never used again: the key made in its place is new. Two requests that make the first version at once both make one; the second to activate gets `keys.activation_conflict`, revokes its own version with the reason `lost the race to become the first key of its algorithm`, and signs with the winner. From then on the algorithm rotates like the default; a tenant stops signing with RS256 when no client asks for it, not by revoking the key.
 
 The decision is made in the domain, by `KeySet::rotation_plan`, from the key set and the time alone; the step only carries it out.
 
@@ -166,6 +168,8 @@ Those who check the signatures of a tenant read its signing keys at `GET /t/{ten
 | `n`, `e` | For RS256 and PS256: the modulus and the exponent, base64url without padding |
 
 Nothing else of a version is published: not its state, its times, or anything of its key material. Keys are listed newest first.
+
+**The set always names the key of the next token.** Before it answers, the address makes sure the tenant has an active version of every algorithm a token of the tenant may be signed with, ES256 and RS256 today, through `KeyService::ensure_active`. A relying party that reads the set of a tenant made a moment ago, before the worker gave it a key and before any token was signed, finds the key of the first token it then gets; the OpenID conformance suite reads the set once at the start of a test and fails a token whose key it does not find ([OpenID conformance](../../operations/conformance.md)). A revoked version is still left out at once, and the version made in its place is new.
 
 The answer carries `Cache-Control: public, max-age=300`: someone who keeps it at most five minutes sees a new version well within its publication time, and a revoked version disappears for everyone within five minutes. The key set of one tenant names only that tenant's versions, as every read inside a tenant does. When the server has no `HODOR_SECRET_KEYS`, there is no keys context and the address is not served.
 

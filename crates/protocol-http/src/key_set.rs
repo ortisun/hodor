@@ -13,8 +13,9 @@ use axum::routing::get;
 use axum::{Extension, Json, Router};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use hodor_kernel::{PublicKey, TenantContext};
+use hodor_kernel::{Caller, PublicKey, TenantContext};
 use hodor_keys::api::{KeyService, KeyVersion, RotationPolicy};
+use hodor_oauth::api::IdTokenAlgorithm;
 use serde::Serialize;
 
 /// One key of the set. Members that do not apply to a key's kind are left
@@ -90,6 +91,18 @@ async fn published(
     State(keys): State<KeyService>,
     Extension(tenant): Extension<TenantContext>,
 ) -> Response {
+    // The set names a key for every algorithm a token of the tenant may be
+    // signed with, before the first such token: a relying party that read
+    // the set of a tenant made a moment ago must find the key of the first
+    // token it gets.
+    for algorithm in IdTokenAlgorithm::ALL {
+        if let Err(error) = keys
+            .ensure_active(&tenant, algorithm.key_algorithm(), Caller::system())
+            .await
+        {
+            return Problem::from(error).into_response();
+        }
+    }
     let versions = match keys.published_keys(&tenant).await {
         Ok(versions) => versions,
         Err(error) => return Problem::from(error).into_response(),

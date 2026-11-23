@@ -12,7 +12,9 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   `ApplicationSettings { name, first_party }`; `Application` with
   `create`, `change` (returns whether anything changed), `set_status`.
 - `client.rs`: `ClientId` (the `client_id` of OAuth); `ClientType`;
-  `AuthenticationMethod` (`uses_secret`); `GrantType`; `TokenPolicy` with
+  `AuthenticationMethod` (`uses_secret`); `GrantType`; `IdTokenAlgorithm`
+  (`Es256` by default or `Rs256`, `key_algorithm`, listed by `ALL` in
+  discovery); `TokenPolicy` with
   its default and `LONGEST_SIGNED_LIFETIME`, the keys context's bound on
   access and ID token lifetimes; `ClientSettings::new` and `checked(client_type)`; `Client`
   with `create`, `change`, `rotate_secret`, `revoke_secret`, `add_key`,

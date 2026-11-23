@@ -462,3 +462,44 @@ mod rotation {
         assert_eq!(world.states(&acme).await, vec![KeyState::Active]);
     }
 }
+
+#[tokio::test]
+async fn requests_that_make_the_first_key_of_an_algorithm_at_once_end_with_one() {
+    let database = TestDatabase::start().await;
+    let service = KeyService::new(
+        Arc::new(database.app().clone()),
+        Arc::new(PgKeyStore),
+        Arc::new(local_provider()),
+        Arc::new(FixedClock::at(Timestamp::UNIX_EPOCH)),
+    );
+    let tenant = TenantContext::assume(TenantId::generate());
+    let ensure = || service.ensure_active(&tenant, KeyAlgorithm::Rs256, Caller::system());
+    let (first, second, third, fourth) = tokio::join!(ensure(), ensure(), ensure(), ensure());
+    let made = [first, second, third, fourth];
+    let winners: std::collections::BTreeSet<_> = made
+        .into_iter()
+        .map(|answer| answer.expect("every request signs").id())
+        .collect();
+    assert_eq!(winners.len(), 1, "every request got the same key");
+
+    let set = service
+        .key_set(&tenant, KeyUse::Signing)
+        .await
+        .expect("set");
+    let rsa: Vec<_> = set
+        .versions()
+        .iter()
+        .filter(|version| version.algorithm() == KeyAlgorithm::Rs256)
+        .collect();
+    assert_eq!(
+        rsa.iter().filter(|v| v.state() == KeyState::Active).count(),
+        1
+    );
+    for loser in rsa.iter().filter(|v| v.state() != KeyState::Active) {
+        assert_eq!(loser.state(), KeyState::Revoked);
+        assert_eq!(
+            loser.snapshot().revocation_reason.as_deref(),
+            Some(hodor_keys::api::LOST_FIRST_RACE)
+        );
+    }
+}

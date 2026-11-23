@@ -26,7 +26,7 @@ use hodor_kernel::{
     RandomSource, Secret, SecretBox, SignatureVerifier, TenantContext, UnitOfWork,
     UnitOfWorkFactory,
 };
-use hodor_keys::api::{KeyAlgorithm, KeyService};
+use hodor_keys::api::{KeyAlgorithm, KeyService, KeyVersionId, Signature};
 use std::fmt;
 use std::sync::Arc;
 use time::Duration;
@@ -362,22 +362,16 @@ impl TokenService {
             self.ports.random.as_ref(),
         );
         let algorithm = KeyAlgorithm::DEFAULT_SIGNING;
-        let signed = self
-            .ports
-            .keys
-            .sign_naming_key(tenant, algorithm, |key_id| {
+        let Some((message, signature)) = self
+            .signed(tenant, algorithm, |key_id| {
                 let header = access_token_header(algorithm.as_str(), &key_id.to_string());
                 signing_input(&header, &claims.claims).into_bytes()
             })
-            .await;
-        let (message, signature) = match signed {
-            Ok(signed) => signed,
-            Err(error) if error.code() == "keys.no_active_version" => {
-                return Ok(Err(TokenError::server_error(
-                    "the tenant has no active signing key",
-                )));
-            }
-            Err(error) => return Err(error),
+            .await?
+        else {
+            return Ok(Err(TokenError::server_error(
+                "the tenant has no active signing key",
+            )));
         };
         Ok(Ok(SignedAccessToken {
             token: compact(&message, &signature.bytes),
@@ -412,20 +406,50 @@ impl TokenService {
             access_token,
             self.ports.digest.as_ref(),
         );
-        let algorithm = KeyAlgorithm::DEFAULT_SIGNING;
+        let algorithm = client
+            .snapshot()
+            .settings
+            .id_token_algorithm
+            .key_algorithm();
         let signed = self
-            .ports
-            .keys
-            .sign_naming_key(tenant, algorithm, |key_id| {
+            .signed(tenant, algorithm, |key_id| {
                 let header = id_token_header(algorithm.as_str(), &key_id.to_string());
                 signing_input(&header, &claims).into_bytes()
             })
-            .await;
-        match signed {
-            Ok((message, signature)) => Ok(Ok(Secret::from(compact(&message, &signature.bytes)))),
-            Err(error) if error.code() == "keys.no_active_version" => Ok(Err(
-                TokenError::server_error("the tenant has no active signing key"),
+            .await?;
+        Ok(match signed {
+            Some((message, signature)) => Ok(Secret::from(compact(&message, &signature.bytes))),
+            None => Err(TokenError::server_error(
+                "the tenant has no active signing key",
             )),
+        })
+    }
+
+    /// Signs `message` with the tenant's active key of `algorithm`. A tenant
+    /// that has none, because it was made a moment ago or has never signed
+    /// with the algorithm, gets its first one at once from the keys
+    /// context, as rotation would have given it. `None` only if even then
+    /// there is no key to sign with.
+    async fn signed<F>(
+        &self,
+        tenant: &TenantContext,
+        algorithm: KeyAlgorithm,
+        message: F,
+    ) -> Result<Option<(Vec<u8>, Signature)>, DomainError>
+    where
+        F: Fn(KeyVersionId) -> Vec<u8> + Send + Sync,
+    {
+        let keys = &self.ports.keys;
+        match keys.sign_naming_key(tenant, algorithm, &message).await {
+            Ok(signed) => return Ok(Some(signed)),
+            Err(error) if error.code() == "keys.no_active_version" => {}
+            Err(error) => return Err(error),
+        }
+        keys.ensure_active(tenant, algorithm, Caller::system())
+            .await?;
+        match keys.sign_naming_key(tenant, algorithm, &message).await {
+            Ok(signed) => Ok(Some(signed)),
+            Err(error) if error.code() == "keys.no_active_version" => Ok(None),
             Err(error) => Err(error),
         }
     }

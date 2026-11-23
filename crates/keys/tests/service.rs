@@ -516,3 +516,42 @@ async fn the_published_keys_of_one_tenant_are_not_those_of_another() {
     assert_eq!((theirs.len(), ours.len()), (1, 1));
     assert_ne!(theirs[0].id(), ours[0].0);
 }
+
+#[tokio::test]
+async fn an_algorithm_other_than_the_default_gets_its_first_key_when_something_must_sign_with_it() {
+    let world = world();
+    let made = world
+        .service
+        .ensure_active(&world.tenant, KeyAlgorithm::Rs256, Caller::system())
+        .await
+        .expect("made");
+    assert_eq!(made.algorithm(), KeyAlgorithm::Rs256);
+    assert_eq!(
+        made.state(),
+        KeyState::Active,
+        "it signs at once, as a first key does"
+    );
+    assert_eq!(
+        world.units_of_work.committed_event_types(),
+        vec!["keys.version_created", "keys.version_activated"]
+    );
+
+    let again = world
+        .service
+        .ensure_active(&world.tenant, KeyAlgorithm::Rs256, Caller::system())
+        .await
+        .expect("found");
+    assert_eq!(again.id(), made.id(), "the active one is kept");
+    assert_eq!(
+        world.units_of_work.committed_event_types().len(),
+        2,
+        "nothing more is made"
+    );
+
+    let error = world
+        .service
+        .ensure_active(&world.tenant, KeyAlgorithm::A256Gcm, Caller::system())
+        .await
+        .expect_err("does not sign");
+    assert_eq!(error.code(), "keys.algorithm_unsuitable");
+}
