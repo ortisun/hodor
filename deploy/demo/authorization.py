@@ -309,8 +309,8 @@ def open_policy_agent(admin, tenant, suffix, directory):
     with open(os.path.join(directory, "config.yaml"), "w", encoding="utf-8") as file:
         file.write(configuration(credential, bundle, public))
     shutil.copy(os.path.join(REPOSITORY, "deploy", "open-policy-agent", "decision-log-mask.rego"), directory)
-    for name in ("config.yaml", "decision-log-mask.rego"):
-        os.chmod(os.path.join(directory, name), 0o644)
+    for mounted in ("config.yaml", "decision-log-mask.rego"):
+        os.chmod(os.path.join(directory, mounted), 0o644)
     agent = PolicyAgent(name, directory)
     agent.start(stack_network())
     admin.call("PUT", f"/resource-servers/{ledger_server}/binding",
