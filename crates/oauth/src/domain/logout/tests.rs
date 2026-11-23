@@ -99,9 +99,12 @@ fn a_hint_says_which_client_person_and_session_even_when_expired() {
 fn a_hint_that_is_not_this_tenants_id_token_is_refused() {
     let who = who();
     let good = sign(&header(), &claims(&who));
-    let mut tampered = good;
-    tampered.pop();
-    tampered.push(if tampered.ends_with('A') { 'B' } else { 'A' });
+    // A character inside the signature: the last one may hold only bits
+    // that base64url drops, which would change nothing.
+    let at = good.rfind('.').expect("three parts") + 3;
+    let mut tampered = good.clone();
+    let was = tampered.as_bytes()[at];
+    tampered.replace_range(at..=at, if was == b'A' { "B" } else { "A" });
     let with_header = |change: &dyn Fn(&mut Value)| {
         let mut h = header();
         change(&mut h);
