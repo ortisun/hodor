@@ -7,7 +7,7 @@ import { PASSWORD, TENANT, at, en, expectAccessible, newAddress, register, signI
 /** The root of the repository, where the Compose file of the stack is. */
 const ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 
-/** Where the application of these tests wants the person back. Nothing answers there: the test does. */
+/** Where the application of these tests wants the person back. Nothing answers there: the test reads the request. */
 const REDIRECT = "https://billing.example.test/callback";
 
 /**
@@ -71,8 +71,8 @@ function thirdPartyClient(): string {
   return client ?? "";
 }
 
-/** Sends the browser to the authorization endpoint as the application would. */
-async function askAsTheApplication(page: Page, client: string): Promise<void> {
+/** The authorization request of the application, as the browser is sent to it. */
+function authorizeAddress(client: string): string {
   const verifier = randomBytes(32).toString("base64url");
   const query = new URLSearchParams({
     response_type: "code",
@@ -83,27 +83,31 @@ async function askAsTheApplication(page: Page, client: string): Promise<void> {
     code_challenge: createHash("sha256").update(verifier).digest("base64url"),
     code_challenge_method: "S256",
   });
-  await page.goto(`/t/${TENANT}/oauth2/authorize?${query.toString()}`);
+  return `/t/${TENANT}/oauth2/authorize?${query.toString()}`;
 }
 
-/** Where the person was sent back to the application with, once they were. */
-async function sentBack(page: Page): Promise<URLSearchParams> {
-  await page.waitForURL((url) => url.href.startsWith(REDIRECT));
-  return new URL(page.url()).searchParams;
+/** Sends the browser to the authorization endpoint as the application would, when it is sent to Hodor's page. */
+async function askAsTheApplication(page: Page, client: string): Promise<void> {
+  await page.goto(authorizeAddress(client));
 }
 
-test.beforeEach(async ({ page }) => {
-  // The application's own site: whatever reaches it is answered here.
-  await page.route(`${new URL(REDIRECT).origin}/**`, (route) =>
-    route.fulfill({ status: 200, contentType: "text/html", body: "<!doctype html><title>Billing</title>" }),
-  );
-});
+/**
+ * What the browser is sent back to the application with, after `action`.
+ * The application's address does not exist: the request to it is read,
+ * and the failed navigation that follows is no failure of the test.
+ */
+async function sentBack(page: Page, action: () => Promise<unknown>): Promise<URLSearchParams> {
+  const request = page.waitForRequest((sent) => sent.url().startsWith(REDIRECT));
+  await action().catch(() => undefined);
+  return new URL((await request).url()).searchParams;
+}
 
 test("a person is asked once before a third-party application gets in", async ({ page }) => {
   const client = thirdPartyClient();
   const address = newAddress();
   await register(page, address);
   await signIn(page, address, PASSWORD);
+  await expect(page.getByRole("heading", { name: en.accountTitle })).toBeVisible();
 
   await askAsTheApplication(page, client);
   await expect(page).toHaveURL(new RegExp(`${at("consent")}$`));
@@ -116,14 +120,13 @@ test("a person is asked once before a third-party application gets in", async ({
   // With the keyboard alone: the first button is the one that allows.
   await page.keyboard.press("Tab");
   await expect(page.getByRole("button", { name: en.consentAllow })).toBeFocused();
-  await page.keyboard.press("Enter");
-  const answer = await sentBack(page);
+  const answer = await sentBack(page, () => page.keyboard.press("Enter"));
   expect(answer.get("code")).toBeTruthy();
   expect(answer.get("state")).toBe("the state");
 
   // Agreed once, not asked again.
-  await askAsTheApplication(page, client);
-  expect((await sentBack(page)).get("code")).toBeTruthy();
+  const again = await sentBack(page, () => page.goto(authorizeAddress(client)));
+  expect(again.get("code")).toBeTruthy();
 
   // The account page lists the application, and withdrawing it means the
   // application asks again.
@@ -140,10 +143,10 @@ test("a person who denies sends the application away with nothing", async ({ pag
   const address = newAddress();
   await register(page, address);
   await signIn(page, address, PASSWORD);
+  await expect(page.getByRole("heading", { name: en.accountTitle })).toBeVisible();
 
   await askAsTheApplication(page, client);
-  await page.getByRole("button", { name: en.consentDeny }).click();
-  const answer = await sentBack(page);
+  const answer = await sentBack(page, () => page.getByRole("button", { name: en.consentDeny }).click());
   expect(answer.get("error")).toBe("access_denied");
   expect(answer.get("code")).toBeNull();
 
