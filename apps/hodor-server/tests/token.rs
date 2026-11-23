@@ -827,3 +827,258 @@ async fn a_service_gets_a_token_for_itself_with_its_credentials() {
     .await;
     assert_eq!(foreign.status, StatusCode::UNAUTHORIZED);
 }
+
+/// A request to the revocation or introspection endpoint, with the client's
+/// secret in `Basic` or its identifier in the form.
+async fn ask_about(
+    server: &Server,
+    slug: &str,
+    endpoint: &str,
+    client: (&str, Option<&str>),
+    token: &str,
+) -> Answer {
+    let (id, secret) = client;
+    let mut pairs = vec![("token", token)];
+    if secret.is_none() {
+        pairs.push(("client_id", id));
+    }
+    let mut request = reqwest::Client::new()
+        .post(format!("{}/t/{slug}/oauth2/{endpoint}", server.base))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(
+            form_urlencoded::Serializer::new(String::new())
+                .extend_pairs(pairs)
+                .finish(),
+        );
+    if let Some(secret) = secret {
+        request = request.header(
+            "authorization",
+            format!("Basic {}", STANDARD.encode(format!("{id}:{secret}"))),
+        );
+    }
+    let response = request.send().await.expect("response");
+    let status = response.status();
+    let headers = response.headers().clone();
+    let text = response.text().await.expect("body");
+    Answer {
+        status,
+        headers,
+        body: serde_json::from_str(&text).unwrap_or(Value::Null),
+    }
+}
+
+async fn is_active(server: &Server, slug: &str, client: (&str, Option<&str>), token: &str) -> bool {
+    let answer = ask_about(server, slug, "introspect", client, token).await;
+    assert_eq!(answer.status, StatusCode::OK, "{}", answer.body);
+    assert_eq!(answer.headers["cache-control"], "no-store");
+    match answer.body["active"].as_bool() {
+        Some(true) => true,
+        Some(false) => {
+            assert_eq!(answer.body, json!({"active": false}), "nothing more");
+            false
+        }
+        None => panic!("not an introspection answer: {}", answer.body),
+    }
+}
+
+async fn userinfo_status(server: &Server, slug: &str, token: &str) -> StatusCode {
+    reqwest::Client::new()
+        .get(format!("{}/t/{slug}/oauth2/userinfo", server.base))
+        .bearer_auth(token)
+        .send()
+        .await
+        .expect("response")
+        .status()
+}
+
+#[tokio::test]
+async fn a_client_revokes_and_introspects_its_own_tokens_and_no_one_else_s() {
+    let database = TestDatabase::start().await;
+    let acme = tenant(&database, "acme").await;
+    let globex = tenant(&database, "globex").await;
+    let grants = vec![GrantType::AuthorizationCode, GrantType::RefreshToken];
+    let (owner_id, owner_secret) = client_with(
+        &acme,
+        ClientType::Confidential,
+        AuthenticationMethod::ClientSecretBasic,
+        grants.clone(),
+    )
+    .await;
+    let (public_id, _) = client_with(
+        &acme,
+        ClientType::Public,
+        AuthenticationMethod::None,
+        grants.clone(),
+    )
+    .await;
+    // A client of another application, which owns no resource server.
+    let elsewhere = acme
+        .applications
+        .create_application(
+            &acme.context,
+            ApplicationSettings {
+                name: "Billing".to_owned(),
+                first_party: true,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("application");
+    let mut settings = ClientSettings::new(
+        "Billing",
+        ClientType::Confidential,
+        vec![GrantType::ClientCredentials],
+        Vec::new(),
+    );
+    settings.authentication_method = AuthenticationMethod::ClientSecretBasic;
+    let (stranger, stranger_secret) = acme
+        .applications
+        .create_client(
+            &acme.context,
+            CreateClient {
+                application_id: elsewhere.id(),
+                client_type: ClientType::Confidential,
+                settings,
+                secret_lifetime: None,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("client");
+    let (globex_id, globex_secret) = client_with(
+        &globex,
+        ClientType::Confidential,
+        AuthenticationMethod::ClientSecretBasic,
+        grants,
+    )
+    .await;
+    let server = server(&database).await;
+    let mut browser = Browser::not_following(&server);
+    browser.sign_in("acme", "ana@example.com", PASSWORD).await;
+
+    let owner = owner_id.to_string();
+    let owner_secret = owner_secret.expect("a secret");
+    let as_owner = (owner.as_str(), Some(owner_secret.as_str()));
+    let code = code(&mut browser, "acme", owner_id).await;
+    let issued = token(
+        &server,
+        "acme",
+        Some((&owner, &owner_secret)),
+        &redeem(&code, &[]),
+    )
+    .await;
+    assert_eq!(issued.status, StatusCode::OK, "{}", issued.body);
+    let access = issued.body["access_token"]
+        .as_str()
+        .expect("access")
+        .to_owned();
+    let refresh = issued.body["refresh_token"]
+        .as_str()
+        .expect("refresh")
+        .to_owned();
+
+    // Introspection says what the token says.
+    let answer = ask_about(&server, "acme", "introspect", as_owner, &access).await;
+    assert_eq!(answer.status, StatusCode::OK, "{}", answer.body);
+    assert_eq!(answer.body["active"], true);
+    assert_eq!(answer.body["client_id"], owner);
+    assert_eq!(answer.body["token_type"], "Bearer");
+    assert_eq!(answer.body["iss"], issuer("acme"));
+    assert!(is_active(&server, "acme", as_owner, &refresh).await);
+    assert_eq!(
+        userinfo_status(&server, "acme", &access).await,
+        StatusCode::OK
+    );
+
+    // Another client learns nothing and ends nothing.
+    let stranger = stranger.id().to_string();
+    let stranger_secret = stranger_secret.expect("a secret").expose().to_owned();
+    let as_stranger = (stranger.as_str(), Some(stranger_secret.as_str()));
+    for token in [&access, &refresh] {
+        assert!(!is_active(&server, "acme", as_stranger, token).await);
+        let revoked = ask_about(&server, "acme", "revoke", as_stranger, token).await;
+        assert_eq!(revoked.status, StatusCode::OK);
+        assert!(is_active(&server, "acme", as_owner, token).await);
+    }
+    // Nor does a client of another tenant, at its own tenant.
+    let globex = globex_id.to_string();
+    let globex_secret = globex_secret.expect("a secret");
+    let as_globex = (globex.as_str(), Some(globex_secret.as_str()));
+    for token in [&access, &refresh] {
+        assert!(!is_active(&server, "globex", as_globex, token).await);
+        ask_about(&server, "globex", "revoke", as_globex, token).await;
+        assert!(is_active(&server, "acme", as_owner, token).await);
+    }
+    // A public client may not introspect.
+    let public = public_id.to_string();
+    let refused = ask_about(&server, "acme", "introspect", (&public, None), &access).await;
+    assert_eq!(refused.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(refused.body["error"], "invalid_client");
+
+    // The owner revokes the access token: introspection and UserInfo refuse
+    // it, and the refresh token stays.
+    let revoked = ask_about(&server, "acme", "revoke", as_owner, &access).await;
+    assert_eq!(revoked.status, StatusCode::OK);
+    assert_eq!(revoked.headers["cache-control"], "no-store");
+    assert_eq!(revoked.body, Value::Null, "an empty body");
+    assert!(!is_active(&server, "acme", as_owner, &access).await);
+    assert_eq!(
+        userinfo_status(&server, "acme", &access).await,
+        StatusCode::UNAUTHORIZED
+    );
+    let refreshed = token(
+        &server,
+        "acme",
+        Some((&owner, &owner_secret)),
+        &[("grant_type", "refresh_token"), ("refresh_token", &refresh)],
+    )
+    .await;
+    assert_eq!(refreshed.status, StatusCode::OK, "{}", refreshed.body);
+    let newer_access = refreshed.body["access_token"]
+        .as_str()
+        .expect("access")
+        .to_owned();
+    let newer_refresh = refreshed.body["refresh_token"]
+        .as_str()
+        .expect("refresh")
+        .to_owned();
+    assert!(is_active(&server, "acme", as_owner, &newer_access).await);
+
+    // The owner revokes the refresh token: its family, its grant and every
+    // access token of the grant end.
+    ask_about(&server, "acme", "revoke", as_owner, &newer_refresh).await;
+    assert!(!is_active(&server, "acme", as_owner, &newer_access).await);
+    assert!(!is_active(&server, "acme", as_owner, &newer_refresh).await);
+    let again = token(
+        &server,
+        "acme",
+        Some((&owner, &owner_secret)),
+        &[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", &newer_refresh),
+        ],
+    )
+    .await;
+    assert_eq!(again.body["error"], "invalid_grant");
+
+    // What was kept: records by `jti`, never a token.
+    let (revoked_records,): (i64,) = sqlx::query_as(
+        "SELECT count(*) FROM oauth.access_token WHERE revocation_reason = 'revoked_by_client'",
+    )
+    .fetch_one(database.owner())
+    .await
+    .expect("count");
+    assert_eq!(revoked_records, 1, "the one access token revoked by itself");
+    let everything: String = sqlx::query_scalar(
+        r#"SELECT concat(
+               (SELECT string_agg(to_jsonb(t)::text, '') FROM oauth.access_token t),
+               (SELECT string_agg(to_jsonb(t)::text, '') FROM platform.outbox t))"#,
+    )
+    .fetch_one(database.owner())
+    .await
+    .expect("dump");
+    for token in [&access, &refresh, &newer_access, &newer_refresh] {
+        assert!(!everything.contains(token.as_str()), "no token is stored");
+    }
+    assert!(everything.contains("oauth.access_token_revoked"));
+}

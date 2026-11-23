@@ -4,12 +4,13 @@
 
 use crate::application::authorization::AuthorizationCodeService;
 use crate::application::ports::{
-    ApplicationStore, ClientAssertionStore, ClientStore, GrantStore, PersonStanding,
-    RefreshTokenStore, ResourceServerStore,
+    AccessTokenRecordStore, ApplicationStore, ClientAssertionStore, ClientStore, GrantStore,
+    PersonStanding, RefreshTokenStore, ResourceServerStore,
 };
 use crate::domain::authorization::{CodePresentation, GrantStatus};
 use crate::domain::client::{AuthenticationMethod, Client, ClientId, GrantType, TokenPolicy};
 use crate::domain::event::OauthEvent;
+use crate::domain::introspection::AccessTokenRecord;
 use crate::domain::openid::{asks_for_openid, id_token_claims, id_token_header};
 use crate::domain::refresh::{
     DEFAULT_RETRY_WINDOW, FAMILY_SECRET_PURPOSE, FamilySecret, LONGEST_RETRY_WINDOW,
@@ -47,6 +48,8 @@ pub struct TokenPorts {
     pub assertions: Arc<dyn ClientAssertionStore>,
     /// Stores refresh token families.
     pub refresh_tokens: Arc<dyn RefreshTokenStore>,
+    /// The register of access tokens: a record of each one issued.
+    pub access_tokens: Arc<dyn AccessTokenRecordStore>,
     /// Whether a person's session and account still stand.
     pub standing: Arc<dyn PersonStanding>,
     /// Seals the secrets of refresh token families.
@@ -118,7 +121,7 @@ struct SignedAccessToken {
 /// The use cases of the token endpoint.
 #[derive(Clone)]
 pub struct TokenService {
-    ports: TokenPorts,
+    pub(crate) ports: TokenPorts,
     retry_window: Duration,
 }
 
@@ -190,7 +193,10 @@ impl TokenService {
         request: TokenRequest,
         correlation_id: CorrelationId,
     ) -> Result<Result<IssuedTokens, TokenError>, DomainError> {
-        let client = match self.authenticate(tenant, issuer, &request.client).await? {
+        let client = match self
+            .authenticate(tenant, issuer, issuer.token_endpoint, &request.client)
+            .await?
+        {
             Ok(client) => client,
             Err(refusal) => return Ok(Err(refusal)),
         };
@@ -243,10 +249,11 @@ impl TokenService {
 
     /// Finds the client a request names and checks that it proved who it
     /// is in the way it was registered with.
-    async fn authenticate(
+    pub(crate) async fn authenticate(
         &self,
         tenant: &TenantContext,
         issuer: Issuer<'_>,
+        endpoint: &str,
         presented: &PresentedClient,
     ) -> Result<Result<Client, TokenError>, DomainError> {
         let named = match presented {
@@ -297,6 +304,7 @@ impl TokenService {
                 let audience = AssertionAudience {
                     issuer: issuer.issuer,
                     token_endpoint: issuer.token_endpoint,
+                    endpoint,
                 };
                 let checked = match check_assertion(
                     assertion,
@@ -422,7 +430,7 @@ impl TokenService {
         }
     }
 
-    fn record(
+    pub(crate) fn record(
         &self,
         uow: &mut dyn UnitOfWork,
         tenant: &TenantContext,
@@ -547,6 +555,19 @@ impl TokenService {
                 .await?;
             self.record(uow.as_mut(), tenant, caller, &family.started_event())?;
         }
+        self.ports
+            .access_tokens
+            .record(
+                uow.as_mut(),
+                &AccessTokenRecord::issued(
+                    signed.token_id.clone(),
+                    client.id(),
+                    Some(redeemed.grant_id),
+                    None,
+                    signed.expires_at,
+                ),
+            )
+            .await?;
         let event = OauthEvent::AccessTokenIssued {
             client_id: client.id(),
             grant_id: redeemed.grant_id,
@@ -791,6 +812,19 @@ impl TokenService {
                 Ok(signed) => signed,
                 Err(refusal) => return Ok(Err(refusal)),
             };
+            self.ports
+                .access_tokens
+                .record(
+                    uow.as_mut(),
+                    &AccessTokenRecord::issued(
+                        signed.token_id.clone(),
+                        client.id(),
+                        Some(family.grant_id),
+                        Some(family.id),
+                        signed.expires_at,
+                    ),
+                )
+                .await?;
             let event = OauthEvent::AccessTokenIssued {
                 client_id: client.id(),
                 grant_id: family.grant_id,
@@ -908,6 +942,19 @@ impl TokenService {
             correlation_id,
         };
         let mut uow = self.ports.units_of_work.begin(tenant).await?;
+        self.ports
+            .access_tokens
+            .record(
+                uow.as_mut(),
+                &AccessTokenRecord::issued(
+                    signed.token_id.clone(),
+                    client.id(),
+                    None,
+                    None,
+                    signed.expires_at,
+                ),
+            )
+            .await?;
         let event = OauthEvent::ClientAccessTokenIssued {
             client_id: client.id(),
             token_id: signed.token_id.clone(),

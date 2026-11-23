@@ -65,10 +65,11 @@ random, clock })`:
 ### Token endpoint (`token.rs`)
 
 `TokenService::new(TokenPorts { units_of_work, applications, clients,
-resource_servers, grants, assertions, refresh_tokens, standing, secrets,
-codes, keys, verifier, digest, random, clock })`, with `codes` the
+resource_servers, grants, assertions, refresh_tokens, access_tokens,
+standing, secrets, codes, keys, verifier, digest, random, clock })`, with `codes` the
 `AuthorizationCodeService`, `keys` the `KeyService`, `standing` a
-`PersonStanding` and `secrets` the kernel `SecretBox`. The retry window of
+`PersonStanding`, `access_tokens` the `AccessTokenRecordStore` of the
+register and `secrets` the kernel `SecretBox`. The retry window of
 refresh tokens is `DEFAULT_RETRY_WINDOW`, 10 seconds;
 `with_retry_window(window)` sets another, 0 to 60 seconds, or answers
 `oauth.retry_window_invalid`.
@@ -112,15 +113,45 @@ refresh tokens is `DEFAULT_RETRY_WINDOW`, 10 seconds;
   - The ID token, when the scopes hold `openid`: claims from
     `id_token_claims`, signed the same way with the client's ID token
     lifetime, header `typ` `JWT`.
+  - The register: every access token issued is recorded with
+    `AccessTokenRecordStore::record` in the unit of work of its event: the
+    code's with its grant, a refresh's with its grant and family, client
+    credentials' with neither.
+
+### Revocation and introspection (`introspection.rs`)
+
+`AccessTokenRegister::new(units_of_work, access_tokens, grants,
+refresh_tokens)`, also `TokenService::register()`:
+`in_force(tenant, token_id, client_id)` is true only when the record
+exists, is not revoked, names that client, and its grant and family, if
+any, are active.
+
+- `TokenService::revoke(tenant, issuer, endpoint, query, correlation_id)`:
+  authenticates the client as `token` does, with `endpoint` also accepted
+  as an assertion's audience. A token shaped as a refresh token
+  (`RefreshTokenHash::of_presented`) of this client revokes its family and
+  its grant with `REVOKED_BY_CLIENT`; anything else is read with
+  `read_access_token` and, when it is this client's, its record is revoked
+  with `oauth.access_token_revoked`. Any other token does nothing; the
+  answer is the same.
+- `TokenService::introspect(tenant, issuer, endpoint, query)`: a public
+  client is `invalid_client`. A refresh token of this client is active when
+  it is the newest of a standing family, its grant is active and the
+  person's standing holds; an access token when `read_access_token` accepts
+  it, it is this client's or its audience holds the resource server of the
+  client's application, and the register says it is in force. Otherwise
+  `inactive()`. Nothing is changed.
 
 ### UserInfo (`userinfo.rs`)
 
-`UserInfoService::new(UserInfoPorts { keys, verifier, identity, clock })`:
+`UserInfoService::new(UserInfoPorts { keys, verifier, identity, register,
+clock })`:
 
 - `claims(tenant, issuer, token)`: the outer `Result` is storage; the
   inner one a `BearerRefusal` (`Missing`, `InvalidToken(reason)`,
   `InsufficientScope`). Checks the token with `check_access_token` against
-  the tenant's published `ES256` keys, then reads the person through
+  the tenant's published `ES256` keys, then asks the register: a token not
+  in force is `InvalidToken`. Then it reads the person through
   `IdentityService::get`: an unknown person, or one who is not `Active`, is
   `InvalidToken`. Answers `userinfo_claims` for the token's scopes.
 - `published_keys(keys, tenant)` (crate-visible): the tenant's published
@@ -150,7 +181,8 @@ verifier })`:
 
 - Run: `cargo test -p hodor-oauth --test service`,
   `cargo test -p hodor-oauth --test authorization`,
-  `cargo test -p hodor-oauth --test token` and
-  `cargo test -p hodor-oauth --test refresh`; `cargo test -p hodor-oauth
+  `cargo test -p hodor-oauth --test token`,
+  `cargo test -p hodor-oauth --test refresh` and
+  `cargo test -p hodor-oauth --test revocation`; `cargo test -p hodor-oauth
   --lib openid` for the OpenID Provider's domain and `--lib logout` for
   logout's

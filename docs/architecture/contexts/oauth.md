@@ -474,7 +474,7 @@ The access token is a JSON Web Token per [RFC 9068](https://www.rfc-editor.org/r
 | `client_id` | The client |
 | `scope` | The scopes of the code, separated by spaces |
 | `iat`, `exp` | When it was issued, and that plus the client's access token lifetime |
-| `jti` | 16 random bytes, base64url, unique to this token |
+| `jti` | 16 random bytes, base64url, unique to this token. It names the token's record in [the register of access tokens](#the-register-of-access-tokens) |
 | `auth_time` | When the person signed in; absent for client credentials, where nobody signed in |
 | `acr` | The level the sign-in reached, as the code says, and for a refreshed token as the code the refresh tokens came from says. Left out when it reached none, and for client credentials |
 | `amr` | The methods of the sign-in, named as [methods and assurance](#methods-and-assurance) says. Left out when none of them has a name in RFC 8176, and for client credentials |
@@ -538,8 +538,7 @@ What the window allows: someone who stole the token one generation old and prese
 | The person may no longer sign in | The family's next refresh is refused |
 | The client or its application disabled, or the client no longer allowed the `refresh_token` grant | The family's next refresh is refused |
 | The absolute lifetime or the idle time passed | The family's next refresh is refused |
-
-Revoking a refresh token through the revocation endpoint, which revokes its family, comes with Issue-58.
+| The client revoked a refresh token of the family at the [revocation endpoint](#revocation) | The family and its grant are revoked |
 
 ### Client credentials
 
@@ -603,7 +602,119 @@ Both are tenant tables under row-level security. A family references its grant a
 
 ## Revocation, introspection and metadata
 
-Issue-58.
+Issue-58 lets a client end a token before it expires, at the revocation endpoint ([RFC 7009](https://www.rfc-editor.org/rfc/rfc7009)), and lets a client ask whether a token is still good, at the introspection endpoint ([RFC 7662](https://www.rfc-editor.org/rfc/rfc7662)). The discovery document names both.
+
+### The register of access tokens
+
+An access token is a signed JSON Web Token that a resource server can check by itself, so Hodor cannot take one back from a resource server that never asks. What Hodor can do is keep, for every access token it issues, whether it is still **in force**. This is the deny-list of `jti` that [Decision 0004](../../decisions/0004-token-formats.md) names, kept the other way round: an access token is recorded when it is issued, and is in force only while its record says so.
+
+**The record** holds the token's `jti`, the client it was issued to, the grant it was issued under (none for [client credentials](#client-credentials)), the refresh token family it came from (none for a code or client credentials), when it expires, and whether and why it was revoked. The token itself is never stored.
+
+**An access token is in force** when:
+
+- its record exists and is not revoked;
+- the grant it was issued under, if any, is active;
+- the refresh token family it came from, if any, is active.
+
+A token without a record is not in force. That holds for a record removed with its client or grant, and for one removed after the token expired.
+
+**Who asks.** Introspection and UserInfo ask, and refuse a token that is not in force. A resource server that checks tokens by itself keeps accepting a revoked token until it expires, five minutes by default. Decision 0004 accepts that window, and a resource server that wants none introspects.
+
+**Cleanup.** The worker removes records whose token has expired, with the other cleanup jobs.
+
+### The requests
+
+Both endpoints answer `POST` with a form only, at `{issuer}/oauth2/revoke` and `{issuer}/oauth2/introspect`.
+
+| Parameter | |
+|---|---|
+| `token` | Required: the token the request is about |
+| `token_type_hint` | Optional: `access_token` or `refresh_token`. It is a hint and nothing more. A token not found as the hint says is looked for as the other kind ([RFC 7009, section 2.1](https://www.rfc-editor.org/rfc/rfc7009#section-2.1)), and any other value is ignored |
+
+The rules of the request:
+
+- **Reading the form:** a parameter given twice is `invalid_request`, and so is a body that is not a form.
+- **The client:** it proves who it is exactly as at the token endpoint: one method only, its registered method, the same checks, and `invalid_client` with status `401`. An assertion's `aud` may also be the address of the endpoint it is sent to, besides the issuer and the token endpoint.
+- **Errors:** they are JSON with `error` and `error_description`. No answer is kept by a cache: they carry `Cache-Control: no-store` and `Pragma: no-cache`.
+
+### Revocation
+
+**Who may revoke.** Any client of the tenant, a public one included with its `client_id` alone. RFC 7009 lets a public client revoke its own tokens, and a stolen `client_id` lets nobody revoke anything but that client's tokens.
+
+**What a revocation does:**
+
+| The token is | What is done |
+|---|---|
+| A refresh token issued to the client | Its family is revoked, with the reason `revoked_by_client`, and its grant with it. With the grant goes every access token issued under it, as RFC 7009 says a server should: a client that ends a refresh token ends what came of it |
+| An access token issued to the client, with a good signature and not expired | Its record is revoked, with the reason `revoked_by_client`. The refresh token of its grant stays: RFC 7009 leaves this to the server, and a client that wants both revokes the refresh token |
+| Unknown, malformed, expired, already revoked, of another client or of another tenant | Nothing |
+
+**The answer** is `200` with an empty body, whatever was done. RFC 7009 would let Hodor refuse a token of another client, but such a refusal would tell the client that the token exists. A refresh token presented here by another client does not revoke its family either, unlike at the token endpoint. Otherwise any client could end the tokens of every other.
+
+### Introspection
+
+**Who may introspect.** A confidential client: one that proves who it is with a secret or an assertion. A public client is answered `invalid_client` with status `401`. It proves nothing, and introspection tells about tokens.
+
+**What a caller may learn about:**
+
+- an access token issued to the caller itself;
+- an access token whose audience holds the audience of the resource server of the caller's application. An application has at most one resource server, and its clients introspect the tokens meant for it;
+- a refresh token issued to the caller itself.
+
+Any other token is answered as not active.
+
+**An access token is active** when:
+
+- it passes the checks of [UserInfo](#userinfo) up to `exp`: shape, header, a key the tenant publishes, the signature, the issuer and the expiry. Audience and scope are not asked for: they are part of the answer;
+- it is [in force](#the-register-of-access-tokens).
+
+**A refresh token is active** when:
+
+- it is found by its hash, and is the newest of its family. A token that was rotated is not active, even within the retry window;
+- its family is active, before its absolute lifetime and used within its idle time;
+- its grant is active;
+- the person may still sign in, and, without `offline_access`, the session is still active.
+
+**Introspection changes nothing.** It never revokes, not even for a refresh token presented by another client.
+
+**The answer** to a token that is not active, or that the caller may not learn about, is exactly `{"active": false}`, never more. An active token is answered:
+
+| Member | For an access token | For a refresh token |
+|---|---|---|
+| `active` | `true` | `true` |
+| `scope` | Its scopes | The scopes of its family |
+| `client_id` | The client it was issued to | The client it was issued to |
+| `sub` | Its `sub` | The person |
+| `aud` | Its `aud` | The issuer, to whom a refresh token is presented |
+| `iss` | The issuer | The issuer |
+| `exp` | Its `exp` | The earlier of the end of its family's absolute lifetime and of its idle time |
+| `iat` | Its `iat` | When this token was issued |
+| `token_type` | `Bearer` | `refresh_token` |
+
+### Limits
+
+No limit on the number of requests is built for the token, revocation and introspection endpoints, per client or per address. The limits Hodor has today are the attempt counters of the [authentication context](authentication.md), and the OAuth context may not depend on it ([crates](../crates.md)). Limits per address wait for an address Hodor can trust behind a load balancer ([known gaps](../../product/progress.md#known-gaps-in-what-is-done)).
+
+A limit would not be stopping guesses here. Secrets, codes and refresh tokens are 256 bits, and an assertion is signed and used once. What it would stop is load, and that is listed in [not built yet](#not-built-yet).
+
+### Events
+
+| Event type | When |
+|---|---|
+| `oauth.access_token_revoked` | A client revoked an access token. It carries the client, the token's `jti` and the reason, never the token |
+
+Revoking a refresh token records `oauth.refresh_token_family_revoked` and `oauth.grant_revoked` with the reason `revoked_by_client`.
+
+### Ports
+
+| Port | Purpose |
+|---|---|
+| `AccessTokenRecordStore` | Record an access token when it is issued; find a record by `jti`; revoke a record; remove the records of tokens that expired |
+| `RefreshTokenStore` | Also finds a family by its identifier, to tell whether an access token that came from it is still in force |
+
+### Storage
+
+`oauth.access_token` holds `tenant_id`, `token_id` (the `jti`), `client_id`, `grant_id`, `family_id`, `expires_at`, `revoked_at` and `revocation_reason`, with the tenant and the `jti` as primary key. It is a tenant table under row-level security. It references its client, its grant and its family with the tenant, so a record goes when they go, and the token with it.
 
 ## OpenID Provider
 
@@ -673,7 +784,9 @@ The token is checked before anything is read:
 | Scope | `scope` does not hold `openid` |
 | Person | The user does not exist or is not active |
 
-A token that fails any check but the scope is answered `401` with `WWW-Authenticate: Bearer error="invalid_token"`; a request without a token, `401` with `WWW-Authenticate: Bearer` and no error. A token without `openid` is answered `403` with `error="insufficient_scope"`. The answer names no reason; Hodor's logs do. Tokens that were revoked are refused once revocation exists (Issue-58).
+After these checks the token must still be [in force](#the-register-of-access-tokens): not revoked, and its grant and its refresh token family still active.
+
+A token that fails any check but the scope is answered `401` with `WWW-Authenticate: Bearer error="invalid_token"`; a request without a token, `401` with `WWW-Authenticate: Bearer` and no error. A token without `openid` is answered `403` with `error="insufficient_scope"`. The answer names no reason; Hodor's logs do.
 
 The answer is JSON with `sub` and the claims of the token's scopes:
 
@@ -713,13 +826,16 @@ It names only what is built:
 | Member | Value |
 |---|---|
 | `issuer` | The tenant's issuer, exactly as every token and redirect carries it |
-| `authorization_endpoint`, `token_endpoint`, `userinfo_endpoint`, `jwks_uri`, `end_session_endpoint` | The five addresses under `{issuer}/oauth2`; the last is [logout](#logout-initiated-by-the-relying-party) |
+| `authorization_endpoint`, `token_endpoint`, `userinfo_endpoint`, `jwks_uri`, `revocation_endpoint`, `introspection_endpoint`, `end_session_endpoint` | The seven addresses under `{issuer}/oauth2`; the last is [logout](#logout-initiated-by-the-relying-party) |
 | `response_types_supported` | `code` |
 | `response_modes_supported` | `query` |
 | `grant_types_supported` | The grants the token endpoint answers: `authorization_code`, `refresh_token` and `client_credentials` |
 | `code_challenge_methods_supported` | `S256` |
 | `token_endpoint_auth_methods_supported` | `client_secret_basic`, `client_secret_post`, `private_key_jwt`, `none` |
 | `token_endpoint_auth_signing_alg_values_supported` | `ES256`, `RS256`, `PS256` |
+| `revocation_endpoint_auth_methods_supported` | The four of the token endpoint: a public client may revoke its own tokens |
+| `introspection_endpoint_auth_methods_supported` | `client_secret_basic`, `client_secret_post`, `private_key_jwt`: a public client may not introspect |
+| `revocation_endpoint_auth_signing_alg_values_supported`, `introspection_endpoint_auth_signing_alg_values_supported` | `ES256`, `RS256`, `PS256` |
 | `id_token_signing_alg_values_supported` | `ES256` |
 | `subject_types_supported` | `public` |
 | `scopes_supported` | `openid`, `profile`, `email`. A tenant's own scopes belong to its resource servers and are not listed |
@@ -730,7 +846,7 @@ It names only what is built:
 | `authorization_response_iss_parameter_supported` | `true` |
 | `request_parameter_supported`, `request_uri_parameter_supported`, `claims_parameter_supported` | `false` |
 
-Revocation and introspection are added to the document with Issue-58. The document may be kept by caches for five minutes and carries `Access-Control-Allow-Origin: *`, as the key set does: it is public.
+The document may be kept by caches for five minutes and carries `Access-Control-Allow-Origin: *`, as the key set does: it is public.
 
 ### Ports
 
@@ -820,11 +936,11 @@ Issue-62.
 
 | Item | Planned in |
 |---|---|
-| Revocation, among them revoking a refresh token and its family; introspection that refuses the access tokens of a revoked family or grant | Issue-58 |
 | Back-channel and front-channel logout: telling the applications of a session that it ended | Phase 2, after 0.2.0 ([Decision 0023](../../decisions/0023-what-0.2.0-holds.md)) |
 | Sending the person back to the application when they choose to stay signed in at the logout question | When an application asks for it |
 | `logout_hint`, which names who to sign out | Not used: a browser holds one session per tenant |
 | An `id_token_hint` signed by a key that has left the tenant's key set: it is refused, and the application can send `client_id` instead, which asks the person | When it matters |
+| Limits on the number of requests to the token, revocation and introspection endpoints, per client and per address ([limits](#limits)) | With the other limits per address, before any deployment behind a load balancer |
 | The metadata at the address RFC 8414 prefers for an issuer with a path, `/.well-known/oauth-authorization-server/t/{slug}`: it is outside the tenant's addresses, so only the address after the issuer is served | When a client needs it |
 | Calling UserInfo from a browser on another origin | With origins in the client settings |
 | The person's claims in the ID token when asked for with the `claims` parameter | Not planned for 0.2.0 |
@@ -833,7 +949,6 @@ Issue-62.
 | Removing refresh token families after they expire, with their tokens | A cleanup job, with the other expired rows |
 | Calling the token endpoint from a browser on another origin: clients have no registered origins yet, so no cross-origin headers are sent | With origins in the client settings |
 | Client assertions signed with `ES384` or `EdDSA`, which client keys on P-384 and Ed25519 would need | When the kernel's signature checking covers them |
-| Limits on requests to the token endpoint per address | With the other limits per address |
 | Removing remembered client assertions after they expire | A cleanup job, with the other expired rows |
 | Asking a person for consent; until then only clients of first-party applications are answered | Issue-62 |
 | Asking for an `acr` with the `claims` parameter. `acr_values` is the way to ask | Not planned for 0.2.0 |

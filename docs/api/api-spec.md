@@ -56,8 +56,8 @@ The paths are relative to the tenant, `https://{host}/t/{slug}`, whose issuer is
 | `GET /oauth2/authorize/resume` | Where the hosted pages send the browser after a sign-in, to go on with the pending authorization request ([the OAuth context](../architecture/contexts/oauth.md#signing-in-and-coming-back)) | — |
 | `POST /oauth2/par` | Pushed authorization request | RFC 9126 |
 | `POST /oauth2/token` | Token endpoint: `authorization_code`, `refresh_token` and `client_credentials` (built: [the token endpoint](../architecture/contexts/oauth.md#token-endpoint-and-client-authentication)), `urn:ietf:params:oauth:grant-type:device_code`, `…:token-exchange`, `…:jwt-bearer` | RFC 6749, 8628, 8693, 7523 |
-| `POST /oauth2/revoke` | Revocation | RFC 7009 |
-| `POST /oauth2/introspect` | Introspection | RFC 7662 |
+| `POST /oauth2/revoke` | Revocation (built: [revocation](../architecture/contexts/oauth.md#revocation)) | RFC 7009 |
+| `POST /oauth2/introspect` | Introspection (built: [introspection](../architecture/contexts/oauth.md#introspection)) | RFC 7662 |
 | `GET, POST /oauth2/userinfo` | UserInfo (built: [UserInfo](../architecture/contexts/oauth.md#userinfo)) | OpenID Connect Core |
 | `POST /oauth2/device_authorization` | Device authorization | RFC 8628 |
 | `GET /oauth2/device` | User code entry page | RFC 8628 |

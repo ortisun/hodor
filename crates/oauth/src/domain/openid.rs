@@ -170,6 +170,121 @@ pub struct CheckedAccessToken {
     pub user_id: UserId,
     /// Its scopes.
     pub scopes: Vec<String>,
+    /// Its `jti`, which names its record in the register.
+    pub token_id: String,
+    /// The client it was issued to, as its `client_id` says.
+    pub client_id: String,
+}
+
+/// What a signed access token of the tenant says, once its shape, header,
+/// key, signature, issuer and expiry have been checked. Its audience and
+/// scope are not checked: those are for whoever reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadAccessToken {
+    /// Its `jti`.
+    pub token_id: String,
+    /// Its `client_id`.
+    pub client_id: String,
+    /// Its `sub`: a user's identifier, or a client's.
+    pub subject: String,
+    /// Its scopes.
+    pub scopes: Vec<String>,
+    /// Its `aud`, as it was written: one text or a list.
+    pub audience: Value,
+    /// Its audiences, as a list.
+    pub audiences: Vec<String>,
+    /// Its `iat`, in seconds.
+    pub issued_at: i64,
+    /// Its `exp`.
+    pub expires_at: Timestamp,
+}
+
+/// Reads an access token of the tenant: checks its shape, header, key,
+/// signature, issuer and expiry, in that order. Nothing it says is used
+/// before its signature has been checked.
+///
+/// # Errors
+///
+/// Returns why the token cannot be used, for the logs.
+pub fn read_access_token(
+    token: &str,
+    issuer: &str,
+    keys: &[PublishedKey],
+    now: Timestamp,
+    verifier: &dyn SignatureVerifier,
+) -> Result<ReadAccessToken, &'static str> {
+    if token.len() > 16 * 1024 {
+        return Err("the token is too large");
+    }
+    let parts: Vec<&str> = token.split('.').collect();
+    let [header_part, claims_part, signature_part] = parts.as_slice() else {
+        return Err("the token is not three parts");
+    };
+    let header = decode_json(header_part).ok_or("the header is malformed")?;
+    if header.get("typ").and_then(Value::as_str) != Some("at+jwt") {
+        return Err("the token is not an access token");
+    }
+    if header.get("alg").and_then(Value::as_str) != Some("ES256") {
+        return Err("the token names another algorithm");
+    }
+    let kid = header
+        .get("kid")
+        .and_then(Value::as_str)
+        .ok_or("the token names no key")?;
+    let key = keys
+        .iter()
+        .find(|key| key.key_id == kid && key.algorithm == SignatureAlgorithm::Es256)
+        .ok_or("the token's key is not published by this tenant")?;
+    let signature = URL_SAFE_NO_PAD
+        .decode(signature_part)
+        .map_err(|_| "the signature is malformed")?;
+    let signed = format!("{header_part}.{claims_part}");
+    if !verifier.verify(key.algorithm, &key.key, signed.as_bytes(), &signature) {
+        return Err("the signature does not verify");
+    }
+
+    // Only now is anything the token says used.
+    let claims = decode_json(claims_part).ok_or("the claims are malformed")?;
+    if claims.get("iss").and_then(Value::as_str) != Some(issuer) {
+        return Err("the token is from another issuer");
+    }
+    let expires_at = claims
+        .get("exp")
+        .and_then(Value::as_i64)
+        .and_then(|seconds| Timestamp::from_unix_timestamp(seconds).ok())
+        .ok_or("the token does not say when it expires")?;
+    if expires_at <= now {
+        return Err("the token has expired");
+    }
+    let text = |name: &str| claims.get(name).and_then(Value::as_str).map(str::to_owned);
+    let audience = claims.get("aud").cloned().unwrap_or(Value::Null);
+    let audiences = match &audience {
+        Value::String(one) => vec![one.clone()],
+        Value::Array(many) => many
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect(),
+        _ => Vec::new(),
+    };
+    Ok(ReadAccessToken {
+        token_id: text("jti").ok_or("the token has no jti")?,
+        client_id: text("client_id").ok_or("the token names no client")?,
+        subject: text("sub").ok_or("the token names no subject")?,
+        scopes: text("scope")
+            .unwrap_or_default()
+            .split(' ')
+            .filter(|scope| !scope.is_empty())
+            .map(str::to_owned)
+            .collect(),
+        audience,
+        audiences,
+        issued_at: claims
+            .get("iat")
+            .and_then(Value::as_i64)
+            .ok_or("the token does not say when it was issued")?,
+        expires_at,
+    })
 }
 
 /// A key the tenant publishes, by the identifier a token's `kid` names.
@@ -198,76 +313,23 @@ pub fn check_access_token(
     verifier: &dyn SignatureVerifier,
 ) -> Result<CheckedAccessToken, BearerRefusal> {
     use BearerRefusal::InvalidToken;
-    if token.len() > 16 * 1024 {
-        return Err(InvalidToken("the token is too large"));
-    }
-    let parts: Vec<&str> = token.split('.').collect();
-    let [header_part, claims_part, signature_part] = parts.as_slice() else {
-        return Err(InvalidToken("the token is not three parts"));
-    };
-    let header = decode_json(header_part).ok_or(InvalidToken("the header is malformed"))?;
-    if header.get("typ").and_then(Value::as_str) != Some("at+jwt") {
-        return Err(InvalidToken("the token is not an access token"));
-    }
-    if header.get("alg").and_then(Value::as_str) != Some("ES256") {
-        return Err(InvalidToken("the token names another algorithm"));
-    }
-    let kid = header
-        .get("kid")
-        .and_then(Value::as_str)
-        .ok_or(InvalidToken("the token names no key"))?;
-    let key = keys
-        .iter()
-        .find(|key| key.key_id == kid && key.algorithm == SignatureAlgorithm::Es256)
-        .ok_or(InvalidToken(
-            "the token's key is not published by this tenant",
-        ))?;
-    let signature = URL_SAFE_NO_PAD
-        .decode(signature_part)
-        .map_err(|_| InvalidToken("the signature is malformed"))?;
-    let signed = format!("{header_part}.{claims_part}");
-    if !verifier.verify(key.algorithm, &key.key, signed.as_bytes(), &signature) {
-        return Err(InvalidToken("the signature does not verify"));
-    }
-
-    // Only now is anything the token says used.
-    let claims = decode_json(claims_part).ok_or(InvalidToken("the claims are malformed"))?;
-    if claims.get("iss").and_then(Value::as_str) != Some(issuer) {
-        return Err(InvalidToken("the token is from another issuer"));
-    }
-    let for_issuer = match claims.get("aud") {
-        Some(Value::String(one)) => one == issuer,
-        Some(Value::Array(many)) => many.iter().any(|value| value.as_str() == Some(issuer)),
-        _ => false,
-    };
-    if !for_issuer {
+    let read = read_access_token(token, issuer, keys, now, verifier).map_err(InvalidToken)?;
+    if !read.audiences.iter().any(|audience| audience == issuer) {
         return Err(InvalidToken("the token is not for this server"));
     }
-    let expires_at = claims
-        .get("exp")
-        .and_then(Value::as_i64)
-        .and_then(|seconds| Timestamp::from_unix_timestamp(seconds).ok())
-        .ok_or(InvalidToken("the token does not say when it expires"))?;
-    if expires_at <= now {
-        return Err(InvalidToken("the token has expired"));
-    }
-    let user_id = claims
-        .get("sub")
-        .and_then(Value::as_str)
-        .and_then(|text| text.parse::<UserId>().ok())
-        .ok_or(InvalidToken("the token names no person"))?;
-    let scopes: Vec<String> = claims
-        .get("scope")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .split(' ')
-        .filter(|scope| !scope.is_empty())
-        .map(str::to_owned)
-        .collect();
-    if !asks_for_openid(&scopes) {
+    let user_id = read
+        .subject
+        .parse::<UserId>()
+        .map_err(|_| InvalidToken("the token names no person"))?;
+    if !asks_for_openid(&read.scopes) {
         return Err(BearerRefusal::InsufficientScope);
     }
-    Ok(CheckedAccessToken { user_id, scopes })
+    Ok(CheckedAccessToken {
+        user_id,
+        scopes: read.scopes,
+        token_id: read.token_id,
+        client_id: read.client_id,
+    })
 }
 
 /// What Hodor knows of a person, for UserInfo.
@@ -325,6 +387,8 @@ pub fn discovery_document(issuer: &str, acr_values: &[&str]) -> Value {
         "token_endpoint": format!("{issuer}/oauth2/token"),
         "userinfo_endpoint": format!("{issuer}/oauth2/userinfo"),
         "jwks_uri": format!("{issuer}/oauth2/jwks"),
+        "revocation_endpoint": format!("{issuer}/oauth2/revoke"),
+        "introspection_endpoint": format!("{issuer}/oauth2/introspect"),
         "end_session_endpoint": format!("{issuer}/oauth2/logout"),
         "response_types_supported": ["code"],
         "response_modes_supported": ["query"],
@@ -334,6 +398,14 @@ pub fn discovery_document(issuer: &str, acr_values: &[&str]) -> Value {
             "client_secret_basic", "client_secret_post", "private_key_jwt", "none"
         ],
         "token_endpoint_auth_signing_alg_values_supported": ["ES256", "RS256", "PS256"],
+        "revocation_endpoint_auth_methods_supported": [
+            "client_secret_basic", "client_secret_post", "private_key_jwt", "none"
+        ],
+        "revocation_endpoint_auth_signing_alg_values_supported": ["ES256", "RS256", "PS256"],
+        "introspection_endpoint_auth_methods_supported": [
+            "client_secret_basic", "client_secret_post", "private_key_jwt"
+        ],
+        "introspection_endpoint_auth_signing_alg_values_supported": ["ES256", "RS256", "PS256"],
         "id_token_signing_alg_values_supported": ["ES256"],
         "subject_types_supported": ["public"],
         "scopes_supported": ["openid", "profile", "email"],

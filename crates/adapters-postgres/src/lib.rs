@@ -18,6 +18,7 @@ mod keys;
 mod migrate;
 mod notification;
 mod oauth;
+mod oauth_access_token;
 mod oauth_authorization;
 mod oauth_refresh;
 mod oauth_token;
@@ -33,7 +34,7 @@ mod uow;
 pub use audit::PgAuditLog;
 pub use authentication::{PgAttemptStore, PgTransactionStore, PgVerificationTokenStore};
 pub use authorization::{PgEngineBindingStore, PgNativeRoleStore, PgRoleAssignmentStore};
-pub use cleanup::{CleanupReport, PendingAuthorizationCleanup};
+pub use cleanup::{AccessTokenCleanup, CleanupReport, PendingAuthorizationCleanup};
 pub use credential::{
     PgAccessTokenStore, PgPasswordStore, PgRecoveryCodeStore, PgTotpStore, PgWebAuthnStore,
 };
@@ -45,6 +46,7 @@ pub use keys::{PgKeyStore, PgSealingStateStore};
 pub use migrate::migrate;
 pub use notification::{PgMessageQueue, PgPendingMessages};
 pub use oauth::{PgApplicationStore, PgClientStore, PgResourceServerStore};
+pub use oauth_access_token::PgAccessTokenRecordStore;
 pub use oauth_authorization::{
     PgAuthorizationCodeStore, PgAuthorizationRequestStore, PgGrantStore,
 };

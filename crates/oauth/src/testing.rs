@@ -16,6 +16,7 @@ use time::Duration;
 
 mod authorization;
 mod refresh;
+mod register;
 mod token;
 pub use authorization::{
     AuthorizationStorePorts, InMemoryAuthorizationCodes, InMemoryAuthorizationRequests,
@@ -23,6 +24,9 @@ pub use authorization::{
 };
 pub use refresh::{
     InMemoryRefreshTokens, RefreshStorePorts, StandingOf, run_refresh_token_contract,
+};
+pub use register::{
+    AccessTokenRecordStorePorts, InMemoryAccessTokenRecords, run_access_token_record_contract,
 };
 pub use token::{
     AssertionStorePorts, FakeVerifier, InMemoryClientAssertions, fake_signature,

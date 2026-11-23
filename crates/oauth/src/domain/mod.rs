@@ -4,6 +4,7 @@ pub(crate) mod application;
 pub(crate) mod authorization;
 pub(crate) mod client;
 pub(crate) mod event;
+pub(crate) mod introspection;
 pub(crate) mod key;
 pub(crate) mod logout;
 pub(crate) mod openid;

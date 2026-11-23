@@ -68,10 +68,21 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   method names as RFC 8176 `amr`, each once, in a fixed order, with `mfa`),
   the code's `acr` when it has one,
   `is_multi_factor`, `access_token_hash` (`at_hash`), `id_token_claims`,
-  `check_access_token` (the checks of UserInfo, in order, against
-  `PublishedKey`s; `BearerRefusal`, `CheckedAccessToken`), `PersonClaims`
+  `read_access_token` (shape, header, a published key, signature, issuer
+  and expiry, in order, against `PublishedKey`s; `ReadAccessToken`),
+  `check_access_token` (that, then the audience, a person as `sub` and the
+  `openid` scope, for UserInfo; `BearerRefusal`, `CheckedAccessToken`
+  with the `jti` and `client_id` the register is asked with), `PersonClaims`
   and `userinfo_claims` (the claims of `profile` and `email`), and
-  `discovery_document(issuer, acr_values)`. Its cases are in `openid/tests.rs`.
+  `discovery_document(issuer, acr_values)`, which names the revocation and introspection
+  endpoints and their methods. Its cases are in `openid/tests.rs`.
+- `introspection.rs`: revocation and introspection. `TokenQuery::parse`
+  (`token` required, a parameter twice or more than one way of proving who
+  the client is `invalid_request`, no client named `invalid_client`),
+  `TokenTypeHint` (an unknown hint is ignored), `AccessTokenRecord` (with
+  `issued`), the answers `inactive`, `active_access_token` and
+  `active_refresh_token` (`ActiveRefreshToken`), and `REVOKED_BY_CLIENT`.
+  Its cases are at the bottom of the file.
 - `refresh.rs`: refresh tokens. `RefreshFamily` (`start` from a redeemed
   code and the client's `TokenPolicy`, `decide`, `is_newest`, `revoke`,
   `started_event`, `first_record`), `RefreshFamilyId`, `RefreshTokenHash`
@@ -94,7 +105,7 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   addresses, at most 10, only with `authorization_code`
   (`oauth.client_post_logout_redirect_uri_invalid`);
   `accepts_post_logout_redirect_uri`.
-- `event.rs`: `OauthEvent`, twenty-one variants, each named `oauth.*`.
+- `event.rs`: `OauthEvent`, twenty-two variants, each named `oauth.*`.
 - `text.rs`: the rules of names and of scopes (`is_scope`).
 
 ## Invariants
@@ -119,7 +130,10 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
 - An assertion's signature is checked over its first two parts as they
   arrived before any claim but `iss` is read; `alg` is one of `ES256`,
   `RS256` and `PS256`, so `none` and shared-secret algorithms cannot be
-  named.
+  named. Its audience is the issuer, the token endpoint, or the endpoint
+  it was sent to (`AssertionAudience::endpoint`).
+- Nothing an access token says is used before its signature has been
+  checked, at UserInfo, revocation and introspection alike.
 
 ## Verification
 

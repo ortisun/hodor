@@ -351,7 +351,7 @@ impl TokenRequest {
     }
 }
 
-fn presented_client(
+pub(crate) fn presented_client(
     basic: Option<BasicCredentials>,
     text: &impl Fn(&str) -> Option<String>,
 ) -> Result<PresentedClient, TokenError> {
@@ -460,6 +460,9 @@ pub struct AssertionAudience<'a> {
     pub issuer: &'a str,
     /// The address of the token endpoint.
     pub token_endpoint: &'a str,
+    /// The address of the endpoint the assertion was sent to: the token
+    /// endpoint itself, or the revocation or introspection endpoint.
+    pub endpoint: &'a str,
 }
 
 /// Checks a client's assertion (RFC 7523), in the order the specification
@@ -527,10 +530,11 @@ pub fn check_assertion(
         Some(Value::Array(many)) => many.iter().filter_map(Value::as_str).collect(),
         _ => Vec::new(),
     };
-    if !audiences
-        .iter()
-        .any(|given| *given == audience.issuer || *given == audience.token_endpoint)
-    {
+    if !audiences.iter().any(|given| {
+        *given == audience.issuer
+            || *given == audience.token_endpoint
+            || *given == audience.endpoint
+    }) {
         return Err("the assertion is not for this server");
     }
     let expires_at = seconds(&claims, "exp")

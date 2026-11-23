@@ -18,9 +18,9 @@ use hodor_oauth::api::{
     SignedInPerson, TokenError, TokenPorts, TokenRequest, TokenService, s256_challenge,
 };
 use hodor_oauth::testing::{
-    DistinctRandom, FakeVerifier, InMemoryAuthorizationCodes, InMemoryAuthorizationRequests,
-    InMemoryClientAssertions, InMemoryGrants, InMemoryRefreshTokens, InMemoryStores,
-    RefreshStorePorts, StandingOf, run_refresh_token_contract,
+    DistinctRandom, FakeVerifier, InMemoryAccessTokenRecords, InMemoryAuthorizationCodes,
+    InMemoryAuthorizationRequests, InMemoryClientAssertions, InMemoryGrants, InMemoryRefreshTokens,
+    InMemoryStores, RefreshStorePorts, StandingOf, run_refresh_token_contract,
 };
 use hodor_session::api::SessionId;
 use serde_json::Value;
@@ -88,6 +88,7 @@ fn world_with_window(window: Duration) -> World {
         grants: Arc::new(grants.clone()),
         assertions: Arc::new(InMemoryClientAssertions::new(&stores.clients)),
         refresh_tokens: Arc::new(families.clone()),
+        access_tokens: Arc::new(InMemoryAccessTokenRecords::new(&stores.clients)),
         standing: Arc::new(standing.clone()),
         secrets: Arc::new(FakeSecretBox),
         codes: codes.clone(),
