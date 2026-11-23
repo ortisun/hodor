@@ -129,6 +129,20 @@ pub enum OauthEvent {
         /// Why, such as `code_reused`.
         reason: &'static str,
     },
+    /// An access token was issued. Never carries the token.
+    AccessTokenIssued {
+        /// The client it was issued to.
+        client_id: ClientId,
+        /// The grant it was issued under.
+        grant_id: GrantId,
+        /// The person it speaks for.
+        user_id: UserId,
+        /// The token's `jti`.
+        token_id: String,
+        /// When it expires.
+        #[serde(with = "time::serde::rfc3339")]
+        expires_at: Timestamp,
+    },
 }
 
 impl DomainEvent for OauthEvent {
@@ -150,6 +164,7 @@ impl DomainEvent for OauthEvent {
             Self::ResourceServerChanged { .. } => "oauth.resource_server_changed",
             Self::AuthorizationCodeIssued { .. } => "oauth.authorization_code_issued",
             Self::GrantRevoked { .. } => "oauth.grant_revoked",
+            Self::AccessTokenIssued { .. } => "oauth.access_token_issued",
         }
     }
 }

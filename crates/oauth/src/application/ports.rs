@@ -263,3 +263,24 @@ pub trait AuthorizationCodeStore: Send + Sync {
         at: Timestamp,
     ) -> Result<bool, DomainError>;
 }
+
+/// Remembers the assertions clients proved who they are with, so that each
+/// is used once.
+#[async_trait::async_trait]
+pub trait ClientAssertionStore: Send + Sync {
+    /// Remembers the assertion `assertion_id` of `client` until
+    /// `expires_at`. Returns whether this call was the first to remember
+    /// it, so that of two requests with the same assertion at the same
+    /// moment exactly one goes on.
+    ///
+    /// # Errors
+    ///
+    /// Returns `oauth.client_not_found` if the tenant has no such client.
+    async fn remember(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        client: ClientId,
+        assertion_id: &str,
+        expires_at: Timestamp,
+    ) -> Result<bool, DomainError>;
+}

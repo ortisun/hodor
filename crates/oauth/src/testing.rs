@@ -15,9 +15,14 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use time::Duration;
 
 mod authorization;
+mod token;
 pub use authorization::{
     AuthorizationStorePorts, InMemoryAuthorizationCodes, InMemoryAuthorizationRequests,
     InMemoryGrants, run_authorization_contract,
+};
+pub use token::{
+    AssertionStorePorts, FakeVerifier, InMemoryClientAssertions, fake_signature,
+    run_assertion_contract,
 };
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {

@@ -28,6 +28,7 @@ the set of re-exports in `lib.rs`.
 | `ClientAddress(pub Option<IpAddr>)` | `request.rs` | The address of the connection, inserted as a request extension. |
 | `interaction_routes(state)`, `InteractionState` | `interaction.rs` | The interaction interface: browser sign-in, sessions, registration and password recovery. |
 | `authorization_routes(state)`, `AuthorizationState` | `authorize.rs` | The OAuth authorization endpoint: checks a request, issues a code to a signed-in browser or keeps the request while the person signs in. `AuthorizationState { authorization: AuthorizationCodeService, sessions, public_url }`. |
+| `token_routes(state)`, `TokenState` | `token.rs` | The OAuth token endpoint: reads the form and the `Basic` credentials, and answers what `TokenService` decides in the JSON of RFC 6749. `TokenState { tokens: TokenService, public_url }`. |
 | `admin_routes(state)`, `AdminState` | `admin.rs` | The administration interface, authenticated by bearer access token. |
 | `console_routes(state)`, `ConsoleState` | `admin.rs` | The same handlers for the admin console, authenticated by session cookie, plus `/me`. |
 | `ADMIN_OPENAPI` | `admin.rs` | `include_str!("../openapi/admin-v1.json")`, served at `/openapi.json`. |
@@ -119,6 +120,23 @@ other answer is a `302`. The issuer sent as `iss` is
 the interaction interface adds `"continue":
 "/t/{slug}/oauth2/authorize/resume"` to its answer while the browser
 holds it (`authorize::waiting`).
+
+`token_routes` (`token.rs`), merged with `authorization_routes` under the
+same mount point `/t/{slug}/oauth2`:
+
+| Method | Path | Handler |
+| --- | --- | --- |
+| POST | `/token` | `token` (only `application/x-www-form-urlencoded`, otherwise `invalid_request`; any other method is `405`) |
+
+`Authorization: Basic` is base64 of the form-encoded identifier and secret
+(`basic_credentials`, `form_decoded`); a malformed one is `invalid_client`,
+another scheme `invalid_request`. `invalid_client` is `401`, with
+`WWW-Authenticate: Basic realm="{issuer}"` when `Basic` was used;
+`server_error` and a failure of storage or signing are `500`; every other
+refusal is `400`. Every answer carries `Cache-Control: no-store` and
+`Pragma: no-cache`. The reason of a refusal is logged at `info`, never
+sent. The issuer is `{public_url}/t/{slug}` and the token endpoint
+`{issuer}/oauth2/token`.
 
 Administration and console handlers, shared by both routers
 (`admin.rs:shared_routes`):

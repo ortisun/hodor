@@ -2,18 +2,20 @@
 
 use hodor_adapters_postgres::testing::TestDatabase;
 use hodor_adapters_postgres::{
-    PgApplicationStore, PgAuthorizationCodeStore, PgAuthorizationRequestStore, PgClientStore,
-    PgGrantStore, PgResourceServerStore,
+    PgApplicationStore, PgAuthorizationCodeStore, PgAuthorizationRequestStore,
+    PgClientAssertionStore, PgClientStore, PgGrantStore, PgResourceServerStore,
 };
 use hodor_kernel::clock::testing::FixedClock;
 use hodor_kernel::random::testing::FakeDigest;
 use hodor_kernel::{Caller, TenantContext, TenantId, Timestamp};
+use hodor_oauth::api::ClientAssertionStore;
 use hodor_oauth::api::{
     ApplicationPorts, ApplicationService, ApplicationSettings, ClientSettings, ClientType,
     CreateClient, GrantType, RotateSecret,
 };
 use hodor_oauth::testing::{
-    AuthorizationStorePorts, DistinctRandom, Ports, run_authorization_contract, run_contract,
+    AssertionStorePorts, AuthorizationStorePorts, DistinctRandom, Ports, run_assertion_contract,
+    run_authorization_contract, run_contract,
 };
 use std::sync::Arc;
 use time::Duration;
@@ -42,6 +44,81 @@ async fn the_postgres_authorization_stores_pass_the_contract() {
         codes: &PgAuthorizationCodeStore,
     })
     .await;
+}
+
+#[tokio::test]
+async fn the_postgres_assertion_store_passes_the_contract() {
+    let database = TestDatabase::start().await;
+    run_assertion_contract(AssertionStorePorts {
+        units_of_work: database.app(),
+        applications: &PgApplicationStore,
+        clients: &PgClientStore,
+        assertions: &PgClientAssertionStore,
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn of_two_requests_with_one_assertion_exactly_one_goes_on() {
+    let database = TestDatabase::start().await;
+    let now = Timestamp::UNIX_EPOCH + Duration::days(20_000);
+    let service = ApplicationService::new(ApplicationPorts {
+        units_of_work: Arc::new(database.app().clone()),
+        applications: Arc::new(PgApplicationStore),
+        clients: Arc::new(PgClientStore),
+        resource_servers: Arc::new(PgResourceServerStore),
+        digest: Arc::new(FakeDigest),
+        random: Arc::new(DistinctRandom),
+        clock: Arc::new(FixedClock::at(now)),
+    });
+    let tenant = TenantContext::assume(TenantId::generate());
+    let application = service
+        .create_application(
+            &tenant,
+            ApplicationSettings {
+                name: "Payroll".to_owned(),
+                first_party: true,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("application");
+    let (client, _) = service
+        .create_client(
+            &tenant,
+            CreateClient {
+                application_id: application.id(),
+                client_type: ClientType::Public,
+                settings: ClientSettings::new(
+                    "Payroll mobile",
+                    ClientType::Public,
+                    vec![GrantType::AuthorizationCode],
+                    vec!["com.example.payroll:/callback".to_owned()],
+                ),
+                secret_lifetime: None,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("client");
+    let remember = || async {
+        let mut uow = hodor_kernel::UnitOfWorkFactory::begin(database.app(), &tenant)
+            .await
+            .expect("begin");
+        let first = PgClientAssertionStore
+            .remember(
+                uow.as_mut(),
+                client.id(),
+                "the-same",
+                now + Duration::minutes(5),
+            )
+            .await
+            .expect("remember");
+        uow.commit().await.expect("commit");
+        first
+    };
+    let (one, two) = tokio::join!(remember(), remember());
+    assert!(one ^ two, "exactly one is the first: {one} {two}");
 }
 
 #[tokio::test]

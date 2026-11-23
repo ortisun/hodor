@@ -53,6 +53,8 @@ reqwest = { version = "0.13", default-features = false }
 form_urlencoded = "1"
 getrandom = "0.4"
 http-body-util = "0.1"
+# Only to check, in tests, the tokens Hodor signs with a library of its own.
+jsonwebtoken = { version = "12", default-features = false }
 ldap3 = { version = "0.12", default-features = false, features = ["tls-rustls-aws-lc-rs"] }
 miniz_oxide = "0.9"
 lettre = { version = "0.11", default-features = false, features = [

@@ -19,6 +19,7 @@ mod migrate;
 mod notification;
 mod oauth;
 mod oauth_authorization;
+mod oauth_token;
 mod outbox;
 mod resealing;
 mod session;
@@ -43,6 +44,7 @@ pub use oauth::{PgApplicationStore, PgClientStore, PgResourceServerStore};
 pub use oauth_authorization::{
     PgAuthorizationCodeStore, PgAuthorizationRequestStore, PgGrantStore,
 };
+pub use oauth_token::PgClientAssertionStore;
 pub use outbox::{DispatchReport, OutboxDispatcher};
 pub use resealing::{ResealReport, SEALED_COLUMNS, SealedColumn, reseal_tenant};
 pub use session::PgSessionStore;

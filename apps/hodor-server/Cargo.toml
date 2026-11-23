@@ -35,7 +35,10 @@ tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+aws-lc-rs.workspace = true
+base64.workspace = true
 form_urlencoded.workspace = true
+jsonwebtoken = { workspace = true, features = ["aws_lc_rs"] }
 hodor-adapters-postgres = { workspace = true, features = ["testing"] }
 hodor-kernel = { workspace = true, features = ["testing"] }
 reqwest = { workspace = true, features = ["json"] }

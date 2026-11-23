@@ -4,7 +4,7 @@ The `oauth` context makes Hodor an OAuth 2.x authorization server and an OpenID 
 
 It does not sign anyone in. When a request needs a person, it hands the request to the `authentication` context and takes the session that comes back. The two contexts do not depend on each other: the HTTP layer joins them ([crates.md](../crates.md)).
 
-This page specifies what Issue-53 builds: applications, clients and resource servers, and the rules they keep; and what Issue-55 builds: the authorization endpoint, grants and authorization codes. The other endpoints, the tokens and consent are added by Issue-56 to Issue-62, under the headings at the end of this page.
+This page specifies what Issue-53 builds: applications, clients and resource servers, and the rules they keep; what Issue-55 builds: the authorization endpoint, grants and authorization codes; and what Issue-56 builds: the token endpoint, client authentication and access tokens. The other endpoints, the other tokens and consent are added by Issue-57 to Issue-62, under the headings at the end of this page.
 
 ## Applications
 
@@ -92,7 +92,7 @@ A client using `private_key_jwt` proves who it is by signing an assertion with i
 - **no private part**: a key with `d`, `p`, `q`, `dp`, `dq`, `qi`, `oth` or `k` is refused, so that a private key pasted by mistake is never kept;
 - at most 5 keys per client.
 
-Checking an assertion against these keys is Issue-56.
+How an assertion is checked against these keys is in [checking a client assertion](#checking-a-client-assertion).
 
 ### Token policy
 
@@ -370,7 +370,124 @@ All three are tenant tables under row-level security. The request and the code r
 
 ## Token endpoint and client authentication
 
-Issue-56 and Issue-57.
+Issue-56 builds the token endpoint, the four ways a client proves who it is there, and the access token issued for a code. Refresh tokens and client credentials are Issue-57; the ID token is Issue-59. The endpoint is at `/t/{slug}/oauth2/token` and answers `POST` with a form (`application/x-www-form-urlencoded`) only ([RFC 6749, section 3.2](https://www.rfc-editor.org/rfc/rfc6749#section-3.2)).
+
+### The request
+
+- Any other method is answered `405`; a body that is not a form is `invalid_request`.
+- A body larger than 64 kibibytes is refused, as for every request.
+- A parameter given more than once is `invalid_request`, since the specification forbids it.
+- `grant_type` is required:
+  - missing: `invalid_request`;
+  - `authorization_code`: built here;
+  - `refresh_token` and `client_credentials`: answered `unsupported_grant_type` until Issue-57;
+  - anything else: `unsupported_grant_type`.
+
+### How a client proves who it is
+
+A client proves who it is in exactly one of four ways, and it must be the one it was registered with:
+
+| Method | What the request carries |
+|---|---|
+| `client_secret_basic` | `Authorization: Basic` with the client identifier and the secret, each form-encoded before the pair is base64-encoded ([RFC 6749, section 2.3.1](https://www.rfc-editor.org/rfc/rfc6749#section-2.3.1)) |
+| `client_secret_post` | `client_id` and `client_secret` in the form |
+| `private_key_jwt` | `client_assertion_type` `urn:ietf:params:oauth:client-assertion-type:jwt-bearer` and `client_assertion`, a JSON Web Token the client signed with its private key ([RFC 7523](https://www.rfc-editor.org/rfc/rfc7523)); `client_id` may be added and must then name the same client |
+| `none` | `client_id` alone, for a public client, which proves nothing and is held to PKCE instead |
+
+The checks, in order:
+
+1. **One method only.** A request that carries more than one is `invalid_request`: for example, both a `Basic` header and a `client_secret`, or both a secret and an assertion. `Authorization` with a scheme other than `Basic` is `invalid_request` too.
+2. **The client exists and may get tokens.** It must be a client of this tenant, enabled, with its application enabled. Otherwise the answer is `invalid_client`.
+3. **The method is the client's.** A client registered with `client_secret_basic` that sends its secret in the form is refused, and so is a confidential client that sends only its identifier. The answer is `invalid_client`.
+4. **The proof holds.**
+   - A secret is checked as [secrets](#secrets) says.
+   - An assertion is checked as the next section says.
+
+An `invalid_client` is answered with status `401`. When the client used `Basic`, the answer also carries `WWW-Authenticate: Basic realm="{issuer}"`, as RFC 6749 requires. Every other error is answered with status `400`. The client is told only the error, never which check failed; the reason is in Hodor's logs.
+
+### Checking a client assertion
+
+An assertion is a compact JSON Web Signature of at most 8 kibibytes. When the form carries no `client_id`, the assertion's `iss` is read first, only to know whose keys to check it with. It is then checked as follows, and nothing else it says is used before its signature has been checked:
+
+| Check | Refused when |
+|---|---|
+| Shape | It is not three base64url parts, or its header or claims are not JSON objects |
+| Algorithm | The header's `alg` is not `ES256`, `RS256` or `PS256`. `none` and the shared-secret algorithms can never be named |
+| Key | The header names a `kid` the client does not have, or names none while more than one of the client's keys fits the algorithm. The key must fit the algorithm: a P-256 key for `ES256`, an RSA key for `RS256` and `PS256`, and the key's own `alg` when it has one |
+| Signature | It does not verify over the first two parts, exactly as they arrived |
+| `iss` and `sub` | Either is not the client's identifier |
+| `aud` | It does not hold the tenant's issuer or the address of the token endpoint, `{issuer}/oauth2/token`. Both are accepted: RFC 7523 names the token endpoint, and the revision of OAuth 2.1 recommends the issuer |
+| `exp` | Missing, in the past (allowing 60 seconds for clocks), or more than 5 minutes ahead: an assertion is for one request, and a long one would have to be remembered long |
+| `nbf`, `iat` | In the future, allowing 60 seconds |
+| `jti` | Missing, longer than 255 characters, or seen before for this client |
+
+**An assertion is used once.** As soon as it has been checked, and before anything else is done with the request, its `jti` is remembered with the client until the assertion expires. A second request with the same `jti` is refused, even when the first one failed afterwards, for example on a wrong code: an assertion that was sent once may have been seen by someone else.
+
+A client key on P-384 or Ed25519 can be registered but cannot yet sign an assertion that Hodor accepts. Hodor's signature checking covers `ES256`, `RS256` and `PS256` today.
+
+### Redeeming a code for tokens
+
+With `grant_type=authorization_code`, the request carries `code`, `redirect_uri` and, when the code was issued with a challenge, `code_verifier`.
+
+- **Redemption:** the code is redeemed by the rules of [redeeming a code](#redeeming-a-code); any refusal is `invalid_grant`.
+- **Grant:** the grant the code was issued under must still be active.
+- **Client:** the client must be allowed the `authorization_code` grant; otherwise the answer is `unauthorized_client`.
+
+### The access token
+
+The access token is a JSON Web Token per [RFC 9068](https://www.rfc-editor.org/rfc/rfc9068), signed by the [keys context](keys.md) with the tenant's active `ES256` key.
+
+| Part | Value |
+|---|---|
+| Header | `alg` `ES256`, `typ` `at+jwt`, `kid` the identifier of the key version that signed, as the [published key set](keys.md) names it |
+| `iss` | The tenant's issuer |
+| `sub` | The person's user identifier |
+| `aud` | The audiences of the code: the resource servers of the request. A request that named none and asked only for OpenID Connect's scopes gets the issuer itself as its audience, for Hodor's own endpoints such as UserInfo (Issue-59) |
+| `client_id` | The client |
+| `scope` | The scopes of the code, separated by spaces |
+| `iat`, `exp` | When it was issued, and that plus the client's access token lifetime |
+| `jti` | 16 random bytes, base64url, unique to this token |
+| `auth_time` | When the person signed in |
+
+`acr` and `amr` are added with assurance levels (Issue-69): the methods a session records, such as `password` and `totp`, are Hodor's own names, and `amr` takes the names of [RFC 8176](https://www.rfc-editor.org/rfc/rfc8176), which need a mapping that Issue-69 decides. `sid` comes with logout (Issue-60).
+
+**No signed token outlives the rotation overlap.** The keys context keeps a retiring key published for `RotationPolicy::LONGEST_SIGNED_LIFETIME`, one hour, after it stops signing. The token policy therefore refuses an access or ID token lifetime longer than that, and the token endpoint refuses to sign one: a token checked after its key left the key set would be refused by everyone.
+
+A tenant without an active signing key cannot issue tokens. The worker makes the first key ([keys](keys.md)), and the answer is `500` with `server_error` until it has.
+
+### The answer
+
+```json
+{
+  "access_token": "eyJ…",
+  "token_type": "Bearer",
+  "expires_in": 300,
+  "scope": "openid orders:read"
+}
+```
+
+- **Caching:** the answer carries `Cache-Control: no-store` and `Pragma: no-cache`.
+- **Errors:** they are JSON with `error` and `error_description` ([RFC 6749, section 5.2](https://www.rfc-editor.org/rfc/rfc6749#section-5.2)).
+- **Refresh token:** `refresh_token` is added by Issue-57.
+- **ID token:** `id_token` is added by Issue-59 when the scopes hold `openid`.
+
+### Events
+
+| Event type | When |
+|---|---|
+| `oauth.access_token_issued` | An access token was issued. It carries the client, the grant, the user, the token's `jti` and when it expires, never the token |
+
+### Ports
+
+| Port | Purpose |
+|---|---|
+| `ClientAssertionStore` | Remember a client assertion's `jti` until it expires. It answers whether this was the first time, so that of two requests with the same assertion at the same moment exactly one goes on |
+| `SignatureVerifier` | Checks a client's assertion, from the kernel |
+| `KeyService` | Signs the access token with the tenant's active key, from the keys context |
+
+### Storage
+
+`oauth.client_assertion` holds `tenant_id`, `client_id`, `jti` and `expires_at`, with the tenant, the client and the `jti` as primary key. It is a tenant table under row-level security, and its client is referenced with the tenant, so its rows go when the client goes.
 
 ## Revocation, introspection and metadata
 
@@ -388,8 +505,12 @@ Issue-62.
 
 | Item | Planned in |
 |---|---|
-| The token endpoint, which redeems codes | Issue-56 |
-| The other endpoints | Issue-57 to Issue-60 |
+| Refresh tokens and the client credentials grant | Issue-57 |
+| The other endpoints | Issue-58 to Issue-60 |
+| Calling the token endpoint from a browser on another origin: clients have no registered origins yet, so no cross-origin headers are sent | With origins in the client settings |
+| Client assertions signed with `ES384` or `EdDSA`, which client keys on P-384 and Ed25519 would need | When the kernel's signature checking covers them |
+| Limits on requests to the token endpoint per address | With the other limits per address |
+| Removing remembered client assertions after they expire | A cleanup job, with the other expired rows |
 | Asking a person for consent; until then only clients of first-party applications are answered | Issue-62 |
 | Enforcing `acr_values` | Issue-69 |
 | Limits on requests to the authorization endpoint per address | With the other limits per address, before any deployment behind a load balancer |

@@ -19,6 +19,7 @@ mod problem;
 mod request;
 mod server;
 mod tenant;
+mod token;
 
 pub use admin::{
     ADMIN_OPENAPI, ADMIN_OPERATIONS, AdminState, CONSOLE_SESSION_HOURS, ConsoleState, admin_routes,
@@ -36,3 +37,4 @@ pub use problem::Problem;
 pub use request::ClientAddress;
 pub use server::{Limits, public_router, serve};
 pub use tenant::{ResolvedTenant, TenantResolver, TenantSlug, TenantStatus};
+pub use token::{TokenState, token_routes};

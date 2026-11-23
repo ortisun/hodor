@@ -10,10 +10,18 @@ follows is `docs/architecture/contexts/oauth.md`.
 
 - `api` re-exports:
   - Ports: `ApplicationStore`, `ClientStore`, `ResourceServerStore`,
-    `AuthorizationRequestStore`, `GrantStore`, `AuthorizationCodeStore`.
+    `AuthorizationRequestStore`, `GrantStore`, `AuthorizationCodeStore`,
+    `ClientAssertionStore`.
   - Services: `ApplicationService`, `ApplicationPorts`, `CreateClient`,
     `RotateSecret`, `CreateResourceServer`; `AuthorizationCodeService`,
-    `AuthorizationCodePorts`, `ResumedRequest`, `RedeemedCode`.
+    `AuthorizationCodePorts`, `ResumedRequest`, `RedeemedCode`;
+    `TokenService`, `TokenPorts`, `Issuer`, `IssuedTokens`.
+  - The token endpoint's domain: `TokenRequest` (with `parse`),
+    `PresentedClient`, `BasicCredentials`, `GrantRequest`, `TokenError`,
+    `check_assertion`, `assertion_issuer`, `AssertionAudience`,
+    `CheckedAssertion`, `access_token_claims`, `AccessTokenClaims`, and
+    `ASSERTION_TYPE`, `MAX_ASSERTION_BYTES`, `MAX_ASSERTION_ID_LENGTH`,
+    `ASSERTION_LONGEST_AHEAD`, `CLOCK_ALLOWANCE`.
   - The authorization endpoint's domain: `AuthorizationParameters`,
     `check_request`, `AuthorizationRequest`, `AuthorizationRefusal`,
     `AuthorizationError`, `SignedInPerson`, `SessionDecision`,
@@ -44,7 +52,11 @@ follows is `docs/architecture/contexts/oauth.md`.
     `InMemoryGrants::new(&clients)`,
     `InMemoryAuthorizationCodes::new(&grants)`, which refuse a row whose
     client or grant the tenant does not have; `AuthorizationStorePorts` and
-    `run_authorization_contract(ports)`.
+    `run_authorization_contract(ports)`; `InMemoryGrants::all(tenant)` for
+    tests that look behind the use cases.
+  - `testing/token.rs`: `InMemoryClientAssertions::new(&clients)`;
+    `FakeVerifier` and `fake_signature`, a stand-in for signature checking
+    in tests only; `AssertionStorePorts` and `run_assertion_contract(ports)`.
 - Subdirectories:
   - [application](./application/EGM.md): the ports and the use cases.
   - [domain](./domain/EGM.md): the aggregates and their rules.
@@ -65,6 +77,10 @@ follows is `docs/architecture/contexts/oauth.md`.
   redeemed once (the second call answers `false`); and that a row cannot
   name a client (`oauth.client_not_found`) or grant
   (`oauth.grant_not_found`) of another tenant.
+- The assertion contract requires that a `jti` is remembered once per
+  client (the second call answers `false`), that the same `jti` of another
+  client is another assertion, and that a row cannot name a client of
+  another tenant (`oauth.client_not_found`).
 
 ## Side Effects
 

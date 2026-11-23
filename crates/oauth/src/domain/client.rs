@@ -6,6 +6,7 @@ use crate::domain::key::{ClientKey, MAX_KEYS};
 use crate::domain::secret::{ClientSecret, ClientSecretHash, ClientSecretId, ClientSecretValue};
 use crate::domain::text;
 use hodor_kernel::{Digest, DomainError, RandomSource, Timestamp};
+use hodor_keys::api::RotationPolicy;
 use time::Duration;
 
 hodor_kernel::define_id!(
@@ -184,8 +185,13 @@ impl Default for TokenPolicy {
 }
 
 impl TokenPolicy {
+    /// The longest a signed token, access or ID, may live: the keys context
+    /// keeps a retiring key published that long after it stops signing, so
+    /// a token that outlived it could no longer be checked.
+    pub const LONGEST_SIGNED_LIFETIME: Duration = RotationPolicy::LONGEST_SIGNED_LIFETIME;
+
     fn checked(self) -> Result<Self, DomainError> {
-        let short = Duration::minutes(1)..=Duration::hours(1);
+        let short = Duration::minutes(1)..=Self::LONGEST_SIGNED_LIFETIME;
         let long = Duration::hours(1)..=Duration::days(365);
         let fits = short.contains(&self.access_token)
             && short.contains(&self.id_token)
@@ -1106,6 +1112,16 @@ mod tests {
             },
             TokenPolicy {
                 access_token: Duration::minutes(61),
+                ..default
+            },
+            // No signed token may outlive the key that signed it in the
+            // published key set.
+            TokenPolicy {
+                access_token: TokenPolicy::LONGEST_SIGNED_LIFETIME + Duration::SECOND,
+                ..default
+            },
+            TokenPolicy {
+                id_token: TokenPolicy::LONGEST_SIGNED_LIFETIME + Duration::SECOND,
                 ..default
             },
             TokenPolicy {

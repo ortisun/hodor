@@ -338,6 +338,29 @@ impl KeyService {
         algorithm: KeyAlgorithm,
         message: &[u8],
     ) -> Result<Signature, DomainError> {
+        let (_, signature) = self
+            .sign_naming_key(tenant, algorithm, |_| message.to_vec())
+            .await?;
+        Ok(signature)
+    }
+
+    /// Signs a message that names the key signing it, such as a JSON Web
+    /// Token whose header carries the `kid`: `message` is given the
+    /// version that will sign and returns what is signed. Returns that
+    /// message and its signature, made by that same version.
+    ///
+    /// # Errors
+    ///
+    /// As [`KeyService::sign`].
+    pub async fn sign_naming_key<F>(
+        &self,
+        tenant: &TenantContext,
+        algorithm: KeyAlgorithm,
+        message: F,
+    ) -> Result<(Vec<u8>, Signature), DomainError>
+    where
+        F: FnOnce(KeyVersionId) -> Vec<u8> + Send,
+    {
         if algorithm.key_use() != KeyUse::Signing {
             return Err(DomainError::invalid(
                 "keys.algorithm_unsuitable",
@@ -351,12 +374,16 @@ impl KeyService {
                 "the tenant has no active key for the algorithm",
             )
         })?;
-        let bytes = self.provider.sign(tenant, version, message).await?;
-        Ok(Signature {
-            key_version_id: version.id(),
-            algorithm,
-            bytes,
-        })
+        let signed = message(version.id());
+        let bytes = self.provider.sign(tenant, version, &signed).await?;
+        Ok((
+            signed,
+            Signature {
+                key_version_id: version.id(),
+                algorithm,
+                bytes,
+            },
+        ))
     }
 
     async fn set_of(

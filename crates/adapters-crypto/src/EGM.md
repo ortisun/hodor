@@ -75,6 +75,7 @@ The cryptography adapter. Hodor implements no cryptography of its own: this crat
 
 - Reads operating system randomness (`random.rs:OsRandom::fill`) and draws from the injected `RandomSource` for salts, the decoy hash and new keys (`password.rs:Argon2idHasher`, `sealing.rs:SecretKeys::generate`).
 - Runs Argon2 work on the `tokio` blocking thread pool through `tokio::task::spawn_blocking` (`password.rs:Argon2idHasher::run`).
+- Runs RSA signatures (RS256 and PS256, about a millisecond each) on the same blocking pool; ES256 signatures, about a thousand times faster, run in place (`keys.rs:LocalKeyProvider::sign`).
 - Queries the processor count through `std::thread::available_parallelism` (`password.rs:HashingLimits::for_this_machine`).
 - No file or network access. `testing::TestProvider` answers in memory, behind an `Arc<Mutex<_>>`, and makes no network calls (`testing.rs:TestProvider`).
 
