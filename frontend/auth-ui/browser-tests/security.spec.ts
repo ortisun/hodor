@@ -1,6 +1,15 @@
 import { expect, type Page } from "@playwright/test";
-import { createHmac } from "node:crypto";
-import { PASSWORD, at, en, expectAccessible, newAddress, register, signIn, test } from "./support";
+import { createHmac, randomUUID } from "node:crypto";
+import {
+  at,
+  en,
+  expectAccessible,
+  type Identity,
+  newAddress,
+  PROVIDER_NAME,
+  signInThroughProvider,
+  test,
+} from "./support";
 
 /** Base32 of RFC 4648, as the key is shown, without the spaces between groups. */
 function fromBase32(text: string): Buffer {
@@ -46,16 +55,20 @@ async function addVirtualPlatformAuthenticator(page: Page): Promise<void> {
   });
 }
 
-/** A new person, signed in a moment ago, on the security page. */
-async function onTheSecurityPage(page: Page): Promise<string> {
-  const address = newAddress();
-  await register(page, address);
-  await signIn(page, address, PASSWORD);
+/**
+ * A new person, signed in a moment ago, on the security page. They are
+ * made through the development identity provider rather than by
+ * registering: asking to register is limited by the address requests come
+ * from, which every test of the run shares.
+ */
+async function onTheSecurityPage(page: Page): Promise<Identity> {
+  const identity = { subject: `subject-${randomUUID()}`, email: newAddress() };
+  await signInThroughProvider(page, identity);
   await expect(page.getByRole("heading", { name: en.accountTitle })).toBeVisible();
   await page.getByRole("link", { name: en.securityLink }).click();
   await expect(page.getByRole("heading", { name: en.securityTitle })).toBeVisible();
   await expect(page).toHaveURL(new RegExp(`${at("security")}$`));
-  return address;
+  return identity;
 }
 
 /** The codes shown once, after which the person says they kept them. */
@@ -72,7 +85,7 @@ async function keptCodes(page: Page): Promise<string[]> {
 }
 
 test("a person sets up an authenticator application and is asked for its code from then on", async ({ page }) => {
-  const address = await onTheSecurityPage(page);
+  const identity = await onTheSecurityPage(page);
   await expect(page.getByText(en.applicationNotInUse)).toBeVisible();
   await expect(page.getByText(en.recoveryNone)).toBeVisible();
   await expectAccessible(page);
@@ -89,24 +102,28 @@ test("a person sets up an authenticator application and is asked for its code fr
   await expect(page.getByText(en.applicationInUse)).toBeVisible();
   await expect(page.getByText(en.recoveryRemaining(10))).toBeVisible();
 
-  // Signing in again asks for a code of the application.
+  // Signing in again, through the provider, asks for a code of the
+  // application after it.
   await page.goto(at(""));
   await page.getByRole("button", { name: en.signOut }).click();
-  await signIn(page, address, PASSWORD);
+  await signInThroughProvider(page, identity);
   await page.getByLabel(en.totpLabel).fill(phone(secret, 1));
   await page.getByRole("button", { name: en.signIn, exact: true }).click();
   await expect(page.getByRole("heading", { name: en.accountTitle })).toBeVisible();
 });
 
 test("a person signs in again for a change, adds a passkey, renames and removes it", async ({ page }) => {
-  const address = await onTheSecurityPage(page);
+  const identity = await onTheSecurityPage(page);
   await addVirtualPlatformAuthenticator(page);
 
-  // Signing in again from the security page brings the person back to it.
+  // Signing in again is offered to someone signed in already. Through a
+  // provider the person comes back to the account page, not to this one.
   await page.goto(`${at("sign-in")}?continue=security`);
-  await signIn(page, address, PASSWORD);
+  await expect(page.getByRole("button", { name: en.continueWith(PROVIDER_NAME) })).toBeVisible();
+  await signInThroughProvider(page, identity);
+  await expect(page.getByRole("heading", { name: en.accountTitle })).toBeVisible();
+  await page.goto(at("security"));
   await expect(page.getByRole("heading", { name: en.securityTitle })).toBeVisible();
-  await expect(page).toHaveURL(new RegExp(`${at("security")}$`));
 
   await page.getByLabel(en.keyNameLabel, { exact: true }).fill("Laptop");
   await page.getByRole("button", { name: en.addPasskey }).click();
