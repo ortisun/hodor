@@ -255,6 +255,7 @@ Failed password attempts are counted, per tenant, against two things: the identi
 - **While locked out, no password is checked.** The attempt is refused with "too many attempts" and the time to wait. Not checking is the point: guesses made during a lockout teach the attacker nothing.
 - **A successful sign-in clears the identifier's count and its lockout history.**
 - **Counting is by a digest of the normalized identifier.** The identifier itself is not stored with the counts.
+- **After an alternative, counting is by the person.** A sign-in through an identity provider or a passkey types no identifier. When it goes on to a second factor, an authenticator application's code or a recovery code, those attempts are counted against a key made from the person's identifier in Hodor, with the same limits; without one, a second factor after an alternative could never be accepted.
 - **An attempt is counted when it is admitted, before the password is checked**, and the identifier's count is cleared if the attempt succeeds. Counting first is what makes the limit exact: when many attempts arrive at the same moment, only as many as the limit reach the password check. The price is that an attempt cut short by an outage still counts.
 - **The same sign-in submitted many times at once** counts once per submission until one of them succeeds. If more arrive together than the limit allows, the surplus is answered with "too many attempts"; one submission completes the sign-in, exactly one session starts, and the success clears the count, so nothing remains locked.
 - **Addresses keep their count after a success.** Signing in to one's own account does not buy an address more guesses.
@@ -508,7 +509,7 @@ This context calls the `identity`, `credential`, `session`, `tenant` and `notifi
 | `current_step` | `integer` | Position in the flow |
 | `identified` | `boolean` | Whether the identifier step has run |
 | `candidate_user_id` | `uuid` | Null until the identifier step, and when the identifier belongs to nobody |
-| `identifier_key` | `bytea` | SHA-256 of the normalized identifier typed |
+| `identifier_key` | `bytea` | SHA-256 of the normalized identifier typed, or, after an alternative identified the person, the key their attempts are counted by |
 | `satisfied_methods` | `text[]` | |
 | `carried_methods` | `text[]` | Empty unless the transaction is a step-up |
 | `demanded_assurance` | `text` | Null unless the transaction is a step-up that an application asked an assurance of |

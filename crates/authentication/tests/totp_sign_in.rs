@@ -4,8 +4,9 @@
 //! in-memory ports.
 
 use hodor_authentication::api::{
-    AttemptGuard, AuthFlow, AuthenticationService, FlowEngine, IdentifierAuthenticator,
-    PasswordAuthenticator, RecoveryCodeAuthenticator, Requirement, SignIn, StepInput,
+    AttemptGuard, AuthFlow, AuthTransaction, AuthenticationService, Authenticator,
+    AuthenticatorTraits, ExternalInput, Factor, FlowEngine, IdentifierAuthenticator,
+    PasswordAuthenticator, RecoveryCodeAuthenticator, Requirement, SignIn, StepInput, StepOutcome,
     TotpAuthenticator, TransactionId,
 };
 use hodor_authentication::testing::{InMemoryAttempts, InMemoryTransactions};
@@ -117,8 +118,12 @@ async fn world() -> World {
             recovery_codes.clone(),
             tenants.clone(),
             guard,
-        )));
+        )))
+        .with(Arc::new(Outside {
+            identity: identity.clone(),
+        }));
     let flow = AuthFlow::built_in()
+        .with_alternative("outside", "outside")
         .with_step(
             TotpAuthenticator::KIND,
             TotpAuthenticator::KIND,
@@ -295,6 +300,112 @@ impl World {
             .await
             .expect("settings");
     }
+}
+
+/// Stands for an identity provider: whoever brings the word "ana" is Ana,
+/// and nobody typed an identifier.
+struct Outside {
+    identity: IdentityService,
+}
+
+#[async_trait::async_trait]
+impl Authenticator for Outside {
+    fn kind(&self) -> &'static str {
+        "outside"
+    }
+
+    fn traits(&self) -> AuthenticatorTraits {
+        AuthenticatorTraits {
+            identifies: true,
+            factor: Some(Factor::Possession),
+            second_factor: None,
+            method: Some("outside"),
+        }
+    }
+
+    async fn perform(
+        &self,
+        tenant: &TenantContext,
+        _transaction: &AuthTransaction,
+        input: &StepInput,
+    ) -> Result<StepOutcome, DomainError> {
+        let StepInput::External(input) = input else {
+            return Ok(StepOutcome::Rejected);
+        };
+        if !input
+            .field("word")
+            .is_some_and(|word| word.expose() == "ana")
+        {
+            return Ok(StepOutcome::Rejected);
+        }
+        let ana = self
+            .identity
+            .find_by_login(tenant, "ana@example.com")
+            .await?
+            .expect("Ana exists");
+        Ok(StepOutcome::Authenticated { user: ana.id() })
+    }
+}
+
+fn from_outside() -> StepInput {
+    StepInput::External(ExternalInput {
+        step: "outside".to_owned(),
+        fields: vec![("word".to_owned(), Secret::from("ana".to_owned()))],
+    })
+}
+
+#[tokio::test]
+async fn after_an_identity_provider_the_code_is_checked_and_its_attempts_are_counted() {
+    let world = world().await;
+    let enrollment = world.enroll().await;
+    let id = world.start().await;
+    let after = world.submit(id, from_outside()).await.expect("outside");
+    assert_eq!(step_of(&after), "totp");
+    let wrong = world.code(id, "000000").await.expect("answered");
+    assert!(matches!(wrong, SignIn::Rejected { .. }), "{wrong:?}");
+    let outcome = world
+        .code(id, &world.phone(&enrollment))
+        .await
+        .expect("answered");
+    let SignIn::Completed { session, .. } = outcome else {
+        panic!("the provider and the code complete the sign-in: {outcome:?}");
+    };
+    assert_eq!(session.snapshot().methods, ["outside", "totp"]);
+
+    // Wrong codes after the provider lock the person out as wrong
+    // passwords would, though no identifier was typed.
+    let mut locked = false;
+    for _ in 0..8 {
+        let id = world.start().await;
+        world.submit(id, from_outside()).await.expect("outside");
+        match world.code(id, "000000").await {
+            Err(error) if error.code() == "authentication.too_many_attempts" => {
+                locked = true;
+                break;
+            }
+            answered => {
+                answered.expect("answered");
+            }
+        }
+    }
+    assert!(
+        locked,
+        "attempts after a provider are counted by the person"
+    );
+}
+
+#[tokio::test]
+async fn after_an_identity_provider_a_recovery_code_stands_in_for_the_code() {
+    let world = world().await;
+    world.enroll().await;
+    let codes = world.recovery_codes().await;
+    let id = world.start().await;
+    world.submit(id, from_outside()).await.expect("outside");
+    let outcome = world
+        .recovery_code(id, codes.codes().next().expect("a code"))
+        .await
+        .expect("answered");
+    assert!(matches!(outcome, SignIn::Completed { .. }), "{outcome:?}");
 }
 
 fn step_of(answer: &SignIn) -> &str {

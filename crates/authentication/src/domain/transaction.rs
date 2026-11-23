@@ -327,6 +327,9 @@ impl AuthTransaction {
         self.state.challenge = None;
         self.state.identified = true;
         self.state.candidate = Some(user);
+        // No identifier was typed: a second factor that follows counts its
+        // attempts by the person instead.
+        self.state.identifier_key = Some(person_attempt_key(user));
         if let Some(method) = method
             && !self.state.satisfied_methods.iter().any(|m| m == method)
         {
@@ -375,4 +378,15 @@ impl AuthTransaction {
             self.state.status = TransactionStatus::Cancelled;
         }
     }
+}
+
+/// The key a second factor's attempts are counted by when an alternative
+/// identified the person and no identifier was typed: a fixed prefix and
+/// the person's identifier, which no SHA-256 of an identifier is.
+#[must_use]
+pub(crate) fn person_attempt_key(user: UserId) -> [u8; 32] {
+    let mut key = [0_u8; 32];
+    key[..16].copy_from_slice(b"attempts of user");
+    key[16..].copy_from_slice(user.as_uuid().as_bytes());
+    key
 }
