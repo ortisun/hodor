@@ -26,6 +26,8 @@ All paths are relative to the tenant: `https://{host}/t/{slug}`.
 
 **Signing out for an application.** When an application asks Hodor to sign a person out and the request does not prove that it comes from the browser's own session, the [end-session endpoint](contexts/oauth.md#asking-the-person) sends the browser to `/account/sign-out`. The page asks who is signed in. When nobody is, it goes on at once to `/t/{slug}/oauth2/logout/finish`. Otherwise it asks "Sign out of {tenant}?" with two buttons: "Sign out" ends the session as the account page does and goes on to the same address; "Stay signed in" goes to the account page. A session that ended in the meantime counts as signed out. The page never learns where the application wants the person back: that stays with the server, which sends the browser there from the finish.
 
+**Coming back from a provider to a second factor.** When the provider is accepted and the sign-in asks for a second factor next, the page the provider sends the person back to goes to `/account/sign-in`, which asks for it, with nothing said against the provider.
+
 **Signing in again.** `/account/sign-in?continue=security` starts a sign-in even when someone is signed in already, as `continue=authorization` does, and goes back to `/account/security` when it completes. The security page sends the person there when a change needs [a recent sign-in](contexts/authentication.md#proving-oneself-again).
 
 Any other path under `/account` is answered with `404` by the server.

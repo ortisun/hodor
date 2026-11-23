@@ -104,8 +104,9 @@ address.
   `go("sign-in", "provider-cancelled")`. It then calls
   `client.currentSignIn()` (a `null` answer means `provider-refused`) and
   `client.finishWithProvider(provider, state, { code } | { receipt })`;
-  `completed` means `go("account")`, anything else `go("sign-in",
-  "provider-refused")`.
+  `completed` means `go("account")` (or `leave(continueTo)`), `pending`, a
+  second factor asked next, `go("sign-in")` with no notice, anything else
+  `go("sign-in", "provider-refused")`.
 
 ## Invariants
 

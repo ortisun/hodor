@@ -753,6 +753,16 @@ describe("the page a provider sends people back to", () => {
     }
   });
 
+  it("goes to the sign-in page, saying nothing against the provider, when a second factor is asked next", async () => {
+    const { props, go } = page({
+      "GET /sign-in": [pending("identifier")],
+      "POST /sign-in/providers/google/callback": [json(200, { status: "pending", step: "totp", csrf_token: "token" })],
+    });
+    render(<ComingBackPage {...props} provider="google" answer={answer} />);
+    await waitFor(() => expect(go).toHaveBeenCalledWith("sign-in"));
+    expect(go).not.toHaveBeenCalledWith("sign-in", "provider-refused");
+  });
+
   it("presents what the provider sent and goes on to the account", async () => {
     const { props, sent, go } = page({
       "GET /sign-in": [pending("identifier")],

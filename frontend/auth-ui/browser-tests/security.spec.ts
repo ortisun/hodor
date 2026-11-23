@@ -107,7 +107,13 @@ test("a person sets up an authenticator application and is asked for its code fr
   await page.goto(at(""));
   await page.getByRole("button", { name: en.signOut }).click();
   await signInThroughProvider(page, identity);
-  await page.getByLabel(en.totpLabel).fill(phone(secret, 1));
+  // The page the provider sends the person back to goes on to the sign-in
+  // page, which asks for the code; nothing says the provider did not work.
+  await expect(page).toHaveURL(new RegExp(`${at("sign-in")}$`));
+  const code = page.getByLabel(en.totpLabel);
+  await expect(code).toBeFocused();
+  await expect(page.getByText(en.noticeProviderRefused)).toHaveCount(0);
+  await code.fill(phone(secret, 1));
   await page.getByRole("button", { name: en.signIn, exact: true }).click();
   await expect(page.getByRole("heading", { name: en.accountTitle })).toBeVisible();
 });

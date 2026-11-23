@@ -47,6 +47,11 @@ export function ComingBackPage({ tenant, client, text, go, leave, path, provider
         return () => go("sign-in", "provider-refused");
       }
       const result = await client.finishWithProvider(provider, state, proof);
+      // The provider was accepted and the sign-in asks for more, a second
+      // factor: its page asks for it, with nothing to say against the provider.
+      if (result.status === "pending") {
+        return () => go("sign-in");
+      }
       if (result.status !== "completed") {
         return () => go("sign-in", "provider-refused");
       }
