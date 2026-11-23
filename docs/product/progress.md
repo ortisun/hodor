@@ -178,7 +178,7 @@ Planned in [the epics](epics.md#milestone-3-applications-ask-hodor-who-someone-i
 |---|---|---|---|
 | 3 — Applications ask Hodor who someone is | L to P: keys, applications and clients, OAuth 2.x core, OpenID Connect, consent | 11 | 14 |
 | 4 — Strong authentication | Q and R: factors, step-up and the person's own factors | 7 | 8 |
-| 5 — The authorization engine | S and T: the native engine, Open Policy Agent | 5 | 9 |
+| 5 — The authorization engine | S and T: the native engine, Open Policy Agent | 6 | 9 |
 
 ### Milestone 3 — Applications ask Hodor who someone is
 
