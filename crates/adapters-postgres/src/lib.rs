@@ -11,6 +11,7 @@ mod authorization;
 mod cleanup;
 mod credential;
 mod database;
+mod decision_log;
 mod federation;
 mod identity;
 mod key_rotation;
@@ -41,6 +42,9 @@ pub use credential::{
     PgAccessTokenStore, PgPasswordStore, PgRecoveryCodeStore, PgTotpStore, PgWebAuthnStore,
 };
 pub use database::{Database, TenantTransaction, connect_pool, ping_pool};
+pub use decision_log::{
+    DAYS_PREPARED_AHEAD, DecisionLogMaintenance, DecisionLogMaintenanceReport, PgDecisionLogStore,
+};
 pub use federation::{PgLinkStore, PgPendingAuthorizationStore, PgProviderStore};
 pub use identity::PgUserRepository;
 pub use key_rotation::{KeyRotationJob, RotationPass};

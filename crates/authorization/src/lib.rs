@@ -15,6 +15,7 @@ pub mod testing;
 
 /// What other crates may use from this context.
 pub mod api {
+    pub use crate::application::decision_log::{Decided, DecisionLog};
     pub use crate::application::engine::{
         AuthorizationEngine, EngineCapabilities, EngineRegistry, EvaluationInput, PolicySelection,
         PolicySimulator, SimulationAnswer,
@@ -25,8 +26,8 @@ pub mod api {
         MAX_CONDITION_TIME, MAX_CONDITIONS_PER_DECISION, NativeEngine,
     };
     pub use crate::application::ports::{
-        CompiledCondition, ConditionLanguage, EngineBindingStore, NativeRoleStore,
-        RoleAssignmentStore, SubjectAttributeSource,
+        CompiledCondition, ConditionLanguage, DecisionLogStore, EngineBindingStore,
+        NativeRoleStore, RoleAssignmentStore, SubjectAttributeSource,
     };
     pub use crate::application::roles::{RoleService, Validity};
     pub use crate::application::service::AuthorizationService;
@@ -39,6 +40,11 @@ pub mod api {
     pub use crate::domain::decision::{
         AuthorizationDecision, DecisionId, DecisionMetadata, EngineAnswer, EngineId,
         PolicyReference, PolicyRevision, ReasonCode,
+    };
+    pub use crate::domain::decision_log::{
+        DEFAULT_RETENTION_DAYS, DecisionFilter, DecisionLogMode, DecisionLogSettings,
+        DecisionRecord, MAX_MASK_LENGTH, MAX_MASKS, MAX_RETENTION_DAYS, MIN_RETENTION_DAYS,
+        MaskPath,
     };
     pub use crate::domain::event::AuthorizationEvent;
     pub use crate::domain::native::{

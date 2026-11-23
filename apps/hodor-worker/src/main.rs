@@ -10,11 +10,11 @@ use clap::{Parser, ValueEnum};
 use hodor_adapters_crypto::{LocalKeyProvider, OsRandom, SecretKeys, Sha256Digest};
 use hodor_adapters_policy_check::{OpaProcessChecker, RunLimits};
 use hodor_adapters_postgres::{
-    AccessTokenCleanup, CleanupReport, Database, KeyRotationJob, OutboxDispatcher,
-    PendingAuthorizationCleanup, PgAuditLog, PgBundleStore, PgInstanceStatusStore, PgInstanceStore,
-    PgKeyStore, PgMessageQueue, PgPendingMessages, PgPolicyVersionStore, PgPool,
-    PgPublicationStore, PgSimulationStore, PgUploadedDecisionStore, PolicyCheckJob, connect_pool,
-    ping_pool,
+    AccessTokenCleanup, CleanupReport, Database, DecisionLogMaintenance, KeyRotationJob,
+    OutboxDispatcher, PendingAuthorizationCleanup, PgAuditLog, PgBundleStore,
+    PgInstanceStatusStore, PgInstanceStore, PgKeyStore, PgMessageQueue, PgPendingMessages,
+    PgPolicyVersionStore, PgPool, PgPublicationStore, PgSimulationStore, PgUploadedDecisionStore,
+    PolicyCheckJob, connect_pool, ping_pool,
 };
 use hodor_adapters_smtp::SmtpSender;
 use hodor_audit::api::{AuditHandler, AuditService};
@@ -283,6 +283,10 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
     ));
     let access_token_cleanup =
         CleanupJob::AccessTokens(AccessTokenCleanup::new(platform.clone(), database.clone()));
+    let decision_log_maintenance = CleanupJob::DecisionLog(DecisionLogMaintenance::new(
+        platform.clone(),
+        database.clone(),
+    ));
     let rotation = root_keys.map(|root| {
         let keys = KeyService::new(
             Arc::new(database.clone()),
@@ -368,6 +372,12 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
             Duration::from_millis(config.cleanup_interval_ms),
             stopped.clone(),
         ),
+        cleanup_loop(
+            &decision_log_maintenance,
+            config.cleanup_batch_size,
+            Duration::from_millis(config.cleanup_interval_ms),
+            stopped.clone(),
+        ),
         rotation_loop(
             rotation.as_ref(),
             Duration::from_millis(config.key_rotation_interval_ms),
@@ -391,6 +401,9 @@ enum CleanupJob {
     PendingAuthorizations(PendingAuthorizationCleanup),
     /// Records of access tokens that expired.
     AccessTokens(AccessTokenCleanup),
+    /// The partitions of the record of decisions, and each tenant's records
+    /// past its retention.
+    DecisionLog(DecisionLogMaintenance),
 }
 
 impl CleanupJob {
@@ -399,6 +412,7 @@ impl CleanupJob {
         match self {
             Self::PendingAuthorizations(_) => "pending_authorizations",
             Self::AccessTokens(_) => "access_tokens",
+            Self::DecisionLog(_) => "decision_log",
         }
     }
 
@@ -406,6 +420,20 @@ impl CleanupJob {
         match self {
             Self::PendingAuthorizations(job) => job.run(now, batch).await,
             Self::AccessTokens(job) => job.run(now, batch).await,
+            Self::DecisionLog(job) => {
+                let report = job.run(now, batch).await?;
+                if report.created > 0 || report.dropped > 0 {
+                    tracing::info!(
+                        created = report.created,
+                        dropped = report.dropped,
+                        "partitions of the record of decisions prepared"
+                    );
+                }
+                Ok(CleanupReport {
+                    tenants: report.tenants,
+                    removed: report.removed,
+                })
+            }
         }
     }
 }

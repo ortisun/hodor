@@ -99,6 +99,17 @@ pub enum AuthorizationEvent {
         /// Why it failed, as a reason code.
         cause: String,
     },
+    /// The tenant's settings of the record of decisions changed.
+    DecisionLogChanged {
+        /// The mode.
+        mode: &'static str,
+        /// The share of allows kept, for `sampled`.
+        allow_percent: Option<u8>,
+        /// How many masks there are; the paths are not announced.
+        masks: usize,
+        /// How many days records are kept.
+        retention_days: u16,
+    },
 }
 
 impl DomainEvent for AuthorizationEvent {
@@ -115,6 +126,7 @@ impl DomainEvent for AuthorizationEvent {
             Self::PrincipalRoleAssigned { .. } => "authorization.principal_role_assigned",
             Self::PrincipalRoleRevoked { .. } => "authorization.principal_role_revoked",
             Self::FailedOpen { .. } => "authorization.failed_open",
+            Self::DecisionLogChanged { .. } => "authorization.decision_log_changed",
         }
     }
 }

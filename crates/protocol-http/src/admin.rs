@@ -28,7 +28,7 @@ use axum::routing::{delete, get, put};
 use axum::{Extension, Json, Router, middleware};
 use hodor_audit::api::{AuditRecord, AuditService};
 use hodor_authentication::api::FactorService;
-use hodor_authorization::api::{AuthorizationService, Permission};
+use hodor_authorization::api::{AuthorizationService, DecisionLog, Permission};
 use hodor_credential::api::AccessTokenService;
 use hodor_federation::api::{
     ChangeProvider, CreateProvider, DirectorySettings, FederationService, IdentityProvider,
@@ -50,6 +50,7 @@ use std::sync::Arc;
 use time::format_description::well_known::Rfc3339;
 
 mod applications;
+mod decisions;
 mod factors;
 
 /// The OpenAPI document of the interface, as served at `/openapi.json`.
@@ -221,6 +222,9 @@ pub const ADMIN_OPERATIONS: &[(&str, &str, Permission)] = &[
     ),
     ("GET", "/assurance-levels", Permission::AssuranceLevelsRead),
     ("PUT", "/assurance-levels", Permission::AssuranceLevelsWrite),
+    ("GET", "/decision-log", Permission::DecisionsRead),
+    ("PUT", "/decision-log", Permission::DecisionLogWrite),
+    ("GET", "/decisions", Permission::DecisionsRead),
 ];
 
 /// What the administration handlers need.
@@ -252,6 +256,8 @@ pub struct AdminState {
     pub factors: FactorService,
     /// The consents people gave applications.
     pub consents: ConsentService,
+    /// The record of decisions and its settings.
+    pub decisions: DecisionLog,
     /// The address people reach this installation at, without a path.
     pub public_url: String,
 }
@@ -352,6 +358,7 @@ fn shared_routes() -> Router<Shared> {
         )
         .merge(applications::routes())
         .merge(factors::routes())
+        .merge(decisions::routes())
 }
 
 /// One assurance level, as the interface writes it.

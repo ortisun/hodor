@@ -37,11 +37,15 @@ pub enum Permission {
     CredentialsRead,
     /// Removing a user's second factors and recovery codes.
     CredentialsWrite,
+    /// Reading the record of decisions and its settings.
+    DecisionsRead,
+    /// Replacing the settings of the record of decisions.
+    DecisionLogWrite,
 }
 
 impl Permission {
     /// Every permission.
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 17] = [
         Self::UsersRead,
         Self::UsersWrite,
         Self::SessionsRead,
@@ -57,6 +61,8 @@ impl Permission {
         Self::AssuranceLevelsWrite,
         Self::CredentialsRead,
         Self::CredentialsWrite,
+        Self::DecisionsRead,
+        Self::DecisionLogWrite,
     ];
 
     /// The permission written as `resource:action`.
@@ -78,6 +84,8 @@ impl Permission {
             Self::AssuranceLevelsWrite => "assurance-levels:write",
             Self::CredentialsRead => "credentials:read",
             Self::CredentialsWrite => "credentials:write",
+            Self::DecisionsRead => "decisions:read",
+            Self::DecisionLogWrite => "decision-log:write",
         }
     }
 
@@ -140,6 +148,7 @@ impl Role {
                 Permission::ApplicationsRead,
                 Permission::AssuranceLevelsRead,
                 Permission::CredentialsRead,
+                Permission::DecisionsRead,
             ],
         }
     }

@@ -675,3 +675,76 @@ async fn only_a_good_token_of_the_tenant_with_the_scope_may_ask() {
     let elsewhere = ask(&server, "globex", "evaluate", Some(&globex_token), &body).await;
     assert_eq!(elsewhere.body["decision"], "DENY");
 }
+
+#[tokio::test]
+async fn the_decisions_asked_for_are_recorded_and_simulations_are_not() {
+    let database = TestDatabase::start().await;
+    let acme = tenant(&database, "acme").await;
+    let server = server(&database).await;
+    let token = access_token(
+        &server,
+        "acme",
+        &acme.evaluator,
+        "authz:evaluate authz:simulate",
+    )
+    .await;
+
+    let allowed = ask(
+        &server,
+        "acme",
+        "evaluate",
+        Some(&token),
+        &question(acme.ana),
+    )
+    .await;
+    let denied = ask(
+        &server,
+        "acme",
+        "evaluate",
+        Some(&token),
+        &question(acme.bob),
+    )
+    .await;
+    let mut simulated_question = question(acme.ana);
+    simulated_question["against"] = json!({ "published": true });
+    let simulated = ask(
+        &server,
+        "acme",
+        "simulate",
+        Some(&token),
+        &simulated_question,
+    )
+    .await;
+    assert_eq!(simulated.status, StatusCode::OK, "{}", simulated.body);
+
+    let rows: Vec<(String, String, String, String, Value)> = sqlx::query_as(
+        "SELECT decision_id::text, effect, reason, subject_id, input
+         FROM \"authorization\".decision_log ORDER BY decided_at",
+    )
+    .fetch_all(database.owner())
+    .await
+    .expect("records");
+    let ids: Vec<&str> = rows.iter().map(|row| row.0.as_str()).collect();
+    assert_eq!(
+        ids,
+        [
+            allowed.body["decision_id"].as_str().expect("allowed"),
+            denied.body["decision_id"].as_str().expect("denied"),
+        ],
+        "the two evaluations, and not the simulation"
+    );
+    assert_eq!(
+        (rows[0].1.as_str(), rows[0].2.as_str()),
+        ("allow", "matching_role")
+    );
+    assert_eq!(
+        (rows[1].1.as_str(), rows[1].2.as_str()),
+        ("deny", "no_matching_role")
+    );
+    assert_eq!(rows[0].3, acme.ana.to_string());
+    assert_eq!(rows[0].4["resource"]["attributes"]["amount"], 5000);
+    assert_eq!(
+        rows[0].4["context"]["attributes"]["environment"],
+        "production"
+    );
+}

@@ -83,6 +83,8 @@ struct World {
     keys_of_people: hodor_credential::testing::InMemoryWebAuthn,
     /// People's authenticator applications.
     totp: hodor_credential::api::TotpService,
+    /// The record of decisions.
+    decisions: hodor_authorization::testing::InMemoryDecisionLog,
     /// The administrator of Acme and their token.
     administrator: UserId,
     administrator_token: String,
@@ -248,6 +250,7 @@ async fn world_with_keys(with_keys: bool) -> World {
     let (factor_service, keys_of_people, totp) =
         factors(&units_of_work, clock.clone(), &identity, &tenants);
     let oauth = applications(&units_of_work, clock.clone());
+    let decision_store = hodor_authorization::testing::InMemoryDecisionLog::default();
     let state = AdminState {
         tokens: tokens.clone(),
         authorization: authorization.clone(),
@@ -261,6 +264,12 @@ async fn world_with_keys(with_keys: bool) -> World {
         consents: oauth.1.clone(),
         tenants: tenants.clone(),
         factors: factor_service,
+        decisions: hodor_authorization::api::DecisionLog::new(
+            units(),
+            Arc::new(decision_store.clone()),
+            Arc::new(SequentialRandom::default()),
+            clock.clone(),
+        ),
         public_url: "https://auth.example".to_owned(),
     };
     let router = public_router(
@@ -289,6 +298,7 @@ async fn world_with_keys(with_keys: bool) -> World {
         tenants,
         keys_of_people,
         totp,
+        decisions: decision_store,
         administrator: UserId::generate(),
         administrator_token: String::new(),
     };
@@ -517,7 +527,7 @@ fn the_document_and_the_routes_list_the_same_operations_and_permissions() {
         })
         .collect();
     assert_eq!(documented, served);
-    assert_eq!(served.len(), 45);
+    assert_eq!(served.len(), 48);
 
     // Every operation says how it refuses.
     let document: serde_json::Value = serde_json::from_str(ADMIN_OPENAPI).expect("valid JSON");
@@ -2868,4 +2878,161 @@ async fn an_administrator_sees_and_withdraws_a_users_consent() {
         .find(|event| event.event_type == "oauth.consent_withdrawn")
         .expect("recorded");
     assert_eq!(withdrawal.payload["by"], "administrator");
+}
+
+#[tokio::test]
+async fn an_administrator_sets_and_reads_the_record_of_decisions_of_their_tenant_only() {
+    use hodor_authorization::api::{DecisionLogStore as _, Effect};
+    use hodor_authorization::testing::sample_decision_record;
+
+    let world = world().await;
+    let defaults = world
+        .as_administrator(Method::GET, "/decision-log", None)
+        .await;
+    assert_eq!(defaults.status, StatusCode::OK, "{:?}", defaults.body);
+    assert_eq!(
+        defaults.body,
+        serde_json::json!({ "mode": "full", "masks": [], "retention_days": 30 })
+    );
+    let settings = serde_json::json!({
+        "mode": "sampled",
+        "allow_sample_percent": 10,
+        "masks": ["subject.attributes.email"],
+        "retention_days": 90
+    });
+    let replaced = world
+        .as_administrator(Method::PUT, "/decision-log", Some(settings.clone()))
+        .await;
+    assert_eq!(replaced.status, StatusCode::OK, "{:?}", replaced.body);
+    assert_eq!(replaced.body, settings);
+
+    for bad in [
+        serde_json::json!({ "mode": "sampled", "retention_days": 30 }),
+        serde_json::json!({ "mode": "full", "allow_sample_percent": 5, "retention_days": 30 }),
+        serde_json::json!({ "mode": "full", "masks": ["subject.id"], "retention_days": 30 }),
+        serde_json::json!({ "mode": "full", "retention_days": 401 }),
+    ] {
+        let refused = world
+            .as_administrator(Method::PUT, "/decision-log", Some(bad))
+            .await;
+        assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(refused.code(), "authorization.decision_log_invalid");
+    }
+    let unknown = world
+        .as_administrator(
+            Method::PUT,
+            "/decision-log",
+            Some(serde_json::json!({ "mode": "everything", "retention_days": 30 })),
+        )
+        .await;
+    assert_eq!(unknown.code(), "request.body_invalid");
+
+    let older = sample_decision_record(1, Effect::Allow, "ana");
+    let newer = sample_decision_record(2, Effect::Deny, "ana");
+    let mut uow = hodor_kernel::UnitOfWorkFactory::begin(&world.units_of_work, &world.acme)
+        .await
+        .expect("begin");
+    world
+        .decisions
+        .append(uow.as_mut(), &[older.clone(), newer.clone()])
+        .await
+        .expect("append");
+    uow.commit().await.expect("commit");
+
+    let page = world
+        .as_administrator(Method::GET, "/decisions?limit=1", None)
+        .await;
+    assert_eq!(page.status, StatusCode::OK, "{:?}", page.body);
+    assert_eq!(
+        page.body["items"][0]["decision_id"],
+        newer.decision_id.to_string()
+    );
+    assert_eq!(page.body["items"][0]["effect"], "deny");
+    assert_eq!(page.body["items"][0]["subject"]["kind"], "user");
+    assert_eq!(page.body["items"][0]["resource"]["type"], "document");
+    let cursor = page.body["next_cursor"]
+        .as_str()
+        .expect("a cursor")
+        .to_owned();
+    let rest = world
+        .as_administrator(
+            Method::GET,
+            &format!("/decisions?limit=1&cursor={cursor}"),
+            None,
+        )
+        .await;
+    assert_eq!(
+        rest.body["items"][0]["decision_id"],
+        older.decision_id.to_string()
+    );
+    let filtered = world
+        .as_administrator(
+            Method::GET,
+            "/decisions?effect=allow&namespace=https%3A%2F%2Fdocuments.example.com&subject_kind=user&subject_id=ana",
+            None,
+        )
+        .await;
+    assert_eq!(filtered.body["items"].as_array().map(Vec::len), Some(1));
+    assert_eq!(
+        filtered.body["items"][0]["decision_id"],
+        older.decision_id.to_string()
+    );
+    for bad in ["effect=maybe", "from=yesterday", "subject_kind=user"] {
+        let refused = world
+            .as_administrator(Method::GET, &format!("/decisions?{bad}"), None)
+            .await;
+        assert_eq!(refused.code(), "request.query_invalid", "{bad}");
+    }
+
+    // Globex sees neither the records nor the settings of Acme.
+    let (_, globex) = world
+        .person(
+            &world.globex,
+            "root@globex.example",
+            &[Role::TenantAdministrator],
+        )
+        .await;
+    let theirs = world
+        .send(
+            Method::GET,
+            "/t/globex/api/v1/admin/decisions",
+            Some(&format!("Bearer {globex}")),
+            None,
+        )
+        .await;
+    assert_eq!(theirs.body["items"], serde_json::json!([]));
+    let their_settings = world
+        .send(
+            Method::GET,
+            "/t/globex/api/v1/admin/decision-log",
+            Some(&format!("Bearer {globex}")),
+            None,
+        )
+        .await;
+    assert_eq!(their_settings.body, defaults.body);
+
+    // An auditor reads the record and may not change what it keeps.
+    let acme = world.acme.clone();
+    let (_, auditor) = world
+        .person(&acme, "auditor@example.com", &[Role::TenantAuditor])
+        .await;
+    let authorization = format!("Bearer {auditor}");
+    let read = world
+        .send(
+            Method::GET,
+            "/t/acme/api/v1/admin/decisions",
+            Some(&authorization),
+            None,
+        )
+        .await;
+    assert_eq!(read.status, StatusCode::OK);
+    let refused = world
+        .send(
+            Method::PUT,
+            "/t/acme/api/v1/admin/decision-log",
+            Some(&authorization),
+            Some(settings),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
 }

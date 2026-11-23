@@ -82,6 +82,10 @@ The specification is `docs/architecture/contexts/authorization.md`
 - `hodor:admin` is never stored, bound, unbound or simulated
   (`src/domain/binding.rs:EngineBinding::check`,
   `src/application/evaluation.rs:EvaluationService`).
+- A simulation is never recorded, nor a decision about `hodor:admin`; a
+  masked path is removed before a record is built
+  (`src/application/decision_log.rs:DecisionLog::record`,
+  `src/domain/decision_log.rs:DecisionLogSettings::reduced_input`).
 - Details per directory are in [src](./src/EGM.md).
 
 ## Side Effects

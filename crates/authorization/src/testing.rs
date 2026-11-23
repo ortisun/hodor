@@ -1319,3 +1319,290 @@ impl ConditionLanguage for FakeConditionLanguage {
         }
     }
 }
+
+/// The record of decisions kept in memory.
+#[derive(Debug, Clone, Default)]
+pub struct InMemoryDecisionLog {
+    settings: Arc<Mutex<BTreeMap<TenantId, crate::api::DecisionLogSettings>>>,
+    records: Arc<Mutex<Vec<(TenantId, crate::api::DecisionRecord)>>>,
+    failing: Arc<Mutex<bool>>,
+}
+
+impl InMemoryDecisionLog {
+    /// Makes every later call fail, as storage that is down would.
+    pub fn fail(&self, failing: bool) {
+        *self.failing.lock().unwrap_or_else(|e| e.into_inner()) = failing;
+    }
+
+    /// Every record of a tenant, in the order they were added.
+    #[must_use]
+    pub fn records_of(&self, tenant: TenantId) -> Vec<crate::api::DecisionRecord> {
+        self.records
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|(owner, _)| *owner == tenant)
+            .map(|(_, record)| record.clone())
+            .collect()
+    }
+
+    fn check(&self) -> Result<(), DomainError> {
+        if *self.failing.lock().unwrap_or_else(|e| e.into_inner()) {
+            Err(DomainError::internal(
+                "test.storage_down",
+                "storage is down",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::api::DecisionLogStore for InMemoryDecisionLog {
+    async fn settings(
+        &self,
+        uow: &mut dyn UnitOfWork,
+    ) -> Result<Option<crate::api::DecisionLogSettings>, DomainError> {
+        self.check()?;
+        let tenant = uow.tenant().tenant_id();
+        Ok(self
+            .settings
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&tenant)
+            .cloned())
+    }
+
+    async fn put_settings(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        settings: &crate::api::DecisionLogSettings,
+        _now: Timestamp,
+    ) -> Result<(), DomainError> {
+        self.check()?;
+        let tenant = uow.tenant().tenant_id();
+        self.settings
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(tenant, settings.clone());
+        Ok(())
+    }
+
+    async fn append(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        records: &[crate::api::DecisionRecord],
+    ) -> Result<(), DomainError> {
+        self.check()?;
+        let tenant = uow.tenant().tenant_id();
+        let mut rows = self.records.lock().unwrap_or_else(|e| e.into_inner());
+        for record in records {
+            let known = rows
+                .iter()
+                .any(|(owner, kept)| *owner == tenant && kept.decision_id == record.decision_id);
+            if !known {
+                rows.push((tenant, record.clone()));
+            }
+        }
+        Ok(())
+    }
+
+    async fn page(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        filter: &crate::api::DecisionFilter,
+        page: &hodor_kernel::PageRequest,
+    ) -> Result<hodor_kernel::Page<crate::api::DecisionRecord>, DomainError> {
+        self.check()?;
+        let tenant = uow.tenant().tenant_id();
+        let mut found: Vec<crate::api::DecisionRecord> = self
+            .records_of(tenant)
+            .into_iter()
+            .filter(|record| filter.matches(record))
+            .collect();
+        found.sort_by(|a, b| {
+            (b.decided_at, b.decision_id.as_uuid()).cmp(&(a.decided_at, a.decision_id.as_uuid()))
+        });
+        let skip = match page.cursor() {
+            None => 0,
+            Some(cursor) => cursor.as_str().parse::<usize>().map_err(|_| {
+                DomainError::invalid(
+                    "request.query_invalid",
+                    "the cursor is not one of this list",
+                )
+            })?,
+        };
+        let limit = usize::try_from(page.limit()).unwrap_or(usize::MAX);
+        let items: Vec<_> = found.iter().skip(skip).take(limit).cloned().collect();
+        let next = skip + items.len();
+        Ok(hodor_kernel::Page {
+            next_cursor: (next < found.len()).then(|| hodor_kernel::Cursor::new(next.to_string())),
+            items,
+        })
+    }
+}
+
+/// What the contract suite of a record of decisions needs.
+#[derive(Clone)]
+pub struct DecisionLogPorts<'a> {
+    /// Units of work over the same storage as `store`.
+    pub units_of_work: &'a dyn hodor_kernel::UnitOfWorkFactory,
+    /// The store under test.
+    pub store: &'a dyn crate::api::DecisionLogStore,
+}
+
+impl std::fmt::Debug for DecisionLogPorts<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DecisionLogPorts").finish_non_exhaustive()
+    }
+}
+
+/// A record for the contract suite, decided `seconds` after a fixed moment.
+#[must_use]
+pub fn sample_decision_record(
+    seconds: i64,
+    effect: crate::api::Effect,
+    subject: &str,
+) -> crate::api::DecisionRecord {
+    crate::api::DecisionRecord {
+        decision_id: crate::api::DecisionId::generate(),
+        namespace: "https://documents.example.com".to_owned(),
+        subject_kind: crate::api::SubjectKind::User,
+        subject_id: subject.to_owned(),
+        action: "read".to_owned(),
+        resource_type: "document".to_owned(),
+        resource_id: Some("42".to_owned()),
+        effect,
+        reason: "by_script".to_owned(),
+        engine: Some("native".to_owned()),
+        policy_version: Some("7".to_owned()),
+        decided_at: Timestamp::UNIX_EPOCH
+            + time::Duration::days(20_000)
+            + time::Duration::seconds(seconds),
+        duration_microseconds: 120,
+        input: serde_json::json!({ "subject": { "attributes": { "status": "active" } } }),
+        masked: vec!["subject.attributes.email".to_owned()],
+    }
+}
+
+/// The behaviour every store of the record of decisions must have.
+///
+/// # Panics
+///
+/// When the store does not behave as the port says.
+pub async fn run_decision_log_contract(ports: DecisionLogPorts<'_>) {
+    use crate::api::{DecisionFilter, DecisionLogMode, DecisionLogSettings, Effect, MaskPath};
+    use hodor_kernel::PageRequest;
+
+    let tenant = TenantContext::assume(TenantId::generate());
+    let other = TenantContext::assume(TenantId::generate());
+    let now = Timestamp::UNIX_EPOCH + time::Duration::days(20_000);
+
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    assert_eq!(
+        ports.store.settings(uow.as_mut()).await.expect("settings"),
+        None
+    );
+    let settings = DecisionLogSettings::new(
+        DecisionLogMode::Sampled { allow_percent: 10 },
+        vec![MaskPath::parse("subject.attributes.email").expect("mask")],
+        90,
+    )
+    .expect("settings");
+    ports
+        .store
+        .put_settings(uow.as_mut(), &settings, now)
+        .await
+        .expect("put settings");
+    uow.commit().await.expect("commit");
+
+    let first = sample_decision_record(1, Effect::Allow, "ana");
+    let second = sample_decision_record(2, Effect::Deny, "bea");
+    let third = sample_decision_record(3, Effect::Deny, "ana");
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    assert_eq!(
+        ports.store.settings(uow.as_mut()).await.expect("settings"),
+        Some(settings)
+    );
+    ports
+        .store
+        .append(
+            uow.as_mut(),
+            &[first.clone(), second.clone(), third.clone()],
+        )
+        .await
+        .expect("append");
+    // The same decision again is kept once.
+    ports
+        .store
+        .append(uow.as_mut(), std::slice::from_ref(&first))
+        .await
+        .expect("append again");
+    uow.commit().await.expect("commit");
+
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    let all = ports
+        .store
+        .page(
+            uow.as_mut(),
+            &DecisionFilter::default(),
+            &PageRequest::new(Some(2), None),
+        )
+        .await
+        .expect("page");
+    assert_eq!(all.items, [third.clone(), second.clone()], "newest first");
+    let rest = ports
+        .store
+        .page(
+            uow.as_mut(),
+            &DecisionFilter::default(),
+            &PageRequest::new(Some(2), all.next_cursor.clone()),
+        )
+        .await
+        .expect("next page");
+    assert_eq!(rest.items, std::slice::from_ref(&first));
+    assert_eq!(rest.next_cursor, None);
+
+    let denied_to_ana = DecisionFilter {
+        effect: Some(Effect::Deny),
+        subject: Some((crate::api::SubjectKind::User, "ana".to_owned())),
+        ..DecisionFilter::default()
+    };
+    let found = ports
+        .store
+        .page(uow.as_mut(), &denied_to_ana, &PageRequest::default())
+        .await
+        .expect("filtered");
+    assert_eq!(found.items, std::slice::from_ref(&third));
+    let window = DecisionFilter {
+        from: Some(second.decided_at),
+        to: Some(third.decided_at),
+        namespace: Some("https://documents.example.com".to_owned()),
+        ..DecisionFilter::default()
+    };
+    let found = ports
+        .store
+        .page(uow.as_mut(), &window, &PageRequest::default())
+        .await
+        .expect("window");
+    assert_eq!(found.items, [second]);
+    drop(uow);
+
+    // Another tenant sees neither the records nor the settings.
+    let mut uow = ports.units_of_work.begin(&other).await.expect("begin");
+    assert_eq!(
+        ports.store.settings(uow.as_mut()).await.expect("settings"),
+        None
+    );
+    let found = ports
+        .store
+        .page(
+            uow.as_mut(),
+            &DecisionFilter::default(),
+            &PageRequest::default(),
+        )
+        .await
+        .expect("other page");
+    assert!(found.items.is_empty());
+}

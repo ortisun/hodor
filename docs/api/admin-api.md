@@ -105,6 +105,9 @@ It needs `HODOR_DATABASE_URL`, like the tenant commands.
 | `PATCH /resource-servers/{resource_server_id}` | `applications:write` | Change its name or its scopes |
 | `GET /assurance-levels` | `assurance-levels:read` | Read the tenant's assurance levels |
 | `PUT /assurance-levels` | `assurance-levels:write` | Replace the tenant's assurance levels |
+| `GET /decision-log` | `decisions:read` | Read the settings of the record of decisions |
+| `PUT /decision-log` | `decision-log:write` | Replace the settings of the record of decisions |
+| `GET /decisions` | `decisions:read` | List recorded decisions, newest first |
 
 ### A user
 
@@ -477,6 +480,53 @@ The levels an application names in `acr_values`, and which every token names in 
 |---|---|---|
 | No level, more than three, a name that is empty, longer than 255 characters or holds a space or a character outside printable ASCII, or two levels with the same name or the same requirement | `422` | `tenant.settings_invalid` |
 | A requirement other than `single_factor`, `multi_factor` and `phishing_resistant`, or a body that is not that document | `422` | `request.body_invalid` |
+
+### The record of decisions
+
+The settings of [the record of decisions](../architecture/contexts/authorization.md#the-record-of-decisions):
+
+```json
+{
+  "mode": "sampled",
+  "allow_sample_percent": 10,
+  "masks": ["subject.attributes.email", "resource.attributes.*"],
+  "retention_days": 30
+}
+```
+
+`GET /decision-log` answers the settings in force, the defaults when none were set. `PUT /decision-log` replaces them all and answers them as they are now. `allow_sample_percent` is given with `sampled` and only then. A change applies to decisions made after it, and is recorded as `authorization.decision_log_changed`.
+
+| Situation | Status | Code |
+|---|---|---|
+| A share outside 1 to 99, a share without `sampled` or `sampled` without one, more than 32 masks, a mask that is not one of the paths the record accepts, or a retention outside 1 to 400 days | `422` | `authorization.decision_log_invalid` |
+| A mode other than `full`, `sampled`, `deny_only` and `off`, or a body that is not that document | `422` | `request.body_invalid` |
+
+`GET /decisions?from=…&to=…&effect=deny&namespace=…&subject_kind=user&subject_id=…&limit=50&cursor=…` answers the tenant's records newest first. Every filter is optional; `from` and `to` are RFC 3339 times, `from` included and `to` excluded. The cursor continues after the last record of the page.
+
+```json
+{
+  "items": [
+    {
+      "decision_id": "0193f2a0-…",
+      "namespace": "https://api.example.com",
+      "subject": { "kind": "user", "id": "0193f1c4-…" },
+      "action": "read",
+      "resource": { "type": "document", "id": "42" },
+      "effect": "deny",
+      "reason": "no_matching_role",
+      "engine": "native",
+      "policy_version": "7",
+      "decided_at": "2026-11-23T03:10:11.482913Z",
+      "duration_microseconds": 412,
+      "input": { "subject": { "attributes": { "status": "active" } }, "resource": { "attributes": {} } },
+      "masked": ["subject.attributes.email"]
+    }
+  ],
+  "next_cursor": "…"
+}
+```
+
+A filter that cannot be read is answered `422` with `request.query_invalid`.
 
 ## Not built yet
 
