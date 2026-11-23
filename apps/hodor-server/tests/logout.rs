@@ -149,7 +149,7 @@ async fn tenant(database: &TestDatabase, slug: &str) -> ClientId {
     let mut settings = ClientSettings::new(
         "Payroll",
         ClientType::Public,
-        vec![GrantType::AuthorizationCode],
+        vec![GrantType::AuthorizationCode, GrantType::RefreshToken],
         vec![REDIRECT.to_owned()],
     );
     settings.post_logout_redirect_uris = vec![OUT.to_owned()];
@@ -194,6 +194,14 @@ async fn signed_in(
     slug: &str,
     client_id: ClientId,
 ) -> String {
+    tokens(browser, server, slug, client_id).await["id_token"]
+        .as_str()
+        .expect("an ID token")
+        .to_owned()
+}
+
+/// Signs Ana in and gets the tokens for `client_id` from her session.
+async fn tokens(browser: &mut Browser, server: &Server, slug: &str, client_id: ClientId) -> Value {
     let (_, answer) = browser.sign_in(slug, "ana@example.com", PASSWORD).await;
     assert_eq!(answer["status"], "completed", "{answer}");
     let id = client_id.to_string();
@@ -217,7 +225,7 @@ async fn signed_in(
         .await;
     assert_eq!(status, StatusCode::FOUND, "{body}");
     let code = query_of(&location.expect("a redirect"))["code"].clone();
-    let tokens: Value = reqwest::Client::new()
+    reqwest::Client::new()
         .post(format!("{}/t/{slug}/oauth2/token", server.base))
         .header("content-type", "application/x-www-form-urlencoded")
         .body(query(&[
@@ -232,8 +240,31 @@ async fn signed_in(
         .expect("response")
         .json()
         .await
-        .expect("JSON");
-    tokens["id_token"].as_str().expect("an ID token").to_owned()
+        .expect("JSON")
+}
+
+/// Refreshes with `token`, answering the status and the body.
+async fn refresh(
+    server: &Server,
+    slug: &str,
+    client_id: ClientId,
+    token: &str,
+) -> (StatusCode, Value) {
+    let response = reqwest::Client::new()
+        .post(format!("{}/t/{slug}/oauth2/token", server.base))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(query(&[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", token),
+            ("client_id", &client_id.to_string()),
+        ]))
+        .send()
+        .await
+        .expect("response");
+    (
+        response.status(),
+        response.json().await.unwrap_or(Value::Null),
+    )
 }
 
 async fn still_signed_in(browser: &mut Browser, slug: &str) -> bool {
@@ -249,8 +280,21 @@ async fn an_application_signs_the_person_out_and_gets_them_back() {
     let client_id = tenant(&database, "acme").await;
     let server = server(&database).await;
     let mut browser = Browser::not_following(&server);
-    let hint = signed_in(&mut browser, &server, "acme", client_id).await;
+    let issued = tokens(&mut browser, &server, "acme", client_id).await;
+    let hint = issued["id_token"].as_str().expect("an ID token").to_owned();
     assert!(still_signed_in(&mut browser, "acme").await);
+    let (status, refreshed) = refresh(
+        &server,
+        "acme",
+        client_id,
+        issued["refresh_token"].as_str().expect("a refresh token"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{refreshed}");
+    let newest = refreshed["refresh_token"]
+        .as_str()
+        .expect("the next refresh token")
+        .to_owned();
 
     let response = browser
         .client
@@ -300,6 +344,11 @@ async fn an_application_signs_the_person_out_and_gets_them_back() {
         !still_signed_in(&mut browser, "acme").await,
         "the session ended"
     );
+    // So is the refresh token of the family made in that session without
+    // offline_access.
+    let (status, refused) = refresh(&server, "acme", client_id, &newest).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+    assert_eq!(refused["error"], "invalid_grant");
 
     // Signing out again with the same hint: nobody to sign out, so straight
     // back.
