@@ -149,8 +149,16 @@ test("a person with a passkey signs in with the one the browser offers in the fi
   await addVirtualPlatformAuthenticator(page);
   await registeredWithPasskey(page);
   // The sign-in page offers the passkey in the identifier field, and the virtual authenticator
-  // takes the offer: the person is signed in without typing anything.
+  // takes the offer: the person is signed in again without typing anything. Until then the session
+  // is the one of the password, or none, and the page may still be moving.
+  await expect
+    .poll(async () => {
+      try {
+        return (await sessionOf(page)).methods ?? null;
+      } catch {
+        return null;
+      }
+    })
+    .toEqual(["passkey"]);
   await expect(page.getByRole("heading", { name: en.accountTitle })).toBeVisible();
-  const session = await sessionOf(page);
-  expect(session.methods).toEqual(["passkey"]);
 });
