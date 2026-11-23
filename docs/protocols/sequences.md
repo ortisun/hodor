@@ -277,7 +277,7 @@ stateDiagram-v2
 | Artifact | Format | Storage | Default lifetime | Revocation |
 |---|---|---|---|---|
 | Authorization code | Opaque, 256-bit random | SHA-256 hash | 60 s, single use | Consumed on use |
-| Access token | JWT (RFC 9068) signed by the tenant key; opaque as a per-client option | Not stored (JWT) or hash (opaque) | 5 min | Short lifetime; `jti` deny-list for immediate revocation; introspection reflects the grant state |
+| Access token | JWT (RFC 9068) signed by the tenant key | Not stored; its `jti` is recorded with its client, grant and family ([the register of access tokens](../architecture/contexts/oauth.md#the-register-of-access-tokens)) | 5 min | Short lifetime; the revocation endpoint revokes its record; introspection and UserInfo refuse it once its record, grant or family is revoked |
 | Refresh token | Opaque, 256 bits: random for the first of a family, derived from the one before and the family's sealed secret after it | SHA-256 hash, family and generation | 30 days absolute, 7 days idle, from the client's token policy | Rotation; reuse revokes the family and its grant |
 | ID token | JWT | Not stored | 5 min | Not revocable; it is a login assertion, not a credential |
 | Pushed authorization requests `request_uri` | Opaque reference | Row with time to live | 60 s, single use | Consumed on use |
