@@ -78,9 +78,13 @@ Adapters implemented here:
 Wiring functions: `interaction` (Argon2id hashing, identity, credential,
 WebAuthn with the relying party of `HODOR_PUBLIC_URL`, session, attempt
 guard, sign-in flow, accounts and notification queue; the flow is the
-built-in one with a `webauthn` step after it and a `totp` step when secrets
-can be kept, both conditional on the sign-in not being multi-factor yet, and
-the alternative `passkey`),
+built-in one with a `webauthn` step after it, conditional on a stronger
+assurance being needed (`StrongerAssuranceNeeded`), a `totp` step when
+secrets can be kept, conditional on the sign-in not being multi-factor yet,
+and the alternative `passkey`), `authorization` (given the interaction's
+`AuthenticationService`, for step-ups, and `tenant_service`, for the
+assurance levels, which `administration` and the discovery document read
+too),
 `external_sign_in` (`ExternalSignIn` with OpenID Connect, GitHub, SAML and,
 through `with_directories`, `LdapDirectoryClient`), `keys`, `key_rotation`
 (the default policy with `HODOR_KEY_OVERLAP_HOURS`), `token` (the token

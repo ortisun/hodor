@@ -267,6 +267,49 @@ impl SessionService {
         Ok(token)
     }
 
+    /// Raises a session after a step-up, as the specification says: only
+    /// an active session of `user_id` is raised. Returns the session and its
+    /// new token; the old token stops working at once.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NotFound` if the tenant has no such session, if it is
+    /// another user's or no longer active, and `Invalid` if no method was
+    /// proven.
+    pub async fn raise(
+        &self,
+        tenant: &TenantContext,
+        user_id: UserId,
+        id: SessionId,
+        proven: &[String],
+        assurance: Assurance,
+        caller: Caller,
+    ) -> Result<(Session, SessionToken), DomainError> {
+        let now = self.clock.now();
+        let mut uow = self.units_of_work.begin(tenant).await?;
+        let mut session = self
+            .sessions
+            .get(uow.as_mut(), id)
+            .await?
+            .filter(|session| {
+                session.user_id() == user_id && session.state_at(now) == SessionState::Active
+            })
+            .ok_or_else(|| {
+                DomainError::not_found("session.not_found", "the session does not exist")
+            })?;
+        let (token, event) = session.raise(
+            proven,
+            assurance,
+            now,
+            self.random.as_ref(),
+            self.digest.as_ref(),
+        )?;
+        self.sessions.update(uow.as_mut(), &session).await?;
+        self.record(uow.as_mut(), caller, &event)?;
+        uow.commit().await?;
+        Ok((session, token))
+    }
+
     fn record(
         &self,
         uow: &mut dyn UnitOfWork,

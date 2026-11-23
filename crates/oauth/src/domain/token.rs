@@ -586,6 +586,12 @@ pub struct TokenSubject {
     pub audiences: Vec<String>,
     /// When the person signed in; none for client credentials.
     pub signed_in_at: Option<Timestamp>,
+    /// The tenant's level the sign-in reached, its `acr`; none for client
+    /// credentials and for a sign-in that reached no level.
+    pub acr: Option<String>,
+    /// The methods of the sign-in, for its `amr`; none for client
+    /// credentials.
+    pub methods: Vec<String>,
 }
 
 impl TokenSubject {
@@ -597,6 +603,8 @@ impl TokenSubject {
             scopes: code.scopes.clone(),
             audiences: code.audiences.clone(),
             signed_in_at: Some(code.signed_in_at),
+            acr: code.acr.clone(),
+            methods: code.methods.clone(),
         }
     }
 }
@@ -660,6 +668,15 @@ pub fn claims_for(
     });
     if let (Some(signed_in_at), Some(object)) = (subject.signed_in_at, claims.as_object_mut()) {
         object.insert("auth_time".to_owned(), json!(signed_in_at.unix_timestamp()));
+    }
+    // The authentication claims of RFC 9068, section 2.2.1: the level the
+    // methods of the sign-in reached, and the methods.
+    if let Some(acr) = &subject.acr {
+        claims["acr"] = json!(acr);
+    }
+    let amr = crate::domain::openid::authentication_methods(&subject.methods);
+    if !amr.is_empty() {
+        claims["amr"] = json!(amr);
     }
     AccessTokenClaims {
         token_id,

@@ -38,7 +38,7 @@ pub mod api {
         AuthorizationCode, AuthorizationError, AuthorizationParameters, AuthorizationRefusal,
         AuthorizationRequest, BrowserSecret, CODE_LIFETIME, CodeHash, CodePresentation,
         CodeRefusal, CodeValue, Grant, GrantId, GrantStatus, MAX_RESOURCES, PENDING_LIFETIME,
-        PendingAuthorization, PendingAuthorizationId, SessionDecision, SignedInPerson,
+        PendingAuthorization, PendingAuthorizationId, Proof, SessionDecision, SignedInPerson,
         check_request, s256_challenge,
     };
     pub use crate::domain::client::{
@@ -53,10 +53,9 @@ pub mod api {
         refusal as logout_refusal,
     };
     pub use crate::domain::openid::{
-        ACR_MULTI_FACTOR, ACR_SINGLE_FACTOR, BearerRefusal, CheckedAccessToken, OPENID_SCOPE,
-        PersonClaims, PublishedKey, UI_LOCALES, access_token_hash, asks_for_openid, assurance,
-        authentication_methods, check_access_token, discovery_document, id_token_claims,
-        is_multi_factor, userinfo_claims,
+        BearerRefusal, CheckedAccessToken, OPENID_SCOPE, PersonClaims, PublishedKey, UI_LOCALES,
+        access_token_hash, asks_for_openid, authentication_methods, check_access_token,
+        discovery_document, id_token_claims, is_multi_factor, userinfo_claims,
     };
     pub use crate::domain::refresh::{
         DEFAULT_RETRY_WINDOW, FAMILY_SECRET_PURPOSE, FamilySecret, FamilyStatus,

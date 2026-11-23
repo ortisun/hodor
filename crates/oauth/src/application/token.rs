@@ -784,6 +784,8 @@ impl TokenService {
                     .resource
                     .map_or_else(|| family.audiences.clone(), |resource| vec![resource]),
                 signed_in_at: Some(family.signed_in_at),
+                acr: family.acr.clone(),
+                methods: family.methods.clone(),
             };
             let signed = match self.sign(tenant, issuer, client, &subject).await? {
                 Ok(signed) => signed,
@@ -894,6 +896,8 @@ impl TokenService {
             scopes,
             audiences,
             signed_in_at: None,
+            acr: None,
+            methods: Vec::new(),
         };
         let signed = match self.sign(tenant, issuer, client, &subject).await? {
             Ok(signed) => signed,

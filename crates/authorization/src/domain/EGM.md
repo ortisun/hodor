@@ -28,6 +28,8 @@ reach other crates through `hodor_authorization::api`.
   | `KeysWrite` | `keys:write` |
   | `ApplicationsRead` | `applications:read` |
   | `ApplicationsWrite` | `applications:write` |
+  | `AssuranceLevelsRead` | `assurance-levels:read` (also the auditor's) |
+  | `AssuranceLevelsWrite` | `assurance-levels:write` |
 
   `Permission::ALL` lists all eleven; `from_name(name) -> Option<Permission>`.
 - `Role` (`role.rs:Role`): `TenantAdministrator` (`tenant_administrator`) and

@@ -26,6 +26,8 @@ use hodor_protocol_http::{
 };
 use hodor_session::api::{Assurance, ClientInfo, SessionService, SessionTimeouts, StartSession};
 use hodor_session::testing::{InMemorySessions, SequentialRandom};
+use hodor_tenant::api::TenantService;
+use hodor_tenant::testing::InMemoryTenants;
 use http_body_util::BodyExt as _;
 use std::sync::Arc;
 use time::Duration;
@@ -133,6 +135,12 @@ fn world() -> World {
         keys: None,
         key_rotation: hodor_keys::api::RotationPolicy::DEFAULT,
         applications: applications(&units_of_work, clock.clone()),
+        tenants: TenantService::new(
+            Arc::new(units_of_work.clone()),
+            Arc::new(InMemoryTenants::default()),
+            Arc::new(InMemoryTenants::default()),
+            clock.clone(),
+        ),
         public_url: "https://auth.example".to_owned(),
     };
     let router = public_router(

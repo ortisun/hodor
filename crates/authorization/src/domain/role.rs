@@ -29,11 +29,15 @@ pub enum Permission {
     /// Registering and changing applications, clients and resource
     /// servers, and giving clients secrets and keys.
     ApplicationsWrite,
+    /// Seeing the tenant's assurance levels.
+    AssuranceLevelsRead,
+    /// Replacing the tenant's assurance levels.
+    AssuranceLevelsWrite,
 }
 
 impl Permission {
     /// Every permission.
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 13] = [
         Self::UsersRead,
         Self::UsersWrite,
         Self::SessionsRead,
@@ -45,6 +49,8 @@ impl Permission {
         Self::KeysWrite,
         Self::ApplicationsRead,
         Self::ApplicationsWrite,
+        Self::AssuranceLevelsRead,
+        Self::AssuranceLevelsWrite,
     ];
 
     /// The permission written as `resource:action`.
@@ -62,6 +68,8 @@ impl Permission {
             Self::KeysWrite => "keys:write",
             Self::ApplicationsRead => "applications:read",
             Self::ApplicationsWrite => "applications:write",
+            Self::AssuranceLevelsRead => "assurance-levels:read",
+            Self::AssuranceLevelsWrite => "assurance-levels:write",
         }
     }
 
@@ -122,6 +130,7 @@ impl Role {
                 Permission::IdentityProvidersRead,
                 Permission::KeysRead,
                 Permission::ApplicationsRead,
+                Permission::AssuranceLevelsRead,
             ],
         }
     }

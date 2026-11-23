@@ -41,6 +41,7 @@ and by `InMemorySessions` in [the test-support module](../EGM.md).
 | `revoke_for_user(&self, tenant, user_id, id, reason, caller)` | `()` | Ends a session only if it belongs to the user and is active (the self-service entry point). |
 | `revoke_all_for_user(&self, tenant, user_id, keep: Option<SessionId>, reason, caller)` | `usize` | Ends all of a user's sessions except `keep`; returns how many ended. |
 | `replace_token(&self, tenant, id: SessionId)` | `SessionToken` | Gives a session a new token; the old one stops working at once. |
+| `raise(&self, tenant, user_id, id, proven: &[String], assurance, caller)` | `(Session, SessionToken)` | Raises an active session of `user_id` after a step-up and records `SessionEvent::Raised`; `NotFound` `session.not_found` for a session of another user, ended, or unknown. |
 
 Kernel items used (`hodor_kernel`): `Caller`, `Clock`, `Digest`,
 `DomainError`, `EventEnvelope`, `EventMetadata`, `RandomSource`,

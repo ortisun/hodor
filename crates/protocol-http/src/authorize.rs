@@ -5,8 +5,11 @@
 //! endpoint". These handlers translate between HTTP and the OAuth and
 //! session contexts; the rules are the OAuth context's.
 
-use crate::interaction::{SESSION_COOKIE, cookie, set_cookie};
+use crate::interaction::{
+    SESSION_COOKIE, SIGN_IN_COOKIE_SECONDS, cookie, set_cookie, sign_in_cookie,
+};
 use crate::problem::Problem;
+use crate::request::ClientAddress;
 use crate::tenant::TenantSlug;
 use axum::body::Bytes;
 use axum::extract::{RawQuery, State};
@@ -15,13 +18,15 @@ use axum::http::header::{self, HeaderMap, HeaderValue};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Extension, Router};
-use hodor_kernel::{Actor, Caller, CorrelationId, TenantContext};
+use hodor_authentication::api::{AuthenticationService, StepUp, StepUpRequest};
+use hodor_kernel::{Actor, Caller, CorrelationId, TenantContext, Timestamp};
 use hodor_oauth::api::{
     AuthorizationCodeService, AuthorizationError, AuthorizationParameters, AuthorizationRefusal,
-    AuthorizationRequest, PENDING_LIFETIME, PendingAuthorizationId, SessionDecision,
+    AuthorizationRequest, PENDING_LIFETIME, PendingAuthorizationId, Proof, SessionDecision,
     SignedInPerson,
 };
-use hodor_session::api::SessionService;
+use hodor_session::api::{Assurance, ClientInfo, Session, SessionService};
+use hodor_tenant::api::{AssuranceLevels, AssuranceRequirement, TenantService};
 
 /// The cookie that holds a pending authorization request's identifier and
 /// the secret that binds it to the browser.
@@ -34,6 +39,10 @@ pub struct AuthorizationState {
     pub authorization: AuthorizationCodeService,
     /// The session use cases, to find who the browser is signed in as.
     pub sessions: SessionService,
+    /// Says what a session's methods amount to, and starts step-ups.
+    pub authentication: AuthenticationService,
+    /// The tenant's assurance levels.
+    pub tenants: TenantService,
     /// The address people reach this installation at, without a path. The
     /// issuer of a tenant is this address followed by `/t/{slug}`.
     pub public_url: String,
@@ -138,23 +147,98 @@ async fn signed_in(
     state: &AuthorizationState,
     tenant: &TenantContext,
     headers: &HeaderMap,
-) -> Result<Option<SignedInPerson>, Box<Response>> {
+) -> Result<Option<Session>, Box<Response>> {
     let Some(token) = cookie(headers, SESSION_COOKIE) else {
         return Ok(None);
     };
-    match state.sessions.find_by_token(tenant, token).await {
-        Ok(Some(session)) => {
-            let snapshot = session.snapshot();
-            Ok(Some(SignedInPerson {
-                user_id: snapshot.user_id,
-                session_id: snapshot.id,
-                signed_in_at: snapshot.signed_in_at,
-                methods: snapshot.methods.clone(),
-            }))
-        }
-        Ok(None) => Ok(None),
-        Err(error) => Err(Box::new(Problem::from(error).into_response())),
+    state
+        .sessions
+        .find_by_token(tenant, token)
+        .await
+        .map_err(|error| Box::new(Problem::from(error).into_response()))
+}
+
+/// The requirement of a tenant's level, as the session context names it.
+const fn assurance_for(requirement: AssuranceRequirement) -> Assurance {
+    match requirement {
+        AssuranceRequirement::SingleFactor => Assurance::SingleFactor,
+        AssuranceRequirement::MultiFactor => Assurance::MultiFactor,
+        AssuranceRequirement::PhishingResistant => Assurance::PhishingResistant,
     }
+}
+
+/// An assurance, as a tenant's levels name it.
+const fn requirement_for(assurance: Assurance) -> AssuranceRequirement {
+    match assurance {
+        Assurance::SingleFactor => AssuranceRequirement::SingleFactor,
+        Assurance::MultiFactor => AssuranceRequirement::MultiFactor,
+        Assurance::PhishingResistant => AssuranceRequirement::PhishingResistant,
+    }
+}
+
+/// What a session is worth to a request: the person with the methods that
+/// count, the assurance the request asks for, and whether the methods
+/// reach it.
+struct Standing {
+    person: SignedInPerson,
+    asked: Option<Assurance>,
+    enough: bool,
+}
+
+async fn standing(
+    state: &AuthorizationState,
+    tenant: &TenantContext,
+    request: &AuthorizationRequest,
+    session: &Session,
+    now: Timestamp,
+    received_at: Option<Timestamp>,
+) -> Result<Standing, Box<Response>> {
+    let levels: AssuranceLevels = state
+        .tenants
+        .get(tenant)
+        .await
+        .map_err(|error| Box::new(Problem::from(error).into_response()))?
+        .snapshot()
+        .settings
+        .authentication
+        .assurance_levels
+        .clone();
+    let proofs: Vec<Proof> = session
+        .proofs()
+        .into_iter()
+        .map(|(method, proven_at)| Proof {
+            method: method.to_owned(),
+            proven_at,
+        })
+        .collect();
+    let counting = request.counting(&proofs, now, received_at);
+    let methods: Vec<String> = counting.iter().map(|proof| proof.method.clone()).collect();
+    let signed_in_at = counting
+        .iter()
+        .map(|proof| proof.proven_at)
+        .max()
+        .unwrap_or(session.snapshot().signed_in_at);
+    let reached = state.authentication.assurance_of(&methods);
+    let asked = request
+        .acr_values
+        .as_deref()
+        .and_then(|values| levels.asked(values))
+        .map(assurance_for);
+    let enough = asked.is_none_or(|asked| reached >= Some(asked));
+    let acr = reached
+        .and_then(|reached| levels.reached(requirement_for(reached)))
+        .map(str::to_owned);
+    Ok(Standing {
+        person: SignedInPerson {
+            user_id: session.user_id(),
+            session_id: session.id(),
+            signed_in_at,
+            methods,
+            acr,
+        },
+        asked,
+        enough,
+    })
 }
 
 async fn issue(
@@ -192,11 +276,107 @@ fn authorization_cookie(slug: &str, value: &str, max_age: i64) -> String {
     )
 }
 
+fn client_of(headers: &HeaderMap, address: Option<std::net::IpAddr>) -> ClientInfo {
+    ClientInfo {
+        address: address.map(|a| a.to_string()),
+        description: headers
+            .get(header::USER_AGENT)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned),
+    }
+}
+
+/// Keeps the request while the person signs in or steps up, and sends the
+/// browser to the sign-in page with the authorization cookie, and the
+/// sign-in cookie of a step-up when one was started.
+async fn hold(
+    state: &AuthorizationState,
+    tenant: &TenantContext,
+    slug: &str,
+    request: AuthorizationRequest,
+    step_up: Option<String>,
+) -> Response {
+    let location = sign_in_address(slug, &request);
+    match state.authorization.hold(tenant, request).await {
+        Ok((id, secret)) => {
+            let mut response = redirect_to_path(&location);
+            set_cookie(
+                &mut response,
+                &authorization_cookie(
+                    slug,
+                    &format!("{id}.{}", secret.expose()),
+                    PENDING_LIFETIME.whole_seconds(),
+                ),
+            );
+            if let Some(handle) = step_up {
+                set_cookie(
+                    &mut response,
+                    &sign_in_cookie(slug, &handle, SIGN_IN_COOKIE_SECONDS),
+                );
+            }
+            response
+        }
+        Err(error) => Problem::from(error).into_response(),
+    }
+}
+
+/// Starts a step-up of `session`, carrying `carried`, to what the request
+/// asks for; answers `unmet_authentication_requirements` when the person
+/// cannot reach it.
+#[allow(clippy::too_many_arguments)]
+async fn step_up(
+    state: &AuthorizationState,
+    tenant: &TenantContext,
+    slug: &str,
+    client: ClientInfo,
+    request: AuthorizationRequest,
+    session: &Session,
+    standing: Standing,
+    carried: Vec<String>,
+) -> Response {
+    let asked = StepUpRequest {
+        session_id: session.id(),
+        user_id: session.user_id(),
+        carried,
+        demanded: standing.asked,
+    };
+    match state
+        .authentication
+        .start_step_up(tenant, client, asked)
+        .await
+    {
+        Ok(StepUp::Started(started)) => {
+            let handle = format!("{}.{}", started.transaction_id, started.secret.expose());
+            hold(state, tenant, slug, request, Some(handle)).await
+        }
+        Ok(StepUp::Unreachable) => {
+            let mut response = redirect_error(
+                &error_for(
+                    &request,
+                    "unmet_authentication_requirements",
+                    "the person cannot reach the assurance asked for",
+                ),
+                &issuer(state, slug),
+            );
+            forget_authorization(&mut response, slug);
+            response
+        }
+        // The session reaches what the step-up would demand: nothing to ask.
+        Ok(StepUp::NotNeeded) => {
+            let mut response = issue(state, tenant, slug, &request, &standing.person).await;
+            forget_authorization(&mut response, slug);
+            response
+        }
+        Err(error) => Problem::from(error).into_response(),
+    }
+}
+
 async fn authorize(
     state: &AuthorizationState,
     tenant: &TenantContext,
     slug: &str,
     headers: &HeaderMap,
+    client: ClientInfo,
     parameters: &AuthorizationParameters,
 ) -> Response {
     let request = match state.authorization.check(tenant, parameters).await {
@@ -207,39 +387,46 @@ async fn authorize(
         }
         Err(error) => return Problem::from(error).into_response(),
     };
-    let person = match signed_in(state, tenant, headers).await {
-        Ok(person) => person,
+    let session = match signed_in(state, tenant, headers).await {
+        Ok(session) => session,
         Err(response) => return *response,
     };
-    match (
-        request.decide(person.as_ref(), state.authorization.now()),
-        person,
-    ) {
-        (SessionDecision::Issue, Some(person)) => {
-            issue(state, tenant, slug, &request, &person).await
+    let now = state.authorization.now();
+    let standing = match &session {
+        Some(session) => match standing(state, tenant, &request, session, now, None).await {
+            Ok(standing) => Some(standing),
+            Err(response) => return *response,
+        },
+        None => None,
+    };
+    let decision = request.decide(
+        session.is_some(),
+        standing
+            .as_ref()
+            .map_or(&[][..], |standing| standing.person.methods.as_slice()),
+        standing.as_ref().is_some_and(|standing| standing.enough),
+    );
+    match (decision, session, standing) {
+        (SessionDecision::Issue, Some(_), Some(standing)) => {
+            issue(state, tenant, slug, &request, &standing.person).await
         }
-        (SessionDecision::LoginRequired | SessionDecision::Issue, _) => redirect_error(
+        (SessionDecision::StepUp { carried }, Some(session), Some(standing)) => {
+            step_up(
+                state, tenant, slug, client, request, &session, standing, carried,
+            )
+            .await
+        }
+        (SessionDecision::SignIn, _, _) => hold(state, tenant, slug, request, None).await,
+        (
+            SessionDecision::LoginRequired
+            | SessionDecision::Issue
+            | SessionDecision::StepUp { .. },
+            _,
+            _,
+        ) => redirect_error(
             &error_for(&request, "login_required", "the person is not signed in"),
             &issuer(state, slug),
         ),
-        (SessionDecision::SignIn, _) => {
-            let location = sign_in_address(slug, &request);
-            match state.authorization.hold(tenant, request).await {
-                Ok((id, secret)) => {
-                    let mut response = redirect_to_path(&location);
-                    set_cookie(
-                        &mut response,
-                        &authorization_cookie(
-                            slug,
-                            &format!("{id}.{}", secret.expose()),
-                            PENDING_LIFETIME.whole_seconds(),
-                        ),
-                    );
-                    response
-                }
-                Err(error) => Problem::from(error).into_response(),
-            }
-        }
     }
 }
 
@@ -269,19 +456,22 @@ async fn authorize_by_query(
     State(state): State<AuthorizationState>,
     Extension(tenant): Extension<TenantContext>,
     Extension(TenantSlug(slug)): Extension<TenantSlug>,
+    address: Option<Extension<ClientAddress>>,
     RawQuery(query): RawQuery,
     headers: HeaderMap,
 ) -> Response {
     let parameters = AuthorizationParameters::from_pairs(
         form_urlencoded::parse(query.unwrap_or_default().as_bytes()).into_owned(),
     );
-    authorize(&state, &tenant, &slug, &headers, &parameters).await
+    let client = client_of(&headers, address.and_then(|Extension(ClientAddress(a))| a));
+    authorize(&state, &tenant, &slug, &headers, client, &parameters).await
 }
 
 async fn authorize_by_form(
     State(state): State<AuthorizationState>,
     Extension(tenant): Extension<TenantContext>,
     Extension(TenantSlug(slug)): Extension<TenantSlug>,
+    address: Option<Extension<ClientAddress>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
@@ -298,7 +488,8 @@ async fn authorize_by_form(
     }
     let parameters =
         AuthorizationParameters::from_pairs(form_urlencoded::parse(&body).into_owned());
-    authorize(&state, &tenant, &slug, &headers, &parameters).await
+    let client = client_of(&headers, address.and_then(|Extension(ClientAddress(a))| a));
+    authorize(&state, &tenant, &slug, &headers, client, &parameters).await
 }
 
 fn forget_authorization(response: &mut Response, slug: &str) {
@@ -309,6 +500,7 @@ async fn resume(
     State(state): State<AuthorizationState>,
     Extension(tenant): Extension<TenantContext>,
     Extension(TenantSlug(slug)): Extension<TenantSlug>,
+    address: Option<Extension<ClientAddress>>,
     headers: HeaderMap,
 ) -> Response {
     let handle = cookie(&headers, AUTHORIZATION_COOKIE)
@@ -326,27 +518,58 @@ async fn resume(
         forget_authorization(&mut response, &slug);
         return response;
     };
-    let person = match signed_in(&state, &tenant, &headers).await {
-        Ok(person) => person,
+    let session = match signed_in(&state, &tenant, &headers).await {
+        Ok(session) => session,
         Err(response) => return *response,
     };
     let now = state.authorization.now();
-    let mut response = match person {
-        Some(person)
-            if resumed
-                .request
-                .satisfied_after_sign_in(Some(&person), resumed.received_at, now) =>
+    let request = resumed.request;
+    let denied = |state: &AuthorizationState| {
+        redirect_error(
+            &error_for(&request, "access_denied", "the person did not sign in"),
+            &issuer(state, &slug),
+        )
+    };
+    let mut response = match session {
+        Some(session)
+            if request.signed_in_as_asked(session.snapshot().signed_in_at, resumed.received_at) =>
         {
-            issue(&state, &tenant, &slug, &resumed.request, &person).await
+            match standing(
+                &state,
+                &tenant,
+                &request,
+                &session,
+                now,
+                Some(resumed.received_at),
+            )
+            .await
+            {
+                Err(response) => *response,
+                Ok(standing) if !standing.person.methods.is_empty() && standing.enough => {
+                    issue(&state, &tenant, &slug, &request, &standing.person).await
+                }
+                // A new sign-in that did not reach what was asked: the
+                // session is stepped up, and the request kept again. A
+                // step-up demands the level, so its completion is enough.
+                Ok(standing) => {
+                    let carried = standing.person.methods.clone();
+                    let client =
+                        client_of(&headers, address.and_then(|Extension(ClientAddress(a))| a));
+                    return step_up(
+                        &state,
+                        &tenant,
+                        &slug,
+                        client,
+                        request.clone(),
+                        &session,
+                        standing,
+                        carried,
+                    )
+                    .await;
+                }
+            }
         }
-        _ => redirect_error(
-            &error_for(
-                &resumed.request,
-                "access_denied",
-                "the person did not sign in",
-            ),
-            &issuer(&state, &slug),
-        ),
+        _ => denied(&state),
     };
     forget_authorization(&mut response, &slug);
     response

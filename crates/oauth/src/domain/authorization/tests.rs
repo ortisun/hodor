@@ -557,6 +557,7 @@ fn person(signed_in_at: Timestamp) -> SignedInPerson {
         session_id: SessionId::generate(),
         signed_in_at,
         methods: vec!["password".to_owned()],
+        acr: Some("urn:hodor:acr:single-factor".to_owned()),
     }
 }
 
@@ -568,67 +569,116 @@ fn request_with(prompt: &[&str], max_age: Option<u32>) -> AuthorizationRequest {
     request
 }
 
+fn proofs(ages_in_minutes: &[(&str, i64)], now: Timestamp) -> Vec<Proof> {
+    ages_in_minutes
+        .iter()
+        .map(|(method, minutes)| Proof {
+            method: (*method).to_owned(),
+            proven_at: now - Duration::minutes(*minutes),
+        })
+        .collect()
+}
+
+fn methods(names: &[&str]) -> Vec<String> {
+    names.iter().map(|name| (*name).to_owned()).collect()
+}
+
 #[test]
-fn the_session_decides_whether_the_person_signs_in() {
-    let now = MOMENT + Duration::hours(1);
-    let fresh = person(now - Duration::minutes(1));
-    let old = person(now - Duration::minutes(30));
+fn the_session_decides_whether_the_person_signs_in_or_steps_up() {
+    let password = methods(&["password"]);
+    let issue = SessionDecision::Issue;
+    let step_up = |carried: &[&str]| SessionDecision::StepUp {
+        carried: methods(carried),
+    };
 
     assert_eq!(
-        request_with(&[], None).decide(None, now),
+        request_with(&[], None).decide(false, &[], false),
         SessionDecision::SignIn
     );
+    assert_eq!(request_with(&[], None).decide(true, &password, true), issue);
     assert_eq!(
-        request_with(&[], None).decide(Some(&old), now),
-        SessionDecision::Issue
-    );
-    assert_eq!(
-        request_with(&["none"], None).decide(None, now),
+        request_with(&["none"], None).decide(false, &[], false),
         SessionDecision::LoginRequired
     );
     assert_eq!(
-        request_with(&["none"], None).decide(Some(&old), now),
-        SessionDecision::Issue
+        request_with(&["none"], None).decide(true, &password, true),
+        issue
     );
     assert_eq!(
-        request_with(&["none"], Some(600)).decide(Some(&old), now),
+        request_with(&["login"], None).decide(true, &password, true),
+        SessionDecision::SignIn
+    );
+    assert_eq!(
+        request_with(&["select_account"], None).decide(true, &password, true),
+        SessionDecision::SignIn
+    );
+    assert_eq!(
+        request_with(&["consent"], None).decide(true, &password, true),
+        issue
+    );
+    // Below the level asked for: only what is missing is asked.
+    assert_eq!(
+        request_with(&[], None).decide(true, &password, false),
+        step_up(&["password"])
+    );
+    // Nothing counts any more, as with a stale session for `max_age`.
+    assert_eq!(
+        request_with(&[], Some(600)).decide(true, &[], true),
+        step_up(&[])
+    );
+    // With `prompt=none` nobody is asked anything.
+    assert_eq!(
+        request_with(&["none"], None).decide(true, &password, false),
         SessionDecision::LoginRequired
     );
     assert_eq!(
-        request_with(&["login"], None).decide(Some(&fresh), now),
-        SessionDecision::SignIn
+        request_with(&["none"], Some(600)).decide(true, &[], true),
+        SessionDecision::LoginRequired
     );
+}
+
+#[test]
+fn with_max_age_only_the_methods_proven_within_it_count() {
+    let now = MOMENT + Duration::hours(3);
+    let session = proofs(&[("password", 120), ("webauthn", 1)], now);
+    let names = |request: &AuthorizationRequest| -> Vec<String> {
+        request
+            .counting(&session, now, None)
+            .iter()
+            .map(|proof| proof.method.clone())
+            .collect()
+    };
     assert_eq!(
-        request_with(&["select_account"], None).decide(Some(&fresh), now),
-        SessionDecision::SignIn
+        names(&request_with(&[], None)),
+        methods(&["password", "webauthn"])
     );
+    assert_eq!(names(&request_with(&[], Some(600))), methods(&["webauthn"]));
+    assert!(names(&request_with(&[], Some(30))).is_empty());
     assert_eq!(
-        request_with(&["consent"], None).decide(Some(&old), now),
-        SessionDecision::Issue
+        names(&request_with(&[], Some(7200))),
+        methods(&["password", "webauthn"]),
+        "proven exactly max_age seconds ago still counts"
     );
-    assert_eq!(
-        request_with(&[], Some(600)).decide(Some(&old), now),
-        SessionDecision::SignIn
-    );
-    assert_eq!(
-        request_with(&[], Some(600)).decide(Some(&fresh), now),
-        SessionDecision::Issue
-    );
+    // Proven after the request arrived: made for it, whatever max_age says.
+    let received = now - Duration::minutes(2);
+    let after: Vec<String> = request_with(&[], Some(0))
+        .counting(&session, now, Some(received))
+        .iter()
+        .map(|proof| proof.method.clone())
+        .collect();
+    assert_eq!(after, methods(&["webauthn"]));
 }
 
 #[test]
 fn after_signing_in_a_request_that_asked_for_a_new_sign_in_needs_one() {
     let received = MOMENT + Duration::hours(1);
-    let now = received + Duration::minutes(2);
-    let before = person(received - Duration::minutes(5));
-    let after = person(received + Duration::minutes(1));
+    let before = received - Duration::minutes(5);
+    let after = received + Duration::minutes(1);
 
-    assert!(!request_with(&[], None).satisfied_after_sign_in(None, received, now));
-    assert!(request_with(&[], None).satisfied_after_sign_in(Some(&before), received, now));
-    assert!(!request_with(&["login"], None).satisfied_after_sign_in(Some(&before), received, now));
-    assert!(request_with(&["login"], None).satisfied_after_sign_in(Some(&after), received, now));
-    assert!(!request_with(&[], Some(60)).satisfied_after_sign_in(Some(&before), received, now));
-    assert!(request_with(&[], Some(600)).satisfied_after_sign_in(Some(&after), received, now));
+    assert!(request_with(&[], None).signed_in_as_asked(before, received));
+    assert!(!request_with(&["login"], None).signed_in_as_asked(before, received));
+    assert!(request_with(&["login"], None).signed_in_as_asked(after, received));
+    assert!(!request_with(&["select_account"], None).signed_in_as_asked(before, received));
 }
 
 #[test]

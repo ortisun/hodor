@@ -166,6 +166,14 @@ pub trait Authenticator: Send + Sync {
         Ok(true)
     }
 
+    /// Whether a satisfied step resists phishing: a key held by the person
+    /// answered a challenge bound to this tenant's address, so that what
+    /// someone tricked out of the person cannot be replayed. Most
+    /// authenticators keep the default: they do not.
+    fn resists_phishing(&self) -> bool {
+        false
+    }
+
     /// Makes the challenge this step's answer must be to, for a step that
     /// can check an answer only to a question it asked. The engine keeps
     /// the challenge in the transaction, and `perform` finds it there.

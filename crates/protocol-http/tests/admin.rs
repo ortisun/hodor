@@ -23,8 +23,7 @@ use hodor_kernel::random::testing::FakeDigest;
 use hodor_kernel::sealing::testing::FakeSecretBox;
 use hodor_kernel::uow::testing::InMemoryUnitOfWorkFactory;
 use hodor_kernel::{
-    Caller, DomainError, EventHandler, TenantContext, TenantId, Timestamp, UnitOfWorkFactory,
-    UserId,
+    Caller, DomainError, EventHandler, TenantContext, Timestamp, UnitOfWorkFactory, UserId,
 };
 use hodor_keys::api::{KeyService, RotationPolicy};
 use hodor_keys::testing::{FakeKeyProvider, InMemoryKeys};
@@ -36,6 +35,8 @@ use hodor_session::api::{
     Assurance, ClientInfo, SessionService, SessionTimeouts, SessionToken, StartSession,
 };
 use hodor_session::testing::{InMemorySessions, SequentialRandom};
+use hodor_tenant::api::{CreateTenant, TenantService};
+use hodor_tenant::testing::InMemoryTenants;
 use http_body_util::BodyExt as _;
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -153,8 +154,30 @@ async fn world_with_keys(with_keys: bool) -> World {
         )
     });
 
-    let acme = TenantContext::assume(TenantId::generate());
-    let globex = TenantContext::assume(TenantId::generate());
+    let tenant_rows = InMemoryTenants::default();
+    let tenants = TenantService::new(
+        units(),
+        Arc::new(tenant_rows.clone()),
+        Arc::new(tenant_rows),
+        clock.clone(),
+    );
+    let mut contexts = Vec::new();
+    for slug in ["acme", "globex"] {
+        let created = tenants
+            .create(
+                CreateTenant {
+                    slug: slug.to_owned(),
+                    display_name: slug.to_uppercase(),
+                    open_registration: false,
+                    system: false,
+                },
+                Caller::system(),
+            )
+            .await
+            .expect("tenant");
+        contexts.push(TenantContext::assume(created.id()));
+    }
+    let (acme, globex) = (contexts[0].clone(), contexts[1].clone());
     let state = AdminState {
         tokens: tokens.clone(),
         authorization: authorization.clone(),
@@ -165,6 +188,7 @@ async fn world_with_keys(with_keys: bool) -> World {
         keys,
         key_rotation: RotationPolicy::DEFAULT,
         applications: applications(&units_of_work, clock.clone()),
+        tenants,
         public_url: "https://auth.example".to_owned(),
     };
     let router = public_router(
@@ -417,7 +441,7 @@ fn the_document_and_the_routes_list_the_same_operations_and_permissions() {
         })
         .collect();
     assert_eq!(documented, served);
-    assert_eq!(served.len(), 37);
+    assert_eq!(served.len(), 39);
 
     // Every operation says how it refuses.
     let document: serde_json::Value = serde_json::from_str(ADMIN_OPENAPI).expect("valid JSON");
@@ -2360,4 +2384,124 @@ async fn the_applications_of_one_tenant_do_not_exist_for_another() {
         .await;
     assert_eq!(still.body["status"], "enabled");
     assert_eq!(still.body["secrets"].as_array().map(Vec::len), Some(1));
+}
+
+#[tokio::test]
+async fn an_administrator_reads_and_replaces_the_assurance_levels_of_their_tenant_only() {
+    let world = world().await;
+    let defaults = world
+        .as_administrator(Method::GET, "/assurance-levels", None)
+        .await;
+    assert_eq!(defaults.status, StatusCode::OK, "{:?}", defaults.body);
+    assert_eq!(
+        defaults.body,
+        serde_json::json!({ "levels": [
+            { "acr": "urn:hodor:acr:single-factor", "requirement": "single_factor" },
+            { "acr": "urn:hodor:acr:mfa", "requirement": "multi_factor" },
+        ]})
+    );
+
+    let replaced = world
+        .as_administrator(
+            Method::PUT,
+            "/assurance-levels",
+            Some(serde_json::json!({ "levels": [
+                { "acr": "urn:acme:strong", "requirement": "phishing_resistant" },
+                { "acr": "urn:acme:mfa", "requirement": "multi_factor" },
+            ]})),
+        )
+        .await;
+    assert_eq!(replaced.status, StatusCode::OK, "{:?}", replaced.body);
+    assert_eq!(
+        replaced.body["levels"][0]["acr"], "urn:acme:mfa",
+        "weakest first"
+    );
+    let read = world
+        .as_administrator(Method::GET, "/assurance-levels", None)
+        .await;
+    assert_eq!(read.body, replaced.body);
+
+    // Globex keeps its own.
+    let (_, globex) = world
+        .person(
+            &world.globex,
+            "root@globex.example",
+            &[Role::TenantAdministrator],
+        )
+        .await;
+    let theirs = world
+        .send(
+            Method::GET,
+            "/t/globex/api/v1/admin/assurance-levels",
+            Some(&format!("Bearer {globex}")),
+            None,
+        )
+        .await;
+    assert_eq!(theirs.body, defaults.body);
+
+    world.record_audit().await;
+    let records = world
+        .as_administrator(Method::GET, "/audit-records", None)
+        .await;
+    assert!(
+        records.body["items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .any(|record| record["action"] == "tenant.settings_changed"),
+        "{:?}",
+        records.body
+    );
+}
+
+#[tokio::test]
+async fn levels_that_break_a_rule_are_refused_and_an_auditor_only_reads_them() {
+    let world = world().await;
+    for levels in [
+        serde_json::json!({ "levels": [] }),
+        serde_json::json!({ "levels": [{ "acr": "has space", "requirement": "single_factor" }] }),
+        serde_json::json!({ "levels": [
+            { "acr": "same", "requirement": "single_factor" },
+            { "acr": "same", "requirement": "multi_factor" },
+        ]}),
+    ] {
+        let refused = world
+            .as_administrator(Method::PUT, "/assurance-levels", Some(levels))
+            .await;
+        assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(refused.code(), "tenant.settings_invalid");
+    }
+    let unknown = world
+        .as_administrator(
+            Method::PUT,
+            "/assurance-levels",
+            Some(serde_json::json!({ "levels": [{ "acr": "x", "requirement": "very_strong" }] })),
+        )
+        .await;
+    assert_eq!(unknown.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(unknown.code(), "request.body_invalid");
+
+    let acme = world.acme.clone();
+    let (_, auditor) = world
+        .person(&acme, "auditor@example.com", &[Role::TenantAuditor])
+        .await;
+    let authorization = format!("Bearer {auditor}");
+    let read = world
+        .send(
+            Method::GET,
+            "/t/acme/api/v1/admin/assurance-levels",
+            Some(&authorization),
+            None,
+        )
+        .await;
+    assert_eq!(read.status, StatusCode::OK);
+    let written = world
+        .send(
+            Method::PUT,
+            "/t/acme/api/v1/admin/assurance-levels",
+            Some(&authorization),
+            Some(serde_json::json!({ "levels": [{ "acr": "x", "requirement": "single_factor" }] })),
+        )
+        .await;
+    assert_eq!(written.status, StatusCode::FORBIDDEN);
 }

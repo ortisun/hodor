@@ -52,17 +52,7 @@ fn each_method_is_named_as_rfc_8176_names_it() {
     assert!(authentication_methods(&methods(&["something-new"])).is_empty());
 }
 
-#[test]
-fn assurance_is_multi_factor_only_for_two_kinds_of_factor() {
-    assert_eq!(assurance(&methods(&["password"])), ACR_SINGLE_FACTOR);
-    assert_eq!(
-        assurance(&methods(&["totp", "webauthn"])),
-        ACR_SINGLE_FACTOR
-    );
-    assert_eq!(assurance(&methods(&["external"])), ACR_SINGLE_FACTOR);
-    assert_eq!(assurance(&methods(&["password", "totp"])), ACR_MULTI_FACTOR);
-    assert_eq!(assurance(&methods(&["passkey"])), ACR_MULTI_FACTOR);
-}
+const ACR_MULTI_FACTOR: &str = "urn:hodor:acr:mfa";
 
 fn code(nonce: Option<&str>, signed_in: &[&str]) -> AuthorizationCode {
     AuthorizationCode {
@@ -78,6 +68,7 @@ fn code(nonce: Option<&str>, signed_in: &[&str]) -> AuthorizationCode {
         user_id: UserId::generate(),
         signed_in_at: now() - Duration::minutes(3),
         methods: methods(signed_in),
+        acr: nonce.map(|_| ACR_MULTI_FACTOR.to_owned()),
         issued_at: now(),
         expires_at: now() + Duration::seconds(60),
         redeemed_at: Some(now()),
@@ -141,7 +132,10 @@ fn an_id_token_leaves_out_what_the_sign_in_did_not_have() {
     );
     assert!(claims.get("nonce").is_none());
     assert!(claims.get("amr").is_none(), "no name in RFC 8176");
-    assert_eq!(claims["acr"], ACR_SINGLE_FACTOR);
+    assert!(
+        claims.get("acr").is_none(),
+        "the code reached no level of the tenant"
+    );
 }
 
 #[test]
@@ -338,8 +332,13 @@ fn userinfo_answers_only_the_claims_of_the_token_s_scopes() {
 
 #[test]
 fn discovery_names_only_what_is_built() {
-    let document = discovery_document(ISSUER);
+    let document = discovery_document(ISSUER, &["urn:example:one", "urn:example:two"]);
     assert_eq!(document["issuer"], ISSUER);
+    assert_eq!(
+        document["acr_values_supported"],
+        json!(["urn:example:one", "urn:example:two"]),
+        "the tenant's levels, as given"
+    );
     assert_eq!(
         document["authorization_endpoint"],
         format!("{ISSUER}/oauth2/authorize")

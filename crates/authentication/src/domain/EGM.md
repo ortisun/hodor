@@ -30,7 +30,9 @@ reach other crates only through `hodor_authentication::api` in `../lib.rs`.
   `is_required()`.
 - `Condition` (`flow.rs:Condition`): `AssuranceNotReached`, which holds while
   the satisfied methods are below the assurance the sign-in must reach, and
-  `MultiFactorNotReached`, which holds while they are below multi-factor.
+  `MultiFactorNotReached`, which holds while they are below multi-factor, and
+  `StrongerAssuranceNeeded`, which holds while they are below the higher of
+  multi-factor and what the sign-in must reach.
 
 ### Engine (`engine.rs`)
 
@@ -43,8 +45,18 @@ reach other crates only through `hodor_authentication::api` in `../lib.rs`.
   and an error leaves the transaction unchanged),
   `challenge(tenant, flow, transaction, step, now)` (the current step's, or
   an alternative's while `current_step` is 0),
-  `assurance(transaction) -> Option<Assurance>` (counts `factor` and
-  `second_factor` of every satisfied method).
+  `assurance(transaction) -> Option<Assurance>` over the carried and satisfied
+  methods, `assurance_of_methods(methods)` (counts `factor` and
+  `second_factor` of every method; two kinds with an authenticator whose
+  `resists_phishing()` is true are `PhishingResistant`),
+  `satisfied_by(flow, carried)` (steps a step-up starts past),
+  `reachable(tenant, flow, transaction, must_reach)` and
+  `settle(tenant, flow, transaction, demanded)` for a step-up just started.
+- `Authenticator::resists_phishing()` defaults to `false`; the WebAuthn and
+  passkey authenticators answer `true`.
+- `AuthTransaction::start_step_up(...)` makes a step-up transaction with
+  `carried_methods`, `demanded` and `raised_session`; `counted_methods()` is
+  the carried methods followed by the satisfied ones.
 - Validity rules added for steps that are not required: they come after every
   required step, never establish who is signing in, and prove a factor; only
   required steps count towards the minimum assurance.

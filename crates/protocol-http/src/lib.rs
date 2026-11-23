@@ -33,7 +33,7 @@ pub use health::{Health, ReadinessCheck, ops_router};
 pub use interaction::{InteractionState, interaction_routes};
 pub use key_set::key_set_routes;
 pub use logout::{LogoutState, logout_routes};
-pub use openid::{UserInfoState, discovery_routes, userinfo_routes};
+pub use openid::{DiscoveryState, UserInfoState, discovery_routes, userinfo_routes};
 pub use pages::{
     CONSOLE_ASSETS_PATH, CONSOLE_PATHS, PAGE_ASSETS_PATH, PAGE_PATHS,
     PAGES_CONTENT_SECURITY_POLICY, PROVIDER_CALLBACK_PAGE, Pages,

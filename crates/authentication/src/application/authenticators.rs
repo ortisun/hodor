@@ -346,6 +346,10 @@ impl Authenticator for WebAuthnAuthenticator {
         Self::KIND
     }
 
+    fn resists_phishing(&self) -> bool {
+        true
+    }
+
     fn traits(&self) -> AuthenticatorTraits {
         AuthenticatorTraits {
             identifies: false,
@@ -468,6 +472,10 @@ impl PasskeyAuthenticator {
 impl Authenticator for PasskeyAuthenticator {
     fn kind(&self) -> &'static str {
         Self::KIND
+    }
+
+    fn resists_phishing(&self) -> bool {
+        true
     }
 
     fn traits(&self) -> AuthenticatorTraits {

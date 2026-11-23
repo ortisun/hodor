@@ -33,7 +33,8 @@ use hodor_keys::api::{
     TenantSecretBox,
 };
 use hodor_tenant::api::{
-    Caller, CreateTenant, DirectoryEntry, SecondFactorPolicy, TenantDirectory as _, TenantService,
+    AssuranceLevel, AssuranceLevels, AssuranceRequirement, Caller, CreateTenant, DirectoryEntry,
+    SecondFactorPolicy, TenantDirectory as _, TenantService,
 };
 use std::error::Error;
 use std::io::{Read as _, Write as _};
@@ -722,6 +723,18 @@ enum TenantCommand {
         #[arg(long, value_enum)]
         policy: SecondFactorArg,
     },
+    /// Replace the assurance levels applications ask for in `acr_values`
+    /// and tokens name in `acr`; without `--level`, print them.
+    AssuranceLevels {
+        /// The tenant's slug.
+        #[arg(long)]
+        slug: String,
+        /// A level, as `<name>=<requirement>`, the requirement being
+        /// `single_factor`, `multi_factor` or `phishing_resistant`. Given
+        /// once per level; the levels given replace all the others.
+        #[arg(long = "level")]
+        levels: Vec<String>,
+    },
 }
 
 /// The command-line tool acts as the system: no authenticated
@@ -831,6 +844,55 @@ async fn run_tenant(
             settings.authentication.second_factor = policy;
             service.change_settings(&tenant, settings, caller()).await?;
             Ok(format!("{} second-factor {said}", entry.slug))
+        }
+        TenantCommand::AssuranceLevels { slug, levels } => {
+            let entry = existing(service, &slug).await?;
+            let tenant = TenantContext::assume(entry.tenant_id);
+            let mut settings = service.get(&tenant).await?.snapshot().settings.clone();
+            if !levels.is_empty() {
+                let parsed = levels
+                    .iter()
+                    .map(|given| {
+                        given
+                            .split_once('=')
+                            .and_then(|(acr, requirement)| {
+                                Some(AssuranceLevel {
+                                    acr: acr.to_owned(),
+                                    requirement: AssuranceRequirement::from_name(requirement)?,
+                                })
+                            })
+                            .ok_or_else(|| {
+                                DomainError::invalid(
+                                    "tenant.settings_invalid",
+                                    "a level is written <name>=<requirement>, the requirement \
+                                     being single_factor, multi_factor or phishing_resistant",
+                                )
+                            })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                settings.authentication.assurance_levels = AssuranceLevels::new(parsed)?;
+                settings = service
+                    .change_settings(&tenant, settings, caller())
+                    .await?
+                    .snapshot()
+                    .settings
+                    .clone();
+            }
+            let lines: Vec<String> = settings
+                .authentication
+                .assurance_levels
+                .levels()
+                .iter()
+                .map(|level| {
+                    format!(
+                        "{} {} {}",
+                        entry.slug,
+                        level.acr,
+                        level.requirement.as_str()
+                    )
+                })
+                .collect();
+            Ok(lines.join("\n"))
         }
     }
 }

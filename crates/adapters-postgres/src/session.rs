@@ -16,7 +16,7 @@ pub struct PgSessionStore;
 
 const COLUMNS: &str = "id, user_id, token_hash, signed_in_at, assurance, methods, started_at,
      last_activity_at, idle_timeout_seconds, absolute_expires_at, client_address,
-     client_description, revoked_at, revocation_reason";
+     client_description, revoked_at, revocation_reason, method_proven_at";
 
 type Row = (
     Uuid,
@@ -33,6 +33,7 @@ type Row = (
     Option<String>,
     Option<Timestamp>,
     Option<String>,
+    Option<Vec<Timestamp>>,
 );
 
 fn corrupted(what: &str) -> DomainError {
@@ -59,6 +60,7 @@ fn to_session(row: Row) -> Result<Session, DomainError> {
         description,
         revoked_at,
         revocation_reason,
+        method_proven_at,
     ) = row;
     let hash: [u8; 32] = token_hash
         .try_into()
@@ -69,6 +71,9 @@ fn to_session(row: Row) -> Result<Session, DomainError> {
         token_hash: TokenHash::from_stored(hash),
         signed_in_at,
         assurance: Assurance::from_stored(&assurance)?,
+        // Rows stored before the times were kept read every method as
+        // proven when the person signed in.
+        method_proven_at: method_proven_at.unwrap_or_else(|| vec![signed_in_at; methods.len()]),
         methods,
         started_at,
         last_activity_at,
@@ -94,8 +99,8 @@ impl SessionStore for PgSessionStore {
             "INSERT INTO session.session
                  (tenant_id, id, user_id, token_hash, signed_in_at, assurance, methods, started_at,
                   last_activity_at, idle_timeout_seconds, absolute_expires_at, client_address,
-                  client_description, revoked_at, revocation_reason)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
+                  client_description, revoked_at, revocation_reason, method_proven_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
         )
         .bind(tenant.as_uuid())
         .bind(state.id.as_uuid())
@@ -112,6 +117,7 @@ impl SessionStore for PgSessionStore {
         .bind(&state.client.description)
         .bind(state.revoked_at)
         .bind(&state.revocation_reason)
+        .bind(&state.method_proven_at)
         .execute(connection(uow)?)
         .await
         .map_err(|e| database_error(&e))?;
@@ -157,7 +163,8 @@ impl SessionStore for PgSessionStore {
         let state = session.snapshot();
         let updated = sqlx::query(
             "UPDATE session.session
-             SET token_hash = $3, last_activity_at = $4, revoked_at = $5, revocation_reason = $6
+             SET token_hash = $3, last_activity_at = $4, revoked_at = $5, revocation_reason = $6,
+                 signed_in_at = $7, assurance = $8, methods = $9, method_proven_at = $10
              WHERE tenant_id = $1 AND id = $2",
         )
         .bind(tenant.as_uuid())
@@ -166,6 +173,10 @@ impl SessionStore for PgSessionStore {
         .bind(state.last_activity_at)
         .bind(state.revoked_at)
         .bind(&state.revocation_reason)
+        .bind(state.signed_in_at)
+        .bind(state.assurance.as_str())
+        .bind(&state.methods)
+        .bind(&state.method_proven_at)
         .execute(connection(uow)?)
         .await
         .map_err(|e| database_error(&e))?

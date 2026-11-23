@@ -13,9 +13,9 @@ This page specifies the part built in Milestone 1. Sessions of individual applic
 | Identifier | A `SessionId`. Safe to show and to log; it does not grant access |
 | User | Whose session it is |
 | Token | The secret the browser presents. Only its hash is stored |
-| Signed in at | When the user last proved who they are |
-| Assurance | How strongly: single factor or multiple factors |
-| Methods | Which methods were used, for example `password` |
+| Signed in at | When the user last proved who they are: the latest of the times below |
+| Assurance | How strongly: single factor, multi-factor or phishing-resistant ([what a sign-in must reach](authentication.md#what-a-sign-in-must-reach)) |
+| Methods | Which methods were used, for example `password`, each with the time it was last proven |
 | Last activity | When the session was last used, to the nearest minute |
 | Idle timeout | How long the session survives without activity |
 | Absolute expiry | The moment after which the session ends whatever happens |
@@ -32,6 +32,21 @@ This page specifies the part built in Milestone 1. Sessions of individual applic
 ### The facts a session carries
 
 A session records the facts of the sign-in: when, how strongly, and by which methods. Other contexts read these facts to decide whether the session is good enough for what is being asked, without knowing how sign-in works. An application that requires a recent or a stronger sign-in compares its requirement with these facts.
+
+Each method keeps the time it was proven, so that a request that accepts only a recent sign-in (`max_age`) can tell which of them are recent: a person who signed in with a password in the morning and answered with a security key a minute ago has a recent key and an old password.
+
+### Raising a session
+
+A [step-up](authentication.md#step-up) does not start a new session: it **raises** the one the person has.
+
+| Rule | Why |
+|---|---|
+| Only an active session is raised, and only for the user it belongs to | A session ended meanwhile is not brought back |
+| The methods proven in the step-up are added, or their time is moved to now when the session had them already. The methods it did not prove keep their times | Each method says when it was last proven |
+| The assurance becomes the higher of the session's and the step-up's | A step-up that carried only the recent methods does not lower what the older ones proved |
+| Signed in at becomes now | The person proved who they are now |
+| The token is replaced | What the session may do increased |
+| The timeouts and the absolute expiry do not change | A step-up does not keep a session alive past its limit |
 
 ## Lifecycle
 
@@ -71,6 +86,7 @@ Rules:
 | Revoke one of a user's sessions | Ends a session only if it belongs to the given user and is active; otherwise it reports that there is no such session, without saying which was the case. This is what a person uses on their own sessions |
 | Revoke a user's sessions | Ends all of a user's active sessions, optionally keeping one: used when a password changes, where the session that made the change survives |
 | Replace token | Gives a session a new token |
+| Raise session | Adds the methods of a step-up to a session, raises its assurance and replaces its token, as [raising a session](#raising-a-session) says |
 
 ### Events
 
@@ -78,6 +94,7 @@ Rules:
 |---|---|
 | `session.started` | A session started; carries the user, the assurance and the methods |
 | `session.revoked` | A session was ended on purpose; carries the reason |
+| `session.raised` | A step-up raised a session; carries the user, the new assurance and the methods proven |
 
 Expiry produces no event, since nothing happens at that moment. Events carry identifiers and never a token or its hash. The address and browser description stay in the session row.
 
@@ -99,8 +116,9 @@ Expiry produces no event, since nothing happens at that moment. Events carry ide
 | `user_id` | `uuid` | The user, of the identity context. Not a database foreign key |
 | `token_hash` | `bytea` | SHA-256 of the token; unique within the tenant |
 | `signed_in_at` | `timestamptz` | |
-| `assurance` | `text` | `single_factor` or `multi_factor` |
+| `assurance` | `text` | `single_factor`, `multi_factor` or `phishing_resistant` |
 | `methods` | `text[]` | |
+| `method_proven_at` | `timestamptz[]` | When each of `methods` was last proven, in the same order. Null in rows stored before it existed, which read every method as proven at `signed_in_at` |
 | `started_at`, `last_activity_at` | `timestamptz` | |
 | `idle_timeout_seconds` | `integer` | Copied from the tenant's policy at the start |
 | `absolute_expires_at` | `timestamptz` | Never changes |
@@ -117,6 +135,5 @@ Rows of expired and revoked sessions stay until a cleanup job removes them; that
 | Item | Planned in |
 |---|---|
 | Removing old rows | Later in Phase 1 |
-| Raising a session's assurance after a stronger sign-in | Phase 4 |
 | Sessions of individual applications, and signing them out | Phase 2 |
 | Limits on concurrent sessions, trusted devices | Phase 4 |

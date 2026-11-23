@@ -48,11 +48,12 @@ use hodor_oauth::api::{
 };
 use hodor_observability::{LogFormat, Telemetry};
 use hodor_protocol_http::{
-    AdminState, AuthorizationState, ConsoleState, Health, InteractionState, Limits, LogoutState,
-    Pages, ReadinessCheck, ResolvedTenant, TenantResolver, TenantStatus as HttpTenantStatus,
-    TokenState, UserInfoState, admin_routes, authorization_routes, console_routes,
-    discovery_routes, interaction_routes, key_set_routes, logout_routes, ops_router,
-    policy_agent_routes, public_router, serve, token_routes, userinfo_routes,
+    AdminState, AuthorizationState, ConsoleState, DiscoveryState, Health, InteractionState, Limits,
+    LogoutState, Pages, ReadinessCheck, ResolvedTenant, TenantResolver,
+    TenantStatus as HttpTenantStatus, TokenState, UserInfoState, admin_routes,
+    authorization_routes, console_routes, discovery_routes, interaction_routes, key_set_routes,
+    logout_routes, ops_router, policy_agent_routes, public_router, serve, token_routes,
+    userinfo_routes,
 };
 use hodor_session::api::SessionService;
 use hodor_tenant::api::{TenantDirectory as _, TenantService, TenantStatus};
@@ -286,7 +287,8 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
     let _engines = authorization_engines(&config, &database)?;
 
     let keys = keys(&config, &database)?;
-    let authorization = authorization(&config, &database);
+    let interaction = interaction(&config, &database)?;
+    let authorization = authorization(&config, &database, interaction.authentication.clone());
     let mut oauth2 = authorization_routes(authorization.clone());
     if let (Some(keys), Some(setting)) = (&keys, &config.secret_keys) {
         oauth2 = oauth2.merge(token_routes(token(
@@ -305,10 +307,7 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
         )));
     }
     let mut tenant_routes = axum::Router::new()
-        .nest(
-            "/interaction",
-            interaction_routes(interaction(&config, &database)?),
-        )
+        .nest("/interaction", interaction_routes(interaction))
         .nest("/oauth2", oauth2)
         .nest(
             "/api/v1/admin",
@@ -326,7 +325,10 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
         Some(keys) => {
             tenant_routes = tenant_routes
                 .merge(key_set_routes(keys))
-                .merge(discovery_routes(config.public_url.clone()));
+                .merge(discovery_routes(DiscoveryState {
+                    public_url: config.public_url.clone(),
+                    tenants: tenant_service(&database),
+                }));
         }
         None => tracing::warn!(
             "HODOR_SECRET_KEYS is not set: no key set is published, keys cannot be managed and \
@@ -493,13 +495,16 @@ fn interaction(config: &Config, database: &Database) -> Result<InteractionState,
     // Signing in through an identity provider is another alternative, and
     // a code of an authenticator application one more step, both offered
     // only by an installation that can keep secrets. A recovery code
-    // stands in for either second factor.
+    // stands in for either second factor. The security key is also asked
+    // for when an application asked a step-up for more than multi-factor:
+    // it is the step that makes a sign-in phishing-resistant.
     let second_factor = Requirement::Conditional(Condition::MultiFactorNotReached);
+    let stronger = Requirement::Conditional(Condition::StrongerAssuranceNeeded);
     let mut flow = AuthFlow::built_in()
         .with_step(
             WebAuthnAuthenticator::KIND,
             WebAuthnAuthenticator::KIND,
-            second_factor,
+            stronger,
         )
         .with_substitute(WebAuthnAuthenticator::KIND, RecoveryCodeAuthenticator::KIND)
         .with_alternative(PasskeyAuthenticator::KIND, PasskeyAuthenticator::KIND);
@@ -563,8 +568,22 @@ fn interaction(config: &Config, database: &Database) -> Result<InteractionState,
     })
 }
 
+/// The tenant use cases, for the settings other routes read.
+fn tenant_service(database: &Database) -> TenantService {
+    TenantService::new(
+        Arc::new(database.clone()),
+        Arc::new(PgTenantRepository),
+        Arc::new(PgTenantDirectory::new(database.clone())),
+        Arc::new(SystemClock),
+    )
+}
+
 /// Builds everything the authorization endpoint needs.
-fn authorization(config: &Config, database: &Database) -> AuthorizationState {
+fn authorization(
+    config: &Config,
+    database: &Database,
+    authentication: AuthenticationService,
+) -> AuthorizationState {
     let units = Arc::new(database.clone());
     let clock = Arc::new(SystemClock);
     let digest = Arc::new(Sha256Digest);
@@ -583,6 +602,8 @@ fn authorization(config: &Config, database: &Database) -> AuthorizationState {
             clock: clock.clone(),
         }),
         sessions: SessionService::new(units, Arc::new(PgSessionStore), digest, random, clock),
+        authentication,
+        tenants: tenant_service(database),
         public_url: config.public_url.clone(),
     }
 }
@@ -955,6 +976,7 @@ fn administration(config: &Config, database: &Database) -> Result<AdminState, Do
         keys: keys(config, database)?,
         key_rotation: key_rotation(config)?,
         applications,
+        tenants: tenant_service(database),
         public_url: config.public_url.clone(),
     })
 }

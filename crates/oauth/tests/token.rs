@@ -238,6 +238,7 @@ fn person(world: &World) -> SignedInPerson {
         session_id: SessionId::generate(),
         signed_in_at: world.clock.now() - Duration::minutes(2),
         methods: vec!["password".to_owned()],
+        acr: Some("urn:hodor:acr:single-factor".to_owned()),
     }
 }
 

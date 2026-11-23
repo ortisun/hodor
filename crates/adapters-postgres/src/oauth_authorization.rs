@@ -242,6 +242,7 @@ fn code_from(row: &PgRow) -> Result<AuthorizationCode, DomainError> {
         user_id: UserId::from_uuid(row.try_get("user_id").map_err(get)?),
         signed_in_at: row.try_get("signed_in_at").map_err(get)?,
         methods: row.try_get("methods").map_err(get)?,
+        acr: row.try_get("acr").map_err(get)?,
         issued_at: row.try_get("issued_at").map_err(get)?,
         expires_at: row.try_get("expires_at").map_err(get)?,
         redeemed_at: row.try_get("redeemed_at").map_err(get)?,
@@ -260,8 +261,8 @@ impl AuthorizationCodeStore for PgAuthorizationCodeStore {
             "INSERT INTO oauth.authorization_code
                  (tenant_id, code_hash, grant_id, client_id, redirect_uri, scopes, audiences,
                   code_challenge, nonce, session_id, user_id, signed_in_at, methods, issued_at,
-                  expires_at, redeemed_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
+                  expires_at, redeemed_at, acr)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)",
         )
         .bind(tenant.as_uuid())
         .bind(code.hash.as_bytes().as_slice())
@@ -279,6 +280,7 @@ impl AuthorizationCodeStore for PgAuthorizationCodeStore {
         .bind(code.issued_at)
         .bind(code.expires_at)
         .bind(code.redeemed_at)
+        .bind(code.acr.as_deref())
         .execute(connection(uow)?)
         .await
         .map_err(|e| refused(e, CODE_GRANT_CONSTRAINT, grant_not_found))?;
@@ -294,7 +296,7 @@ impl AuthorizationCodeStore for PgAuthorizationCodeStore {
         sqlx::query(
             "SELECT code_hash, grant_id, client_id, redirect_uri, scopes, audiences,
                     code_challenge, nonce, session_id, user_id, signed_in_at, methods,
-                    issued_at, expires_at, redeemed_at
+                    issued_at, expires_at, redeemed_at, acr
              FROM oauth.authorization_code
              WHERE tenant_id = $1 AND code_hash = $2",
         )

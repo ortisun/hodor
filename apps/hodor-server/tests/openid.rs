@@ -562,3 +562,319 @@ async fn an_application_learns_who_signed_in_and_reads_their_claims() {
     let answer = userinfo(&server, "acme", Method::GET, Some(resource_only)).await;
     assert_eq!(answer.status, StatusCode::UNAUTHORIZED);
 }
+
+/// Who Ana is in a tenant, by its slug.
+async fn ana_of(database: &TestDatabase, slug: &str) -> (TenantContext, hodor_kernel::UserId) {
+    let units = Arc::new(database.app().clone());
+    let entry = TenantService::new(
+        units.clone(),
+        Arc::new(PgTenantRepository),
+        Arc::new(PgTenantDirectory::new(database.app().clone())),
+        Arc::new(SystemClock),
+    )
+    .find_by_slug(slug)
+    .await
+    .expect("lookup")
+    .expect("the tenant");
+    let tenant = TenantContext::assume(entry.tenant_id);
+    let ana = IdentityService::new(units, Arc::new(PgUserRepository), Arc::new(SystemClock))
+        .find_by_login(&tenant, "ana@example.com")
+        .await
+        .expect("lookup")
+        .expect("Ana")
+        .id();
+    (tenant, ana)
+}
+
+/// The bytes of a secret written in base32 without padding (RFC 4648).
+fn base32(text: &str) -> Vec<u8> {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+    let (mut bytes, mut buffer, mut bits) = (Vec::new(), 0_u32, 0_u32);
+    for character in text.bytes() {
+        let value = ALPHABET
+            .iter()
+            .position(|&c| c == character)
+            .expect("base32");
+        buffer = (buffer << 5) | u32::try_from(value).expect("small");
+        bits += 5;
+        if bits >= 8 {
+            bits -= 8;
+            bytes.push(u8::try_from((buffer >> bits) & 0xff).expect("a byte"));
+        }
+    }
+    bytes
+}
+
+/// Gives Ana an authenticator application, with the server's own way of
+/// keeping its secret, and answers the secret's bytes.
+async fn enroll_application(database: &TestDatabase, slug: &str) -> Vec<u8> {
+    use hodor_adapters_crypto::AwsLcHmacSha1;
+    use hodor_adapters_postgres::{PgSealingStateStore, PgTotpStore};
+    use hodor_credential::api::{TotpService, totp_code_at};
+    use hodor_keys::api::TenantSecretBox;
+
+    let (tenant, ana) = ana_of(database, slug).await;
+    let units = Arc::new(database.app().clone());
+    let root = Arc::new(SecretKeys::parse(&Secret::from(ROOT_KEY.to_owned())).expect("root"));
+    let sealing = TenantSecretBox::new(
+        units.clone(),
+        Arc::new(PgKeyStore),
+        Arc::new(LocalKeyProvider::new(root.clone())),
+        Arc::new(PgSealingStateStore),
+        Some(root),
+        Arc::new(SystemClock),
+    );
+    let totp = TotpService::new(
+        units,
+        Arc::new(PgTotpStore),
+        Arc::new(sealing),
+        Arc::new(AwsLcHmacSha1),
+        Arc::new(OsRandom),
+        Arc::new(SystemClock),
+    );
+    let enrollment = totp
+        .begin_enrollment(&tenant, ana, slug, "ana@example.com")
+        .await
+        .expect("begin");
+    let secret = base32(enrollment.secret());
+    let code = totp_code_at(
+        &AwsLcHmacSha1,
+        &secret,
+        hodor_kernel::Clock::now(&SystemClock),
+    );
+    totp.confirm_enrollment(&tenant, ana, &Secret::from(code), Caller::system())
+        .await
+        .expect("confirm");
+    secret
+}
+
+/// A code of Ana's application that has not been used: the next one,
+/// which the window accepts.
+fn next_code(secret: &[u8]) -> String {
+    use hodor_adapters_crypto::AwsLcHmacSha1;
+    use hodor_credential::api::totp_code_at;
+    let later = hodor_kernel::Clock::now(&SystemClock) + time::Duration::seconds(30);
+    totp_code_at(&AwsLcHmacSha1, secret, later)
+}
+
+/// Gives a tenant a phishing-resistant level, under a name of its own.
+async fn add_strong_level(database: &TestDatabase, slug: &str) {
+    use hodor_tenant::api::{AssuranceLevel, AssuranceLevels, AssuranceRequirement};
+    let (tenant, _) = ana_of(database, slug).await;
+    let tenants = TenantService::new(
+        Arc::new(database.app().clone()),
+        Arc::new(PgTenantRepository),
+        Arc::new(PgTenantDirectory::new(database.app().clone())),
+        Arc::new(SystemClock),
+    );
+    let mut settings = tenants
+        .get(&tenant)
+        .await
+        .expect("tenant")
+        .snapshot()
+        .settings
+        .clone();
+    let mut levels: Vec<AssuranceLevel> = settings
+        .authentication
+        .assurance_levels
+        .levels()
+        .into_iter()
+        .cloned()
+        .collect();
+    levels.push(AssuranceLevel {
+        acr: "urn:acme:phishing-resistant".to_owned(),
+        requirement: AssuranceRequirement::PhishingResistant,
+    });
+    settings.authentication.assurance_levels = AssuranceLevels::new(levels).expect("valid");
+    tenants
+        .change_settings(&tenant, settings, Caller::system())
+        .await
+        .expect("changed");
+}
+
+/// The claims of a token, unchecked: its signature is checked elsewhere.
+fn claims_of(token: &str) -> Value {
+    let payload = token.split('.').nth(1).expect("a payload");
+    serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).expect("base64url")).expect("JSON")
+}
+
+#[tokio::test]
+async fn an_application_that_asks_for_more_gets_it_after_only_the_missing_factor() {
+    let database = TestDatabase::start().await;
+    let client_id = tenant(&database, "acme").await;
+    let server = server(&database).await;
+    let mut browser = Browser::not_following(&server);
+
+    // A password session first; the application comes later.
+    let (_, signed_in) = browser.sign_in("acme", "ana@example.com", PASSWORD).await;
+    assert_eq!(signed_in["status"], "completed");
+    let secret = enroll_application(&database, "acme").await;
+
+    let (status, location, body) = browser
+        .navigate(
+            Method::GET,
+            &format!(
+                "/t/acme/oauth2/authorize?{}",
+                authorize_query(client_id, "openid", &[("acr_values", "urn:hodor:acr:mfa")])
+            ),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::FOUND, "{body}");
+    let location = location.expect("a redirect");
+    assert!(
+        location.starts_with("/t/acme/account/sign-in?"),
+        "{location}"
+    );
+
+    // The page finds the step-up and is asked only for the code.
+    let (status, waiting) = browser
+        .send(Method::GET, "/t/acme/interaction/sign-in", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{waiting}");
+    assert_eq!(waiting["step"], "totp", "{waiting}");
+    let (status, done) = browser
+        .send(
+            Method::POST,
+            "/t/acme/interaction/sign-in/steps/totp",
+            Some(serde_json::json!({ "code": next_code(&secret) })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{done}");
+    assert_eq!(done["status"], "completed", "{done}");
+    let resume = done["continue"].as_str().expect("continue").to_owned();
+
+    let (status, location, body) = browser.navigate(Method::GET, &resume, None).await;
+    assert_eq!(status, StatusCode::FOUND, "{body}");
+    let answer = query_of(&location.expect("a redirect"));
+    let tokens = redeem(&server, "acme", client_id, &answer["code"]).await;
+    let id_token = claims_of(tokens["id_token"].as_str().expect("ID token"));
+    assert_eq!(id_token["acr"], "urn:hodor:acr:mfa");
+    assert_eq!(id_token["amr"], serde_json::json!(["pwd", "otp", "mfa"]));
+    let access_token = claims_of(tokens["access_token"].as_str().expect("access token"));
+    assert_eq!(access_token["acr"], "urn:hodor:acr:mfa");
+    assert_eq!(access_token["amr"], id_token["amr"]);
+
+    // Now the session is enough: the next request is answered at once.
+    let again = code(
+        &mut browser,
+        "acme",
+        &authorize_query(client_id, "openid", &[("acr_values", "urn:hodor:acr:mfa")]),
+    )
+    .await;
+    assert!(!again.is_empty());
+}
+
+#[tokio::test]
+async fn a_level_out_of_reach_is_unmet_and_another_tenants_level_asks_for_nothing() {
+    let database = TestDatabase::start().await;
+    let acme = tenant(&database, "acme").await;
+    let globex = tenant(&database, "globex").await;
+    add_strong_level(&database, "acme").await;
+    let server = server(&database).await;
+
+    // Acme: Ana has an application, which is not phishing-resistant.
+    let mut browser = Browser::not_following(&server);
+    browser.sign_in("acme", "ana@example.com", PASSWORD).await;
+    enroll_application(&database, "acme").await;
+    let (status, location, _) = browser
+        .navigate(
+            Method::GET,
+            &format!(
+                "/t/acme/oauth2/authorize?{}",
+                authorize_query(
+                    acme,
+                    "openid",
+                    &[
+                        ("acr_values", "urn:acme:phishing-resistant"),
+                        ("state", "s1")
+                    ]
+                )
+            ),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::FOUND);
+    let answer = query_of(&location.expect("a redirect"));
+    assert_eq!(answer["error"], "unmet_authentication_requirements");
+    assert_eq!(answer["state"], "s1");
+
+    // Discovery names Acme's three levels, and Globex's two.
+    let document: Value = reqwest::get(format!(
+        "{}/t/acme/.well-known/openid-configuration",
+        server.base
+    ))
+    .await
+    .expect("document")
+    .json()
+    .await
+    .expect("JSON");
+    assert_eq!(
+        document["acr_values_supported"],
+        serde_json::json!([
+            "urn:hodor:acr:single-factor",
+            "urn:hodor:acr:mfa",
+            "urn:acme:phishing-resistant"
+        ])
+    );
+
+    // At Globex the same name is no level: nothing more is asked.
+    let mut other = Browser::not_following(&server);
+    other.sign_in("globex", "ana@example.com", PASSWORD).await;
+    let code = code(
+        &mut other,
+        "globex",
+        &authorize_query(
+            globex,
+            "openid",
+            &[("acr_values", "urn:acme:phishing-resistant")],
+        ),
+    )
+    .await;
+    let tokens = redeem(&server, "globex", globex, &code).await;
+    let id_token = claims_of(tokens["id_token"].as_str().expect("ID token"));
+    assert_eq!(id_token["acr"], "urn:hodor:acr:single-factor");
+}
+
+#[tokio::test]
+async fn max_age_asks_again_for_the_password_and_not_for_the_identifier() {
+    let database = TestDatabase::start().await;
+    let client_id = tenant(&database, "acme").await;
+    let server = server(&database).await;
+    let mut browser = Browser::not_following(&server);
+    browser.sign_in("acme", "ana@example.com", PASSWORD).await;
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+
+    let (status, _, _) = browser
+        .navigate(
+            Method::GET,
+            &format!(
+                "/t/acme/oauth2/authorize?{}",
+                authorize_query(client_id, "openid", &[("max_age", "0")])
+            ),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::FOUND);
+    let (_, waiting) = browser
+        .send(Method::GET, "/t/acme/interaction/sign-in", None)
+        .await;
+    assert_eq!(waiting["step"], "password", "{waiting}");
+    let (_, done) = browser
+        .send(
+            Method::POST,
+            "/t/acme/interaction/sign-in/steps/password",
+            Some(serde_json::json!({ "password": PASSWORD })),
+        )
+        .await;
+    assert_eq!(done["status"], "completed", "{done}");
+    let resume = done["continue"].as_str().expect("continue").to_owned();
+    let (status, location, body) = browser.navigate(Method::GET, &resume, None).await;
+    assert_eq!(status, StatusCode::FOUND, "{body}");
+    let answer = query_of(&location.expect("a redirect"));
+    let tokens = redeem(&server, "acme", client_id, &answer["code"]).await;
+    let id_token = claims_of(tokens["id_token"].as_str().expect("ID token"));
+    let auth_time = id_token["auth_time"].as_i64().expect("auth_time");
+    let issued = id_token["iat"].as_i64().expect("iat");
+    assert!(issued - auth_time <= 5, "the person proved it just now");
+}

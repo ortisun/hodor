@@ -28,6 +28,7 @@ Commands, as typed, from the clap enums in `main.rs`:
 | `hodor-cli tenant suspend` | `--slug`, `--reason` | `TenantService::suspend` (`TenantCommand::Suspend`) |
 | `hodor-cli tenant reactivate` | `--slug` | `TenantService::reactivate` (`TenantCommand::Reactivate`) |
 | `hodor-cli tenant second-factor` | `--slug`, `--policy` (`required`, `not-required`) | `TenantService::change_settings` with `authentication.second_factor` (`TenantCommand::SecondFactor`) |
+| `hodor-cli tenant assurance-levels` | `--slug`, `--level <acr>=<requirement>` repeated; none to only print | `AssuranceLevels::new` then `TenantService::change_settings` with `authentication.assurance_levels`; prints `<slug> <acr> <requirement>` per level, weakest first (`TenantCommand::AssuranceLevels`) |
 | `hodor-cli admin bootstrap` | `--tenant`, `--email`, `--token-minutes` (default 60) | `bootstrap_administrator` (`AdminCommand::Bootstrap`) |
 | `hodor-cli audit verify` | `--tenant` | `verify_audit`, which calls `hodor_audit::api::AuditService::verify` (`AuditCommand::Verify`) |
 | `hodor-cli provider add` | `--tenant`, `--alias`, `--name`, `--kind` (`openid-connect`, `github`, `ldap`, `saml`; default `openid-connect`), `--issuer`, `--client-id`, `--scope` (repeatable), `--no-create-users`, `--base`, `--filter`, `--subject-attribute` (default `entryUUID`), `--email-attribute`, `--name-attribute`, `--sign-on-address`, `--certificate`, `--trust-email`; client secret from `HODOR_PROVIDER_CLIENT_SECRET` | `FederationService::create_provider` (`ProviderCommand::Add`, `run_provider`) |

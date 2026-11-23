@@ -232,6 +232,46 @@ pub async fn run_contract(ports: Ports<'_>) {
     changes_are_stored(&ports, &random).await;
     an_update_cannot_reach_another_tenant(&ports, &random).await;
     a_users_sessions_are_listed_newest_first_without_ended_ones(&ports, &random).await;
+    a_raised_session_is_stored_with_its_methods_and_their_times(&ports, &random).await;
+}
+
+async fn a_raised_session_is_stored_with_its_methods_and_their_times(
+    ports: &Ports<'_>,
+    random: &SequentialRandom,
+) {
+    let tenant = tenant();
+    let (session, old_token) = new_session(random, UserId::generate(), MOMENT);
+    insert(ports, &tenant, &session).await;
+
+    let mut raised = get(ports, &tenant, session.id()).await.expect("exists");
+    let later = MOMENT + Duration::minutes(5);
+    let (token, _) = raised
+        .raise(
+            &["webauthn".to_owned()],
+            crate::domain::session::Assurance::PhishingResistant,
+            later,
+            random,
+            &FakeDigest,
+        )
+        .expect("raise");
+    update(ports, &tenant, &raised).await.expect("update");
+
+    let stored = get(ports, &tenant, session.id()).await.expect("exists");
+    assert_eq!(stored, raised);
+    assert_eq!(
+        stored.proofs(),
+        vec![("password", MOMENT), ("webauthn", later)]
+    );
+    assert_eq!(
+        stored.snapshot().assurance,
+        crate::domain::session::Assurance::PhishingResistant
+    );
+    assert_eq!(stored.snapshot().signed_in_at, later);
+    assert_eq!(find(ports, &tenant, &old_token).await, None);
+    assert_eq!(
+        find(ports, &tenant, &token).await.map(|s| s.id()),
+        Some(session.id())
+    );
 }
 
 async fn a_stored_session_is_loaded_unchanged(ports: &Ports<'_>, random: &SequentialRandom) {

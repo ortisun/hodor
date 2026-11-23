@@ -15,10 +15,6 @@ use time::Duration;
 
 /// The scope that makes a request an OpenID Connect one.
 pub const OPENID_SCOPE: &str = "openid";
-/// The `acr` of a sign-in that proved two kinds of factor.
-pub const ACR_MULTI_FACTOR: &str = "urn:hodor:acr:mfa";
-/// The `acr` of any other sign-in.
-pub const ACR_SINGLE_FACTOR: &str = "urn:hodor:acr:single-factor";
 /// The languages the hosted pages are written in.
 pub const UI_LOCALES: [&str; 2] = ["en", "pt-BR"];
 
@@ -93,16 +89,6 @@ pub fn authentication_methods(methods: &[String]) -> Vec<&'static str> {
         .collect()
 }
 
-/// The `acr` a sign-in by `methods` reached.
-#[must_use]
-pub fn assurance(methods: &[String]) -> &'static str {
-    if is_multi_factor(methods) {
-        ACR_MULTI_FACTOR
-    } else {
-        ACR_SINGLE_FACTOR
-    }
-}
-
 /// `at_hash`: the base64url of the left half of the SHA-256 of the access
 /// token, for an ID token signed with ES256 (OpenID Connect Core, section
 /// 3.1.3.6).
@@ -149,7 +135,9 @@ pub fn id_token_claims(
     if let Some(nonce) = &code.nonce {
         claims.insert("nonce".to_owned(), json!(nonce));
     }
-    claims.insert("acr".to_owned(), json!(assurance(&code.methods)));
+    if let Some(acr) = &code.acr {
+        claims.insert("acr".to_owned(), json!(acr));
+    }
     let amr = authentication_methods(&code.methods);
     if !amr.is_empty() {
         claims.insert("amr".to_owned(), json!(amr));
@@ -330,7 +318,7 @@ pub fn userinfo_claims(user_id: UserId, scopes: &[String], person: &PersonClaims
 /// The tenant's discovery document (OpenID Connect Discovery 1.0 and RFC
 /// 8414). It names only what is built.
 #[must_use]
-pub fn discovery_document(issuer: &str) -> Value {
+pub fn discovery_document(issuer: &str, acr_values: &[&str]) -> Value {
     json!({
         "issuer": issuer,
         "authorization_endpoint": format!("{issuer}/oauth2/authorize"),
@@ -353,7 +341,7 @@ pub fn discovery_document(issuer: &str) -> Value {
             "iss", "sub", "aud", "exp", "iat", "auth_time", "nonce", "acr", "amr", "at_hash", "sid",
             "name", "preferred_username", "locale", "updated_at", "email", "email_verified"
         ],
-        "acr_values_supported": [ACR_MULTI_FACTOR, ACR_SINGLE_FACTOR],
+        "acr_values_supported": acr_values,
         "prompt_values_supported": ["none", "login", "consent", "select_account"],
         "ui_locales_supported": UI_LOCALES,
         "authorization_response_iss_parameter_supported": true,

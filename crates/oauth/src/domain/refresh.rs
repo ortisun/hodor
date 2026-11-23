@@ -206,6 +206,9 @@ pub struct RefreshFamily {
     pub signed_in_at: Timestamp,
     /// The methods they signed in with.
     pub methods: Vec<String>,
+    /// The tenant's level those methods reached, the `acr` of its access
+    /// tokens.
+    pub acr: Option<String>,
     /// The secret each next token is derived with, sealed.
     pub sealed_secret: SealedSecret,
     /// The generation of its newest token, from 1.
@@ -330,6 +333,7 @@ impl RefreshFamily {
             offline: code.scopes.iter().any(|scope| scope == OFFLINE_ACCESS),
             signed_in_at: code.signed_in_at,
             methods: code.methods.clone(),
+            acr: code.acr.clone(),
             sealed_secret,
             generation: 1,
             current_hash: first.hash(digest),

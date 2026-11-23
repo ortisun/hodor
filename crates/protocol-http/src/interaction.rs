@@ -34,7 +34,7 @@ const SIGN_IN_COOKIE: &str = "__Secure-hodor_signin";
 pub(crate) const SESSION_COOKIE: &str = "__Secure-hodor_session";
 pub(crate) const CSRF_HEADER: HeaderName = HeaderName::from_static("x-csrf-token");
 /// A sign-in lasts ten minutes; so does its cookie.
-const SIGN_IN_COOKIE_SECONDS: i64 = 600;
+pub(crate) const SIGN_IN_COOKIE_SECONDS: i64 = 600;
 
 /// What the interaction handlers need.
 #[derive(Clone)]
@@ -341,7 +341,7 @@ pub(crate) fn set_cookie(response: &mut Response, value: &str) {
     }
 }
 
-fn sign_in_cookie(slug: &str, value: &str, max_age: i64) -> String {
+pub(crate) fn sign_in_cookie(slug: &str, value: &str, max_age: i64) -> String {
     format!(
         "{SIGN_IN_COOKIE}={value}; Path=/t/{slug}/interaction; Max-Age={max_age}; HttpOnly; Secure; SameSite=Strict"
     )
