@@ -65,7 +65,10 @@ pub(crate) async fn start_server_with(
         base: format!("http://127.0.0.1:{public}"),
     };
     let ready = format!("http://127.0.0.1:{ops}/readyz");
-    for _ in 0..100 {
+    // Up to thirty seconds: a test file starts a server and a database per
+    // test, all at once, and on a busy machine ten seconds were not always
+    // enough.
+    for _ in 0..300 {
         if reqwest::get(&ready)
             .await
             .is_ok_and(|r| r.status().is_success())
