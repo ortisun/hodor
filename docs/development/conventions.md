@@ -129,7 +129,8 @@ Branching follows Gitflow.
 ### Pull requests
 
 - One issue per pull request, small enough to review in one sitting.
-- The title is the Conventional Commits subject, because pull requests are squash-merged and the title becomes the commit on `develop`.
+- The title is the Conventional Commits subject, because pull requests are squash-merged and the title becomes the commit on `develop`. The squash adds ` (#number)` to it, so a title into `develop` keeps nine characters below the limit of a first line; continuous integration says so.
+- A pull request into `main` is checked only for the commits that are not already on `develop`: those were checked when they reached it.
 - The description says what changed, what a reviewer should look at, and how it was verified. It states plainly anything that was not verified.
 - A pull request is merged only when continuous integration is green.
 
