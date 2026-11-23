@@ -4,26 +4,65 @@ Every release of Hodor, newest first. The rules for versions and releases are in
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-23
+
+A pre-release that lets applications ask Hodor who someone is, and whether they may do something. It holds the three parts [Decision 0023](docs/decisions/0023-what-0.2.0-holds.md) set for it: the OAuth 2.x authorization server and OpenID Provider ([Milestone 3](docs/product/epics.md#milestone-3-applications-ask-hodor-who-someone-is)), multi-factor authentication with passkeys and step-up ([Milestone 4](docs/product/epics.md#milestone-4-strong-authentication)), and the authorization engine with Open Policy Agent ([Milestone 5](docs/product/epics.md#milestone-5-the-authorization-engine)). Each part is cut to what makes it whole; what each leaves to its phase is in that decision.
+
+**0.2.0 is not ready to hold real accounts.** What stands in the way, besides what 0.1.0 listed and still holds:
+
+- no limit on the number of requests to the token, revocation, introspection and authorization endpoints, nor to the Authorization API;
+- no cross-origin headers, so an application running in a browser cannot call the token endpoint or UserInfo;
+- the OpenID conformance plans pass in continuous integration, but Hodor is not certified: four tests wait for a person to review their screenshots, and nobody of the OpenID Foundation has seen the results;
+- request objects, the `claims` parameter, pairwise subjects and back-channel logout are not supported;
+- no physical security key and no authenticator built into a device were tried; WebAuthn and passkeys were tested with software and virtual authenticators;
+- the journeys of the authorization endpoint, consent, logout and step-up, and the console's new screens, were not tried by hand in a browser;
+- no application and no Open Policy Agent instance of the world has talked to Hodor yet; the demonstrations and the conformance suite stand in for them.
+
+The [progress](docs/product/progress.md) page lists every known gap, with "Before Milestone 3 is used anywhere real".
+
 ### Added
 
-- **Assurance levels and step-up**: a tenant names the `acr` levels applications ask for, single-factor, multi-factor and phishing-resistant; an application asks with `acr_values` or `max_age`, and a person signed in is asked only for what their session lacks. Tokens say the level reached. Set the levels with `hodor-cli tenant assurance-levels` or the administration interface.
-- **The policy lifecycle for Open Policy Agent.** A tenant's policy is drafted as a version, which the worker validates and tests with the `opa` binary, now part of the image, and which can be simulated against made-up requests. Only a tested version is published, and a rollback publishes an earlier version as a new revision: `hodor-cli policy draft|validate|test|simulate|publish|rollback|status`. The status says when every instance runs the latest revision. A decision from an instance that still runs an older revision five minutes after a new one is published is `indeterminate`.
+**Applications ask Hodor who someone is**
 
-- **The demonstration of Milestone 3**, `deploy/demo/applications.py`, run in continuous integration: a third-party application registered with the command-line tool, the consent page, the ID token and UserInfo, a refresh token whose reuse ends its family, a token a client gets for itself, revocation and introspection, a rotated key, and a client, a code and a token of one tenant refused by another. The cross-tenant suite covers OAuth clients, codes, tokens and consents.
+- **Signing keys per tenant**, kept sealed, rotated by the worker on a schedule and published as a key set at `/t/{slug}/oauth2/jwks`, with the next key published a day before it signs and the old one kept until its tokens expire. `hodor-cli keys list|rotate|revoke` and the administration interface.
+- **Applications, clients and resource servers**: confidential and public clients, redirect addresses compared exactly, client secrets shown once and kept as hashes, keys for `private_key_jwt`, resource servers with their scopes. Managed through the administration interface, `hodor-cli application|client|resource-server` and the console.
+- **The authorization endpoint** with PKCE, one-use authorization codes and a sign-in in the middle when there is no session; **the token endpoint** with the four client authentication methods and access tokens as JWT (RFC 9068); **refresh tokens** that rotate on every use, whose reuse ends their family; **client credentials**.
+- **The OpenID Provider**: ID tokens signed with ES256 or, per client, RS256; UserInfo; discovery and the authorization server metadata; `nonce`, `prompt`, `max_age`, `login_hint`, `ui_locales`; `acr` and `amr` (RFC 8176).
+- **Consent** for third-party applications, on a page of the hosted pages, kept with its history and withdrawn by the person or an administrator, which ends the grants it allowed.
+- **Logout initiated by the relying party**, with registered addresses to return to and a confirmation when the request does not name the browser's session.
+- **Revocation and introspection** (RFC 7009 and RFC 7662), with a register of the access tokens issued, so that a revoked grant or family makes its access tokens inactive.
+- **The OpenID conformance suite in continuous integration**: the Basic OpenID Provider and Config OpenID Provider plans of the OpenID Foundation's suite run against the image on every pull request ([conformance](docs/operations/conformance.md)).
+- **The demonstration of Milestone 3**, `deploy/demo/applications.py`, run in continuous integration: a third-party application registered with the command-line tool, the consent page, the ID token and UserInfo, a refresh token whose reuse ends its family, a token a client gets for itself, revocation and introspection, a rotated key, and a client, a code and a token of one tenant refused by another.
+
+**Strong authentication**
+
+- **Authenticator applications (TOTP)** as a second factor, with the secret sealed and every code good once; **recovery codes**, ten per person, each good once; **WebAuthn security keys**, checked by Hodor's own code ([Decision 0024](docs/decisions/0024-webauthn-checks.md)); **passkeys** that sign a person in alone, without an identifier or a password.
+- **A tenant policy that requires a second factor**, `hodor-cli tenant second-factor`.
+- **Assurance levels and step-up**: a tenant names the `acr` levels applications ask for, single-factor, multi-factor and phishing-resistant; an application asks with `acr_values` or `max_age`, and a person signed in is asked only for what their session lacks. Tokens say the level reached. Set the levels with `hodor-cli tenant assurance-levels` or the administration interface.
+- **A person manages their own factors** on `/account/security`, after proving themselves again; an administrator removes a person's factors through the administration interface and the console.
+- **The demonstration of Milestone 4**, `deploy/demo/strong_authentication.py`, run in continuous integration: an authenticator application, recovery codes, a tenant that requires a second factor, a passkey alone, a step-up asked for by an application, and an administrator removing a person's factors.
+
+**The authorization engine**
+
+- **The engine contract**: one engine answers for each resource server of a tenant, a failing engine never answers allow, and the tenant always comes from the caller's credential.
+- **Native role-based access control**: permissions per resource server, roles with hierarchy and composites, assignments to users and clients for the tenant or an application. The fixed roles of the administration interface became roles of this engine, unchanged.
+- **Conditions in Common Expression Language** on the permissions of a role, checked and bounded when the role is saved ([Decision 0025](docs/decisions/0025-condition-language.md)).
+- **The Authorization API**: `evaluate`, `batch` and `simulate` under `/t/{slug}/api/v1/authorization/`, called with access tokens, the explanation only for callers allowed to see it.
+- **Open Policy Agent as an engine**, over its Data API, with a circuit breaker and every failure an indeterminate answer; **signed bundles** pulled by each instance with a credential of its own; **the policy lifecycle**: versions validated and tested with the `opa` binary in a sandbox of the worker ([Decision 0026](docs/decisions/0026-policy-checks-in-a-sandbox.md)), simulated, published and rolled back with `hodor-cli policy draft|validate|test|simulate|publish|rollback|status`; a decision from an instance that runs an older revision five minutes after a new one is published is `indeterminate`.
+- **The record of decisions**, for both engines, per tenant full, sampled or deny-only, masked by path and kept for a number of days, partitioned by day.
 - **Managing authorization through the administration interface and the command line**: the permissions of a resource server, roles with their inclusions and conditions, who holds them, which engine answers for each resource server, and policy versions drafted, checked, tested and simulated, under the new permissions `roles:read|write`, `bindings:read|write` and `policies:read|write`. `hodor-cli authorization permission|role|assign|revoke|bind|unbind|bindings`. Publishing and rolling back a policy stay commands of the operator, who alone holds the key that signs bundles.
 - **An Authorization screen in the admin console**: the tenant's roles with their conditions, changed as text and checked by the server; the engine of each resource server and removing a binding; what is published for Open Policy Agent and whether every instance runs it; the latest decisions. A person's and a client's roles are on their pages, and can be taken away.
 - **The demonstration of Milestone 5**, `deploy/demo/authorization.py`, run in continuous integration after the other four: roles given to a person and a client, decisions asked for with a token, a condition that changes the answer, a resource server answered by Open Policy Agent with policies published, simulated and rolled back, a stopped instance whose answer is never allow, and the record of decisions.
-- **The demonstration of Milestone 4**, `deploy/demo/strong_authentication.py`, run in continuous integration after the other two: an authenticator application, recovery codes, a tenant that requires a second factor, a passkey alone, a step-up asked for by an application, and an administrator removing a person's factors.
 
 ### Changed
 
-- **`hodor-cli policy-agent publish` is gone.** Bundles are published only from tested policy versions, with `hodor-cli policy publish`.
-
 - **Secrets are kept under a data key of their tenant**, a key version of the keys context, and the keys of `HODOR_SECRET_KEYS` only wrap keys. After upgrading from 0.1.0, run `hodor-cli secrets reseal` once: it moves the secrets 0.1.0 kept and then refuses their old format. Until it runs, they open as before.
+- **`hodor-cli policy-agent publish` is gone.** Bundles are published only from tested policy versions, with `hodor-cli policy publish`.
+- **The image holds the `opa` binary**, 46 MB, pinned by checksum; the chart gives the worker 512 MiB of memory instead of 256 MiB.
 
 ### Fixed
 
-- **A token's `amr` and `acr` agree for a sign-in through an identity provider.** After an identity provider and a code of an authenticator application, the `acr` said multi-factor but `amr` lacked `mfa`. `amr` now says `otp` and `mfa`.
+- **Building the image where other branches were built.** The shared cargo cache of the image's build compared modification times and could build code of another checkout; the build now marks the workspace's files as changed first.
 
 ## [0.1.0] - 2026-11-22
 
@@ -61,5 +100,6 @@ The [progress](docs/product/progress.md) page lists every known gap.
 - **Two demonstrations**, one per milestone, run in continuous integration against the image.
 - **The documentation site**, published from `docs/` at <https://ortisun.github.io/hodor/>.
 
-[Unreleased]: https://github.com/ortisun/hodor/compare/v0.1.0...develop
+[Unreleased]: https://github.com/ortisun/hodor/compare/v0.2.0...develop
+[0.2.0]: https://github.com/ortisun/hodor/releases/tag/v0.2.0
 [0.1.0]: https://github.com/ortisun/hodor/releases/tag/v0.1.0

@@ -1577,7 +1577,7 @@ dependencies = [
 
 [[package]]
 name = "hodor-adapters-crypto"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "argon2",
  "async-trait",
@@ -1600,7 +1600,7 @@ dependencies = [
 
 [[package]]
 name = "hodor-adapters-http"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "hodor-kernel",
@@ -1611,7 +1611,7 @@ dependencies = [
 
 [[package]]
 name = "hodor-adapters-ldap"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "hodor-adapters-ldap",
@@ -1624,7 +1624,7 @@ dependencies = [
 
 [[package]]
 name = "hodor-adapters-policy-check"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "hodor-adapters-crypto",
@@ -1637,7 +1637,7 @@ dependencies = [
 
 [[package]]
 name = "hodor-adapters-postgres"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "hodor-adapters-crypto",
@@ -1667,7 +1667,7 @@ dependencies = [
 
 [[package]]
 name = "hodor-adapters-smtp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "hodor-kernel",
@@ -1681,14 +1681,14 @@ dependencies = [
 
 [[package]]
 name = "hodor-architecture-tests"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "cargo_metadata",
 ]
 
 [[package]]
 name = "hodor-audit"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "hodor-audit",
@@ -1702,7 +1702,7 @@ dependencies = [
 
 [[package]]
 name = "hodor-authentication"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "hodor-authentication",
@@ -1721,7 +1721,7 @@ dependencies = [
 
 [[package]]
 name = "hodor-authorization"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "hodor-authorization",
@@ -1734,7 +1734,7 @@ dependencies = [
 
 [[package]]
 name = "hodor-authorization-native"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "cel",
@@ -1748,7 +1748,7 @@ dependencies = [
 
 [[package]]
 name = "hodor-authorization-opa"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1767,7 +1767,7 @@ dependencies = [
 
 [[package]]
 name = "hodor-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "clap",
@@ -1792,7 +1792,7 @@ dependencies = [
 
 [[package]]
 name = "hodor-credential"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1807,7 +1807,7 @@ dependencies = [
 
 [[package]]
 name = "hodor-federation"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1825,7 +1825,7 @@ dependencies = [
 
 [[package]]
 name = "hodor-identity"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "hodor-identity",
@@ -1837,7 +1837,7 @@ dependencies = [
 
 [[package]]
 name = "hodor-kernel"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "serde",
@@ -1851,7 +1851,7 @@ dependencies = [
 
 [[package]]
 name = "hodor-keys"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "hodor-kernel",
@@ -1865,7 +1865,7 @@ dependencies = [
 
 [[package]]
 name = "hodor-notification"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "hodor-kernel",
@@ -1878,7 +1878,7 @@ dependencies = [
 
 [[package]]
 name = "hodor-oauth"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1895,7 +1895,7 @@ dependencies = [
 
 [[package]]
 name = "hodor-observability"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "opentelemetry",
  "opentelemetry-otlp",
@@ -1912,7 +1912,7 @@ dependencies = [
 
 [[package]]
 name = "hodor-protocol-http"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -1949,7 +1949,7 @@ dependencies = [
 
 [[package]]
 name = "hodor-saml"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aws-lc-rs",
  "base64 0.22.1",
@@ -1965,7 +1965,7 @@ dependencies = [
 
 [[package]]
 name = "hodor-server"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "aws-lc-rs",
@@ -2004,7 +2004,7 @@ dependencies = [
 
 [[package]]
 name = "hodor-session"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "hodor-kernel",
@@ -2017,7 +2017,7 @@ dependencies = [
 
 [[package]]
 name = "hodor-tenant"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "hodor-kernel",
@@ -2031,7 +2031,7 @@ dependencies = [
 
 [[package]]
 name = "hodor-worker"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "clap",

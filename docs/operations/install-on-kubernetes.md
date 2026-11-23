@@ -40,11 +40,11 @@ Run every command of this page from the root of a checkout of the repository; th
 Replace `registry.example.com` with your registry, here and in the steps that follow:
 
 ```bash
-docker build --file deploy/docker/Dockerfile --tag registry.example.com/hodor:0.1.0 .
+docker build --file deploy/docker/Dockerfile --tag registry.example.com/hodor:0.2.0 .
 ```
 
 ```bash
-docker push registry.example.com/hodor:0.1.0
+docker push registry.example.com/hodor:0.2.0
 ```
 
 ## 2. Prepare the database
@@ -74,7 +74,7 @@ kubectl create namespace hodor
 Make the key that keeps the secrets of identity providers encrypted. It is written after an identifier of your choice, as `identifier:key`; [secrets at rest](../security/secrets-at-rest.md#root-keys) explains the format and how to change the key later:
 
 ```bash
-docker run --rm --entrypoint /usr/local/bin/hodor-cli registry.example.com/hodor:0.1.0 secrets generate-key
+docker run --rm --entrypoint /usr/local/bin/hodor-cli registry.example.com/hodor:0.2.0 secrets generate-key
 ```
 
 Then create the Secret, with your own addresses, passwords and key in place of the examples:
@@ -216,11 +216,11 @@ kind create cluster --name hodor
 ```
 
 ```bash
-docker build --file deploy/docker/Dockerfile --tag hodor:0.1.0 .
+docker build --file deploy/docker/Dockerfile --tag hodor:0.2.0 .
 ```
 
 ```bash
-kind load docker-image hodor:0.1.0 --name hodor
+kind load docker-image hodor:0.2.0 --name hodor
 ```
 
 Create the namespace and the stand-ins, and wait for the database:
