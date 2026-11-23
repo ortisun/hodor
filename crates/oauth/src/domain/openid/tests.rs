@@ -46,8 +46,9 @@ fn each_method_is_named_as_rfc_8176_names_it() {
     );
     assert_eq!(
         authentication_methods(&methods(&["external", "totp"])),
-        ["otp"],
-        "an external sign-in is not counted as something known"
+        ["otp", "mfa"],
+        "an external sign-in names nothing, and counts as something known, \
+         as it does for the acr"
     );
     assert!(authentication_methods(&methods(&["something-new"])).is_empty());
 }

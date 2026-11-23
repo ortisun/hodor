@@ -57,8 +57,15 @@ fn facts(method: &str) -> MethodFacts {
             both: true,
             ..none
         },
-        // `external` and anything unknown: Hodor did not see how the
-        // person was signed in, so it claims nothing about it.
+        // Hodor did not see how the identity provider signed the person
+        // in, so it names nothing. It still counts as something known, as
+        // the authentication context's table counts it for the `acr`, so
+        // that `mfa` and the `acr` of a token never disagree.
+        "external" => MethodFacts {
+            knows: true,
+            ..none
+        },
+        // Anything unknown: nothing is claimed about it.
         _ => none,
     }
 }
