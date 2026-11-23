@@ -186,6 +186,77 @@ describe("the page of a user", () => {
   });
 });
 
+describe("the second factors of a user", () => {
+  const withCredentials = [
+    "users:read",
+    "users:write",
+    "sessions:read",
+    "sessions:revoke",
+    "credentials:read",
+    "credentials:write",
+  ];
+  const factors = (more: Record<string, unknown> = {}) =>
+    json(200, {
+      authenticator_application: { in_use: true },
+      keys: [
+        { id: "key-1", name: "Blue key", passkey: false, created_at: "2026-11-21T14:05:00Z", last_used_at: null },
+      ],
+      recovery_codes: { remaining: 8 },
+      second_factor_required: true,
+      ...more,
+    });
+  const script = (permissions: string[], answers: Response[]) => ({
+    "GET /console/api/me": [json(200, meBody(permissions))],
+    [`GET /console/api/users/${BIA}`]: [json(200, userBody(BIA, "bia@example.com", { display_name: "Bia Souza" }))],
+    [`GET /console/api/users/${BIA}/sessions`]: [json(200, { items: [] })],
+    [`GET /console/api/users/${BIA}/factors`]: answers,
+  });
+
+  it("are shown to whoever may see them, and offered for removal only to whoever may remove them", async () => {
+    show(`/t/acme/console/users/${BIA}`, script(["users:read", "sessions:read", "credentials:read"], [factors()]));
+    expect(await screen.findByText("Blue key")).toBeTruthy();
+    expect(screen.getByText(en.inUse)).toBeTruthy();
+    expect(screen.getByText(en.recoveryCodesLeft(8))).toBeTruthy();
+    expect(screen.getByText(en.secondFactorRequired)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: en.remove })).toBeNull();
+  });
+
+  it("are not asked for without the permission to see them", async () => {
+    const { sent } = show(`/t/acme/console/users/${BIA}`, script(["users:read", "sessions:read"], []));
+    expect(await screen.findByRole("heading", { name: en.profile })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: en.factors })).toBeNull();
+    expect(sent.some((request) => request.path.endsWith("/factors"))).toBe(false);
+  });
+
+  it("are removed only with the address typed in full, and the dialog says what follows", async () => {
+    const { sent, user } = show(`/t/acme/console/users/${BIA}`, {
+      ...script(withCredentials, [
+        factors({ authenticator_application: { in_use: false } }),
+        factors({ authenticator_application: { in_use: false }, keys: [], recovery_codes: { remaining: 0 } }),
+      ]),
+      [`DELETE /console/api/users/${BIA}/factors/keys/key-1`]: [new Response(null, { status: 204 })],
+    });
+    // The key's button comes first; the recovery codes have their own.
+    const [ofTheKey] = await screen.findAllByRole("button", { name: en.remove });
+    expect(ofTheKey).toBeTruthy();
+    await user.click(ofTheKey as HTMLElement);
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByRole("heading", { name: en.removePersonKeyTitle("Blue key") })).toBeTruthy();
+    expect(within(dialog).getByText(en.level(2), { exact: false })).toBeTruthy();
+    expect(within(dialog).getByText(en.removeConsequenceLast)).toBeTruthy();
+    expect(within(dialog).getByText(en.removeConsequenceLocked)).toBeTruthy();
+    expect(within(dialog).getByText(en.removeConsequenceSessionsValue)).toBeTruthy();
+    const confirm = within(dialog).getByRole("button", { name: en.remove });
+    expect(confirm.getAttribute("aria-disabled")).toBe("true");
+    await user.type(within(dialog).getByLabelText(en.typeToConfirm("bia@example.com")), "bia@example.com");
+    await user.click(confirm);
+    expect(await screen.findByText(en.noPersonKeys)).toBeTruthy();
+    expect(sent.find((request) => request.method === "DELETE")?.path).toBe(
+      `/console/api/users/${BIA}/factors/keys/key-1`,
+    );
+  });
+});
+
 describe("the audit screen", () => {
   it("lists the records and shows one whole, with its hashes", async () => {
     const record = {

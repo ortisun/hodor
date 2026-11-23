@@ -1224,6 +1224,45 @@ impl crate::api::WebAuthnStore for InMemoryWebAuthn {
             _ => Ok(false),
         }
     }
+
+    async fn rename(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        user_id: UserId,
+        id: crate::api::WebAuthnCredentialId,
+        name: &str,
+    ) -> Result<bool, DomainError> {
+        let key = (uow.tenant().tenant_id(), id);
+        let mut rows = self.credentials();
+        match rows.get(&key) {
+            Some(stored) if stored.user_id() == user_id => {
+                let mut snapshot = stored.snapshot().clone();
+                name.clone_into(&mut snapshot.name);
+                rows.insert(key, crate::api::WebAuthnCredential::from_snapshot(snapshot));
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    async fn remove(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        user_id: UserId,
+        id: crate::api::WebAuthnCredentialId,
+    ) -> Result<bool, DomainError> {
+        let key = (uow.tenant().tenant_id(), id);
+        let mut rows = self.credentials();
+        if rows
+            .get(&key)
+            .is_some_and(|stored| stored.user_id() == user_id)
+        {
+            rows.remove(&key);
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
 }
 
 /// The ports under test.
@@ -1425,6 +1464,91 @@ pub async fn run_webauthn_contract(ports: WebAuthnPorts<'_>) {
             .await
             .expect("list")[0],
         used
+    );
+    drop(uow);
+
+    // A credential is renamed and removed by its user only, in its own
+    // tenant only.
+    let mut uow = ports.units_of_work.begin(&elsewhere).await.expect("begin");
+    assert!(
+        !ports
+            .store
+            .rename(uow.as_mut(), user, first.id(), "Elsewhere")
+            .await
+            .expect("rename")
+    );
+    assert!(
+        !ports
+            .store
+            .remove(uow.as_mut(), user, first.id())
+            .await
+            .expect("remove")
+    );
+    uow.commit().await.expect("commit");
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    let stranger = UserId::generate();
+    assert!(
+        !ports
+            .store
+            .rename(uow.as_mut(), stranger, first.id(), "Not theirs")
+            .await
+            .expect("rename")
+    );
+    assert!(
+        !ports
+            .store
+            .remove(uow.as_mut(), stranger, first.id())
+            .await
+            .expect("remove")
+    );
+    assert!(
+        ports
+            .store
+            .rename(uow.as_mut(), user, first.id(), "Office key")
+            .await
+            .expect("rename")
+    );
+    uow.commit().await.expect("commit");
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    let listed = ports
+        .store
+        .list_for_user(uow.as_mut(), user)
+        .await
+        .expect("list");
+    assert_eq!(listed[0].snapshot().name, "Office key");
+    assert_eq!(listed[0].snapshot().sign_count, used.snapshot().sign_count);
+    assert!(
+        ports
+            .store
+            .remove(uow.as_mut(), user, second.id())
+            .await
+            .expect("remove")
+    );
+    assert!(
+        !ports
+            .store
+            .remove(uow.as_mut(), user, second.id())
+            .await
+            .expect("remove again")
+    );
+    uow.commit().await.expect("commit");
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    let left: Vec<_> = ports
+        .store
+        .list_for_user(uow.as_mut(), user)
+        .await
+        .expect("list")
+        .iter()
+        .map(crate::api::WebAuthnCredential::id)
+        .collect();
+    assert_eq!(left, vec![first.id()]);
+    assert_eq!(
+        ports
+            .store
+            .find_by_credential_id(uow.as_mut(), &[7; 64])
+            .await
+            .expect("find"),
+        None
     );
     drop(uow);
 

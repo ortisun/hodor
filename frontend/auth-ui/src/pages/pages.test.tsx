@@ -8,6 +8,7 @@ import { AccountPage } from "./AccountPage";
 import { AskPage } from "./AskPage";
 import { ComingBackPage } from "./ComingBackPage";
 import { FinishPage } from "./FinishPage";
+import { SecurityPage } from "./SecurityPage";
 import { SignInPage } from "./SignInPage";
 import { SignOutPage } from "./SignOutPage";
 
@@ -188,6 +189,20 @@ describe("the sign-in page", () => {
     render(<SignInPage {...props} notice={null} signInAgain loginHint="ana@example.com" />);
     const field = await screen.findByLabelText<HTMLInputElement>(en.identifierLabel);
     expect(field.value).toBe("ana@example.com");
+  });
+
+  it("goes back to the security page after signing in again for a change", async () => {
+    const { props, go } = page({
+      "GET /sign-in": [noSignIn],
+      "POST /sign-in": [pending("identifier")],
+      "POST /sign-in/steps/identifier": [pending("password")],
+      "POST /sign-in/steps/password": [json(200, { status: "completed" })],
+    });
+    const user = userEvent.setup();
+    render(<SignInPage {...props} notice={null} signInAgain afterSignIn="security" />);
+    await user.type(await screen.findByLabelText(en.identifierLabel), "ana@example.com{Enter}");
+    await user.type(await screen.findByLabelText(en.passwordLabel), "correct horse{Enter}");
+    await waitFor(() => expect(go).toHaveBeenCalledWith("security"));
   });
 
   it("shows a rejection with one message and an empty password field", async () => {
@@ -871,5 +886,204 @@ describe("a directory on the sign-in page", () => {
     await user.click(screen.getByRole("button", { name: en.otherWays }));
     expect(screen.getByLabelText(en.identifierLabel)).toBeTruthy();
     expect(screen.getByRole("button", { name: en.continueWith("Google") })).toBeTruthy();
+  });
+});
+
+describe("the security page", () => {
+  const signedIn = () =>
+    json(200, {
+      user_id: "u",
+      session_id: "s",
+      signed_in_at: "2026-11-20T14:03:11Z",
+      expires_at: "2999-01-01T00:00:00Z",
+      csrf_token: "session-token",
+    });
+  const factors = (overrides: Record<string, unknown> = {}) =>
+    json(200, {
+      authenticator_application: { in_use: false },
+      keys: [],
+      recovery_codes: { remaining: 0 },
+      second_factor_required: false,
+      recent_sign_in_until: "2999-01-01T00:00:00Z",
+      ...overrides,
+    });
+  const blueKey = {
+    id: "k1",
+    name: "Blue key",
+    passkey: false,
+    created_at: "2026-11-20T14:05:00Z",
+    last_used_at: null,
+  };
+  const codes = Array.from({ length: 10 }, (_, index) => `7K2M-QX9D-4HVN-R8T${index}`);
+
+  function securityPage(script: Parameters<typeof scripted>[0]) {
+    const opened = page(script);
+    const reauthenticate = vi.fn();
+    render(<SecurityPage {...opened.props} reauthenticate={reauthenticate} />);
+    return { ...opened, reauthenticate };
+  }
+
+  it("sends a person who is not signed in to sign in", async () => {
+    const { go } = securityPage({ "GET /session": [nobody] });
+    await waitFor(() => expect(go).toHaveBeenCalledWith("sign-in"));
+  });
+
+  it("asks the person to sign in again before any change, and offers none until then", async () => {
+    const { reauthenticate, user } = securityPage({
+      "GET /session": [signedIn],
+      "GET /factors": [factors({ recent_sign_in_until: null, keys: [blueKey], recovery_codes: { remaining: 8 } })],
+    });
+    expect(await screen.findByText("Blue key")).toBeTruthy();
+    expect(screen.getByText(en.recoveryRemaining(8))).toBeTruthy();
+    expect(screen.queryByRole("button", { name: en.setUpApplication })).toBeNull();
+    expect(screen.queryByRole("button", { name: en.removeKey("Blue key") })).toBeNull();
+    expect(screen.queryByRole("button", { name: en.generateCodes })).toBeNull();
+    await user.click(screen.getByRole("button", { name: en.signInAgain }));
+    expect(reauthenticate).toHaveBeenCalledOnce();
+  });
+
+  it("sets up an authenticator application and shows the recovery codes that come with it once", async () => {
+    const { sent, user } = securityPage({
+      "GET /session": [signedIn],
+      "GET /factors": [
+        factors(),
+        factors(),
+        factors({ authenticator_application: { in_use: true }, recovery_codes: { remaining: 10 } }),
+      ],
+      "POST /factors/authenticator-application": [
+        json(201, {
+          secret: "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP",
+          uri: "otpauth://totp/acme:ana%40example.com?secret=JBSWY3DPEHPK3PXP&issuer=acme",
+        }),
+      ],
+      "POST /factors/authenticator-application/confirmation": [json(200, { recovery_codes: codes })],
+    });
+    await user.click(await screen.findByRole("button", { name: en.setUpApplication }));
+    expect(await screen.findByRole("img", { name: en.qrLabel })).toBeTruthy();
+    expect(screen.getByText("JBSW Y3DP EHPK 3PXP JBSW Y3DP EHPK 3PXP")).toBeTruthy();
+    await user.type(screen.getByLabelText(en.totpLabel), "123 456{Enter}");
+    expect(await screen.findByRole("heading", { name: en.codesTitle })).toBeTruthy();
+    for (const one of codes) {
+      expect(screen.getByText(one)).toBeTruthy();
+    }
+    expect(sent.find((request) => request.path === "/factors/authenticator-application/confirmation")).toMatchObject({
+      body: { code: "123456" },
+      csrfToken: "session-token",
+    });
+    await user.click(screen.getByRole("button", { name: en.codesKept }));
+    expect(await screen.findByText(en.applicationInUse)).toBeTruthy();
+    expect(screen.queryByText(codes[0] ?? "")).toBeNull();
+  });
+
+  it("says what is wrong with a code and lets the person try again", async () => {
+    const { user } = securityPage({
+      "GET /session": [signedIn],
+      "GET /factors": [factors(), factors()],
+      "POST /factors/authenticator-application": [json(201, { secret: "JBSWY3DP", uri: "otpauth://totp/a:b?secret=JBSWY3DP" })],
+      "POST /factors/authenticator-application/confirmation": [problem(422, "credential.totp_code_wrong")],
+    });
+    await user.click(await screen.findByRole("button", { name: en.setUpApplication }));
+    await user.type(await screen.findByLabelText(en.totpLabel), "000000{Enter}");
+    expect((await alertShown()).textContent).toContain(en.totpCodeWrong);
+    expect(screen.getByRole("img", { name: en.qrLabel })).toBeTruthy();
+  });
+
+  it("removes a key after the person confirms, and renames one", async () => {
+    const renamed = { ...blueKey, name: "Office key" };
+    const { sent, user } = securityPage({
+      "GET /session": [signedIn],
+      "GET /factors": [
+        factors({ keys: [blueKey] }),
+        factors({ keys: [renamed] }),
+        factors({ keys: [] }),
+      ],
+      "PATCH /factors/keys/k1": [json(200, renamed)],
+      "DELETE /factors/keys/k1": [empty(204)],
+    });
+    await user.click(await screen.findByRole("button", { name: en.renameKey("Blue key") }));
+    const name = screen.getByLabelText(en.keyNameLabel);
+    await user.clear(name);
+    await user.type(name, "Office key{Enter}");
+    expect(await screen.findByText("Office key")).toBeTruthy();
+    expect(sent.find((request) => request.method === "PATCH")?.body).toEqual({ name: "Office key" });
+
+    await user.click(screen.getByRole("button", { name: en.removeKey("Office key") }));
+    expect(screen.getByRole("heading", { name: en.removeTitle("Office key") })).toBeTruthy();
+    expect(screen.getByText(en.removeLastLead)).toBeTruthy();
+    // Keeping it is offered first.
+    await user.click(screen.getByRole("button", { name: en.removeKey("Office key") }));
+    expect(await screen.findByText(en.noKeys)).toBeTruthy();
+    expect(sent.some((request) => request.method === "DELETE" && request.path === "/factors/keys/k1")).toBe(true);
+  });
+
+  it("says the last second factor cannot go when the organization requires one", async () => {
+    const { user } = securityPage({
+      "GET /session": [signedIn],
+      "GET /factors": [
+        factors({ keys: [blueKey], second_factor_required: true }),
+        factors({ keys: [blueKey], second_factor_required: true }),
+      ],
+      "DELETE /factors/keys/k1": [problem(422, "authentication.last_second_factor")],
+    });
+    await user.click(await screen.findByRole("button", { name: en.removeKey("Blue key") }));
+    await user.click(screen.getByRole("button", { name: en.removeKey("Blue key") }));
+    expect((await alertShown()).textContent).toContain(en.lastSecondFactor);
+    expect(screen.getByText("Blue key")).toBeTruthy();
+  });
+
+  it("asks the person to sign in again when the server says the sign-in is no longer recent", async () => {
+    const { user } = securityPage({
+      "GET /session": [signedIn],
+      "GET /factors": [factors({ keys: [blueKey] }), factors({ keys: [blueKey], recent_sign_in_until: null })],
+      "POST /factors/recovery-codes": [problem(403, "authentication.recent_sign_in_required")],
+    });
+    await user.click(await screen.findByRole("button", { name: en.generateCodes }));
+    expect(screen.getByText(en.generateCodesLead)).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: en.generateCodes }));
+    expect((await alertShown()).textContent).toContain(en.recentSignInRequired);
+    expect(await screen.findByRole("button", { name: en.signInAgain })).toBeTruthy();
+  });
+
+  it("adds a passkey with the name given and shows the codes of a first factor", async () => {
+    const bytes = (...values: number[]) => new Uint8Array(values).buffer;
+    const create = vi.fn().mockResolvedValue({
+      rawId: bytes(1),
+      response: { clientDataJSON: bytes(3), attestationObject: bytes(4), getTransports: () => ["internal"] },
+      getClientExtensionResults: () => ({ credProps: { rk: true } }),
+    });
+    vi.stubGlobal("PublicKeyCredential", function PublicKeyCredential() {});
+    Object.defineProperty(navigator, "credentials", { value: { create }, configurable: true });
+    const { sent, user } = securityPage({
+      "GET /session": [signedIn],
+      "GET /factors": [factors(), factors({ keys: [{ ...blueKey, name: "Phone", passkey: true }] })],
+      "POST /webauthn/registrations": [
+        json(201, {
+          registration_id: "r1",
+          public_key: {
+            rp: { id: "auth.example", name: "Hodor" },
+            user: { id: "AQI", name: "ana@example.com", displayName: "Ana (acme)" },
+            challenge: "BQY",
+            pubKeyCredParams: [{ type: "public-key", alg: -7 }],
+            authenticatorSelection: { residentKey: "required", userVerification: "required" },
+          },
+        }),
+      ],
+      "POST /webauthn/registrations/r1": [json(201, { id: "k1", name: "Phone", created_at: "2026-11-20T14:05:00Z", recovery_codes: codes })],
+    });
+    await user.type(await screen.findByLabelText(en.keyNameLabel), "Phone");
+    await user.click(screen.getByRole("button", { name: en.addPasskey }));
+    expect(await screen.findByRole("heading", { name: en.codesTitle })).toBeTruthy();
+    expect(sent.find((request) => request.path === "/webauthn/registrations")?.body).toEqual({ passkey: true });
+    expect(sent.find((request) => request.path === "/webauthn/registrations/r1")?.body).toEqual({
+      client_data: "Aw",
+      attestation_object: "BA",
+      transports: ["internal"],
+      discoverable: true,
+      name: "Phone",
+    });
+    const asked = create.mock.calls[0]?.[0] as { publicKey: PublicKeyCredentialCreationOptions };
+    expect(asked.publicKey.authenticatorSelection?.residentKey).toBe("required");
+    expect(asked.publicKey.authenticatorSelection?.userVerification).toBe("required");
+    vi.unstubAllGlobals();
   });
 });

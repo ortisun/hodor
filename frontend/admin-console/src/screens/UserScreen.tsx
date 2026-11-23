@@ -13,7 +13,7 @@ import { TextInput } from "@astryxdesign/core/TextInput";
 import { VStack } from "@astryxdesign/core/VStack";
 import { type MouseEvent, useCallback, useState } from "react";
 import { may } from "../actions";
-import type { Session, User } from "../client";
+import type { PersonFactors, PersonKey, Session, User } from "../client";
 import { moment, named } from "../messages";
 import { Confirm, Consequence } from "../parts/Confirm";
 import { Identifier } from "../parts/Identifier";
@@ -22,6 +22,10 @@ import { Page, type ScreenProps } from "./shared";
 import { nameOf, StatusBadge } from "./UsersScreen";
 
 type Row = { id: string; session: Session };
+type KeyRow = { id: string; key: PersonKey };
+
+/** What is being removed from a person, when the dialog is open. */
+type Removing = { kind: "application" } | { kind: "key"; key: PersonKey } | { kind: "codes" };
 
 export function UserScreen({ id, client, me, text, go, path, say }: ScreenProps & { id: string }) {
   const loadUser = useCallback(() => client.getUser(id), [client, id]);
@@ -32,6 +36,21 @@ export function UserScreen({ id, client, me, text, go, path, say }: ScreenProps 
     [client, id, maySeeSessions],
   );
   const [sessions, againSessions] = useLoaded<Session[]>(loadSessions);
+  const maySeeFactors = me.permissions.includes("credentials:read");
+  const loadFactors = useCallback(
+    () =>
+      maySeeFactors
+        ? client.listFactors(id)
+        : Promise.resolve<PersonFactors>({
+            authenticatorApplication: null,
+            keys: [],
+            recoveryCodesRemaining: 0,
+            secondFactorRequired: false,
+          }),
+    [client, id, maySeeFactors],
+  );
+  const [factors, againFactors] = useLoaded<PersonFactors>(loadFactors);
+  const [removing, setRemoving] = useState<Removing | null>(null);
   const [suspending, setSuspending] = useState(false);
   const [reason, setReason] = useState("");
   const [ending, setEnding] = useState<Session | null>(null);
@@ -66,6 +85,12 @@ export function UserScreen({ id, client, me, text, go, path, say }: ScreenProps 
   // What the person types to confirm: the address, or the identifier when there is none.
   const typed = shown.identifiers.find((identifier) => identifier.primary)?.value ?? shown.id;
   const active = sessions.state === "loaded" ? sessions.value : [];
+  const shownFactors = factors.state === "loaded" ? factors.value : null;
+  const secondFactors =
+    shownFactors === null
+      ? 0
+      : (shownFactors.authenticatorApplication?.inUse === true ? 1 : 0) + shownFactors.keys.length;
+  const mayRemove = may(me.permissions, "removeFactor");
 
   return (
     <Page
@@ -162,6 +187,114 @@ export function UserScreen({ id, client, me, text, go, path, say }: ScreenProps 
             ) : null}
           </VStack>
         </Card>
+      ) : null}
+
+      {maySeeFactors ? (
+        <Card>
+          <VStack gap={3}>
+            <Heading level={2}>{text.factors}</Heading>
+            {factors.state === "loading" ? <Waiting text={text} /> : null}
+            {factors.state === "failed" ? <Failed failure={factors.failure} again={againFactors} text={text} /> : null}
+            {shownFactors !== null ? (
+              <VStack gap={3}>
+                {shownFactors.secondFactorRequired ? <Badge variant="info" label={text.secondFactorRequired} /> : null}
+                <HStack gap={2} vAlign="center" wrap="wrap">
+                  <Text weight="semibold">{text.authenticatorApplication}</Text>
+                  {shownFactors.authenticatorApplication === null ? (
+                    <Text color="secondary">{text.noFactorsOffered}</Text>
+                  ) : (
+                    <>
+                      <Badge
+                        variant={shownFactors.authenticatorApplication.inUse ? "success" : "neutral"}
+                        label={shownFactors.authenticatorApplication.inUse ? text.inUse : text.notInUse}
+                      />
+                      {shownFactors.authenticatorApplication.inUse && mayRemove ? (
+                        <Button size="sm" label={text.remove} onClick={() => setRemoving({ kind: "application" })} />
+                      ) : null}
+                    </>
+                  )}
+                </HStack>
+                <Table<KeyRow>
+                  data={shownFactors.keys.map((key) => ({ id: key.id, key }))}
+                  idKey="id"
+                  emptyState={<EmptyState title={text.noPersonKeys} description={text.noPersonKeysHint} isCompact />}
+                  columns={[
+                    { key: "name", header: text.columnKey, renderCell: ({ key }) => key.name },
+                    {
+                      key: "kind",
+                      header: text.columnKind,
+                      renderCell: ({ key }) => (key.passkey ? text.passkey : text.securityKey),
+                    },
+                    { key: "added", header: text.columnAdded, renderCell: ({ key }) => moment(key.createdAt, text) },
+                    {
+                      key: "used",
+                      header: text.columnLastUsed,
+                      renderCell: ({ key }) => (key.lastUsedAt === null ? text.never : moment(key.lastUsedAt, text)),
+                    },
+                    {
+                      key: "remove",
+                      header: "",
+                      align: "end",
+                      renderCell: ({ key }) =>
+                        mayRemove ? (
+                          <Button size="sm" label={text.remove} onClick={() => setRemoving({ kind: "key", key })} />
+                        ) : null,
+                    },
+                  ]}
+                />
+                <HStack gap={2} vAlign="center" wrap="wrap">
+                  <Text weight="semibold">{text.recoveryCodes}</Text>
+                  <Text>{text.recoveryCodesLeft(shownFactors.recoveryCodesRemaining)}</Text>
+                  {shownFactors.recoveryCodesRemaining > 0 && mayRemove ? (
+                    <Button size="sm" label={text.remove} onClick={() => setRemoving({ kind: "codes" })} />
+                  ) : null}
+                </HStack>
+              </VStack>
+            ) : null}
+          </VStack>
+        </Card>
+      ) : null}
+
+      {removing !== null && shownFactors !== null ? (
+        <Confirm
+          action="removeFactor"
+          title={
+            removing.kind === "application"
+              ? text.removeApplicationTitle
+              : removing.kind === "key"
+                ? text.removePersonKeyTitle(removing.key.name)
+                : text.removeCodesTitle
+          }
+          confirmLabel={text.remove}
+          typed={typed}
+          text={text}
+          onClose={() => setRemoving(null)}
+          onConfirm={async () => {
+            if (removing.kind === "application") {
+              await client.removeAuthenticatorApplication(shown.id);
+            } else if (removing.kind === "key") {
+              await client.removePersonKey(shown.id, removing.key.id);
+            } else {
+              await client.removeRecoveryCodes(shown.id);
+            }
+            setRemoving(null);
+            say(text.factorRemoved);
+            againFactors();
+          }}
+        >
+          <ul className="console-facts">
+            {removing.kind !== "codes" ? (
+              <Consequence what={text.removeConsequenceUse} value={text.removeConsequenceUseValue} />
+            ) : null}
+            {removing.kind !== "codes" && secondFactors === 1 ? (
+              <Consequence what={text.removeConsequenceLast} value={shownFactors.recoveryCodesRemaining} />
+            ) : null}
+            {removing.kind !== "codes" && secondFactors === 1 && shownFactors.secondFactorRequired ? (
+              <Consequence what={text.removeConsequenceLocked} value={text.removeConsequenceLockedValue} />
+            ) : null}
+            <Consequence what={text.removeConsequenceSessions} value={text.removeConsequenceSessionsValue} />
+          </ul>
+        </Confirm>
       ) : null}
 
       {suspending ? (

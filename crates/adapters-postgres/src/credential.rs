@@ -779,6 +779,48 @@ impl WebAuthnStore for PgWebAuthnStore {
         .map_err(|e| database_error(&e))?;
         Ok(updated.rows_affected() == 1)
     }
+
+    async fn rename(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        user_id: UserId,
+        id: WebAuthnCredentialId,
+        name: &str,
+    ) -> Result<bool, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let updated = sqlx::query(
+            "UPDATE credential.webauthn_credential SET name = $4
+             WHERE tenant_id = $1 AND id = $2 AND user_id = $3",
+        )
+        .bind(tenant.as_uuid())
+        .bind(id.as_uuid())
+        .bind(user_id.as_uuid())
+        .bind(name)
+        .execute(connection(uow)?)
+        .await
+        .map_err(|e| database_error(&e))?;
+        Ok(updated.rows_affected() == 1)
+    }
+
+    async fn remove(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        user_id: UserId,
+        id: WebAuthnCredentialId,
+    ) -> Result<bool, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let removed = sqlx::query(
+            "DELETE FROM credential.webauthn_credential
+             WHERE tenant_id = $1 AND id = $2 AND user_id = $3",
+        )
+        .bind(tenant.as_uuid())
+        .bind(id.as_uuid())
+        .bind(user_id.as_uuid())
+        .execute(connection(uow)?)
+        .await
+        .map_err(|e| database_error(&e))?;
+        Ok(removed.rows_affected() == 1)
+    }
 }
 
 /// [`RecoveryCodeStore`] on `credential.recovery_code_set` and

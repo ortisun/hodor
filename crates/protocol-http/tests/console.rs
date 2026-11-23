@@ -89,6 +89,56 @@ fn applications(
     })
 }
 
+/// The use cases of people's factors on in-memory stores, with
+/// authenticator applications. Returns the key store too, for a test to
+/// give someone a key as a finished registration would.
+fn factors(
+    units_of_work: &InMemoryUnitOfWorkFactory,
+    clock: Arc<FixedClock>,
+    identity: &IdentityService,
+    tenants: &hodor_tenant::api::TenantService,
+) -> (
+    hodor_authentication::api::FactorService,
+    hodor_credential::testing::InMemoryWebAuthn,
+    hodor_credential::api::TotpService,
+) {
+    let units = || Arc::new(units_of_work.clone());
+    let keys = hodor_credential::testing::InMemoryWebAuthn::default();
+    let webauthn = hodor_credential::api::WebAuthnService::new(
+        units(),
+        Arc::new(keys.clone()),
+        hodor_credential::api::RelyingParty::from_public_address("https://auth.example")
+            .expect("valid"),
+        Arc::new(hodor_adapters_crypto::Sha256Digest),
+        Arc::new(hodor_adapters_crypto::AwsLcVerifier),
+        Arc::new(hodor_adapters_crypto::OsRandom),
+        clock.clone(),
+    );
+    let recovery_codes = hodor_credential::api::RecoveryCodeService::new(
+        units(),
+        Arc::new(hodor_credential::testing::InMemoryRecoveryCodes::default()),
+        Arc::new(hodor_adapters_crypto::Sha256Digest),
+        Arc::new(hodor_adapters_crypto::OsRandom),
+        clock.clone(),
+    );
+    let totp = hodor_credential::api::TotpService::new(
+        units(),
+        Arc::new(hodor_credential::testing::InMemoryTotps::default()),
+        Arc::new(hodor_kernel::sealing::testing::FakeSecretBox),
+        Arc::new(hodor_credential::testing::FakeHmacSha1),
+        Arc::new(hodor_adapters_crypto::OsRandom),
+        clock,
+    );
+    let service = hodor_authentication::api::FactorService::new(
+        identity.clone(),
+        tenants.clone(),
+        webauthn,
+        recovery_codes,
+    )
+    .with_totp(totp.clone());
+    (service, keys, totp)
+}
+
 fn world() -> World {
     let units_of_work = InMemoryUnitOfWorkFactory::default();
     let clock = Arc::new(FixedClock::at(Timestamp::UNIX_EPOCH));
@@ -141,6 +191,20 @@ fn world() -> World {
             Arc::new(InMemoryTenants::default()),
             clock.clone(),
         ),
+        // People's factors are tested in `admin.rs`; here no tenant has a
+        // row, so only the routes' refusals are reached.
+        factors: factors(
+            &units_of_work,
+            clock.clone(),
+            &identity,
+            &hodor_tenant::api::TenantService::new(
+                units(),
+                Arc::new(hodor_tenant::testing::InMemoryTenants::default()),
+                Arc::new(hodor_tenant::testing::InMemoryTenants::default()),
+                clock.clone(),
+            ),
+        )
+        .0,
         public_url: "https://auth.example".to_owned(),
     };
     let router = public_router(

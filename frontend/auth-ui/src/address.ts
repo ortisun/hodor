@@ -9,6 +9,7 @@ export const PAGES = [
   "reset-password",
   "account",
   "sign-out",
+  "security",
 ] as const;
 
 export type PageName = (typeof PAGES)[number];
@@ -70,11 +71,27 @@ export function noticeOf(search: string): NoticeName | null {
 }
 
 /**
+ * What a sign-in started from this address continues: an application's
+ * request, or a change on the security page that needs the person to sign
+ * in again. Either way the person signs in even when they are signed in
+ * already.
+ */
+export function continuationOf(search: string): "authorization" | "security" | null {
+  const named = new URLSearchParams(search).get("continue");
+  return named === "authorization" || named === "security" ? named : null;
+}
+
+/**
  * Whether the address says that an application's request waits for this
  * sign-in, so that the person signs in even when they are signed in already.
  */
 export function continuesAuthorization(search: string): boolean {
-  return new URLSearchParams(search).get("continue") === "authorization";
+  return continuationOf(search) === "authorization";
+}
+
+/** The sign-in page that signs the person in again and comes back to the security page. */
+export function signInAgainPath(tenant: string): string {
+  return `/t/${tenant}/account/sign-in?continue=security`;
 }
 
 /**

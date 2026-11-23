@@ -46,6 +46,6 @@ pub mod api {
         AssertionResponse, Challenge, CoseAlgorithm, CreationOptions, CredentialDescriptor,
         PendingRegistration, PendingRegistrationSnapshot, RegistrationResponse, RelyingParty,
         RequestOptions, WebAuthnCredential, WebAuthnCredentialId, WebAuthnCredentialSnapshot,
-        WebAuthnEvent, WebAuthnRegistrationId, user_handle,
+        WebAuthnEvent, WebAuthnRegistrationId, credential_name, user_handle,
     };
 }

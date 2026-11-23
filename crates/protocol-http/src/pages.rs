@@ -30,6 +30,7 @@ pub const PAGE_PATHS: &[&str] = &[
     "/account/recover",
     "/account/reset-password",
     "/account/sign-out",
+    "/account/security",
 ];
 
 /// The page an identity provider sends a person back to. It is the one

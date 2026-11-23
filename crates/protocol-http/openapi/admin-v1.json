@@ -3,7 +3,7 @@
   "info": {
     "title": "Hodor administration interface",
     "version": "1.0.0",
-    "description": "Users, sessions, the audit log, the identity providers, the keys, the applications and the assurance levels of a tenant, for the people who run it. Paths are relative to https://{host}/t/{slug}/api/v1/admin. Every operation needs an access token whose user holds a role with the permission named in `x-hodor-permission`."
+    "description": "Users, their sessions and second factors, the audit log, the identity providers, the keys, the applications and the assurance levels of a tenant, for the people who run it. Paths are relative to https://{host}/t/{slug}/api/v1/admin. Every operation needs an access token whose user holds a role with the permission named in `x-hodor-permission`."
   },
   "servers": [
     {
@@ -422,6 +422,262 @@
           },
           "404": {
             "description": "A problem document",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/users/{user_id}/factors": {
+      "get": {
+        "operationId": "listUserFactors",
+        "summary": "List a user's second factors and how many recovery codes are left",
+        "x-hodor-permission": "credentials:read",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The user's factors, without any secret, key or code.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Factors"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such user.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/users/{user_id}/factors/authenticator-application": {
+      "delete": {
+        "operationId": "removeUserAuthenticatorApplication",
+        "summary": "Remove a user's authenticator application",
+        "x-hodor-permission": "credentials:write",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "The application is removed; when it was the last second factor, the recovery codes are too."
+          },
+          "404": {
+            "description": "No such user, no authenticator application in use, or none offered by this installation.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/users/{user_id}/factors/keys/{key_id}": {
+      "delete": {
+        "operationId": "removeUserKey",
+        "summary": "Remove one of a user's security keys or passkeys",
+        "x-hodor-permission": "credentials:write",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "key_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "The key is removed; when it was the last second factor, the recovery codes are too."
+          },
+          "404": {
+            "description": "No such user, or the user has no such key.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/users/{user_id}/factors/recovery-codes": {
+      "delete": {
+        "operationId": "removeUserRecoveryCodes",
+        "summary": "Remove a user's recovery codes",
+        "x-hodor-permission": "credentials:write",
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "The recovery codes are removed."
+          },
+          "404": {
+            "description": "No such user, or the user has no recovery codes.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3355,6 +3611,86 @@
               "string",
               "null"
             ]
+          }
+        }
+      },
+      "Factors": {
+        "type": "object",
+        "required": [
+          "authenticator_application",
+          "keys",
+          "recovery_codes",
+          "second_factor_required"
+        ],
+        "properties": {
+          "authenticator_application": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Null when the installation offers no authenticator application.",
+            "required": [
+              "in_use"
+            ],
+            "properties": {
+              "in_use": {
+                "type": "boolean"
+              }
+            }
+          },
+          "keys": {
+            "type": "array",
+            "description": "Security keys and passkeys, oldest first.",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "name",
+                "passkey",
+                "created_at",
+                "last_used_at"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "passkey": {
+                  "type": "boolean",
+                  "description": "Whether the credential is discoverable."
+                },
+                "created_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "last_used_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                }
+              }
+            }
+          },
+          "recovery_codes": {
+            "type": "object",
+            "required": [
+              "remaining"
+            ],
+            "properties": {
+              "remaining": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          },
+          "second_factor_required": {
+            "type": "boolean",
+            "description": "Whether the tenant requires a second factor."
           }
         }
       },

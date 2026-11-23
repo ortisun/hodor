@@ -3,8 +3,9 @@
 use crate::domain::webauthn::{
     AssertionCheck, AssertionKind, AssertionResponse, Challenge, CreationOptions,
     PendingRegistration, RegistrationResponse, RelyingParty, RequestOptions, WebAuthnCredential,
-    WebAuthnEvent, WebAuthnRegistrationId, check_assertion, check_registration, creation_options,
-    passkey_request_options, request_options,
+    WebAuthnCredentialId, WebAuthnEvent, WebAuthnRegistrationId, check_assertion,
+    check_registration, creation_options, credential_name, passkey_request_options,
+    request_options,
 };
 use hodor_kernel::{
     Caller, Clock, Digest, DomainError, EventEnvelope, EventMetadata, RandomSource,
@@ -87,6 +88,33 @@ pub trait WebAuthnStore: Send + Sync {
         credential: &WebAuthnCredential,
         previous_count: u32,
     ) -> Result<bool, DomainError>;
+
+    /// Gives one of a user's credentials a new name. Answers whether the
+    /// user has a credential with this identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn rename(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        user_id: UserId,
+        id: WebAuthnCredentialId,
+        name: &str,
+    ) -> Result<bool, DomainError>;
+
+    /// Removes one of a user's credentials. Answers whether the user had a
+    /// credential with this identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn remove(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        user_id: UserId,
+        id: WebAuthnCredentialId,
+    ) -> Result<bool, DomainError>;
 }
 
 /// A registration that was just asked for.
@@ -125,6 +153,14 @@ pub struct WebAuthnService {
     verifier: Arc<dyn SignatureVerifier>,
     random: Arc<dyn RandomSource>,
     clock: Arc<dyn Clock>,
+}
+
+/// One answer for a credential that is not the user's or does not exist.
+fn credential_not_found() -> DomainError {
+    DomainError::not_found(
+        "credential.webauthn_credential_not_found",
+        "there is no such security key or passkey",
+    )
 }
 
 impl std::fmt::Debug for WebAuthnService {
@@ -278,6 +314,81 @@ impl WebAuthnService {
     ) -> Result<Vec<WebAuthnCredential>, DomainError> {
         let mut uow = self.units_of_work.begin(tenant).await?;
         self.store.list_for_user(uow.as_mut(), user_id).await
+    }
+
+    /// Gives one of a user's credentials a new name, by the rules of a name
+    /// given at registration.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Invalid` with `credential.webauthn_name_invalid` for a
+    /// name that breaks the rules, `NotFound` with
+    /// `credential.webauthn_credential_not_found` when the user has no
+    /// such credential, and an error if storage fails.
+    pub async fn rename(
+        &self,
+        tenant: &TenantContext,
+        user_id: UserId,
+        id: WebAuthnCredentialId,
+        name: &str,
+        caller: Caller,
+    ) -> Result<WebAuthnCredential, DomainError> {
+        let name = credential_name(name).ok_or_else(|| {
+            DomainError::invalid(
+                "credential.webauthn_name_invalid",
+                "a name has 1 to 64 characters and no control characters",
+            )
+        })?;
+        let mut uow = self.units_of_work.begin(tenant).await?;
+        if !self.store.rename(uow.as_mut(), user_id, id, &name).await? {
+            return Err(credential_not_found());
+        }
+        self.record(
+            uow.as_mut(),
+            caller,
+            &WebAuthnEvent::Renamed {
+                user_id,
+                credential_id: id,
+            },
+        )?;
+        let renamed = self
+            .store
+            .list_for_user(uow.as_mut(), user_id)
+            .await?
+            .into_iter()
+            .find(|credential| credential.id() == id)
+            .ok_or_else(credential_not_found)?;
+        uow.commit().await?;
+        Ok(renamed)
+    }
+
+    /// Removes one of a user's credentials.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NotFound` with `credential.webauthn_credential_not_found`
+    /// when the user has no such credential, and an error if storage
+    /// fails.
+    pub async fn remove(
+        &self,
+        tenant: &TenantContext,
+        user_id: UserId,
+        id: WebAuthnCredentialId,
+        caller: Caller,
+    ) -> Result<(), DomainError> {
+        let mut uow = self.units_of_work.begin(tenant).await?;
+        if !self.store.remove(uow.as_mut(), user_id, id).await? {
+            return Err(credential_not_found());
+        }
+        self.record(
+            uow.as_mut(),
+            caller,
+            &WebAuthnEvent::Removed {
+                user_id,
+                credential_id: id,
+            },
+        )?;
+        uow.commit().await
     }
 
     /// Makes a challenge that a user's credentials may answer.
