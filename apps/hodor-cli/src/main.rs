@@ -5,14 +5,18 @@
 mod applications;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use hodor_adapters_crypto::{AwsLcHmacSha1, LocalKeyProvider, OsRandom, SecretKeys, Sha256Digest};
+use hodor_adapters_crypto::{
+    AwsLcHmacSha1, BundleSigningKey, LocalKeyProvider, OsRandom, SecretKeys, Sha256Digest,
+};
 use hodor_adapters_postgres::{
-    Database, PgAccessTokenStore, PgAuditLog, PgKeyStore, PgLinkStore, PgPool, PgProviderStore,
-    PgRecoveryCodeStore, PgRoleAssignmentStore, PgSealingStateStore, PgTenantDirectory,
-    PgTenantRepository, PgTotpStore, PgUserRepository, reseal_tenant,
+    Database, PgAccessTokenStore, PgAuditLog, PgBundleStore, PgInstanceStatusStore,
+    PgInstanceStore, PgKeyStore, PgLinkStore, PgPool, PgProviderStore, PgRecoveryCodeStore,
+    PgRoleAssignmentStore, PgSealingStateStore, PgTenantDirectory, PgTenantRepository, PgTotpStore,
+    PgUploadedDecisionStore, PgUserRepository, reseal_tenant,
 };
 use hodor_audit::api::AuditService;
-use hodor_authorization::api::{AuthorizationService, Role};
+use hodor_authorization::api::{AuthorizationService, Namespace, Role};
+use hodor_authorization_opa::api::{Author, BundleFile, BundleService, bundle_name, decision_path};
 use hodor_credential::api::{AccessTokenService, RecoveryCodeService, RecoveryCodes, TotpService};
 use hodor_federation::api::{
     CreateProvider, DirectorySettings, FederationService, IdentityProvider, ProviderKind,
@@ -261,6 +265,21 @@ enum Command {
         command: SecretsCommand,
     },
 
+    /// Register Open Policy Agent instances, publish their bundles and
+    /// read what they report.
+    PolicyAgent {
+        /// Connection URL of the application role.
+        #[arg(
+            long,
+            env = "HODOR_DATABASE_URL",
+            hide_env_values = true,
+            global = true
+        )]
+        database_url: Option<String>,
+        #[command(subcommand)]
+        command: PolicyAgentCommand,
+    },
+
     /// Check a health endpoint and exit non-zero unless it answers 200.
     ///
     /// For container health checks: the runtime image has no shell or HTTP
@@ -273,6 +292,91 @@ enum Command {
         #[arg(long, default_value = "/readyz")]
         path: String,
     },
+}
+
+#[derive(Subcommand)]
+enum PolicyAgentCommand {
+    /// Make a key that signs bundles, and print it and its public key.
+    ///
+    /// The private key goes into the file `HODOR_OPEN_POLICY_AGENT_SIGNING_KEY_FILE`
+    /// names; the public key into each instance's configuration.
+    SigningKey,
+    /// Print the name of a tenant's bundle, or with a namespace the Rego
+    /// package of a resource server's `decision` rule.
+    BundleName {
+        /// The tenant's slug.
+        #[arg(long)]
+        tenant: String,
+        /// A resource server's audience.
+        #[arg(long)]
+        namespace: Option<String>,
+    },
+    /// Manage the registered instances.
+    Instance {
+        #[command(subcommand)]
+        command: InstanceCommand,
+    },
+    /// Check, sign and publish a tenant's next bundle from a directory.
+    ///
+    /// Every file under the directory goes into the bundle at the same
+    /// path under the tenant's tree: `.rego` policy modules and
+    /// `data.json` data documents.
+    Publish {
+        /// The tenant's slug.
+        #[arg(long)]
+        tenant: String,
+        /// The directory that holds the files.
+        #[arg(long)]
+        directory: std::path::PathBuf,
+        /// Who wrote the files. Only a bundle written by the operator is
+        /// served to a shared instance.
+        #[arg(long, value_enum, default_value = "tenant")]
+        written_by: WrittenByArg,
+        /// The file that holds the key that signs bundles.
+        #[arg(long, env = "HODOR_OPEN_POLICY_AGENT_SIGNING_KEY_FILE")]
+        signing_key_file: std::path::PathBuf,
+        /// The name instances know the key by.
+        #[arg(
+            long,
+            env = "HODOR_OPEN_POLICY_AGENT_SIGNING_KEY_ID",
+            default_value = "hodor"
+        )]
+        signing_key_id: String,
+    },
+    /// Show which revision each instance reports for a tenant's bundle.
+    Status {
+        /// The tenant's slug.
+        #[arg(long)]
+        tenant: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum InstanceCommand {
+    /// Register an instance and print its credential, once.
+    Add {
+        /// 1 to 63 lower-case letters, digits and `-`.
+        #[arg(long)]
+        name: String,
+        /// The tenant whose instance it is; without it, a shared instance
+        /// that runs only bundles written by the operator.
+        #[arg(long)]
+        tenant: Option<String>,
+    },
+    /// List the instances.
+    List,
+    /// Disable an instance: its credential is refused from now on.
+    Disable {
+        /// The instance's name.
+        #[arg(long)]
+        name: String,
+    },
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum WrittenByArg {
+    Operator,
+    Tenant,
 }
 
 #[derive(Subcommand)]
@@ -1118,6 +1222,224 @@ fn key_line(version: &KeyVersion) -> String {
 }
 
 /// Runs a keys command against a tenant named by its slug.
+/// The files of a bundle: every file under `directory`, at its path
+/// relative to it.
+fn bundle_files(directory: &std::path::Path) -> Result<Vec<BundleFile>, DomainError> {
+    let unreadable = |error: std::io::Error| {
+        DomainError::invalid(
+            "authorization.bundle_directory_unreadable",
+            "the directory of the bundle could not be read",
+        )
+        .with_detail(error.to_string())
+    };
+    let mut files = Vec::new();
+    let mut pending = vec![directory.to_path_buf()];
+    while let Some(next) = pending.pop() {
+        for entry in std::fs::read_dir(&next).map_err(unreadable)? {
+            let entry = entry.map_err(unreadable)?;
+            let kind = entry.file_type().map_err(unreadable)?;
+            let path = entry.path();
+            if kind.is_dir() {
+                pending.push(path);
+            } else if kind.is_file() {
+                let relative = path
+                    .strip_prefix(directory)
+                    .map_err(|_| unreadable(std::io::Error::other("outside the directory")))?
+                    .components()
+                    .map(|part| part.as_os_str().to_string_lossy().into_owned())
+                    .collect::<Vec<_>>()
+                    .join("/");
+                files.push(BundleFile {
+                    path: relative,
+                    contents: std::fs::read(&path).map_err(unreadable)?,
+                });
+            } else {
+                return Err(unreadable(std::io::Error::other(
+                    "a bundle's directory holds only files and directories",
+                )));
+            }
+        }
+    }
+    Ok(files)
+}
+
+fn bundle_service(database: &Database) -> BundleService {
+    BundleService::new(
+        Arc::new(PgInstanceStore::new(database.clone())),
+        Arc::new(PgBundleStore),
+        Arc::new(PgInstanceStatusStore),
+        Arc::new(PgUploadedDecisionStore),
+        Arc::new(database.clone()),
+        Arc::new(Sha256Digest),
+        Arc::new(OsRandom),
+        Arc::new(SystemClock),
+    )
+}
+
+fn when(time: Option<hodor_kernel::Timestamp>) -> String {
+    time.and_then(|time| {
+        time.format(&time::format_description::well_known::Rfc3339)
+            .ok()
+    })
+    .unwrap_or_else(|| "-".to_owned())
+}
+
+async fn run_policy_agent(
+    database_url: Option<String>,
+    command: PolicyAgentCommand,
+) -> Result<String, DomainError> {
+    if matches!(command, PolicyAgentCommand::SigningKey) {
+        let (private, public) = BundleSigningKey::generate()?;
+        return Ok(format!("{private}{public}").trim_end().to_owned());
+    }
+    let url = database_url.ok_or_else(|| {
+        DomainError::invalid(
+            "database.url_missing",
+            "HODOR_DATABASE_URL or --database-url is required",
+        )
+    })?;
+    let database = Database::connect(&Secret::from(url), 2)
+        .await
+        .map_err(|error| {
+            DomainError::internal("database.error", "the database could not be reached")
+                .with_detail(error.to_string())
+        })?;
+    let tenants = TenantService::new(
+        Arc::new(database.clone()),
+        Arc::new(PgTenantRepository),
+        Arc::new(PgTenantDirectory::new(database.clone())),
+        Arc::new(SystemClock),
+    );
+    let bundles = bundle_service(&database);
+    match command {
+        PolicyAgentCommand::SigningKey => Ok(String::new()),
+        PolicyAgentCommand::BundleName { tenant, namespace } => {
+            let entry = existing(&tenants, &tenant).await?;
+            match namespace {
+                None => Ok(bundle_name(entry.tenant_id)),
+                Some(namespace) => {
+                    let namespace = Namespace::parse(&namespace)?;
+                    let path = decision_path(
+                        &TenantContext::assume(entry.tenant_id),
+                        &namespace,
+                        &Sha256Digest,
+                    );
+                    Ok(path
+                        .trim_start_matches("/v1/data/")
+                        .trim_end_matches("/decision")
+                        .replace('/', "."))
+                }
+            }
+        }
+        PolicyAgentCommand::Instance {
+            command: InstanceCommand::Add { name, tenant },
+        } => {
+            let tenant = match tenant {
+                Some(slug) => Some(existing(&tenants, &slug).await?.tenant_id),
+                None => None,
+            };
+            let (instance, credential) = bundles.register(&name, tenant).await?;
+            Ok(format!(
+                "{}\t{}\n{}",
+                instance.id(),
+                instance.name().as_str(),
+                credential.expose()
+            ))
+        }
+        PolicyAgentCommand::Instance {
+            command: InstanceCommand::List,
+        } => Ok(bundles
+            .instances()
+            .await?
+            .iter()
+            .map(|instance| {
+                format!(
+                    "{}\t{}\t{}\t{}",
+                    instance.name().as_str(),
+                    instance
+                        .tenant()
+                        .map_or_else(|| "shared".to_owned(), |tenant| tenant.to_string()),
+                    when(Some(instance.registered_at())),
+                    instance.disabled_at().map_or_else(
+                        || "enabled".to_owned(),
+                        |at| format!("disabled {}", when(Some(at)))
+                    )
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")),
+        PolicyAgentCommand::Instance {
+            command: InstanceCommand::Disable { name },
+        } => {
+            if bundles.disable(&name).await? {
+                Ok(String::new())
+            } else {
+                Err(DomainError::not_found(
+                    "authorization.policy_agent_instance_not_found",
+                    "no enabled instance has this name",
+                ))
+            }
+        }
+        PolicyAgentCommand::Publish {
+            tenant,
+            directory,
+            written_by,
+            signing_key_file,
+            signing_key_id,
+        } => {
+            let entry = existing(&tenants, &tenant).await?;
+            let key = std::fs::read_to_string(&signing_key_file).map_err(|error| {
+                DomainError::invalid(
+                    "authorization.bundle_signing_key_unreadable",
+                    "the file of the key that signs bundles could not be read",
+                )
+                .with_detail(error.to_string())
+            })?;
+            let signer = BundleSigningKey::from_pem(&key, &signing_key_id)?;
+            let author = match written_by {
+                WrittenByArg::Operator => Author::Operator,
+                WrittenByArg::Tenant => Author::Tenant,
+            };
+            let files = bundle_files(&directory)?;
+            let bundle = bundles
+                .publish(
+                    &TenantContext::assume(entry.tenant_id),
+                    author,
+                    &files,
+                    &signer,
+                    caller(),
+                )
+                .await?;
+            Ok(format!("{}\t{}", bundle.revision, bundle.entity_tag()))
+        }
+        PolicyAgentCommand::Status { tenant } => {
+            let entry = existing(&tenants, &tenant).await?;
+            let instances = bundles.instances().await?;
+            Ok(bundles
+                .statuses(&TenantContext::assume(entry.tenant_id))
+                .await?
+                .iter()
+                .map(|status| {
+                    let name = instances
+                        .iter()
+                        .find(|instance| instance.id() == status.instance)
+                        .map_or_else(
+                            || status.instance.to_string(),
+                            |i| i.name().as_str().to_owned(),
+                        );
+                    format!(
+                        "{name}\t{}\t{}\t{}",
+                        status.active_revision.as_deref().unwrap_or("-"),
+                        when(Some(status.reported_at)),
+                        status.error.as_deref().unwrap_or("")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n"))
+        }
+    }
+}
+
 async fn run_keys(
     database: &Database,
     secret_keys: Option<String>,
@@ -1552,6 +1874,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .await
                 .map_err(|error| format!("{}: {}", error.code(), error.message()))?;
             writeln!(std::io::stdout(), "{output}")?;
+        }
+        Command::PolicyAgent {
+            database_url,
+            command,
+        } => {
+            let output = run_policy_agent(database_url, command)
+                .await
+                .map_err(|error| format!("{}: {}", error.code(), error.message()))?;
+            if !output.is_empty() {
+                writeln!(std::io::stdout(), "{output}")?;
+            }
         }
         Command::Secrets {
             command: SecretsCommand::GenerateKey,

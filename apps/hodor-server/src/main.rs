@@ -13,12 +13,13 @@ use hodor_adapters_http::{GuardedHttpClient, OutboundPolicy, ServiceHttpClient};
 use hodor_adapters_ldap::LdapDirectoryClient;
 use hodor_adapters_postgres::{
     Database, PgAccessTokenStore, PgApplicationStore, PgAttemptStore, PgAuditLog,
-    PgAuthorizationCodeStore, PgAuthorizationRequestStore, PgClientAssertionStore, PgClientStore,
-    PgGrantStore, PgKeyStore, PgLinkStore, PgMessageQueue, PgNativeRoleStore, PgPasswordStore,
-    PgPendingAuthorizationStore, PgProviderStore, PgRecoveryCodeStore, PgResourceServerStore,
-    PgRoleAssignmentStore, PgSealingStateStore, PgSessionStore, PgTenantDirectory,
-    PgTenantRepository, PgTotpStore, PgTransactionStore, PgUserRepository,
-    PgVerificationTokenStore, PgWebAuthnStore,
+    PgAuthorizationCodeStore, PgAuthorizationRequestStore, PgBundleStore, PgClientAssertionStore,
+    PgClientStore, PgGrantStore, PgInstanceStatusStore, PgInstanceStore, PgKeyStore, PgLinkStore,
+    PgMessageQueue, PgNativeRoleStore, PgPasswordStore, PgPendingAuthorizationStore,
+    PgProviderStore, PgRecoveryCodeStore, PgResourceServerStore, PgRoleAssignmentStore,
+    PgSealingStateStore, PgSessionStore, PgTenantDirectory, PgTenantRepository, PgTotpStore,
+    PgTransactionStore, PgUploadedDecisionStore, PgUserRepository, PgVerificationTokenStore,
+    PgWebAuthnStore,
 };
 use hodor_audit::api::AuditService;
 use hodor_authentication::api::{
@@ -27,7 +28,7 @@ use hodor_authentication::api::{
     RecoveryCodeAuthenticator, Requirement, TotpAuthenticator, WebAuthnAuthenticator,
 };
 use hodor_authorization::api::{AuthorizationService, EngineRegistry, NativeEngine};
-use hodor_authorization_opa::api::{Instances, OpenPolicyAgentEngine};
+use hodor_authorization_opa::api::{BundleService, Instances, OpenPolicyAgentEngine};
 use hodor_credential::api::{
     AccessTokenService, CredentialService, RecoveryCodeService, RelyingParty, TotpService,
     WebAuthnService,
@@ -49,8 +50,8 @@ use hodor_protocol_http::{
     AdminState, AuthorizationState, ConsoleState, Health, InteractionState, Limits, Pages,
     ReadinessCheck, ResolvedTenant, TenantResolver, TenantStatus as HttpTenantStatus, TokenState,
     UserInfoState, admin_routes, authorization_routes, console_routes, discovery_routes,
-    interaction_routes, key_set_routes, ops_router, public_router, serve, token_routes,
-    userinfo_routes,
+    interaction_routes, key_set_routes, ops_router, policy_agent_routes, public_router, serve,
+    token_routes, userinfo_routes,
 };
 use hodor_session::api::SessionService;
 use hodor_tenant::api::{TenantDirectory as _, TenantService, TenantStatus};
@@ -316,7 +317,18 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
              no token is issued"
         ),
     }
-    let mut site_routes = axum::Router::new();
+    // Open Policy Agent instances pull their bundles and report here,
+    // each by its own credential.
+    let mut site_routes = axum::Router::new().merge(policy_agent_routes(BundleService::new(
+        Arc::new(PgInstanceStore::new(database.clone())),
+        Arc::new(PgBundleStore),
+        Arc::new(PgInstanceStatusStore),
+        Arc::new(PgUploadedDecisionStore),
+        Arc::new(database.clone()),
+        Arc::new(Sha256Digest),
+        Arc::new(OsRandom),
+        Arc::new(SystemClock),
+    )));
     match &config.pages_directory {
         Some(directory) => {
             let pages = Pages::load(directory)?;

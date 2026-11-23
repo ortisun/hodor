@@ -15,6 +15,7 @@ form_urlencoded.workspace = true
 hodor-audit.workspace = true
 hodor-authentication.workspace = true
 hodor-authorization.workspace = true
+hodor-authorization-opa.workspace = true
 hodor-credential.workspace = true
 hodor-federation.workspace = true
 hodor-identity.workspace = true
@@ -32,6 +33,9 @@ tracing.workspace = true
 
 [dev-dependencies]
 hodor-adapters-crypto = { workspace = true, features = ["testing"] }
+hodor-adapters-http.workspace = true
+hodor-authorization-opa = { workspace = true, features = ["testing"] }
+testcontainers.workspace = true
 hodor-adapters-ldap = { workspace = true, features = ["testing"] }
 hodor-federation = { workspace = true, features = ["testing"] }
 hodor-audit = { workspace = true, features = ["testing"] }

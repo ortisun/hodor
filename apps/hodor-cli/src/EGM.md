@@ -8,6 +8,7 @@ the command line with clap (`Cli`, `Command`), connects to PostgreSQL and calls
 the services of the domain crates directly. It applies migrations, manages
 tenants, makes the first administrator of a tenant, verifies the audit chain,
 manages identity providers, looks at, rotates and revokes a tenant's keys,
+registers Open Policy Agent instances and publishes their signed bundles,
 generates secret keys and probes a health endpoint.
 manages identity providers and applications, generates secret keys and probes
 a health endpoint.
@@ -50,6 +51,13 @@ Commands, as typed, from the clap enums in `main.rs`:
 | `hodor-cli recovery-codes generate` | `--tenant`, `--login`; no keys needed | `RecoveryCodeService::generate`: a set in place of any earlier one; prints `recovery codes, shown once: 10` and the ten codes (`RecoveryCodeCommand::Generate`, `run_recovery_codes`) |
 | `hodor-cli recovery-codes count` | `--tenant`, `--login` | `RecoveryCodeService::unused`; prints `unused <count>` (`RecoveryCodeCommand::Count`) |
 | `hodor-cli recovery-codes remove` | `--tenant`, `--login` | `RecoveryCodeService::remove`; prints `removed` or `nothing to remove` (`RecoveryCodeCommand::Remove`) |
+| `hodor-cli policy-agent signing-key` | none; no database | `BundleSigningKey::generate`; prints the private key and the public key in PEM (`PolicyAgentCommand::SigningKey`, `run_policy_agent`) |
+| `hodor-cli policy-agent bundle-name` | `--tenant`, optional `--namespace` | `bundle_name`, or with a namespace the package of `decision_path` (`PolicyAgentCommand::BundleName`) |
+| `hodor-cli policy-agent instance add` | `--name`, optional `--tenant` (without it, a shared instance) | `BundleService::register`; prints `<identifier>\t<name>` and the credential on the next line, once (`InstanceCommand::Add`) |
+| `hodor-cli policy-agent instance list` | none | `BundleService::instances`: name, tenant or `shared`, when registered, `enabled` or `disabled <when>` (`InstanceCommand::List`) |
+| `hodor-cli policy-agent instance disable` | `--name` | `BundleService::disable`; `authorization.policy_agent_instance_not_found` if no enabled instance has the name (`InstanceCommand::Disable`) |
+| `hodor-cli policy-agent publish` | `--tenant`, `--directory`, `--written-by` (`operator`, `tenant`; default `tenant`), `--signing-key-file` / `HODOR_OPEN_POLICY_AGENT_SIGNING_KEY_FILE`, `--signing-key-id` / `HODOR_OPEN_POLICY_AGENT_SIGNING_KEY_ID` (default `hodor`) | every file under the directory (`bundle_files`), `BundleSigningKey::from_pem`, `BundleService::publish`; prints `<revision>\t<entity tag>` (`PolicyAgentCommand::Publish`) |
+| `hodor-cli policy-agent status` | `--tenant` | `BundleService::statuses`: instance, active revision, when reported, last error (`PolicyAgentCommand::Status`) |
 | `hodor-cli secrets generate-key` | none | `hodor_adapters_crypto::SecretKeys::generate(&OsRandom)` (`SecretsCommand::GenerateKey`) |
 | `hodor-cli secrets reseal` | `--tenant` (optional), `HODOR_DATABASE_URL`, `HODOR_SECRET_KEYS` | `hodor_adapters_postgres::reseal_tenant` per tenant of `TenantDirectory::list`, then `TenantSecretBox::refuse_first_format` when nothing was left unreadable; one line per tenant (`SecretsCommand::Reseal`, `run_reseal`) |
 | `hodor-cli probe` | `--addr` (default `127.0.0.1:9090`), `--path` (default `/readyz`) | local `probe`, over `std::net::TcpStream` (`Command::Probe`) |

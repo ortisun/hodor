@@ -51,6 +51,10 @@ Routers, as assembled in `run`:
   into the tenant routes when `keys` built a `KeyService` (`PgKeyStore`,
   `LocalKeyProvider` over `HODOR_SECRET_KEYS`); otherwise a warning is logged
   and the address is not served.
+- `/opa/…`: `hodor_protocol_http::policy_agent_routes(BundleService)` is
+  merged into the site routes, with `PgInstanceStore`, `PgBundleStore`,
+  `PgInstanceStatusStore` and `PgUploadedDecisionStore`. The server never
+  holds the key that signs bundles: it serves them as published.
 - Hosted pages and the console come from `Pages::load` and
   `Pages::load_console`, merged through `page_routes` and `asset_routes`.
 - The public router is `hodor_protocol_http::public_router`; the operations

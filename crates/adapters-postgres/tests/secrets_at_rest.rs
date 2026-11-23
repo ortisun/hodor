@@ -422,6 +422,21 @@ const NOT_SEALED_SECRETS: &[(&str, &str, &str)] = &[
         "checksum",
         "the checksum of a migration",
     ),
+    (
+        "platform.policy_agent_instance",
+        "credential_digest",
+        "the SHA-256 of an instance's credential, never the credential",
+    ),
+    (
+        "authorization.policy_bundle",
+        "archive",
+        "a signed bundle of policies, which holds no secret",
+    ),
+    (
+        "authorization.policy_bundle",
+        "digest",
+        "the SHA-256 of a bundle's archive",
+    ),
 ];
 
 #[tokio::test]

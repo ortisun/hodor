@@ -1,6 +1,6 @@
 //! Reading what an instance answered, strictly.
 
-use hodor_authorization::api::{Effect, EngineAnswer, PolicyReference, ReasonCode};
+use hodor_authorization::api::{Effect, EngineAnswer, PolicyReference, PolicyRevision, ReasonCode};
 use serde_json::Value;
 
 /// At most this many policies are taken from an answer.
@@ -43,6 +43,19 @@ pub(crate) fn read(body: &[u8]) -> EngineAnswer {
     decide(result).unwrap_or_else(|| indeterminate(MALFORMED))
 }
 
+/// The revision of the bundle `name` an answer asked with `provenance`
+/// says the instance used, if it says one.
+pub(crate) fn revision(body: &[u8], name: &str) -> Option<PolicyRevision> {
+    let document = serde_json::from_slice::<Value>(body).ok()?;
+    let revision = document
+        .get("provenance")?
+        .get("bundles")?
+        .get(name)?
+        .get("revision")?
+        .as_str()?;
+    PolicyRevision::parse(revision).ok()
+}
+
 fn decide(result: &Value) -> Option<EngineAnswer> {
     let result = result.as_object()?;
     let allow = result.get("allow")?.as_bool()?;
@@ -76,6 +89,24 @@ mod tests {
     fn effect_and_reason(body: &str) -> (Effect, String) {
         let answer = read(body.as_bytes());
         (answer.effect, answer.reason.as_str().to_owned())
+    }
+
+    #[test]
+    fn the_revision_is_that_of_the_named_bundle() {
+        let body = br#"{"result":{"allow":true},"provenance":{"version":"1.10.1","bundles":{"tab":{"revision":"7"},"other":{"revision":"9"}}}}"#;
+        assert_eq!(
+            revision(body, "tab").map(|r| r.as_str().to_owned()),
+            Some("7".to_owned())
+        );
+        assert_eq!(revision(body, "missing"), None);
+        assert_eq!(revision(br#"{"result":{"allow":true}}"#, "tab"), None);
+        assert_eq!(
+            revision(
+                br#"{"provenance":{"bundles":{"tab":{"revision":""}}}}"#,
+                "tab"
+            ),
+            None
+        );
     }
 
     #[test]

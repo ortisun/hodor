@@ -7,10 +7,17 @@ rust-version.workspace = true
 publish.workspace = true
 repository.workspace = true
 
+[features]
+# In-memory stores of the bundles and the contract every store passes.
+testing = ["hodor-kernel/testing"]
+
 [dependencies]
 async-trait.workspace = true
+base64.workspace = true
 hodor-authorization.workspace = true
 hodor-kernel.workspace = true
+miniz_oxide.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 time.workspace = true
 
@@ -20,6 +27,7 @@ time.workspace = true
 hodor-adapters-crypto.workspace = true
 hodor-adapters-http.workspace = true
 hodor-authorization = { workspace = true, features = ["testing"] }
+hodor-authorization-opa = { path = ".", features = ["testing"] }
 hodor-kernel = { workspace = true, features = ["testing"] }
 testcontainers.workspace = true
 tokio.workspace = true

@@ -143,7 +143,7 @@ async fn the_request_goes_to_the_path_of_the_tenant_and_the_binding() {
     assert_eq!(
         seen[0].url,
         format!(
-            "{SHARED}{}",
+            "{SHARED}{}?provenance=true",
             decision_path(&tenant, &input.request.namespace, &Sha256Digest)
         )
     );

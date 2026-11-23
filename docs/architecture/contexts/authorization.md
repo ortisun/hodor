@@ -360,7 +360,7 @@ POST /v1/data/hodor/tenants/t<tenant>/resource_servers/r<namespace>/decision
 
 Both come from the `TenantContext` and the binding. **Nothing in the request is part of the path**: an attribute, a resource kind or an identifier that names another tenant or another path is only input that the policy sees.
 
-The policy that answers a tenant's resource server is therefore the rule `decision` of the package `hodor.tenants.t<tenant>.resource_servers.r<namespace>`. The bundles of Issue-78 write it; a person writing Rego does not have to.
+The policy that answers a tenant's resource server is therefore the rule `decision` of the package `hodor.tenants.t<tenant>.resource_servers.r<namespace>`. Whoever writes the policy declares that package; `hodor-cli policy-agent bundle-name --tenant … --namespace …` prints it, and publishing refuses a module whose package is outside the tenant's tree.
 
 ### The input
 
@@ -394,7 +394,7 @@ The only answer taken is a result that is an object with a boolean `allow`:
 | No `result`: the rule is not defined for this input, or no policy exists at the path | `indeterminate` | `policy_undefined` |
 | Anything else: `allow` missing or not a boolean, a `reason` that is not a code of lower-case letters, digits and `_`, `policies` that are not at most 64 strings, a body that is not JSON | `indeterminate` | `policy_answer_malformed` |
 
-`policies` become the decision's matched policies. A revision is not read yet; it comes with the bundles (Issue-78).
+`policies` become the decision's matched policies. The revision comes from the answer's provenance: see [the revision of a decision](#the-revision-of-a-decision).
 
 ### Failures
 
@@ -414,7 +414,11 @@ Every failure is `indeterminate`, with its own reason. The evaluation then treat
 
 ### How policies reach an instance
 
-In production, only as signed bundles that the instance pulls from Hodor (Issue-78). Hodor never sends a policy through Open Policy Agent's Policy API. The tests of this engine do, into a container of their own, because the bundles do not exist yet.
+In production, only as signed bundles that the instance pulls from Hodor: see [Bundles](#bundles). Hodor never sends a policy through Open Policy Agent's Policy API. The tests of the engine alone load policies into a container of their own as files; the tests of the bundles load them the production way.
+
+### The revision of a decision
+
+The engine asks with `?provenance=true`, and Open Policy Agent answers with the revision of every bundle it has activated. The revision of the tenant's bundle, named `t<tenant>`, is the decision's `policy_version`. An answer without it, from an instance that loaded its policies some other way, has no revision.
 
 ### The capabilities file
 
@@ -431,6 +435,125 @@ Its `allow_net` is empty, so no built-in may reach the network even if one were 
 
 Open Policy Agent has no setting that limits the built-ins of a running instance. The file is enforced when a policy is checked and built (`opa check --capabilities`, `opa build --capabilities`, Issue-79), so no bundle using a removed built-in is ever published. An instance should run without a route out of its network as well.
 
+## Bundles
+
+An Open Policy Agent instance gets its policies and data from Hodor only, as signed bundles that it pulls. It reports which revision it runs, and uploads the decisions it made. This is the other direction from the engine: there Hodor calls the instance, here the instance calls Hodor. The two directions have their own credentials:
+
+| Direction | Credential | Where it is set |
+|---|---|---|
+| Hodor asks an instance for a decision | `HODOR_OPEN_POLICY_AGENT_TOKEN`, the bearer token the instance's interface requires | The server's configuration and the instance's authorization policy |
+| An instance pulls bundles, reports its status and uploads decisions | A credential of that instance alone, issued by Hodor when the instance is registered | Hodor keeps its hash; the instance's configuration holds the credential |
+
+All of it lives in `hodor-authorization-opa`, which depends on this context and the kernel only. Nothing in this context knows about bundles.
+
+### Instances
+
+An instance is registered by whoever operates the installation, with `hodor-cli policy-agent instance add`:
+
+- **Shared**, without a tenant. It may pull the bundle of any tenant, but only bundles written by the operator.
+- **Of a tenant's own**, with `--tenant`. It may pull that tenant's bundle and no other, whoever wrote it.
+
+That is the isolation rule of [Decision 0010](../../decisions/0010-opa-integration.md): Rego written by a tenant never reaches an instance that runs another tenant's policies, because Rego can read every document an instance holds.
+
+Registering an instance prints its credential once: `hodor_pa_` followed by 43 characters, 32 random bytes in base64url. Hodor keeps only the SHA-256 of it. A high-entropy credential needs no slow hash ([Decision 0004](../../decisions/0004-token-formats.md)). An instance is never deleted. Disabling it refuses its credential at once, and the instance keeps running the last bundle it activated.
+
+The instances are the installation's, not a tenant's, so they are a platform table: a shared instance is known before any tenant is. Registering and disabling them is not in a tenant's audit log; it is done by the operator from the command line. Managing them through the administration interface is Issue-80.
+
+### What a bundle holds
+
+A bundle is built for one tenant and holds:
+
+- the tenant's policy modules (`.rego` files) and data documents (`data.json` files), at the paths they were given under the tenant's tree `hodor/tenants/t<tenant>/`;
+- `.manifest`, with the revision and one root, `hodor/tenants/t<tenant>`;
+- `.signatures.json`, Hodor's signature over every other file.
+
+The root is what keeps tenants apart in a shared instance: Open Policy Agent refuses a bundle that writes outside its roots, and two bundles whose roots overlap. Before signing, Hodor checks every module: its `package` must be `hodor.tenants.t<tenant>` or a package below it, and a data document must sit under the tenant's tree. A file of any other kind is refused. Whether the modules compile, against [the capabilities file](#the-capabilities-file), is the policy lifecycle's to check (Issue-79).
+
+Each bundle records **who wrote it**: the operator or the tenant. Only a bundle written by the operator is served to a shared instance. `hodor-cli policy-agent publish` takes `--written-by operator` or `--written-by tenant`, and it is `tenant` unless the operator says otherwise, so that a mistake keeps a bundle off the shared instance rather than putting it there.
+
+The revision is a number per tenant: 1, then 2, and so on, written as text in the manifest. A bundle is never changed or removed once it is published. Publishing a previous version again is a new revision; that is the rollback of Issue-79.
+
+### Signing
+
+Hodor signs bundles with **a key of the installation**, an ECDSA P-256 key (ES256). It is not a tenant's signing key: those rotate every 90 days and sign tokens, and every instance would need every tenant's key. The operator makes the key with `hodor-cli policy-agent signing-key`, which prints the private key and the public key. The public key goes into each instance's configuration. Only the command-line tool, which publishes, needs the private key: `HODOR_OPEN_POLICY_AGENT_SIGNING_KEY_FILE` names the file that holds it, and `HODOR_OPEN_POLICY_AGENT_SIGNING_KEY_ID` its name, `hodor` by default. The server serves the bundles as they were signed and never holds the key.
+
+The signature is Open Policy Agent's own format. `.signatures.json` holds one JSON Web Signature in compact form. Its header names the algorithm and the key (`kid`). Its payload lists every other file of the bundle with the SHA-256 of its contents. Hodor writes JSON files in the canonical form Open Policy Agent hashes them in: keys sorted, no space, numbers as written. Their bytes and their hash therefore agree whichever way they are read.
+
+To change the key, the operator adds the new public key to every instance under a new name, then publishes with the new key. Instances verify each bundle with the key its `kid` names.
+
+### The service interface
+
+| Route | Called by Open Policy Agent to |
+|---|---|
+| `GET /opa/bundles/t<tenant>` | Download the tenant's latest bundle |
+| `POST /opa/status` | Report which revision of each bundle it runs |
+| `POST /opa/logs` | Upload the decisions it made |
+
+The routes belong to no tenant, since a shared instance serves several. Every request carries the instance's credential as a bearer token. A missing, unknown or disabled credential is answered `401`, with nothing else.
+
+**Bundles.** A bundle the instance may not pull is answered `404`, exactly like a tenant with no bundle, so an instance cannot tell another tenant's bundle from no bundle at all. The answer carries an `ETag`, the SHA-256 of the archive. A request whose `If-None-Match` matches it is answered `304` without the archive. The archive is `application/gzip`.
+
+**Status.** Open Policy Agent's status report names each bundle with its active revision, when it was last activated and its last error. For each bundle of a tenant the instance serves (its own tenant, or any tenant for a shared instance), Hodor keeps the latest report, one per instance and tenant. Bundles of other tenants are ignored. This is the record the policy lifecycle reads to know when a revision is active everywhere (Issue-79).
+
+**Decision logs.** Open Policy Agent uploads its decisions as gzip-compressed JSON arrays. Hodor accepts at most 1 mebibyte compressed and 8 mebibytes once expanded, and at most 10,000 decisions per upload. For each decision under the tree of a tenant the instance serves, Hodor keeps:
+
+- the decision's identifier;
+- its path;
+- the revision of the tenant's bundle;
+- whether it allowed;
+- when it was made.
+
+The same decision uploaded twice is kept once. **Neither the input nor the whole result is kept**: they can hold personal data, and masking them belongs to the record of decisions (Issue-76). That issue joins these decisions to the ones Hodor records. Decisions outside a tenant's tree, or of a tenant the instance does not serve, are dropped. An upload whose body says `Content-Encoding: gzip` is expanded; a status report may come either way.
+
+The status and log reports may be up to 1 mebibyte, larger than the 64 kibibytes of every other request.
+
+### Configuring an instance
+
+```yaml
+services:
+  hodor:
+    url: https://hodor.example.com/opa
+    credentials:
+      bearer:
+        token: hodor_pa_…
+bundles:
+  t0193a1…:
+    service: hodor
+    resource: bundles/t0193a1…
+    signing:
+      keyid: hodor
+keys:
+  hodor:
+    algorithm: ES256
+    key: |
+      -----BEGIN PUBLIC KEY-----
+      …
+      -----END PUBLIC KEY-----
+status:
+  service: hodor
+decision_logs:
+  service: hodor
+```
+
+An instance of a tenant's own lists that tenant's bundle. A shared instance lists one bundle for each tenant it answers. `hodor-cli policy-agent bundle-name --tenant` prints the name, and `--namespace` prints the package a resource server's `decision` rule belongs to.
+
+### Storage of bundles
+
+| Table | Kind | Holds |
+|---|---|---|
+| `platform.policy_agent_instance` | Platform table | Identifier, unique name, the tenant of an instance of a tenant's own, the SHA-256 of the credential, when it was registered and disabled |
+| `"authorization".policy_bundle` | Tenant table | Revision (primary key with the tenant), who wrote it, the archive, its SHA-256, when it was published. Append only for the application role |
+| `"authorization".policy_agent_status` | Tenant table | One row per instance: active revision, last activation, last error, when it was reported |
+| `"authorization".policy_agent_decision` | Tenant table | One row per instance and decision identifier: path, revision, whether it allowed, when it was made and received |
+
+The instance table is the second platform table after the tenant directory. It holds no secret, only a hash. It must be readable before a tenant is known, because a credential is checked first.
+
+### Events of bundles
+
+| Event | When | Data |
+|---|---|---|
+| `authorization.policy_bundle_published` | A bundle is published | Revision, who wrote it, the SHA-256 of the archive |
+
 ## Not built yet
 
 | Item | Planned in |
@@ -440,10 +563,12 @@ Open Policy Agent has no setting that limits the built-ins of a running instance
 | Conditions on attributes in Common Expression Language | Issue-74 |
 | The authorization interface for applications, which calls the evaluation; and an implementation of `SubjectAttributeSource`. Until then no binary evaluates through the engine contract, and the administration interface still asks the check above | Issue-75 |
 | The record of decisions | Issue-76 |
-| Bundles, the revision a decision was made with and the lag of an instance behind what is published | Issue-78 |
+| A decision from an instance that runs a revision older than the published one, by more than an allowed lag, answered `indeterminate` | Issue-79, with activation tracking |
+| Retention of the decisions instances upload, and joining them to the record of decisions | Issue-76 |
+| A discovery bundle, so that a shared instance learns the tenants it answers without listing them in its configuration | When the number of tenants calls for it |
 | The policy lifecycle, with checks and builds against the capabilities file | Issue-79 |
-| A health check of each instance every 5 seconds. Today an instance's health is known only from the decisions it answers, through its circuit | Issue-78, with the status each instance reports |
-| Instances and their credentials managed through the administration interface, one token per instance, and mutual TLS | Issue-80 |
+| A health check of each instance every 5 seconds. Today an instance's health is known from the decisions it answers, through its circuit, and from the status it reports | Issue-80 |
+| Instances and their credentials managed through the administration interface, a query token of each instance's own for the Data API, and mutual TLS | Issue-80 |
 | A cache of decisions | When a binding declares its policy deterministic |
 | Managing bindings, permissions, roles and assignments through the administration interface, the command-line tool and the console | Issue-80 |
 | Access control lists and relationships | Later phase ([Decision 0023](../../decisions/0023-what-0.2.0-holds.md)) |

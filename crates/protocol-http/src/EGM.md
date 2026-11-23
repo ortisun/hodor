@@ -21,7 +21,7 @@ the set of re-exports in `lib.rs`.
 | --- | --- | --- |
 | `public_router(resolver, tenant_routes, site_routes, limits)` | `server.rs` | Builds the router for the public listener. |
 | `serve(listener, router, shutdown)` | `server.rs` | Serves with `ConnectInfo<SocketAddr>` until `shutdown` resolves, then stops accepting and waits for in-flight requests (`with_graceful_shutdown`). |
-| `Limits` | `server.rs` | `max_body_bytes` (default 64 KiB), `max_saml_response_bytes` (default `2 * hodor_federation::api::MAX_SAML_POSTED_BYTES`), `request_timeout` (default 30 seconds). |
+| `Limits` | `server.rs` | `max_body_bytes` (default 64 KiB), `max_saml_response_bytes` (default `2 * hodor_federation::api::MAX_SAML_POSTED_BYTES`), `max_policy_agent_report_bytes` (default 1 MiB), `request_timeout` (default 30 seconds). |
 | `ops_router(health)`, `Health`, `ReadinessCheck` | `health.rs` | Operations listener. `Health::new(checks)`, `begin_draining`, `is_draining`. `ReadinessCheck` has `name()` and `async check() -> Result<(), String>`. |
 | `TenantResolver`, `ResolvedTenant`, `TenantSlug`, `TenantStatus` | `tenant.rs` | `TenantResolver::resolve(slug) -> Result<Option<ResolvedTenant>, DomainError>`. `ResolvedTenant` holds a `TenantContext` and a `TenantStatus` (`Active` or `Suspended`). `TenantSlug(pub String)` is the slug as it appears in the path. |
 | `Problem` | `problem.rs` | Error response body, `application/problem+json`. `Problem::new(status, code, detail)`, `status()`, `impl From<DomainError>`, `impl IntoResponse`. |
@@ -37,6 +37,7 @@ the set of re-exports in `lib.rs`.
 | `ADMIN_OPERATIONS` | `admin.rs` | Table of `(method, path as written in the OpenAPI document, Permission)`. Every shared handler looks its permission up here; the documentation says a test holds the table and the OpenAPI document together. |
 | `CONSOLE_SESSION_HOURS` | `admin.rs` | `12`: the console stops answering this many hours after `signed_in_at`, whatever the tenant allows. |
 | `key_set_routes(keys: KeyService)` | `key_set.rs` | `GET /oauth2/jwks`, mounted under a tenant: the published key set as a JSON Web Key Set, with `Cache-Control: public, max-age=300` (`RotationPolicy::PUBLISHED_FOR`) and `Access-Control-Allow-Origin: *`. |
+| `policy_agent_routes(bundles: BundleService)` | `policy_agent.rs` | Mounted at the root, for Open Policy Agent instances, each by its bearer credential: `GET /opa/bundles/{name}` (`application/gzip`, `ETag`, `304` for a matching `If-None-Match`, `Cache-Control: no-store`; `404 authorization.bundle_not_found` for anything the instance may not pull), `POST /opa/status` and `POST /opa/logs` (`204`; a body with `Content-Encoding: gzip` is expanded). A missing, unknown or disabled credential is `401` with `WWW-Authenticate: Bearer`. |
 | `Pages` | `pages.rs` | A static application read from a directory: `load` (hosted pages), `load_console` (admin console), `page_routes`, `asset_routes`. |
 | `PAGE_PATHS`, `PROVIDER_CALLBACK_PAGE`, `PAGE_ASSETS_PATH`, `CONSOLE_PATHS`, `CONSOLE_ASSETS_PATH`, `PAGES_CONTENT_SECURITY_POLICY` | `pages.rs` | Paths and the content security policy of the static applications. |
 
@@ -221,8 +222,10 @@ root, outside any tenant.
 - `limit_bodies` refuses a body over the limit with
   `413 request.body_too_large`, whether or not it declares its length.
   `POST /t/.../interaction/sign-in/providers/.../saml` gets
-  `max_saml_response_bytes`; every other request gets `max_body_bytes`
-  (`posts_a_saml_response`). Requests longer than `request_timeout` get 408
+  `max_saml_response_bytes` (`posts_a_saml_response`); `POST /opa/status`
+  and `POST /opa/logs` get `max_policy_agent_report_bytes`, 1 mebibyte
+  (`posts_a_policy_agent_report`); every other request gets
+  `max_body_bytes`. Requests longer than `request_timeout` get 408
   (`TimeoutLayer`).
 - Unknown routes get `404 route.not_found` (`route_not_found`).
 
