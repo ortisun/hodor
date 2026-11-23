@@ -5,8 +5,8 @@ use super::{InMemoryClients, lock};
 use crate::api::{
     Application, ApplicationSettings, ApplicationStore, AuthorizationCode, AuthorizationCodeStore,
     AuthorizationRequest, AuthorizationRequestStore, Client, ClientId, ClientSecret,
-    ClientSettings, ClientStore, ClientType, CodeHash, Grant, GrantId, GrantStatus, GrantStore,
-    GrantType, PendingAuthorization, PendingAuthorizationId, SignedInPerson,
+    ClientSettings, ClientStore, ClientType, CodeHash, ConsentAnswer, Grant, GrantId, GrantStatus,
+    GrantStore, GrantType, PendingAuthorization, PendingAuthorizationId, SignedInPerson,
 };
 use hodor_kernel::random::testing::FakeDigest;
 use hodor_kernel::{
@@ -78,6 +78,25 @@ impl AuthorizationRequestStore for InMemoryAuthorizationRequests {
             .remove(&(uow.tenant().tenant_id(), id))
             .is_some())
     }
+
+    async fn answer(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: PendingAuthorizationId,
+        answer: ConsentAnswer,
+    ) -> Result<bool, DomainError> {
+        let mut rows = lock(&self.rows);
+        match rows
+            .get_mut(&(uow.tenant().tenant_id(), id))
+            .and_then(|pending| pending.consent.as_mut())
+        {
+            Some(wait) if wait.answer.is_none() => {
+                wait.answer = Some(answer);
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
 }
 
 /// Grants kept in memory.
@@ -147,6 +166,25 @@ impl GrantStore for InMemoryGrants {
             }
             None => Err(grant_not_found()),
         }
+    }
+
+    async fn list_active_for(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        user: UserId,
+        client: ClientId,
+    ) -> Result<Vec<Grant>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        Ok(lock(&self.rows)
+            .iter()
+            .filter(|((owner, _), grant)| {
+                *owner == tenant
+                    && grant.user_id == user
+                    && grant.client_id == client
+                    && grant.status == GrantStatus::Active
+            })
+            .map(|(_, grant)| grant.clone())
+            .collect())
     }
 }
 
@@ -296,6 +334,7 @@ fn request_for(client_id: ClientId) -> AuthorizationRequest {
         login_hint: Some("ana@example.com".to_owned()),
         ui_locales: Some("pt-BR en".to_owned()),
         acr_values: Some("urn:hodor:mfa".to_owned()),
+        first_party: true,
     }
 }
 
@@ -318,7 +357,9 @@ fn person() -> SignedInPerson {
 /// Panics when an implementation breaks a rule.
 pub async fn run_authorization_contract(ports: AuthorizationStorePorts<'_>) {
     a_pending_request_is_stored_whole_and_removed_once(ports).await;
+    a_request_waiting_for_consent_is_answered_once(ports).await;
     a_grant_is_stored_and_its_revocation_kept(ports).await;
+    the_active_grants_of_a_person_for_a_client_are_listed(ports).await;
     a_code_is_found_by_its_hash_and_redeemed_once(ports).await;
     rows_reference_their_own_tenant(ports).await;
 }
@@ -401,6 +442,145 @@ async fn a_pending_request_is_stored_whole_and_removed_once(ports: Authorization
             .await
             .expect("get"),
         None
+    );
+}
+
+async fn a_request_waiting_for_consent_is_answered_once(ports: AuthorizationStorePorts<'_>) {
+    let tenant = tenant();
+    let client = a_client(ports, &tenant).await;
+    let asked = person();
+    let (pending, _) = PendingAuthorization::hold_for_consent(
+        request_for(client.id()),
+        &asked,
+        moment(),
+        &super::DistinctRandom,
+        &FakeDigest,
+    );
+    let (signing_in, _) = PendingAuthorization::hold(
+        request_for(client.id()),
+        moment(),
+        &super::DistinctRandom,
+        &FakeDigest,
+    );
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    for kept in [&pending, &signing_in] {
+        ports
+            .requests
+            .insert(uow.as_mut(), kept)
+            .await
+            .expect("insert");
+    }
+    uow.commit().await.expect("commit");
+
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    assert_eq!(
+        ports
+            .requests
+            .get(uow.as_mut(), pending.id)
+            .await
+            .expect("get"),
+        Some(pending.clone()),
+        "stored whole, with whom it waits for"
+    );
+    assert!(
+        !ports
+            .requests
+            .answer(uow.as_mut(), signing_in.id, ConsentAnswer::Agreed)
+            .await
+            .expect("answer"),
+        "a request that waits for a sign-in has no answer to record"
+    );
+    drop(uow);
+
+    let elsewhere = self::tenant();
+    let mut uow = ports.units_of_work.begin(&elsewhere).await.expect("begin");
+    assert!(
+        !ports
+            .requests
+            .answer(uow.as_mut(), pending.id, ConsentAnswer::Agreed)
+            .await
+            .expect("answer"),
+        "another tenant cannot answer it"
+    );
+    uow.commit().await.expect("commit");
+
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    assert!(
+        ports
+            .requests
+            .answer(uow.as_mut(), pending.id, ConsentAnswer::Refused)
+            .await
+            .expect("answer")
+    );
+    assert!(
+        !ports
+            .requests
+            .answer(uow.as_mut(), pending.id, ConsentAnswer::Agreed)
+            .await
+            .expect("answer"),
+        "answered once"
+    );
+    uow.commit().await.expect("commit");
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    let stored = ports
+        .requests
+        .get(uow.as_mut(), pending.id)
+        .await
+        .expect("get")
+        .expect("found");
+    assert_eq!(
+        stored.consent.and_then(|wait| wait.answer),
+        Some(ConsentAnswer::Refused)
+    );
+}
+
+async fn the_active_grants_of_a_person_for_a_client_are_listed(ports: AuthorizationStorePorts<'_>) {
+    let tenant = tenant();
+    let client = a_client(ports, &tenant).await;
+    let other_client = a_client(ports, &tenant).await;
+    let someone = person();
+    let request = request_for(client.id());
+    let first = Grant::make(&request, &someone, moment());
+    let second = Grant::make(&request, &someone, moment());
+    let mut revoked = Grant::make(&request, &someone, moment());
+    revoked.revoke("code_reused", moment());
+    let another_person = Grant::make(&request, &person(), moment());
+    let another_client = Grant::make(&request_for(other_client.id()), &someone, moment());
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    for grant in [&first, &second, &revoked, &another_person, &another_client] {
+        ports
+            .grants
+            .insert(uow.as_mut(), grant)
+            .await
+            .expect("insert");
+    }
+    uow.commit().await.expect("commit");
+
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    let mut listed: Vec<GrantId> = ports
+        .grants
+        .list_active_for(uow.as_mut(), someone.user_id, client.id())
+        .await
+        .expect("list")
+        .into_iter()
+        .map(|grant| grant.id)
+        .collect();
+    listed.sort();
+    let mut expected = vec![first.id, second.id];
+    expected.sort();
+    assert_eq!(listed, expected);
+    drop(uow);
+
+    let elsewhere = self::tenant();
+    let mut uow = ports.units_of_work.begin(&elsewhere).await.expect("begin");
+    assert!(
+        ports
+            .grants
+            .list_active_for(uow.as_mut(), someone.user_id, client.id())
+            .await
+            .expect("list")
+            .is_empty(),
+        "another tenant sees none"
     );
 }
 

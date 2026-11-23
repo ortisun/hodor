@@ -20,6 +20,7 @@ mod notification;
 mod oauth;
 mod oauth_access_token;
 mod oauth_authorization;
+mod oauth_consent;
 mod oauth_refresh;
 mod oauth_token;
 mod outbox;
@@ -51,6 +52,7 @@ pub use oauth_access_token::PgAccessTokenRecordStore;
 pub use oauth_authorization::{
     PgAuthorizationCodeStore, PgAuthorizationRequestStore, PgGrantStore,
 };
+pub use oauth_consent::PgConsentStore;
 pub use oauth_refresh::PgRefreshTokenStore;
 pub use oauth_token::PgClientAssertionStore;
 pub use outbox::{DispatchReport, OutboxDispatcher};

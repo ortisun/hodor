@@ -130,6 +130,31 @@ pub enum OauthEvent {
         /// Why, such as `code_reused`.
         reason: &'static str,
     },
+    /// A person agreed to what a client asked for.
+    ConsentGiven {
+        /// The client.
+        client_id: ClientId,
+        /// The person.
+        user_id: UserId,
+        /// The scopes the consent now holds.
+        scopes: Vec<String>,
+    },
+    /// A person refused what a client asked for.
+    ConsentRefused {
+        /// The client.
+        client_id: ClientId,
+        /// The person.
+        user_id: UserId,
+    },
+    /// A consent was withdrawn, and the grants made under it revoked.
+    ConsentWithdrawn {
+        /// The client.
+        client_id: ClientId,
+        /// The person.
+        user_id: UserId,
+        /// `person` or `administrator`.
+        by: &'static str,
+    },
     /// An access token was issued. Never carries the token.
     AccessTokenIssued {
         /// The client it was issued to.
@@ -220,6 +245,9 @@ impl DomainEvent for OauthEvent {
             Self::ResourceServerChanged { .. } => "oauth.resource_server_changed",
             Self::AuthorizationCodeIssued { .. } => "oauth.authorization_code_issued",
             Self::GrantRevoked { .. } => "oauth.grant_revoked",
+            Self::ConsentGiven { .. } => "oauth.consent_given",
+            Self::ConsentRefused { .. } => "oauth.consent_refused",
+            Self::ConsentWithdrawn { .. } => "oauth.consent_withdrawn",
             Self::AccessTokenIssued { .. } => "oauth.access_token_issued",
             Self::ClientAccessTokenIssued { .. } => "oauth.client_access_token_issued",
             Self::RefreshTokenFamilyStarted { .. } => "oauth.refresh_token_family_started",

@@ -34,9 +34,8 @@ pub(crate) enum ApplicationCommand {
         /// Its name, shown to people.
         #[arg(long)]
         name: String,
-        /// Whether it belongs to whoever runs the tenant. A first-party
-        /// application is not asked for consent; until consent exists,
-        /// only first-party applications get codes.
+        /// Whether it belongs to whoever runs the tenant. A person is not
+        /// asked for consent for a first-party application.
         #[arg(long)]
         first_party: bool,
     },

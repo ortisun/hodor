@@ -15,9 +15,10 @@ All paths are relative to the tenant: `https://{host}/t/{slug}`.
 | `/account/complete-registration` | Arrives from the link in the message, chooses a password | `POST /interaction/registration/complete` |
 | `/account/recover` | Asks for a link to choose a new password | `POST /interaction/recovery` |
 | `/account/reset-password` | Arrives from the link in the message, chooses a new password | `POST /interaction/recovery/complete` |
-| `/account` | Sees that they are signed in, and signs out | `GET` and `DELETE /interaction/session` |
+| `/account` | Sees that they are signed in and which applications they agreed to, withdraws an agreement, and signs out | `GET` and `DELETE /interaction/session`, [`GET` and `DELETE /interaction/consents`](../api/interaction-api.md#the-persons-consents) |
 | `/account/sign-out` | Is asked whether to sign out, when an application asked Hodor to sign them out | `GET` and `DELETE /interaction/session` |
 | `/account/security` | Manages their second factors and recovery codes | [The factor routes](../api/interaction-api.md#managing-ones-factors) and the WebAuthn registration routes |
+| `/account/consent` | Is asked whether an application may have the access it asks for | [`GET` and `POST /interaction/consent`](../api/interaction-api.md#consent) |
 | `/account/providers/{alias}/callback` | Arrives back from an identity provider | The sign-in routes, to [finish](../api/interaction-api.md#signing-in-through-an-identity-provider) |
 
 `/account` and `/account/security` send a person who is not signed in to `/account/sign-in`, and `/account/sign-in` sends a person who is already signed in to `/account`.
@@ -76,6 +77,19 @@ The provider sends the person back to `/account/providers/{alias}/callback`. Tha
 A SAML identity provider does not send the person back with a code: it posts its response to Hodor's [assertion consumer](contexts/federation.md#when-the-response-arrives), which checks it, keeps its answer and sends the browser to the same page with `binding=saml`, the state and a receipt in the address. The page then takes the state and the receipt out of the address in the same way and presents those two. An address with `binding=saml` and no receipt is one the assertion consumer could not use, and the page says "that did not work" without asking the server anything.
 
 The page decides nothing and shows nothing of what the provider sent.
+
+### Asking for consent
+
+When a third-party application asks for access the person has not agreed to, the [authorization endpoint](contexts/oauth.md#asking) sends the browser to `/account/consent`. The page:
+
+- reads what the request asks for. Without a request waiting for this browser, it says there is nothing to answer and offers the account page;
+- names the application, in the heading: "Billing wants to access your account";
+- lists what it asks for, one line per scope. The scopes of OpenID Connect are worded by the page in the person's language: `openid` "know who you are", `profile` "see your name and username", `email` "see your email address", `address` and `phone` likewise. A scope of a resource server shows the description its administrator wrote, with the resource server's name; that text is shown as text, never as markup;
+- says so plainly when the application asks for offline access: "keep this access when you are not using it";
+- offers two buttons, "allow" and "deny". Neither is chosen for the person: nothing is answered until one is pressed;
+- sends the answer, then goes where the answer says, which is only ever an address of the tenant's own authorization endpoint, as after a sign-in.
+
+The account page lists the applications the person agreed to, each with what it may do and until when, and a button, "withdraw", that asks nothing more: a withdrawn agreement only means the application asks again.
 
 ### Registering and recovering
 

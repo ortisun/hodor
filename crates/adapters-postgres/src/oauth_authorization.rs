@@ -7,8 +7,8 @@ use crate::uow::{connection, database_error};
 use hodor_kernel::{DomainError, Timestamp, UnitOfWork, UserId};
 use hodor_oauth::api::{
     AuthorizationCode, AuthorizationCodeStore, AuthorizationRequest, AuthorizationRequestStore,
-    ClientId, CodeHash, Grant, GrantId, GrantStatus, GrantStore, PendingAuthorization,
-    PendingAuthorizationId,
+    ClientId, CodeHash, ConsentAnswer, ConsentWait, Grant, GrantId, GrantStatus, GrantStore,
+    PendingAuthorization, PendingAuthorizationId,
 };
 use hodor_session::api::SessionId;
 use sqlx::Row as _;
@@ -69,8 +69,9 @@ impl AuthorizationRequestStore for PgAuthorizationRequestStore {
         let tenant = uow.tenant().tenant_id();
         sqlx::query(
             "INSERT INTO oauth.authorization_request
-                 (tenant_id, id, secret_hash, client_id, request, received_at, expires_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                 (tenant_id, id, secret_hash, client_id, request, received_at, expires_at,
+                  consent_user_id, consent_session_id, consent_answer)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
         )
         .bind(tenant.as_uuid())
         .bind(pending.id.as_uuid())
@@ -79,6 +80,14 @@ impl AuthorizationRequestStore for PgAuthorizationRequestStore {
         .bind(Json(&pending.request))
         .bind(pending.received_at)
         .bind(pending.expires_at)
+        .bind(pending.consent.map(|wait| wait.user_id.as_uuid()))
+        .bind(pending.consent.map(|wait| wait.session_id.as_uuid()))
+        .bind(
+            pending
+                .consent
+                .and_then(|wait| wait.answer)
+                .map(ConsentAnswer::as_str),
+        )
         .execute(connection(uow)?)
         .await
         .map_err(|e| refused(e, REQUEST_CLIENT_CONSTRAINT, client_not_found))?;
@@ -92,7 +101,8 @@ impl AuthorizationRequestStore for PgAuthorizationRequestStore {
     ) -> Result<Option<PendingAuthorization>, DomainError> {
         let tenant = uow.tenant().tenant_id();
         let row = sqlx::query(
-            "SELECT id, secret_hash, request, received_at, expires_at
+            "SELECT id, secret_hash, request, received_at, expires_at, consent_user_id,
+                    consent_session_id, consent_answer
              FROM oauth.authorization_request
              WHERE tenant_id = $1 AND id = $2",
         )
@@ -103,12 +113,27 @@ impl AuthorizationRequestStore for PgAuthorizationRequestStore {
         .map_err(get)?;
         row.map(|row| {
             let Json(request): Json<AuthorizationRequest> = row.try_get("request").map_err(get)?;
+            let user: Option<Uuid> = row.try_get("consent_user_id").map_err(get)?;
+            let session: Option<Uuid> = row.try_get("consent_session_id").map_err(get)?;
+            let answer: Option<String> = row.try_get("consent_answer").map_err(get)?;
+            let consent = match (user, session) {
+                (Some(user), Some(session)) => Some(ConsentWait {
+                    user_id: UserId::from_uuid(user),
+                    session_id: SessionId::from_uuid(session),
+                    answer: answer
+                        .as_deref()
+                        .map(ConsentAnswer::from_stored)
+                        .transpose()?,
+                }),
+                _ => None,
+            };
             Ok(PendingAuthorization {
                 id: PendingAuthorizationId::from_uuid(row.try_get("id").map_err(get)?),
                 secret_hash: hash_of(&row, "secret_hash")?,
                 request,
                 received_at: row.try_get("received_at").map_err(get)?,
                 expires_at: row.try_get("expires_at").map_err(get)?,
+                consent,
             })
         })
         .transpose()
@@ -128,6 +153,27 @@ impl AuthorizationRequestStore for PgAuthorizationRequestStore {
                 .await
                 .map_err(get)?;
         Ok(removed.rows_affected() == 1)
+    }
+
+    async fn answer(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: PendingAuthorizationId,
+        answer: ConsentAnswer,
+    ) -> Result<bool, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let answered = sqlx::query(
+            "UPDATE oauth.authorization_request SET consent_answer = $3
+             WHERE tenant_id = $1 AND id = $2
+               AND consent_user_id IS NOT NULL AND consent_answer IS NULL",
+        )
+        .bind(tenant.as_uuid())
+        .bind(id.as_uuid())
+        .bind(answer.as_str())
+        .execute(connection(uow)?)
+        .await
+        .map_err(get)?;
+        Ok(answered.rows_affected() == 1)
     }
 }
 
@@ -220,6 +266,31 @@ impl GrantStore for PgGrantStore {
         } else {
             Err(grant_not_found())
         }
+    }
+
+    async fn list_active_for(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        user: UserId,
+        client: ClientId,
+    ) -> Result<Vec<Grant>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        sqlx::query(
+            "SELECT id, client_id, user_id, session_id, scopes, audiences, status, created_at,
+                    revoked_at, revocation_reason
+             FROM oauth.authorization_grant
+             WHERE tenant_id = $1 AND user_id = $2 AND client_id = $3 AND status = 'active'
+             ORDER BY created_at, id",
+        )
+        .bind(tenant.as_uuid())
+        .bind(user.as_uuid())
+        .bind(client.as_uuid())
+        .fetch_all(connection(uow)?)
+        .await
+        .map_err(get)?
+        .iter()
+        .map(grant_from)
+        .collect()
     }
 }
 

@@ -34,7 +34,7 @@ its header); the pages see plain values.
   found" frame with a link to sign-in.
 - `address.ts`:
   - `PAGES` / `PageName` - `sign-in`, `register`, `complete-registration`,
-    `recover`, `reset-password`, `account`, `security`.
+    `recover`, `reset-password`, `consent`, `account`, `security`.
   - `continuationOf(search)` - `"authorization"`, `"security"` or `null`, from
     `?continue=`; `signInAgainPath(tenant)` is
     `/t/{tenant}/account/sign-in?continue=security`.
@@ -85,6 +85,10 @@ its header); the pages see plain values.
     | `webAuthnOptions()` | `POST /sign-in/steps/webauthn/options` (answers `public_key`) |
     | `submitWebAuthn(answer)` | `POST /sign-in/steps/webauthn` |
     | `submitRecoveryCode(code)` | `POST /sign-in/steps/recovery_code` |
+    | `consentQuestion()` | `GET /consent` (404 gives `null`; answers a `ConsentQuestion` of `AskedScope`s) |
+    | `answerConsent("allow" or "deny")` | `POST /consent` (answers `continue`, refused unless it is an address of the tenant's authorization endpoint) |
+    | `consents()` | `GET /consents` (answers `GivenConsent`s) |
+    | `withdrawConsent(clientId)` | `DELETE /consents/{clientId}` (404 is not an error) |
     | `passkeyOptions()` | `POST /sign-in/steps/passkey/options` (answers `public_key`) |
     | `submitPasskey(answer)` | `POST /sign-in/steps/passkey` |
     | `askToRegister(email, locale)` | `POST /registration` |

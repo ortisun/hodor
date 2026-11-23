@@ -4,6 +4,7 @@ import type { Messages } from "./messages";
 import { AccountPage } from "./pages/AccountPage";
 import { AskPage } from "./pages/AskPage";
 import { ComingBackPage } from "./pages/ComingBackPage";
+import { ConsentPage } from "./pages/ConsentPage";
 import { FinishPage } from "./pages/FinishPage";
 import { SecurityPage } from "./pages/SecurityPage";
 import { SignInPage } from "./pages/SignInPage";
@@ -77,6 +78,8 @@ export function App({
       return <SignOutPage {...page} />;
     case "security":
       return <SecurityPage {...page} reauthenticate={reauthenticate} />;
+    case "consent":
+      return <ConsentPage {...page} />;
     case "provider-callback":
       return <ComingBackPage {...page} provider={place.provider ?? ""} answer={providerAnswer} />;
     default:

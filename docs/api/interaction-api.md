@@ -478,6 +478,72 @@ The `DELETE`, `PATCH` and `POST` requests above change something, so each must c
 
 The session cookie is `SameSite=Lax`, which already keeps a browser from attaching it to a `DELETE` another site starts. The token is a second, independent measure. The bodies are JSON, which a plain cross-site form cannot send.
 
+## Consent
+
+When a third-party application asks for access a person has not agreed to, the authorization endpoint keeps the request and sends the browser to the consent page ([the OAuth context](../architecture/contexts/oauth.md#consent)). These routes are what that page and the account page use.
+
+| Method and path | Purpose |
+|---|---|
+| `GET /interaction/consent` | What the waiting request asks for, to show it |
+| `POST /interaction/consent` | The person's answer |
+| `GET /interaction/consents` | The person's consents that stand |
+| `DELETE /interaction/consents/{client_id}` | Withdraw one |
+
+Each needs a valid session cookie, and is answered `401` with `session.not_authenticated` without one. The two that change something need the session's CSRF token in `X-CSRF-Token`, from `GET /interaction/session`, and pass the origin check, as [for a signed-in person](#protection-for-these-requests).
+
+### What the request asks for
+
+`GET /interaction/consent` reads the `__Secure-hodor_authorization` cookie. When it names a request that waits for consent, for this browser and for the session of this browser, the answer is:
+
+```json
+{
+  "application": "Billing",
+  "scopes": [
+    { "scope": "openid", "kind": "openid" },
+    { "scope": "email", "kind": "openid" },
+    { "scope": "invoices:read", "kind": "resource", "description": "Read your invoices", "resource_server": "Invoices" }
+  ],
+  "offline_access": false,
+  "csrf_token": "5b1e…"
+}
+```
+
+- `kind` `openid` is a scope of OpenID Connect, which the page words in the person's language by its name;
+- `kind` `resource` is a scope of a resource server, with the description and the resource server's name as the tenant's administrator wrote them;
+- `offline_access` says the application asks to keep access when the person is not there. It is not repeated in `scopes`.
+
+Without the cookie, with a request that does not wait for consent, that is another browser's, another session's or already answered, the answer is `404` with `oauth.consent_request_not_found`, in the same way for every reason.
+
+### The answer
+
+`POST /interaction/consent` with `{ "decision": "allow" }` or `{ "decision": "deny" }`. The request must be the one `GET` describes. The answer is recorded once; it is `200` with:
+
+```json
+{ "continue": "/t/acme/oauth2/authorize/resume" }
+```
+
+The page goes there, and the authorization endpoint answers the application: with a code after `allow`, with `access_denied` after `deny`. A request that was answered already, or none, is `404` with `oauth.consent_request_not_found`; a body that is not one of the two is `422` with `request.body_invalid`.
+
+### The person's consents
+
+`GET /interaction/consents` lists the consents of the person that stand and have not expired, the most recently given first:
+
+```json
+{
+  "consents": [
+    {
+      "client_id": "0193f1d0-…",
+      "application": "Billing",
+      "scopes": ["openid", "email", "invoices:read"],
+      "given_at": "2026-11-20T14:03:11Z",
+      "expires_at": "2027-11-20T14:03:11Z"
+    }
+  ]
+}
+```
+
+`DELETE /interaction/consents/{client_id}` withdraws the person's consent for that client and revokes the grants made under it: `204`. A consent the person does not have, of another person, or already withdrawn, is `404` with `oauth.consent_not_found`, all alike, so that a person learns nothing about another's.
+
 ## Registering and recovering a password
 
 These requests are made by a person who is not signed in and has no sign-in in progress. The rules behind them are in [the authentication context](../architecture/contexts/authentication.md#registration-and-password-recovery).
@@ -516,3 +582,4 @@ The address recorded for a sign-in, and used to limit attempts, is the address o
 | Trusting a forwarded client address from named proxies | Before any deployment behind a load balancer |
 | Limiting requests per address on these paths, beyond the attempt limits of the password step | Later in Phase 1 |
 | The `__Host-` cookie variant for a tenant's own host | Phase 3 |
+| The history of a person's consents in the account pages | The account console, Phase 2 |

@@ -13,6 +13,7 @@ mod admin;
 mod authorization_api;
 mod authorize;
 mod bearer;
+mod consent;
 mod health;
 mod interaction;
 mod key_set;
@@ -35,6 +36,7 @@ pub use authorization_api::{
     AuthorizationApiState, EVALUATE_SCOPE, EXPLAIN_SCOPE, SIMULATE_SCOPE, authorization_api_routes,
 };
 pub use authorize::{AuthorizationState, authorization_routes};
+pub use consent::{ConsentState, consent_routes};
 pub use health::{Health, ReadinessCheck, ops_router};
 pub use interaction::{InteractionState, interaction_routes};
 pub use key_set::key_set_routes;

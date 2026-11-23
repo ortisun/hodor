@@ -72,6 +72,7 @@ struct World {
     tokens: AccessTokenService,
     authorization: AuthorizationService,
     sessions: SessionService,
+    consents: hodor_oauth::api::ConsentService,
     audit: AuditHandler,
     recorded: AtomicUsize,
     acme: TenantContext,
@@ -91,17 +92,27 @@ struct World {
 fn applications(
     units_of_work: &InMemoryUnitOfWorkFactory,
     clock: Arc<FixedClock>,
-) -> hodor_oauth::api::ApplicationService {
+) -> (
+    hodor_oauth::api::ApplicationService,
+    hodor_oauth::api::ConsentService,
+) {
     let stores = hodor_oauth::testing::InMemoryStores::default();
-    hodor_oauth::api::ApplicationService::new(hodor_oauth::api::ApplicationPorts {
-        units_of_work: Arc::new(units_of_work.clone()),
-        applications: Arc::new(stores.applications),
-        clients: Arc::new(stores.clients),
-        resource_servers: Arc::new(stores.resource_servers),
-        digest: Arc::new(FakeDigest),
-        random: Arc::new(hodor_oauth::testing::DistinctRandom),
-        clock,
-    })
+    let consents = hodor_oauth::testing::consent_service(
+        Arc::new(units_of_work.clone()),
+        &stores,
+        clock.clone(),
+    );
+    let applications =
+        hodor_oauth::api::ApplicationService::new(hodor_oauth::api::ApplicationPorts {
+            units_of_work: Arc::new(units_of_work.clone()),
+            applications: Arc::new(stores.applications),
+            clients: Arc::new(stores.clients),
+            resource_servers: Arc::new(stores.resource_servers),
+            digest: Arc::new(FakeDigest),
+            random: Arc::new(hodor_oauth::testing::DistinctRandom),
+            clock,
+        });
+    (applications, consents)
 }
 
 /// The use cases of people's factors on in-memory stores, with
@@ -236,6 +247,7 @@ async fn world_with_keys(with_keys: bool) -> World {
     let (acme, globex) = (contexts[0].clone(), contexts[1].clone());
     let (factor_service, keys_of_people, totp) =
         factors(&units_of_work, clock.clone(), &identity, &tenants);
+    let oauth = applications(&units_of_work, clock.clone());
     let state = AdminState {
         tokens: tokens.clone(),
         authorization: authorization.clone(),
@@ -245,7 +257,8 @@ async fn world_with_keys(with_keys: bool) -> World {
         federation: Some(federation),
         keys,
         key_rotation: RotationPolicy::DEFAULT,
-        applications: applications(&units_of_work, clock.clone()),
+        applications: oauth.0,
+        consents: oauth.1.clone(),
         tenants: tenants.clone(),
         factors: factor_service,
         public_url: "https://auth.example".to_owned(),
@@ -268,6 +281,7 @@ async fn world_with_keys(with_keys: bool) -> World {
         tokens,
         authorization,
         sessions,
+        consents: oauth.1,
         audit: AuditHandler::new(audit),
         recorded: AtomicUsize::new(0),
         acme,
@@ -503,7 +517,7 @@ fn the_document_and_the_routes_list_the_same_operations_and_permissions() {
         })
         .collect();
     assert_eq!(documented, served);
-    assert_eq!(served.len(), 43);
+    assert_eq!(served.len(), 45);
 
     // Every operation says how it refuses.
     let document: serde_json::Value = serde_json::from_str(ADMIN_OPENAPI).expect("valid JSON");
@@ -2742,4 +2756,116 @@ async fn the_factors_of_a_person_do_not_exist_for_another_tenants_administrator(
         .as_administrator(Method::GET, &format!("/users/{ana}/factors"), None)
         .await;
     assert_eq!(listed.body["keys"].as_array().map(Vec::len), Some(1));
+}
+
+/// Ana agrees, as the consent page would, to what `client` asks for.
+async fn agreed(world: &World, user: UserId, client: &str) {
+    let request = hodor_oauth::api::AuthorizationRequest {
+        client_id: client.parse().expect("client"),
+        redirect_uri: "https://billing.example.com/callback".to_owned(),
+        scopes: vec!["openid".to_owned(), "email".to_owned()],
+        audiences: Vec::new(),
+        code_challenge: None,
+        state: None,
+        nonce: None,
+        prompt: Vec::new(),
+        max_age: None,
+        login_hint: None,
+        ui_locales: None,
+        acr_values: None,
+        first_party: false,
+    };
+    let person = hodor_oauth::api::SignedInPerson {
+        user_id: user,
+        session_id: hodor_session::api::SessionId::generate(),
+        signed_in_at: Timestamp::UNIX_EPOCH,
+        methods: vec!["password".to_owned()],
+        acr: None,
+    };
+    let (id, secret) = world
+        .consents
+        .hold(&world.acme, request, &person)
+        .await
+        .expect("held");
+    assert!(
+        world
+            .consents
+            .answer(
+                &world.acme,
+                id,
+                secret.expose(),
+                &person,
+                hodor_oauth::api::ConsentAnswer::Agreed,
+                Caller::system(),
+            )
+            .await
+            .expect("answered")
+    );
+}
+
+#[tokio::test]
+async fn an_administrator_sees_and_withdraws_a_users_consent() {
+    let world = world().await;
+    let acme = world.acme.clone();
+    let (ana, _) = world.person(&acme, "ana@example.com", &[]).await;
+    let application = new_application(&world, "Billing", false).await;
+    let created = world
+        .as_administrator(
+            Method::POST,
+            &format!("/applications/{application}/clients"),
+            Some(web_client()),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    assert_eq!(
+        created.body["token_policy"]["consent_seconds"],
+        365 * 86400,
+        "a consent lasts a year unless the client says otherwise"
+    );
+    let client = created.body["id"].as_str().expect("client").to_owned();
+    agreed(&world, ana, &client).await;
+
+    let listed = world
+        .as_administrator(Method::GET, &format!("/users/{ana}/consents"), None)
+        .await;
+    assert_eq!(listed.status, StatusCode::OK, "{}", listed.body);
+    let items = listed.body["items"].as_array().expect("items");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["client_id"], client.as_str());
+    assert_eq!(items[0]["application"], "Billing");
+    assert_eq!(items[0]["scopes"], serde_json::json!(["openid", "email"]));
+
+    let withdrawn = world
+        .as_administrator(
+            Method::DELETE,
+            &format!("/users/{ana}/consents/{client}"),
+            None,
+        )
+        .await;
+    assert_eq!(withdrawn.status, StatusCode::NO_CONTENT);
+    let again = world
+        .as_administrator(
+            Method::DELETE,
+            &format!("/users/{ana}/consents/{client}"),
+            None,
+        )
+        .await;
+    assert_eq!(again.status, StatusCode::NOT_FOUND);
+    assert_eq!(again.code(), "oauth.consent_not_found");
+    let remaining = world
+        .as_administrator(Method::GET, &format!("/users/{ana}/consents"), None)
+        .await;
+    assert_eq!(remaining.body["items"].as_array().map(Vec::len), Some(0));
+
+    let nobody = UserId::generate();
+    let unknown = world
+        .as_administrator(Method::GET, &format!("/users/{nobody}/consents"), None)
+        .await;
+    assert_eq!(unknown.code(), "identity.user_not_found");
+    let events = world.units_of_work.committed_events();
+    let withdrawal = events
+        .iter()
+        .find(|event| event.event_type == "oauth.consent_withdrawn")
+        .expect("recorded");
+    assert_eq!(withdrawal.payload["by"], "administrator");
 }

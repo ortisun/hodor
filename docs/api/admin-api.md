@@ -70,6 +70,8 @@ It needs `HODOR_DATABASE_URL`, like the tenant commands.
 | `DELETE /users/{user_id}/factors/keys/{key_id}` | `credentials:write` | Remove one of a user's security keys or passkeys |
 | `DELETE /users/{user_id}/factors/recovery-codes` | `credentials:write` | Remove a user's recovery codes |
 | `DELETE /sessions/{session_id}` | `sessions:revoke` | End a session |
+| `GET /users/{user_id}/consents` | `users:read` | List the consents a user gave that stand |
+| `DELETE /users/{user_id}/consents/{client_id}` | `users:write` | Withdraw a user's consent for a client |
 | `GET /audit-records` | `audit:read` | Read the audit log |
 | `GET /identity-providers` | `identity-providers:read` | List the tenant's identity providers |
 | `POST /identity-providers` | `identity-providers:write` | Add an identity provider |
@@ -180,6 +182,16 @@ It never holds a secret, a public key or a code. An administrator removes a fact
 - `DELETE /users/{user_id}/factors/recovery-codes`: `204`, or `404` with `credential.recovery_codes_not_found` when the user has none.
 
 The tenant's second factor policy does not refuse an administrator's removal, and removing a factor ends none of the user's sessions; [the authentication context](../architecture/contexts/authentication.md#what-an-administrator-may-do) says why. When the last second factor goes, the user's recovery codes go with it. A user that does not exist is `404` with `identity.user_not_found`. Each removal is in the audit log with the administrator as the actor.
+
+### Consents
+
+`GET /users/{user_id}/consents` answers with the consents the user gave that stand and have not expired, as [a person sees their own](interaction-api.md#the-persons-consents):
+
+```json
+{ "items": [ { "client_id": "…", "application": "Billing", "scopes": ["openid", "invoices:read"], "given_at": "…", "expires_at": "…" } ] }
+```
+
+`DELETE /users/{user_id}/consents/{client_id}` withdraws it: `204`, and every active grant of the user for that client is revoked ([withdrawing a consent](../architecture/contexts/oauth.md#withdrawing-a-consent)). A user who does not exist, or a consent the user does not have or that was withdrawn already, is `404`: `identity.user_not_found` or `oauth.consent_not_found`. The audit log records it as withdrawn by an administrator.
 
 ### The audit log
 

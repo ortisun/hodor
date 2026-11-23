@@ -16,8 +16,9 @@ tenant and records its events in it.
 | `ApplicationStore` | `insert`, `update` (version checked), `get`, `list` (oldest first) |
 | `ClientStore` | `insert` (`oauth.application_not_found` for an application the tenant does not have), `update` (version checked; replaces secrets and keys), `get`, `list_for_application` (oldest first) |
 | `ResourceServerStore` | `insert` (`oauth.audience_taken`, `oauth.application_has_resource_server`, `oauth.application_not_found`), `update` (version checked; replaces the scopes), `get`, `find_by_audience` (exact), `list` (oldest first) |
-| `AuthorizationRequestStore` | `insert` (`oauth.client_not_found`), `get`, `remove` (answers whether this call removed it) |
-| `GrantStore` | `insert` (`oauth.client_not_found`), `get`, `update` (status and revocation; `oauth.grant_not_found`) |
+| `AuthorizationRequestStore` | `insert` (`oauth.client_not_found`), `get`, `remove` (answers whether this call removed it), `answer` (records the answer of a request that waits for consent and has none; answers whether this call recorded it) |
+| `GrantStore` | `insert` (`oauth.client_not_found`), `get`, `update` (status and revocation; `oauth.grant_not_found`), `list_active_for(user, client)` |
+| `ConsentStore` | `get(user, client)` (withdrawn and expired included), `save` (replaces; `oauth.client_not_found`), `list_standing(user, now)` (newest first), `record` (a history entry; `oauth.client_not_found`) |
 | `AuthorizationCodeStore` | `insert` (`oauth.grant_not_found`), `find` (by hash), `redeem` (only if not redeemed; answers whether this call redeemed it) |
 | `ClientAssertionStore` | `remember(client, jti, expires_at)` (`oauth.client_not_found`; answers whether this call was the first) |
 
@@ -143,6 +144,40 @@ any, are active.
   client's application, and the register says it is in force. Otherwise
   `inactive()`. Nothing is changed.
 
+### Consent (`consent.rs`)
+
+`ConsentService::new(ConsentPorts { units_of_work, consents, requests,
+grants, clients, applications, resource_servers, digest, random, clock })`:
+
+- `must_ask(tenant, request, person)`: `must_ask` of the domain with the
+  person's consent for the client; reads nothing when nobody is asked
+  whatever was agreed (a first-party client without `prompt=consent`).
+- `hold(tenant, request, person)`: stores a pending request that waits for
+  this person's consent in this session; returns its identifier and the
+  browser's secret.
+- `describe(tenant, id, secret, user, session)`: `None` unless the request
+  is this browser's, waits unanswered for this person in this session and
+  lives; otherwise the `ConsentQuestion`: the application's name, each
+  scope as `AskedScope::OpenId` or `AskedScope::Resource` with the
+  description and name of the resource server of the request that defines
+  it, and whether `offline_access` was asked.
+- `answer(tenant, id, secret, person, answer, caller)`: `false` under the
+  same conditions as `describe`, or when another answer won; records the
+  answer on the request once. `Agreed` saves the consent
+  (`Consent::give` with the client's `TokenPolicy::consent`), a `given`
+  history entry and `oauth.consent_given`; `Refused` a `refused` entry and
+  `oauth.consent_refused`.
+- `list(tenant, user)`: the person's standing consents with their
+  applications' names (`ListedConsent`).
+- `withdraw(tenant, user, client, by, caller)`: `oauth.consent_not_found`
+  unless a consent stands; marks it withdrawn, writes a `withdrawn` entry,
+  revokes every active grant of the person for the client (reason
+  `consent_withdrawn`) and records `oauth.consent_withdrawn` and each
+  `oauth.grant_revoked`, in one unit of work.
+
+`AuthorizationCodeService::resume` also returns `ResumedRequest::consent`,
+whom a request waited for and their answer.
+
 ### UserInfo (`userinfo.rs`)
 
 `UserInfoService::new(UserInfoPorts { keys, verifier, identity, register,
@@ -198,6 +233,7 @@ verifier })`:
   `cargo test -p hodor-oauth --test authorization`,
   `cargo test -p hodor-oauth --test token`,
   `cargo test -p hodor-oauth --test refresh` and
-  `cargo test -p hodor-oauth --test revocation`; `cargo test -p hodor-oauth
+  `cargo test -p hodor-oauth --test revocation`,
+  `cargo test -p hodor-oauth --test consent`; `cargo test -p hodor-oauth
   --lib openid` for the OpenID Provider's domain and `--lib logout` for
   logout's

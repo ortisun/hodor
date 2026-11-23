@@ -106,6 +106,16 @@ watched page and the steps a person repeats.
     platform authenticator, generates new codes, renames and removes the
     passkey, which takes the codes with it; and works the page with the
     keyboard alone.
+  - `consent.spec.ts` - an operator registers a third-party application
+    and a public client with `hodor-cli application add` and `client add`
+    (through `docker compose run … server`, as in `totp.spec.ts`); the
+    application's site is answered by the test (`page.route`). A signed-in
+    person sent to the authorization endpoint is asked on the consent page,
+    which passes the accessibility check, allows with the keyboard alone,
+    and the application gets a code with its state; the next request gets a
+    code at once; withdrawing the application on the account page makes it
+    ask again. A person who denies sends the application `access_denied`,
+    and the consent page then has nothing to answer.
   - `webauthn.spec.ts` (a virtual authenticator of Chromium, added through
     the DevTools protocol) - a person registers, signs in with a password,
     registers a key through the interaction interface from a page of
@@ -124,7 +134,7 @@ watched page and the steps a person repeats.
   `HODOR_URL`, the development mail server at `HODOR_MAIL_URL`, and a tenant
   `HODOR_TENANT` with open registration that offers the three development
   providers (commands in `stack.ts:HELP`). Otherwise `checkTheStack` stops
-  the run before any test. `totp.spec.ts` also needs `docker compose` on the
+  the run before any test. `totp.spec.ts` and `consent.spec.ts` also need `docker compose` on the
   machine that runs the tests, to run `hodor-cli` in the stack.
 - Tests run one at a time (`workers: 1`, `fullyParallel: false`), because
   the server limits attempts by the address requests come from and every test

@@ -36,6 +36,15 @@ body {
   list-style: none;
 }
 
+/* What an application asks for on the consent page, and the applications
+   on the account page: one to a line, as a list a screen reader names. */
+.auth-consent-scopes {
+  margin: 0;
+  padding-inline-start: 1.25rem;
+  display: grid;
+  gap: 0.5rem;
+}
+
 /* Not shown and not reachable: see the sign-in page. */
 .auth-hidden {
   position: absolute;

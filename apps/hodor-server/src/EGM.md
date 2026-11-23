@@ -45,7 +45,9 @@ Configuration (`Config`, clap, command name `hodor-server`):
 Routers, as assembled in `run`:
 
 - `/interaction` nests `hodor_protocol_http::interaction_routes` with the
-  `InteractionState` built by `interaction`.
+  `InteractionState` built by `interaction`, merged with
+  `hodor_protocol_http::consent_routes`, whose `ConsentState` shares the
+  `ConsentService` and `SessionService` of the authorization endpoint.
 - `/api/v1/admin` nests `hodor_protocol_http::admin_routes` with the
   `AdminState` built by `administration`.
 - `/console/api` nests `hodor_protocol_http::console_routes`.
@@ -102,7 +104,10 @@ too),
 through `with_directories`, `LdapDirectoryClient`), `keys`, `key_rotation`
 (the default policy with `HODOR_KEY_OVERLAP_HOURS`), `token` (the token
 endpoint, with `PgRefreshTokenStore`, `ServerStanding`, the secret box and
-the retry window of `HODOR_REFRESH_RETRY_SECONDS`), `administration`,
+the retry window of `HODOR_REFRESH_RETRY_SECONDS`), `consents` (the
+`ConsentService` over `PgConsentStore`, which the authorization endpoint,
+the consent routes and the administration interface use),
+`administration`,
 `development_hosts`, `directory_hosts`, `wait_for`, `stop_signal`, `main`
 and `run`.
 

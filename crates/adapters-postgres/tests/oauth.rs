@@ -3,7 +3,7 @@
 use hodor_adapters_postgres::testing::TestDatabase;
 use hodor_adapters_postgres::{
     PgApplicationStore, PgAuthorizationCodeStore, PgAuthorizationRequestStore,
-    PgClientAssertionStore, PgClientStore, PgGrantStore, PgRefreshTokenStore,
+    PgClientAssertionStore, PgClientStore, PgConsentStore, PgGrantStore, PgRefreshTokenStore,
     PgResourceServerStore,
 };
 use hodor_kernel::clock::testing::FixedClock;
@@ -15,8 +15,9 @@ use hodor_oauth::api::{
     CreateClient, GrantType, RotateSecret,
 };
 use hodor_oauth::testing::{
-    AssertionStorePorts, AuthorizationStorePorts, DistinctRandom, Ports, RefreshStorePorts,
-    run_assertion_contract, run_authorization_contract, run_contract, run_refresh_token_contract,
+    AssertionStorePorts, AuthorizationStorePorts, ConsentStorePorts, DistinctRandom, Ports,
+    RefreshStorePorts, run_assertion_contract, run_authorization_contract, run_consent_contract,
+    run_contract, run_refresh_token_contract,
 };
 use std::sync::Arc;
 use time::Duration;
@@ -45,6 +46,92 @@ async fn the_postgres_authorization_stores_pass_the_contract() {
         codes: &PgAuthorizationCodeStore,
     })
     .await;
+}
+
+#[tokio::test]
+async fn the_postgres_consent_store_passes_the_contract() {
+    let database = TestDatabase::start().await;
+    run_consent_contract(ConsentStorePorts {
+        units_of_work: database.app(),
+        applications: &PgApplicationStore,
+        clients: &PgClientStore,
+        consents: &PgConsentStore,
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn the_database_keeps_consent_to_its_rules_and_its_history_unchanged() {
+    let database = TestDatabase::start().await;
+    let tenant = sqlx::types::Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO oauth.application VALUES ($1, $1, 'Billing', false, 'enabled', now(), now(), 0)",
+    )
+    .bind(tenant)
+    .execute(database.owner())
+    .await
+    .expect("application");
+    sqlx::query(
+        "INSERT INTO oauth.client VALUES ($1, $1, $1, 'Web', 'public', 'none',
+             ARRAY['authorization_code'], ARRAY['https://billing.example.com/callback'],
+             ARRAY[]::text[], true, 300, 300, 2592000, 604800, 'enabled', now(), now(), 0)",
+    )
+    .bind(tenant)
+    .execute(database.owner())
+    .await
+    .expect("client");
+    for (case, statement) in [
+        (
+            "offline access is never kept",
+            "INSERT INTO oauth.consent VALUES ($1, gen_random_uuid(), $1,
+                 ARRAY['openid', 'offline_access'], ARRAY[]::text[], now(),
+                 now() + interval '1 day', NULL, NULL)",
+        ),
+        (
+            "a consent lasts at most 730 days",
+            "INSERT INTO oauth.consent VALUES ($1, gen_random_uuid(), $1, ARRAY['openid'],
+                 ARRAY[]::text[], now(), now() + interval '731 days', NULL, NULL)",
+        ),
+        (
+            "a withdrawal says who withdrew it",
+            "INSERT INTO oauth.consent VALUES ($1, gen_random_uuid(), $1, ARRAY['openid'],
+                 ARRAY[]::text[], now(), now() + interval '1 day', now(), 'someone')",
+        ),
+        (
+            "a withdrawal says when",
+            "INSERT INTO oauth.consent VALUES ($1, gen_random_uuid(), $1, ARRAY['openid'],
+                 ARRAY[]::text[], now(), now() + interval '1 day', NULL, 'person')",
+        ),
+    ] {
+        let refused = sqlx::query(statement)
+            .bind(tenant)
+            .execute(database.owner())
+            .await;
+        assert!(refused.is_err(), "{case}");
+    }
+    let refused = sqlx::query("UPDATE oauth.client SET consent_seconds = 3600 WHERE id = $1")
+        .bind(tenant)
+        .execute(database.owner())
+        .await;
+    assert!(refused.is_err(), "a consent lasts at least a day");
+
+    sqlx::query(
+        "INSERT INTO oauth.consent_history VALUES ($1, gen_random_uuid(), gen_random_uuid(), $1,
+             'given', ARRAY['openid'], ARRAY[]::text[], 'person', now())",
+    )
+    .bind(tenant)
+    .execute(database.owner())
+    .await
+    .expect("history");
+    let context = TenantContext::assume(TenantId::from_uuid(tenant));
+    for statement in [
+        "UPDATE oauth.consent_history SET action = 'refused'",
+        "DELETE FROM oauth.consent_history",
+    ] {
+        let mut tx = database.app().begin(&context).await.expect("begin");
+        let refused = sqlx::query(statement).execute(tx.connection()).await;
+        assert!(refused.is_err(), "the application cannot run: {statement}");
+    }
 }
 
 #[tokio::test]

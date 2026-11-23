@@ -179,8 +179,8 @@ pub struct PgClientStore;
 
 const CLIENT_COLUMNS: &str = "id, application_id, name, client_type, authentication_method, \
      grant_types, redirect_uris, post_logout_redirect_uris, allowed_scopes, require_pkce, \
-     access_token_seconds, id_token_seconds, refresh_token_seconds, refresh_idle_seconds, status, created_at, \
-     updated_at, version";
+     access_token_seconds, id_token_seconds, refresh_token_seconds, refresh_idle_seconds, \
+     consent_seconds, status, created_at, updated_at, version";
 
 async fn load_client(
     connection: &mut PgConnection,
@@ -258,6 +258,7 @@ async fn load_client(
                 id_token: duration("id_token_seconds")?,
                 refresh_token: duration("refresh_token_seconds")?,
                 refresh_idle: duration("refresh_idle_seconds")?,
+                consent: duration("consent_seconds")?,
             },
         },
         secrets,
@@ -334,9 +335,10 @@ impl ClientStore for PgClientStore {
                  (tenant_id, id, application_id, name, client_type, authentication_method,
                   grant_types, redirect_uris, post_logout_redirect_uris, allowed_scopes,
                   require_pkce, access_token_seconds, id_token_seconds, refresh_token_seconds,
-                  refresh_idle_seconds, status, created_at, updated_at, version)
+                  refresh_idle_seconds, consent_seconds, status, created_at, updated_at,
+                  version)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-                     $17, $18, 0)",
+                     $17, $18, $19, 0)",
         )
         .bind(tenant)
         .bind(state.id.as_uuid())
@@ -353,6 +355,7 @@ impl ClientStore for PgClientStore {
         .bind(seconds(policy.id_token)?)
         .bind(seconds(policy.refresh_token)?)
         .bind(seconds(policy.refresh_idle)?)
+        .bind(seconds(policy.consent)?)
         .bind(state.status.as_str())
         .bind(state.created_at)
         .bind(state.updated_at)
@@ -383,9 +386,9 @@ impl ClientStore for PgClientStore {
              SET name = $3, authentication_method = $4, grant_types = $5, redirect_uris = $6,
                  post_logout_redirect_uris = $7, allowed_scopes = $8, require_pkce = $9,
                  access_token_seconds = $10, id_token_seconds = $11,
-                 refresh_token_seconds = $12, refresh_idle_seconds = $13, status = $14,
-                 updated_at = $15, version = version + 1
-             WHERE tenant_id = $1 AND id = $2 AND version = $16",
+                 refresh_token_seconds = $12, refresh_idle_seconds = $13,
+                 consent_seconds = $14, status = $15, updated_at = $16, version = version + 1
+             WHERE tenant_id = $1 AND id = $2 AND version = $17",
         )
         .bind(tenant)
         .bind(state.id.as_uuid())
@@ -400,6 +403,7 @@ impl ClientStore for PgClientStore {
         .bind(seconds(policy.id_token)?)
         .bind(seconds(policy.refresh_token)?)
         .bind(seconds(policy.refresh_idle)?)
+        .bind(seconds(policy.consent)?)
         .bind(state.status.as_str())
         .bind(state.updated_at)
         .bind(version_of(state.version)?)

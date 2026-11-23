@@ -7,6 +7,7 @@ export const PAGES = [
   "complete-registration",
   "recover",
   "reset-password",
+  "consent",
   "account",
   "sign-out",
   "security",

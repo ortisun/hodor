@@ -10,6 +10,7 @@ use crate::domain::authorization::{
     BrowserSecret, CodeHash, CodePresentation, CodeRefusal, CodeValue, Grant, PendingAuthorization,
     PendingAuthorizationId, SignedInPerson, check_request,
 };
+use crate::domain::consent::ConsentWait;
 use crate::domain::event::OauthEvent;
 use hodor_kernel::{
     Caller, Clock, Digest, DomainError, EventEnvelope, EventMetadata, RandomSource, TenantContext,
@@ -56,6 +57,8 @@ pub struct ResumedRequest {
     pub request: AuthorizationRequest,
     /// When it arrived, for deciding whether the sign-in was new.
     pub received_at: Timestamp,
+    /// When it waited for a person's consent: whose, and their answer.
+    pub consent: Option<ConsentWait>,
 }
 
 /// What a redeemed code was issued for.
@@ -219,6 +222,7 @@ impl AuthorizationCodeService {
         Ok(Some(ResumedRequest {
             request: pending.request,
             received_at: pending.received_at,
+            consent: pending.consent,
         }))
     }
 

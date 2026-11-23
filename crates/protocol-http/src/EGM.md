@@ -28,6 +28,7 @@ the set of re-exports in `lib.rs`.
 | `ClientAddress(pub Option<IpAddr>)` | `request.rs` | The address of the connection, inserted as a request extension. |
 | `interaction_routes(state)`, `InteractionState` | `interaction.rs` | The interaction interface: browser sign-in, sessions, registration and password recovery. |
 | `authorization_routes(state)`, `AuthorizationState` | `authorize.rs` | The OAuth authorization endpoint: checks a request, issues a code to a signed-in browser whose methods that count (`max_age`) reach the tenant level `acr_values` asks for, starts a step-up of the session when they do not (`AuthenticationService::start_step_up`, giving the browser the sign-in cookie; `unmet_authentication_requirements` when it cannot be reached), or keeps the request while the person signs in, sending them to `/account/sign-in?continue=authorization` with the request's `login_hint` and `ui_locales`. The code carries the `acr` of the tenant's levels the counted methods reach. `AuthorizationState { authorization: AuthorizationCodeService, sessions, authentication: AuthenticationService, tenants: TenantService, public_url }`. |
+| `consent_routes(state)`, `ConsentState` | `consent.rs` | The consent routes of the interaction interface, merged with `interaction_routes` under `/interaction`, behind the origin check: `GET` and `POST /consent` (what the waiting request asks for, the answer; `404 oauth.consent_request_not_found` for any request that is not this browser's, this person's and this session's, or was answered), `GET /consents` and `DELETE /consents/{client_id}` (`404 oauth.consent_not_found`). The two that change something need the session's CSRF token. `ConsentState { consents, sessions, digest }`. |
 | `token_routes(state)`, `TokenState` | `token.rs` | The OAuth token, revocation and introspection endpoints (`/token`, `/revoke`, `/introspect`): each reads the form and the `Basic` credentials, and answers what `TokenService` decides: tokens in the JSON of RFC 6749, an empty `200` for every revocation by a client that proved who it is (RFC 7009), and the JSON of RFC 7662. Every answer carries `no-store`. `TokenState { tokens: TokenService, public_url }`. |
 | `userinfo_routes(state)`, `UserInfoState` | `openid.rs` | UserInfo at `GET` and `POST /oauth2/userinfo`, mounted under a tenant: reads `Authorization: Bearer` only and answers what `UserInfoService` decides, with `Cache-Control: no-store`; a refusal is `401` with `WWW-Authenticate: Bearer` (with `error="invalid_token"` when a token was sent) or `403` with `error="insufficient_scope"`. `UserInfoState { userinfo, public_url }`. |
 | `logout_routes(state)`, `LogoutState` | `logout.rs` | The end-session endpoint at `GET` and `POST /oauth2/logout` and `GET /oauth2/logout/finish`, mounted under a tenant. A refused request is the page of `error_page` (status `400`), never a redirect. A `GET` whose hint names the browser's session revokes it (`relying_party_logout`) and forgets the cookie; otherwise, and always for a form, the checked return address is kept in `__Secure-hodor_logout` (`SameSite=Strict`, 600 seconds) and the browser goes to `/account/sign-out`. The finish sends a browser still signed in to `/account`, else to the return address checked again (`LogoutService::still_returns`) with `state`, else to `/account/sign-in?notice=signed-out`. Every answer is `Cache-Control: no-store`. `LogoutState { logout, sessions, public_url }`. |
@@ -123,7 +124,7 @@ routes and the whole router.
 | --- | --- | --- |
 | GET | `/authorize` | `authorize_by_query` |
 | POST | `/authorize` | `authorize_by_form` (only `application/x-www-form-urlencoded`; otherwise the page `oauth.authorization_form_expected`) |
-| GET | `/authorize/resume` | `resume` (takes the pending request of the `__Secure-hodor_authorization` cookie once, and removes the cookie) |
+| GET | `/authorize/resume` | `resume` (takes the pending request of the `__Secure-hodor_authorization` cookie once, and removes the cookie unless it keeps the request again to ask for consent) |
 
 A request whose client or redirect address is not trusted gets Hodor's own
 HTML page with status `400` and the reason's code (`error_page`); every
@@ -132,7 +133,13 @@ other answer is a `302`. The issuer sent as `iss` is
 `Path=/t/{slug}`, `SameSite=Strict`, ten minutes; a completed sign-in of
 the interaction interface adds `"continue":
 "/t/{slug}/oauth2/authorize/resume"` to its answer while the browser
-holds it (`authorize::waiting`).
+holds it (`authorize::waiting`). When the session is enough, `proceed`
+asks `ConsentService::must_ask`: a request that must ask is kept with
+`ConsentService::hold` and the browser sent to `/account/consent` (with
+`ui_locales`), or answered `consent_required` with `prompt=none`. A request
+that waited for consent is answered by its answer at `resume`, for the
+session it was asked in; any other session, or no answer, is
+`access_denied`.
 
 `token_routes` (`token.rs`), merged with `authorization_routes` under the
 same mount point `/t/{slug}/oauth2`:

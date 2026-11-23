@@ -77,9 +77,21 @@ address.
   matching field.
 - `AccountPage.tsx:AccountPage(PageProps)` - `client.session()`: none means
   `go("sign-in")`; else it shows `signedInSince` (the `signedInAt` time
-  formatted with `Intl.DateTimeFormat` in `text.locale`), a link to the
-  security page and a sign-out `Action` that calls `client.signOut()` and
-  `go("sign-in", "signed-out")`.
+  formatted with `Intl.DateTimeFormat` in `text.locale`), the applications
+  the person let in from `client.consents()`, each with a "withdraw" `Action`
+  that calls `client.withdrawConsent(clientId)` and says so
+  (`consentWithdrawn`), a link to the
+  security page, and a sign-out `Action` that calls
+  `client.signOut()` and `go("sign-in", "signed-out")`.
+- `ConsentPage.tsx:ConsentPage(PageProps)` - `client.session()`: none means
+  `go("sign-in")`; then `client.consentQuestion()`: none is the "nothing to
+  answer" frame with a link to the account page. Otherwise the heading
+  names the application (`consentTitle`), one line per scope (OpenID
+  Connect scopes worded by the page, a resource server's scope by its
+  description and name, as text), `consentOffline` when offline access is
+  asked, and the two `Action`s "allow" (primary, first) and "deny".
+  `client.answerConsent(decision)` answers where to go, given to `leave`;
+  a 404 shows the "nothing to answer" frame.
 - `SignOutPage.tsx:SignOutPage(PageProps)` - the question an application's
   logout asks. `client.session()`: none means `leave` to
   `/t/{tenant}/oauth2/logout/finish` at once; else it shows
