@@ -22,7 +22,7 @@ fn invalid(code: &'static str, message: &'static str) -> DomainError {
 
 /// Whether `value` is a name: a lower-case letter, then lower-case
 /// letters, digits, `-`, `_` and `.`, at most 64 characters.
-fn is_name(value: &str) -> bool {
+pub(crate) fn is_name(value: &str) -> bool {
     let mut characters = value.chars();
     value.len() <= MAX_NAME_LENGTH
         && characters
@@ -135,7 +135,7 @@ impl SubjectKind {
 
 /// Whether `value` is an identifier: 1 to 255 characters, none of them a
 /// control character.
-fn is_identifier(value: &str) -> bool {
+pub(crate) fn is_identifier(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= MAX_IDENTIFIER_LENGTH
         && !value.chars().any(char::is_control)
@@ -336,6 +336,37 @@ impl Resource {
     }
 }
 
+/// The application a request is made for: what an assignment scoped to an
+/// application is compared with.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(transparent)]
+pub struct ApplicationReference(String);
+
+impl ApplicationReference {
+    /// Reads an application's identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns `authorization.application_invalid` if it is empty, longer
+    /// than 255 characters or holds a control character.
+    pub fn parse(value: &str) -> Result<Self, DomainError> {
+        if is_identifier(value) {
+            Ok(Self(value.to_owned()))
+        } else {
+            Err(invalid(
+                "authorization.application_invalid",
+                "an application's identifier has 1 to 255 characters and no control character",
+            ))
+        }
+    }
+
+    /// The identifier as written.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// What is known about the moment of the request.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct EvaluationContext {
@@ -343,6 +374,8 @@ pub struct EvaluationContext {
     pub attributes: Attributes,
     /// Ties the decision to the request that asked for it.
     pub correlation_id: Option<CorrelationId>,
+    /// The application the request is made for, when there is one.
+    pub application: Option<ApplicationReference>,
 }
 
 /// The question: may this subject do this action to this resource of this

@@ -30,7 +30,7 @@ mod uow;
 
 pub use audit::PgAuditLog;
 pub use authentication::{PgAttemptStore, PgTransactionStore, PgVerificationTokenStore};
-pub use authorization::{PgEngineBindingStore, PgRoleAssignmentStore};
+pub use authorization::{PgEngineBindingStore, PgNativeRoleStore, PgRoleAssignmentStore};
 pub use cleanup::{CleanupReport, PendingAuthorizationCleanup};
 pub use credential::{
     PgAccessTokenStore, PgPasswordStore, PgRecoveryCodeStore, PgTotpStore, PgWebAuthnStore,

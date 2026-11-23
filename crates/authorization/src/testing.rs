@@ -2,9 +2,12 @@
 //! contracts every store passes.
 
 use crate::api::{
-    Action, Attributes, AuthorizationEngine, BindingSettings, EngineAnswer, EngineBinding,
-    EngineBindingStore, EngineCapabilities, EngineId, EvaluationInput, Namespace, PolicySelection,
-    PolicySimulator, Role, RoleAssignmentStore, SimulationAnswer, Subject, SubjectAttributeSource,
+    Action, ApplicationReference, AssignmentScope, Attributes, AuthorizationEngine,
+    BindingSettings, EngineAnswer, EngineBinding, EngineBindingStore, EngineCapabilities, EngineId,
+    EvaluationInput, Namespace, NativeRoleStore, PermissionDefinition, PermissionName,
+    PolicySelection, PolicySimulator, Role, RoleAssignment, RoleAssignmentStore, RoleContents,
+    RoleDefinition, RoleKey, RoleName, SimulationAnswer, Subject, SubjectAttributeSource,
+    SubjectKind,
 };
 use hodor_kernel::clock::testing::FixedClock;
 use hodor_kernel::{
@@ -572,5 +575,685 @@ pub async fn run_binding_contract(ports: BindingPorts<'_>) {
     assert_eq!(
         find_binding(&ports, &elsewhere, &documents).await.as_ref(),
         Some(&theirs)
+    );
+}
+
+#[derive(Debug, Default)]
+struct NativeRows {
+    revisions: BTreeMap<TenantId, u64>,
+    permissions: BTreeMap<(TenantId, Namespace, PermissionName), PermissionDefinition>,
+    roles: BTreeMap<(TenantId, RoleKey), RoleDefinition>,
+    assignments: BTreeMap<(TenantId, Subject, RoleKey, AssignmentScope), RoleAssignment>,
+}
+
+/// Permissions, roles and assignments kept in memory. Like the database,
+/// it refuses a role that names a permission or a role that does not
+/// exist, and the removal of a role another role includes.
+#[derive(Debug, Clone, Default)]
+pub struct InMemoryNativeRoles {
+    rows: Arc<Mutex<NativeRows>>,
+}
+
+impl InMemoryNativeRoles {
+    fn rows(&self) -> std::sync::MutexGuard<'_, NativeRows> {
+        self.rows.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+fn missing_reference() -> DomainError {
+    DomainError::internal("database.error", "the operation could not be completed")
+        .with_detail("a role names a permission or a role that does not exist")
+}
+
+#[async_trait::async_trait]
+impl NativeRoleStore for InMemoryNativeRoles {
+    async fn raise_revision(&self, uow: &mut dyn UnitOfWork) -> Result<u64, DomainError> {
+        let mut rows = self.rows();
+        let revision = rows.revisions.entry(uow.tenant().tenant_id()).or_default();
+        *revision += 1;
+        Ok(*revision)
+    }
+
+    async fn revision(&self, uow: &mut dyn UnitOfWork) -> Result<u64, DomainError> {
+        Ok(self
+            .rows()
+            .revisions
+            .get(&uow.tenant().tenant_id())
+            .copied()
+            .unwrap_or(0))
+    }
+
+    async fn put_permission(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        permission: &PermissionDefinition,
+    ) -> Result<(), DomainError> {
+        self.rows().permissions.insert(
+            (
+                uow.tenant().tenant_id(),
+                permission.namespace().clone(),
+                permission.name().clone(),
+            ),
+            permission.clone(),
+        );
+        Ok(())
+    }
+
+    async fn remove_permission(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        namespace: &Namespace,
+        permission: &PermissionName,
+    ) -> Result<bool, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let mut rows = self.rows();
+        let removed = rows
+            .permissions
+            .remove(&(tenant, namespace.clone(), permission.clone()))
+            .is_some();
+        for ((owner, key), role) in &mut rows.roles {
+            if *owner == tenant
+                && &key.namespace == namespace
+                && role.contents().permissions.contains(permission)
+            {
+                let mut contents = role.contents().clone();
+                contents.permissions.remove(permission);
+                *role = RoleDefinition::restore(
+                    key.clone(),
+                    contents,
+                    role.created_at(),
+                    role.updated_at(),
+                )?;
+            }
+        }
+        Ok(removed)
+    }
+
+    async fn permissions(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        namespace: &Namespace,
+    ) -> Result<Vec<PermissionDefinition>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        Ok(self
+            .rows()
+            .permissions
+            .iter()
+            .filter(|((owner, space, _), _)| *owner == tenant && space == namespace)
+            .map(|(_, permission)| permission.clone())
+            .collect())
+    }
+
+    async fn put_role(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        role: &RoleDefinition,
+    ) -> Result<(), DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let mut rows = self.rows();
+        let key = role.key();
+        let declared = role.contents().permissions.iter().all(|permission| {
+            rows.permissions
+                .contains_key(&(tenant, key.namespace.clone(), permission.clone()))
+        });
+        let included = role.contents().includes.iter().all(|included| {
+            included == key || rows.roles.contains_key(&(tenant, included.clone()))
+        });
+        if !declared || !included {
+            return Err(missing_reference());
+        }
+        rows.roles.insert((tenant, key.clone()), role.clone());
+        Ok(())
+    }
+
+    async fn roles(&self, uow: &mut dyn UnitOfWork) -> Result<Vec<RoleDefinition>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        Ok(self
+            .rows()
+            .roles
+            .iter()
+            .filter(|((owner, _), _)| *owner == tenant)
+            .map(|(_, role)| role.clone())
+            .collect())
+    }
+
+    async fn remove_role(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        key: &RoleKey,
+    ) -> Result<bool, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let mut rows = self.rows();
+        let included = rows.roles.iter().any(|((owner, other), role)| {
+            *owner == tenant && other != key && role.contents().includes.contains(key)
+        });
+        if included {
+            return Err(DomainError::conflict(
+                "authorization.role_in_use",
+                "a role that another role includes cannot be removed",
+            ));
+        }
+        let removed = rows.roles.remove(&(tenant, key.clone())).is_some();
+        rows.assignments
+            .retain(|(owner, _, role, _), _| !(*owner == tenant && role == key));
+        Ok(removed)
+    }
+
+    async fn put_assignment(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        assignment: &RoleAssignment,
+    ) -> Result<(), DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let mut rows = self.rows();
+        if !rows
+            .roles
+            .contains_key(&(tenant, assignment.role().clone()))
+        {
+            return Err(missing_reference());
+        }
+        rows.assignments.insert(
+            (
+                tenant,
+                assignment.principal().clone(),
+                assignment.role().clone(),
+                assignment.scope().clone(),
+            ),
+            assignment.clone(),
+        );
+        Ok(())
+    }
+
+    async fn remove_assignment(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        principal: &Subject,
+        role: &RoleKey,
+        scope: &AssignmentScope,
+    ) -> Result<bool, DomainError> {
+        Ok(self
+            .rows()
+            .assignments
+            .remove(&(
+                uow.tenant().tenant_id(),
+                principal.clone(),
+                role.clone(),
+                scope.clone(),
+            ))
+            .is_some())
+    }
+
+    async fn assignments_of(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        principal: &Subject,
+    ) -> Result<Vec<RoleAssignment>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        Ok(self
+            .rows()
+            .assignments
+            .iter()
+            .filter(|((owner, held_by, _, _), _)| *owner == tenant && held_by == principal)
+            .map(|(_, assignment)| assignment.clone())
+            .collect())
+    }
+}
+
+/// The ports under test.
+#[derive(Clone)]
+pub struct NativeRolePorts<'a> {
+    /// Starts units of work.
+    pub units_of_work: &'a dyn UnitOfWorkFactory,
+    /// The store under test.
+    pub roles: &'a dyn NativeRoleStore,
+}
+
+impl std::fmt::Debug for NativeRolePorts<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NativeRolePorts").finish_non_exhaustive()
+    }
+}
+
+/// Runs `work` in a unit of work of `tenant` and commits it.
+async fn in_tenant<T>(
+    ports: &NativeRolePorts<'_>,
+    tenant: &TenantContext,
+    work: impl for<'u> FnOnce(
+        &'u dyn NativeRoleStore,
+        &'u mut dyn UnitOfWork,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<T, DomainError>> + Send + 'u>,
+    >,
+) -> Result<T, DomainError> {
+    let mut uow = ports.units_of_work.begin(tenant).await.expect("begin");
+    let result = work(ports.roles, uow.as_mut()).await;
+    if result.is_ok() {
+        uow.commit().await.expect("commit");
+    }
+    result
+}
+
+fn contract_key(namespace: &str, name: &str) -> RoleKey {
+    RoleKey::new(
+        Namespace::parse(namespace).expect("namespace"),
+        RoleName::parse(name).expect("name"),
+    )
+}
+
+fn contract_permission(value: &str) -> PermissionName {
+    PermissionName::parse(value).expect("permission")
+}
+
+fn contract_role(
+    key: RoleKey,
+    permissions: &[&str],
+    includes: &[RoleKey],
+    at: Timestamp,
+) -> RoleDefinition {
+    RoleDefinition::new(
+        key,
+        RoleContents {
+            description: "a role".to_owned(),
+            permissions: permissions.iter().map(|p| contract_permission(p)).collect(),
+            includes: includes.iter().cloned().collect(),
+        },
+        at,
+    )
+    .expect("role")
+}
+
+/// Runs every rule a native role store must obey. Each run uses tenants of
+/// its own, so runs can share one database.
+///
+/// # Panics
+///
+/// Panics if the implementation breaks a rule.
+#[allow(clippy::too_many_lines)]
+pub async fn run_native_role_contract(ports: NativeRolePorts<'_>) {
+    let tenant = TenantContext::assume(TenantId::generate());
+    let elsewhere = TenantContext::assume(TenantId::generate());
+    let documents = Namespace::parse("urn:example:documents").expect("namespace");
+    let billing = Namespace::parse("https://billing.example.com").expect("namespace");
+    // Times with whole microseconds, as storage keeps them.
+    let at = Timestamp::UNIX_EPOCH + time::Duration::days(20_000);
+
+    // The revision starts at zero and every raise is one more.
+    let revision = in_tenant(&ports, &tenant, |s, u| s.revision(u)).await;
+    assert_eq!(revision.ok(), Some(0));
+    assert_eq!(
+        in_tenant(&ports, &tenant, |s, u| s.raise_revision(u))
+            .await
+            .ok(),
+        Some(1)
+    );
+    assert_eq!(
+        in_tenant(&ports, &tenant, |s, u| s.raise_revision(u))
+            .await
+            .ok(),
+        Some(2)
+    );
+    assert_eq!(
+        in_tenant(&ports, &tenant, |s, u| s.revision(u)).await.ok(),
+        Some(2)
+    );
+    assert_eq!(
+        in_tenant(&ports, &elsewhere, |s, u| s.revision(u))
+            .await
+            .ok(),
+        Some(0)
+    );
+
+    // Permissions are listed by name, and putting again describes again.
+    for (name, description) in [
+        ("document:write", "change documents"),
+        ("document:read", "see documents"),
+    ] {
+        let permission =
+            PermissionDefinition::new(documents.clone(), contract_permission(name), description)
+                .expect("permission");
+        in_tenant(&ports, &tenant, |s, u| {
+            Box::pin(async move { s.put_permission(u, &permission).await })
+        })
+        .await
+        .expect("put permission");
+    }
+    let payment =
+        PermissionDefinition::new(billing.clone(), contract_permission("invoice:pay"), "")
+            .expect("permission");
+    in_tenant(&ports, &tenant, |s, u| {
+        Box::pin(async move { s.put_permission(u, &payment).await })
+    })
+    .await
+    .expect("put permission");
+    let described = PermissionDefinition::new(
+        documents.clone(),
+        contract_permission("document:read"),
+        "read documents",
+    )
+    .expect("permission");
+    let again = described.clone();
+    in_tenant(&ports, &tenant, |s, u| {
+        Box::pin(async move { s.put_permission(u, &again).await })
+    })
+    .await
+    .expect("describe again");
+    let space = documents.clone();
+    let listed = in_tenant(&ports, &tenant, |s, u| {
+        Box::pin(async move { s.permissions(u, &space).await })
+    })
+    .await
+    .expect("permissions");
+    let names: Vec<&str> = listed.iter().map(|p| p.name().as_str()).collect();
+    assert_eq!(names, ["document:read", "document:write"]);
+    assert_eq!(listed[0], described);
+    let space = documents.clone();
+    let theirs = in_tenant(&ports, &elsewhere, |s, u| {
+        Box::pin(async move { s.permissions(u, &space).await })
+    })
+    .await
+    .expect("permissions");
+    assert!(theirs.is_empty());
+
+    // Roles keep what they hold and include, and are listed by namespace and name.
+    let viewer = contract_role(
+        contract_key("urn:example:documents", "viewer"),
+        &["document:read"],
+        &[],
+        at,
+    );
+    let editor = contract_role(
+        contract_key("urn:example:documents", "editor"),
+        &["document:write"],
+        &[viewer.key().clone()],
+        at,
+    );
+    let support = contract_role(
+        contract_key("https://billing.example.com", "support"),
+        &["invoice:pay"],
+        &[editor.key().clone()],
+        at,
+    );
+    for role in [viewer.clone(), editor.clone(), support.clone()] {
+        in_tenant(&ports, &tenant, |s, u| {
+            Box::pin(async move { s.put_role(u, &role).await })
+        })
+        .await
+        .expect("put role");
+    }
+    let roles = in_tenant(&ports, &tenant, |s, u| s.roles(u))
+        .await
+        .expect("roles");
+    assert_eq!(roles, [support.clone(), editor.clone(), viewer.clone()]);
+    assert!(
+        in_tenant(&ports, &elsewhere, |s, u| s.roles(u))
+            .await
+            .expect("roles")
+            .is_empty()
+    );
+
+    // A role that names a permission or a role that does not exist is refused.
+    let undeclared = contract_role(
+        contract_key("urn:example:documents", "odd"),
+        &["document:delete"],
+        &[],
+        at,
+    );
+    assert!(
+        in_tenant(&ports, &tenant, |s, u| Box::pin(async move {
+            s.put_role(u, &undeclared).await
+        }))
+        .await
+        .is_err()
+    );
+    let dangling = contract_role(
+        contract_key("urn:example:documents", "odd"),
+        &[],
+        &[contract_key("urn:example:documents", "missing")],
+        at,
+    );
+    assert!(
+        in_tenant(&ports, &tenant, |s, u| Box::pin(async move {
+            s.put_role(u, &dangling).await
+        }))
+        .await
+        .is_err()
+    );
+    // Nor in another tenant, where the permissions are not declared.
+    let foreign = viewer.clone();
+    assert!(
+        in_tenant(&ports, &elsewhere, |s, u| Box::pin(async move {
+            s.put_role(u, &foreign).await
+        }))
+        .await
+        .is_err()
+    );
+
+    // Putting a role again replaces what it holds and includes.
+    let later = at + time::Duration::minutes(5);
+    let replaced = editor
+        .replaced(
+            RoleContents {
+                description: "edits".to_owned(),
+                permissions: [
+                    contract_permission("document:read"),
+                    contract_permission("document:write"),
+                ]
+                .into(),
+                includes: std::collections::BTreeSet::new(),
+            },
+            later,
+        )
+        .expect("replaced");
+    let put = replaced.clone();
+    in_tenant(&ports, &tenant, |s, u| {
+        Box::pin(async move { s.put_role(u, &put).await })
+    })
+    .await
+    .expect("replace role");
+    let roles = in_tenant(&ports, &tenant, |s, u| s.roles(u))
+        .await
+        .expect("roles");
+    assert_eq!(roles[1], replaced);
+    let back = editor.clone();
+    in_tenant(&ports, &tenant, |s, u| {
+        Box::pin(async move { s.put_role(u, &back).await })
+    })
+    .await
+    .expect("restore role");
+
+    // Removing a permission removes it from every role.
+    let space = documents.clone();
+    let removed = in_tenant(&ports, &tenant, |s, u| {
+        Box::pin(async move {
+            s.remove_permission(u, &space, &contract_permission("document:read"))
+                .await
+        })
+    })
+    .await;
+    assert_eq!(removed.ok(), Some(true));
+    let space = documents.clone();
+    let removed = in_tenant(&ports, &tenant, |s, u| {
+        Box::pin(async move {
+            s.remove_permission(u, &space, &contract_permission("document:read"))
+                .await
+        })
+    })
+    .await;
+    assert_eq!(removed.ok(), Some(false));
+    let roles = in_tenant(&ports, &tenant, |s, u| s.roles(u))
+        .await
+        .expect("roles");
+    assert!(
+        roles[2].contents().permissions.is_empty(),
+        "the viewer lost its permission"
+    );
+
+    // Assignments: by principal, role and scope; putting again replaces the start and end.
+    let ana =
+        Subject::new(SubjectKind::User, "0190f5b2-6a3e-7c1d-9b2a-1f2e3d4c5b6a").expect("user");
+    let billing_client = Subject::new(SubjectKind::Client, "billing-service").expect("client");
+    let portal = ApplicationReference::parse("portal").expect("application");
+    let whole = RoleAssignment::new(
+        ana.clone(),
+        editor.key().clone(),
+        AssignmentScope::Tenant,
+        None,
+        None,
+        at,
+    )
+    .expect("assignment");
+    let scoped = RoleAssignment::new(
+        ana.clone(),
+        viewer.key().clone(),
+        AssignmentScope::Application(portal.clone()),
+        Some(at),
+        Some(later),
+        at,
+    )
+    .expect("assignment");
+    let for_client = RoleAssignment::new(
+        billing_client.clone(),
+        support.key().clone(),
+        AssignmentScope::Tenant,
+        None,
+        Some(later),
+        at,
+    )
+    .expect("assignment");
+    for assignment in [whole.clone(), scoped.clone(), for_client.clone()] {
+        in_tenant(&ports, &tenant, |s, u| {
+            Box::pin(async move { s.put_assignment(u, &assignment).await })
+        })
+        .await
+        .expect("put assignment");
+    }
+    let principal = ana.clone();
+    let held = in_tenant(&ports, &tenant, |s, u| {
+        Box::pin(async move { s.assignments_of(u, &principal).await })
+    })
+    .await
+    .expect("assignments");
+    assert_eq!(held, [whole.clone(), scoped.clone()]);
+    let ended = RoleAssignment::new(
+        ana.clone(),
+        editor.key().clone(),
+        AssignmentScope::Tenant,
+        None,
+        Some(later),
+        later,
+    )
+    .expect("assignment");
+    let put = ended.clone();
+    in_tenant(&ports, &tenant, |s, u| {
+        Box::pin(async move { s.put_assignment(u, &put).await })
+    })
+    .await
+    .expect("replace assignment");
+    let principal = ana.clone();
+    let held = in_tenant(&ports, &tenant, |s, u| {
+        Box::pin(async move { s.assignments_of(u, &principal).await })
+    })
+    .await
+    .expect("assignments");
+    assert_eq!(held, [ended, scoped.clone()]);
+    let principal = billing_client.clone();
+    let held = in_tenant(&ports, &tenant, |s, u| {
+        Box::pin(async move { s.assignments_of(u, &principal).await })
+    })
+    .await
+    .expect("assignments");
+    assert_eq!(held, [for_client]);
+    // An assignment of a role that does not exist is refused.
+    let nowhere = RoleAssignment::new(
+        ana.clone(),
+        contract_key("urn:example:documents", "missing"),
+        AssignmentScope::Tenant,
+        None,
+        None,
+        at,
+    )
+    .expect("assignment");
+    assert!(
+        in_tenant(&ports, &tenant, |s, u| Box::pin(async move {
+            s.put_assignment(u, &nowhere).await
+        }))
+        .await
+        .is_err()
+    );
+    // Another tenant sees none of them.
+    let principal = ana.clone();
+    let theirs = in_tenant(&ports, &elsewhere, |s, u| {
+        Box::pin(async move { s.assignments_of(u, &principal).await })
+    })
+    .await
+    .expect("assignments");
+    assert!(theirs.is_empty());
+
+    // Removing an assignment says whether there was one.
+    let (principal, role, scope) = (ana.clone(), viewer.key().clone(), scoped.scope().clone());
+    let removed = in_tenant(&ports, &tenant, |s, u| {
+        Box::pin(async move { s.remove_assignment(u, &principal, &role, &scope).await })
+    })
+    .await;
+    assert_eq!(removed.ok(), Some(true));
+    let (principal, role, scope) = (ana.clone(), viewer.key().clone(), scoped.scope().clone());
+    let removed = in_tenant(&ports, &tenant, |s, u| {
+        Box::pin(async move { s.remove_assignment(u, &principal, &role, &scope).await })
+    })
+    .await;
+    assert_eq!(removed.ok(), Some(false));
+
+    // A role another role includes cannot be removed; removing a role
+    // removes its assignments.
+    let key = editor.key().clone();
+    let refused = in_tenant(&ports, &tenant, |s, u| {
+        Box::pin(async move { s.remove_role(u, &key).await })
+    })
+    .await;
+    assert_eq!(
+        refused.map_err(|e| e.code().to_owned()),
+        Err("authorization.role_in_use".to_owned())
+    );
+    let key = support.key().clone();
+    let removed = in_tenant(&ports, &tenant, |s, u| {
+        Box::pin(async move { s.remove_role(u, &key).await })
+    })
+    .await;
+    assert_eq!(removed.ok(), Some(true));
+    let key = editor.key().clone();
+    let removed = in_tenant(&ports, &tenant, |s, u| {
+        Box::pin(async move { s.remove_role(u, &key).await })
+    })
+    .await;
+    assert_eq!(removed.ok(), Some(true));
+    let key = editor.key().clone();
+    let removed = in_tenant(&ports, &tenant, |s, u| {
+        Box::pin(async move { s.remove_role(u, &key).await })
+    })
+    .await;
+    assert_eq!(removed.ok(), Some(false));
+    let principal = ana.clone();
+    let held = in_tenant(&ports, &tenant, |s, u| {
+        Box::pin(async move { s.assignments_of(u, &principal).await })
+    })
+    .await
+    .expect("assignments");
+    assert!(held.is_empty());
+    let principal = billing_client;
+    let held = in_tenant(&ports, &tenant, |s, u| {
+        Box::pin(async move { s.assignments_of(u, &principal).await })
+    })
+    .await
+    .expect("assignments");
+    assert!(held.is_empty());
+    let roles = in_tenant(&ports, &tenant, |s, u| s.roles(u))
+        .await
+        .expect("roles");
+    assert_eq!(roles.len(), 1);
+    // The built-in roles are not among the stored ones.
+    assert!(
+        roles
+            .iter()
+            .all(|role| role.key() != &RoleKey::built_in(Role::TenantAdministrator))
     );
 }

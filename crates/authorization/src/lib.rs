@@ -1,8 +1,9 @@
 //! The authorization context.
 //!
 //! Answers one question: may this subject do this? Hodor's administration
-//! asks it through the fixed roles; applications ask it through the engine
-//! bound to their resource server. Whoever asks obeys the answer.
+//! asks it through the built-in roles; applications ask it through the
+//! engine bound to their resource server, such as the native engine over
+//! the roles the tenant defined. Whoever asks obeys the answer.
 //!
 //! The specification of what is built is
 //! `docs/architecture/contexts/authorization.md`; this crate follows it.
@@ -19,10 +20,11 @@ pub mod api {
         PolicySimulator, SimulationAnswer,
     };
     pub use crate::application::evaluation::{EvaluationService, MAX_BATCH, Simulation};
-    pub use crate::application::fixed_roles::{FIXED_ROLES_REVISION, FixedRoleEngine};
+    pub use crate::application::native::{FIXED_ROLES_REVISION, MATCHING_ROLE, NativeEngine};
     pub use crate::application::ports::{
-        EngineBindingStore, RoleAssignmentStore, SubjectAttributeSource,
+        EngineBindingStore, NativeRoleStore, RoleAssignmentStore, SubjectAttributeSource,
     };
+    pub use crate::application::roles::{RoleService, Validity};
     pub use crate::application::service::AuthorizationService;
     pub use crate::domain::binding::{BindingSettings, DEFAULT_TIME_LIMIT, EngineBinding};
     pub use crate::domain::decision::{
@@ -30,9 +32,14 @@ pub mod api {
         PolicyReference, PolicyRevision, ReasonCode,
     };
     pub use crate::domain::event::AuthorizationEvent;
+    pub use crate::domain::native::{
+        AssignmentScope, Grant, MAX_DESCRIPTION_LENGTH, MAX_INCLUDED_ROLES, MAX_INCLUSION_DEPTH,
+        MAX_ROLE_PERMISSIONS, PermissionDefinition, PermissionName, RoleAssignment, RoleContents,
+        RoleDefinition, RoleGraph, RoleKey, RoleName,
+    };
     pub use crate::domain::request::{
-        Action, Attributes, AuthorizationRequest, EvaluationContext, Namespace, Resource, Subject,
-        SubjectKind,
+        Action, ApplicationReference, Attributes, AuthorizationRequest, EvaluationContext,
+        Namespace, Resource, Subject, SubjectKind,
     };
     pub use crate::domain::role::{Decision, Effect, Permission, Role};
 }

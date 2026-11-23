@@ -49,6 +49,7 @@ Tables created, by file:
 | `0030_authorization_engine_binding.sql` | `"authorization".engine_binding`: which engine answers for a resource server, never `hodor:admin` |
 | `0031_credential_recovery_codes.sql` | `credential.recovery_code_set` (`recovery_code_set_one_per_user`) and `credential.recovery_code`, with only the SHA-256 of each code (`recovery_code_hash_length`, `recovery_code_unique_in_set`) |
 | `0032_keys_sealing_state.sql` | `keys.sealing_state`: whether a tenant refuses secrets of the first format; `hodor_app` may insert and read, never update or delete |
+| `0033_authorization_native_roles.sql` | `"authorization".permission`, `role`, `role_permission`, `role_inclusion`, `role_revision`; changes `"authorization".role_assignment` to hold users and clients, roles of any namespace, a scope and a start and end, with the earlier rows as built-in assignments of `hodor:admin` |
 | `0035_oauth_client_assertion.sql` | `oauth.client_assertion`: the `jti` of every client assertion until it expires, once per client (`client_assertion_jti_shape`) |
 
 No migration creates a type, an extension or seed rows; enumerations are text
@@ -83,9 +84,14 @@ columns with `CHECK ... IN (...)` constraints.
   `verification_token_hash_is_sha256` and
   `identity_provider_secret_is_sealed`. Every access token expires
   (constraint `access_token_expires` in `0014_credential_access_token.sql`).
-- The role names allowed in `"authorization".role_assignment` are
-  `tenant_administrator` and `tenant_auditor` (constraint
-  `role_assignment_role_known`).
+- In `"authorization".role_assignment`, the namespace `hodor:admin` holds
+  only `tenant_administrator` and `tenant_auditor`, given to users for the
+  whole tenant without a start or end (constraint `role_assignment_built_in`);
+  any other assignment names a role of `"authorization".role` through the
+  generated column `role_namespace` (constraint `role_assignment_role_exists`,
+  deleted with the role). No tenant table of native roles names
+  `hodor:admin`, and a role cannot be removed while another includes it
+  (constraint `role_inclusion_included_exists`).
 - Each identity provider kind carries only its own settings: the
   `directory_*` columns are set only for `ldap`
   (`identity_provider_directory_settings`), and the `saml_*` columns only for

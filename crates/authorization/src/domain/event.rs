@@ -34,6 +34,60 @@ pub enum AuthorizationEvent {
         /// The resource server.
         namespace: String,
     },
+    /// A permission was declared for a resource server, or described again.
+    PermissionDeclared {
+        /// The resource server.
+        namespace: String,
+        /// The permission.
+        permission: String,
+    },
+    /// A permission was removed, and with it from every role.
+    PermissionRemoved {
+        /// The resource server.
+        namespace: String,
+        /// The permission.
+        permission: String,
+    },
+    /// A role was created or replaced.
+    RoleDefined {
+        /// The resource server.
+        namespace: String,
+        /// The role's name.
+        name: String,
+    },
+    /// A role was removed, with its assignments.
+    RoleRemoved {
+        /// The resource server.
+        namespace: String,
+        /// The role's name.
+        name: String,
+    },
+    /// A role was given to a principal, or its start and end changed.
+    PrincipalRoleAssigned {
+        /// `user` or `client`.
+        principal_kind: &'static str,
+        /// The user's or the client's identifier.
+        principal: String,
+        /// The role's resource server.
+        namespace: String,
+        /// The role's name.
+        role: String,
+        /// The application it is scoped to; nothing for the whole tenant.
+        application: Option<String>,
+    },
+    /// A role was taken away from a principal.
+    PrincipalRoleRevoked {
+        /// `user` or `client`.
+        principal_kind: &'static str,
+        /// The user's or the client's identifier.
+        principal: String,
+        /// The role's resource server.
+        namespace: String,
+        /// The role's name.
+        role: String,
+        /// The application it was scoped to; nothing for the whole tenant.
+        application: Option<String>,
+    },
     /// A failure allowed, because the binding lets the action fail open.
     FailedOpen {
         /// The resource server.
@@ -54,6 +108,12 @@ impl DomainEvent for AuthorizationEvent {
             Self::RoleRevoked { .. } => "authorization.role_revoked",
             Self::EngineBound { .. } => "authorization.engine_bound",
             Self::EngineUnbound { .. } => "authorization.engine_unbound",
+            Self::PermissionDeclared { .. } => "authorization.permission_declared",
+            Self::PermissionRemoved { .. } => "authorization.permission_removed",
+            Self::RoleDefined { .. } => "authorization.role_defined",
+            Self::RoleRemoved { .. } => "authorization.role_removed",
+            Self::PrincipalRoleAssigned { .. } => "authorization.principal_role_assigned",
+            Self::PrincipalRoleRevoked { .. } => "authorization.principal_role_revoked",
             Self::FailedOpen { .. } => "authorization.failed_open",
         }
     }

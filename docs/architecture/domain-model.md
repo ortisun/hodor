@@ -327,9 +327,9 @@ A `KeySet` (per tenant and use: `sig`, `enc`, `data`) contains `KeyVersion`s wit
 
 | Aggregate | Role |
 |---|---|
-| `Role` | Name, scope (tenant, organization, application), permissions, inherited roles |
+| `Role` | Resource server (namespace), name, permissions, included roles (a hierarchy within the namespace, a composite across namespaces) |
 | `Permission` | `resource_type` + `action`, owned by a resource server |
-| `RoleAssignment` | Principal or group → role, with scope and validity |
+| `RoleAssignment` | Principal (a user or a client; groups and organizations later) → role, scoped to the tenant or one application, with validity |
 | `AclEntry` | Specific resource → principal → actions |
 | `RelationTuple` | `object#relation@subject` (relationship-based access control) |
 | `Policy` / `PolicyVersion` | Native rule (attribute-based access control condition) or Rego module; immutable version with checksum |

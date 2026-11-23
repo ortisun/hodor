@@ -2,6 +2,9 @@
 //! contexts.
 
 use crate::domain::binding::EngineBinding;
+use crate::domain::native::{
+    AssignmentScope, PermissionDefinition, PermissionName, RoleAssignment, RoleDefinition, RoleKey,
+};
 use crate::domain::request::{Attributes, Namespace, Subject};
 use crate::domain::role::Role;
 use hodor_kernel::{DomainError, TenantContext, Timestamp, UnitOfWork, UserId};
@@ -111,4 +114,134 @@ pub trait SubjectAttributeSource: Send + Sync {
         tenant: &TenantContext,
         subject: &Subject,
     ) -> Result<Attributes, DomainError>;
+}
+
+/// Stores a tenant's permissions, roles and assignments of native
+/// role-based access control, and its role revision. Every method works
+/// inside the tenant the unit of work is bound to. The built-in roles of
+/// `hodor:admin` are not stored here: their assignments go through
+/// [`RoleAssignmentStore`].
+#[async_trait::async_trait]
+pub trait NativeRoleStore: Send + Sync {
+    /// Raises the tenant's role revision and returns the new one. Called
+    /// first in every transaction that changes roles, so that it also
+    /// keeps two such transactions of one tenant from running at once.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn raise_revision(&self, uow: &mut dyn UnitOfWork) -> Result<u64, DomainError>;
+
+    /// The tenant's role revision: zero before anything was changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn revision(&self, uow: &mut dyn UnitOfWork) -> Result<u64, DomainError>;
+
+    /// Stores a permission, replacing its description if it exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn put_permission(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        permission: &PermissionDefinition,
+    ) -> Result<(), DomainError>;
+
+    /// Removes a permission, and removes it from every role. Returns
+    /// whether there was one.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn remove_permission(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        namespace: &Namespace,
+        permission: &PermissionName,
+    ) -> Result<bool, DomainError>;
+
+    /// The permissions of a resource server, ordered by name.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn permissions(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        namespace: &Namespace,
+    ) -> Result<Vec<PermissionDefinition>, DomainError>;
+
+    /// Stores a role with what it holds and includes, replacing the role of
+    /// the same key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails, or a permission or an included
+    /// role it names does not exist.
+    async fn put_role(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        role: &RoleDefinition,
+    ) -> Result<(), DomainError>;
+
+    /// Every role of the tenant, ordered by namespace and name.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails or what is stored is not a valid
+    /// role.
+    async fn roles(&self, uow: &mut dyn UnitOfWork) -> Result<Vec<RoleDefinition>, DomainError>;
+
+    /// Removes a role and its assignments. Returns whether there was one.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails, or another role includes it.
+    async fn remove_role(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        key: &RoleKey,
+    ) -> Result<bool, DomainError>;
+
+    /// Stores an assignment, replacing the one of the same principal, role
+    /// and scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails, or the role does not exist.
+    async fn put_assignment(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        assignment: &RoleAssignment,
+    ) -> Result<(), DomainError>;
+
+    /// Removes the assignment of a role to a principal with a scope.
+    /// Returns whether there was one.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn remove_assignment(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        principal: &Subject,
+        role: &RoleKey,
+        scope: &AssignmentScope,
+    ) -> Result<bool, DomainError>;
+
+    /// A principal's assignments of roles the tenant defined, ordered by
+    /// role and scope. Assignments of the built-in roles are not among
+    /// them.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails or what is stored is not valid.
+    async fn assignments_of(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        principal: &Subject,
+    ) -> Result<Vec<RoleAssignment>, DomainError>;
 }

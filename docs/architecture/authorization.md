@@ -97,6 +97,8 @@ Evaluation order, first decisive step wins:
 5. **Relationship-based access control**: if the resource type has a relation model, check `resource#relation@subject` by bounded graph traversal.
 6. No rule matched → `Deny` with reason `no_matching_policy`.
 
+What is built (Issue-73) is step 3, without groups and organizations: assignments to users and clients, scoped to the tenant or to one application, roles with hierarchy and composites, and `no_matching_role` as the reason of a deny. Steps 1, 2 and 5 are not built ([Decision 0023](../decisions/0023-what-0.2.0-holds.md)); step 4 comes with Issue-74. The exact rules are in [the authorization context](contexts/authorization.md#native-role-based-access-control).
+
 | Model | Implementation notes |
 |---|---|
 | Role-based access control | The role closure per (tenant, principal, scope) is cached and invalidated by `RoleAssigned`/`RoleRevoked`/group events |
