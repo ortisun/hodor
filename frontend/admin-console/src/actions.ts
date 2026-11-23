@@ -61,6 +61,12 @@ export const ACTIONS = {
   enableClient: { level: 1, permission: "applications:write" },
   /** It gets no token until it is enabled again. */
   disableClient: { level: 2, permission: "applications:write" },
+  /** Changes what the role allows, and so what everyone holding it may do. */
+  defineRole: { level: 1, permission: "roles:write" },
+  /** What the role allowed them is denied from the next decision. */
+  revokeRole: { level: 2, permission: "roles:write" },
+  /** Every decision about the resource server is denied until it is bound again. */
+  unbind: { level: 2, permission: "bindings:write" },
 } as const satisfies Record<string, Action>;
 
 export type ActionName = keyof typeof ACTIONS;

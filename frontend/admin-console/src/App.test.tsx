@@ -567,3 +567,116 @@ describe("the page of a client", () => {
     expect(sent.some((request) => request.path.endsWith("/keys") && request.method === "POST")).toBe(false);
   });
 });
+
+describe("authorization", () => {
+  const PAYROLL = "https://payroll.example.com";
+  const PAYROLL_SERVER = "0193f1c2-0000-7000-8000-0000000000c1";
+  const READS = ["roles:read", "bindings:read", "policies:read", "decisions:read"];
+  const roleBody = {
+    namespace: PAYROLL,
+    name: "approver",
+    description: "Approves invoices",
+    permissions: [{ name: "invoice:approve", condition: "resource.attributes.amount <= 1000" }],
+    includes: [{ namespace: PAYROLL, name: "clerk" }],
+    created_at: "2026-11-22T14:03:11Z",
+    updated_at: "2026-11-22T14:03:11Z",
+  };
+  const serverBody = {
+    id: PAYROLL_SERVER,
+    application_id: BILLING,
+    audience: PAYROLL,
+    name: "Payroll",
+    scopes: [],
+    created_at: "2026-11-22T14:03:11Z",
+    updated_at: "2026-11-22T14:03:11Z",
+  };
+  const answers = (permissions: string[]) => ({
+    "GET /console/api/me": [json(200, meBody(permissions, ["tenant_auditor"]))],
+    "GET /console/api/roles": [json(200, { items: [roleBody] }), json(200, { items: [roleBody] })],
+    "GET /console/api/resource-servers": [json(200, { items: [serverBody] }), json(200, { items: [serverBody] })],
+    "GET /console/api/bindings": [
+      json(200, {
+        items: [
+          {
+            namespace: PAYROLL,
+            engine: "open_policy_agent",
+            time_limit_milliseconds: 200,
+            sensitive: false,
+            fail_open_actions: ["read"],
+            trust_asserted: false,
+            created_at: "2026-11-22T14:03:11Z",
+            updated_at: "2026-11-22T14:03:11Z",
+          },
+        ],
+      }),
+    ],
+    "GET /console/api/policy-status": [
+      json(200, {
+        latest: { revision: 3, written_by: "operator", published_at: "2026-11-22T14:03:11Z", version: 1 },
+        publications: [],
+        instances: [{ instance: "shared", own: false, active_revision: "2", current: false }],
+        pending_activation: true,
+      }),
+    ],
+    "GET /console/api/decisions?limit=50": [
+      json(200, {
+        items: [
+          {
+            decision_id: "decision-1",
+            namespace: PAYROLL,
+            subject: { kind: "user", id: ANA },
+            action: "approve",
+            resource: { type: "invoice", id: "42" },
+            effect: "deny",
+            reason: "condition_not_met",
+            decided_at: "2026-11-22T14:03:11Z",
+            duration_microseconds: 10,
+            input: {},
+            masked: [],
+          },
+        ],
+      }),
+    ],
+  });
+
+  it("shows roles with their conditions, engines, what is published and the latest decisions, and an auditor changes nothing", async () => {
+    show("/t/acme/console/authorization", answers(READS));
+    expect(await screen.findByText(`${PAYROLL}#approver`)).toBeTruthy();
+    expect(screen.getByText(en.conditionShown("resource.attributes.amount <= 1000"), { exact: false })).toBeTruthy();
+    expect(await screen.findByText("open_policy_agent")).toBeTruthy();
+    expect(screen.getByText("read")).toBeTruthy();
+    expect(await screen.findByText(en.activationPending)).toBeTruthy();
+    expect(screen.getByText(en.instanceBehind("2"))).toBeTruthy();
+    expect(await screen.findByText("condition_not_met")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: en.editRole })).toBeNull();
+    expect(screen.queryByRole("button", { name: en.unbind })).toBeNull();
+  });
+
+  it("changes a role with its conditions written as text, and says what the server refused", async () => {
+    const script = {
+      ...answers([...READS, "roles:write"]),
+      [`PUT /console/api/resource-servers/${PAYROLL_SERVER}/roles/approver`]: [
+        problem(422, "authorization.condition_invalid"),
+        json(200, roleBody),
+      ],
+    };
+    const { sent, user } = show("/t/acme/console/authorization", script);
+    await user.click(await screen.findByRole("button", { name: en.editRole }));
+    const dialog = await screen.findByRole("dialog");
+    const lines = within(dialog).getByLabelText(en.rolePermissionsLabel);
+    expect((lines as HTMLTextAreaElement).value).toBe("invoice:approve if resource.attributes.amount <= 1000");
+    await user.clear(lines);
+    await user.type(lines, "invoice:approve if resource.attributes.amount <=");
+    await user.click(within(dialog).getByRole("button", { name: en.saveRole }));
+    expect(await within(dialog).findByText(en.valueInvalid["authorization.condition_invalid"] as string)).toBeTruthy();
+    await user.clear(lines);
+    await user.type(lines, "invoice:approve if resource.attributes.amount <= 5000");
+    await user.click(within(dialog).getByRole("button", { name: en.saveRole }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(sent.filter((request) => request.method === "PUT").at(-1)?.body).toEqual({
+      description: "Approves invoices",
+      permissions: [{ name: "invoice:approve", condition: "resource.attributes.amount <= 5000" }],
+      includes: [{ namespace: PAYROLL, name: "clerk" }],
+    });
+  });
+});

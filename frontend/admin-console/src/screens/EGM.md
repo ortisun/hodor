@@ -23,6 +23,8 @@ console interface.
   calls `client.createUser(email, name)`.
 - `UsersScreen.tsx:nameOf`, `UsersScreen.tsx:StatusBadge` - a user's list name
   (display name, then primary identifier, then `text.unnamed`) and status badge.
+- `AuthorizationScreen.tsx:AuthorizationScreen` - the tenant's authorization at `/authorization`: roles (`client.listRoles`, with the resource servers to find a role's by audience), each changed in `RoleEditor` with its permissions written one a line as `name` or `name if condition` (`permissionLines`, `readPermissionLines`) and saved with `client.defineRole`; bindings (`client.listBindings`, removed with `client.unbind` behind `Confirm` `unbind`); the policy status (`client.policyStatus`; publishing is the command line's); the latest decisions (`client.listDecisions`, filtered by effect). Each part only with its read permission.
+- `RoleAssignments.tsx:RoleAssignments` - the roles a user or a client holds (`client.listAssignments`), each taken away with `client.revokeAssignment` behind `Confirm` `revokeRole`, the role's name typed; shown on `UserScreen` and `ClientScreen` with `roles:read`.
 - `UserScreen.tsx:UserScreen` - one user, loaded with `client.getUser(id)`;
   sessions loaded with `client.listSessions(id)`. "Suspend user"
   (`suspendUser`) calls `client.suspendUser(id, reason)`; "End session"

@@ -32,7 +32,66 @@ export type Permission =
   | "applications:read"
   | "applications:write"
   | "credentials:read"
-  | "credentials:write";
+  | "credentials:write"
+  | "decisions:read"
+  | "decision-log:write"
+  | "roles:read"
+  | "roles:write"
+  | "bindings:read"
+  | "bindings:write"
+  | "policies:read"
+  | "policies:write";
+
+/** A permission a role holds, with its condition when it has one. */
+export interface HeldPermission {
+  name: string;
+  condition: string | null;
+}
+
+/** A role a tenant defined for one resource server. */
+export interface RoleDefinition {
+  namespace: string;
+  name: string;
+  description: string;
+  permissions: HeldPermission[];
+  includes: { namespace: string; name: string }[];
+}
+
+/** A role given to a user or a client. */
+export interface RoleAssignment {
+  principal: { kind: "user" | "client"; id: string };
+  role: { namespace: string; name: string };
+  applicationId: string | null;
+  validUntil: string | null;
+}
+
+/** Which engine answers for a resource server. */
+export interface Binding {
+  namespace: string;
+  engine: string;
+  timeLimitMilliseconds: number;
+  sensitive: boolean;
+  failOpenActions: string[];
+}
+
+/** What is published for Open Policy Agent, and what each instance runs. */
+export interface PolicyStatus {
+  latest: { revision: number; version: number | null; publishedAt: string } | null;
+  instances: { instance: string; activeRevision: string | null; current: boolean; error: string | null }[];
+  pendingActivation: boolean;
+}
+
+/** One recorded decision, as the list shows it. */
+export interface DecisionRecord {
+  id: string;
+  namespace: string;
+  subject: string;
+  action: string;
+  effect: "allow" | "deny" | "indeterminate";
+  reason: string;
+  engine: string | null;
+  decidedAt: string;
+}
 
 /** A security key or a passkey of a person. Nothing of its key is ever here. */
 export interface PersonKey {
@@ -613,6 +672,117 @@ export class Client {
 
   async enableProvider(id: string): Promise<Provider> {
     return provider(await this.#send("POST", `/identity-providers/${encodeURIComponent(id)}:enable`));
+  }
+
+  async listRoles(): Promise<RoleDefinition[]> {
+    return list((await this.#send("GET", "/roles"))["items"]).map((role) => ({
+      namespace: required(role["namespace"]),
+      name: required(role["name"]),
+      description: text(role["description"]) ?? "",
+      permissions: list(role["permissions"]).map((held) => ({
+        name: required(held["name"]),
+        condition: text(held["condition"]),
+      })),
+      includes: list(role["includes"]).map((included) => ({
+        namespace: required(included["namespace"]),
+        name: required(included["name"]),
+      })),
+    }));
+  }
+
+  /** Defines a role, or replaces it whole; the server checks its conditions. */
+  async defineRole(resourceServerId: string, role: RoleDefinition): Promise<void> {
+    await this.#send(
+      "PUT",
+      `/resource-servers/${encodeURIComponent(resourceServerId)}/roles/${encodeURIComponent(role.name)}`,
+      {
+        description: role.description,
+        permissions: role.permissions.map((held) =>
+          held.condition === null ? { name: held.name } : { name: held.name, condition: held.condition },
+        ),
+        includes: role.includes,
+      },
+    );
+  }
+
+  async listAssignments(kind: "user" | "client", id: string): Promise<RoleAssignment[]> {
+    const owner = kind === "user" ? "users" : "clients";
+    return list((await this.#send("GET", `/${owner}/${encodeURIComponent(id)}/role-assignments`))["items"]).map(
+      (held) => {
+        const principal = fields(held["principal"]);
+        const role = fields(held["role"]);
+        return {
+          principal: { kind: principal["kind"] === "client" ? "client" : "user", id: required(principal["id"]) },
+          role: { namespace: required(role["namespace"]), name: required(role["name"]) },
+          applicationId: text(held["application_id"]),
+          validUntil: text(held["valid_until"]),
+        };
+      },
+    );
+  }
+
+  async revokeAssignment(assignment: RoleAssignment): Promise<void> {
+    await this.#send("POST", "/role-assignments:revoke", {
+      principal: assignment.principal,
+      role: assignment.role,
+      ...(assignment.applicationId === null ? {} : { application_id: assignment.applicationId }),
+    });
+  }
+
+  async unbind(resourceServerId: string): Promise<void> {
+    await this.#send("DELETE", `/resource-servers/${encodeURIComponent(resourceServerId)}/binding`);
+  }
+
+  async listBindings(): Promise<Binding[]> {
+    return list((await this.#send("GET", "/bindings"))["items"]).map((binding) => ({
+      namespace: required(binding["namespace"]),
+      engine: required(binding["engine"]),
+      timeLimitMilliseconds: typeof binding["time_limit_milliseconds"] === "number" ? binding["time_limit_milliseconds"] : 0,
+      sensitive: binding["sensitive"] === true,
+      failOpenActions: Array.isArray(binding["fail_open_actions"])
+        ? binding["fail_open_actions"].filter((action): action is string => typeof action === "string")
+        : [],
+    }));
+  }
+
+  async policyStatus(): Promise<PolicyStatus> {
+    const body = await this.#send("GET", "/policy-status");
+    const latest = body["latest"] === undefined ? null : fields(body["latest"]);
+    return {
+      latest:
+        latest === null
+          ? null
+          : {
+              revision: typeof latest["revision"] === "number" ? latest["revision"] : 0,
+              version: typeof latest["version"] === "number" ? latest["version"] : null,
+              publishedAt: required(latest["published_at"]),
+            },
+      instances: list(body["instances"]).map((instance) => ({
+        instance: required(instance["instance"]),
+        activeRevision: text(instance["active_revision"]),
+        current: instance["current"] === true,
+        error: text(instance["error"]),
+      })),
+      pendingActivation: body["pending_activation"] === true,
+    };
+  }
+
+  async listDecisions(effect: string | null): Promise<DecisionRecord[]> {
+    const query = effect === null ? "" : `&effect=${encodeURIComponent(effect)}`;
+    return list((await this.#send("GET", `/decisions?limit=50${query}`))["items"]).map((record) => {
+      const subject = fields(record["subject"]);
+      const effectOf = record["effect"];
+      return {
+        id: required(record["decision_id"]),
+        namespace: required(record["namespace"]),
+        subject: `${required(subject["kind"])}:${required(subject["id"])}`,
+        action: required(record["action"]),
+        effect: effectOf === "allow" || effectOf === "indeterminate" ? effectOf : "deny",
+        reason: required(record["reason"]),
+        engine: text(record["engine"]),
+        decidedAt: required(record["decided_at"]),
+      };
+    });
   }
 
   async listApplications(): Promise<Application[]> {

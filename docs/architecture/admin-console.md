@@ -43,13 +43,16 @@ The console opens in the dark mode and remembers the person's choice in the brow
 |---|---|---|
 | `/` | Sends to the first screen the person may open | — |
 | `/users` | Users: a table, oldest first, with status and identifiers, loaded a page at a time; create a user | `users:read`; `users:write` to create |
-| `/users/{user_id}` | One user: profile, identifiers with their verification, active sessions, second factors and how many recovery codes are left; suspend the user; end a session; remove the authenticator application, a key or the recovery codes | `users:read`; `sessions:read` for the sessions; `credentials:read` for the factors; `users:write`, `sessions:revoke` and `credentials:write` for the actions |
+| `/users/{user_id}` | One user: profile, identifiers with their verification, active sessions, second factors and how many recovery codes are left, the roles they hold; suspend the user; end a session; remove the authenticator application, a key or the recovery codes; take a role away | `users:read`; `sessions:read` for the sessions; `credentials:read` for the factors; `roles:read` for the roles; `users:write`, `sessions:revoke`, `credentials:write` and `roles:write` for the actions |
 | `/audit` | Audit records: a table, a page at a time, with a panel showing the whole record and its hashes | `audit:read` |
 | `/identity-providers` | Identity providers: a table ordered by alias, with status and whether each creates users; add a provider | `identity-providers:read`; `identity-providers:write` to add |
 | `/identity-providers/{provider_id}` | One provider: the callback address to register at the provider, its settings; change them, replace the client secret, disable or enable it | `identity-providers:read`; `identity-providers:write` for the actions |
 | `/applications` | Applications: a table, oldest first, with whether each is first party and its status; register an application | `applications:read`; `applications:write` to register |
 | `/applications/{application_id}` | One application: its settings, its clients, its resource server with the scopes it defines; change the application, disable or enable it, create a client, register or change its resource server | `applications:read`; `applications:write` for every change |
-| `/clients/{client_id}` | One client: its `client_id`, type, authentication method, grants, redirect addresses, post-logout redirect addresses, scopes and token lifetimes, its secrets by expiry and its keys; change it, give it a new secret, end a secret, add or remove a key, disable or enable it | `applications:read`; `applications:write` for every change |
+| `/clients/{client_id}` | One client: its `client_id`, type, authentication method, grants, redirect addresses, post-logout redirect addresses, scopes and token lifetimes, its secrets by expiry and its keys; change it, give it a new secret, end a secret, add or remove a key, disable or enable it; the roles it holds, each of which can be taken away | `applications:read`; `applications:write` for every change; `roles:read` for its roles and `roles:write` to take one away |
+| `/authorization` | Authorization: the tenant's roles with their permissions, conditions and inclusions, each of which can be changed, its conditions written as text and checked by the server; the engine of each resource server, what it does when the engine fails, and removing a binding; what is published for Open Policy Agent and whether every instance runs it; the latest decisions, filtered by effect | `roles:read`; `roles:write` to change a role; `bindings:read` and `bindings:write`; `policies:read`; `decisions:read` |
+
+Publishing and rolling back a policy, giving a role, binding a resource server and registering Open Policy Agent instances are not in the console: publishing needs the key that signs bundles, which only `hodor-cli` holds, and the others are done through the [administration interface](../api/admin-api.md#roles-and-their-permissions) and `hodor-cli authorization` for now.
 
 The console adds OpenID Connect providers, and changes their settings and secrets. Providers of the other kinds, GitHub and directories, are listed and shown, and are disabled and enabled from the console; adding them, and changing their settings or secret, is done through the [administration interface](../api/admin-api.md#identity-providers) for now, because the fields of the form mean other things for them. A directory has no callback address, and its screen shows where it searches instead.
 
@@ -82,6 +85,9 @@ Each action has one level, written once in the console's action catalog (`src/ac
 | Add a key to a client | 1 | The form, which refuses a key with a private part |
 | Remove a key of a client | 1 | A dialog that names the `kid`: assertions signed with it are refused from now on |
 | Disable a client | 2 | The client's name typed in full: it gets no token until it is enabled again |
+| Change a role | 1 | The form; the server checks every permission and condition, and its refusal is shown in the form |
+| Take a role away from a person or a client | 2 | The role's name typed in full: what it allowed is denied from the next decision |
+| Remove a resource server's binding | 2 | The resource server's audience typed in full: every decision about it is denied until it is bound again |
 
 The dialog says what will happen in words the reader can check, never puts the destructive button first or focused, and does not act on Enter. After the action a toast confirms it; the audit record it produced is on the audit screen.
 
@@ -137,9 +143,9 @@ The console is used in production with these known gaps. Each is a requirement o
 | Recent authentication for sensitive actions (Requirement-Console-03) | There is no step-up yet | Phase 2 |
 | Phishing-resistant sign-in for administrators (Requirement-Console-05) | Passkeys are Phase 4. Until then an administrator signs in with a password | Phase 4 |
 | Adding GitHub providers and directories, and changing their settings or secret, from the console | The form is the one of OpenID Connect providers | Next |
-| Security posture, live activity, signing keys, policies | The server has no such resources yet | The phase of each |
+| Security posture, live activity, signing keys | The server has no such resources yet | The phase of each |
+| Giving a role, binding a resource server, drafting and simulating a policy version from the console | The routes exist; the forms do not | Next |
 | Changing a client's token lifetimes from the console | The form keeps to what most clients change; the administration interface changes them | Next |
 | Reactivating, changing or removing a user; filtering and searching the tables | The administration interface does not have them | Phase 2 |
-| Giving and taking roles | No route exists; roles are given with `hodor-cli` | Phase 2 |
 | Conflict detection between two administrators (Requirement-Console-09) | No `ETag` yet | Phase 2 |
 | Browser tests against a running stack | The console is covered by unit tests and by the tests of the console interface | Next |

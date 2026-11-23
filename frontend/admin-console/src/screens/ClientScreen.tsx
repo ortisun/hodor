@@ -16,6 +16,7 @@ import { describe, lifetime, moment, named, type Messages } from "../messages";
 import { Confirm, Ladder } from "../parts/Confirm";
 import { Identifier } from "../parts/Identifier";
 import { asFailure, Failed, useLoaded, Waiting } from "../parts/Loaded";
+import { RoleAssignments } from "./RoleAssignments";
 import { ShownOnce } from "../parts/ShownOnce";
 import { ClientForm } from "./ClientForm";
 import { ProviderStatus } from "./ProvidersScreen";
@@ -397,6 +398,12 @@ export function ClientScreen({ id, client, me, text, go, path, say }: ScreenProp
         >
           <Text>{text.enableClientLead}</Text>
         </Confirm>
+      ) : null}
+
+      {me.permissions.includes("roles:read") ? (
+        <Card padding={5}>
+          <RoleAssignments kind="client" id={id} client={client} me={me} text={text} say={say} />
+        </Card>
       ) : null}
 
       {secret !== null ? (

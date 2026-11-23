@@ -17,7 +17,20 @@ import { useToast } from "@astryxdesign/core/Toast";
 import { TopNav, TopNavHeading } from "@astryxdesign/core/TopNav";
 import { VStack } from "@astryxdesign/core/VStack";
 import { useHotkeys } from "@astryxdesign/core/hooks";
-import { AppWindow, Clock, DoorOpen, FileText, Link2, LogOut, type LucideIcon, Moon, Search, Sun, Users } from "lucide-react";
+import {
+  AppWindow,
+  Clock,
+  DoorOpen,
+  FileText,
+  Link2,
+  LogOut,
+  type LucideIcon,
+  Moon,
+  Search,
+  ShieldCheck,
+  Sun,
+  Users,
+} from "lucide-react";
 import { type MouseEvent, type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import { accountPath, isIdentifier, pathOf, type Place, type Screen, signInPath } from "./address";
 import type { Client, Me, Permission } from "./client";
@@ -26,6 +39,7 @@ import { asFailure, Failed, type Loading, Waiting } from "./parts/Loaded";
 import { ApplicationScreen } from "./screens/ApplicationScreen";
 import { ApplicationsScreen } from "./screens/ApplicationsScreen";
 import { AuditScreen } from "./screens/AuditScreen";
+import { AuthorizationScreen } from "./screens/AuthorizationScreen";
 import { ClientScreen } from "./screens/ClientScreen";
 import { ProviderScreen } from "./screens/ProviderScreen";
 import { ProvidersScreen } from "./screens/ProvidersScreen";
@@ -74,6 +88,12 @@ const SECTIONS: { title: (text: Messages) => string; entries: Entry[] }[] = [
         label: (text) => text.applications,
         icon: AppWindow,
         needs: "applications:read",
+      },
+      {
+        screen: { name: "authorization" },
+        label: (text) => text.authorization,
+        icon: ShieldCheck,
+        needs: "roles:read",
       },
     ],
   },
@@ -342,6 +362,7 @@ function Frame({ place, client, text, mode, changeMode, go, leave, me }: AppProp
         {screen?.name === "client" && allowed("applications:read") ? (
           <ClientScreen key={screen.id} id={screen.id} {...props} />
         ) : null}
+        {screen?.name === "authorization" && allowed("roles:read") ? <AuthorizationScreen {...props} /> : null}
         {screen === null || (screen.name !== "home" && !allowed(needsOf(screen))) ? (
           <div className="console-page">
             <VStack gap={3} hAlign="start">
@@ -380,6 +401,8 @@ function needsOf(screen: Screen): Permission {
     case "application":
     case "client":
       return "applications:read";
+    case "authorization":
+      return "roles:read";
     default:
       return "users:read";
   }
