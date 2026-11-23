@@ -1,11 +1,24 @@
 import { expect, type Page } from "@playwright/test";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { PASSWORD, TENANT, at, en, expectAccessible, newAddress, register, signIn, test } from "./support";
+import { PASSWORD, en, expectAccessible, messageTo, newAddress, test } from "./support";
 
 /** The root of the repository, where the Compose file of the stack is. */
 const ROOT = fileURLToPath(new URL("../../../", import.meta.url));
+
+/**
+ * The tenant of these tests, made for them. Every sign-in and registration
+ * counts against the address the tests run from, with each tenant's own
+ * limits; a tenant of their own keeps them from spending the limits of the
+ * tenant the other tests share.
+ */
+const TENANT = `consent-${randomUUID().slice(0, 8)}`;
+
+/** The path of a page of the tenant of these tests. */
+function at(page: string): string {
+  return page === "" ? `/t/${TENANT}/account` : `/t/${TENANT}/account/${page}`;
+}
 
 /** Where the application of these tests wants the person back. Nothing answers there: the test reads the request. */
 const REDIRECT = "https://billing.example.test/callback";
@@ -38,6 +51,28 @@ function operator(...arguments_: string[]): string {
     },
   ).trim();
 }
+
+/** Registers a person in the tenant of these tests, and signs them in. */
+async function signedIn(page: Page): Promise<void> {
+  const address = newAddress();
+  await page.goto(at("register"));
+  await page.getByLabel(en.emailLabel, { exact: true }).fill(address);
+  await page.getByRole("button", { name: en.sendLink }).click();
+  await expect(page.getByRole("heading", { name: en.checkMailboxTitle })).toBeVisible();
+  await page.goto((await messageTo(address)).link);
+  await page.getByLabel(en.newPasswordLabel, { exact: true }).fill(PASSWORD);
+  await page.getByRole("button", { name: en.createAccount }).click();
+  await expect(page.getByText(en.noticeRegistered)).toBeVisible();
+  await page.getByLabel(en.identifierLabel, { exact: true }).fill(address);
+  await page.getByRole("button", { name: en.continue, exact: true }).click();
+  await page.getByLabel(en.passwordLabel, { exact: true }).fill(PASSWORD);
+  await page.getByRole("button", { name: en.signIn, exact: true }).click();
+  await expect(page.getByRole("heading", { name: en.accountTitle })).toBeVisible();
+}
+
+test.beforeAll(() => {
+  operator("tenant", "create", "--slug", TENANT, "--name", "Consent", "--open-registration");
+});
 
 /** A third-party application with a public client that may ask for `openid` and `email`. Answers the client. */
 function thirdPartyClient(): string {
@@ -104,10 +139,7 @@ async function sentBack(page: Page, action: () => Promise<unknown>): Promise<URL
 
 test("a person is asked once before a third-party application gets in", async ({ page }) => {
   const client = thirdPartyClient();
-  const address = newAddress();
-  await register(page, address);
-  await signIn(page, address, PASSWORD);
-  await expect(page.getByRole("heading", { name: en.accountTitle })).toBeVisible();
+  await signedIn(page);
 
   await askAsTheApplication(page, client);
   await expect(page).toHaveURL(new RegExp(`${at("consent")}$`));
@@ -140,10 +172,7 @@ test("a person is asked once before a third-party application gets in", async ({
 
 test("a person who denies sends the application away with nothing", async ({ page }) => {
   const client = thirdPartyClient();
-  const address = newAddress();
-  await register(page, address);
-  await signIn(page, address, PASSWORD);
-  await expect(page.getByRole("heading", { name: en.accountTitle })).toBeVisible();
+  await signedIn(page);
 
   await askAsTheApplication(page, client);
   const answer = await sentBack(page, () => page.getByRole("button", { name: en.consentDeny }).click());

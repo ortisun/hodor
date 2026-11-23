@@ -106,7 +106,10 @@ watched page and the steps a person repeats.
     platform authenticator, generates new codes, renames and removes the
     passkey, which takes the codes with it; and works the page with the
     keyboard alone.
-  - `consent.spec.ts` - an operator registers a third-party application
+  - `consent.spec.ts` - runs in a tenant of its own, made with
+    `hodor-cli tenant create`, so that its sign-ins and registrations spend
+    nothing of the limits per address of the tenant the other tests share.
+    An operator registers a third-party application
     and a public client with `hodor-cli application add` and `client add`
     (through `docker compose run … server`, as in `totp.spec.ts`); the
     application's site is answered by the test (`page.route`). A signed-in
