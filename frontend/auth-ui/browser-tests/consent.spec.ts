@@ -129,12 +129,20 @@ async function askAsTheApplication(page: Page, client: string): Promise<void> {
 /**
  * What the browser is sent back to the application with, after `action`.
  * The application's address does not exist: the request to it is read,
- * and the failed navigation that follows is no failure of the test.
+ * and the failed navigation that follows is no failure of the test. The
+ * browser's error page is waited for, so that it does not interrupt the
+ * test's next navigation.
  */
 async function sentBack(page: Page, action: () => Promise<unknown>): Promise<URLSearchParams> {
   const request = page.waitForRequest((sent) => sent.url().startsWith(REDIRECT));
+  const errorPage = page.waitForEvent(
+    "framenavigated",
+    (frame) => frame === page.mainFrame() && frame.url().startsWith("chrome-error:"),
+  );
   await action().catch(() => undefined);
-  return new URL((await request).url()).searchParams;
+  const sent = await request;
+  await errorPage;
+  return new URL(sent.url()).searchParams;
 }
 
 test("a person is asked once before a third-party application gets in", async ({ page }) => {
