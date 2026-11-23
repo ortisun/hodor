@@ -1,5 +1,5 @@
-//! The administration interface: users, sessions and the audit log of a
-//! tenant, for the people who run it.
+//! The administration interface: users, sessions, the audit log, identity
+//! providers and keys of a tenant, for the people who run it.
 //!
 //! The same routes are served twice. The administration interface, for
 //! programs, knows who is asking by an access token; the console
@@ -7,6 +7,7 @@
 //! handlers and the table of permissions are the same for both.
 //!
 //! Specified in `docs/api/admin-api.md` and `docs/api/console-interface.md`.
+//! Applications, clients and resource servers are in [`applications`].
 //! Every request is checked before
 //! anything else: the access token, whether its user may sign in, and
 //! whether the user holds a role with the permission the route needs. A
@@ -26,7 +27,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, put};
 use axum::{Extension, Json, Router, middleware};
 use hodor_audit::api::{AuditRecord, AuditService};
-use hodor_authorization::api::{AuthorizationService, Permission};
+use hodor_authentication::api::FactorService;
+use hodor_authorization::api::{AuthorizationService, DecisionLog, Permission};
 use hodor_credential::api::AccessTokenService;
 use hodor_federation::api::{
     ChangeProvider, CreateProvider, DirectorySettings, FederationService, IdentityProvider,
@@ -38,11 +40,19 @@ use hodor_kernel::{
     Actor, Caller, Clock, CorrelationId, Cursor, Digest, DomainError, Page, PageRequest, Secret,
     TenantContext, UserId,
 };
+use hodor_keys::api::{KeyAlgorithm, KeyService, KeyUse, KeyVersion, KeyVersionId, RotationPolicy};
+use hodor_oauth::api::{ApplicationService, ClientId, ConsentActor, ConsentService};
 use hodor_session::api::{Session, SessionId, SessionService};
+use hodor_tenant::api::{AssuranceLevel, AssuranceLevels, AssuranceRequirement, TenantService};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use time::format_description::well_known::Rfc3339;
+
+mod applications;
+mod authorization;
+mod decisions;
+mod factors;
 
 /// The OpenAPI document of the interface, as served at `/openapi.json`.
 pub const ADMIN_OPENAPI: &str = include_str!("../openapi/admin-v1.json");
@@ -57,6 +67,32 @@ pub const ADMIN_OPERATIONS: &[(&str, &str, Permission)] = &[
     ("GET", "/users/{user_id}", Permission::UsersRead),
     ("POST", "/users/{user_id}:suspend", Permission::UsersWrite),
     ("GET", "/users/{user_id}/sessions", Permission::SessionsRead),
+    ("GET", "/users/{user_id}/consents", Permission::UsersRead),
+    (
+        "DELETE",
+        "/users/{user_id}/consents/{client_id}",
+        Permission::UsersWrite,
+    ),
+    (
+        "GET",
+        "/users/{user_id}/factors",
+        Permission::CredentialsRead,
+    ),
+    (
+        "DELETE",
+        "/users/{user_id}/factors/authenticator-application",
+        Permission::CredentialsWrite,
+    ),
+    (
+        "DELETE",
+        "/users/{user_id}/factors/keys/{key_id}",
+        Permission::CredentialsWrite,
+    ),
+    (
+        "DELETE",
+        "/users/{user_id}/factors/recovery-codes",
+        Permission::CredentialsWrite,
+    ),
     (
         "DELETE",
         "/sessions/{session_id}",
@@ -98,6 +134,181 @@ pub const ADMIN_OPERATIONS: &[(&str, &str, Permission)] = &[
         "/identity-providers/{provider_id}:enable",
         Permission::IdentityProvidersWrite,
     ),
+    ("GET", "/keys/{key_set}", Permission::KeysRead),
+    ("POST", "/keys/{key_set}:rotate", Permission::KeysWrite),
+    (
+        "POST",
+        "/keys/{key_set}/versions/{version_id}:revoke",
+        Permission::KeysWrite,
+    ),
+    ("GET", "/applications", Permission::ApplicationsRead),
+    ("POST", "/applications", Permission::ApplicationsWrite),
+    (
+        "GET",
+        "/applications/{application_id}",
+        Permission::ApplicationsRead,
+    ),
+    (
+        "PATCH",
+        "/applications/{application_id}",
+        Permission::ApplicationsWrite,
+    ),
+    (
+        "POST",
+        "/applications/{application_id}:disable",
+        Permission::ApplicationsWrite,
+    ),
+    (
+        "POST",
+        "/applications/{application_id}:enable",
+        Permission::ApplicationsWrite,
+    ),
+    (
+        "GET",
+        "/applications/{application_id}/clients",
+        Permission::ApplicationsRead,
+    ),
+    (
+        "POST",
+        "/applications/{application_id}/clients",
+        Permission::ApplicationsWrite,
+    ),
+    ("GET", "/clients/{client_id}", Permission::ApplicationsRead),
+    (
+        "PATCH",
+        "/clients/{client_id}",
+        Permission::ApplicationsWrite,
+    ),
+    (
+        "POST",
+        "/clients/{client_id}:disable",
+        Permission::ApplicationsWrite,
+    ),
+    (
+        "POST",
+        "/clients/{client_id}:enable",
+        Permission::ApplicationsWrite,
+    ),
+    (
+        "POST",
+        "/clients/{client_id}/secrets",
+        Permission::ApplicationsWrite,
+    ),
+    (
+        "DELETE",
+        "/clients/{client_id}/secrets/{secret_id}",
+        Permission::ApplicationsWrite,
+    ),
+    (
+        "POST",
+        "/clients/{client_id}/keys",
+        Permission::ApplicationsWrite,
+    ),
+    (
+        "DELETE",
+        "/clients/{client_id}/keys/{key_id}",
+        Permission::ApplicationsWrite,
+    ),
+    ("GET", "/resource-servers", Permission::ApplicationsRead),
+    ("POST", "/resource-servers", Permission::ApplicationsWrite),
+    (
+        "GET",
+        "/resource-servers/{resource_server_id}",
+        Permission::ApplicationsRead,
+    ),
+    (
+        "PATCH",
+        "/resource-servers/{resource_server_id}",
+        Permission::ApplicationsWrite,
+    ),
+    ("GET", "/assurance-levels", Permission::AssuranceLevelsRead),
+    ("PUT", "/assurance-levels", Permission::AssuranceLevelsWrite),
+    ("GET", "/decision-log", Permission::DecisionsRead),
+    ("PUT", "/decision-log", Permission::DecisionLogWrite),
+    ("GET", "/decisions", Permission::DecisionsRead),
+    (
+        "GET",
+        "/resource-servers/{resource_server_id}/permissions",
+        Permission::RolesRead,
+    ),
+    (
+        "PUT",
+        "/resource-servers/{resource_server_id}/permissions/{permission}",
+        Permission::RolesWrite,
+    ),
+    (
+        "DELETE",
+        "/resource-servers/{resource_server_id}/permissions/{permission}",
+        Permission::RolesWrite,
+    ),
+    ("GET", "/roles", Permission::RolesRead),
+    (
+        "GET",
+        "/resource-servers/{resource_server_id}/roles/{role}",
+        Permission::RolesRead,
+    ),
+    (
+        "PUT",
+        "/resource-servers/{resource_server_id}/roles/{role}",
+        Permission::RolesWrite,
+    ),
+    (
+        "DELETE",
+        "/resource-servers/{resource_server_id}/roles/{role}",
+        Permission::RolesWrite,
+    ),
+    (
+        "GET",
+        "/users/{user_id}/role-assignments",
+        Permission::RolesRead,
+    ),
+    (
+        "GET",
+        "/clients/{client_id}/role-assignments",
+        Permission::RolesRead,
+    ),
+    ("POST", "/role-assignments", Permission::RolesWrite),
+    ("POST", "/role-assignments:revoke", Permission::RolesWrite),
+    ("GET", "/bindings", Permission::BindingsRead),
+    (
+        "GET",
+        "/resource-servers/{resource_server_id}/binding",
+        Permission::BindingsRead,
+    ),
+    (
+        "PUT",
+        "/resource-servers/{resource_server_id}/binding",
+        Permission::BindingsWrite,
+    ),
+    (
+        "DELETE",
+        "/resource-servers/{resource_server_id}/binding",
+        Permission::BindingsWrite,
+    ),
+    ("GET", "/policy-versions", Permission::PoliciesRead),
+    ("POST", "/policy-versions", Permission::PoliciesWrite),
+    ("GET", "/policy-versions/{number}", Permission::PoliciesRead),
+    (
+        "POST",
+        "/policy-versions/{number}:validate",
+        Permission::PoliciesWrite,
+    ),
+    (
+        "POST",
+        "/policy-versions/{number}:test",
+        Permission::PoliciesWrite,
+    ),
+    (
+        "POST",
+        "/policy-versions/{number}/simulations",
+        Permission::PoliciesWrite,
+    ),
+    (
+        "GET",
+        "/policy-simulations/{simulation_id}",
+        Permission::PoliciesRead,
+    ),
+    ("GET", "/policy-status", Permission::PoliciesRead),
 ];
 
 /// What the administration handlers need.
@@ -116,6 +327,28 @@ pub struct AdminState {
     /// The identity providers. `None` when this installation has no keys
     /// to keep their secrets with.
     pub federation: Option<FederationService>,
+    /// The tenants' keys. `None` when this installation has no keys to
+    /// wrap them with.
+    pub keys: Option<KeyService>,
+    /// How long a replaced signing key stays when it is rotated by hand.
+    pub key_rotation: RotationPolicy,
+    /// The applications, their clients and resource servers.
+    pub applications: ApplicationService,
+    /// The tenant, for its assurance levels.
+    pub tenants: TenantService,
+    /// The users' second factors, which an administrator sees and removes.
+    pub factors: FactorService,
+    /// The consents people gave applications.
+    pub consents: ConsentService,
+    /// The record of decisions and its settings.
+    pub decisions: DecisionLog,
+    /// The tenant's permissions, roles and who holds them.
+    pub roles: hodor_authorization::api::RoleService,
+    /// The bindings of resource servers to engines.
+    pub evaluation: hodor_authorization::api::EvaluationService,
+    /// The tenant's policy versions for Open Policy Agent. `None` when the
+    /// installation does not run it.
+    pub policies: Option<hodor_authorization_opa::api::PolicyService>,
     /// The address people reach this installation at, without a path.
     pub public_url: String,
 }
@@ -178,6 +411,11 @@ fn shared_routes() -> Router<Shared> {
         // is part of the last segment.
         .route("/users/{user}", get(get_user).post(user_action))
         .route("/users/{user}/sessions", get(list_user_sessions))
+        .route("/users/{user}/consents", get(list_user_consents))
+        .route(
+            "/users/{user}/consents/{client}",
+            delete(withdraw_user_consent),
+        )
         .route("/sessions/{session}", delete(revoke_session))
         .route("/audit-records", get(list_audit_records))
         .route(
@@ -195,6 +433,106 @@ fn shared_routes() -> Router<Shared> {
             "/identity-providers/{provider}/client-secret",
             put(change_provider_secret),
         )
+        // `POST /keys/{key_set}:rotate` arrives here as well, as part of
+        // the last segment; so does `:revoke` on a version.
+        .route(
+            "/keys/{key_set}",
+            get(list_key_versions).post(key_set_action),
+        )
+        .route(
+            "/keys/{key_set}/versions/{version}",
+            axum::routing::post(key_version_action),
+        )
+        .route(
+            "/assurance-levels",
+            get(read_assurance_levels).put(replace_assurance_levels),
+        )
+        .merge(applications::routes())
+        .merge(factors::routes())
+        .merge(decisions::routes())
+        .merge(authorization::routes())
+}
+
+/// One assurance level, as the interface writes it.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AssuranceLevelBody {
+    acr: String,
+    requirement: AssuranceRequirement,
+}
+
+/// The tenant's assurance levels, weakest first.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AssuranceLevelsBody {
+    levels: Vec<AssuranceLevelBody>,
+}
+
+impl From<&AssuranceLevels> for AssuranceLevelsBody {
+    fn from(levels: &AssuranceLevels) -> Self {
+        Self {
+            levels: levels
+                .levels()
+                .into_iter()
+                .map(|level| AssuranceLevelBody {
+                    acr: level.acr.clone(),
+                    requirement: level.requirement,
+                })
+                .collect(),
+        }
+    }
+}
+
+async fn read_assurance_levels(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+) -> Response {
+    respond(
+        async {
+            authorize(&state, &tenant, &headers, "GET", "/assurance-levels").await?;
+            let found = state.tenants.get(&tenant).await.map_err(failed)?;
+            let levels = &found.snapshot().settings.authentication.assurance_levels;
+            Ok(Json(AssuranceLevelsBody::from(levels)).into_response())
+        }
+        .await,
+    )
+}
+
+async fn replace_assurance_levels(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+    bytes: Bytes,
+) -> Response {
+    respond(
+        async {
+            let caller = authorize(&state, &tenant, &headers, "PUT", "/assurance-levels").await?;
+            let asked: AssuranceLevelsBody = body(&bytes)?;
+            let levels = AssuranceLevels::new(
+                asked
+                    .levels
+                    .into_iter()
+                    .map(|level| AssuranceLevel {
+                        acr: level.acr,
+                        requirement: level.requirement,
+                    })
+                    .collect(),
+            )
+            .map_err(failed)?;
+            let found = state.tenants.get(&tenant).await.map_err(failed)?;
+            let mut settings = found.snapshot().settings.clone();
+            settings.authentication.assurance_levels = levels;
+            let changed = state
+                .tenants
+                .change_settings(&tenant, settings, caller)
+                .await
+                .map_err(failed)?;
+            let levels = &changed.snapshot().settings.authentication.assurance_levels;
+            Ok(Json(AssuranceLevelsBody::from(levels)).into_response())
+        }
+        .await,
+    )
 }
 
 /// The routes of the administration interface, to be mounted under a
@@ -801,6 +1139,90 @@ async fn list_user_sessions(
     )
 }
 
+#[derive(Debug, Serialize)]
+struct ConsentBody {
+    client_id: String,
+    application: String,
+    scopes: Vec<String>,
+    given_at: String,
+    expires_at: String,
+}
+
+async fn list_user_consents(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+    parameters: RawPathParams,
+) -> Response {
+    respond(
+        async {
+            authorize(
+                &state,
+                &tenant,
+                &headers,
+                "GET",
+                "/users/{user_id}/consents",
+            )
+            .await?;
+            let id: UserId = parameter(&parameters, "user").ok_or_else(user_not_found)?;
+            // A user that does not exist has no consents to list.
+            state.identity.get(&tenant, id).await.map_err(failed)?;
+            let consents = state.consents.list(&tenant, id).await.map_err(failed)?;
+            let body = PageBody {
+                items: consents
+                    .into_iter()
+                    .map(|listed| ConsentBody {
+                        client_id: listed.consent.client_id.to_string(),
+                        application: listed.application,
+                        scopes: listed.consent.scopes,
+                        given_at: written(listed.consent.given_at),
+                        expires_at: written(listed.consent.expires_at),
+                    })
+                    .collect(),
+                next_cursor: None,
+            };
+            Ok(Json(body).into_response())
+        }
+        .await,
+    )
+}
+
+async fn withdraw_user_consent(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+    parameters: RawPathParams,
+) -> Response {
+    respond(
+        async {
+            let caller = authorize(
+                &state,
+                &tenant,
+                &headers,
+                "DELETE",
+                "/users/{user_id}/consents/{client_id}",
+            )
+            .await?;
+            let id: UserId = parameter(&parameters, "user").ok_or_else(user_not_found)?;
+            state.identity.get(&tenant, id).await.map_err(failed)?;
+            let not_found = || {
+                failed(DomainError::not_found(
+                    "oauth.consent_not_found",
+                    "there is no such consent",
+                ))
+            };
+            let client: ClientId = parameter(&parameters, "client").ok_or_else(not_found)?;
+            state
+                .consents
+                .withdraw(&tenant, id, client, ConsentActor::Administrator, caller)
+                .await
+                .map_err(failed)?;
+            Ok(StatusCode::NO_CONTENT.into_response())
+        }
+        .await,
+    )
+}
+
 async fn revoke_session(
     State(state): State<Shared>,
     Extension(tenant): Extension<TenantContext>,
@@ -1281,6 +1703,211 @@ async fn provider_action(
                 .await
                 .map_err(failed)?;
             Ok(Json(provider_body(&provider, &state.public_url, &slug)).into_response())
+        }
+        .await,
+    )
+}
+
+fn keys(state: &AdminState) -> Result<&KeyService, Box<Response>> {
+    state.keys.as_ref().ok_or_else(|| {
+        problem(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "keys.not_configured",
+            "this installation is not set up to keep keys",
+        )
+    })
+}
+
+fn key_set_not_found() -> Box<Response> {
+    problem(
+        StatusCode::NOT_FOUND,
+        "keys.key_set_not_found",
+        "there is no such key set: it is sig or data",
+    )
+}
+
+fn key_version_not_found() -> Box<Response> {
+    problem(
+        StatusCode::NOT_FOUND,
+        "keys.version_not_found",
+        "the key version does not exist",
+    )
+}
+
+/// The key set named by the path: `sig` or `data`.
+fn key_use(name: &str) -> Result<KeyUse, Box<Response>> {
+    match name {
+        "sig" => Ok(KeyUse::Signing),
+        "data" => Ok(KeyUse::Data),
+        _ => Err(key_set_not_found()),
+    }
+}
+
+/// A key version, without anything of its key: the published key set is
+/// where public keys are read.
+#[derive(Debug, Serialize)]
+struct KeyVersionBody {
+    id: String,
+    key_use: &'static str,
+    algorithm: &'static str,
+    state: &'static str,
+    provider: String,
+    created_at: String,
+    activated_at: Option<String>,
+    retiring_at: Option<String>,
+    retire_after: Option<String>,
+    retired_at: Option<String>,
+    revoked_at: Option<String>,
+    revocation_reason: Option<String>,
+}
+
+impl From<&KeyVersion> for KeyVersionBody {
+    fn from(version: &KeyVersion) -> Self {
+        let state = version.snapshot();
+        Self {
+            id: state.id.to_string(),
+            key_use: version.key_use().as_str(),
+            algorithm: state.algorithm.as_str(),
+            state: state.state.as_str(),
+            provider: state.provider.clone(),
+            created_at: written(state.created_at),
+            activated_at: state.activated_at.map(written),
+            retiring_at: state.retiring_at.map(written),
+            retire_after: state.retire_after.map(written),
+            retired_at: state.retired_at.map(written),
+            revoked_at: state.revoked_at.map(written),
+            revocation_reason: state.revocation_reason.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct KeyVersionsBody {
+    items: Vec<KeyVersionBody>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RotateBody {
+    algorithm: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RevokeBody {
+    reason: String,
+}
+
+async fn list_key_versions(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+    parameters: RawPathParams,
+) -> Response {
+    respond(
+        async {
+            authorize(&state, &tenant, &headers, "GET", "/keys/{key_set}").await?;
+            let keys = keys(&state)?;
+            let name: String = parameter(&parameters, "key_set").ok_or_else(key_set_not_found)?;
+            let key_use = key_use(&name)?;
+            let set = keys.key_set(&tenant, key_use).await.map_err(failed)?;
+            let items = set.versions().iter().map(KeyVersionBody::from).collect();
+            Ok(Json(KeyVersionsBody { items }).into_response())
+        }
+        .await,
+    )
+}
+
+async fn key_set_action(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+    parameters: RawPathParams,
+    bytes: Bytes,
+) -> Response {
+    respond(
+        async {
+            // Checked before the action is read, so that a caller without a
+            // token learns nothing about paths.
+            let caller =
+                authorize(&state, &tenant, &headers, "POST", "/keys/{key_set}:rotate").await?;
+            let keys = keys(&state)?;
+            let segment: String =
+                parameter(&parameters, "key_set").ok_or_else(key_set_not_found)?;
+            let Some(name) = segment.strip_suffix(":rotate") else {
+                return Err(problem(
+                    StatusCode::NOT_FOUND,
+                    "route.not_found",
+                    "there is no such action on a key set",
+                ));
+            };
+            if key_use(name)? != KeyUse::Signing {
+                return Err(problem(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "keys.rotation_not_offered",
+                    "only the signing key set is rotated by hand",
+                ));
+            }
+            let asked: RotateBody = if bytes.is_empty() {
+                RotateBody::default()
+            } else {
+                body(&bytes)?
+            };
+            let algorithm = match asked.algorithm.as_deref() {
+                None => KeyAlgorithm::DEFAULT_SIGNING,
+                Some(name) => KeyAlgorithm::from_name(name).ok_or_else(|| {
+                    problem(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "keys.algorithm_unsuitable",
+                        "the algorithm does not sign: ES256, RS256 or PS256",
+                    )
+                })?,
+            };
+            let version = keys
+                .rotate_now(&tenant, algorithm, &state.key_rotation, caller)
+                .await
+                .map_err(failed)?;
+            Ok(Json(KeyVersionBody::from(&version)).into_response())
+        }
+        .await,
+    )
+}
+
+async fn key_version_action(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+    parameters: RawPathParams,
+    bytes: Bytes,
+) -> Response {
+    respond(
+        async {
+            let operation = "/keys/{key_set}/versions/{version_id}:revoke";
+            let caller = authorize(&state, &tenant, &headers, "POST", operation).await?;
+            let keys = keys(&state)?;
+            let name: String = parameter(&parameters, "key_set").ok_or_else(key_set_not_found)?;
+            let key_use = key_use(&name)?;
+            let segment: String =
+                parameter(&parameters, "version").ok_or_else(key_version_not_found)?;
+            let Some(id) = segment.strip_suffix(":revoke") else {
+                return Err(problem(
+                    StatusCode::NOT_FOUND,
+                    "route.not_found",
+                    "there is no such action on a key version",
+                ));
+            };
+            let id: KeyVersionId = id.parse().map_err(|_| key_version_not_found())?;
+            let asked: RevokeBody = body(&bytes)?;
+            // A version of another key set is not found in this one.
+            let set = keys.key_set(&tenant, key_use).await.map_err(failed)?;
+            if set.version(id).is_none() {
+                return Err(key_version_not_found());
+            }
+            let version = keys
+                .revoke(&tenant, id, &asked.reason, caller)
+                .await
+                .map_err(failed)?;
+            Ok(Json(KeyVersionBody::from(&version)).into_response())
         }
         .await,
     )

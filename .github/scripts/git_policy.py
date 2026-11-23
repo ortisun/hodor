@@ -1144,10 +1144,11 @@ def hook_pre_push(_remote: str, stdin: IO[str], out: IO[str]) -> int:
         if problem:
             problems.append(problem)
             continue
+        # Only what no remote has yet: after a rebase, the range from the old remote head also holds the commits
+        # of the base branch that the rebase brought in, which were checked when they were merged.
+        revisions = [local_sha, "--not", "--remotes"]
         if not ZERO_SHA.match(remote_sha) and git(checkout, "cat-file", "-e", remote_sha + "^{commit}")[0] == 0:
-            revisions = ["%s..%s" % (remote_sha, local_sha)]
-        else:
-            revisions = [local_sha, "--not", "--remotes"]  # what no remote has yet (the remote may be a URL)
+            revisions.append(remote_sha)
         problems += report_commits(commits_in(checkout, revisions), settings, allow_autosquash=True,
                                    char=comment_char(checkout))
     if problems:

@@ -49,9 +49,15 @@ A stack on one machine has an identity provider at a private address, over plain
 - It must be empty anywhere real. It is the one setting that turns the protection off for a destination.
 - The same list is what lets an identity provider have a plain HTTP issuer and plain HTTP endpoints: only when their host and port are on it. Everywhere else an issuer that is not HTTPS is refused when the provider is added, whatever the list says about other hosts.
 
+## A time limit per request
+
+A caller may give one request a shorter time limit than the client's, such as the 200 milliseconds an authorization decision may take. The shorter of the two applies. A request that runs out of time fails with `http.timed_out`, so that a caller can tell a slow answer from no connection.
+
 ## What does not go through this client
 
 Connections to [LDAP directories](../architecture/contexts/federation.md#which-directories-may-be-used). Directories live on private networks, so the rule about public addresses cannot hold for them; they have a rule of their own, a list of allowed hosts kept by whoever operates the installation.
+
+Requests to [Open Policy Agent](../architecture/contexts/authorization.md#open-policy-agent-as-an-engine), which also lives on a private network, often on the same machine. They go through a second client of the same crate, `ServiceHttpClient`, which reverses the rule: instead of every public address, it calls **only the origins the operator configured**, exactly, and refuses any other address whatever it resolves to. No tenant and no caller can add to that list; the engine builds the path itself. Every other rule above stays: no name and password in the address, no redirects, no proxy, a limit on time and on the size of the answer. Plain HTTP is accepted for these origins, for a sidecar on the same machine.
 
 ## Errors
 
@@ -59,7 +65,9 @@ Connections to [LDAP directories](../architecture/contexts/federation.md#which-d
 |---|---|
 | `http.url_invalid` | The address cannot be read, is not HTTPS, or carries a name and password |
 | `http.destination_forbidden` | The address is not public |
-| `http.unreachable` | No connection, a failed TLS handshake, or the time limit |
+| `http.destination_not_configured` | `ServiceHttpClient` only: the origin is not one the operator configured |
+| `http.unreachable` | No connection, or a failed TLS handshake |
+| `http.timed_out` | The time limit, of the client or of the request, ran out |
 | `http.response_too_large` | The answer passed the size limit |
 
 None of them repeats the address in its message: the message may reach a person who should not learn what an internal name resolves to. The log has it.

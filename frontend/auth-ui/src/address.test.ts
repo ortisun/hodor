@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { noticeOf, pathOf, placeOf, providerAnswerOf, tokenOf } from "./address";
+import {
+  continuationOf,
+  loginHintOf,
+  noticeOf,
+  pathOf,
+  placeOf,
+  providerAnswerOf,
+  signInAgainPath,
+  tokenOf,
+  uiLocalesOf,
+} from "./address";
 
 describe("placeOf", () => {
   it("reads the tenant and the page from the path", () => {
@@ -12,7 +22,9 @@ describe("placeOf", () => {
 
   it("takes /account, with or without a final slash, as the account page", () => {
     expect(placeOf("/t/acme/account")).toEqual({ tenant: "acme", page: "account" });
+    expect(placeOf("/t/acme/account/consent")).toEqual({ tenant: "acme", page: "consent" });
     expect(placeOf("/t/acme/account/")).toEqual({ tenant: "acme", page: "account" });
+    expect(placeOf("/t/acme/account/sign-out")).toEqual({ tenant: "acme", page: "sign-out" });
   });
 
   it("knows the tenant but no page for a name it does not have", () => {
@@ -95,5 +107,31 @@ describe("the page a provider sends people back to", () => {
       receipt: "ghi",
     });
     expect(providerAnswerOf("?binding=other&state=def").binding).toBeNull();
+  });
+});
+
+describe("what an application asked of the sign-in", () => {
+  it("reads the login hint, and nothing for an empty or long one", () => {
+    expect(loginHintOf("?continue=authorization&login_hint=ana%40example.com")).toBe("ana@example.com");
+    expect(loginHintOf("?continue=authorization")).toBeNull();
+    expect(loginHintOf("?login_hint=%20")).toBeNull();
+    expect(loginHintOf(`?login_hint=${"a".repeat(256)}`)).toBeNull();
+  });
+
+  it("reads the languages in the order they were asked for", () => {
+    expect(uiLocalesOf("?ui_locales=pt-BR%20en")).toEqual(["pt-BR", "en"]);
+    expect(uiLocalesOf("?ui_locales=pt-BR+en")).toEqual(["pt-BR", "en"]);
+    expect(uiLocalesOf("?continue=authorization")).toEqual([]);
+  });
+});
+
+describe("signing in again", () => {
+  it("knows the security page and what a sign-in continues", () => {
+    expect(placeOf("/t/acme/account/security")).toEqual({ tenant: "acme", page: "security" });
+    expect(continuationOf("?continue=authorization")).toBe("authorization");
+    expect(continuationOf("?continue=security")).toBe("security");
+    expect(continuationOf("?continue=https://elsewhere.example")).toBeNull();
+    expect(continuationOf("")).toBeNull();
+    expect(signInAgainPath("acme")).toBe("/t/acme/account/sign-in?continue=security");
   });
 });

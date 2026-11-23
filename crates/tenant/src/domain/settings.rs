@@ -166,6 +166,186 @@ pub enum RegistrationPolicy {
     Open,
 }
 
+/// Whether a sign-in to the tenant needs a second factor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SecondFactorPolicy {
+    /// One factor is enough, unless the flow asks for more.
+    #[default]
+    NotRequired,
+    /// No sign-in completes with one factor.
+    Required,
+}
+
+/// How strongly a person proved who they are, as an assurance level of a
+/// tenant requires it. Ordered: a sign-in that reaches one reaches every
+/// requirement before it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssuranceRequirement {
+    /// One factor.
+    SingleFactor,
+    /// Two kinds of factor.
+    MultiFactor,
+    /// Two kinds of factor, one of them a key held by the person that
+    /// answered a challenge for this tenant's address.
+    PhishingResistant,
+}
+
+impl AssuranceRequirement {
+    /// Every requirement, weakest first.
+    pub const ALL: [Self; 3] = [
+        Self::SingleFactor,
+        Self::MultiFactor,
+        Self::PhishingResistant,
+    ];
+
+    /// The name used in settings, on the command line and in the
+    /// administration interface.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SingleFactor => "single_factor",
+            Self::MultiFactor => "multi_factor",
+            Self::PhishingResistant => "phishing_resistant",
+        }
+    }
+
+    /// The requirement a name stands for, if any.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|requirement| requirement.as_str() == name)
+    }
+}
+
+/// The `acr` of a tenant's level for a single-factor sign-in, until the
+/// tenant renames it.
+pub const ACR_SINGLE_FACTOR: &str = "urn:hodor:acr:single-factor";
+/// The `acr` of a tenant's level for a multi-factor sign-in, until the
+/// tenant renames it.
+pub const ACR_MULTI_FACTOR: &str = "urn:hodor:acr:mfa";
+
+/// One assurance level of a tenant: the `acr` value that names it, and
+/// what a sign-in must reach to be at it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssuranceLevel {
+    /// The name applications ask for in `acr_values` and tokens carry in
+    /// `acr`.
+    pub acr: String,
+    /// What a sign-in must reach.
+    pub requirement: AssuranceRequirement,
+}
+
+/// The assurance levels of a tenant. See
+/// `docs/architecture/contexts/tenant.md`, "Assurance levels".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct AssuranceLevels(Vec<AssuranceLevel>);
+
+impl Default for AssuranceLevels {
+    fn default() -> Self {
+        Self(vec![
+            AssuranceLevel {
+                acr: ACR_SINGLE_FACTOR.to_owned(),
+                requirement: AssuranceRequirement::SingleFactor,
+            },
+            AssuranceLevel {
+                acr: ACR_MULTI_FACTOR.to_owned(),
+                requirement: AssuranceRequirement::MultiFactor,
+            },
+        ])
+    }
+}
+
+impl AssuranceLevels {
+    /// The most levels a tenant has: one per requirement.
+    pub const MAX: usize = 3;
+    /// The longest name of a level.
+    pub const MAX_NAME: usize = 255;
+
+    /// The levels, weakest first.
+    ///
+    /// # Errors
+    ///
+    /// Returns `tenant.settings_invalid` when they break a rule of the
+    /// specification.
+    pub fn new(mut levels: Vec<AssuranceLevel>) -> Result<Self, DomainError> {
+        levels.sort_by_key(|level| level.requirement);
+        let levels = Self(levels);
+        levels.validate()?;
+        Ok(levels)
+    }
+
+    /// The levels, weakest first.
+    #[must_use]
+    pub fn levels(&self) -> Vec<&AssuranceLevel> {
+        let mut levels: Vec<&AssuranceLevel> = self.0.iter().collect();
+        levels.sort_by_key(|level| level.requirement);
+        levels
+    }
+
+    /// What a request's `acr_values` asks for: the weakest of the levels
+    /// of this tenant it names. `None` when it names none of them.
+    #[must_use]
+    pub fn asked(&self, acr_values: &str) -> Option<AssuranceRequirement> {
+        acr_values
+            .split(' ')
+            .filter_map(|name| self.0.iter().find(|level| level.acr == name))
+            .map(|level| level.requirement)
+            .min()
+    }
+
+    /// The name of the strongest level that a sign-in reaching `reached`
+    /// is at. `None` when it reaches no level of this tenant.
+    #[must_use]
+    pub fn reached(&self, reached: AssuranceRequirement) -> Option<&str> {
+        self.0
+            .iter()
+            .filter(|level| level.requirement <= reached)
+            .max_by_key(|level| level.requirement)
+            .map(|level| level.acr.as_str())
+    }
+
+    fn validate(&self) -> Result<(), DomainError> {
+        if self.0.is_empty() || self.0.len() > Self::MAX {
+            return Err(invalid("a tenant has one to three assurance levels"));
+        }
+        for (index, level) in self.0.iter().enumerate() {
+            let named = !level.acr.is_empty()
+                && level.acr.len() <= Self::MAX_NAME
+                && level.acr.bytes().all(|b| (0x21..=0x7e).contains(&b));
+            if !named {
+                return Err(invalid(
+                    "the name of an assurance level is 1 to 255 characters of printable ASCII without spaces",
+                ));
+            }
+            let repeated = self.0[..index].iter().any(|earlier| {
+                earlier.acr == level.acr || earlier.requirement == level.requirement
+            });
+            if repeated {
+                return Err(invalid(
+                    "no two assurance levels have the same name or the same requirement",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// How people must prove who they are to sign in.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct AuthenticationPolicy {
+    /// Whether a second factor is required.
+    #[serde(default)]
+    pub second_factor: SecondFactorPolicy,
+    /// The levels applications ask for and tokens name. Settings stored
+    /// before they existed read as the default.
+    #[serde(default)]
+    pub assurance_levels: AssuranceLevels,
+}
+
 /// All the policies of one tenant.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct TenantSettings {
@@ -177,6 +357,10 @@ pub struct TenantSettings {
     pub lockout: LockoutPolicy,
     /// Who may register.
     pub registration: RegistrationPolicy,
+    /// How people must prove who they are. Settings stored before this
+    /// policy existed read as the default.
+    #[serde(default)]
+    pub authentication: AuthenticationPolicy,
 }
 
 impl TenantSettings {
@@ -188,7 +372,8 @@ impl TenantSettings {
     pub fn validate(&self) -> Result<(), DomainError> {
         self.password.validate()?;
         self.session.validate()?;
-        self.lockout.validate()
+        self.lockout.validate()?;
+        self.authentication.assurance_levels.validate()
     }
 }
 
@@ -210,7 +395,31 @@ mod tests {
         assert_eq!(settings.lockout.first_lockout_seconds, MINUTE);
         assert_eq!(settings.lockout.longest_lockout_seconds, HOUR);
         assert_eq!(settings.registration, RegistrationPolicy::Closed);
+        assert_eq!(
+            settings.authentication.second_factor,
+            SecondFactorPolicy::NotRequired
+        );
         settings.validate().expect("defaults are valid");
+    }
+
+    #[test]
+    fn settings_stored_before_the_authentication_policy_read_as_the_default() {
+        let mut stored = serde_json::to_value(TenantSettings::default()).expect("serializes");
+        stored
+            .as_object_mut()
+            .expect("an object")
+            .remove("authentication");
+        let read: TenantSettings = serde_json::from_value(stored).expect("still reads");
+        assert_eq!(read, TenantSettings::default());
+    }
+
+    #[test]
+    fn a_required_second_factor_is_stored_by_name() {
+        let mut settings = TenantSettings::default();
+        settings.authentication.second_factor = SecondFactorPolicy::Required;
+        let stored = serde_json::to_value(&settings).expect("serializes");
+        assert_eq!(stored["authentication"]["second_factor"], "required");
+        settings.validate().expect("valid");
     }
 
     fn rejected(change: impl FnOnce(&mut TenantSettings)) -> bool {
@@ -257,6 +466,136 @@ mod tests {
             |s| s.lockout.first_lockout_seconds = s.lockout.longest_lockout_seconds + 1
         ));
         assert!(rejected(|s| s.lockout.longest_lockout_seconds = DAY + 1));
+    }
+
+    fn level(acr: &str, requirement: AssuranceRequirement) -> AssuranceLevel {
+        AssuranceLevel {
+            acr: acr.to_owned(),
+            requirement,
+        }
+    }
+
+    #[test]
+    fn the_default_levels_are_the_two_of_the_specification() {
+        let levels = AssuranceLevels::default();
+        let names: Vec<&str> = levels.levels().iter().map(|l| l.acr.as_str()).collect();
+        assert_eq!(names, [ACR_SINGLE_FACTOR, ACR_MULTI_FACTOR]);
+        let stored = serde_json::to_value(TenantSettings::default()).expect("serializes");
+        assert_eq!(
+            stored["authentication"]["assurance_levels"][1]["requirement"],
+            "multi_factor"
+        );
+    }
+
+    #[test]
+    fn settings_stored_before_the_levels_read_the_default_levels() {
+        let mut stored = serde_json::to_value(TenantSettings::default()).expect("serializes");
+        stored["authentication"]
+            .as_object_mut()
+            .expect("an object")
+            .remove("assurance_levels");
+        let read: TenantSettings = serde_json::from_value(stored).expect("still reads");
+        assert_eq!(read, TenantSettings::default());
+    }
+
+    #[test]
+    fn levels_are_kept_weakest_first_whatever_order_they_come_in() {
+        let levels = AssuranceLevels::new(vec![
+            level("strong", AssuranceRequirement::PhishingResistant),
+            level("weak", AssuranceRequirement::SingleFactor),
+        ])
+        .expect("valid");
+        let names: Vec<&str> = levels.levels().iter().map(|l| l.acr.as_str()).collect();
+        assert_eq!(names, ["weak", "strong"]);
+    }
+
+    #[test]
+    fn the_rules_of_the_levels_are_enforced() {
+        let refused = |levels: Vec<AssuranceLevel>| {
+            AssuranceLevels::new(levels).is_err_and(|e| e.code() == "tenant.settings_invalid")
+        };
+        assert!(refused(Vec::new()));
+        assert!(refused(vec![
+            level("a", AssuranceRequirement::SingleFactor),
+            level("b", AssuranceRequirement::MultiFactor),
+            level("c", AssuranceRequirement::PhishingResistant),
+            level("d", AssuranceRequirement::PhishingResistant),
+        ]));
+        assert!(refused(vec![level("", AssuranceRequirement::SingleFactor)]));
+        assert!(refused(vec![level(
+            "with space",
+            AssuranceRequirement::SingleFactor
+        )]));
+        assert!(refused(vec![level(
+            "caf\u{e9}",
+            AssuranceRequirement::SingleFactor
+        )]));
+        assert!(refused(vec![level(
+            &"x".repeat(256),
+            AssuranceRequirement::SingleFactor
+        )]));
+        assert!(refused(vec![
+            level("same", AssuranceRequirement::SingleFactor),
+            level("same", AssuranceRequirement::MultiFactor),
+        ]));
+        assert!(refused(vec![
+            level("one", AssuranceRequirement::MultiFactor),
+            level("two", AssuranceRequirement::MultiFactor),
+        ]));
+        assert!(!refused(vec![level(
+            &"x".repeat(255),
+            AssuranceRequirement::MultiFactor
+        )]));
+        assert!(rejected(|s| {
+            s.authentication.assurance_levels = AssuranceLevels(Vec::new());
+        }));
+    }
+
+    #[test]
+    fn a_request_asks_for_the_weakest_level_of_this_tenant_it_names() {
+        let levels = AssuranceLevels::new(vec![
+            level("one", AssuranceRequirement::SingleFactor),
+            level("mfa", AssuranceRequirement::MultiFactor),
+            level("strong", AssuranceRequirement::PhishingResistant),
+        ])
+        .expect("valid");
+        assert_eq!(
+            levels.asked("strong"),
+            Some(AssuranceRequirement::PhishingResistant)
+        );
+        assert_eq!(
+            levels.asked("strong mfa"),
+            Some(AssuranceRequirement::MultiFactor)
+        );
+        assert_eq!(
+            levels.asked("unknown strong"),
+            Some(AssuranceRequirement::PhishingResistant)
+        );
+        assert_eq!(levels.asked("unknown other"), None);
+        assert_eq!(levels.asked(""), None);
+    }
+
+    #[test]
+    fn a_sign_in_is_at_the_strongest_level_it_reaches() {
+        let levels = AssuranceLevels::new(vec![
+            level("mfa", AssuranceRequirement::MultiFactor),
+            level("strong", AssuranceRequirement::PhishingResistant),
+        ])
+        .expect("valid");
+        assert_eq!(levels.reached(AssuranceRequirement::SingleFactor), None);
+        assert_eq!(
+            levels.reached(AssuranceRequirement::MultiFactor),
+            Some("mfa")
+        );
+        assert_eq!(
+            levels.reached(AssuranceRequirement::PhishingResistant),
+            Some("strong")
+        );
+        let defaults = AssuranceLevels::default();
+        assert_eq!(
+            defaults.reached(AssuranceRequirement::PhishingResistant),
+            Some(ACR_MULTI_FACTOR)
+        );
     }
 
     #[test]

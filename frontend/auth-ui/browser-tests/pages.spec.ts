@@ -160,6 +160,9 @@ test("a person signs in and out with the keyboard alone", async ({ page }) => {
   await expect(identifier).toBeFocused();
   await page.keyboard.press("Tab");
   await expect(page.getByRole("button", { name: en.continue, exact: true })).toBeFocused();
+  // Chromium can use passkeys, so the page offers one.
+  await page.keyboard.press("Tab");
+  await expect(page.getByRole("button", { name: en.signInWithPasskey })).toBeFocused();
   // Then every way to sign in that the tenant offers, in the order shown.
   const offered = page.getByRole("button", { name: /^Continue with / });
   const ways = await offered.count();
@@ -172,7 +175,7 @@ test("a person signs in and out with the keyboard alone", async ({ page }) => {
   await expect(page.getByRole("link", { name: en.forgotPassword })).toBeFocused();
   await page.keyboard.press("Tab");
   await expect(page.getByRole("link", { name: en.register })).toBeFocused();
-  for (let step = 0; step < ways + 3; step += 1) {
+  for (let step = 0; step < ways + 4; step += 1) {
     await page.keyboard.press("Shift+Tab");
   }
   await expect(identifier).toBeFocused();
@@ -195,6 +198,8 @@ test("a person signs in and out with the keyboard alone", async ({ page }) => {
   await page.keyboard.press("Enter");
 
   await expect(page.getByRole("heading", { name: en.accountTitle })).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(page.getByRole("link", { name: en.securityLink })).toBeFocused();
   await page.keyboard.press("Tab");
   await expect(page.getByRole("button", { name: en.signOut })).toBeFocused();
   await page.keyboard.press("Enter");

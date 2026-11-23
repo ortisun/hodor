@@ -21,23 +21,34 @@ the set of re-exports in `lib.rs`.
 | --- | --- | --- |
 | `public_router(resolver, tenant_routes, site_routes, limits)` | `server.rs` | Builds the router for the public listener. |
 | `serve(listener, router, shutdown)` | `server.rs` | Serves with `ConnectInfo<SocketAddr>` until `shutdown` resolves, then stops accepting and waits for in-flight requests (`with_graceful_shutdown`). |
-| `Limits` | `server.rs` | `max_body_bytes` (default 64 KiB), `max_saml_response_bytes` (default `2 * hodor_federation::api::MAX_SAML_POSTED_BYTES`), `request_timeout` (default 30 seconds). |
+| `Limits` | `server.rs` | `max_body_bytes` (default 64 KiB), `max_saml_response_bytes` (default `2 * hodor_federation::api::MAX_SAML_POSTED_BYTES`), `max_policy_agent_report_bytes` (default 1 MiB), `request_timeout` (default 30 seconds). |
 | `ops_router(health)`, `Health`, `ReadinessCheck` | `health.rs` | Operations listener. `Health::new(checks)`, `begin_draining`, `is_draining`. `ReadinessCheck` has `name()` and `async check() -> Result<(), String>`. |
 | `TenantResolver`, `ResolvedTenant`, `TenantSlug`, `TenantStatus` | `tenant.rs` | `TenantResolver::resolve(slug) -> Result<Option<ResolvedTenant>, DomainError>`. `ResolvedTenant` holds a `TenantContext` and a `TenantStatus` (`Active` or `Suspended`). `TenantSlug(pub String)` is the slug as it appears in the path. |
 | `Problem` | `problem.rs` | Error response body, `application/problem+json`. `Problem::new(status, code, detail)`, `status()`, `impl From<DomainError>`, `impl IntoResponse`. |
 | `ClientAddress(pub Option<IpAddr>)` | `request.rs` | The address of the connection, inserted as a request extension. |
 | `interaction_routes(state)`, `InteractionState` | `interaction.rs` | The interaction interface: browser sign-in, sessions, registration and password recovery. |
+| `authorization_routes(state)`, `AuthorizationState` | `authorize.rs` | The OAuth authorization endpoint: checks a request, issues a code to a signed-in browser whose methods that count (`max_age`) reach the tenant level `acr_values` asks for, starts a step-up of the session when they do not (`AuthenticationService::start_step_up`, giving the browser the sign-in cookie; `unmet_authentication_requirements` when it cannot be reached), or keeps the request while the person signs in, sending them to `/account/sign-in?continue=authorization` with the request's `login_hint` and `ui_locales`. The code carries the `acr` of the tenant's levels the counted methods reach. `AuthorizationState { authorization: AuthorizationCodeService, sessions, authentication: AuthenticationService, tenants: TenantService, public_url }`. |
+| `consent_routes(state)`, `ConsentState` | `consent.rs` | The consent routes of the interaction interface, merged with `interaction_routes` under `/interaction`, behind the origin check: `GET` and `POST /consent` (what the waiting request asks for, the answer; `404 oauth.consent_request_not_found` for any request that is not this browser's, this person's and this session's, or was answered), `GET /consents` and `DELETE /consents/{client_id}` (`404 oauth.consent_not_found`). The two that change something need the session's CSRF token. `ConsentState { consents, sessions, digest }`. |
+| `token_routes(state)`, `TokenState` | `token.rs` | The OAuth token, revocation and introspection endpoints (`/token`, `/revoke`, `/introspect`): each reads the form and the `Basic` credentials, and answers what `TokenService` decides: tokens in the JSON of RFC 6749, an empty `200` for every revocation by a client that proved who it is (RFC 7009), and the JSON of RFC 7662. Every answer carries `no-store`. `TokenState { tokens: TokenService, public_url }`. |
+| `userinfo_routes(state)`, `UserInfoState` | `openid.rs` | UserInfo at `GET` and `POST /oauth2/userinfo`, mounted under a tenant: reads `Authorization: Bearer` only and answers what `UserInfoService` decides, with `Cache-Control: no-store`; a refusal is `401` with `WWW-Authenticate: Bearer` (with `error="invalid_token"` when a token was sent) or `403` with `error="insufficient_scope"`. `UserInfoState { userinfo, public_url }`. |
+| `logout_routes(state)`, `LogoutState` | `logout.rs` | The end-session endpoint at `GET` and `POST /oauth2/logout` and `GET /oauth2/logout/finish`, mounted under a tenant. A refused request is the page of `error_page` (status `400`), never a redirect. A `GET` whose hint names the browser's session revokes it (`relying_party_logout`) and forgets the cookie; otherwise, and always for a form, the checked return address is kept in `__Secure-hodor_logout` (`SameSite=Strict`, 600 seconds) and the browser goes to `/account/sign-out`. The finish sends a browser still signed in to `/account`, else to the return address checked again (`LogoutService::still_returns`) with `state`, else to `/account/sign-in?notice=signed-out`. Every answer is `Cache-Control: no-store`. `LogoutState { logout, sessions, public_url }`. |
+| `discovery_routes(DiscoveryState { public_url, tenants })` | `openid.rs` | `GET /.well-known/openid-configuration` and `GET /.well-known/oauth-authorization-server`, mounted under a tenant: the same `discovery_document`, naming the tenant's assurance levels in `acr_values_supported`, with `Cache-Control: public, max-age=300` and `Access-Control-Allow-Origin: *`. |
+| `authorization_api_routes(state)`, `AuthorizationApiState`, `AUTHORIZATION_API_AUDIENCE`, `EVALUATE_SCOPE`, `SIMULATE_SCOPE`, `EXPLAIN_SCOPE`, `AUTHORIZATION_OPENAPI`, `AUTHORIZATION_OPERATIONS` | `authorization_api.rs` | The Authorization API, mounted under a tenant at `/api/v1/authorization`: `POST /evaluate`, `/batch` (at most 100; a request that cannot be read is a problem object in its place) and `/simulate` (`against`: exactly one of `published: true`, `revision`, `draft`), and `GET /openapi.json` (`include_str!("../openapi/authorization-v1.json")`; a unit test holds it and `AUTHORIZATION_OPERATIONS` together). The caller comes from `ResourceAccessService::caller` with the audience `urn:hodor:authorization`, then the route's scope; the namespace is the audience of the token client's application's resource server (`authorization.no_resource_server` when it has none) and the context's application is that application. Bodies are `deny_unknown_fields` (`request.body_invalid`). Answers name `decision` (`ALLOW`, `DENY`, `INDETERMINATE`), `decision_id`, `evaluated_at`, `engine`, `policy_version`, `reason`, and with `authz:explain` `matched_policies` and a simulation's `trace`; every answer carries `no-store`. `AuthorizationApiState { access, evaluation, public_url }`. |
+| `bearer`, `refused`, `not_cached` (crate-visible) | `bearer.rs` | The token of `Authorization: Bearer`; a refusal as `401` with `WWW-Authenticate: Bearer` (`error="invalid_token"` when a token was sent) or `403` with `error="insufficient_scope", scope="…"`, logged with the surface it came from; `Cache-Control: no-store`. Shared by UserInfo and the Authorization API. |
 | `admin_routes(state)`, `AdminState` | `admin.rs` | The administration interface, authenticated by bearer access token. |
 | `console_routes(state)`, `ConsoleState` | `admin.rs` | The same handlers for the admin console, authenticated by session cookie, plus `/me`. |
 | `ADMIN_OPENAPI` | `admin.rs` | `include_str!("../openapi/admin-v1.json")`, served at `/openapi.json`. |
 | `ADMIN_OPERATIONS` | `admin.rs` | Table of `(method, path as written in the OpenAPI document, Permission)`. Every shared handler looks its permission up here; the documentation says a test holds the table and the OpenAPI document together. |
 | `CONSOLE_SESSION_HOURS` | `admin.rs` | `12`: the console stops answering this many hours after `signed_in_at`, whatever the tenant allows. |
+| `key_set_routes(keys: KeyService)` | `key_set.rs` | `GET /oauth2/jwks`, mounted under a tenant: first `KeyService::ensure_active` for each `IdTokenAlgorithm` (ES256, RS256), so that the set names the key of the next token; then the published key set as a JSON Web Key Set, with `Cache-Control: public, max-age=300` (`RotationPolicy::PUBLISHED_FOR`) and `Access-Control-Allow-Origin: *`. |
+| `policy_agent_routes(bundles: BundleService)` | `policy_agent.rs` | Mounted at the root, for Open Policy Agent instances, each by its bearer credential: `GET /opa/bundles/{name}` (`application/gzip`, `ETag`, `304` for a matching `If-None-Match`, `Cache-Control: no-store`; `404 authorization.bundle_not_found` for anything the instance may not pull), `POST /opa/status` and `POST /opa/logs` (`204`; a body with `Content-Encoding: gzip` is expanded). A missing, unknown or disabled credential is `401` with `WWW-Authenticate: Bearer`. |
 | `Pages` | `pages.rs` | A static application read from a directory: `load` (hosted pages), `load_console` (admin console), `page_routes`, `asset_routes`. |
 | `PAGE_PATHS`, `PROVIDER_CALLBACK_PAGE`, `PAGE_ASSETS_PATH`, `CONSOLE_PATHS`, `CONSOLE_ASSETS_PATH`, `PAGES_CONTENT_SECURITY_POLICY` | `pages.rs` | Paths and the content security policy of the static applications. |
 
 `InteractionState` holds `authentication: AuthenticationService`,
 `accounts: AccountService` (both `hodor_authentication::api`),
 `sessions: SessionService` (`hodor_session::api`),
+`factors: FactorService` (`hodor_authentication::api`),
 `external: Option<ExternalSignIn>` (`hodor_federation::api`; `None` means no
 provider is offered), `digest: Arc<dyn Digest>` and `clock: Arc<dyn Clock>`
 (`hodor_kernel`).
@@ -46,8 +57,24 @@ provider is offered), `digest: Arc<dyn Digest>` and `clock: Arc<dyn Clock>`
 `authorization: AuthorizationService` (`hodor_authorization`),
 `identity: IdentityService` (`hodor_identity`), `sessions: SessionService`,
 `audit: AuditService` (`hodor_audit`),
+`factors: FactorService` (`hodor_authentication`; what an administrator sees
+and removes of a user's factors, `admin/factors.rs`),
+`decisions: DecisionLog` (`hodor_authorization`; the record of decisions and
+its settings, `admin/decisions.rs`),
+`roles: RoleService` and `evaluation: EvaluationService` (`hodor_authorization`;
+permissions, roles, assignments and bindings, `admin/authorization.rs`, a
+resource server named in the path by its identifier and standing for its
+audience), `policies: Option<PolicyService>` (`hodor_authorization_opa`; policy
+versions drafted, checked, tested and simulated, and the publication status;
+`None` answers `404` `authorization.policies_unavailable`; publishing is not a
+route, since only the command line holds the key that signs bundles),
 `federation: Option<FederationService>` (`None` when the installation has no
-keys to keep provider secrets with) and `public_url: String`.
+keys to keep provider secrets with), `keys: Option<KeyService>`
+(`hodor_keys`; `None` makes the key routes answer `503`
+`keys.not_configured`), `key_rotation: RotationPolicy` (whose overlap a
+rotation by hand uses), `applications: ApplicationService`,
+`tenants: TenantService` (`hodor_tenant`, for the assurance levels) and
+`public_url: String`.
 `ConsoleState` holds an `AdminState` plus `digest` and `clock`.
 
 ### Routes
@@ -77,6 +104,12 @@ routes and the whole router.
 | POST, GET, DELETE | `/sign-in` | `start_sign_in`, `describe_sign_in`, `cancel_sign_in` |
 | POST | `/sign-in/steps/identifier` | `submit_identifier` |
 | POST | `/sign-in/steps/password` | `submit_password` |
+| POST | `/sign-in/steps/totp` | `submit_totp` (body `{ "code" }`) |
+| POST | `/sign-in/steps/webauthn/options` | `webauthn_options` (the challenge of the WebAuthn step) |
+| POST | `/sign-in/steps/webauthn` | `submit_webauthn` |
+| POST | `/sign-in/steps/recovery_code` | `submit_recovery_code` (body `{ "code" }`), a substitute of the `webauthn` and `totp` steps |
+| POST | `/sign-in/steps/passkey/options` | `passkey_options` (the challenge of the passkey alternative) |
+| POST | `/sign-in/steps/passkey` | `submit_passkey` |
 | GET | `/sign-in/providers` | `offered_providers` |
 | POST | `/sign-in/providers/{alias}` | `choose_provider` |
 | POST | `/sign-in/providers/{alias}/callback` | `finish_with_provider` |
@@ -84,12 +117,57 @@ routes and the whole router.
 | GET, DELETE | `/session` | `current_session`, `sign_out` |
 | GET, DELETE | `/sessions` | `list_sessions`, `end_other_sessions` |
 | DELETE | `/sessions/{session_id}` | `end_session` |
+| POST | `/webauthn/registrations` | `begin_webauthn_registration` (session and CSRF token; `{ "passkey": true }` asks for a passkey) |
+| POST | `/webauthn/registrations/{registration_id}` | `finish_webauthn_registration` (session and CSRF token) |
 | POST | `/registration` | `request_registration` |
 | POST | `/registration/complete` | `complete_registration` |
 | POST | `/recovery` | `request_recovery` |
 | POST | `/recovery/complete` | `reset_password` |
 | POST | `/sign-in/providers/{alias}/saml` | `receive_saml_response` (SAML assertion consumer; outside the origin check) |
 | GET | `/sign-in/providers/{alias}/saml/metadata` | `saml_metadata` (`application/samlmetadata+xml`) |
+
+`authorization_routes` (`authorize.rs`), documented mount point
+`/t/{slug}/oauth2`:
+
+| Method | Path | Handler |
+| --- | --- | --- |
+| GET | `/authorize` | `authorize_by_query` |
+| POST | `/authorize` | `authorize_by_form` (only `application/x-www-form-urlencoded`; otherwise the page `oauth.authorization_form_expected`) |
+| GET | `/authorize/resume` | `resume` (takes the pending request of the `__Secure-hodor_authorization` cookie once, and removes the cookie unless it keeps the request again to ask for consent) |
+
+A request whose client or redirect address is not trusted gets Hodor's own
+HTML page with status `400` and the reason's code (`error_page`); every
+other answer is a `302`. The issuer sent as `iss` is
+`{public_url}/t/{slug}`. The cookie `__Secure-hodor_authorization` is
+`Path=/t/{slug}`, `SameSite=Strict`, ten minutes; a completed sign-in of
+the interaction interface adds `"continue":
+"/t/{slug}/oauth2/authorize/resume"` to its answer while the browser
+holds it (`authorize::waiting`). When the session is enough, `proceed`
+asks `ConsentService::must_ask`: a request that must ask is kept with
+`ConsentService::hold` and the browser sent to `/account/consent` (with
+`ui_locales`), or answered `consent_required` with `prompt=none`. A request
+that waited for consent is answered by its answer at `resume`, for the
+session it was asked in; any other session, or no answer, is
+`access_denied`.
+
+`token_routes` (`token.rs`), merged with `authorization_routes` under the
+same mount point `/t/{slug}/oauth2`:
+
+| Method | Path | Handler |
+| --- | --- | --- |
+| POST | `/token` | `token` (only `application/x-www-form-urlencoded`, otherwise `invalid_request`; any other method is `405`) |
+| POST | `/revoke` | `revoke` (the same form rules; `200` with an empty body for every token once the client proved who it is) |
+| POST | `/introspect` | `introspect` (the same form rules; the JSON `TokenService::introspect` answers) |
+
+`Authorization: Basic` is base64 of the form-encoded identifier and secret
+(`basic_credentials`, `form_decoded`); a malformed one is `invalid_client`,
+another scheme `invalid_request`. `invalid_client` is `401`, with
+`WWW-Authenticate: Basic realm="{issuer}"` when `Basic` was used;
+`server_error` and a failure of storage or signing are `500`; every other
+refusal is `400`. Every answer carries `Cache-Control: no-store` and
+`Pragma: no-cache`. The reason of a refusal is logged at `info`, never
+sent. The issuer is `{public_url}/t/{slug}` and the token endpoint
+`{issuer}/oauth2/token`.
 
 Administration and console handlers, shared by both routers
 (`admin.rs:shared_routes`):
@@ -104,6 +182,25 @@ Administration and console handlers, shared by both routers
 | GET, POST | `/identity-providers` | `list_providers`, `create_provider` |
 | GET, PATCH, POST | `/identity-providers/{provider}` | `get_provider`, `change_provider`, `provider_action` (`:disable` and `:enable` arrive here) |
 | PUT | `/identity-providers/{provider}/client-secret` | `change_provider_secret` |
+| GET, POST | `/keys/{key_set}` | `list_key_versions`, `key_set_action` (`POST /keys/{key_set}:rotate` arrives here) |
+| POST | `/keys/{key_set}/versions/{version}` | `key_version_action` (`:revoke` arrives here) |
+| GET, PUT | `/assurance-levels` | `read_assurance_levels`, `replace_assurance_levels` (`{ "levels": [{ "acr", "requirement" }] }`, weakest first; `tenant.settings_invalid` for levels that break a rule) |
+| GET, POST | `/applications` | `applications::list_applications`, `create_application` |
+| GET, PATCH, POST | `/applications/{application}` | `get_application`, `change_application`, `application_action` (`:disable` and `:enable` arrive here) |
+| GET, POST | `/applications/{application}/clients` | `list_clients`, `create_client` |
+| GET, PATCH, POST | `/clients/{client}` | `get_client`, `change_client`, `client_action` (`:disable` and `:enable` arrive here) |
+| POST | `/clients/{client}/secrets` | `rotate_secret` (an empty body is `{}`) |
+| DELETE | `/clients/{client}/secrets/{secret}` | `revoke_secret` |
+| POST | `/clients/{client}/keys` | `add_key` |
+| DELETE | `/clients/{client}/keys/{key}` | `remove_key` (the `kid`, percent-decoded) |
+| GET, POST | `/resource-servers` | `list_resource_servers`, `create_resource_server` |
+| GET, PATCH | `/resource-servers/{resource_server}` | `get_resource_server`, `change_resource_server` |
+
+The application routes live in `admin/applications.rs` and are merged into
+`shared_routes`; they need `ApplicationService` in `AdminState.applications`.
+A client's secret is written only by `create_client` (`client_secret` in
+`CreatedClientBody`) and `rotate_secret` (`NewSecretBody`); neither type is
+`Debug`, and `ClientBody` names secrets by identifier and expiry only.
 
 `admin_routes` (documented mount point `/t/{slug}/api/v1/admin`) adds
 `GET /openapi.json` (`openapi`, no authentication). `console_routes`
@@ -151,8 +248,10 @@ root, outside any tenant.
 - `limit_bodies` refuses a body over the limit with
   `413 request.body_too_large`, whether or not it declares its length.
   `POST /t/.../interaction/sign-in/providers/.../saml` gets
-  `max_saml_response_bytes`; every other request gets `max_body_bytes`
-  (`posts_a_saml_response`). Requests longer than `request_timeout` get 408
+  `max_saml_response_bytes` (`posts_a_saml_response`); `POST /opa/status`
+  and `POST /opa/logs` get `max_policy_agent_report_bytes`, 1 mebibyte
+  (`posts_a_policy_agent_report`); every other request gets
+  `max_body_bytes`. Requests longer than `request_timeout` get 408
   (`TimeoutLayer`).
 - Unknown routes get `404 route.not_found` (`route_not_found`).
 

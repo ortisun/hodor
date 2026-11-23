@@ -12,6 +12,12 @@ All paths are relative to the tenant: `https://{host}/t/{slug}`. Requests and re
 | `GET /interaction/sign-in` | Ask where the current sign-in stands, for example after the page was reloaded |
 | `POST /interaction/sign-in/steps/identifier` | Submit the login identifier |
 | `POST /interaction/sign-in/steps/password` | Submit the password |
+| `POST /interaction/sign-in/steps/totp` | Submit a code of the person's authenticator application |
+| `POST /interaction/sign-in/steps/webauthn/options` | Ask for the challenge of the WebAuthn step |
+| `POST /interaction/sign-in/steps/webauthn` | Submit what the authenticator answered |
+| `POST /interaction/sign-in/steps/recovery_code` | Submit one of the person's recovery codes, while the sign-in waits for the `webauthn` or the `totp` step |
+| `POST /interaction/sign-in/steps/passkey/options` | Ask for the challenge of signing in with a passkey |
+| `POST /interaction/sign-in/steps/passkey` | Submit what the passkey answered, in place of the identifier and the password |
 | `DELETE /interaction/sign-in` | Abandon the sign-in |
 | `GET /interaction/session` | Say who is signed in |
 
@@ -35,15 +41,20 @@ Every response about a sign-in has the same shape:
 | `step` | When `pending` or `rejected` | The step the pages should ask for next |
 | `attempts_left` | When `rejected` | How many more rejections this sign-in tolerates |
 | `csrf_token` | When `pending` or `rejected` | The value to send back in the `X-CSRF-Token` header |
+| `continue` | When `completed`, and the browser holds a pending [authorization request](../architecture/contexts/oauth.md#signing-in-and-coming-back) of this tenant | The address of Hodor's own to go to next, `/t/{slug}/oauth2/authorize/resume`, instead of the account page |
 
 | Status | HTTP status | What the pages do |
 |---|---|---|
 | `pending` | `200`, or `201` when the sign-in was just started | Show the form for `step` |
 | `rejected` | `200` | Show the same form again with a generic "that did not work" message |
 | `failed` | `200` | The sign-in is over; offer to start again |
-| `completed` | `200` | The person is signed in; the session cookie has been set |
+| `completed` | `200` | The person is signed in; the session cookie has been set. The pages go to `continue` when the answer has it, and to the account page otherwise |
 
-A rejection is a normal answer, not an error: the request was understood and the sign-in simply did not advance. Nothing in it says why, and it is the same whether the password was wrong, the identifier belongs to nobody, or the user may not sign in.
+A rejection is a normal answer, not an error: the request was understood and the sign-in simply did not advance. Nothing in it says why, and it is the same whether the password was wrong, the identifier belongs to nobody, or the user may not sign in. For the `totp` step it is the same whether the code was wrong, already used or not six digits.
+
+The `totp` step comes after the password only for a person who has an authenticator application in use ([the built-in flow](../architecture/contexts/authentication.md#the-built-in-flow)). The answer to the password then names `totp` as the next step instead of completing.
+
+While the sign-in waits for `webauthn` or for `totp`, a recovery code can be submitted in its place: `recovery_code` is a [substitute](../architecture/contexts/authentication.md#substitutes) of both steps. The answer has the same shape. When the recovery code is rejected, `step` is still the step it stood in for; the rejection is the same whether the code was wrong, already used, from an earlier set or not a code at all.
 
 ### Request bodies
 
@@ -51,8 +62,63 @@ A rejection is a normal answer, not an error: the request was understood and the
 |---|---|
 | `identifier` | `{ "identifier": "ana@example.com" }` |
 | `password` | `{ "password": "…" }` |
+| `totp` | `{ "code": "123456" }` |
+| `webauthn` | `{ "credential_id": "…", "client_data": "…", "authenticator_data": "…", "signature": "…", "user_handle": "…" }`, each the bytes the authenticator gave, in base64url without padding. `user_handle` may be left out or `null` |
+| `recovery_code` | `{ "code": "7K2M-QX9D-4HVN-R8TA" }` |
+| `passkey` | The same as `webauthn`, and `user_handle` is needed: an answer without it is a rejection |
 
-Submitting a step other than the one the sign-in is waiting for is an error (`422`, `authentication.unexpected_step`), and changes nothing.
+Submitting a step other than the one the sign-in is waiting for, or than one of its substitutes, is an error (`422`, `authentication.unexpected_step`), and changes nothing.
+
+### The WebAuthn step
+
+The `webauthn` step needs a challenge before it can be submitted, so the pages ask for one first. `POST /interaction/sign-in/steps/webauthn/options`, with the CSRF token and no body, answers `200`:
+
+```json
+{
+  "public_key": {
+    "challenge": "q3Fv…",
+    "rpId": "id.example.com",
+    "allowCredentials": [
+      { "type": "public-key", "id": "AbC1…", "transports": ["usb", "nfc"] }
+    ],
+    "userVerification": "discouraged",
+    "timeout": 300000
+  }
+}
+```
+
+`public_key` is the `PublicKeyCredentialRequestOptionsJSON` of the WebAuthn specification: every byte string in base64url without padding. The pages turn it into what `navigator.credentials.get` takes, and send the answer to `POST /interaction/sign-in/steps/webauthn`. Asking again replaces the challenge; submitting uses it up, whatever the answer.
+
+| Situation | Status | Code |
+|---|---|---|
+| The sign-in is not waiting for the `webauthn` step | `422` | `authentication.unexpected_step` |
+
+A wrong answer, a value that is not base64url, an answer to another challenge, from another credential or from another site is a rejection like a wrong password: `200` with `"status": "rejected"`.
+
+### Signing in with a passkey
+
+A passkey takes the place of the identifier and the password, as an [alternative](../architecture/contexts/authentication.md#the-passkey-alternative): only while the sign-in is waiting for the `identifier` step. `POST /interaction/sign-in/steps/passkey/options`, with the CSRF token and no body, answers `200` with options that name no credential and require user verification:
+
+```json
+{
+  "public_key": {
+    "challenge": "c0Fq…",
+    "rpId": "id.example.com",
+    "allowCredentials": [],
+    "userVerification": "required",
+    "timeout": 300000
+  }
+}
+```
+
+The pages pass them to `navigator.credentials.get`, either when the person presses "sign in with a passkey" or as a conditional request that lets the browser offer passkeys in the identifier field, and send the answer to `POST /interaction/sign-in/steps/passkey`. The answer to it is `completed` when the passkey is accepted, since a passkey is multi-factor and nothing more is asked. Asking again replaces the challenge; submitting the passkey or the identifier uses it up.
+
+| Situation | Status | Code |
+|---|---|---|
+| The sign-in has gone past the `identifier` step | `422` | `authentication.unexpected_step` |
+| Attempts from this address are being limited | `429`, with `Retry-After` | `authentication.too_many_attempts` |
+
+A wrong answer, an answer without a user handle or without user verification, a passkey of another tenant or of a user who may not sign in is a rejection: `200` with `"status": "rejected"`, and the sign-in goes on waiting for the identifier.
 
 ### Errors
 
@@ -62,7 +128,7 @@ Submitting a step other than the one the sign-in is waiting for is an error (`42
 | The sign-in has ended | `409` | `authentication.transaction_not_active` |
 | Another request advanced the sign-in at the same moment | `409` | `authentication.transaction_modified_concurrently` |
 | The wrong step was submitted | `422` | `authentication.unexpected_step` |
-| Attempts are being limited | `429`, with `Retry-After` | `authentication.too_many_attempts` |
+| Attempts are being limited, on the password or the code | `429`, with `Retry-After` | `authentication.too_many_attempts` |
 | The server is too busy to check a password | `503`, with `Retry-After` when known | `credential.hashing_overloaded` |
 | The CSRF token is missing or wrong | `403` | `request.csrf_token_invalid` |
 | The request comes from another site | `403` | `request.cross_origin` |
@@ -134,6 +200,12 @@ Only then is the answer used: the person is signed in, or the reason it was refu
 | The provider cannot be reached or describes itself wrongly | `503` | `federation.provider_unavailable` |
 | The server has no keys to keep secrets with (`HODOR_SECRET_KEYS`) | No provider is offered, and each of these routes answers `404` with `federation.provider_not_found` | |
 
+### A step-up
+
+When an application asks for more than the session has, the [authorization endpoint](../architecture/contexts/oauth.md#assurance-and-step-up) starts a [step-up](../architecture/contexts/authentication.md#step-up) itself: it gives the browser the sign-in cookie of the step-up and sends it to the sign-in page. The page finds the step-up with `GET /interaction/sign-in`, as it finds any sign-in in progress, and shows the step it names: the WebAuthn step, the code of the application, or the password when only the identifier is still known. The steps are submitted to the same routes as any sign-in.
+
+Nothing starts a step-up through this interface: `POST /interaction/sign-in` always starts a new sign-in, from the first step, and replaces the cookie of a step-up in progress. When a step-up completes, the answer is the answer of a completed sign-in: the session cookie carries the session's new token, and `continue` names the authorization endpoint's resume address.
+
 ## How a sign-in is tied to one browser
 
 A sign-in belongs to the browser that started it. Nobody else can continue it, even knowing its identifier.
@@ -200,6 +272,15 @@ On a host that serves several tenants by path, cookies are separated by `Path`, 
 | `GET /interaction/sessions` | List the person's sessions |
 | `DELETE /interaction/sessions/{session_id}` | End one of the person's sessions |
 | `DELETE /interaction/sessions` | End all of the person's sessions except this one |
+| `POST /interaction/webauthn/registrations` | Begin registering a WebAuthn credential |
+| `POST /interaction/webauthn/registrations/{registration_id}` | Finish registering it |
+| `GET /interaction/factors` | List the person's factors |
+| `POST /interaction/factors/authenticator-application` | Begin enrolling an authenticator application |
+| `POST /interaction/factors/authenticator-application/confirmation` | Confirm it with a code |
+| `DELETE /interaction/factors/authenticator-application` | Remove the authenticator application |
+| `PATCH /interaction/factors/keys/{key_id}` | Rename a security key or a passkey |
+| `DELETE /interaction/factors/keys/{key_id}` | Remove a security key or a passkey |
+| `POST /interaction/factors/recovery-codes` | Generate a new set of recovery codes |
 
 Every one of them needs a valid session cookie. Without one the answer is `401` with `session.not_authenticated`, whatever the reason: no cookie, an unknown token, an expired or a revoked session.
 
@@ -219,7 +300,7 @@ Answers who is signed in:
 }
 ```
 
-`expires_at` is the moment the session ends if it is not used again. `csrf_token` is the value to send back in the `X-CSRF-Token` header of the requests below that change something.
+`assurance` is `single_factor`, `multi_factor` or `phishing_resistant` ([what a sign-in must reach](../architecture/contexts/authentication.md#what-a-sign-in-must-reach)); after a [step-up](#a-step-up) it is what the raised session reached. `expires_at` is the moment the session ends if it is not used again. `csrf_token` is the value to send back in the `X-CSRF-Token` header of the requests below that change something.
 
 ### Signing out
 
@@ -257,11 +338,211 @@ Signing out ends one session. The person's sessions in other browsers continue.
 
 `DELETE /interaction/sessions` ends every session of the person except the current one: `200` with `{ "ended": 2 }`.
 
+### Registering a WebAuthn credential
+
+A signed-in person registers a security key or a platform authenticator in two requests. Both change something and carry the session's CSRF token.
+
+`POST /interaction/webauthn/registrations`, with no body or with `{ "passkey": false }`, registers a security key, and with `{ "passkey": true }` a [passkey](../architecture/contexts/credential.md#passkeys). It needs [a recent sign-in](#a-recent-sign-in). It answers `201`:
+
+```json
+{
+  "registration_id": "0193f1d0-…",
+  "public_key": {
+    "rp": { "id": "id.example.com", "name": "Hodor" },
+    "user": { "id": "AZPx…", "name": "ana@example.com", "displayName": "Ana" },
+    "challenge": "Zm9v…",
+    "pubKeyCredParams": [
+      { "type": "public-key", "alg": -7 },
+      { "type": "public-key", "alg": -257 }
+    ],
+    "timeout": 300000,
+    "excludeCredentials": [],
+    "authenticatorSelection": { "residentKey": "preferred", "userVerification": "discouraged" },
+    "attestation": "none",
+    "extensions": { "credProps": true }
+  }
+}
+```
+
+`public_key` is the `PublicKeyCredentialCreationOptionsJSON` of the WebAuthn specification. The registration can be finished within five minutes, once. For a passkey, `authenticatorSelection` is `{ "residentKey": "required", "userVerification": "required" }`, and `displayName` is followed by the tenant's name in brackets.
+
+`POST /interaction/webauthn/registrations/{registration_id}` with what `navigator.credentials.create` answered:
+
+```json
+{
+  "client_data": "eyJ0…",
+  "attestation_object": "o2Nm…",
+  "transports": ["usb"],
+  "discoverable": true,
+  "name": "Blue key"
+}
+```
+
+`client_data` and `attestation_object` are base64url without padding. `transports` is what `getTransports()` gave, `discoverable` what the `credProps` extension said, and either may be left out. `name` may be left out too, and is then `Security key`. The answer is `201` with the credential:
+
+```json
+{ "id": "0193f1d1-…", "name": "Blue key", "created_at": "2026-11-20T14:05:00Z" }
+```
+
+When this is the person's first second factor and they have no unused recovery code, the answer also holds a new set, once: `"recovery_codes": ["7K2M-QX9D-4HVN-R8TA", …]`. Otherwise `recovery_codes` is absent.
+
+| Situation | Status | Code |
+|---|---|---|
+| The registration is unknown, another person's, already used or older than five minutes | `404` | `credential.webauthn_registration_not_found` |
+| The answer fails a check of [registration](../architecture/contexts/credential.md#registering-a-credential) | `422` | `credential.webauthn_registration_refused` |
+| The tenant already has this credential | `409` | `credential.webauthn_credential_exists` |
+
+A registration that fails is used up anyway: the person asks again.
+
+### Managing one's factors
+
+These routes are what [the person's own pages](../architecture/hosted-pages.md#a-persons-own-factors) use. The rules behind them are in [the authentication context](../architecture/contexts/authentication.md#a-persons-own-factors).
+
+#### A recent sign-in
+
+Every request below that changes something, and beginning a WebAuthn registration, needs a session signed in to at most five minutes before. Confirming an authenticator application and finishing a WebAuthn registration do not: they finish what was begun with one. Without a recent sign-in the answer is:
+
+| Situation | Status | Code |
+|---|---|---|
+| The session was signed in to more than five minutes ago | `403` | `authentication.recent_sign_in_required` |
+
+The pages then send the person to sign in again and bring them back.
+
+#### Listing them
+
+`GET /interaction/factors` answers:
+
+```json
+{
+  "authenticator_application": { "in_use": true },
+  "keys": [
+    {
+      "id": "0193f1d1-…",
+      "name": "Blue key",
+      "passkey": false,
+      "created_at": "2026-11-20T14:05:00Z",
+      "last_used_at": "2026-11-21T09:12:40Z"
+    }
+  ],
+  "recovery_codes": { "remaining": 8 },
+  "second_factor_required": false,
+  "recent_sign_in_until": "2026-11-21T09:17:40Z"
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `authenticator_application` | Whether an application is in use; `null` when the installation offers none, because it cannot keep secrets |
+| `keys` | Security keys and passkeys, oldest first. `passkey` is whether the credential is discoverable; `last_used_at` is `null` until it is used |
+| `recovery_codes.remaining` | How many unused recovery codes the person has |
+| `second_factor_required` | Whether the tenant requires a second factor, so that removing the last one is refused |
+| `recent_sign_in_until` | Until when changes are allowed without signing in again; `null` when they are not allowed now |
+
+#### The authenticator application
+
+`POST /interaction/factors/authenticator-application`, with no body, begins enrolling one and answers `201`, once:
+
+```json
+{
+  "secret": "JBSWY3DPEHPK3PXP…",
+  "uri": "otpauth://totp/Acme:ana%40example.com?secret=JBSW…&issuer=Acme&algorithm=SHA1&digits=6&period=30"
+}
+```
+
+The pages show `uri` as a QR code and `secret` as text, for an application that cannot scan. `POST /interaction/factors/authenticator-application/confirmation` with `{ "code": "123456" }` puts the application in use: `200` with `{}`, or with `recovery_codes` as for a first WebAuthn credential. `DELETE /interaction/factors/authenticator-application` removes it: `204`.
+
+#### Keys
+
+`PATCH /interaction/factors/keys/{key_id}` with `{ "name": "Office key" }` answers `200` with the key, as listed. `DELETE /interaction/factors/keys/{key_id}` answers `204`.
+
+#### Recovery codes
+
+`POST /interaction/factors/recovery-codes`, with no body, makes a new set in place of the old one and answers `201`, once: `{ "recovery_codes": ["7K2M-QX9D-4HVN-R8TA", …] }`.
+
+#### Errors
+
+| Situation | Status | Code |
+|---|---|---|
+| The installation offers no authenticator application | `404` | `credential.totp_unavailable` |
+| No enrollment waits to be confirmed, or it waited more than ten minutes | `404` | `credential.totp_enrollment_not_found` |
+| The code is not the one the application shows | `422` | `credential.totp_code_wrong` |
+| The key is not the person's, or does not exist | `404` | `credential.webauthn_credential_not_found` |
+| The name is empty, longer than 64 characters or holds control characters | `422` | `credential.webauthn_name_invalid` |
+| Removing the last second factor while the tenant requires one | `422` | `authentication.last_second_factor` |
+| Generating recovery codes without a second factor | `422` | `authentication.second_factor_missing` |
+| Another set of recovery codes was generated at the same moment | `409` | `credential.recovery_codes_conflict` |
+
 ### Protection for these requests
 
-The three `DELETE` requests change something, so each must carry the CSRF token from `GET /interaction/session` in the `X-CSRF-Token` header. The token is derived from the session token, and only a page from this origin can read it. A request without it, or with a wrong one, is refused with `403` and `request.csrf_token_invalid`, and changes nothing. The origin check applies as everywhere.
+The `DELETE`, `PATCH` and `POST` requests above change something, so each must carry the CSRF token from `GET /interaction/session` in the `X-CSRF-Token` header. The token is derived from the session token, and only a page from this origin can read it. A request without it, or with a wrong one, is refused with `403` and `request.csrf_token_invalid`, and changes nothing. The origin check applies as everywhere.
 
-The session cookie is `SameSite=Lax`, which already keeps a browser from attaching it to a `DELETE` another site starts. The token is a second, independent measure.
+The session cookie is `SameSite=Lax`, which already keeps a browser from attaching it to a `DELETE` another site starts. The token is a second, independent measure. The bodies are JSON, which a plain cross-site form cannot send.
+
+## Consent
+
+When a third-party application asks for access a person has not agreed to, the authorization endpoint keeps the request and sends the browser to the consent page ([the OAuth context](../architecture/contexts/oauth.md#consent)). These routes are what that page and the account page use.
+
+| Method and path | Purpose |
+|---|---|
+| `GET /interaction/consent` | What the waiting request asks for, to show it |
+| `POST /interaction/consent` | The person's answer |
+| `GET /interaction/consents` | The person's consents that stand |
+| `DELETE /interaction/consents/{client_id}` | Withdraw one |
+
+Each needs a valid session cookie, and is answered `401` with `session.not_authenticated` without one. The two that change something need the session's CSRF token in `X-CSRF-Token`, from `GET /interaction/session`, and pass the origin check, as [for a signed-in person](#protection-for-these-requests).
+
+### What the request asks for
+
+`GET /interaction/consent` reads the `__Secure-hodor_authorization` cookie. When it names a request that waits for consent, for this browser and for the session of this browser, the answer is:
+
+```json
+{
+  "application": "Billing",
+  "scopes": [
+    { "scope": "openid", "kind": "openid" },
+    { "scope": "email", "kind": "openid" },
+    { "scope": "invoices:read", "kind": "resource", "description": "Read your invoices", "resource_server": "Invoices" }
+  ],
+  "offline_access": false,
+  "csrf_token": "5b1e…"
+}
+```
+
+- `kind` `openid` is a scope of OpenID Connect, which the page words in the person's language by its name;
+- `kind` `resource` is a scope of a resource server, with the description and the resource server's name as the tenant's administrator wrote them;
+- `offline_access` says the application asks to keep access when the person is not there. It is not repeated in `scopes`.
+
+Without the cookie, with a request that does not wait for consent, that is another browser's, another session's or already answered, the answer is `404` with `oauth.consent_request_not_found`, in the same way for every reason.
+
+### The answer
+
+`POST /interaction/consent` with `{ "decision": "allow" }` or `{ "decision": "deny" }`. The request must be the one `GET` describes. The answer is recorded once; it is `200` with:
+
+```json
+{ "continue": "/t/acme/oauth2/authorize/resume" }
+```
+
+The page goes there, and the authorization endpoint answers the application: with a code after `allow`, with `access_denied` after `deny`. A request that was answered already, or none, is `404` with `oauth.consent_request_not_found`; a body that is not one of the two is `422` with `request.body_invalid`.
+
+### The person's consents
+
+`GET /interaction/consents` lists the consents of the person that stand and have not expired, the most recently given first:
+
+```json
+{
+  "consents": [
+    {
+      "client_id": "0193f1d0-…",
+      "application": "Billing",
+      "scopes": ["openid", "email", "invoices:read"],
+      "given_at": "2026-11-20T14:03:11Z",
+      "expires_at": "2027-11-20T14:03:11Z"
+    }
+  ]
+}
+```
+
+`DELETE /interaction/consents/{client_id}` withdraws the person's consent for that client and revokes the grants made under it: `204`. A consent the person does not have, of another person, or already withdrawn, is `404` with `oauth.consent_not_found`, all alike, so that a person learns nothing about another's.
 
 ## Registering and recovering a password
 
@@ -301,3 +582,4 @@ The address recorded for a sign-in, and used to limit attempts, is the address o
 | Trusting a forwarded client address from named proxies | Before any deployment behind a load balancer |
 | Limiting requests per address on these paths, beyond the attempt limits of the password step | Later in Phase 1 |
 | The `__Host-` cookie variant for a tenant's own host | Phase 3 |
+| The history of a person's consents in the account pages | The account console, Phase 2 |

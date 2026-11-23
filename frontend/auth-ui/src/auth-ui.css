@@ -36,6 +36,15 @@ body {
   list-style: none;
 }
 
+/* What an application asks for on the consent page, and the applications
+   on the account page: one to a line, as a list a screen reader names. */
+.auth-consent-scopes {
+  margin: 0;
+  padding-inline-start: 1.25rem;
+  display: grid;
+  gap: 0.5rem;
+}
+
 /* Not shown and not reachable: see the sign-in page. */
 .auth-hidden {
   position: absolute;
@@ -61,6 +70,34 @@ body {
   content: "";
   flex: 1;
   border-top: 1px solid var(--color-border);
+}
+
+/* The QR code of an authenticator application: square, never wider than the card, with its own light border. */
+.auth-qr {
+  display: block;
+  width: min(100%, 15rem);
+  height: auto;
+  margin-inline: auto;
+}
+
+/* A recovery code or the key of an application: one character for one character, as people copy them. */
+.auth-code {
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  letter-spacing: 0.05em;
+  overflow-wrap: anywhere;
+}
+
+/* The lists of the security page carry no bullets: each item is a block of its own. */
+.auth-codes,
+.auth-keys {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.auth-codes {
+  display: grid;
+  gap: var(--spacing-1);
 }
 
 @media (max-width: 30rem) {

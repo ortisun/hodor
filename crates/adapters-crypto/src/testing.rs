@@ -15,6 +15,8 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+pub mod webauthn;
+
 /// The client the test provider knows.
 pub const CLIENT_ID: &str = "hodor-under-test";
 /// Its secret. It has characters that must be encoded on the way.

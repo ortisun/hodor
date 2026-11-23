@@ -14,20 +14,30 @@ its header); the pages see plain values.
 - `main.tsx` (entry, loaded by `../index.html`) - imports the IBM Plex Sans
   font files, `@astryxdesign/core/reset.css`, `@astryxdesign/core/astryx.css`
   and `auth-ui.css`. When `#root` exists and `placeOf(location.pathname)` is
-  not `null`, it sets `document.documentElement.lang`, reads `noticeOf`,
-  `providerAnswerOf` and `tokenOf`, and renders `<Theme
+  not `null`, it picks the language with `chooseMessages` from
+  `uiLocalesOf(location.search)` followed by `navigator.languages`, sets
+  `document.documentElement.lang`, reads `noticeOf`, `providerAnswerOf`,
+  `tokenOf`, `continuesAuthorization` and `loginHintOf`, and renders `<Theme
   theme={themes[defaultThemeSlug]} mode="light"><App .../></Theme>` with
   `client={new Client(place.tenant)}`, `go` (`window.location.assign(pathOf(...))`)
   and `leave` (`window.location.assign(url)`).
 - `App.tsx:App(AppProps)` - `AppProps` is `{ place, client, text, notice,
-  token, go, leave, providerAnswer }`. It renders `sign-in` as `SignInPage`,
+  token, go, leave, providerAnswer, signInAgain?, loginHint?, afterSignIn?,
+  reauthenticate? }`; `signInAgain`, `loginHint` and `afterSignIn` go to
+  `SignInPage`; `main.tsx` sets `signInAgain`, `afterSignIn` and
+  `reauthenticate` from `continuationOf(location.search)` and
+  `signInAgainPath`. It renders `sign-in` as `SignInPage`,
   `register` / `recover` as `AskPage`, `complete-registration` /
-  `reset-password` as `FinishPage`, `account` as `AccountPage`,
+  `reset-password` as `FinishPage`, `account` as `AccountPage`, `sign-out`
+  as `SignOutPage`, `security` as `SecurityPage`,
   `provider-callback` as `ComingBackPage`, and anything else as a "page not
   found" frame with a link to sign-in.
 - `address.ts`:
   - `PAGES` / `PageName` - `sign-in`, `register`, `complete-registration`,
-    `recover`, `reset-password`, `account`.
+    `recover`, `reset-password`, `consent`, `account`, `security`.
+  - `continuationOf(search)` - `"authorization"`, `"security"` or `null`, from
+    `?continue=`; `signInAgainPath(tenant)` is
+    `/t/{tenant}/account/sign-in?continue=security`.
   - `NOTICES` / `NoticeName` - `registered`, `password-changed`, `signed-out`,
     `provider-refused`, `provider-cancelled`.
   - `Place` - `{ tenant, page: PageName | "provider-callback" | null,
@@ -39,6 +49,11 @@ its header); the pages see plain values.
   - `pathOf(tenant, page, notice?)` - `/t/{tenant}/account` or
     `/t/{tenant}/account/{page}`, with `?notice={notice}` when given.
   - `noticeOf(search)` - the `notice` query parameter if it is in `NOTICES`.
+  - `continuesAuthorization(search)` - whether `continue=authorization`.
+  - `loginHintOf(search)` - `login_hint`, or `null` when missing, blank or
+    longer than 255 characters.
+  - `uiLocalesOf(search)` - the tags of `ui_locales`, separated by spaces, in
+    their order.
   - `tokenOf(hash)` - the `token` of the fragment if it matches
     `^[0-9a-f]{16,128}$`.
   - `ProviderAnswer` / `providerAnswerOf(search)` - `code`, `state`, `error`,
@@ -66,11 +81,28 @@ its header); the pages see plain values.
     | `finishWithProvider(alias, state, { code } or { receipt })` | `POST /sign-in/providers/{alias}/callback` |
     | `submitIdentifier(identifier)` | `POST /sign-in/steps/identifier` |
     | `submitPassword(password)` | `POST /sign-in/steps/password` |
+    | `submitTotp(code)` | `POST /sign-in/steps/totp` |
+    | `webAuthnOptions()` | `POST /sign-in/steps/webauthn/options` (answers `public_key`) |
+    | `submitWebAuthn(answer)` | `POST /sign-in/steps/webauthn` |
+    | `submitRecoveryCode(code)` | `POST /sign-in/steps/recovery_code` |
+    | `consentQuestion()` | `GET /consent` (404 gives `null`; answers a `ConsentQuestion` of `AskedScope`s) |
+    | `answerConsent("allow" or "deny")` | `POST /consent` (answers `continue`, refused unless it is an address of the tenant's authorization endpoint) |
+    | `consents()` | `GET /consents` (answers `GivenConsent`s) |
+    | `withdrawConsent(clientId)` | `DELETE /consents/{clientId}` (404 is not an error) |
+    | `passkeyOptions()` | `POST /sign-in/steps/passkey/options` (answers `public_key`) |
+    | `submitPasskey(answer)` | `POST /sign-in/steps/passkey` |
     | `askToRegister(email, locale)` | `POST /registration` |
     | `completeRegistration(token, password, displayName)` | `POST /registration/complete` |
     | `askToRecover(email, locale)` | `POST /recovery` |
     | `resetPassword(token, password)` | `POST /recovery/complete` |
 
+- `webauthn.ts` - `toBase64url`, `fromBase64url`, `requestOptions(options)`
+  (the interface's options as `navigator.credentials.get` takes them),
+  `answerOf(credential)`, `webAuthnAvailable()`,
+  `conditionalMediationAvailable()`, and
+  `askAuthenticator(options, credentials?, { mediation?, signal? })`, which
+  answers `null` when the authenticator gave no answer or the request was
+  abandoned.
 - `astryx-themes.ts` (generated by `astryx theme`) - `themes` (`{ hodor }`),
   `ThemeSlug`, `defaultThemeSlug = "hodor"`; imports
   `./themes/hodor/hodor.js` and `./themes/hodor/hodor.css`.
@@ -87,7 +119,7 @@ its header); the pages see plain values.
   - [messages](./messages/EGM.md) - the English and Portuguese catalogs,
     `chooseMessages`, `describe`, `fieldProblem`.
   - [pages](./pages/EGM.md) - `SignInPage`, `AskPage`, `FinishPage`,
-    `AccountPage`, `ComingBackPage`, `PageProps`.
+    `AccountPage`, `SignOutPage`, `ComingBackPage`, `PageProps`.
   - [parts](./parts/EGM.md) - `Frame`, `Form`, `Field`, `PasswordField`,
     `Submit`, `Action`, `Notice`, `Words`, `PageLink`, `Ways`.
   - [themes](./themes/EGM.md) - the Hodor theme source and its compiled

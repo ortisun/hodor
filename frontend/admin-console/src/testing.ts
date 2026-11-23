@@ -79,6 +79,8 @@ const EVERYTHING = [
   "audit:read",
   "identity-providers:read",
   "identity-providers:write",
+  "applications:read",
+  "applications:write",
 ];
 
 export const GOOGLE = "0193f1c2-0000-7000-8000-00000000000a";
@@ -113,5 +115,51 @@ export function meBody(permissions: string[] = EVERYTHING, roles: string[] = ["t
     signed_in_at: "2026-11-21T14:03:11Z",
     console_until: "2026-11-22T02:03:11Z",
     csrf_token: "token-of-the-session",
+  };
+}
+
+export const BILLING = "0193f1c2-0000-7000-8000-0000000000b1";
+export const WEB = "0193f1c2-0000-7000-8000-0000000000c1";
+
+/** An application, as the console interface writes one. */
+export function applicationBody(more: Record<string, unknown> = {}) {
+  return {
+    id: BILLING,
+    name: "Billing",
+    first_party: true,
+    status: "enabled",
+    created_at: "2026-11-22T14:03:11Z",
+    updated_at: "2026-11-22T14:03:11Z",
+    ...more,
+  };
+}
+
+/** A confidential client of Billing, as the console interface writes one. */
+export function clientBody(more: Record<string, unknown> = {}) {
+  return {
+    id: WEB,
+    application_id: BILLING,
+    name: "Billing web site",
+    type: "confidential",
+    authentication_method: "client_secret_basic",
+    grant_types: ["authorization_code"],
+    redirect_uris: ["https://billing.example.com/callback"],
+    post_logout_redirect_uris: [],
+    allowed_scopes: ["openid"],
+    require_pkce: true,
+    token_policy: {
+      access_token_seconds: 300,
+      id_token_seconds: 300,
+      refresh_token_seconds: 2592000,
+      refresh_idle_seconds: 604800,
+    },
+    secrets: [
+      { id: "0193f1c2-0000-7000-8000-0000000000d1", created_at: "2026-11-22T14:03:11Z", expires_at: "2027-11-22T14:03:11Z" },
+    ],
+    keys: [],
+    status: "enabled",
+    created_at: "2026-11-22T14:03:11Z",
+    updated_at: "2026-11-22T14:03:11Z",
+    ...more,
   };
 }

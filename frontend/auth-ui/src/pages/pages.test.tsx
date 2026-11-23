@@ -7,8 +7,11 @@ import { empty, json, problem, scripted } from "../testing";
 import { AccountPage } from "./AccountPage";
 import { AskPage } from "./AskPage";
 import { ComingBackPage } from "./ComingBackPage";
+import { ConsentPage } from "./ConsentPage";
 import { FinishPage } from "./FinishPage";
+import { SecurityPage } from "./SecurityPage";
 import { SignInPage } from "./SignInPage";
+import { SignOutPage } from "./SignOutPage";
 
 afterEach(cleanup);
 
@@ -59,6 +62,84 @@ describe("the sign-in page", () => {
     expect(sent.at(-1)?.body).toEqual({ password: "correct horse" });
   });
 
+  it("asks a person with an authenticator application for its code after the password", async () => {
+    const { props, sent, go, user } = page({
+      "GET /session": [nobody],
+      "GET /sign-in": [noSignIn],
+      "POST /sign-in": [pending("identifier")],
+      "POST /sign-in/steps/identifier": [pending("password")],
+      "POST /sign-in/steps/password": [pending("totp")],
+      "POST /sign-in/steps/totp": [
+        json(200, { status: "rejected", step: "totp", attempts_left: 4, csrf_token: "token" }),
+        json(200, { status: "completed" }),
+      ],
+    });
+    render(<SignInPage {...props} notice={null} />);
+    await user.type(await screen.findByLabelText(en.identifierLabel), "ana@example.com{Enter}");
+    await user.type(await screen.findByLabelText(en.passwordLabel), "correct horse{Enter}");
+
+    const code = await screen.findByLabelText<HTMLInputElement>(en.totpLabel, { exact: false });
+    expect(document.activeElement).toBe(code);
+    expect(code.getAttribute("autocomplete")).toBe("one-time-code");
+    expect(code.getAttribute("inputmode")).toBe("numeric");
+    expect(screen.getByText(en.totpHint)).toBeTruthy();
+    await user.type(code, "000000{Enter}");
+
+    const alert = await alertShown();
+    expect(alert.textContent).toBe(`${en.rejected} ${en.attemptsLeft(4)}`);
+    const again = screen.getByLabelText<HTMLInputElement>(en.totpLabel, { exact: false });
+    expect(again.value).toBe("");
+    await user.type(again, "123 456{Enter}");
+
+    await waitFor(() => expect(go).toHaveBeenCalledWith("account"));
+    expect(sent.at(-1)?.body).toEqual({ code: "123 456" });
+  });
+
+  it("lets a person who lost their application give a recovery code instead, and go back", async () => {
+    const { props, sent, go, user } = page({
+      "GET /session": [nobody],
+      "GET /sign-in": [noSignIn],
+      "POST /sign-in": [pending("identifier")],
+      "POST /sign-in/steps/identifier": [pending("password")],
+      "POST /sign-in/steps/password": [pending("totp")],
+      "POST /sign-in/steps/recovery_code": [
+        json(200, { status: "rejected", step: "totp", attempts_left: 4, csrf_token: "token" }),
+        json(200, { status: "completed" }),
+      ],
+    });
+    render(<SignInPage {...props} notice={null} />);
+    await user.type(await screen.findByLabelText(en.identifierLabel), "ana@example.com{Enter}");
+    await user.type(await screen.findByLabelText(en.passwordLabel), "correct horse{Enter}");
+    await screen.findByLabelText(en.totpLabel, { exact: false });
+
+    await user.click(screen.getByRole("button", { name: en.useRecoveryCode }));
+    const field = await screen.findByLabelText<HTMLInputElement>(en.recoveryCodeLabel, { exact: false });
+    await waitFor(() => expect(document.activeElement).toBe(field));
+    expect(field.getAttribute("inputmode")).toBeNull();
+    expect(field.getAttribute("autocapitalize")).toBe("none");
+    expect(screen.getByText(en.recoveryCodeHint)).toBeTruthy();
+    expect(screen.queryByLabelText(en.totpLabel, { exact: false })).toBeNull();
+
+    // Going back shows the code of the application again.
+    await user.click(screen.getByRole("button", { name: en.useAuthenticatorApplication }));
+    const back = await screen.findByLabelText<HTMLInputElement>(en.totpLabel, { exact: false });
+    await waitFor(() => expect(document.activeElement).toBe(back));
+    await user.click(screen.getByRole("button", { name: en.useRecoveryCode }));
+
+    await user.type(
+      await screen.findByLabelText(en.recoveryCodeLabel, { exact: false }),
+      "aaaa-aaaa-aaaa-aaaa{Enter}",
+    );
+    const alert = await alertShown();
+    expect(alert.textContent).toBe(`${en.rejected} ${en.attemptsLeft(4)}`);
+    const again = screen.getByLabelText<HTMLInputElement>(en.recoveryCodeLabel, { exact: false });
+    expect(again.value).toBe("");
+    await user.type(again, "7k2m qx9d 4hvn r8ta{Enter}");
+
+    await waitFor(() => expect(go).toHaveBeenCalledWith("account"));
+    expect(sent.at(-1)?.body).toEqual({ code: "7k2m qx9d 4hvn r8ta" });
+  });
+
   it("continues a sign-in that is already in progress", async () => {
     const { props } = page({ "GET /session": [nobody], "GET /sign-in": [pending("password")] });
     render(<SignInPage {...props} notice={null} />);
@@ -73,6 +154,56 @@ describe("the sign-in page", () => {
     });
     render(<SignInPage {...props} notice={null} />);
     await waitFor(() => expect(go).toHaveBeenCalledWith("account"));
+  });
+
+  it("goes on to the application's request when the sign-in says so", async () => {
+    const { props, go, leave, user } = page({
+      "GET /session": [nobody],
+      "GET /sign-in": [pending("password")],
+      "POST /sign-in/steps/password": [json(200, { status: "completed", continue: "/t/acme/oauth2/authorize/resume" })],
+    });
+    render(<SignInPage {...props} notice={null} />);
+    await user.type(await screen.findByLabelText(en.passwordLabel), "correct horse{Enter}");
+    await waitFor(() => expect(leave).toHaveBeenCalledWith("/t/acme/oauth2/authorize/resume"));
+    expect(go).not.toHaveBeenCalled();
+  });
+
+  it("signs a person in again when an application asked for it, even when signed in", async () => {
+    const { props, go, sent } = page({
+      "GET /session": [
+        json(200, { user_id: "u", session_id: "s", signed_in_at: "2026-11-20T14:03:11Z", expires_at: "2026-11-20T15:03:11Z" }),
+      ],
+      "GET /sign-in": [noSignIn],
+      "POST /sign-in": [pending("identifier")],
+    });
+    render(<SignInPage {...props} notice={null} signInAgain />);
+    expect(await screen.findByLabelText(en.identifierLabel)).toBeTruthy();
+    expect(go).not.toHaveBeenCalled();
+    expect(sent.map((request) => `${request.method} ${request.path}`)).not.toContain("GET /session");
+  });
+
+  it("starts with the identifier an application suggested", async () => {
+    const { props } = page({
+      "GET /session": [nobody],
+      "GET /sign-in": [pending("identifier")],
+    });
+    render(<SignInPage {...props} notice={null} signInAgain loginHint="ana@example.com" />);
+    const field = await screen.findByLabelText<HTMLInputElement>(en.identifierLabel);
+    expect(field.value).toBe("ana@example.com");
+  });
+
+  it("goes back to the security page after signing in again for a change", async () => {
+    const { props, go } = page({
+      "GET /sign-in": [noSignIn],
+      "POST /sign-in": [pending("identifier")],
+      "POST /sign-in/steps/identifier": [pending("password")],
+      "POST /sign-in/steps/password": [json(200, { status: "completed" })],
+    });
+    const user = userEvent.setup();
+    render(<SignInPage {...props} notice={null} signInAgain afterSignIn="security" />);
+    await user.type(await screen.findByLabelText(en.identifierLabel), "ana@example.com{Enter}");
+    await user.type(await screen.findByLabelText(en.passwordLabel), "correct horse{Enter}");
+    await waitFor(() => expect(go).toHaveBeenCalledWith("security"));
   });
 
   it("shows a rejection with one message and an empty password field", async () => {
@@ -119,6 +250,188 @@ describe("the sign-in page", () => {
     const alert = await alertShown();
     expect(alert.textContent).toBe(`${en.tooManyAttempts} ${en.tryAgainInSeconds(45)}`);
     expect(screen.getByLabelText(en.passwordLabel)).toBeTruthy();
+  });
+
+  it("asks the security key for the WebAuthn step and sends its answer", async () => {
+    const bytes = (...values: number[]) => new Uint8Array(values).buffer;
+    const get = vi.fn().mockResolvedValue({
+      rawId: bytes(1, 2),
+      response: { clientDataJSON: bytes(3), authenticatorData: bytes(4), signature: bytes(5), userHandle: null },
+    });
+    vi.stubGlobal("PublicKeyCredential", function PublicKeyCredential() {});
+    Object.defineProperty(navigator, "credentials", { value: { get }, configurable: true });
+    const { props, sent, go, user } = page({
+      "GET /session": [nobody],
+      "GET /sign-in": [pending("webauthn")],
+      "POST /sign-in/steps/webauthn/options": [
+        json(200, { public_key: { challenge: "AQI", rpId: "auth.example", allowCredentials: [] } }),
+      ],
+      "POST /sign-in/steps/webauthn": [json(200, { status: "completed" })],
+    });
+    render(<SignInPage {...props} notice={null} />);
+    await user.click(await screen.findByRole("button", { name: en.useSecurityKey }));
+    await waitFor(() => expect(go).toHaveBeenCalledWith("account"));
+    expect(get).toHaveBeenCalledOnce();
+    expect(sent.at(-1)?.body).toEqual({
+      credential_id: "AQI",
+      client_data: "Aw",
+      authenticator_data: "BA",
+      signature: "BQ",
+      user_handle: null,
+    });
+    vi.unstubAllGlobals();
+  });
+
+  it("lets a person who lost their security key give a recovery code, and the choice ends with the step", async () => {
+    vi.stubGlobal("PublicKeyCredential", function PublicKeyCredential() {});
+    const { props, sent, user } = page({
+      "GET /session": [nobody],
+      "GET /sign-in": [pending("webauthn")],
+      "POST /sign-in/steps/recovery_code": [pending("totp")],
+    });
+    render(<SignInPage {...props} notice={null} />);
+    await user.click(await screen.findByRole("button", { name: en.useRecoveryCode }));
+    const field = await screen.findByLabelText<HTMLInputElement>(en.recoveryCodeLabel, { exact: false });
+    await waitFor(() => expect(document.activeElement).toBe(field));
+    expect(screen.queryByRole("button", { name: en.useSecurityKey })).toBeNull();
+
+    // Back to the key, and to the code again.
+    await user.click(screen.getByRole("button", { name: en.useSecurityKeyInstead }));
+    expect(await screen.findByRole("button", { name: en.useSecurityKey })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: en.useRecoveryCode }));
+
+    await user.type(
+      await screen.findByLabelText(en.recoveryCodeLabel, { exact: false }),
+      "7K2M-QX9D-4HVN-R8TA{Enter}",
+    );
+    expect(sent.at(-1)?.path).toBe("/sign-in/steps/recovery_code");
+    // The next step is asked for as it is, not with a recovery code.
+    expect(await screen.findByLabelText(en.totpLabel, { exact: false })).toBeTruthy();
+    expect(screen.queryByLabelText(en.recoveryCodeLabel, { exact: false })).toBeNull();
+    vi.unstubAllGlobals();
+  });
+
+  it("sends nothing and says so when the security key gives no answer", async () => {
+    const get = vi.fn().mockRejectedValue(new DOMException("cancelled", "NotAllowedError"));
+    vi.stubGlobal("PublicKeyCredential", function PublicKeyCredential() {});
+    Object.defineProperty(navigator, "credentials", { value: { get }, configurable: true });
+    const { props, sent, user } = page({
+      "GET /session": [nobody],
+      "GET /sign-in": [pending("webauthn")],
+      "POST /sign-in/steps/webauthn/options": [json(200, { public_key: { challenge: "AQI", rpId: "auth.example" } })],
+    });
+    render(<SignInPage {...props} notice={null} />);
+    await user.click(await screen.findByRole("button", { name: en.useSecurityKey }));
+    expect((await alertShown()).textContent).toContain(en.securityKeyNoAnswer);
+    expect(sent.some((request) => request.path === "/sign-in/steps/webauthn")).toBe(false);
+    vi.unstubAllGlobals();
+  });
+
+  it("offers a passkey on the identifier step and signs in with it alone", async () => {
+    const bytes = (...values: number[]) => new Uint8Array(values).buffer;
+    const get = vi.fn().mockResolvedValue({
+      rawId: bytes(1, 2),
+      response: { clientDataJSON: bytes(3), authenticatorData: bytes(4), signature: bytes(5), userHandle: bytes(6) },
+    });
+    vi.stubGlobal("PublicKeyCredential", function PublicKeyCredential() {});
+    Object.defineProperty(navigator, "credentials", { value: { get }, configurable: true });
+    const { props, sent, go, user } = page({
+      "GET /session": [nobody],
+      "GET /sign-in": [pending("identifier")],
+      "POST /sign-in/steps/passkey/options": [
+        json(200, {
+          public_key: { challenge: "AQI", rpId: "auth.example", allowCredentials: [], userVerification: "required" },
+        }),
+      ],
+      "POST /sign-in/steps/passkey": [json(200, { status: "completed" })],
+    });
+    render(<SignInPage {...props} notice={null} />);
+    const identifier = await screen.findByLabelText(en.identifierLabel);
+    expect(identifier.getAttribute("autocomplete")).toBe("username webauthn");
+    await user.click(screen.getByRole("button", { name: en.signInWithPasskey }));
+    await waitFor(() => expect(go).toHaveBeenCalledWith("account"));
+    expect(get).toHaveBeenCalledOnce();
+    expect(get.mock.calls[0]?.[0].publicKey.userVerification).toBe("required");
+    expect(sent.at(-1)).toMatchObject({
+      path: "/sign-in/steps/passkey",
+      body: { credential_id: "AQI", client_data: "Aw", authenticator_data: "BA", signature: "BQ", user_handle: "Bg" },
+    });
+    vi.unstubAllGlobals();
+  });
+
+  it("sends nothing and still asks for the identifier when the passkey gives no answer", async () => {
+    const get = vi.fn().mockRejectedValue(new DOMException("cancelled", "NotAllowedError"));
+    vi.stubGlobal("PublicKeyCredential", function PublicKeyCredential() {});
+    Object.defineProperty(navigator, "credentials", { value: { get }, configurable: true });
+    const { props, sent, user } = page({
+      "GET /session": [nobody],
+      "GET /sign-in": [pending("identifier")],
+      "POST /sign-in/steps/passkey/options": [json(200, { public_key: { challenge: "AQI", rpId: "auth.example" } })],
+    });
+    render(<SignInPage {...props} notice={null} />);
+    await user.click(await screen.findByRole("button", { name: en.signInWithPasskey }));
+    expect((await alertShown()).textContent).toContain(en.passkeyNoAnswer);
+    expect(screen.getByLabelText(en.identifierLabel)).toBeTruthy();
+    expect(sent.some((request) => request.path === "/sign-in/steps/passkey")).toBe(false);
+    vi.unstubAllGlobals();
+  });
+
+  it("offers the passkeys the browser holds in the identifier field, where it can", async () => {
+    const bytes = (...values: number[]) => new Uint8Array(values).buffer;
+    const get = vi.fn().mockResolvedValue({
+      rawId: bytes(1, 2),
+      response: { clientDataJSON: bytes(3), authenticatorData: bytes(4), signature: bytes(5), userHandle: bytes(6) },
+    });
+    const PublicKeyCredential = Object.assign(function PublicKeyCredential() {}, {
+      isConditionalMediationAvailable: () => Promise.resolve(true),
+    });
+    vi.stubGlobal("PublicKeyCredential", PublicKeyCredential);
+    Object.defineProperty(navigator, "credentials", { value: { get }, configurable: true });
+    const { props, go } = page({
+      "GET /session": [nobody],
+      "GET /sign-in": [pending("identifier")],
+      "POST /sign-in/steps/passkey/options": [json(200, { public_key: { challenge: "AQI", rpId: "auth.example" } })],
+      "POST /sign-in/steps/passkey": [json(200, { status: "completed" })],
+    });
+    render(<SignInPage {...props} notice={null} />);
+    await waitFor(() => expect(go).toHaveBeenCalledWith("account"));
+    expect(get.mock.calls[0]?.[0].mediation).toBe("conditional");
+    expect(get.mock.calls[0]?.[0].signal).toBeInstanceOf(AbortSignal);
+    vi.unstubAllGlobals();
+  });
+
+  it("abandons offering passkeys once the person types an identifier", async () => {
+    let signal: AbortSignal | undefined;
+    const get = vi.fn().mockImplementation((asked: { signal?: AbortSignal }) => {
+      signal = asked.signal;
+      return new Promise((_, reject) =>
+        asked.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))),
+      );
+    });
+    const PublicKeyCredential = Object.assign(function PublicKeyCredential() {}, {
+      isConditionalMediationAvailable: () => Promise.resolve(true),
+    });
+    vi.stubGlobal("PublicKeyCredential", PublicKeyCredential);
+    Object.defineProperty(navigator, "credentials", { value: { get }, configurable: true });
+    const { props, sent, user } = page({
+      "GET /session": [nobody],
+      "GET /sign-in": [pending("identifier")],
+      "POST /sign-in/steps/passkey/options": [json(200, { public_key: { challenge: "AQI", rpId: "auth.example" } })],
+      "POST /sign-in/steps/identifier": [pending("password")],
+    });
+    render(<SignInPage {...props} notice={null} />);
+    await waitFor(() => expect(get).toHaveBeenCalledOnce());
+    await user.type(screen.getByLabelText(en.identifierLabel), "ana@example.com{Enter}");
+    await screen.findByLabelText(en.passwordLabel);
+    expect(signal?.aborted).toBe(true);
+    expect(sent.some((request) => request.path === "/sign-in/steps/passkey")).toBe(false);
+    vi.unstubAllGlobals();
+  });
+
+  it("says so when the browser cannot use security keys", async () => {
+    const { props } = page({ "GET /session": [nobody], "GET /sign-in": [pending("webauthn")] });
+    render(<SignInPage {...props} notice={null} />);
+    expect((await alertShown()).textContent).toContain(en.securityKeyUnavailable);
   });
 
   it("does not guess at a step it does not know", async () => {
@@ -267,12 +580,197 @@ describe("the account page", () => {
   });
 
   it("signs out and says so on the sign-in page", async () => {
-    const { props, sent, go, user } = page({ "GET /session": [session], "DELETE /session": [empty(204)] });
+    const { props, sent, go, user } = page({
+      "GET /session": [session],
+      "GET /consents": [json(200, { consents: [] })],
+      "DELETE /session": [empty(204)],
+    });
     render(<AccountPage {...props} />);
     await user.click(await screen.findByRole("button", { name: en.signOut }));
 
     await waitFor(() => expect(go).toHaveBeenCalledWith("sign-in", "signed-out"));
     expect(sent.at(-1)).toMatchObject({ method: "DELETE", path: "/session", csrfToken: "of-the-session" });
+  });
+
+  it("lists the applications the person let in and withdraws one", async () => {
+    const { props, sent, user } = page({
+      "GET /session": [session],
+      "GET /consents": [
+        json(200, {
+          consents: [
+            {
+              client_id: "c-1",
+              application: "Billing",
+              scopes: ["openid", "invoices:read"],
+              given_at: "2026-11-20T14:03:11Z",
+              expires_at: "2027-11-20T14:03:11Z",
+            },
+          ],
+        }),
+      ],
+      "DELETE /consents/c-1": [empty(204)],
+    });
+    render(<AccountPage {...props} />);
+    await user.click(await screen.findByRole("button", { name: en.withdrawConsent("Billing") }));
+
+    expect(await screen.findByText(en.consentWithdrawn("Billing"))).toBeTruthy();
+    expect(screen.getByText(en.givenConsentsNone)).toBeTruthy();
+    expect(sent.at(-1)).toMatchObject({ method: "DELETE", path: "/consents/c-1", csrfToken: "of-the-session" });
+  });
+
+  it("says when no application was let in", async () => {
+    const { props } = page({ "GET /session": [session], "GET /consents": [json(200, { consents: [] })] });
+    render(<AccountPage {...props} />);
+    expect(await screen.findByText(en.givenConsentsNone)).toBeTruthy();
+  });
+});
+
+describe("the consent page", () => {
+  const session = () =>
+    json(200, {
+      user_id: "u",
+      session_id: "s",
+      signed_in_at: "2026-11-20T14:03:11Z",
+      expires_at: "2026-11-20T15:03:11Z",
+      csrf_token: "of-the-session",
+    });
+  const question = (offline = false) =>
+    json(200, {
+      application: "Billing",
+      scopes: [
+        { scope: "openid", kind: "openid" },
+        { scope: "email", kind: "openid" },
+        {
+          scope: "invoices:read",
+          kind: "resource",
+          description: "<b>Read your invoices</b>",
+          resource_server: "Invoices",
+        },
+      ],
+      offline_access: offline,
+      csrf_token: "of-the-session",
+    });
+
+  it("names the application and what it asks for, then goes where the answer says", async () => {
+    const { props, sent, leave, user } = page({
+      "GET /session": [session],
+      "GET /consent": [question(true)],
+      "POST /consent": [json(200, { continue: "/t/acme/oauth2/authorize/resume" })],
+    });
+    render(<ConsentPage {...props} />);
+
+    const heading = await screen.findByRole("heading", { name: en.consentTitle("Billing") });
+    expect(document.activeElement).toBe(heading);
+    expect(screen.getByText(en.consentScopeOpenid)).toBeTruthy();
+    expect(screen.getByText(en.consentScopeEmail)).toBeTruthy();
+    // The administrator's words are text, never markup.
+    expect(screen.getByText(en.consentScopeOfResource("<b>Read your invoices</b>", "Invoices"))).toBeTruthy();
+    expect(document.querySelector("main b")).toBeNull();
+    expect(screen.getByText(en.consentOffline)).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: en.consentAllow }));
+    await waitFor(() => expect(leave).toHaveBeenCalledWith("/t/acme/oauth2/authorize/resume"));
+    expect(sent.at(-1)).toMatchObject({
+      method: "POST",
+      path: "/consent",
+      body: { decision: "allow" },
+      csrfToken: "of-the-session",
+    });
+  });
+
+  it("sends a refusal and goes back to the application", async () => {
+    const { props, sent, leave, user } = page({
+      "GET /session": [session],
+      "GET /consent": [question()],
+      "POST /consent": [json(200, { continue: "/t/acme/oauth2/authorize/resume" })],
+    });
+    render(<ConsentPage {...props} />);
+    expect(screen.queryByText(en.consentOffline)).toBeNull();
+    await user.click(await screen.findByRole("button", { name: en.consentDeny }));
+    await waitFor(() => expect(leave).toHaveBeenCalledWith("/t/acme/oauth2/authorize/resume"));
+    expect(sent.at(-1)?.body).toEqual({ decision: "deny" });
+  });
+
+  it("goes nowhere that is not the tenant's own authorization endpoint", async () => {
+    const { props, leave, user } = page({
+      "GET /session": [session],
+      "GET /consent": [question()],
+      "POST /consent": [json(200, { continue: "https://evil.example/steal" })],
+    });
+    render(<ConsentPage {...props} />);
+    await user.click(await screen.findByRole("button", { name: en.consentAllow }));
+    expect(await alertShown()).toBeTruthy();
+    expect(leave).not.toHaveBeenCalled();
+  });
+
+  it("says there is nothing to answer when no request waits", async () => {
+    const { props } = page({
+      "GET /session": [session],
+      "GET /consent": [problem(404, "oauth.consent_request_not_found")],
+    });
+    render(<ConsentPage {...props} />);
+    expect(await screen.findByRole("heading", { name: en.consentNothingTitle })).toBeTruthy();
+    expect(screen.getByRole("link", { name: en.goToAccount }).getAttribute("href")).toBe("/t/acme/account");
+  });
+
+  it("sends a person who is not signed in to sign in", async () => {
+    const { props, go } = page({ "GET /session": [nobody] });
+    render(<ConsentPage {...props} />);
+    await waitFor(() => expect(go).toHaveBeenCalledWith("sign-in"));
+  });
+});
+
+describe("the sign-out page", () => {
+  const session = () =>
+    json(200, {
+      user_id: "u",
+      session_id: "s",
+      signed_in_at: "2026-11-20T14:03:11Z",
+      expires_at: "2026-11-20T15:03:11Z",
+      csrf_token: "of-the-session",
+    });
+  const finish = "/t/acme/oauth2/logout/finish";
+
+  it("goes on at once when nobody is signed in", async () => {
+    const { props, leave } = page({ "GET /session": [nobody] });
+    render(<SignOutPage {...props} />);
+    await waitFor(() => expect(leave).toHaveBeenCalledWith(finish));
+    expect(screen.queryByRole("button", { name: en.signOut })).toBeNull();
+  });
+
+  it("asks, signs out and goes on to the finish", async () => {
+    const { props, sent, leave, user } = page({ "GET /session": [session], "DELETE /session": [empty(204)] });
+    render(<SignOutPage {...props} />);
+    expect(await screen.findByText(en.signOutQuestion("acme"))).toBeTruthy();
+    expect(leave).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: en.signOut }));
+    await waitFor(() => expect(leave).toHaveBeenCalledWith(finish));
+    expect(sent.at(-1)).toMatchObject({ method: "DELETE", path: "/session", csrfToken: "of-the-session" });
+  });
+
+  it("stays signed in when the person says so, and the application is not told", async () => {
+    const { props, sent, go, leave, user } = page({ "GET /session": [session] });
+    render(<SignOutPage {...props} />);
+    await user.click(await screen.findByRole("button", { name: en.staySignedIn }));
+    expect(go).toHaveBeenCalledWith("account");
+    expect(leave).not.toHaveBeenCalled();
+    expect(sent.some((request) => request.method === "DELETE")).toBe(false);
+  });
+
+  it("counts a session that ended in the meantime as signed out", async () => {
+    const { props, leave, user } = page({ "GET /session": [session], "DELETE /session": [nobody] });
+    render(<SignOutPage {...props} />);
+    await user.click(await screen.findByRole("button", { name: en.signOut }));
+    await waitFor(() => expect(leave).toHaveBeenCalledWith(finish));
+  });
+
+  it("says what went wrong and stays when signing out fails", async () => {
+    const { props, leave, user } = page({ "GET /session": [session], "DELETE /session": [unreachable] });
+    render(<SignOutPage {...props} />);
+    await user.click(await screen.findByRole("button", { name: en.signOut }));
+    expect((await alertShown()).textContent).toBe(en.unreachable);
+    expect(leave).not.toHaveBeenCalled();
   });
 });
 
@@ -387,6 +885,16 @@ describe("the page a provider sends people back to", () => {
     }
   });
 
+  it("goes to the sign-in page, saying nothing against the provider, when a second factor is asked next", async () => {
+    const { props, go } = page({
+      "GET /sign-in": [pending("identifier")],
+      "POST /sign-in/providers/google/callback": [json(200, { status: "pending", step: "totp", csrf_token: "token" })],
+    });
+    render(<ComingBackPage {...props} provider="google" answer={answer} />);
+    await waitFor(() => expect(go).toHaveBeenCalledWith("sign-in"));
+    expect(go).not.toHaveBeenCalledWith("sign-in", "provider-refused");
+  });
+
   it("presents what the provider sent and goes on to the account", async () => {
     const { props, sent, go } = page({
       "GET /sign-in": [pending("identifier")],
@@ -400,6 +908,18 @@ describe("the page a provider sends people back to", () => {
       body: { code: "the-code", state: "the-state" },
       csrfToken: "token",
     });
+  });
+
+  it("goes on to the application's request after a provider, when the sign-in says so", async () => {
+    const { props, go, leave } = page({
+      "GET /sign-in": [pending("identifier")],
+      "POST /sign-in/providers/google/callback": [
+        json(200, { status: "completed", continue: "/t/acme/oauth2/authorize/resume" }),
+      ],
+    });
+    render(<ComingBackPage {...props} provider="google" answer={answer} />);
+    await waitFor(() => expect(leave).toHaveBeenCalledWith("/t/acme/oauth2/authorize/resume"));
+    expect(go).not.toHaveBeenCalled();
   });
 
   it("goes back to sign in, saying it did not work, when the server refuses", async () => {
@@ -508,5 +1028,204 @@ describe("a directory on the sign-in page", () => {
     await user.click(screen.getByRole("button", { name: en.otherWays }));
     expect(screen.getByLabelText(en.identifierLabel)).toBeTruthy();
     expect(screen.getByRole("button", { name: en.continueWith("Google") })).toBeTruthy();
+  });
+});
+
+describe("the security page", () => {
+  const signedIn = () =>
+    json(200, {
+      user_id: "u",
+      session_id: "s",
+      signed_in_at: "2026-11-20T14:03:11Z",
+      expires_at: "2999-01-01T00:00:00Z",
+      csrf_token: "session-token",
+    });
+  const factors = (overrides: Record<string, unknown> = {}) =>
+    json(200, {
+      authenticator_application: { in_use: false },
+      keys: [],
+      recovery_codes: { remaining: 0 },
+      second_factor_required: false,
+      recent_sign_in_until: "2999-01-01T00:00:00Z",
+      ...overrides,
+    });
+  const blueKey = {
+    id: "k1",
+    name: "Blue key",
+    passkey: false,
+    created_at: "2026-11-20T14:05:00Z",
+    last_used_at: null,
+  };
+  const codes = Array.from({ length: 10 }, (_, index) => `7K2M-QX9D-4HVN-R8T${index}`);
+
+  function securityPage(script: Parameters<typeof scripted>[0]) {
+    const opened = page(script);
+    const reauthenticate = vi.fn();
+    render(<SecurityPage {...opened.props} reauthenticate={reauthenticate} />);
+    return { ...opened, reauthenticate };
+  }
+
+  it("sends a person who is not signed in to sign in", async () => {
+    const { go } = securityPage({ "GET /session": [nobody] });
+    await waitFor(() => expect(go).toHaveBeenCalledWith("sign-in"));
+  });
+
+  it("asks the person to sign in again before any change, and offers none until then", async () => {
+    const { reauthenticate, user } = securityPage({
+      "GET /session": [signedIn],
+      "GET /factors": [factors({ recent_sign_in_until: null, keys: [blueKey], recovery_codes: { remaining: 8 } })],
+    });
+    expect(await screen.findByText("Blue key")).toBeTruthy();
+    expect(screen.getByText(en.recoveryRemaining(8))).toBeTruthy();
+    expect(screen.queryByRole("button", { name: en.setUpApplication })).toBeNull();
+    expect(screen.queryByRole("button", { name: en.removeKey("Blue key") })).toBeNull();
+    expect(screen.queryByRole("button", { name: en.generateCodes })).toBeNull();
+    await user.click(screen.getByRole("button", { name: en.signInAgain }));
+    expect(reauthenticate).toHaveBeenCalledOnce();
+  });
+
+  it("sets up an authenticator application and shows the recovery codes that come with it once", async () => {
+    const { sent, user } = securityPage({
+      "GET /session": [signedIn],
+      "GET /factors": [
+        factors(),
+        factors(),
+        factors({ authenticator_application: { in_use: true }, recovery_codes: { remaining: 10 } }),
+      ],
+      "POST /factors/authenticator-application": [
+        json(201, {
+          secret: "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP",
+          uri: "otpauth://totp/acme:ana%40example.com?secret=JBSWY3DPEHPK3PXP&issuer=acme",
+        }),
+      ],
+      "POST /factors/authenticator-application/confirmation": [json(200, { recovery_codes: codes })],
+    });
+    await user.click(await screen.findByRole("button", { name: en.setUpApplication }));
+    expect(await screen.findByRole("img", { name: en.qrLabel })).toBeTruthy();
+    expect(screen.getByText("JBSW Y3DP EHPK 3PXP JBSW Y3DP EHPK 3PXP")).toBeTruthy();
+    await user.type(screen.getByLabelText(en.totpLabel), "123 456{Enter}");
+    expect(await screen.findByRole("heading", { name: en.codesTitle })).toBeTruthy();
+    for (const one of codes) {
+      expect(screen.getByText(one)).toBeTruthy();
+    }
+    expect(sent.find((request) => request.path === "/factors/authenticator-application/confirmation")).toMatchObject({
+      body: { code: "123456" },
+      csrfToken: "session-token",
+    });
+    await user.click(screen.getByRole("button", { name: en.codesKept }));
+    expect(await screen.findByText(en.applicationInUse)).toBeTruthy();
+    expect(screen.queryByText(codes[0] ?? "")).toBeNull();
+  });
+
+  it("says what is wrong with a code and lets the person try again", async () => {
+    const { user } = securityPage({
+      "GET /session": [signedIn],
+      "GET /factors": [factors(), factors()],
+      "POST /factors/authenticator-application": [json(201, { secret: "JBSWY3DP", uri: "otpauth://totp/a:b?secret=JBSWY3DP" })],
+      "POST /factors/authenticator-application/confirmation": [problem(422, "credential.totp_code_wrong")],
+    });
+    await user.click(await screen.findByRole("button", { name: en.setUpApplication }));
+    await user.type(await screen.findByLabelText(en.totpLabel), "000000{Enter}");
+    expect((await alertShown()).textContent).toContain(en.totpCodeWrong);
+    expect(screen.getByRole("img", { name: en.qrLabel })).toBeTruthy();
+  });
+
+  it("removes a key after the person confirms, and renames one", async () => {
+    const renamed = { ...blueKey, name: "Office key" };
+    const { sent, user } = securityPage({
+      "GET /session": [signedIn],
+      "GET /factors": [
+        factors({ keys: [blueKey] }),
+        factors({ keys: [renamed] }),
+        factors({ keys: [] }),
+      ],
+      "PATCH /factors/keys/k1": [json(200, renamed)],
+      "DELETE /factors/keys/k1": [empty(204)],
+    });
+    await user.click(await screen.findByRole("button", { name: en.renameKey("Blue key") }));
+    const name = screen.getByLabelText(en.keyNameLabel);
+    await user.clear(name);
+    await user.type(name, "Office key{Enter}");
+    expect(await screen.findByText("Office key")).toBeTruthy();
+    expect(sent.find((request) => request.method === "PATCH")?.body).toEqual({ name: "Office key" });
+
+    await user.click(screen.getByRole("button", { name: en.removeKey("Office key") }));
+    expect(screen.getByRole("heading", { name: en.removeTitle("Office key") })).toBeTruthy();
+    expect(screen.getByText(en.removeLastLead)).toBeTruthy();
+    // Keeping it is offered first.
+    await user.click(screen.getByRole("button", { name: en.removeKey("Office key") }));
+    expect(await screen.findByText(en.noKeys)).toBeTruthy();
+    expect(sent.some((request) => request.method === "DELETE" && request.path === "/factors/keys/k1")).toBe(true);
+  });
+
+  it("says the last second factor cannot go when the organization requires one", async () => {
+    const { user } = securityPage({
+      "GET /session": [signedIn],
+      "GET /factors": [
+        factors({ keys: [blueKey], second_factor_required: true }),
+        factors({ keys: [blueKey], second_factor_required: true }),
+      ],
+      "DELETE /factors/keys/k1": [problem(422, "authentication.last_second_factor")],
+    });
+    await user.click(await screen.findByRole("button", { name: en.removeKey("Blue key") }));
+    await user.click(screen.getByRole("button", { name: en.removeKey("Blue key") }));
+    expect((await alertShown()).textContent).toContain(en.lastSecondFactor);
+    expect(screen.getByText("Blue key")).toBeTruthy();
+  });
+
+  it("asks the person to sign in again when the server says the sign-in is no longer recent", async () => {
+    const { user } = securityPage({
+      "GET /session": [signedIn],
+      "GET /factors": [factors({ keys: [blueKey] }), factors({ keys: [blueKey], recent_sign_in_until: null })],
+      "POST /factors/recovery-codes": [problem(403, "authentication.recent_sign_in_required")],
+    });
+    await user.click(await screen.findByRole("button", { name: en.generateCodes }));
+    expect(screen.getByText(en.generateCodesLead)).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: en.generateCodes }));
+    expect((await alertShown()).textContent).toContain(en.recentSignInRequired);
+    expect(await screen.findByRole("button", { name: en.signInAgain })).toBeTruthy();
+  });
+
+  it("adds a passkey with the name given and shows the codes of a first factor", async () => {
+    const bytes = (...values: number[]) => new Uint8Array(values).buffer;
+    const create = vi.fn().mockResolvedValue({
+      rawId: bytes(1),
+      response: { clientDataJSON: bytes(3), attestationObject: bytes(4), getTransports: () => ["internal"] },
+      getClientExtensionResults: () => ({ credProps: { rk: true } }),
+    });
+    vi.stubGlobal("PublicKeyCredential", function PublicKeyCredential() {});
+    Object.defineProperty(navigator, "credentials", { value: { create }, configurable: true });
+    const { sent, user } = securityPage({
+      "GET /session": [signedIn],
+      "GET /factors": [factors(), factors({ keys: [{ ...blueKey, name: "Phone", passkey: true }] })],
+      "POST /webauthn/registrations": [
+        json(201, {
+          registration_id: "r1",
+          public_key: {
+            rp: { id: "auth.example", name: "Hodor" },
+            user: { id: "AQI", name: "ana@example.com", displayName: "Ana (acme)" },
+            challenge: "BQY",
+            pubKeyCredParams: [{ type: "public-key", alg: -7 }],
+            authenticatorSelection: { residentKey: "required", userVerification: "required" },
+          },
+        }),
+      ],
+      "POST /webauthn/registrations/r1": [json(201, { id: "k1", name: "Phone", created_at: "2026-11-20T14:05:00Z", recovery_codes: codes })],
+    });
+    await user.type(await screen.findByLabelText(en.keyNameLabel), "Phone");
+    await user.click(screen.getByRole("button", { name: en.addPasskey }));
+    expect(await screen.findByRole("heading", { name: en.codesTitle })).toBeTruthy();
+    expect(sent.find((request) => request.path === "/webauthn/registrations")?.body).toEqual({ passkey: true });
+    expect(sent.find((request) => request.path === "/webauthn/registrations/r1")?.body).toEqual({
+      client_data: "Aw",
+      attestation_object: "BA",
+      transports: ["internal"],
+      discoverable: true,
+      name: "Phone",
+    });
+    const asked = create.mock.calls[0]?.[0] as { publicKey: PublicKeyCredentialCreationOptions };
+    expect(asked.publicKey.authenticatorSelection?.residentKey).toBe("required");
+    expect(asked.publicKey.authenticatorSelection?.userVerification).toBe("required");
+    vi.unstubAllGlobals();
   });
 });

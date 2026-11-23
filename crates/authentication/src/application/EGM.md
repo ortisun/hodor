@@ -47,12 +47,21 @@ the tenant the unit of work is bound to.
   - `new(units_of_work, transactions, engine, flow, identity, sessions, tenants, digest, random, clock)`:
     wires the use cases; returns `Invalid` if `FlowEngine::validate` rejects
     the flow.
+  - `start_step_up(tenant, client, StepUpRequest { session_id, user_id, carried, demanded }) -> StepUp`
+    (`Started(StartedSignIn)`, `Unreachable`, `NotNeeded`): a step-up of a
+    session, counted against the person's primary identifier; completing it
+    raises the session through `SessionService::raise` instead of starting one
+    (`service.rs:start_step_up`, `complete`). `assurance_of(methods)` asks the
+    engine.
   - `start(tenant, client) -> StartedSignIn`: starts a sign-in and returns its
     identifier, the browser secret and the first step.
   - `describe(tenant, id, secret) -> SignIn`: says which step a sign-in is
     waiting for.
   - `submit(tenant, id, secret, input: StepInput) -> SignIn`: runs the current
-    step with what was submitted.
+    step with what was submitted. Reads the tenant's second factor policy on
+    every step and again at completion: when it is `Required`, the sign-in
+    must reach `Assurance::MultiFactor` or it ends as `SignIn::Failed` with
+    `authentication.failed` and no session (`service.rs:demanded`).
   - `cancel(tenant, id, secret)`: ends a sign-in; ending one that has already
     ended changes nothing.
 - `SignIn` (`service.rs:SignIn`): `Pending { transaction_id, step }`,
@@ -83,6 +92,9 @@ the tenant the unit of work is bound to.
   - `new(units_of_work, attempts, digest, clock)`.
   - `admit(tenant, rules, identifier_key, address, caller)`: admits one
     attempt, counting it against the identifier and, when given, the address.
+  - `admit_address(tenant, rules, address, caller)`: admits an attempt that
+    names no identifier, counting it against the address only; without an
+    address nothing is counted.
   - `succeeded(tenant, identifier_key)`: forgets the identifier's count and
     lockout history.
 
@@ -97,6 +109,67 @@ Both implement the `Authenticator` trait from [`../domain/EGM.md`](../domain/EGM
   `kind()` is `"password"`; traits `identifies: false`,
   `factor: Some(Factor::Knowledge)`, `method: Some("password")`.
   `new(credentials, identity, tenants, guard)`.
+- `TotpAuthenticator` (`authenticators.rs:TotpAuthenticator`): `kind()` is
+  `TotpAuthenticator::KIND`, `"totp"`; traits `identifies: false`,
+  `factor: Some(Factor::Possession)`, `method: Some("totp")`.
+  `new(totp: TotpService, tenants, guard)`. `has_means` asks
+  `TotpService::has_totp` for the candidate, and is `false` without one.
+- `WebAuthnAuthenticator` (`authenticators.rs:WebAuthnAuthenticator`):
+  `kind()` and `KIND` are `"webauthn"`; traits `identifies: false`,
+  `factor: Some(Factor::Possession)`, `method: Some("webauthn")`.
+  `new(webauthn: WebAuthnService)`. Rejects without a candidate, without a
+  challenge in the transaction, or with fields that are not base64url;
+  `has_means` asks whether the candidate has credentials; `challenge` asks the
+  credential context for one.
+- `PasskeyAuthenticator` (`authenticators.rs:PasskeyAuthenticator`):
+  `kind()` and `KIND` are `"passkey"`, used as an alternative; traits
+  `identifies: true`, `factor: Some(Factor::Possession)`,
+  `second_factor: Some(Factor::Inherence)`, `method: Some("passkey")`.
+  `new(webauthn, identity, tenants, guard)`. Admits the attempt with
+  `AttemptGuard::admit_address` first; answers `Authenticated` with the user
+  `WebAuthnService::verify_passkey` names, and rejects without a challenge,
+  for an answer that is refused, and for a user who may not sign in;
+  `challenge` asks for a passkey challenge, which names no credential.
+- `FactorService` (`factors.rs`): `new(identity, tenants, webauthn,
+  recovery_codes)` and `with_totp(totp)`; without it no authenticator
+  application is offered (`NotFound` `credential.totp_unavailable`).
+  - `factors(tenant, user_id) -> Factors { authenticator_application:
+    Option<bool>, keys, recovery_codes_remaining, second_factor_required }`;
+    `Factors::second_factors()` counts the application in use and the keys.
+  - `begin_authenticator_application` (issuer: the tenant's display name;
+    account: the primary email address, else username) and
+    `confirm_authenticator_application(tenant, user_id, code, caller) ->
+    Option<RecoveryCodes>`.
+  - `begin_webauthn_registration(tenant, user_id)` (names the person by their
+    primary email address, else username, and display name),
+    `begin_passkey_registration(tenant, user_id)` (the same, with the
+    tenant's display name in brackets after the display name) and
+    `finish_webauthn_registration(tenant, user_id, id, response, caller) ->
+    RegisteredKey { credential, recovery_codes }`. Both confirmations call
+    `RecoveryCodeService::generate_if_none`.
+  - `rename_key`, `remove_key(.., by: Remover, caller)`,
+    `remove_authenticator_application(.., by, caller)`: removing the last
+    second factor under `SecondFactorPolicy::Required` is `Invalid`
+    `authentication.last_second_factor` for `Remover::Person` only; when no
+    second factor is left the recovery codes are removed.
+  - `generate_recovery_codes` (`Invalid` `authentication.second_factor_missing`
+    without a second factor) and `remove_recovery_codes` (`NotFound`
+    `credential.recovery_codes_not_found`).
+- `factors.rs` also holds `RECENT_SIGN_IN` (five minutes),
+  `signed_in_recently(signed_in_at, now)`, `recent_sign_in_until` and
+  `recent_sign_in_required()` (`Forbidden`
+  `authentication.recent_sign_in_required`), which the interaction routes
+  apply to the session's `signed_in_at`.
+- `AuthenticationService::challenge(tenant, id, secret, step) -> Value`: asks
+  the current step, or an alternative at the start, for a challenge through
+  `FlowEngine::challenge` and stores the transaction.
+- `RecoveryCodeAuthenticator` (`authenticators.rs:RecoveryCodeAuthenticator`):
+  `kind()` is `RecoveryCodeAuthenticator::KIND`, `"recovery_code"`; traits
+  `identifies: false`, `factor: Some(Factor::Possession)`,
+  `method: Some("recovery_code")`. `new(codes: RecoveryCodeService, tenants,
+  guard)`. Used as a substitute of the `webauthn` and `totp` steps
+  (`AuthFlow::with_substitute`); `has_means` asks
+  `RecoveryCodeService::unused` for the candidate.
 
 ## Invariants
 
@@ -139,6 +212,15 @@ Both implement the `Authenticator` trait from [`../domain/EGM.md`](../domain/EGM
   answer nor timing tells the cases apart; it answers `Proven` only when the
   password is verified, the user may sign in and a candidate exists
   (`authenticators.rs:PasswordAuthenticator::perform`).
+- `TotpAuthenticator` takes only `StepInput::Totp`, rejects when there is no
+  identifier key, admits the attempt through the guard with the tenant's
+  lockout rules first (shared with the password by `lockout_rules`), and
+  clears the identifier's count when the code is verified
+  (`authenticators.rs:TotpAuthenticator::perform`).
+- `RecoveryCodeAuthenticator` takes only `StepInput::RecoveryCode`, and
+  admits and clears the attempt the same way; a wrong, used, earlier or
+  malformed code is the same `StepOutcome::Rejected`
+  (`authenticators.rs:RecoveryCodeAuthenticator::perform`).
 - Registration is refused with `Forbidden` code
   `authentication.registration_closed` unless the tenant's registration
   policy is `RegistrationPolicy::Open`, checked before anything is counted

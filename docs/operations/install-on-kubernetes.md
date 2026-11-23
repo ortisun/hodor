@@ -40,11 +40,11 @@ Run every command of this page from the root of a checkout of the repository; th
 Replace `registry.example.com` with your registry, here and in the steps that follow:
 
 ```bash
-docker build --file deploy/docker/Dockerfile --tag registry.example.com/hodor:0.1.0 .
+docker build --file deploy/docker/Dockerfile --tag registry.example.com/hodor:0.2.0 .
 ```
 
 ```bash
-docker push registry.example.com/hodor:0.1.0
+docker push registry.example.com/hodor:0.2.0
 ```
 
 ## 2. Prepare the database
@@ -71,10 +71,10 @@ The chart never takes a password or a key as a value: it reads them from one Sec
 kubectl create namespace hodor
 ```
 
-Make the key that keeps the secrets of identity providers encrypted. It is written after an identifier of your choice, as `identifier:key`; [secrets at rest](../security/secrets-at-rest.md#keys) explains the format and how to change the key later:
+Make the key that keeps the secrets of identity providers encrypted. It is written after an identifier of your choice, as `identifier:key`; [secrets at rest](../security/secrets-at-rest.md#root-keys) explains the format and how to change the key later:
 
 ```bash
-docker run --rm --entrypoint /usr/local/bin/hodor-cli registry.example.com/hodor:0.1.0 secrets generate-key
+docker run --rm --entrypoint /usr/local/bin/hodor-cli registry.example.com/hodor:0.2.0 secrets generate-key
 ```
 
 Then create the Secret, with your own addresses, passwords and key in place of the examples:
@@ -95,7 +95,7 @@ kubectl create secret generic hodor --namespace hodor \
 | `server-database-url` | The servers, and the migration job to create the system tenant | Connection address of the server's role |
 | `worker-database-url` | The workers | Connection address of the worker's role in `hodor_app` |
 | `worker-platform-database-url` | The workers | Connection address of the worker's role in `hodor_platform` |
-| `secret-keys` | The servers | `HODOR_SECRET_KEYS`: one or more `identifier:key` pairs, separated by commas |
+| `secret-keys` | The servers and the workers | `HODOR_SECRET_KEYS`: one or more `identifier:key` pairs, separated by commas. The workers make the tenants' signing keys with them, and the servers use those keys |
 | `smtp-url` | The workers, with `mail.enabled` | Address of the mail server |
 
 A password written into an address must be made of letters and digits, or be percent-encoded. A tool that manages secrets in the cluster can make this Secret instead of `kubectl`; `secret.keys` renames the keys if it needs other names.
@@ -156,7 +156,7 @@ kubectl exec --namespace hodor deployment/hodor-server -- /usr/local/bin/hodor-c
 | `server.replicas` | `3` | Servers, when autoscaling is off |
 | `server.autoscaling.enabled` | `false` | Adds servers between `minReplicas` and `maxReplicas` as average processor use passes `targetProcessorUtilizationPercentage`. Needs the cluster's metrics server |
 | `server.passwordHashConcurrency` | `4` | Password hashes one server computes at once. Each uses about 19 MiB, so this value times 19 MiB must fit under `server.resources.limits.memory` with room for the rest |
-| `server.resources`, `worker.resources` | 500m and 256Mi to 512Mi; 100m and 128Mi to 256Mi | Requests and limits |
+| `server.resources`, `worker.resources` | 500m and 256Mi to 512Mi; 100m and 128Mi to 512Mi | Requests and limits. The worker's limit leaves room for one run of `opa`, which checks policies and is bounded only by it |
 | `worker.replicas` | `2` | Workers |
 | `mail.enabled`, `mail.from` | `false` | Whether messages are delivered, and the address they come from |
 | `directoryHosts` | Empty | The LDAP directories identity providers may name, each as `host:port` |
@@ -189,6 +189,12 @@ A cluster enforces network policies only if its network plugin does.
 helm upgrade hodor deploy/install/helm/hodor --namespace hodor --values hodor-values.yaml --wait
 ```
 
+If [deployment](deployment.md#upgrades) lists a command for the version you upgraded from, run it in a server once the upgrade is done. From 0.1.0:
+
+```bash
+kubectl exec --namespace hodor deployment/hodor-server -- /usr/local/bin/hodor-cli secrets reseal
+```
+
 The migration job runs first, against the database the old servers are still using; then the servers and workers are replaced one at a time. Upgrade one release at a time: [deployment](deployment.md#upgrades) explains why the migrations allow that and no more. Going back within one release is `helm rollback`.
 
 ## Uninstalling
@@ -210,11 +216,11 @@ kind create cluster --name hodor
 ```
 
 ```bash
-docker build --file deploy/docker/Dockerfile --tag hodor:0.1.0 .
+docker build --file deploy/docker/Dockerfile --tag hodor:0.2.0 .
 ```
 
 ```bash
-kind load docker-image hodor:0.1.0 --name hodor
+kind load docker-image hodor:0.2.0 --name hodor
 ```
 
 Create the namespace and the stand-ins, and wait for the database:

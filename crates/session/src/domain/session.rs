@@ -17,6 +17,9 @@ pub enum Assurance {
     SingleFactor,
     /// More than one factor.
     MultiFactor,
+    /// More than one factor, one of them a key held by the person that
+    /// answered a challenge for this tenant's address.
+    PhishingResistant,
 }
 
 impl Assurance {
@@ -26,6 +29,7 @@ impl Assurance {
         match self {
             Self::SingleFactor => "single_factor",
             Self::MultiFactor => "multi_factor",
+            Self::PhishingResistant => "phishing_resistant",
         }
     }
 
@@ -38,6 +42,7 @@ impl Assurance {
         match value {
             "single_factor" => Ok(Self::SingleFactor),
             "multi_factor" => Ok(Self::MultiFactor),
+            "phishing_resistant" => Ok(Self::PhishingResistant),
             other => Err(DomainError::internal(
                 "session.stored_data_invalid",
                 "the session could not be loaded",
@@ -181,6 +186,8 @@ pub struct SessionSnapshot {
     pub assurance: Assurance,
     /// By which methods.
     pub methods: Vec<String>,
+    /// When each of `methods` was last proven, in the same order.
+    pub method_proven_at: Vec<Timestamp>,
     /// When the session started.
     pub started_at: Timestamp,
     /// When it was last used, to the nearest minute.
@@ -252,6 +259,7 @@ impl Session {
                 token_hash: token.hash(digest),
                 signed_in_at: now,
                 assurance,
+                method_proven_at: vec![now; methods.len()],
                 methods,
                 started_at: now,
                 last_activity_at: now,
@@ -335,6 +343,70 @@ impl Session {
             user_id: self.state.user_id,
             reason: reason.to_owned(),
         })
+    }
+
+    /// The methods of the session with the time each was last proven.
+    #[must_use]
+    pub fn proofs(&self) -> Vec<(&str, Timestamp)> {
+        self.state
+            .methods
+            .iter()
+            .enumerate()
+            .map(|(index, method)| {
+                let at = self
+                    .state
+                    .method_proven_at
+                    .get(index)
+                    .copied()
+                    .unwrap_or(self.state.signed_in_at);
+                (method.as_str(), at)
+            })
+            .collect()
+    }
+
+    /// Raises the session after a step-up: `proven` are the methods the
+    /// step-up proved, now; `assurance` is what the step-up reached. See
+    /// `docs/architecture/contexts/session.md`, "Raising a session".
+    ///
+    /// # Errors
+    ///
+    /// Returns a `Conflict` error unless the session is active, and an
+    /// `Invalid` error if no method was proven.
+    pub fn raise(
+        &mut self,
+        proven: &[String],
+        assurance: Assurance,
+        now: Timestamp,
+        random: &dyn RandomSource,
+        digest: &dyn Digest,
+    ) -> Result<(SessionToken, SessionEvent), DomainError> {
+        if proven.is_empty() {
+            return Err(DomainError::invalid(
+                "session.methods_missing",
+                "a session records at least one sign-in method",
+            ));
+        }
+        let token = self.replace_token(now, random, digest)?;
+        let mut times: Vec<Timestamp> = self.proofs().into_iter().map(|(_, at)| at).collect();
+        for method in proven {
+            match self.state.methods.iter().position(|known| known == method) {
+                Some(index) => times[index] = now,
+                None => {
+                    self.state.methods.push(method.clone());
+                    times.push(now);
+                }
+            }
+        }
+        self.state.method_proven_at = times;
+        self.state.assurance = self.state.assurance.max(assurance);
+        self.state.signed_in_at = now;
+        let event = SessionEvent::Raised {
+            session_id: self.state.id,
+            user_id: self.state.user_id,
+            assurance: self.state.assurance.as_str(),
+            methods: proven.to_vec(),
+        };
+        Ok((token, event))
     }
 
     /// Gives the session a new token; the old one is useless from now on.
@@ -581,6 +653,78 @@ mod tests {
                 .map(String::len),
             Some(256)
         );
+    }
+
+    #[test]
+    fn every_method_of_a_new_session_was_proven_when_it_started() {
+        let (session, _) = started(TIMEOUTS);
+        assert_eq!(session.proofs(), vec![("password", START)]);
+    }
+
+    #[test]
+    fn raising_adds_the_methods_proven_now_and_keeps_the_others_times() {
+        let (mut session, old) = started(TIMEOUTS);
+        let later = START + Duration::minutes(5);
+        let random = CountingRandom::default();
+        random.fill(&mut [0_u8; 7]);
+        let (token, event) = session
+            .raise(
+                &["webauthn".to_owned()],
+                Assurance::PhishingResistant,
+                later,
+                &random,
+                &FakeDigest,
+            )
+            .expect("raised");
+        assert_eq!(
+            session.proofs(),
+            vec![("password", START), ("webauthn", later)]
+        );
+        assert_eq!(session.snapshot().assurance, Assurance::PhishingResistant);
+        assert_eq!(session.snapshot().signed_in_at, later);
+        assert_ne!(token.expose(), old.expose(), "the token is replaced");
+        assert_eq!(
+            TokenHash::of_presented(token.expose(), &FakeDigest),
+            Some(session.snapshot().token_hash)
+        );
+        assert_eq!(event.event_type(), "session.raised");
+        assert_eq!(
+            session.snapshot().absolute_expires_at,
+            START + TIMEOUTS.absolute,
+            "a step-up does not keep a session alive longer"
+        );
+    }
+
+    #[test]
+    fn raising_moves_a_method_proven_again_to_now_and_never_lowers_the_assurance() {
+        let (mut session, _) = started(TIMEOUTS);
+        session.state.assurance = Assurance::MultiFactor;
+        let later = START + Duration::minutes(5);
+        session
+            .raise(
+                &["password".to_owned()],
+                Assurance::SingleFactor,
+                later,
+                &CountingRandom::default(),
+                &FakeDigest,
+            )
+            .expect("raised");
+        assert_eq!(session.proofs(), vec![("password", later)]);
+        assert_eq!(session.snapshot().assurance, Assurance::MultiFactor);
+    }
+
+    #[test]
+    fn a_session_that_is_not_active_is_not_raised() {
+        let (mut session, _) = started(TIMEOUTS);
+        session.revoke("signed_out", START);
+        let refused = session.raise(
+            &["webauthn".to_owned()],
+            Assurance::MultiFactor,
+            START,
+            &CountingRandom::default(),
+            &FakeDigest,
+        );
+        assert!(refused.is_err_and(|e| e.code() == "session.not_active"));
     }
 
     proptest! {

@@ -26,6 +26,10 @@ pub struct AuthenticatorTraits {
     pub identifies: bool,
     /// The kind of evidence the step provides, if it proves anything.
     pub factor: Option<Factor>,
+    /// A second kind of evidence the same step provides, if any: a passkey
+    /// is something the person has, unlocked by something they know or
+    /// are.
+    pub second_factor: Option<Factor>,
     /// The name recorded in the session for a satisfied step, if any.
     pub method: Option<&'static str>,
 }
@@ -59,6 +63,10 @@ pub enum StepInput {
     Identifier(String),
     /// The password, as typed.
     Password(Secret<String>),
+    /// A code of the person's authenticator application, as typed.
+    Totp(Secret<String>),
+    /// One of the person's recovery codes, as typed.
+    RecoveryCode(Secret<String>),
     /// What an alternative needs, in its own terms.
     External(ExternalInput),
 }
@@ -70,6 +78,8 @@ impl StepInput {
         match self {
             Self::Identifier(_) => "identifier",
             Self::Password(_) => "password",
+            Self::Totp(_) => "totp",
+            Self::RecoveryCode(_) => "recovery_code",
             Self::External(input) => &input.step,
         }
     }
@@ -102,6 +112,17 @@ pub enum StepOutcome {
     Rejected,
 }
 
+/// A challenge a step asked for: what is kept in the transaction until the
+/// step is submitted, and what the browser needs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StepChallenge {
+    /// Kept in the transaction and handed back to the authenticator with
+    /// the answer. Used once.
+    pub challenge: [u8; 32],
+    /// What the browser needs to answer, in the authenticator's own terms.
+    pub options: serde_json::Value,
+}
+
 /// Performs one step of a flow.
 #[async_trait::async_trait]
 pub trait Authenticator: Send + Sync {
@@ -124,4 +145,50 @@ pub trait Authenticator: Send + Sync {
         transaction: &AuthTransaction,
         input: &StepInput,
     ) -> Result<StepOutcome, DomainError>;
+
+    /// Whether the person signing in has the means to perform this step,
+    /// such as an authenticator application they enrolled. Asked only for
+    /// steps that are not required, which come after the person has been
+    /// identified and has proved a first factor.
+    ///
+    /// An authenticator with nothing to enroll keeps the default: the
+    /// means are always there.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the answer could not be found, for example
+    /// because a dependency is unavailable.
+    async fn has_means(
+        &self,
+        _tenant: &TenantContext,
+        _transaction: &AuthTransaction,
+    ) -> Result<bool, DomainError> {
+        Ok(true)
+    }
+
+    /// Whether a satisfied step resists phishing: a key held by the person
+    /// answered a challenge bound to this tenant's address, so that what
+    /// someone tricked out of the person cannot be replayed. Most
+    /// authenticators keep the default: they do not.
+    fn resists_phishing(&self) -> bool {
+        false
+    }
+
+    /// Makes the challenge this step's answer must be to, for a step that
+    /// can check an answer only to a question it asked. The engine keeps
+    /// the challenge in the transaction, and `perform` finds it there.
+    ///
+    /// An authenticator that needs no challenge keeps the default: `None`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the challenge could not be made, for example
+    /// because a dependency is unavailable.
+    async fn challenge(
+        &self,
+        _tenant: &TenantContext,
+        _transaction: &AuthTransaction,
+    ) -> Result<Option<StepChallenge>, DomainError> {
+        Ok(None)
+    }
 }

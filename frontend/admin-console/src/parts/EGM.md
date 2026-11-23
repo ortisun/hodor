@@ -22,6 +22,10 @@ interface. They are built on `@astryxdesign/core` components.
   unchanged; longer ones as the first 8 characters, an ellipsis and the last 4.
 - `Identifier.tsx:Identifier` - shows a value whole or shortened, with the full
   value as its title and a button that copies it.
+- `ShownOnce.tsx:ShownOnce` - a form dialog (width 560) with a client's new
+  secret, a warning that it is shown this once, a copy button and
+  `text.secretKept`, which calls `onClose`. Props: `secret`, `onClose`, `text`.
+  The secret is in an element with `data-testid="shown-once"`.
 - `Loaded.tsx:Loading<T>` - `loading`, `failed` with a `Failure`, or `loaded`
   with a value.
 - `Loaded.tsx:useLoaded(load)` - returns `[state, again, replace]`.

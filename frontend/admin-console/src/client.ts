@@ -26,7 +26,90 @@ export type Permission =
   | "sessions:revoke"
   | "audit:read"
   | "identity-providers:read"
-  | "identity-providers:write";
+  | "identity-providers:write"
+  | "keys:read"
+  | "keys:write"
+  | "applications:read"
+  | "applications:write"
+  | "credentials:read"
+  | "credentials:write"
+  | "decisions:read"
+  | "decision-log:write"
+  | "roles:read"
+  | "roles:write"
+  | "bindings:read"
+  | "bindings:write"
+  | "policies:read"
+  | "policies:write";
+
+/** A permission a role holds, with its condition when it has one. */
+export interface HeldPermission {
+  name: string;
+  condition: string | null;
+}
+
+/** A role a tenant defined for one resource server. */
+export interface RoleDefinition {
+  namespace: string;
+  name: string;
+  description: string;
+  permissions: HeldPermission[];
+  includes: { namespace: string; name: string }[];
+}
+
+/** A role given to a user or a client. */
+export interface RoleAssignment {
+  principal: { kind: "user" | "client"; id: string };
+  role: { namespace: string; name: string };
+  applicationId: string | null;
+  validUntil: string | null;
+}
+
+/** Which engine answers for a resource server. */
+export interface Binding {
+  namespace: string;
+  engine: string;
+  timeLimitMilliseconds: number;
+  sensitive: boolean;
+  failOpenActions: string[];
+}
+
+/** What is published for Open Policy Agent, and what each instance runs. */
+export interface PolicyStatus {
+  latest: { revision: number; version: number | null; publishedAt: string } | null;
+  instances: { instance: string; activeRevision: string | null; current: boolean; error: string | null }[];
+  pendingActivation: boolean;
+}
+
+/** One recorded decision, as the list shows it. */
+export interface DecisionRecord {
+  id: string;
+  namespace: string;
+  subject: string;
+  action: string;
+  effect: "allow" | "deny" | "indeterminate";
+  reason: string;
+  engine: string | null;
+  decidedAt: string;
+}
+
+/** A security key or a passkey of a person. Nothing of its key is ever here. */
+export interface PersonKey {
+  id: string;
+  name: string;
+  passkey: boolean;
+  createdAt: string;
+  lastUsedAt: string | null;
+}
+
+/** A person's second factors, as an administrator sees them. */
+export interface PersonFactors {
+  /** `null` when the installation offers no authenticator application. */
+  authenticatorApplication: { inUse: boolean } | null;
+  keys: PersonKey[];
+  recoveryCodesRemaining: number;
+  secondFactorRequired: boolean;
+}
 
 export interface Identifier {
   id: string;
@@ -120,6 +203,96 @@ export interface ProviderChange {
   createsUsers?: boolean;
 }
 
+/** An application registered in the tenant. */
+export interface Application {
+  id: string;
+  name: string;
+  /** A first-party application is not asked for consent. */
+  firstParty: boolean;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** What an administrator gives to register or change an application. */
+export interface ApplicationSettings {
+  name: string;
+  firstParty: boolean;
+}
+
+/** How long a client's tokens live, in seconds. */
+export interface TokenPolicy {
+  accessTokenSeconds: number;
+  idTokenSeconds: number;
+  refreshTokenSeconds: number;
+  refreshIdleSeconds: number;
+}
+
+/**
+ * A client of an application: what talks to Hodor's endpoints. Its
+ * secrets are named by identifier and expiry; the server never gives a
+ * secret back after the answer that made it.
+ */
+export interface ApplicationClient {
+  /** The `client_id`. Not a secret. */
+  id: string;
+  applicationId: string;
+  name: string;
+  type: string;
+  authenticationMethod: string;
+  grantTypes: string[];
+  redirectUris: string[];
+  postLogoutRedirectUris: string[];
+  allowedScopes: string[];
+  requirePkce: boolean;
+  tokenPolicy: TokenPolicy;
+  secrets: { id: string; createdAt: string; expiresAt: string }[];
+  keys: { kid: string; jwk: Record<string, unknown>; addedAt: string }[];
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** What an administrator decides about a client. */
+export interface ClientSettings {
+  name: string;
+  authenticationMethod: string;
+  grantTypes: string[];
+  redirectUris: string[];
+  postLogoutRedirectUris: string[];
+  allowedScopes: string[];
+}
+
+/** A new client, with its first secret when it has one: shown once. */
+export interface CreatedClient {
+  client: ApplicationClient;
+  secret: string | null;
+}
+
+/** A new secret of a client: shown once. */
+export interface NewSecret {
+  id: string;
+  secret: string;
+  expiresAt: string;
+}
+
+export interface Scope {
+  name: string;
+  description: string;
+}
+
+/** The interface that accepts an application's access tokens. */
+export interface ResourceServer {
+  id: string;
+  applicationId: string;
+  /** The audience of its tokens. It never changes. */
+  audience: string;
+  name: string;
+  scopes: Scope[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface Page<T> {
   items: T[];
   /** What to ask for next; `null` on the last page. */
@@ -167,6 +340,26 @@ function user(body: Fields): User {
     })),
     createdAt: required(body["created_at"]),
     updatedAt: required(body["updated_at"]),
+  };
+}
+
+function personFactors(body: Fields): PersonFactors {
+  const application = body["authenticator_application"];
+  const remaining = fields(body["recovery_codes"])["remaining"];
+  return {
+    authenticatorApplication:
+      typeof application === "object" && application !== null
+        ? { inUse: fields(application)["in_use"] === true }
+        : null,
+    keys: list(body["keys"]).map((key) => ({
+      id: required(key["id"]),
+      name: required(key["name"]),
+      passkey: key["passkey"] === true,
+      createdAt: required(key["created_at"]),
+      lastUsedAt: text(key["last_used_at"]),
+    })),
+    recoveryCodesRemaining: typeof remaining === "number" ? remaining : 0,
+    secondFactorRequired: body["second_factor_required"] === true,
   };
 }
 
@@ -224,6 +417,82 @@ function provider(body: Fields): Provider {
     directory: directoryOf(body["directory"]),
     createdAt: required(body["created_at"]),
     updatedAt: required(body["updated_at"]),
+  };
+}
+
+function application(body: Fields): Application {
+  return {
+    id: required(body["id"]),
+    name: required(body["name"]),
+    firstParty: body["first_party"] === true,
+    status: required(body["status"]),
+    createdAt: required(body["created_at"]),
+    updatedAt: required(body["updated_at"]),
+  };
+}
+
+function seconds(value: unknown): number {
+  return typeof value === "number" ? value : 0;
+}
+
+function applicationClient(body: Fields): ApplicationClient {
+  const policy = fields(body["token_policy"]);
+  return {
+    id: required(body["id"]),
+    applicationId: required(body["application_id"]),
+    name: required(body["name"]),
+    type: required(body["type"]),
+    authenticationMethod: required(body["authentication_method"]),
+    grantTypes: strings(body["grant_types"]),
+    redirectUris: strings(body["redirect_uris"]),
+    postLogoutRedirectUris: strings(body["post_logout_redirect_uris"]),
+    allowedScopes: strings(body["allowed_scopes"]),
+    requirePkce: body["require_pkce"] === true,
+    tokenPolicy: {
+      accessTokenSeconds: seconds(policy["access_token_seconds"]),
+      idTokenSeconds: seconds(policy["id_token_seconds"]),
+      refreshTokenSeconds: seconds(policy["refresh_token_seconds"]),
+      refreshIdleSeconds: seconds(policy["refresh_idle_seconds"]),
+    },
+    secrets: list(body["secrets"]).map((secret) => ({
+      id: required(secret["id"]),
+      createdAt: required(secret["created_at"]),
+      expiresAt: required(secret["expires_at"]),
+    })),
+    keys: list(body["keys"]).map((key) => ({
+      kid: required(key["kid"]),
+      jwk: fields(key["jwk"]),
+      addedAt: required(key["added_at"]),
+    })),
+    status: required(body["status"]),
+    createdAt: required(body["created_at"]),
+    updatedAt: required(body["updated_at"]),
+  };
+}
+
+function resourceServer(body: Fields): ResourceServer {
+  return {
+    id: required(body["id"]),
+    applicationId: required(body["application_id"]),
+    audience: required(body["audience"]),
+    name: required(body["name"]),
+    scopes: list(body["scopes"]).map((scope) => ({
+      name: required(scope["name"]),
+      description: text(scope["description"]) ?? "",
+    })),
+    createdAt: required(body["created_at"]),
+    updatedAt: required(body["updated_at"]),
+  };
+}
+
+function clientBody(settings: ClientSettings): Fields {
+  return {
+    name: settings.name.trim(),
+    authentication_method: settings.authenticationMethod,
+    grant_types: settings.grantTypes,
+    redirect_uris: settings.redirectUris,
+    post_logout_redirect_uris: settings.postLogoutRedirectUris,
+    allowed_scopes: settings.allowedScopes,
   };
 }
 
@@ -339,6 +608,25 @@ export class Client {
     await this.#send("DELETE", `/sessions/${encodeURIComponent(sessionId)}`);
   }
 
+  async listFactors(userId: string): Promise<PersonFactors> {
+    return personFactors(await this.#send("GET", `/users/${encodeURIComponent(userId)}/factors`));
+  }
+
+  async removeAuthenticatorApplication(userId: string): Promise<void> {
+    await this.#send("DELETE", `/users/${encodeURIComponent(userId)}/factors/authenticator-application`);
+  }
+
+  async removePersonKey(userId: string, keyId: string): Promise<void> {
+    await this.#send(
+      "DELETE",
+      `/users/${encodeURIComponent(userId)}/factors/keys/${encodeURIComponent(keyId)}`,
+    );
+  }
+
+  async removeRecoveryCodes(userId: string): Promise<void> {
+    await this.#send("DELETE", `/users/${encodeURIComponent(userId)}/factors/recovery-codes`);
+  }
+
   async listProviders(): Promise<Provider[]> {
     return list((await this.#send("GET", "/identity-providers"))["items"]).map(provider);
   }
@@ -384,6 +672,218 @@ export class Client {
 
   async enableProvider(id: string): Promise<Provider> {
     return provider(await this.#send("POST", `/identity-providers/${encodeURIComponent(id)}:enable`));
+  }
+
+  async listRoles(): Promise<RoleDefinition[]> {
+    return list((await this.#send("GET", "/roles"))["items"]).map((role) => ({
+      namespace: required(role["namespace"]),
+      name: required(role["name"]),
+      description: text(role["description"]) ?? "",
+      permissions: list(role["permissions"]).map((held) => ({
+        name: required(held["name"]),
+        condition: text(held["condition"]),
+      })),
+      includes: list(role["includes"]).map((included) => ({
+        namespace: required(included["namespace"]),
+        name: required(included["name"]),
+      })),
+    }));
+  }
+
+  /** Defines a role, or replaces it whole; the server checks its conditions. */
+  async defineRole(resourceServerId: string, role: RoleDefinition): Promise<void> {
+    await this.#send(
+      "PUT",
+      `/resource-servers/${encodeURIComponent(resourceServerId)}/roles/${encodeURIComponent(role.name)}`,
+      {
+        description: role.description,
+        permissions: role.permissions.map((held) =>
+          held.condition === null ? { name: held.name } : { name: held.name, condition: held.condition },
+        ),
+        includes: role.includes,
+      },
+    );
+  }
+
+  async listAssignments(kind: "user" | "client", id: string): Promise<RoleAssignment[]> {
+    const owner = kind === "user" ? "users" : "clients";
+    return list((await this.#send("GET", `/${owner}/${encodeURIComponent(id)}/role-assignments`))["items"]).map(
+      (held) => {
+        const principal = fields(held["principal"]);
+        const role = fields(held["role"]);
+        return {
+          principal: { kind: principal["kind"] === "client" ? "client" : "user", id: required(principal["id"]) },
+          role: { namespace: required(role["namespace"]), name: required(role["name"]) },
+          applicationId: text(held["application_id"]),
+          validUntil: text(held["valid_until"]),
+        };
+      },
+    );
+  }
+
+  async revokeAssignment(assignment: RoleAssignment): Promise<void> {
+    await this.#send("POST", "/role-assignments:revoke", {
+      principal: assignment.principal,
+      role: assignment.role,
+      ...(assignment.applicationId === null ? {} : { application_id: assignment.applicationId }),
+    });
+  }
+
+  async unbind(resourceServerId: string): Promise<void> {
+    await this.#send("DELETE", `/resource-servers/${encodeURIComponent(resourceServerId)}/binding`);
+  }
+
+  async listBindings(): Promise<Binding[]> {
+    return list((await this.#send("GET", "/bindings"))["items"]).map((binding) => ({
+      namespace: required(binding["namespace"]),
+      engine: required(binding["engine"]),
+      timeLimitMilliseconds: typeof binding["time_limit_milliseconds"] === "number" ? binding["time_limit_milliseconds"] : 0,
+      sensitive: binding["sensitive"] === true,
+      failOpenActions: Array.isArray(binding["fail_open_actions"])
+        ? binding["fail_open_actions"].filter((action): action is string => typeof action === "string")
+        : [],
+    }));
+  }
+
+  async policyStatus(): Promise<PolicyStatus> {
+    const body = await this.#send("GET", "/policy-status");
+    const latest = body["latest"] === undefined ? null : fields(body["latest"]);
+    return {
+      latest:
+        latest === null
+          ? null
+          : {
+              revision: typeof latest["revision"] === "number" ? latest["revision"] : 0,
+              version: typeof latest["version"] === "number" ? latest["version"] : null,
+              publishedAt: required(latest["published_at"]),
+            },
+      instances: list(body["instances"]).map((instance) => ({
+        instance: required(instance["instance"]),
+        activeRevision: text(instance["active_revision"]),
+        current: instance["current"] === true,
+        error: text(instance["error"]),
+      })),
+      pendingActivation: body["pending_activation"] === true,
+    };
+  }
+
+  async listDecisions(effect: string | null): Promise<DecisionRecord[]> {
+    const query = effect === null ? "" : `&effect=${encodeURIComponent(effect)}`;
+    return list((await this.#send("GET", `/decisions?limit=50${query}`))["items"]).map((record) => {
+      const subject = fields(record["subject"]);
+      const effectOf = record["effect"];
+      return {
+        id: required(record["decision_id"]),
+        namespace: required(record["namespace"]),
+        subject: `${required(subject["kind"])}:${required(subject["id"])}`,
+        action: required(record["action"]),
+        effect: effectOf === "allow" || effectOf === "indeterminate" ? effectOf : "deny",
+        reason: required(record["reason"]),
+        engine: text(record["engine"]),
+        decidedAt: required(record["decided_at"]),
+      };
+    });
+  }
+
+  async listApplications(): Promise<Application[]> {
+    return list((await this.#send("GET", "/applications"))["items"]).map(application);
+  }
+
+  async getApplication(id: string): Promise<Application> {
+    return application(await this.#send("GET", `/applications/${encodeURIComponent(id)}`));
+  }
+
+  async addApplication(settings: ApplicationSettings): Promise<Application> {
+    return application(
+      await this.#send("POST", "/applications", { name: settings.name.trim(), first_party: settings.firstParty }),
+    );
+  }
+
+  async changeApplication(id: string, settings: ApplicationSettings): Promise<Application> {
+    return application(
+      await this.#send("PATCH", `/applications/${encodeURIComponent(id)}`, {
+        name: settings.name.trim(),
+        first_party: settings.firstParty,
+      }),
+    );
+  }
+
+  async disableApplication(id: string): Promise<Application> {
+    return application(await this.#send("POST", `/applications/${encodeURIComponent(id)}:disable`));
+  }
+
+  async enableApplication(id: string): Promise<Application> {
+    return application(await this.#send("POST", `/applications/${encodeURIComponent(id)}:enable`));
+  }
+
+  async listClients(applicationId: string): Promise<ApplicationClient[]> {
+    const body = await this.#send("GET", `/applications/${encodeURIComponent(applicationId)}/clients`);
+    return list(body["items"]).map(applicationClient);
+  }
+
+  /** Creates a client. Its first secret, when it has one, is in this answer only. */
+  async addClient(applicationId: string, type: string, settings: ClientSettings): Promise<CreatedClient> {
+    const body = await this.#send("POST", `/applications/${encodeURIComponent(applicationId)}/clients`, {
+      ...clientBody(settings),
+      type,
+    });
+    return { client: applicationClient(body), secret: text(body["client_secret"]) };
+  }
+
+  async getClient(id: string): Promise<ApplicationClient> {
+    return applicationClient(await this.#send("GET", `/clients/${encodeURIComponent(id)}`));
+  }
+
+  async changeClient(id: string, settings: ClientSettings): Promise<ApplicationClient> {
+    return applicationClient(await this.#send("PATCH", `/clients/${encodeURIComponent(id)}`, clientBody(settings)));
+  }
+
+  async disableClient(id: string): Promise<ApplicationClient> {
+    return applicationClient(await this.#send("POST", `/clients/${encodeURIComponent(id)}:disable`));
+  }
+
+  async enableClient(id: string): Promise<ApplicationClient> {
+    return applicationClient(await this.#send("POST", `/clients/${encodeURIComponent(id)}:enable`));
+  }
+
+  /** Gives a client a new secret, in this answer only. */
+  async rotateSecret(id: string): Promise<NewSecret> {
+    const body = await this.#send("POST", `/clients/${encodeURIComponent(id)}/secrets`, {});
+    return { id: required(body["id"]), secret: required(body["client_secret"]), expiresAt: required(body["expires_at"]) };
+  }
+
+  async revokeSecret(id: string, secretId: string): Promise<void> {
+    await this.#send("DELETE", `/clients/${encodeURIComponent(id)}/secrets/${encodeURIComponent(secretId)}`);
+  }
+
+  /** Adds a public key, given as the JSON Web Key it is. */
+  async addKey(id: string, jwk: unknown): Promise<ApplicationClient> {
+    return applicationClient(await this.#send("POST", `/clients/${encodeURIComponent(id)}/keys`, { jwk }));
+  }
+
+  async removeKey(id: string, kid: string): Promise<void> {
+    await this.#send("DELETE", `/clients/${encodeURIComponent(id)}/keys/${encodeURIComponent(kid)}`);
+  }
+
+  async listResourceServers(): Promise<ResourceServer[]> {
+    return list((await this.#send("GET", "/resource-servers"))["items"]).map(resourceServer);
+  }
+
+  async addResourceServer(applicationId: string, audience: string, name: string, scopes: Scope[]): Promise<ResourceServer> {
+    return resourceServer(
+      await this.#send("POST", "/resource-servers", {
+        application_id: applicationId,
+        audience: audience.trim(),
+        name: name.trim(),
+        scopes,
+      }),
+    );
+  }
+
+  async changeResourceServer(id: string, name: string, scopes: Scope[]): Promise<ResourceServer> {
+    return resourceServer(
+      await this.#send("PATCH", `/resource-servers/${encodeURIComponent(id)}`, { name: name.trim(), scopes }),
+    );
   }
 
   async listAuditRecords(cursor: string | null = null): Promise<Page<AuditRecord>> {

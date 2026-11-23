@@ -68,8 +68,8 @@ sequenceDiagram
     Note over OAuth: Invalid client or redirect_uri: render an error page, never redirect
     OAuth->>Session: GetSession(cookie)
     alt no session, or acr / max_age / prompt not satisfied
-        Server-->>Browser: 302 to auth-ui with interaction_id
-        Note over Browser,Server: Sequence 1 runs, then the browser returns to /authorize/resume
+        Server-->>Browser: 302 to /account/sign-in?continue=authorization, with the cookie of the pending request
+        Note over Browser,Server: Sequence 1 runs; its answer says continue, and the browser goes to /oauth2/authorize/resume
     end
     alt consent missing for requested scopes
         Server-->>Browser: 302 to consent screen
@@ -97,6 +97,8 @@ Security properties enforced here: PKCE S256 only (`plain` rejected), exact redi
 
 ## 3. OpenID Provider
 
+Built by Issue-59, without `sid`, which comes with logout (Issue-60). `acr_values` and `max_age` are met by a step-up, built by Issue-69 and drawn below. [The OAuth context](../architecture/contexts/oauth.md#openid-provider) holds the details.
+
 ```mermaid
 sequenceDiagram
     autonumber
@@ -116,13 +118,14 @@ sequenceDiagram
     Note over Server: Sequence 2, with the session facts checked against max_age and acr_values
     Server-->>Browser: 302 redirect_uri?code&state&iss
     RelyingParty->>Server: POST /token
-    OAuth->>Identity: GetClaims(user, consented scopes)
-    OAuth->>OAuth: subject = public identifier or pairwise(sector, user, salt)
-    OAuth->>Keys: Sign ID Token {iss, sub, aud, exp, iat, auth_time, nonce, acr, amr, sid, at_hash}
+    OAuth->>OAuth: subject = the user identifier (public subjects)
+    OAuth->>Keys: Sign ID Token {iss, sub, aud, exp, iat, auth_time, nonce, acr, amr, at_hash}
     Server-->>RelyingParty: {id_token, access_token, refresh_token}
     RelyingParty->>RelyingParty: validate signature, iss, aud, exp, nonce
     RelyingParty->>Server: GET /t/acme/oauth2/userinfo with bearer token
-    Server-->>RelyingParty: claims for consented scopes
+    OAuth->>Keys: published keys, to check the access token
+    OAuth->>Identity: the person, for the claims of the token's scopes
+    Server-->>RelyingParty: claims for the token's scopes
     Note over RelyingParty,Server: Logout
     RelyingParty->>Browser: redirect to /logout?id_token_hint&post_logout_redirect_uri&state
     Browser->>Server: GET /t/acme/oauth2/logout
@@ -130,6 +133,39 @@ sequenceDiagram
     Server->>Server: revoke SsoSession, enqueue back-channel logout
     Server-->>Browser: 302 post_logout_redirect_uri?state
     Server->>RelyingParty: POST backchannel_logout_uri {logout_token} from the worker
+```
+
+### Step-up
+
+A person signed in with a password, and an application asking for a multi-factor level ([assurance and step-up](../architecture/contexts/oauth.md#assurance-and-step-up)):
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Browser as Browser
+    participant Server as hodor-server
+    participant OAuth as oauth
+    participant Authentication as authentication
+    participant Session as session
+
+    Browser->>Server: GET /t/acme/oauth2/authorize?acr_values=urn:hodor:acr:mfa (session cookie)
+    Server->>OAuth: check the request; the level asked for is multi_factor
+    Server->>Authentication: assurance of the session's methods: single factor
+    Server->>Authentication: start a step-up of the session, carrying password, demanding multi_factor
+    alt the person has no second factor
+        Authentication-->>Server: cannot be reached
+        Server-->>Browser: 302 redirect_uri?error=unmet_authentication_requirements
+    else
+        Authentication-->>Server: step-up waiting for the webauthn step
+        Server->>OAuth: keep the request pending
+        Server-->>Browser: 302 sign-in page, with the sign-in and authorization cookies
+        Browser->>Server: the security key's answer, through the interaction interface
+        Authentication->>Session: raise the session: webauthn added, multi_factor, new token
+        Server-->>Browser: completed, continue to /oauth2/authorize/resume
+        Browser->>Server: GET /oauth2/authorize/resume
+        Server->>OAuth: issue a code with acr urn:hodor:acr:mfa
+        Server-->>Browser: 302 redirect_uri?code&state&iss
+    end
 ```
 
 ## 4. Social login over OpenID Connect
@@ -241,8 +277,8 @@ stateDiagram-v2
 | Artifact | Format | Storage | Default lifetime | Revocation |
 |---|---|---|---|---|
 | Authorization code | Opaque, 256-bit random | SHA-256 hash | 60 s, single use | Consumed on use |
-| Access token | JWT (RFC 9068) signed by the tenant key; opaque as a per-client option | Not stored (JWT) or hash (opaque) | 5 min | Short lifetime; `jti` deny-list for immediate revocation; introspection reflects the grant state |
-| Refresh token | Opaque, 256-bit random | SHA-256 hash, family and generation | 30 days absolute, 14 days idle | Rotation; reuse revokes the family |
+| Access token | JWT (RFC 9068) signed by the tenant key | Not stored; its `jti` is recorded with its client, grant and family ([the register of access tokens](../architecture/contexts/oauth.md#the-register-of-access-tokens)) | 5 min | Short lifetime; the revocation endpoint revokes its record; introspection and UserInfo refuse it once its record, grant or family is revoked |
+| Refresh token | Opaque, 256 bits: random for the first of a family, derived from the one before and the family's sealed secret after it | SHA-256 hash, family and generation | 30 days absolute, 7 days idle, from the client's token policy | Rotation; reuse revokes the family and its grant |
 | ID token | JWT | Not stored | 5 min | Not revocable; it is a login assertion, not a credential |
 | Pushed authorization requests `request_uri` | Opaque reference | Row with time to live | 60 s, single use | Consumed on use |
 | Device code | Opaque + short user code | Hash | 10 min | Consumed or expired |
@@ -250,7 +286,7 @@ stateDiagram-v2
 Rules:
 
 - Sessions, access tokens and refresh tokens have independent lifetimes. A refresh token issued with `offline_access` survives session end; one without it is revoked with the session.
-- Rotation tolerates one benign retry: the immediately previous generation is accepted for a few seconds and returns the same successor, so a client that lost the response does not pending authorization reuse detection.
+- Rotation tolerates one benign retry: the immediately previous generation, presented again by the same client for the same scopes within the retry window (10 seconds by default), returns the same successor, so a client that lost the response does not set off reuse detection. See [refresh tokens](../architecture/contexts/oauth.md#refresh-tokens).
 - Sender-constrained tokens (DPoP, mTLS) carry `cnf`; bearer refresh tokens for public clients are always rotated.
 - Signing keys rotate on a schedule. A key leaves the JWKS only after every token it signed has expired.
 

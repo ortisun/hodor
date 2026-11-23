@@ -23,9 +23,10 @@ use hodor_kernel::random::testing::FakeDigest;
 use hodor_kernel::sealing::testing::FakeSecretBox;
 use hodor_kernel::uow::testing::InMemoryUnitOfWorkFactory;
 use hodor_kernel::{
-    Caller, DomainError, EventHandler, TenantContext, TenantId, Timestamp, UnitOfWorkFactory,
-    UserId,
+    Caller, DomainError, EventHandler, TenantContext, Timestamp, UnitOfWorkFactory, UserId,
 };
+use hodor_keys::api::{KeyService, RotationPolicy};
+use hodor_keys::testing::{FakeKeyProvider, InMemoryKeys};
 use hodor_protocol_http::{
     ADMIN_OPENAPI, ADMIN_OPERATIONS, AdminState, Limits, ResolvedTenant, TenantResolver,
     TenantStatus, admin_routes, public_router,
@@ -34,6 +35,8 @@ use hodor_session::api::{
     Assurance, ClientInfo, SessionService, SessionTimeouts, SessionToken, StartSession,
 };
 use hodor_session::testing::{InMemorySessions, SequentialRandom};
+use hodor_tenant::api::{CreateTenant, TenantService};
+use hodor_tenant::testing::InMemoryTenants;
 use http_body_util::BodyExt as _;
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -69,16 +72,168 @@ struct World {
     tokens: AccessTokenService,
     authorization: AuthorizationService,
     sessions: SessionService,
+    consents: hodor_oauth::api::ConsentService,
     audit: AuditHandler,
     recorded: AtomicUsize,
     acme: TenantContext,
     globex: TenantContext,
+    /// The tenants, for changing their policy.
+    tenants: hodor_tenant::api::TenantService,
+    /// People's keys, given as a finished registration would.
+    keys_of_people: hodor_credential::testing::InMemoryWebAuthn,
+    /// People's authenticator applications.
+    totp: hodor_credential::api::TotpService,
+    /// The record of decisions.
+    decisions: hodor_authorization::testing::InMemoryDecisionLog,
     /// The administrator of Acme and their token.
     administrator: UserId,
     administrator_token: String,
 }
 
+/// The applications use cases on in-memory stores.
+fn applications(
+    units_of_work: &InMemoryUnitOfWorkFactory,
+    clock: Arc<FixedClock>,
+) -> (
+    hodor_oauth::api::ApplicationService,
+    hodor_oauth::api::ConsentService,
+) {
+    let stores = hodor_oauth::testing::InMemoryStores::default();
+    let consents = hodor_oauth::testing::consent_service(
+        Arc::new(units_of_work.clone()),
+        &stores,
+        clock.clone(),
+    );
+    let applications =
+        hodor_oauth::api::ApplicationService::new(hodor_oauth::api::ApplicationPorts {
+            units_of_work: Arc::new(units_of_work.clone()),
+            applications: Arc::new(stores.applications),
+            clients: Arc::new(stores.clients),
+            resource_servers: Arc::new(stores.resource_servers),
+            digest: Arc::new(FakeDigest),
+            random: Arc::new(hodor_oauth::testing::DistinctRandom),
+            clock,
+        });
+    (applications, consents)
+}
+
+/// The use cases of roles, bindings and policy versions on in-memory
+/// stores, with the native engine registered.
+fn authorization_services(
+    units_of_work: &InMemoryUnitOfWorkFactory,
+    clock: Arc<FixedClock>,
+) -> (
+    hodor_authorization::api::RoleService,
+    hodor_authorization::api::EvaluationService,
+    hodor_authorization_opa::api::PolicyService,
+) {
+    use hodor_authorization::testing::{
+        InMemoryEngineBindings, InMemoryNativeRoles, StaticSubjectAttributes,
+    };
+    use hodor_authorization_opa::testing::{
+        InMemoryBundles, InMemoryInstances, InMemoryPolicyVersions, InMemoryPublications,
+        InMemorySimulations, InMemoryStatuses, InMemoryUploadedDecisions,
+    };
+    let units = || -> Arc<dyn hodor_kernel::UnitOfWorkFactory> { Arc::new(units_of_work.clone()) };
+    let assignments = hodor_authorization::testing::InMemoryRoleAssignments::default();
+    let roles = InMemoryNativeRoles::default();
+    let engine = hodor_authorization::api::NativeEngine::new(
+        units(),
+        Arc::new(assignments.clone()),
+        Arc::new(roles.clone()),
+        clock.clone(),
+    );
+    let mut registry = hodor_authorization::api::EngineRegistry::new();
+    registry.register(Arc::new(engine)).expect("register");
+    let evaluation = hodor_authorization::api::EvaluationService::new(
+        units(),
+        Arc::new(assignments),
+        Arc::new(InMemoryEngineBindings::default()),
+        Arc::new(StaticSubjectAttributes::default()),
+        registry,
+        clock.clone(),
+    );
+    let bundles = hodor_authorization_opa::api::BundleService::new(
+        Arc::new(InMemoryInstances::default()),
+        Arc::new(InMemoryBundles::default()),
+        Arc::new(InMemoryStatuses::default()),
+        Arc::new(InMemoryUploadedDecisions::default()),
+        units(),
+        Arc::new(hodor_adapters_crypto::Sha256Digest),
+        Arc::new(SequentialRandom::default()),
+        clock.clone(),
+    );
+    let policies = hodor_authorization_opa::api::PolicyService::new(
+        Arc::new(InMemoryPolicyVersions::default()),
+        Arc::new(InMemoryPublications::default()),
+        Arc::new(InMemorySimulations::default()),
+        bundles,
+        units(),
+        Arc::new(hodor_adapters_crypto::Sha256Digest),
+        clock.clone(),
+    );
+    (
+        hodor_authorization::api::RoleService::new(units(), Arc::new(roles), clock),
+        evaluation,
+        policies,
+    )
+}
+
+/// The use cases of people's factors on in-memory stores, with
+/// authenticator applications. Returns the key store too, for a test to
+/// give someone a key as a finished registration would.
+fn factors(
+    units_of_work: &InMemoryUnitOfWorkFactory,
+    clock: Arc<FixedClock>,
+    identity: &IdentityService,
+    tenants: &hodor_tenant::api::TenantService,
+) -> (
+    hodor_authentication::api::FactorService,
+    hodor_credential::testing::InMemoryWebAuthn,
+    hodor_credential::api::TotpService,
+) {
+    let units = || Arc::new(units_of_work.clone());
+    let keys = hodor_credential::testing::InMemoryWebAuthn::default();
+    let webauthn = hodor_credential::api::WebAuthnService::new(
+        units(),
+        Arc::new(keys.clone()),
+        hodor_credential::api::RelyingParty::from_public_address("https://auth.example")
+            .expect("valid"),
+        Arc::new(hodor_adapters_crypto::Sha256Digest),
+        Arc::new(hodor_adapters_crypto::AwsLcVerifier),
+        Arc::new(hodor_adapters_crypto::OsRandom),
+        clock.clone(),
+    );
+    let recovery_codes = hodor_credential::api::RecoveryCodeService::new(
+        units(),
+        Arc::new(hodor_credential::testing::InMemoryRecoveryCodes::default()),
+        Arc::new(hodor_adapters_crypto::Sha256Digest),
+        Arc::new(hodor_adapters_crypto::OsRandom),
+        clock.clone(),
+    );
+    let totp = hodor_credential::api::TotpService::new(
+        units(),
+        Arc::new(hodor_credential::testing::InMemoryTotps::default()),
+        Arc::new(FakeSecretBox),
+        Arc::new(hodor_credential::testing::FakeHmacSha1),
+        Arc::new(hodor_adapters_crypto::OsRandom),
+        clock,
+    );
+    let service = hodor_authentication::api::FactorService::new(
+        identity.clone(),
+        tenants.clone(),
+        webauthn,
+        recovery_codes,
+    )
+    .with_totp(totp.clone());
+    (service, keys, totp)
+}
+
 async fn world() -> World {
+    world_with_keys(true).await
+}
+
+async fn world_with_keys(with_keys: bool) -> World {
     let units_of_work = InMemoryUnitOfWorkFactory::default();
     let clock = Arc::new(FixedClock::at(Timestamp::UNIX_EPOCH));
     let digest = Arc::new(FakeDigest);
@@ -121,8 +276,44 @@ async fn world() -> World {
     )
     .allowing_directory_hosts(&["ldap.example.com:636".to_owned()]);
 
-    let acme = TenantContext::assume(TenantId::generate());
-    let globex = TenantContext::assume(TenantId::generate());
+    let keys = with_keys.then(|| {
+        KeyService::new(
+            units(),
+            Arc::new(InMemoryKeys::default()),
+            Arc::new(FakeKeyProvider),
+            clock.clone(),
+        )
+    });
+
+    let tenant_rows = InMemoryTenants::default();
+    let tenants = TenantService::new(
+        units(),
+        Arc::new(tenant_rows.clone()),
+        Arc::new(tenant_rows),
+        clock.clone(),
+    );
+    let mut contexts = Vec::new();
+    for slug in ["acme", "globex"] {
+        let created = tenants
+            .create(
+                CreateTenant {
+                    slug: slug.to_owned(),
+                    display_name: slug.to_uppercase(),
+                    open_registration: false,
+                    system: false,
+                },
+                Caller::system(),
+            )
+            .await
+            .expect("tenant");
+        contexts.push(TenantContext::assume(created.id()));
+    }
+    let (acme, globex) = (contexts[0].clone(), contexts[1].clone());
+    let (factor_service, keys_of_people, totp) =
+        factors(&units_of_work, clock.clone(), &identity, &tenants);
+    let oauth = applications(&units_of_work, clock.clone());
+    let decision_store = hodor_authorization::testing::InMemoryDecisionLog::default();
+    let authorization_parts = authorization_services(&units_of_work, clock.clone());
     let state = AdminState {
         tokens: tokens.clone(),
         authorization: authorization.clone(),
@@ -130,6 +321,21 @@ async fn world() -> World {
         sessions: sessions.clone(),
         audit: audit.clone(),
         federation: Some(federation),
+        keys,
+        key_rotation: RotationPolicy::DEFAULT,
+        applications: oauth.0,
+        consents: oauth.1.clone(),
+        tenants: tenants.clone(),
+        factors: factor_service,
+        decisions: hodor_authorization::api::DecisionLog::new(
+            units(),
+            Arc::new(decision_store.clone()),
+            Arc::new(SequentialRandom::default()),
+            clock.clone(),
+        ),
+        roles: authorization_parts.0,
+        evaluation: authorization_parts.1,
+        policies: Some(authorization_parts.2),
         public_url: "https://auth.example".to_owned(),
     };
     let router = public_router(
@@ -150,10 +356,15 @@ async fn world() -> World {
         tokens,
         authorization,
         sessions,
+        consents: oauth.1,
         audit: AuditHandler::new(audit),
         recorded: AtomicUsize::new(0),
         acme,
         globex,
+        tenants,
+        keys_of_people,
+        totp,
+        decisions: decision_store,
         administrator: UserId::generate(),
         administrator_token: String::new(),
     };
@@ -329,6 +540,17 @@ impl Operation {
                 .replace("{user_id}", &UserId::generate().to_string())
                 .replace("{session_id}", &UserId::generate().to_string())
                 .replace("{provider_id}", &UserId::generate().to_string())
+                .replace("{key_set}", "sig")
+                .replace("{version_id}", &UserId::generate().to_string())
+                .replace("{application_id}", &UserId::generate().to_string())
+                .replace("{client_id}", &UserId::generate().to_string())
+                .replace("{secret_id}", &UserId::generate().to_string())
+                .replace("{key_id}", "a-key")
+                .replace("{resource_server_id}", &UserId::generate().to_string())
+                .replace("{permission}", "document:read")
+                .replace("{role}", "editor")
+                .replace("{number}", "7")
+                .replace("{simulation_id}", &UserId::generate().to_string())
         )
     }
 }
@@ -375,7 +597,7 @@ fn the_document_and_the_routes_list_the_same_operations_and_permissions() {
         })
         .collect();
     assert_eq!(documented, served);
-    assert_eq!(served.len(), 14);
+    assert_eq!(served.len(), 71);
 
     // Every operation says how it refuses.
     let document: serde_json::Value = serde_json::from_str(ADMIN_OPENAPI).expect("valid JSON");
@@ -1499,4 +1721,1636 @@ async fn an_administrator_adds_and_changes_a_saml_provider() {
         .await;
     assert_eq!(secret.status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(secret.code(), "federation.client_secret_invalid");
+}
+
+#[tokio::test]
+async fn an_administrator_rotates_and_revokes_a_signing_key_and_it_is_audited() {
+    let world = world().await;
+    let empty = world.as_administrator(Method::GET, "/keys/sig", None).await;
+    assert_eq!(empty.status, StatusCode::OK);
+    assert_eq!(empty.body["items"], serde_json::json!([]));
+
+    let first = world
+        .as_administrator(Method::POST, "/keys/sig:rotate", None)
+        .await;
+    assert_eq!(first.status, StatusCode::OK, "{:?}", first.body);
+    assert_eq!(first.body["state"], "active");
+    assert_eq!(first.body["algorithm"], "ES256");
+    assert_eq!(first.body["key_use"], "sig");
+    let first_id = first.body["id"].as_str().expect("id").to_owned();
+
+    let second = world
+        .as_administrator(
+            Method::POST,
+            "/keys/sig:rotate",
+            Some(serde_json::json!({ "algorithm": "ES256" })),
+        )
+        .await;
+    assert_eq!(second.status, StatusCode::OK);
+    let listed = world.as_administrator(Method::GET, "/keys/sig", None).await;
+    let items = listed.body["items"].as_array().expect("items");
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0]["id"], second.body["id"]);
+    assert_eq!(items[0]["state"], "active");
+    assert_eq!(items[1]["id"], first_id.as_str());
+    assert_eq!(items[1]["state"], "retiring");
+    // A day of overlap, the installation's.
+    assert_eq!(items[1]["retire_after"], "1970-01-02T00:00:00Z");
+
+    let revoked = world
+        .as_administrator(
+            Method::POST,
+            &format!("/keys/sig/versions/{first_id}:revoke"),
+            Some(serde_json::json!({ "reason": "the laptop was stolen" })),
+        )
+        .await;
+    assert_eq!(revoked.status, StatusCode::OK);
+    assert_eq!(revoked.body["state"], "revoked");
+    assert_eq!(revoked.body["revocation_reason"], "the laptop was stolen");
+
+    // Nothing of a key is in any answer.
+    for body in [&first.body, &second.body, &listed.body, &revoked.body] {
+        let written = body.to_string();
+        for member in ["material", "public", "\"x\"", "\"n\""] {
+            assert!(!written.contains(member), "{member} in {written}");
+        }
+    }
+
+    world.record_audit().await;
+    let records = world
+        .as_administrator(Method::GET, "/audit-records?limit=200", None)
+        .await;
+    let actions: Vec<&serde_json::Value> = records.body["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .filter(|record| {
+            record["action"]
+                .as_str()
+                .is_some_and(|action| action.starts_with("keys."))
+        })
+        .collect();
+    assert_eq!(actions.len(), 5, "two made, two activated, one revoked");
+    for record in actions {
+        assert_eq!(record["actor"]["id"], world.administrator.to_string());
+    }
+}
+
+#[tokio::test]
+async fn what_breaks_a_rule_of_keys_is_refused_with_its_code() {
+    let world = world().await;
+    let rotated = world
+        .as_administrator(Method::POST, "/keys/sig:rotate", None)
+        .await;
+    let id = rotated.body["id"].as_str().expect("id").to_owned();
+    let cases = [
+        (
+            Method::GET,
+            "/keys/enc".to_owned(),
+            None,
+            StatusCode::NOT_FOUND,
+            "keys.key_set_not_found",
+        ),
+        (
+            Method::GET,
+            "/keys/everything".to_owned(),
+            None,
+            StatusCode::NOT_FOUND,
+            "keys.key_set_not_found",
+        ),
+        (
+            Method::POST,
+            "/keys/data:rotate".to_owned(),
+            None,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "keys.rotation_not_offered",
+        ),
+        (
+            Method::POST,
+            "/keys/sig:explode".to_owned(),
+            None,
+            StatusCode::NOT_FOUND,
+            "route.not_found",
+        ),
+        (
+            Method::POST,
+            "/keys/sig:rotate".to_owned(),
+            Some(serde_json::json!({ "algorithm": "none" })),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "keys.algorithm_unsuitable",
+        ),
+        (
+            Method::POST,
+            "/keys/sig:rotate".to_owned(),
+            Some(serde_json::json!({ "algorithm": "A256GCM" })),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "keys.algorithm_unsuitable",
+        ),
+        (
+            Method::POST,
+            "/keys/sig:rotate".to_owned(),
+            Some(serde_json::json!({ "algorithm": "ES256", "overlap": 0 })),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "request.body_invalid",
+        ),
+        (
+            Method::POST,
+            format!("/keys/sig/versions/{id}:revoke"),
+            Some(serde_json::json!({ "reason": "" })),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "keys.reason_invalid",
+        ),
+        (
+            Method::POST,
+            format!("/keys/sig/versions/{id}:revoke"),
+            Some(serde_json::json!({ "reason": "x".repeat(201) })),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "keys.reason_invalid",
+        ),
+        (
+            Method::POST,
+            format!("/keys/sig/versions/{id}:revoke"),
+            None,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "request.body_invalid",
+        ),
+        (
+            Method::POST,
+            format!("/keys/data/versions/{id}:revoke"),
+            Some(serde_json::json!({ "reason": "wrong set" })),
+            StatusCode::NOT_FOUND,
+            "keys.version_not_found",
+        ),
+        (
+            Method::POST,
+            format!("/keys/sig/versions/{}:revoke", UserId::generate()),
+            Some(serde_json::json!({ "reason": "unknown" })),
+            StatusCode::NOT_FOUND,
+            "keys.version_not_found",
+        ),
+        (
+            Method::POST,
+            "/keys/sig/versions/not-an-identifier:revoke".to_owned(),
+            Some(serde_json::json!({ "reason": "malformed" })),
+            StatusCode::NOT_FOUND,
+            "keys.version_not_found",
+        ),
+        (
+            Method::POST,
+            format!("/keys/sig/versions/{id}:destroy"),
+            Some(serde_json::json!({ "reason": "no such action" })),
+            StatusCode::NOT_FOUND,
+            "route.not_found",
+        ),
+    ];
+    for (method, path, body, status, code) in cases {
+        let reply = world.as_administrator(method.clone(), &path, body).await;
+        assert_eq!(reply.status, status, "{method} {path}: {:?}", reply.body);
+        assert_eq!(reply.code(), code, "{method} {path}");
+    }
+    // The version is still active: nothing above changed it.
+    let listed = world.as_administrator(Method::GET, "/keys/sig", None).await;
+    assert_eq!(listed.body["items"][0]["state"], "active");
+}
+
+#[tokio::test]
+async fn the_keys_of_one_tenant_do_not_exist_for_another() {
+    let world = world().await;
+    let rotated = world
+        .as_administrator(Method::POST, "/keys/sig:rotate", None)
+        .await;
+    let id = rotated.body["id"].as_str().expect("id").to_owned();
+    let (_, globex) = world
+        .person(
+            &world.globex,
+            "root@globex.example",
+            &[Role::TenantAdministrator],
+        )
+        .await;
+    let authorization = format!("Bearer {globex}");
+
+    let listed = world
+        .send(
+            Method::GET,
+            "/t/globex/api/v1/admin/keys/sig",
+            Some(&authorization),
+            None,
+        )
+        .await;
+    assert_eq!(listed.status, StatusCode::OK);
+    assert_eq!(listed.body["items"], serde_json::json!([]));
+    let revoked = world
+        .send(
+            Method::POST,
+            &format!("/t/globex/api/v1/admin/keys/sig/versions/{id}:revoke"),
+            Some(&authorization),
+            Some(serde_json::json!({ "reason": "not ours" })),
+        )
+        .await;
+    assert_eq!(revoked.status, StatusCode::NOT_FOUND);
+    assert_eq!(revoked.code(), "keys.version_not_found");
+    // Globex's token means nothing at Acme.
+    let elsewhere = world
+        .send(
+            Method::GET,
+            "/t/acme/api/v1/admin/keys/sig",
+            Some(&authorization),
+            None,
+        )
+        .await;
+    assert_eq!(elsewhere.status, StatusCode::UNAUTHORIZED);
+
+    let acme = world.as_administrator(Method::GET, "/keys/sig", None).await;
+    assert_eq!(acme.body["items"][0]["state"], "active");
+}
+
+#[tokio::test]
+async fn without_keys_to_wrap_them_with_the_key_routes_say_so() {
+    let world = world_with_keys(false).await;
+    for (method, path) in [
+        (Method::GET, "/keys/sig".to_owned()),
+        (Method::POST, "/keys/sig:rotate".to_owned()),
+        (
+            Method::POST,
+            format!("/keys/sig/versions/{}:revoke", UserId::generate()),
+        ),
+    ] {
+        let reply = world
+            .as_administrator(
+                method.clone(),
+                &path,
+                Some(serde_json::json!({ "reason": "test" })),
+            )
+            .await;
+        assert_eq!(
+            reply.status,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "{method} {path}"
+        );
+        assert_eq!(reply.code(), "keys.not_configured", "{method} {path}");
+    }
+}
+
+// Applications, clients and resource servers.
+
+/// Registers an application in Acme and answers its identifier.
+async fn new_application(world: &World, name: &str, first_party: bool) -> String {
+    let created = world
+        .as_administrator(
+            Method::POST,
+            "/applications",
+            Some(serde_json::json!({ "name": name, "first_party": first_party })),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    created.body["id"].as_str().expect("id").to_owned()
+}
+
+fn web_client() -> serde_json::Value {
+    serde_json::json!({
+        "name": "Billing web site",
+        "type": "confidential",
+        "grant_types": ["authorization_code", "refresh_token"],
+        "redirect_uris": ["https://billing.example.com/callback"],
+        "allowed_scopes": ["openid", "email"],
+    })
+}
+
+#[tokio::test]
+async fn an_administrator_registers_an_application_with_its_clients_and_resource_server() {
+    let world = world().await;
+    let application = new_application(&world, "Billing", true).await;
+    let read = world
+        .as_administrator(Method::GET, &format!("/applications/{application}"), None)
+        .await;
+    assert_eq!(read.status, StatusCode::OK);
+    assert_eq!(read.body["name"], "Billing");
+    assert_eq!(read.body["first_party"], true);
+    assert_eq!(read.body["status"], "enabled");
+
+    // A change leaves out what stays.
+    let changed = world
+        .as_administrator(
+            Method::PATCH,
+            &format!("/applications/{application}"),
+            Some(serde_json::json!({ "name": "Billing and invoices" })),
+        )
+        .await;
+    assert_eq!(changed.status, StatusCode::OK);
+    assert_eq!(changed.body["name"], "Billing and invoices");
+    assert_eq!(changed.body["first_party"], true);
+
+    let created = world
+        .as_administrator(
+            Method::POST,
+            &format!("/applications/{application}/clients"),
+            Some(web_client()),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    assert_eq!(created.body["type"], "confidential");
+    assert_eq!(created.body["authentication_method"], "client_secret_basic");
+    assert_eq!(created.body["require_pkce"], true);
+    assert_eq!(created.body["token_policy"]["access_token_seconds"], 300);
+    assert!(
+        created.body["client_secret"]
+            .as_str()
+            .is_some_and(|secret| secret.starts_with("hodor_cs_")),
+        "the first secret, once: {}",
+        created.body
+    );
+    let client = created.body["id"].as_str().expect("client").to_owned();
+
+    let listed = world
+        .as_administrator(
+            Method::GET,
+            &format!("/applications/{application}/clients"),
+            None,
+        )
+        .await;
+    assert_eq!(listed.status, StatusCode::OK);
+    assert_eq!(listed.body["items"][0]["id"], client.as_str());
+
+    // Changed settings are checked as a whole; the token policy takes
+    // any of its fields.
+    let changed = world
+        .as_administrator(
+            Method::PATCH,
+            &format!("/clients/{client}"),
+            Some(serde_json::json!({
+                "redirect_uris": ["https://billing.example.com/callback", "https://billing.example.com/other"],
+                "post_logout_redirect_uris": ["https://billing.example.com/signed-out"],
+                "token_policy": { "access_token_seconds": 600 },
+            })),
+        )
+        .await;
+    assert_eq!(changed.status, StatusCode::OK, "{}", changed.body);
+    assert_eq!(
+        changed.body["redirect_uris"].as_array().map(Vec::len),
+        Some(2)
+    );
+    assert_eq!(
+        changed.body["post_logout_redirect_uris"],
+        serde_json::json!(["https://billing.example.com/signed-out"])
+    );
+    assert_eq!(changed.body["token_policy"]["access_token_seconds"], 600);
+    assert_eq!(changed.body["token_policy"]["id_token_seconds"], 300);
+
+    // A new secret is shown once; the newest previous keeps working.
+    let rotated = world
+        .as_administrator(Method::POST, &format!("/clients/{client}/secrets"), None)
+        .await;
+    assert_eq!(rotated.status, StatusCode::CREATED, "{}", rotated.body);
+    let new_secret = rotated.body["id"].as_str().expect("secret").to_owned();
+    let now = world
+        .as_administrator(Method::GET, &format!("/clients/{client}"), None)
+        .await;
+    assert_eq!(now.body["secrets"].as_array().map(Vec::len), Some(2));
+    let revoked = world
+        .as_administrator(
+            Method::DELETE,
+            &format!("/clients/{client}/secrets/{new_secret}"),
+            None,
+        )
+        .await;
+    assert_eq!(revoked.status, StatusCode::NO_CONTENT);
+    let now = world
+        .as_administrator(Method::GET, &format!("/clients/{client}"), None)
+        .await;
+    assert_eq!(now.body["secrets"].as_array().map(Vec::len), Some(1));
+
+    let disabled = world
+        .as_administrator(Method::POST, &format!("/clients/{client}:disable"), None)
+        .await;
+    assert_eq!(disabled.body["status"], "disabled");
+    let enabled = world
+        .as_administrator(Method::POST, &format!("/clients/{client}:enable"), None)
+        .await;
+    assert_eq!(enabled.body["status"], "enabled");
+    let disabled = world
+        .as_administrator(
+            Method::POST,
+            &format!("/applications/{application}:disable"),
+            None,
+        )
+        .await;
+    assert_eq!(disabled.body["status"], "disabled");
+    let unknown = world
+        .as_administrator(
+            Method::POST,
+            &format!("/applications/{application}:archive"),
+            None,
+        )
+        .await;
+    assert_eq!(unknown.status, StatusCode::NOT_FOUND);
+    assert_eq!(unknown.code(), "route.not_found");
+
+    let server = world
+        .as_administrator(
+            Method::POST,
+            "/resource-servers",
+            Some(serde_json::json!({
+                "application_id": application,
+                "audience": "https://api.billing.example.com",
+                "name": "Billing interface",
+                "scopes": [{ "name": "invoices:read", "description": "Read your invoices" }],
+            })),
+        )
+        .await;
+    assert_eq!(server.status, StatusCode::CREATED, "{}", server.body);
+    let id = server.body["id"].as_str().expect("id").to_owned();
+    let changed = world
+        .as_administrator(
+            Method::PATCH,
+            &format!("/resource-servers/{id}"),
+            Some(serde_json::json!({
+                "scopes": [
+                    { "name": "invoices:read", "description": "Read your invoices" },
+                    { "name": "invoices:write" },
+                ],
+            })),
+        )
+        .await;
+    assert_eq!(changed.status, StatusCode::OK, "{}", changed.body);
+    assert_eq!(changed.body["audience"], "https://api.billing.example.com");
+    assert_eq!(changed.body["scopes"][1]["name"], "invoices:write");
+    let listed = world
+        .as_administrator(Method::GET, "/resource-servers", None)
+        .await;
+    assert_eq!(listed.body["items"][0]["id"], id.as_str());
+    // The audience can never change: the field is not taken.
+    let refused = world
+        .as_administrator(
+            Method::PATCH,
+            &format!("/resource-servers/{id}"),
+            Some(serde_json::json!({ "audience": "https://elsewhere.example.com" })),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // Every change is announced, under the administrator's name.
+    world.record_audit().await;
+    let records = world
+        .as_administrator(Method::GET, "/audit-records?limit=200", None)
+        .await;
+    let said = records.body.to_string();
+    for event in [
+        "oauth.application_created",
+        "oauth.application_changed",
+        "oauth.application_disabled",
+        "oauth.client_created",
+        "oauth.client_changed",
+        "oauth.client_secret_issued",
+        "oauth.client_secret_revoked",
+        "oauth.client_disabled",
+        "oauth.client_enabled",
+        "oauth.resource_server_created",
+        "oauth.resource_server_changed",
+    ] {
+        assert!(said.contains(event), "{event}");
+    }
+    assert!(said.contains(&world.administrator.to_string()));
+}
+
+#[tokio::test]
+async fn a_client_secret_is_shown_only_in_the_answers_that_make_it() {
+    let world = world().await;
+    let application = new_application(&world, "Billing", true).await;
+    let created = world
+        .as_administrator(
+            Method::POST,
+            &format!("/applications/{application}/clients"),
+            Some(web_client()),
+        )
+        .await;
+    let first = created.body["client_secret"]
+        .as_str()
+        .expect("first secret")
+        .to_owned();
+    let client = created.body["id"].as_str().expect("client").to_owned();
+    let rotated = world
+        .as_administrator(
+            Method::POST,
+            &format!("/clients/{client}/secrets"),
+            Some(serde_json::json!({ "lifetime_days": 30, "keep_previous_days": 0 })),
+        )
+        .await;
+    assert_eq!(rotated.status, StatusCode::CREATED, "{}", rotated.body);
+    let second = rotated.body["client_secret"]
+        .as_str()
+        .expect("second secret")
+        .to_owned();
+    assert_ne!(first, second);
+    // Ending the previous at once leaves one secret.
+    let path = format!("/clients/{client}");
+    let now = world.as_administrator(Method::GET, &path, None).await;
+    assert_eq!(now.body["secrets"].as_array().map(Vec::len), Some(1));
+
+    let answers = [
+        now,
+        world
+            .as_administrator(
+                Method::GET,
+                &format!("/applications/{application}/clients"),
+                None,
+            )
+            .await,
+        world
+            .as_administrator(
+                Method::PATCH,
+                &path,
+                Some(serde_json::json!({ "name": "Renamed" })),
+            )
+            .await,
+        world
+            .as_administrator(Method::POST, &format!("{path}:disable"), None)
+            .await,
+    ];
+    for answer in &answers {
+        let body = answer.body.to_string();
+        assert_eq!(answer.status, StatusCode::OK, "{body}");
+        assert!(!body.contains(&first), "{body}");
+        assert!(!body.contains(&second), "{body}");
+        assert!(!body.contains("\"client_secret\":"), "{body}");
+        assert!(!body.contains("hash"), "{body}");
+    }
+    // Nor is either secret announced.
+    let said = format!("{:?}", world.units_of_work.committed_events());
+    assert!(!said.contains(&first));
+    assert!(!said.contains(&second));
+
+    // A public client has no secret, so its answer has none.
+    let public = world
+        .as_administrator(
+            Method::POST,
+            &format!("/applications/{application}/clients"),
+            Some(serde_json::json!({
+                "name": "Billing mobile application",
+                "type": "public",
+                "grant_types": ["authorization_code"],
+                "redirect_uris": ["com.example.billing:/callback"],
+            })),
+        )
+        .await;
+    assert_eq!(public.status, StatusCode::CREATED, "{}", public.body);
+    assert_eq!(public.body["authentication_method"], "none");
+    assert!(public.body.get("client_secret").is_none());
+    let public_id = public.body["id"].as_str().expect("id").to_owned();
+    let refused = world
+        .as_administrator(Method::POST, &format!("/clients/{public_id}/secrets"), None)
+        .await;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(refused.code(), "oauth.client_secret_not_allowed");
+}
+
+#[tokio::test]
+async fn keys_are_added_without_a_private_part_and_removed_by_their_kid() {
+    let world = world().await;
+    let application = new_application(&world, "Reports", true).await;
+    let mut settings = web_client();
+    settings["authentication_method"] = "private_key_jwt".into();
+    let created = world
+        .as_administrator(
+            Method::POST,
+            &format!("/applications/{application}/clients"),
+            Some(settings),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    // A client that proves itself with a key gets no secret.
+    assert!(created.body.get("client_secret").is_none());
+    let client = created.body["id"].as_str().expect("client").to_owned();
+    let key = serde_json::json!({
+        "kty": "EC",
+        "crv": "P-256",
+        "kid": "2026/11+a",
+        "x": "f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU",
+        "y": "x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0",
+    });
+    let mut private = key.clone();
+    private["d"] = "jpsQnnGQmL-YBIffH1136cspYG6-0iY7X1fCE9-E9LI".into();
+    let refused = world
+        .as_administrator(
+            Method::POST,
+            &format!("/clients/{client}/keys"),
+            Some(serde_json::json!({ "jwk": private })),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(refused.code(), "oauth.client_key_invalid");
+
+    let added = world
+        .as_administrator(
+            Method::POST,
+            &format!("/clients/{client}/keys"),
+            Some(serde_json::json!({ "jwk": key })),
+        )
+        .await;
+    assert_eq!(added.status, StatusCode::CREATED, "{}", added.body);
+    assert_eq!(added.body["keys"][0]["kid"], "2026/11+a");
+    assert_eq!(added.body["keys"][0]["jwk"]["crv"], "P-256");
+    let again = world
+        .as_administrator(
+            Method::POST,
+            &format!("/clients/{client}/keys"),
+            Some(serde_json::json!({ "jwk": key })),
+        )
+        .await;
+    assert_eq!(again.status, StatusCode::CONFLICT);
+    assert_eq!(again.code(), "oauth.client_key_taken");
+
+    // The `kid` is written in the path with percent-encoding.
+    let removed = world
+        .as_administrator(
+            Method::DELETE,
+            &format!("/clients/{client}/keys/2026%2F11%2Ba"),
+            None,
+        )
+        .await;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT);
+    let now = world
+        .as_administrator(Method::GET, &format!("/clients/{client}"), None)
+        .await;
+    assert_eq!(now.body["keys"].as_array().map(Vec::len), Some(0));
+    let gone = world
+        .as_administrator(
+            Method::DELETE,
+            &format!("/clients/{client}/keys/2026%2F11%2Ba"),
+            None,
+        )
+        .await;
+    assert_eq!(gone.status, StatusCode::NOT_FOUND);
+    assert_eq!(gone.code(), "oauth.client_key_not_found");
+}
+
+#[tokio::test]
+async fn what_breaks_a_rule_of_a_client_is_refused_with_its_code() {
+    let world = world().await;
+    let application = new_application(&world, "Billing", true).await;
+    let path = format!("/applications/{application}/clients");
+    let cases: [(&str, Change, &str); 6] = [
+        (
+            "a kind of client that does not exist",
+            |body| body["type"] = "trusted".into(),
+            "oauth.client_type_invalid",
+        ),
+        (
+            "a public client with a secret",
+            |body| {
+                body["type"] = "public".into();
+                body["authentication_method"] = "client_secret_basic".into();
+            },
+            "oauth.client_authentication_method_invalid",
+        ),
+        (
+            "a redirect address over plain HTTP",
+            |body| {
+                body["redirect_uris"] = serde_json::json!(["http://billing.example.com/callback"])
+            },
+            "oauth.client_redirect_uri_invalid",
+        ),
+        (
+            "a grant that does not exist",
+            |body| body["grant_types"] = serde_json::json!(["password"]),
+            "oauth.client_grants_invalid",
+        ),
+        (
+            "an access token that lives a day",
+            |body| body["token_policy"] = serde_json::json!({ "access_token_seconds": 86400 }),
+            "oauth.token_policy_invalid",
+        ),
+        (
+            "a secret that lives ten years",
+            |body| body["secret_lifetime_days"] = 3650.into(),
+            "oauth.client_secret_lifetime_invalid",
+        ),
+    ];
+    for (what, change, code) in cases {
+        let mut body = web_client();
+        change(&mut body);
+        let reply = world
+            .as_administrator(Method::POST, &path, Some(body))
+            .await;
+        assert_eq!(
+            reply.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{what}: {}",
+            reply.body
+        );
+        assert_eq!(reply.code(), code, "{what}");
+    }
+    // Nothing was created by any of them.
+    let listed = world.as_administrator(Method::GET, &path, None).await;
+    assert_eq!(listed.body["items"].as_array().map(Vec::len), Some(0));
+
+    // Whether an application is first party is never assumed.
+    let missing = world
+        .as_administrator(
+            Method::POST,
+            "/applications",
+            Some(serde_json::json!({ "name": "Billing" })),
+        )
+        .await;
+    assert_eq!(missing.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(missing.code(), "request.body_invalid");
+}
+
+#[tokio::test]
+async fn the_applications_of_one_tenant_do_not_exist_for_another() {
+    let world = world().await;
+    let application = new_application(&world, "Billing", true).await;
+    let created = world
+        .as_administrator(
+            Method::POST,
+            &format!("/applications/{application}/clients"),
+            Some(web_client()),
+        )
+        .await;
+    let client = created.body["id"].as_str().expect("client").to_owned();
+    let (_, globex_token) = world
+        .person(
+            &world.globex,
+            "root@globex.example",
+            &[Role::TenantAdministrator],
+        )
+        .await;
+    let as_globex = |method: Method, path: String, body: Option<serde_json::Value>| {
+        let token = format!("Bearer {globex_token}");
+        let world = &world;
+        async move {
+            world
+                .send(
+                    method,
+                    &format!("/t/globex/api/v1/admin{path}"),
+                    Some(&token),
+                    body,
+                )
+                .await
+        }
+    };
+    for (method, path, code) in [
+        (
+            Method::GET,
+            format!("/applications/{application}"),
+            "oauth.application_not_found",
+        ),
+        (
+            Method::POST,
+            format!("/applications/{application}:disable"),
+            "oauth.application_not_found",
+        ),
+        (
+            Method::GET,
+            format!("/applications/{application}/clients"),
+            "oauth.application_not_found",
+        ),
+        (
+            Method::GET,
+            format!("/clients/{client}"),
+            "oauth.client_not_found",
+        ),
+        (
+            Method::POST,
+            format!("/clients/{client}/secrets"),
+            "oauth.client_not_found",
+        ),
+        (
+            Method::POST,
+            format!("/clients/{client}:disable"),
+            "oauth.client_not_found",
+        ),
+    ] {
+        let reply = as_globex(method.clone(), path.clone(), None).await;
+        assert_eq!(reply.status, StatusCode::NOT_FOUND, "{method} {path}");
+        assert_eq!(reply.code(), code, "{method} {path}");
+    }
+    let listed = as_globex(Method::GET, "/applications".to_owned(), None).await;
+    assert_eq!(listed.body["items"].as_array().map(Vec::len), Some(0));
+    // A client of Globex cannot be put in Acme's application either.
+    let foreign = as_globex(
+        Method::POST,
+        format!("/applications/{application}/clients"),
+        Some(web_client()),
+    )
+    .await;
+    assert_eq!(foreign.status, StatusCode::NOT_FOUND);
+    // And Acme's client is as it was.
+    let still = world
+        .as_administrator(Method::GET, &format!("/clients/{client}"), None)
+        .await;
+    assert_eq!(still.body["status"], "enabled");
+    assert_eq!(still.body["secrets"].as_array().map(Vec::len), Some(1));
+}
+
+#[tokio::test]
+async fn an_administrator_reads_and_replaces_the_assurance_levels_of_their_tenant_only() {
+    let world = world().await;
+    let defaults = world
+        .as_administrator(Method::GET, "/assurance-levels", None)
+        .await;
+    assert_eq!(defaults.status, StatusCode::OK, "{:?}", defaults.body);
+    assert_eq!(
+        defaults.body,
+        serde_json::json!({ "levels": [
+            { "acr": "urn:hodor:acr:single-factor", "requirement": "single_factor" },
+            { "acr": "urn:hodor:acr:mfa", "requirement": "multi_factor" },
+        ]})
+    );
+
+    let replaced = world
+        .as_administrator(
+            Method::PUT,
+            "/assurance-levels",
+            Some(serde_json::json!({ "levels": [
+                { "acr": "urn:acme:strong", "requirement": "phishing_resistant" },
+                { "acr": "urn:acme:mfa", "requirement": "multi_factor" },
+            ]})),
+        )
+        .await;
+    assert_eq!(replaced.status, StatusCode::OK, "{:?}", replaced.body);
+    assert_eq!(
+        replaced.body["levels"][0]["acr"], "urn:acme:mfa",
+        "weakest first"
+    );
+    let read = world
+        .as_administrator(Method::GET, "/assurance-levels", None)
+        .await;
+    assert_eq!(read.body, replaced.body);
+
+    // Globex keeps its own.
+    let (_, globex) = world
+        .person(
+            &world.globex,
+            "root@globex.example",
+            &[Role::TenantAdministrator],
+        )
+        .await;
+    let theirs = world
+        .send(
+            Method::GET,
+            "/t/globex/api/v1/admin/assurance-levels",
+            Some(&format!("Bearer {globex}")),
+            None,
+        )
+        .await;
+    assert_eq!(theirs.body, defaults.body);
+
+    world.record_audit().await;
+    let records = world
+        .as_administrator(Method::GET, "/audit-records", None)
+        .await;
+    assert!(
+        records.body["items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .any(|record| record["action"] == "tenant.settings_changed"),
+        "{:?}",
+        records.body
+    );
+}
+
+#[tokio::test]
+async fn levels_that_break_a_rule_are_refused_and_an_auditor_only_reads_them() {
+    let world = world().await;
+    for levels in [
+        serde_json::json!({ "levels": [] }),
+        serde_json::json!({ "levels": [{ "acr": "has space", "requirement": "single_factor" }] }),
+        serde_json::json!({ "levels": [
+            { "acr": "same", "requirement": "single_factor" },
+            { "acr": "same", "requirement": "multi_factor" },
+        ]}),
+    ] {
+        let refused = world
+            .as_administrator(Method::PUT, "/assurance-levels", Some(levels))
+            .await;
+        assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(refused.code(), "tenant.settings_invalid");
+    }
+    let unknown = world
+        .as_administrator(
+            Method::PUT,
+            "/assurance-levels",
+            Some(serde_json::json!({ "levels": [{ "acr": "x", "requirement": "very_strong" }] })),
+        )
+        .await;
+    assert_eq!(unknown.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(unknown.code(), "request.body_invalid");
+
+    let acme = world.acme.clone();
+    let (_, auditor) = world
+        .person(&acme, "auditor@example.com", &[Role::TenantAuditor])
+        .await;
+    let authorization = format!("Bearer {auditor}");
+    let read = world
+        .send(
+            Method::GET,
+            "/t/acme/api/v1/admin/assurance-levels",
+            Some(&authorization),
+            None,
+        )
+        .await;
+    assert_eq!(read.status, StatusCode::OK);
+    let written = world
+        .send(
+            Method::PUT,
+            "/t/acme/api/v1/admin/assurance-levels",
+            Some(&authorization),
+            Some(serde_json::json!({ "levels": [{ "acr": "x", "requirement": "single_factor" }] })),
+        )
+        .await;
+    assert_eq!(written.status, StatusCode::FORBIDDEN);
+}
+
+impl World {
+    /// Gives a person an authenticator application in use, as their pages
+    /// would, and moves past the step of the code that confirmed it.
+    async fn give_application(&self, user: UserId) {
+        use hodor_kernel::Clock as _;
+        let enrollment = self
+            .totp
+            .begin_enrollment(&self.acme, user, "acme", "ana@example.com")
+            .await
+            .expect("begin");
+        let code = hodor_credential::api::totp_code_at(
+            &hodor_credential::testing::FakeHmacSha1,
+            &hodor_credential::testing::base32_secret(enrollment.secret()),
+            self.clock.now(),
+        );
+        self.totp
+            .confirm_enrollment(
+                &self.acme,
+                user,
+                &hodor_kernel::Secret::from(code),
+                Caller::system(),
+            )
+            .await
+            .expect("confirm");
+        self.clock
+            .advance(Duration::seconds(hodor_credential::api::STEP_SECONDS));
+    }
+
+    /// Gives a person a key, as a finished registration would.
+    async fn give_key(&self, user: UserId) -> hodor_credential::api::WebAuthnCredentialId {
+        use hodor_credential::api::WebAuthnStore as _;
+        use hodor_kernel::Clock as _;
+        let key = hodor_credential::testing::stored_credential(
+            user,
+            hodor_credential::api::WebAuthnCredentialId::generate()
+                .as_uuid()
+                .as_bytes()
+                .to_vec(),
+            self.clock.now(),
+        );
+        let mut uow = self.units_of_work.begin(&self.acme).await.expect("begin");
+        self.keys_of_people
+            .insert(uow.as_mut(), &key)
+            .await
+            .expect("insert");
+        uow.commit().await.expect("commit");
+        key.id()
+    }
+}
+
+#[tokio::test]
+async fn an_administrator_sees_and_removes_a_persons_factors_whatever_the_policy() {
+    let world = world().await;
+    let acme = world.acme.clone();
+    let (ana, _) = world.person(&acme, "ana@example.com", &[]).await;
+    world.give_application(ana).await;
+    let key = world.give_key(ana).await;
+    // The policy requires a second factor: it holds the person back, not
+    // an administrator.
+    let mut settings = world
+        .tenants
+        .get(&acme)
+        .await
+        .expect("tenant")
+        .snapshot()
+        .settings
+        .clone();
+    settings.authentication.second_factor = hodor_tenant::api::SecondFactorPolicy::Required;
+    world
+        .tenants
+        .change_settings(&acme, settings, Caller::system())
+        .await
+        .expect("settings");
+    let listed = world
+        .as_administrator(Method::GET, &format!("/users/{ana}/factors"), None)
+        .await;
+    assert_eq!(listed.status, StatusCode::OK);
+    assert_eq!(listed.body["authenticator_application"]["in_use"], true);
+    assert_eq!(listed.body["second_factor_required"], true);
+    assert_eq!(listed.body["keys"][0]["id"], key.to_string());
+    assert_eq!(listed.body["keys"][0]["name"], "Blue key");
+    assert_eq!(listed.body["keys"][0]["passkey"], true);
+    assert!(listed.body.get("recent_sign_in_until").is_none());
+    // Nothing of a key's material is in the answer.
+    assert!(listed.body["keys"][0].get("public_key").is_none());
+    assert!(listed.body["keys"][0].get("credential_id").is_none());
+
+    let removed = world
+        .as_administrator(
+            Method::DELETE,
+            &format!("/users/{ana}/factors/authenticator-application"),
+            None,
+        )
+        .await;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT);
+    let again = world
+        .as_administrator(
+            Method::DELETE,
+            &format!("/users/{ana}/factors/authenticator-application"),
+            None,
+        )
+        .await;
+    assert_eq!(again.status, StatusCode::NOT_FOUND);
+    assert_eq!(again.code(), "credential.totp_not_found");
+
+    // The last second factor goes too, for an administrator.
+    let removed = world
+        .as_administrator(
+            Method::DELETE,
+            &format!("/users/{ana}/factors/keys/{key}"),
+            None,
+        )
+        .await;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT);
+    let left = world
+        .as_administrator(Method::GET, &format!("/users/{ana}/factors"), None)
+        .await;
+    assert_eq!(left.body["authenticator_application"]["in_use"], false);
+    assert_eq!(left.body["keys"].as_array().map(Vec::len), Some(0));
+    assert_eq!(left.body["recovery_codes"]["remaining"], 0);
+
+    let none = world
+        .as_administrator(
+            Method::DELETE,
+            &format!("/users/{ana}/factors/recovery-codes"),
+            None,
+        )
+        .await;
+    assert_eq!(none.status, StatusCode::NOT_FOUND);
+    assert_eq!(none.code(), "credential.recovery_codes_not_found");
+    let unknown = world
+        .as_administrator(
+            Method::DELETE,
+            &format!("/users/{ana}/factors/keys/{key}"),
+            None,
+        )
+        .await;
+    assert_eq!(unknown.code(), "credential.webauthn_credential_not_found");
+}
+
+#[tokio::test]
+async fn the_factors_of_a_person_do_not_exist_for_another_tenants_administrator() {
+    let world = world().await;
+    let acme = world.acme.clone();
+    let globex = world.globex.clone();
+    let (ana, _) = world.person(&acme, "ana@example.com", &[]).await;
+    let key = world.give_key(ana).await;
+    let (_, theirs) = world
+        .person(&globex, "root@globex.example", &[Role::TenantAdministrator])
+        .await;
+    let bearer = format!("Bearer {theirs}");
+    for (method, path) in [
+        (
+            Method::GET,
+            format!("/t/globex/api/v1/admin/users/{ana}/factors"),
+        ),
+        (
+            Method::DELETE,
+            format!("/t/globex/api/v1/admin/users/{ana}/factors/keys/{key}"),
+        ),
+        (
+            Method::DELETE,
+            format!("/t/globex/api/v1/admin/users/{ana}/factors/recovery-codes"),
+        ),
+    ] {
+        let reply = world.send(method.clone(), &path, Some(&bearer), None).await;
+        assert_eq!(reply.status, StatusCode::NOT_FOUND, "{method} {path}");
+        assert_eq!(reply.code(), "identity.user_not_found", "{method} {path}");
+    }
+    // Ana's key is still hers.
+    let listed = world
+        .as_administrator(Method::GET, &format!("/users/{ana}/factors"), None)
+        .await;
+    assert_eq!(listed.body["keys"].as_array().map(Vec::len), Some(1));
+}
+
+/// Ana agrees, as the consent page would, to what `client` asks for.
+async fn agreed(world: &World, user: UserId, client: &str) {
+    let request = hodor_oauth::api::AuthorizationRequest {
+        client_id: client.parse().expect("client"),
+        redirect_uri: "https://billing.example.com/callback".to_owned(),
+        scopes: vec!["openid".to_owned(), "email".to_owned()],
+        audiences: Vec::new(),
+        code_challenge: None,
+        state: None,
+        nonce: None,
+        prompt: Vec::new(),
+        max_age: None,
+        login_hint: None,
+        ui_locales: None,
+        acr_values: None,
+        first_party: false,
+    };
+    let person = hodor_oauth::api::SignedInPerson {
+        user_id: user,
+        session_id: hodor_session::api::SessionId::generate(),
+        signed_in_at: Timestamp::UNIX_EPOCH,
+        methods: vec!["password".to_owned()],
+        acr: None,
+    };
+    let (id, secret) = world
+        .consents
+        .hold(&world.acme, request, &person)
+        .await
+        .expect("held");
+    assert!(
+        world
+            .consents
+            .answer(
+                &world.acme,
+                id,
+                secret.expose(),
+                &person,
+                hodor_oauth::api::ConsentAnswer::Agreed,
+                Caller::system(),
+            )
+            .await
+            .expect("answered")
+    );
+}
+
+#[tokio::test]
+async fn an_administrator_sees_and_withdraws_a_users_consent() {
+    let world = world().await;
+    let acme = world.acme.clone();
+    let (ana, _) = world.person(&acme, "ana@example.com", &[]).await;
+    let application = new_application(&world, "Billing", false).await;
+    let created = world
+        .as_administrator(
+            Method::POST,
+            &format!("/applications/{application}/clients"),
+            Some(web_client()),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    assert_eq!(
+        created.body["token_policy"]["consent_seconds"],
+        365 * 86400,
+        "a consent lasts a year unless the client says otherwise"
+    );
+    let client = created.body["id"].as_str().expect("client").to_owned();
+    agreed(&world, ana, &client).await;
+
+    let listed = world
+        .as_administrator(Method::GET, &format!("/users/{ana}/consents"), None)
+        .await;
+    assert_eq!(listed.status, StatusCode::OK, "{}", listed.body);
+    let items = listed.body["items"].as_array().expect("items");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["client_id"], client.as_str());
+    assert_eq!(items[0]["application"], "Billing");
+    assert_eq!(items[0]["scopes"], serde_json::json!(["openid", "email"]));
+
+    let withdrawn = world
+        .as_administrator(
+            Method::DELETE,
+            &format!("/users/{ana}/consents/{client}"),
+            None,
+        )
+        .await;
+    assert_eq!(withdrawn.status, StatusCode::NO_CONTENT);
+    let again = world
+        .as_administrator(
+            Method::DELETE,
+            &format!("/users/{ana}/consents/{client}"),
+            None,
+        )
+        .await;
+    assert_eq!(again.status, StatusCode::NOT_FOUND);
+    assert_eq!(again.code(), "oauth.consent_not_found");
+    let remaining = world
+        .as_administrator(Method::GET, &format!("/users/{ana}/consents"), None)
+        .await;
+    assert_eq!(remaining.body["items"].as_array().map(Vec::len), Some(0));
+
+    let nobody = UserId::generate();
+    let unknown = world
+        .as_administrator(Method::GET, &format!("/users/{nobody}/consents"), None)
+        .await;
+    assert_eq!(unknown.code(), "identity.user_not_found");
+    let events = world.units_of_work.committed_events();
+    let withdrawal = events
+        .iter()
+        .find(|event| event.event_type == "oauth.consent_withdrawn")
+        .expect("recorded");
+    assert_eq!(withdrawal.payload["by"], "administrator");
+}
+
+#[tokio::test]
+async fn an_administrator_sets_and_reads_the_record_of_decisions_of_their_tenant_only() {
+    use hodor_authorization::api::{DecisionLogStore as _, Effect};
+    use hodor_authorization::testing::sample_decision_record;
+
+    let world = world().await;
+    let defaults = world
+        .as_administrator(Method::GET, "/decision-log", None)
+        .await;
+    assert_eq!(defaults.status, StatusCode::OK, "{:?}", defaults.body);
+    assert_eq!(
+        defaults.body,
+        serde_json::json!({ "mode": "full", "masks": [], "retention_days": 30 })
+    );
+    let settings = serde_json::json!({
+        "mode": "sampled",
+        "allow_sample_percent": 10,
+        "masks": ["subject.attributes.email"],
+        "retention_days": 90
+    });
+    let replaced = world
+        .as_administrator(Method::PUT, "/decision-log", Some(settings.clone()))
+        .await;
+    assert_eq!(replaced.status, StatusCode::OK, "{:?}", replaced.body);
+    assert_eq!(replaced.body, settings);
+
+    for bad in [
+        serde_json::json!({ "mode": "sampled", "retention_days": 30 }),
+        serde_json::json!({ "mode": "full", "allow_sample_percent": 5, "retention_days": 30 }),
+        serde_json::json!({ "mode": "full", "masks": ["subject.id"], "retention_days": 30 }),
+        serde_json::json!({ "mode": "full", "retention_days": 401 }),
+    ] {
+        let refused = world
+            .as_administrator(Method::PUT, "/decision-log", Some(bad))
+            .await;
+        assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(refused.code(), "authorization.decision_log_invalid");
+    }
+    let unknown = world
+        .as_administrator(
+            Method::PUT,
+            "/decision-log",
+            Some(serde_json::json!({ "mode": "everything", "retention_days": 30 })),
+        )
+        .await;
+    assert_eq!(unknown.code(), "request.body_invalid");
+
+    let older = sample_decision_record(1, Effect::Allow, "ana");
+    let newer = sample_decision_record(2, Effect::Deny, "ana");
+    let mut uow = hodor_kernel::UnitOfWorkFactory::begin(&world.units_of_work, &world.acme)
+        .await
+        .expect("begin");
+    world
+        .decisions
+        .append(uow.as_mut(), &[older.clone(), newer.clone()])
+        .await
+        .expect("append");
+    uow.commit().await.expect("commit");
+
+    let page = world
+        .as_administrator(Method::GET, "/decisions?limit=1", None)
+        .await;
+    assert_eq!(page.status, StatusCode::OK, "{:?}", page.body);
+    assert_eq!(
+        page.body["items"][0]["decision_id"],
+        newer.decision_id.to_string()
+    );
+    assert_eq!(page.body["items"][0]["effect"], "deny");
+    assert_eq!(page.body["items"][0]["subject"]["kind"], "user");
+    assert_eq!(page.body["items"][0]["resource"]["type"], "document");
+    let cursor = page.body["next_cursor"]
+        .as_str()
+        .expect("a cursor")
+        .to_owned();
+    let rest = world
+        .as_administrator(
+            Method::GET,
+            &format!("/decisions?limit=1&cursor={cursor}"),
+            None,
+        )
+        .await;
+    assert_eq!(
+        rest.body["items"][0]["decision_id"],
+        older.decision_id.to_string()
+    );
+    let filtered = world
+        .as_administrator(
+            Method::GET,
+            "/decisions?effect=allow&namespace=https%3A%2F%2Fdocuments.example.com&subject_kind=user&subject_id=ana",
+            None,
+        )
+        .await;
+    assert_eq!(filtered.body["items"].as_array().map(Vec::len), Some(1));
+    assert_eq!(
+        filtered.body["items"][0]["decision_id"],
+        older.decision_id.to_string()
+    );
+    for bad in ["effect=maybe", "from=yesterday", "subject_kind=user"] {
+        let refused = world
+            .as_administrator(Method::GET, &format!("/decisions?{bad}"), None)
+            .await;
+        assert_eq!(refused.code(), "request.query_invalid", "{bad}");
+    }
+
+    // Globex sees neither the records nor the settings of Acme.
+    let (_, globex) = world
+        .person(
+            &world.globex,
+            "root@globex.example",
+            &[Role::TenantAdministrator],
+        )
+        .await;
+    let theirs = world
+        .send(
+            Method::GET,
+            "/t/globex/api/v1/admin/decisions",
+            Some(&format!("Bearer {globex}")),
+            None,
+        )
+        .await;
+    assert_eq!(theirs.body["items"], serde_json::json!([]));
+    let their_settings = world
+        .send(
+            Method::GET,
+            "/t/globex/api/v1/admin/decision-log",
+            Some(&format!("Bearer {globex}")),
+            None,
+        )
+        .await;
+    assert_eq!(their_settings.body, defaults.body);
+
+    // An auditor reads the record and may not change what it keeps.
+    let acme = world.acme.clone();
+    let (_, auditor) = world
+        .person(&acme, "auditor@example.com", &[Role::TenantAuditor])
+        .await;
+    let authorization = format!("Bearer {auditor}");
+    let read = world
+        .send(
+            Method::GET,
+            "/t/acme/api/v1/admin/decisions",
+            Some(&authorization),
+            None,
+        )
+        .await;
+    assert_eq!(read.status, StatusCode::OK);
+    let refused = world
+        .send(
+            Method::PUT,
+            "/t/acme/api/v1/admin/decision-log",
+            Some(&authorization),
+            Some(settings),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn an_administrator_manages_roles_assignments_bindings_and_policy_versions() {
+    let world = world().await;
+    let application = world
+        .as_administrator(
+            Method::POST,
+            "/applications",
+            Some(serde_json::json!({ "name": "Documents", "first_party": true })),
+        )
+        .await;
+    assert_eq!(
+        application.status,
+        StatusCode::CREATED,
+        "{}",
+        application.body
+    );
+    let application = application.body["id"].as_str().expect("id").to_owned();
+    let server = world
+        .as_administrator(
+            Method::POST,
+            "/resource-servers",
+            Some(serde_json::json!({
+                "application_id": application,
+                "audience": "https://api.documents.example.com",
+                "name": "Documents interface",
+            })),
+        )
+        .await;
+    assert_eq!(server.status, StatusCode::CREATED, "{}", server.body);
+    let server = server.body["id"].as_str().expect("id").to_owned();
+    let namespace = "https://api.documents.example.com";
+
+    // Permissions, then a role that holds them and one that includes it.
+    for permission in ["document:read", "document:write"] {
+        let declared = world
+            .as_administrator(
+                Method::PUT,
+                &format!("/resource-servers/{server}/permissions/{permission}"),
+                Some(serde_json::json!({ "description": "A document" })),
+            )
+            .await;
+        assert_eq!(declared.status, StatusCode::OK, "{}", declared.body);
+    }
+    let listed = world
+        .as_administrator(
+            Method::GET,
+            &format!("/resource-servers/{server}/permissions"),
+            None,
+        )
+        .await;
+    assert_eq!(listed.body["items"][0]["name"], "document:read");
+    let reader = world
+        .as_administrator(
+            Method::PUT,
+            &format!("/resource-servers/{server}/roles/reader"),
+            Some(serde_json::json!({ "permissions": [{ "name": "document:read" }] })),
+        )
+        .await;
+    assert_eq!(reader.status, StatusCode::OK, "{}", reader.body);
+    let editor = world
+        .as_administrator(
+            Method::PUT,
+            &format!("/resource-servers/{server}/roles/editor"),
+            Some(serde_json::json!({
+                "description": "Edits documents",
+                "permissions": [{ "name": "document:write" }],
+                "includes": [{ "namespace": namespace, "name": "reader" }],
+            })),
+        )
+        .await;
+    assert_eq!(editor.status, StatusCode::OK, "{}", editor.body);
+    assert_eq!(editor.body["includes"][0]["name"], "reader");
+
+    // A role leading back to itself, and one holding an undeclared
+    // permission, are refused.
+    let cycle = world
+        .as_administrator(
+            Method::PUT,
+            &format!("/resource-servers/{server}/roles/reader"),
+            Some(serde_json::json!({
+                "includes": [{ "namespace": namespace, "name": "editor" }],
+            })),
+        )
+        .await;
+    assert_eq!(cycle.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(cycle.code(), "authorization.role_cycle");
+    let undeclared = world
+        .as_administrator(
+            Method::PUT,
+            &format!("/resource-servers/{server}/roles/deleter"),
+            Some(serde_json::json!({ "permissions": [{ "name": "document:delete" }] })),
+        )
+        .await;
+    assert_eq!(undeclared.code(), "authorization.permission_not_declared");
+    // A role another includes cannot be removed.
+    let in_use = world
+        .as_administrator(
+            Method::DELETE,
+            &format!("/resource-servers/{server}/roles/reader"),
+            None,
+        )
+        .await;
+    assert_eq!(in_use.status, StatusCode::CONFLICT);
+
+    // A role given to a person, for one application, then taken away.
+    let given = world
+        .as_administrator(
+            Method::POST,
+            "/role-assignments",
+            Some(serde_json::json!({
+                "principal": { "kind": "user", "id": world.administrator.to_string() },
+                "role": { "namespace": namespace, "name": "editor" },
+                "application_id": application,
+                "valid_until": "2099-01-01T00:00:00Z",
+            })),
+        )
+        .await;
+    assert_eq!(given.status, StatusCode::CREATED, "{}", given.body);
+    let held = world
+        .as_administrator(
+            Method::GET,
+            &format!("/users/{}/role-assignments", world.administrator),
+            None,
+        )
+        .await;
+    assert_eq!(held.body["items"][0]["role"]["name"], "editor");
+    assert_eq!(
+        held.body["items"][0]["application_id"],
+        application.as_str()
+    );
+    let nobody = world
+        .as_administrator(
+            Method::POST,
+            "/role-assignments",
+            Some(serde_json::json!({
+                "principal": { "kind": "user", "id": UserId::generate().to_string() },
+                "role": { "namespace": namespace, "name": "editor" },
+            })),
+        )
+        .await;
+    assert_eq!(nobody.status, StatusCode::NOT_FOUND);
+    let revoke = serde_json::json!({
+        "principal": { "kind": "user", "id": world.administrator.to_string() },
+        "role": { "namespace": namespace, "name": "editor" },
+        "application_id": application,
+    });
+    let taken = world
+        .as_administrator(
+            Method::POST,
+            "/role-assignments:revoke",
+            Some(revoke.clone()),
+        )
+        .await;
+    assert_eq!(taken.status, StatusCode::NO_CONTENT, "{}", taken.body);
+    let again = world
+        .as_administrator(Method::POST, "/role-assignments:revoke", Some(revoke))
+        .await;
+    assert_eq!(again.code(), "authorization.assignment_not_found");
+
+    // The resource server bound to the native engine, then unbound.
+    let missing = world
+        .as_administrator(
+            Method::GET,
+            &format!("/resource-servers/{server}/binding"),
+            None,
+        )
+        .await;
+    assert_eq!(missing.code(), "authorization.binding_not_found");
+    let bound = world
+        .as_administrator(
+            Method::PUT,
+            &format!("/resource-servers/{server}/binding"),
+            Some(serde_json::json!({ "engine": "native", "time_limit_milliseconds": 300 })),
+        )
+        .await;
+    assert_eq!(bound.status, StatusCode::OK, "{}", bound.body);
+    assert_eq!(bound.body["time_limit_milliseconds"], 300);
+    let unknown = world
+        .as_administrator(
+            Method::PUT,
+            &format!("/resource-servers/{server}/binding"),
+            Some(serde_json::json!({ "engine": "elsewhere" })),
+        )
+        .await;
+    assert_eq!(unknown.code(), "authorization.unknown_engine");
+    let bindings = world.as_administrator(Method::GET, "/bindings", None).await;
+    assert_eq!(bindings.body["items"][0]["namespace"], namespace);
+    let unbound = world
+        .as_administrator(
+            Method::DELETE,
+            &format!("/resource-servers/{server}/binding"),
+            None,
+        )
+        .await;
+    assert_eq!(unbound.status, StatusCode::NO_CONTENT);
+
+    // A policy version is drafted and asked to be checked; nothing is
+    // published, so the status names no revision.
+    let package = format!(
+        "hodor.tenants.t{}",
+        world.acme.tenant_id().to_string().replace('-', "")
+    );
+    let drafted = world
+        .as_administrator(
+            Method::POST,
+            "/policy-versions",
+            Some(serde_json::json!({
+                "files": [{ "path": "policy.rego", "contents": format!("package {package}\n\ndefault allow := false\n") }],
+            })),
+        )
+        .await;
+    assert_eq!(drafted.status, StatusCode::CREATED, "{}", drafted.body);
+    assert_eq!(drafted.body["state"], "draft");
+    assert_eq!(drafted.body["written_by"], "tenant");
+    let number = drafted.body["number"].as_u64().expect("number");
+    let asked = world
+        .as_administrator(
+            Method::POST,
+            &format!("/policy-versions/{number}:validate"),
+            None,
+        )
+        .await;
+    assert_eq!(asked.status, StatusCode::ACCEPTED, "{}", asked.body);
+    assert_eq!(asked.body["state"], "validating");
+    let status = world
+        .as_administrator(Method::GET, "/policy-status", None)
+        .await;
+    assert_eq!(status.status, StatusCode::OK);
+    assert!(status.body.get("latest").is_none());
+
+    // Every change is announced.
+    world.record_audit().await;
+    let records = world
+        .as_administrator(Method::GET, "/audit-records?limit=200", None)
+        .await;
+    let said = records.body.to_string();
+    for event in [
+        "authorization.permission_declared",
+        "authorization.role_defined",
+        "authorization.principal_role_assigned",
+        "authorization.principal_role_revoked",
+        "authorization.engine_bound",
+        "authorization.engine_unbound",
+    ] {
+        assert!(said.contains(event), "{event} is not in the audit log");
+    }
 }

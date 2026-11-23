@@ -3,9 +3,13 @@
 ## Overview
 
 The use cases of the credential context and the ports they need. There are
-two services. `CredentialService` (`service.rs`) sets, changes, verifies and
+four services. `CredentialService` (`service.rs`) sets, changes, verifies and
 removes passwords. `AccessTokenService` (`access_tokens.rs`) issues,
-authenticates and revokes access tokens. They drive the
+authenticates and revokes access tokens. `TotpService` (`totp.rs`) enrolls,
+confirms, checks and removes authenticator applications. `WebAuthnService`
+(`webauthn.rs`) registers WebAuthn credentials and checks answers to
+challenges. `RecoveryCodeService` (`recovery_codes.rs`) generates, checks,
+counts and removes recovery codes. They drive the
 [domain model](../domain/EGM.md) and reach storage and hashing only through
 port traits. The modules are `pub(crate)` (`mod.rs`); other crates use
 `hodor_credential::api` (`src/lib.rs`).
@@ -33,6 +37,26 @@ bound to.
   - `get(uow, id: AccessTokenId) -> Option<AccessToken>`.
   - `find_by_hash(uow, hash: &AccessTokenHash) -> Option<AccessToken>`.
   - `update(uow, token)`: stores a revoked token. `NotFound` if the tenant has no such token.
+- `TotpStore` (`totp.rs`). Implemented by `PgTotpStore` in `crates/adapters-postgres/src/credential.rs` and by `InMemoryTotps` in `src/testing.rs`.
+  - `active(uow, user_id) -> Option<Totp>` and `pending(uow, user_id) -> Option<Totp>`.
+  - `replace_pending(uow, enrollment)`: stores an enrollment in place of the user's earlier one still pending.
+  - `activate(uow, confirmed)`: puts the pending row in use and removes the user's earlier application in use. `NotFound` `credential.totp_enrollment_not_found` if the row is no longer pending.
+  - `use_step(uow, id, step) -> bool`: stores the step only if it is later than the last one used, in one statement.
+  - `remove(uow, user_id) -> bool`: removes both rows; answers whether one was in use.
+- `RecoveryCodeStore` (`recovery_codes.rs`). Implemented by `PgRecoveryCodeStore` in `crates/adapters-postgres/src/credential.rs` and by `InMemoryRecoveryCodes` in `src/testing.rs`.
+  - `replace(uow, set)`: stores a set in place of the user's earlier one. `Conflict` `credential.recovery_codes_conflict` when another set was stored for the user at the same moment.
+  - `use_code(uow, user_id, hash) -> bool`: marks the code with this hash used only if it is unused, in one statement.
+  - `unused(uow, user_id) -> u32` and `remove(uow, user_id) -> bool`.
+- `HmacSha1` (`totp.rs`), not async: `mac(key, message) -> [u8; 20]`. Implemented by `AwsLcHmacSha1` in `crates/adapters-crypto/src/hmac.rs` and by `FakeHmacSha1` in `src/testing.rs`.
+
+- `WebAuthnStore` (`webauthn.rs`). Implemented by `PgWebAuthnStore` in `crates/adapters-postgres/src/credential.rs` and by `InMemoryWebAuthn` in `src/testing.rs`.
+  - `insert_registration(uow, registration)`.
+  - `take_registration(uow, id) -> Option<PendingRegistration>`: removes and returns it; of any number of callers at once, one gets it.
+  - `insert(uow, credential)`: `Conflict` `credential.webauthn_credential_exists` when the tenant has the credential identifier.
+  - `list_for_user(uow, user_id)`: oldest first.
+  - `find_by_credential_id(uow, credential_id)`: the tenant's credential with the identifier the authenticator made, whoever it belongs to.
+  - `record_use(uow, credential, previous_count) -> bool`: stores the counter, backup state and last use only if the stored counter is still `previous_count`.
+  - `rename(uow, user_id, id, name) -> bool` and `remove(uow, user_id, id) -> bool`: act only on a credential of that user in the tenant, and answer whether there was one.
 
 ### Service entry points
 
@@ -45,11 +69,33 @@ bound to.
   - `verify_password(tenant, user_id: Option<UserId>, password) -> PasswordCheck`.
   - `remove_password(tenant, user_id, caller)`.
   - `has_password(tenant, user_id) -> bool`: for administrators and account pages, never a sign-in form (doc comment).
+- `TotpService::new(units_of_work, store: Arc<dyn TotpStore>, secrets: Arc<dyn SecretBox>, mac: Arc<dyn HmacSha1>, random, clock)`.
+  - `begin_enrollment(tenant, user_id, issuer, account) -> TotpEnrollment`: 20 random bytes, sealed for `credential.totp_secret`; the secret is returned once, in Base32 and as an `otpauth://totp/` address.
+  - `confirm_enrollment(tenant, user_id, code, caller)`: `NotFound` `credential.totp_enrollment_not_found` when nothing waits or it waited ten minutes; `Invalid` `credential.totp_code_wrong` for a wrong code; records `credential.totp_enrolled`.
+  - `verify(tenant, user_id: Option<UserId>, code) -> TotpCheck`: `Verified` or `Rejected`; a right code is marked used in the same call.
+  - `has_totp(tenant, user_id) -> bool` and `remove(tenant, user_id, caller) -> bool` (records `credential.totp_removed` when one was in use).
+- `totp_code_at(mac, secret, moment) -> String` (`totp.rs`): the six digits an application shows.
+- `RecoveryCodeService::new(units_of_work, store: Arc<dyn RecoveryCodeStore>, digest: Arc<dyn Digest>, random: Arc<dyn RandomSource>, clock)`.
+  - `generate(tenant, user_id, caller) -> RecoveryCodes`: ten codes of 80 random bits in place of any earlier set; returned once; records `credential.recovery_codes_generated`.
+  - `generate_if_none(tenant, user_id, caller) -> Option<RecoveryCodes>`: the same, only when the user has no unused code.
+  - `verify(tenant, user_id: Option<UserId>, typed) -> RecoveryCodeCheck`: `Verified { unused }` or `Rejected`; an accepted code is marked used in the same call and records `credential.recovery_code_used`.
+  - `unused(tenant, user_id) -> u32` and `remove(tenant, user_id, caller) -> bool` (records `credential.recovery_codes_removed` when there was a set).
 - `AccessTokenService::new(units_of_work, tokens: Arc<dyn AccessTokenStore>, digest: Arc<dyn Digest>, random: Arc<dyn RandomSource>, clock)`.
   - `issue(tenant, user_id, description, lifetime: time::Duration, caller) -> (AccessToken, AccessTokenSecret)`: the secret is returned once and is not available again.
   - `authenticate(tenant, presented: &str) -> Option<AccessToken>`.
   - `revoke(tenant, id: AccessTokenId, caller)`.
-- Both services are `Clone`, and their `Debug` output shows no fields.
+- `WebAuthnService::new(units_of_work, store: Arc<dyn WebAuthnStore>, relying_party: RelyingParty, digest, verifier: Arc<dyn SignatureVerifier>, random, clock)`.
+  - `begin_registration(tenant, user_id, name, display_name) -> BegunRegistration { id, options }`: stores a pending registration of five minutes.
+  - `begin_passkey_registration(tenant, user_id, name, display_name)`: the same for a passkey: a discoverable credential and user verification required, both checked when it is finished.
+  - `finish_registration(tenant, user_id, id, response, caller) -> WebAuthnCredential`: takes the pending registration first; `NotFound` `credential.webauthn_registration_not_found` if it is unknown, another user's, used or expired; `Invalid` `credential.webauthn_registration_refused` with the reason in the detail; records `credential.webauthn_registered`.
+  - `list(tenant, user_id)`, `has_credentials(tenant, user_id) -> bool`.
+  - `rename(tenant, user_id, id, name, caller) -> WebAuthnCredential`: `credential_name` must accept the name (`Invalid` `credential.webauthn_name_invalid`); `NotFound` `credential.webauthn_credential_not_found` for a credential that is not the user's; records `credential.webauthn_renamed`.
+  - `remove(tenant, user_id, id, caller)`: the same `NotFound`; records `credential.webauthn_removed`.
+  - `challenge(tenant, user_id) -> AssertionChallenge { challenge, options }`: stores nothing; the caller keeps the challenge.
+  - `verify(tenant, user_id, challenge, response) -> bool`: `false` for any refused check; a counter that did not grow records `credential.webauthn_counter_not_increased`; `true` only when the use was stored over the counter that was read.
+  - `passkey_challenge() -> AssertionChallenge`: a challenge naming no credential, with user verification required; reads nothing.
+  - `verify_passkey(tenant, challenge, response) -> Option<UserId>`: finds the credential in the tenant by the identifier the answer names, needs the user handle and user verification, and answers the user it belongs to under the same rules as `verify`.
+- The services are `Clone`. `CredentialService`, `AccessTokenService` and `TotpService` show no fields in `Debug`; `WebAuthnService` shows its relying party.
 
 ## Invariants
 

@@ -29,6 +29,9 @@ pub const PAGE_PATHS: &[&str] = &[
     "/account/complete-registration",
     "/account/recover",
     "/account/reset-password",
+    "/account/sign-out",
+    "/account/security",
+    "/account/consent",
 ];
 
 /// The page an identity provider sends a person back to. It is the one

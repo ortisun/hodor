@@ -124,6 +124,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "antlr4rust"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "003352ee03bab0eea34057cc541fa4362734220ca381343c7e9c35050c1fc942"
+dependencies = [
+ "bit-set",
+ "byteorder",
+ "lazy_static",
+ "murmur3",
+ "once_cell",
+ "parking_lot",
+ "typed-arena",
+ "uuid",
+]
+
+[[package]]
 name = "anyhow"
 version = "1.0.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -583,6 +599,21 @@ dependencies = [
  "jobserver",
  "libc",
  "shlex",
+]
+
+[[package]]
+name = "cel"
+version = "0.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "058e87eba1938be49be5785de8d2eff3004a70f8e8f9158b52b1177c93d6c869"
+dependencies = [
+ "antlr4rust",
+ "lazy_static",
+ "nom 7.1.3",
+ "pastey",
+ "regex",
+ "serde",
+ "thiserror",
 ]
 
 [[package]]
@@ -1546,7 +1577,7 @@ dependencies = [
 
 [[package]]
 name = "hodor-adapters-crypto"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "argon2",
  "async-trait",
@@ -1555,9 +1586,11 @@ dependencies = [
  "form_urlencoded",
  "getrandom 0.4.3",
  "hodor-adapters-crypto",
+ "hodor-authorization-opa",
  "hodor-credential",
  "hodor-federation",
  "hodor-kernel",
+ "hodor-keys",
  "serde_json",
  "sha2",
  "time",
@@ -1567,7 +1600,7 @@ dependencies = [
 
 [[package]]
 name = "hodor-adapters-http"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "hodor-kernel",
@@ -1578,7 +1611,7 @@ dependencies = [
 
 [[package]]
 name = "hodor-adapters-ldap"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "hodor-adapters-ldap",
@@ -1590,8 +1623,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "hodor-adapters-policy-check"
+version = "0.2.0"
+dependencies = [
+ "async-trait",
+ "hodor-adapters-crypto",
+ "hodor-authorization-opa",
+ "hodor-kernel",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "hodor-adapters-postgres"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "hodor-adapters-crypto",
@@ -1599,11 +1645,14 @@ dependencies = [
  "hodor-audit",
  "hodor-authentication",
  "hodor-authorization",
+ "hodor-authorization-opa",
  "hodor-credential",
  "hodor-federation",
  "hodor-identity",
  "hodor-kernel",
+ "hodor-keys",
  "hodor-notification",
+ "hodor-oauth",
  "hodor-saml",
  "hodor-session",
  "hodor-tenant",
@@ -1618,7 +1667,7 @@ dependencies = [
 
 [[package]]
 name = "hodor-adapters-smtp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "hodor-kernel",
@@ -1632,14 +1681,14 @@ dependencies = [
 
 [[package]]
 name = "hodor-architecture-tests"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "cargo_metadata",
 ]
 
 [[package]]
 name = "hodor-audit"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "hodor-audit",
@@ -1653,7 +1702,7 @@ dependencies = [
 
 [[package]]
 name = "hodor-authentication"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "hodor-authentication",
@@ -1665,35 +1714,77 @@ dependencies = [
  "hodor-tenant",
  "proptest",
  "serde",
+ "serde_json",
  "time",
  "tokio",
 ]
 
 [[package]]
 name = "hodor-authorization"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "hodor-authorization",
  "hodor-kernel",
  "serde",
+ "serde_json",
+ "time",
+ "tokio",
+]
+
+[[package]]
+name = "hodor-authorization-native"
+version = "0.2.0"
+dependencies = [
+ "async-trait",
+ "cel",
+ "hodor-authorization",
+ "hodor-kernel",
+ "serde",
+ "serde_json",
+ "time",
+ "tokio",
+]
+
+[[package]]
+name = "hodor-authorization-opa"
+version = "0.2.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "hodor-adapters-crypto",
+ "hodor-adapters-http",
+ "hodor-authorization",
+ "hodor-authorization-opa",
+ "hodor-kernel",
+ "miniz_oxide",
+ "serde",
+ "serde_json",
+ "testcontainers",
+ "time",
  "tokio",
 ]
 
 [[package]]
 name = "hodor-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
+ "async-trait",
  "clap",
  "hodor-adapters-crypto",
  "hodor-adapters-postgres",
  "hodor-audit",
  "hodor-authorization",
+ "hodor-authorization-native",
+ "hodor-authorization-opa",
  "hodor-credential",
  "hodor-federation",
  "hodor-identity",
  "hodor-kernel",
+ "hodor-keys",
+ "hodor-oauth",
  "hodor-tenant",
+ "serde_json",
  "sqlx",
  "time",
  "tokio",
@@ -1701,20 +1792,22 @@ dependencies = [
 
 [[package]]
 name = "hodor-credential"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "hodor-credential",
  "hodor-kernel",
  "proptest",
  "serde",
+ "serde_json",
  "time",
  "tokio",
 ]
 
 [[package]]
 name = "hodor-federation"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1732,7 +1825,7 @@ dependencies = [
 
 [[package]]
 name = "hodor-identity"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "hodor-identity",
@@ -1744,20 +1837,35 @@ dependencies = [
 
 [[package]]
 name = "hodor-kernel"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "serde",
  "serde_json",
  "thiserror",
  "time",
+ "tokio",
  "uuid",
  "zeroize",
 ]
 
 [[package]]
+name = "hodor-keys"
+version = "0.2.0"
+dependencies = [
+ "async-trait",
+ "hodor-kernel",
+ "hodor-keys",
+ "serde",
+ "serde_json",
+ "time",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "hodor-notification"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "hodor-kernel",
@@ -1769,8 +1877,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "hodor-oauth"
+version = "0.2.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "hodor-identity",
+ "hodor-kernel",
+ "hodor-keys",
+ "hodor-oauth",
+ "hodor-session",
+ "serde",
+ "serde_json",
+ "time",
+ "tokio",
+]
+
+[[package]]
 name = "hodor-observability"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "opentelemetry",
  "opentelemetry-otlp",
@@ -1787,22 +1912,26 @@ dependencies = [
 
 [[package]]
 name = "hodor-protocol-http"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "axum",
  "base64 0.22.1",
  "form_urlencoded",
  "hodor-adapters-crypto",
+ "hodor-adapters-http",
  "hodor-adapters-ldap",
  "hodor-audit",
  "hodor-authentication",
  "hodor-authorization",
+ "hodor-authorization-opa",
  "hodor-credential",
  "hodor-federation",
  "hodor-identity",
  "hodor-kernel",
+ "hodor-keys",
  "hodor-notification",
+ "hodor-oauth",
  "hodor-saml",
  "hodor-session",
  "hodor-tenant",
@@ -1810,6 +1939,7 @@ dependencies = [
  "miniz_oxide",
  "serde",
  "serde_json",
+ "testcontainers",
  "time",
  "tokio",
  "tower",
@@ -1819,7 +1949,7 @@ dependencies = [
 
 [[package]]
 name = "hodor-saml"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aws-lc-rs",
  "base64 0.22.1",
@@ -1835,11 +1965,14 @@ dependencies = [
 
 [[package]]
 name = "hodor-server"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
+ "aws-lc-rs",
  "axum",
+ "base64 0.22.1",
  "clap",
+ "form_urlencoded",
  "hodor-adapters-crypto",
  "hodor-adapters-http",
  "hodor-adapters-ldap",
@@ -1847,15 +1980,20 @@ dependencies = [
  "hodor-audit",
  "hodor-authentication",
  "hodor-authorization",
+ "hodor-authorization-native",
+ "hodor-authorization-opa",
  "hodor-credential",
  "hodor-federation",
  "hodor-identity",
  "hodor-kernel",
+ "hodor-keys",
  "hodor-notification",
+ "hodor-oauth",
  "hodor-observability",
  "hodor-protocol-http",
  "hodor-session",
  "hodor-tenant",
+ "jsonwebtoken",
  "reqwest",
  "serde_json",
  "sqlx",
@@ -1866,7 +2004,7 @@ dependencies = [
 
 [[package]]
 name = "hodor-session"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "hodor-kernel",
@@ -1879,7 +2017,7 @@ dependencies = [
 
 [[package]]
 name = "hodor-tenant"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "hodor-kernel",
@@ -1893,24 +2031,29 @@ dependencies = [
 
 [[package]]
 name = "hodor-worker"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "clap",
  "hodor-adapters-crypto",
+ "hodor-adapters-policy-check",
  "hodor-adapters-postgres",
  "hodor-adapters-smtp",
  "hodor-audit",
+ "hodor-authorization-opa",
  "hodor-kernel",
+ "hodor-keys",
  "hodor-notification",
  "hodor-observability",
  "hodor-protocol-http",
+ "hodor-tenant",
  "opentelemetry",
  "reqwest",
  "serde",
  "serde_json",
  "sqlx",
  "testcontainers",
+ "time",
  "tokio",
  "tracing",
 ]
@@ -2467,6 +2610,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "jsonwebtoken"
+version = "12.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f347a975eb5fa8f5c4eadce6c1152c11c326cf32cf839fb64ff12d5cb8f4ce8b"
+dependencies = [
+ "aws-lc-rs",
+ "base64 0.23.1",
+ "getrandom 0.4.3",
+ "js-sys",
+ "serde",
+ "serde_json",
+ "signature",
+ "zeroize",
+]
+
+[[package]]
 name = "keccak"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2686,6 +2845,15 @@ name = "multiversion_no_op"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "743fb55ba31b18fb1ecef6bdc9aa2743314978ac084044301a7eee33fb99a20d"
+
+[[package]]
+name = "murmur3"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a198f9589efc03f544388dfc4a19fe8af4323662b62f598b8dcfdac62c14771c"
+dependencies = [
+ "byteorder",
+]
 
 [[package]]
 name = "nom"
@@ -3013,6 +3181,12 @@ dependencies = [
  "getrandom 0.4.3",
  "phc",
 ]
+
+[[package]]
+name = "pastey"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ee67f1008b1ba2321834326597b8e186293b049a023cdef258527550b9935b4"
 
 [[package]]
 name = "pbkdf2"
@@ -4907,6 +5081,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
+name = "typed-arena"
+version = "2.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6af6ae20167a9ece4bcb41af5b80f8a1f1df981f6391189ce00fd257af04126a"
+
+[[package]]
 name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5602,6 +5782,20 @@ name = "zeroize"
 version = "1.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "85ccff8a4805aba1eaa4cd4afcd49f7557dd2cf5fd79ffc37f8959466effc5aa"
+dependencies = [
+ "zeroize_derive",
+]
+
+[[package]]
+name = "zeroize_derive"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3c50655cbb0fe3fc43170059e702f1ce5e19b84cec58dc87b037a09935c2f328"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
 
 [[package]]
 name = "zerotrie"

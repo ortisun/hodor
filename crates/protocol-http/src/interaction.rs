@@ -8,6 +8,7 @@
 use crate::problem::Problem;
 use crate::request::ClientAddress;
 use crate::tenant::TenantSlug;
+use axum::body::Bytes;
 use axum::extract::{RawPathParams, Request, State};
 use axum::http::header::{self, HeaderMap, HeaderName, HeaderValue};
 use axum::http::{Method, StatusCode};
@@ -16,9 +17,10 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Extension, Json, Router};
 use hodor_authentication::api::{
-    AccountRequest, AccountService, AuthenticationService, ExternalInput, SignIn, StepInput,
-    TransactionId,
+    AccountRequest, AccountService, AuthenticationService, ExternalInput, FactorService,
+    PasskeyAuthenticator, SignIn, StepInput, TransactionId, WebAuthnAuthenticator,
 };
+use hodor_credential::api::{RegistrationResponse, WebAuthnRegistrationId};
 use hodor_federation::api::{Alias, EXTERNAL_STEP, ExternalSignIn};
 use hodor_kernel::{
     Actor, Caller, Clock, CorrelationId, Digest, DomainError, Secret, TenantContext,
@@ -28,11 +30,13 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use time::format_description::well_known::Rfc3339;
 
+pub(crate) mod factors;
+
 const SIGN_IN_COOKIE: &str = "__Secure-hodor_signin";
 pub(crate) const SESSION_COOKIE: &str = "__Secure-hodor_session";
 pub(crate) const CSRF_HEADER: HeaderName = HeaderName::from_static("x-csrf-token");
 /// A sign-in lasts ten minutes; so does its cookie.
-const SIGN_IN_COOKIE_SECONDS: i64 = 600;
+pub(crate) const SIGN_IN_COOKIE_SECONDS: i64 = 600;
 
 /// What the interaction handlers need.
 #[derive(Clone)]
@@ -43,6 +47,8 @@ pub struct InteractionState {
     pub accounts: AccountService,
     /// The session use cases.
     pub sessions: SessionService,
+    /// The factors a signed-in person registers.
+    pub factors: FactorService,
     /// Signing in through an identity provider. `None` when this
     /// installation is not set up for it: no provider is offered then.
     pub external: Option<ExternalSignIn>,
@@ -70,6 +76,12 @@ pub fn interaction_routes(state: InteractionState) -> Router {
         )
         .route("/sign-in/steps/identifier", post(submit_identifier))
         .route("/sign-in/steps/password", post(submit_password))
+        .route("/sign-in/steps/totp", post(submit_totp))
+        .route("/sign-in/steps/recovery_code", post(submit_recovery_code))
+        .route("/sign-in/steps/webauthn/options", post(webauthn_options))
+        .route("/sign-in/steps/webauthn", post(submit_webauthn))
+        .route("/sign-in/steps/passkey/options", post(passkey_options))
+        .route("/sign-in/steps/passkey", post(submit_passkey))
         .route("/sign-in/providers", get(offered_providers))
         .route("/sign-in/providers/{alias}", post(choose_provider))
         .route(
@@ -83,6 +95,29 @@ pub fn interaction_routes(state: InteractionState) -> Router {
         .route("/session", get(current_session).delete(sign_out))
         .route("/sessions", get(list_sessions).delete(end_other_sessions))
         .route("/sessions/{session_id}", delete(end_session))
+        .route("/webauthn/registrations", post(begin_webauthn_registration))
+        .route("/factors", get(factors::list_factors))
+        .route(
+            "/factors/authenticator-application",
+            post(factors::begin_authenticator_application)
+                .delete(factors::remove_authenticator_application),
+        )
+        .route(
+            "/factors/authenticator-application/confirmation",
+            post(factors::confirm_authenticator_application),
+        )
+        .route(
+            "/factors/keys/{key_id}",
+            axum::routing::patch(factors::rename_key).delete(factors::remove_key),
+        )
+        .route(
+            "/factors/recovery-codes",
+            post(factors::generate_recovery_codes),
+        )
+        .route(
+            "/webauthn/registrations/{registration_id}",
+            post(finish_webauthn_registration),
+        )
         .route("/registration", post(request_registration))
         .route("/registration/complete", post(complete_registration))
         .route("/recovery", post(request_recovery))
@@ -112,6 +147,10 @@ struct SignInBody {
     attempts_left: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     csrf_token: Option<String>,
+    /// Where the pages go after a completed sign-in, when an
+    /// authorization request of this browser waits for it.
+    #[serde(rename = "continue", skip_serializing_if = "Option::is_none")]
+    continue_to: Option<String>,
 }
 
 /// A provider as the sign-in page shows it.
@@ -173,6 +212,19 @@ struct IdentifierBody {
 #[derive(Deserialize)]
 struct PasswordBody {
     password: String,
+}
+
+/// No `Debug`: this holds a code of an authenticator application until it
+/// is wrapped.
+#[derive(Deserialize)]
+struct TotpBody {
+    code: String,
+}
+
+/// No `Debug`: this holds a recovery code until it is wrapped.
+#[derive(Deserialize)]
+struct RecoveryCodeBody {
+    code: String,
 }
 
 /// What a person gives when asking to register or to recover a password.
@@ -303,13 +355,13 @@ fn csrf_is_valid(headers: &HeaderMap, digest: &dyn Digest, handle: &Handle) -> b
         .is_some_and(|presented| same(presented, &csrf_token(digest, handle.secret.expose())))
 }
 
-fn set_cookie(response: &mut Response, value: &str) {
+pub(crate) fn set_cookie(response: &mut Response, value: &str) {
     if let Ok(value) = HeaderValue::from_str(value) {
         response.headers_mut().append(header::SET_COOKIE, value);
     }
 }
 
-fn sign_in_cookie(slug: &str, value: &str, max_age: i64) -> String {
+pub(crate) fn sign_in_cookie(slug: &str, value: &str, max_age: i64) -> String {
     format!(
         "{SIGN_IN_COOKIE}={value}; Path=/t/{slug}/interaction; Max-Age={max_age}; HttpOnly; Secure; SameSite=Strict"
     )
@@ -327,6 +379,7 @@ fn session_cookie(slug: &str, token: &SessionToken, max_age: i64) -> String {
 fn respond(
     state: &InteractionState,
     slug: &str,
+    headers: &HeaderMap,
     secret: &str,
     status: StatusCode,
     outcome: SignIn,
@@ -340,6 +393,7 @@ fn respond(
                 step: Some(step),
                 attempts_left: None,
                 csrf_token: token(),
+                continue_to: None,
             }),
         )
             .into_response(),
@@ -354,6 +408,7 @@ fn respond(
                 step: Some(step),
                 attempts_left: Some(attempts_left),
                 csrf_token: token(),
+                continue_to: None,
             }),
         )
             .into_response(),
@@ -365,6 +420,7 @@ fn respond(
                     step: None,
                     attempts_left: None,
                     csrf_token: None,
+                    continue_to: None,
                 }),
             )
                 .into_response();
@@ -382,6 +438,7 @@ fn respond(
                     step: None,
                     attempts_left: None,
                     csrf_token: None,
+                    continue_to: crate::authorize::waiting(headers, slug),
                 }),
             )
                 .into_response();
@@ -449,6 +506,7 @@ async fn start_sign_in(
             step: Some(started.step),
             attempts_left: None,
             csrf_token: Some(csrf_token(state.digest.as_ref(), secret)),
+            continue_to: None,
         }),
     )
         .into_response();
@@ -477,6 +535,7 @@ async fn describe_sign_in(
         Ok(outcome) => respond(
             &state,
             &slug,
+            &headers,
             handle.secret.expose(),
             StatusCode::OK,
             outcome,
@@ -507,7 +566,14 @@ async fn submit(
         .submit(tenant, handle.id, handle.secret.expose(), input)
         .await
     {
-        Ok(outcome) => respond(state, slug, handle.secret.expose(), StatusCode::OK, outcome),
+        Ok(outcome) => respond(
+            state,
+            slug,
+            headers,
+            handle.secret.expose(),
+            StatusCode::OK,
+            outcome,
+        ),
         Err(error) => Problem::from(error).into_response(),
     }
 }
@@ -538,6 +604,278 @@ async fn submit_password(
 ) -> Response {
     let input = StepInput::Password(Secret::from(body.password));
     submit(&state, &tenant, &slug, &headers, input).await
+}
+
+async fn submit_totp(
+    State(state): State<InteractionState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(TenantSlug(slug)): Extension<TenantSlug>,
+    headers: HeaderMap,
+    Json(body): Json<TotpBody>,
+) -> Response {
+    let input = StepInput::Totp(Secret::from(body.code));
+    submit(&state, &tenant, &slug, &headers, input).await
+}
+
+/// A recovery code, in place of the second factor the sign-in waits for.
+async fn submit_recovery_code(
+    State(state): State<InteractionState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(TenantSlug(slug)): Extension<TenantSlug>,
+    headers: HeaderMap,
+    Json(body): Json<RecoveryCodeBody>,
+) -> Response {
+    let input = StepInput::RecoveryCode(Secret::from(body.code));
+    submit(&state, &tenant, &slug, &headers, input).await
+}
+
+#[derive(Debug, Deserialize)]
+struct WebAuthnAnswerBody {
+    credential_id: String,
+    client_data: String,
+    authenticator_data: String,
+    signature: String,
+    #[serde(default)]
+    user_handle: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct PublicKeyBody<T: Serialize> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    registration_id: Option<WebAuthnRegistrationId>,
+    public_key: T,
+}
+
+#[derive(Debug, Deserialize)]
+struct FinishWebAuthnBody {
+    client_data: String,
+    attestation_object: String,
+    #[serde(default)]
+    transports: Vec<String>,
+    #[serde(default)]
+    discoverable: Option<bool>,
+    #[serde(default)]
+    name: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct WebAuthnCredentialBody {
+    id: String,
+    name: String,
+    created_at: String,
+    /// A new set, shown once, when this is the person's first second
+    /// factor.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recovery_codes: Option<Vec<String>>,
+}
+
+/// The challenge of the WebAuthn step of the current sign-in.
+async fn webauthn_options(
+    State(state): State<InteractionState>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+) -> Response {
+    step_options(&state, &tenant, &headers, WebAuthnAuthenticator::KIND).await
+}
+
+/// The challenge of signing in with a passkey, the alternative that takes
+/// the place of the identifier and the password.
+async fn passkey_options(
+    State(state): State<InteractionState>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+) -> Response {
+    step_options(&state, &tenant, &headers, PasskeyAuthenticator::KIND).await
+}
+
+/// The challenge of `step`, for the sign-in of the browser that asks.
+async fn step_options(
+    state: &InteractionState,
+    tenant: &TenantContext,
+    headers: &HeaderMap,
+    step: &str,
+) -> Response {
+    let Some(handle) = handle(headers) else {
+        return no_sign_in();
+    };
+    if !csrf_is_valid(headers, state.digest.as_ref(), &handle) {
+        return problem(
+            StatusCode::FORBIDDEN,
+            "request.csrf_token_invalid",
+            "the request is missing its CSRF token, or the token is wrong",
+        );
+    }
+    match state
+        .authentication
+        .challenge(tenant, handle.id, handle.secret.expose(), step)
+        .await
+    {
+        Ok(options) => Json(PublicKeyBody {
+            registration_id: None,
+            public_key: options,
+        })
+        .into_response(),
+        Err(error) => Problem::from(error).into_response(),
+    }
+}
+
+async fn submit_webauthn(
+    State(state): State<InteractionState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(TenantSlug(slug)): Extension<TenantSlug>,
+    headers: HeaderMap,
+    Json(body): Json<WebAuthnAnswerBody>,
+) -> Response {
+    let input = answer_input(WebAuthnAuthenticator::KIND, body);
+    submit(&state, &tenant, &slug, &headers, input).await
+}
+
+async fn submit_passkey(
+    State(state): State<InteractionState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(TenantSlug(slug)): Extension<TenantSlug>,
+    headers: HeaderMap,
+    Json(body): Json<WebAuthnAnswerBody>,
+) -> Response {
+    let input = answer_input(PasskeyAuthenticator::KIND, body);
+    submit(&state, &tenant, &slug, &headers, input).await
+}
+
+/// What an authenticator answered, as the input of `step`.
+fn answer_input(step: &str, body: WebAuthnAnswerBody) -> StepInput {
+    let mut fields = vec![
+        ("credential_id", body.credential_id),
+        ("client_data", body.client_data),
+        ("authenticator_data", body.authenticator_data),
+        ("signature", body.signature),
+    ];
+    if let Some(handle) = body.user_handle {
+        fields.push(("user_handle", handle));
+    }
+    StepInput::External(ExternalInput {
+        step: step.to_owned(),
+        fields: fields
+            .into_iter()
+            .map(|(name, value)| (name.to_owned(), Secret::from(value)))
+            .collect(),
+    })
+}
+
+/// What a registration is asked for as. No body is a security key.
+#[derive(Debug, Default, Deserialize)]
+struct BeginWebAuthnBody {
+    #[serde(default)]
+    passkey: bool,
+}
+
+async fn begin_webauthn_registration(
+    State(state): State<InteractionState>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let person = match factors::recently_signed_in(&state, &tenant, &headers).await {
+        Ok(person) => person,
+        Err(response) => return *response,
+    };
+    let asked: BeginWebAuthnBody = if body.is_empty() {
+        BeginWebAuthnBody::default()
+    } else {
+        match serde_json::from_slice(&body) {
+            Ok(asked) => asked,
+            Err(_) => {
+                return problem(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "request.invalid_body",
+                    "the body must be empty or { \"passkey\": true | false }",
+                );
+            }
+        }
+    };
+    let user = person.session.user_id();
+    let begun = if asked.passkey {
+        state
+            .factors
+            .begin_passkey_registration(&tenant, user)
+            .await
+    } else {
+        state
+            .factors
+            .begin_webauthn_registration(&tenant, user)
+            .await
+    };
+    match begun {
+        Ok(begun) => (
+            StatusCode::CREATED,
+            Json(PublicKeyBody {
+                registration_id: Some(begun.id),
+                public_key: begun.options,
+            }),
+        )
+            .into_response(),
+        Err(error) => Problem::from(error).into_response(),
+    }
+}
+
+async fn finish_webauthn_registration(
+    State(state): State<InteractionState>,
+    Extension(tenant): Extension<TenantContext>,
+    parameters: RawPathParams,
+    headers: HeaderMap,
+    Json(body): Json<FinishWebAuthnBody>,
+) -> Response {
+    let person = match signed_in_to_change(&state, &tenant, &headers).await {
+        Ok(person) => person,
+        Err(response) => return *response,
+    };
+    // Something that is not an identifier names no registration.
+    let Some(id) = parameters
+        .iter()
+        .find(|(name, _)| *name == "registration_id")
+        .and_then(|(_, value)| value.parse::<WebAuthnRegistrationId>().ok())
+    else {
+        return Problem::from(DomainError::not_found(
+            "credential.webauthn_registration_not_found",
+            "this registration does not exist or has expired; start again",
+        ))
+        .into_response();
+    };
+    let Some(response) = RegistrationResponse::from_base64url(
+        &body.client_data,
+        &body.attestation_object,
+        body.transports,
+        body.discoverable,
+        body.name,
+    ) else {
+        return problem(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "request.invalid_body",
+            "client_data and attestation_object must be base64url without padding",
+        );
+    };
+    let finished = state
+        .factors
+        .finish_webauthn_registration(
+            &tenant,
+            person.session.user_id(),
+            id,
+            response,
+            person.caller(),
+        )
+        .await;
+    match finished {
+        Ok(registered) => (
+            StatusCode::CREATED,
+            Json(WebAuthnCredentialBody {
+                id: registered.credential.id().to_string(),
+                name: registered.credential.snapshot().name.clone(),
+                created_at: written(registered.credential.snapshot().created_at),
+                recovery_codes: factors::codes_of(registered.recovery_codes.as_ref()),
+            }),
+        )
+            .into_response(),
+        Err(error) => Problem::from(error).into_response(),
+    }
 }
 
 fn provider_not_found() -> Response {

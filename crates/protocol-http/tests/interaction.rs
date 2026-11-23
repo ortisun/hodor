@@ -6,17 +6,25 @@ use axum::body::Body;
 use axum::http::{HeaderMap, Method, Request, StatusCode, header};
 use hodor_authentication::api::{
     AccountService, AttemptGuard, AuthFlow, AuthenticationService, FlowEngine,
-    IdentifierAuthenticator, PasswordAuthenticator,
+    IdentifierAuthenticator, PasswordAuthenticator, RecoveryCodeAuthenticator, Requirement,
+    TotpAuthenticator,
 };
 use hodor_authentication::testing::{
     InMemoryAttempts, InMemoryTransactions, InMemoryVerificationTokens,
 };
-use hodor_credential::api::{CredentialService, NewPassword, PasswordRules};
-use hodor_credential::testing::{FakeHasher, InMemoryPasswords};
+use hodor_credential::api::{
+    CredentialService, NewPassword, PasswordRules, RecoveryCodeService, STEP_SECONDS, TotpService,
+    totp_code_at,
+};
+use hodor_credential::testing::{
+    FakeHasher, FakeHmacSha1, InMemoryPasswords, InMemoryRecoveryCodes, InMemoryTotps,
+    base32_secret,
+};
 use hodor_identity::api::{CreateUser, IdentifierKind, IdentityService, Profile, UserKind};
 use hodor_identity::testing::InMemoryUsers;
 use hodor_kernel::clock::testing::FixedClock;
-use hodor_kernel::random::testing::FakeDigest;
+use hodor_kernel::random::testing::{CountingRandom, FakeDigest};
+use hodor_kernel::sealing::testing::FakeSecretBox;
 use hodor_kernel::uow::testing::InMemoryUnitOfWorkFactory;
 use hodor_kernel::{Caller, DomainError, Secret, TenantContext, Timestamp, UserId};
 use hodor_notification::api::Notifier;
@@ -61,6 +69,12 @@ impl TenantResolver for Tenants {
 struct World {
     router: Router,
     clock: Arc<FixedClock>,
+    /// Authenticator applications; nobody has one unless a test gives it.
+    totp: TotpService,
+    /// Recovery codes; nobody has any unless a test makes them.
+    recovery_codes: RecoveryCodeService,
+    /// The tenants, for changing their policy.
+    tenants: TenantService,
     ana: UserId,
     acme: TenantContext,
     /// What would be in people's mailboxes.
@@ -133,6 +147,32 @@ async fn world() -> World {
             tenants.clone(),
             guard.clone(),
         )));
+    let totp = TotpService::new(
+        units(),
+        Arc::new(InMemoryTotps::default()),
+        Arc::new(FakeSecretBox),
+        Arc::new(FakeHmacSha1),
+        Arc::new(CountingRandom::default()),
+        clock.clone(),
+    );
+    let recovery_codes = RecoveryCodeService::new(
+        units(),
+        Arc::new(InMemoryRecoveryCodes::default()),
+        digest.clone(),
+        Arc::new(CountingRandom::default()),
+        clock.clone(),
+    );
+    let engine = engine
+        .with(Arc::new(TotpAuthenticator::new(
+            totp.clone(),
+            tenants.clone(),
+            guard.clone(),
+        )))
+        .with(Arc::new(RecoveryCodeAuthenticator::new(
+            recovery_codes.clone(),
+            tenants.clone(),
+            guard.clone(),
+        )));
     let messages = InMemoryMessages::default();
     let accounts = AccountService::new(
         units(),
@@ -152,7 +192,13 @@ async fn world() -> World {
         units(),
         Arc::new(InMemoryTransactions::default()),
         engine,
-        AuthFlow::built_in(),
+        AuthFlow::built_in()
+            .with_step(
+                TotpAuthenticator::KIND,
+                TotpAuthenticator::KIND,
+                Requirement::Optional,
+            )
+            .with_substitute(TotpAuthenticator::KIND, RecoveryCodeAuthenticator::KIND),
         identity.clone(),
         sessions.clone(),
         tenants.clone(),
@@ -214,6 +260,13 @@ async fn world() -> World {
         authentication,
         accounts,
         sessions,
+        factors: hodor_authentication::api::FactorService::new(
+            identity.clone(),
+            tenants.clone(),
+            webauthn_service(units_of_work.clone(), clock.clone()),
+            recovery_codes.clone(),
+        )
+        .with_totp(totp.clone()),
         external: None,
         digest,
         clock: clock.clone(),
@@ -230,6 +283,9 @@ async fn world() -> World {
     World {
         router,
         clock,
+        totp,
+        recovery_codes,
+        tenants,
         ana,
         acme,
         messages,
@@ -353,6 +409,28 @@ impl Browser {
             world,
             Method::POST,
             "/t/acme/interaction/sign-in/steps/password",
+            Some(body),
+        )
+        .await
+    }
+
+    async fn code(&mut self, world: &World, typed: &str) -> Reply {
+        let body = serde_json::json!({ "code": typed });
+        self.send(
+            world,
+            Method::POST,
+            "/t/acme/interaction/sign-in/steps/totp",
+            Some(body),
+        )
+        .await
+    }
+
+    async fn recovery_code(&mut self, world: &World, typed: &str) -> Reply {
+        let body = serde_json::json!({ "code": typed });
+        self.send(
+            world,
+            Method::POST,
+            "/t/acme/interaction/sign-in/steps/recovery_code",
             Some(body),
         )
         .await
@@ -1239,4 +1317,422 @@ async fn the_routes_of_a_signed_in_person_refuse_everyone_else_in_one_way() {
         assert_eq!(reply.status, StatusCode::UNAUTHORIZED, "{method} {path}");
         assert_eq!(reply.code(), "session.not_authenticated");
     }
+}
+
+#[tokio::test]
+async fn a_person_with_an_authenticator_application_gives_a_code_after_the_password() {
+    use hodor_kernel::Clock as _;
+    let world = world().await;
+    let enrollment = world
+        .totp
+        .begin_enrollment(&world.acme, world.ana, "Acme", "ana@example.com")
+        .await
+        .expect("begin");
+    let secret = base32_secret(enrollment.secret());
+    let phone = || totp_code_at(&FakeHmacSha1, &secret, world.clock.now());
+    world
+        .totp
+        .confirm_enrollment(
+            &world.acme,
+            world.ana,
+            &Secret::from(phone()),
+            Caller::system(),
+        )
+        .await
+        .expect("confirm");
+    world.clock.advance(Duration::seconds(STEP_SECONDS));
+
+    let mut browser = Browser::default();
+    browser.start(&world).await;
+    browser.identifier(&world, "ana@example.com").await;
+    let after_password = browser.password(&world, PASSWORD).await;
+    assert_eq!(
+        (
+            after_password.body["status"].as_str(),
+            after_password.body["step"].as_str()
+        ),
+        (Some("pending"), Some("totp"))
+    );
+    assert_eq!(
+        browser.session(&world, "acme").await.status,
+        StatusCode::UNAUTHORIZED
+    );
+
+    let wrong = browser.code(&world, "000000").await;
+    assert_eq!(
+        (
+            wrong.status,
+            wrong.body["status"].as_str(),
+            wrong.body["step"].as_str()
+        ),
+        (StatusCode::OK, Some("rejected"), Some("totp"))
+    );
+    assert_eq!(wrong.body["attempts_left"], 4);
+
+    let done = browser.code(&world, &phone()).await;
+    assert_eq!(done.body, serde_json::json!({ "status": "completed" }));
+    let session = browser.session(&world, "acme").await;
+    assert_eq!(session.body["assurance"], "multi_factor");
+    assert_eq!(
+        session.body["methods"],
+        serde_json::json!(["password", "totp"])
+    );
+}
+
+#[tokio::test]
+async fn a_person_who_lost_their_application_gives_a_recovery_code_once() {
+    use hodor_kernel::Clock as _;
+    let world = world().await;
+    let enrollment = world
+        .totp
+        .begin_enrollment(&world.acme, world.ana, "Acme", "ana@example.com")
+        .await
+        .expect("begin");
+    let secret = base32_secret(enrollment.secret());
+    let code = totp_code_at(&FakeHmacSha1, &secret, world.clock.now());
+    world
+        .totp
+        .confirm_enrollment(
+            &world.acme,
+            world.ana,
+            &Secret::from(code),
+            Caller::system(),
+        )
+        .await
+        .expect("confirm");
+    let codes = world
+        .recovery_codes
+        .generate(&world.acme, world.ana, Caller::system())
+        .await
+        .expect("generate");
+    let written_down = codes.codes().next().expect("a code").to_owned();
+
+    let mut browser = Browser::default();
+    browser.start(&world).await;
+    browser.identifier(&world, "ana@example.com").await;
+    let after_password = browser.password(&world, PASSWORD).await;
+    assert_eq!(after_password.body["step"], "totp");
+
+    let wrong = browser.recovery_code(&world, "AAAA-AAAA-AAAA-AAAA").await;
+    assert_eq!(
+        (
+            wrong.status,
+            wrong.body["status"].as_str(),
+            wrong.body["step"].as_str()
+        ),
+        (StatusCode::OK, Some("rejected"), Some("totp")),
+        "a rejected substitute leaves the sign-in waiting for the step"
+    );
+
+    let typed = written_down.to_lowercase().replace('-', " ");
+    let done = browser.recovery_code(&world, &typed).await;
+    assert_eq!(done.body, serde_json::json!({ "status": "completed" }));
+    let session = browser.session(&world, "acme").await;
+    assert_eq!(session.body["assurance"], "multi_factor");
+    assert_eq!(
+        session.body["methods"],
+        serde_json::json!(["password", "recovery_code"])
+    );
+
+    let mut again = Browser::default();
+    again.start(&world).await;
+    again.identifier(&world, "ana@example.com").await;
+    again.password(&world, PASSWORD).await;
+    let reused = again.recovery_code(&world, &written_down).await;
+    assert_eq!(
+        (reused.status, reused.body["status"].as_str()),
+        (StatusCode::OK, Some("rejected")),
+        "a recovery code is good for one sign-in"
+    );
+}
+
+#[tokio::test]
+async fn a_recovery_code_is_the_wrong_step_where_no_second_factor_is_asked() {
+    let world = world().await;
+    let mut browser = Browser::default();
+    browser.start(&world).await;
+    browser.identifier(&world, "ana@example.com").await;
+    let early = browser.recovery_code(&world, "AAAA-AAAA-AAAA-AAAA").await;
+    assert_eq!(early.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(early.code(), "authentication.unexpected_step");
+}
+
+#[tokio::test]
+async fn a_code_sent_before_the_password_is_the_wrong_step() {
+    let world = world().await;
+    let mut browser = Browser::default();
+    browser.start(&world).await;
+    browser.identifier(&world, "ana@example.com").await;
+    let early = browser.code(&world, "123456").await;
+    assert_eq!(
+        (early.status, early.code()),
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "authentication.unexpected_step"
+        )
+    );
+}
+
+/// The WebAuthn use cases on the in-memory store, with real cryptography.
+fn webauthn_service(
+    units_of_work: InMemoryUnitOfWorkFactory,
+    clock: Arc<FixedClock>,
+) -> hodor_credential::api::WebAuthnService {
+    hodor_credential::api::WebAuthnService::new(
+        Arc::new(units_of_work),
+        Arc::new(hodor_credential::testing::InMemoryWebAuthn::default()),
+        hodor_credential::api::RelyingParty::from_public_address("https://auth.example")
+            .expect("valid"),
+        Arc::new(hodor_adapters_crypto::Sha256Digest),
+        Arc::new(hodor_adapters_crypto::AwsLcVerifier),
+        Arc::new(hodor_adapters_crypto::OsRandom),
+        clock,
+    )
+}
+
+impl Browser {
+    async fn factors(&mut self, world: &World) -> Reply {
+        self.send(world, Method::GET, "/t/acme/interaction/factors", None)
+            .await
+    }
+
+    async fn factor(&mut self, world: &World, method: Method, path: &str) -> Reply {
+        self.send(
+            world,
+            method,
+            &format!("/t/acme/interaction/factors/{path}"),
+            None,
+        )
+        .await
+    }
+
+    /// Sets up an authenticator application through the routes, as the
+    /// security page does, and answers the confirmation and the secret.
+    async fn set_up_application(&mut self, world: &World) -> (Reply, Vec<u8>) {
+        use hodor_kernel::Clock as _;
+        let begun = self
+            .factor(world, Method::POST, "authenticator-application")
+            .await;
+        assert_eq!(begun.status, StatusCode::CREATED, "{}", begun.body);
+        let secret = base32_secret(begun.body["secret"].as_str().expect("secret"));
+        assert!(
+            begun.body["uri"]
+                .as_str()
+                .expect("uri")
+                .starts_with("otpauth://totp/acme:ana%40example.com?secret="),
+            "{}",
+            begun.body
+        );
+        let code = totp_code_at(&FakeHmacSha1, &secret, world.clock.now());
+        let confirmed = self
+            .send(
+                world,
+                Method::POST,
+                "/t/acme/interaction/factors/authenticator-application/confirmation",
+                Some(serde_json::json!({ "code": code })),
+            )
+            .await;
+        world.clock.advance(Duration::seconds(STEP_SECONDS));
+        (confirmed, secret)
+    }
+}
+
+#[tokio::test]
+async fn a_person_sets_up_an_authenticator_application_and_keeps_the_recovery_codes() {
+    use hodor_kernel::Clock as _;
+    let world = world().await;
+    let mut browser = signed_in_browser(&world).await;
+    let before = browser.factors(&world).await;
+    assert_eq!(before.status, StatusCode::OK);
+    assert_eq!(before.body["authenticator_application"]["in_use"], false);
+    assert_eq!(before.body["keys"], serde_json::json!([]));
+    assert_eq!(before.body["recovery_codes"]["remaining"], 0);
+    assert_eq!(before.body["second_factor_required"], false);
+    assert!(before.body["recent_sign_in_until"].is_string());
+
+    let (confirmed, secret) = browser.set_up_application(&world).await;
+    assert_eq!(confirmed.status, StatusCode::OK, "{}", confirmed.body);
+    let codes = confirmed.body["recovery_codes"].as_array().expect("codes");
+    assert_eq!(codes.len(), 10);
+    let after = browser.factors(&world).await;
+    assert_eq!(after.body["authenticator_application"]["in_use"], true);
+    assert_eq!(after.body["recovery_codes"]["remaining"], 10);
+
+    // A new set replaces the old one, and is shown once.
+    let again = browser.factor(&world, Method::POST, "recovery-codes").await;
+    assert_eq!(again.status, StatusCode::CREATED);
+    assert_eq!(
+        again.body["recovery_codes"].as_array().map(Vec::len),
+        Some(10)
+    );
+    assert_ne!(again.body["recovery_codes"][0], codes[0]);
+
+    // Signing in now asks for a code of the application.
+    let mut other = Browser::default();
+    other.start(&world).await;
+    other.identifier(&world, "ana@example.com").await;
+    let step = other.password(&world, PASSWORD).await;
+    assert_eq!(step.body["step"], "totp");
+    let done = other
+        .code(
+            &world,
+            &totp_code_at(&FakeHmacSha1, &secret, world.clock.now()),
+        )
+        .await;
+    assert_eq!(done.body["status"], "completed");
+
+    // Removing it, the last factor, takes the codes with it.
+    let removed = browser
+        .factor(&world, Method::DELETE, "authenticator-application")
+        .await;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT);
+    let left = browser.factors(&world).await;
+    assert_eq!(left.body["authenticator_application"]["in_use"], false);
+    assert_eq!(left.body["recovery_codes"]["remaining"], 0);
+    let none = browser.factor(&world, Method::POST, "recovery-codes").await;
+    assert_eq!(none.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(none.code(), "authentication.second_factor_missing");
+}
+
+#[tokio::test]
+async fn a_wrong_code_confirms_nothing_and_the_enrollment_still_waits() {
+    use hodor_kernel::Clock as _;
+    let world = world().await;
+    let mut browser = signed_in_browser(&world).await;
+    let begun = browser
+        .factor(&world, Method::POST, "authenticator-application")
+        .await;
+    let wrong = browser
+        .send(
+            &world,
+            Method::POST,
+            "/t/acme/interaction/factors/authenticator-application/confirmation",
+            Some(serde_json::json!({ "code": "000000" })),
+        )
+        .await;
+    assert_eq!(wrong.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(wrong.code(), "credential.totp_code_wrong");
+    let secret = base32_secret(begun.body["secret"].as_str().expect("secret"));
+    let right = browser
+        .send(
+            &world,
+            Method::POST,
+            "/t/acme/interaction/factors/authenticator-application/confirmation",
+            Some(serde_json::json!({
+                "code": totp_code_at(&FakeHmacSha1, &secret, world.clock.now())
+            })),
+        )
+        .await;
+    assert_eq!(right.status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn a_change_needs_a_sign_in_of_the_last_five_minutes() {
+    let world = world().await;
+    let mut browser = signed_in_browser(&world).await;
+    world
+        .clock
+        .advance(Duration::minutes(5) + Duration::seconds(1));
+
+    // Looking needs no recent sign-in; changing does.
+    let listed = browser.factors(&world).await;
+    assert_eq!(listed.status, StatusCode::OK);
+    assert!(listed.body["recent_sign_in_until"].is_null());
+    for (method, path) in [
+        (Method::POST, "authenticator-application"),
+        (Method::DELETE, "authenticator-application"),
+        (Method::POST, "recovery-codes"),
+        (Method::DELETE, "keys/0193f1d1-0000-7000-8000-000000000000"),
+    ] {
+        let refused = browser.factor(&world, method.clone(), path).await;
+        assert_eq!(refused.status, StatusCode::FORBIDDEN, "{method} {path}");
+        assert_eq!(
+            refused.code(),
+            "authentication.recent_sign_in_required",
+            "{method} {path}"
+        );
+    }
+    let registering = browser
+        .send(
+            &world,
+            Method::POST,
+            "/t/acme/interaction/webauthn/registrations",
+            None,
+        )
+        .await;
+    assert_eq!(registering.code(), "authentication.recent_sign_in_required");
+
+    // Signing in again, in the same browser, allows changes again.
+    assert!(browser.signs_in(&world, "ana@example.com", PASSWORD).await);
+    assert_eq!(browser.whoami(&world).await.status, StatusCode::OK);
+    let until = browser.factors(&world).await.body["recent_sign_in_until"].clone();
+    assert!(until.is_string());
+    let (confirmed, _) = browser.set_up_application(&world).await;
+    assert_eq!(confirmed.status, StatusCode::OK, "{}", confirmed.body);
+}
+
+#[tokio::test]
+async fn changes_need_the_csrf_token_and_a_session() {
+    let world = world().await;
+    let mut browser = signed_in_browser(&world).await;
+    let mut forged = browser.clone();
+    forged.csrf_token = Some("forged".to_owned());
+    let refused = forged
+        .factor(&world, Method::POST, "authenticator-application")
+        .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+    assert_eq!(refused.code(), "request.csrf_token_invalid");
+    let mut stranger = Browser::default();
+    for (method, path) in [
+        (Method::GET, "/t/acme/interaction/factors"),
+        (
+            Method::POST,
+            "/t/acme/interaction/factors/authenticator-application",
+        ),
+        (Method::POST, "/t/acme/interaction/factors/recovery-codes"),
+    ] {
+        let reply = stranger.send(&world, method, path, None).await;
+        assert_eq!(reply.status, StatusCode::UNAUTHORIZED, "{path}");
+        assert_eq!(reply.code(), "session.not_authenticated", "{path}");
+    }
+    // Nothing was begun by the forged request.
+    assert_eq!(
+        browser.factors(&world).await.body["authenticator_application"]["in_use"],
+        false
+    );
+}
+
+#[tokio::test]
+async fn under_the_policy_the_last_second_factor_cannot_be_removed_by_the_person() {
+    let world = world().await;
+    let mut browser = signed_in_browser(&world).await;
+    let (confirmed, _) = browser.set_up_application(&world).await;
+    assert_eq!(confirmed.status, StatusCode::OK);
+    let mut settings = world
+        .tenants
+        .get(&world.acme)
+        .await
+        .expect("tenant")
+        .snapshot()
+        .settings
+        .clone();
+    settings.authentication.second_factor = hodor_tenant::api::SecondFactorPolicy::Required;
+    world
+        .tenants
+        .change_settings(&world.acme, settings, Caller::system())
+        .await
+        .expect("settings");
+    assert_eq!(
+        browser.factors(&world).await.body["second_factor_required"],
+        true
+    );
+    let refused = browser
+        .factor(&world, Method::DELETE, "authenticator-application")
+        .await;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(refused.code(), "authentication.last_second_factor");
+    assert_eq!(
+        browser.factors(&world).await.body["authenticator_application"]["in_use"],
+        true
+    );
 }

@@ -15,17 +15,27 @@ pub mod testing;
 /// What other crates may use from this context.
 pub mod api {
     pub use crate::application::account::{AccountRequest, AccountService};
-    pub use crate::application::authenticators::{IdentifierAuthenticator, PasswordAuthenticator};
+    pub use crate::application::authenticators::{
+        IdentifierAuthenticator, PasskeyAuthenticator, PasswordAuthenticator,
+        RecoveryCodeAuthenticator, TotpAuthenticator, WebAuthnAuthenticator,
+    };
+    pub use crate::application::factors::{
+        FactorService, Factors, RECENT_SIGN_IN, RegisteredKey, Remover, recent_sign_in_required,
+        recent_sign_in_until, signed_in_recently,
+    };
     pub use crate::application::guard::AttemptGuard;
     pub use crate::application::ports::{AttemptStore, TransactionStore, VerificationTokenStore};
-    pub use crate::application::service::{AuthenticationService, SignIn, StartedSignIn};
+    pub use crate::application::service::{
+        AuthenticationService, SignIn, StartedSignIn, StepUp, StepUpRequest,
+    };
     pub use crate::domain::attempt::{AttemptCounter, AttemptSubject, LockoutRules};
     pub use crate::domain::authenticator::{
-        Authenticator, AuthenticatorTraits, ExternalInput, Factor, StepInput, StepOutcome,
+        Authenticator, AuthenticatorTraits, ExternalInput, Factor, StepChallenge, StepInput,
+        StepOutcome,
     };
     pub use crate::domain::engine::{FlowEngine, Progress};
     pub use crate::domain::event::AuthenticationEvent;
-    pub use crate::domain::flow::{AuthFlow, FlowStep, Requirement};
+    pub use crate::domain::flow::{AuthFlow, Condition, FlowStep, Requirement};
     pub use crate::domain::transaction::{
         AuthTransaction, TransactionId, TransactionSnapshot, TransactionState, TransactionStatus,
     };

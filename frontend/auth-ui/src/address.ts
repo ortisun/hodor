@@ -7,7 +7,10 @@ export const PAGES = [
   "complete-registration",
   "recover",
   "reset-password",
+  "consent",
   "account",
+  "sign-out",
+  "security",
 ] as const;
 
 export type PageName = (typeof PAGES)[number];
@@ -66,6 +69,48 @@ export function pathOf(tenant: string, page: PageName, notice?: NoticeName): str
 export function noticeOf(search: string): NoticeName | null {
   const named = new URLSearchParams(search).get("notice");
   return NOTICES.find((known) => known === named) ?? null;
+}
+
+/**
+ * What a sign-in started from this address continues: an application's
+ * request, or a change on the security page that needs the person to sign
+ * in again. Either way the person signs in even when they are signed in
+ * already.
+ */
+export function continuationOf(search: string): "authorization" | "security" | null {
+  const named = new URLSearchParams(search).get("continue");
+  return named === "authorization" || named === "security" ? named : null;
+}
+
+/**
+ * Whether the address says that an application's request waits for this
+ * sign-in, so that the person signs in even when they are signed in already.
+ */
+export function continuesAuthorization(search: string): boolean {
+  return continuationOf(search) === "authorization";
+}
+
+/** The sign-in page that signs the person in again and comes back to the security page. */
+export function signInAgainPath(tenant: string): string {
+  return `/t/${tenant}/account/sign-in?continue=security`;
+}
+
+/**
+ * The identifier an application suggested with `login_hint`, if any. A
+ * hint fills the field in; the person can change it.
+ */
+export function loginHintOf(search: string): string | null {
+  const hint = new URLSearchParams(search).get("login_hint");
+  return hint !== null && hint.trim() !== "" && hint.length <= 255 ? hint : null;
+}
+
+/**
+ * The languages an application asked for with `ui_locales`, in its order:
+ * language tags separated by spaces.
+ */
+export function uiLocalesOf(search: string): string[] {
+  const locales = new URLSearchParams(search).get("ui_locales");
+  return locales === null ? [] : locales.split(" ").filter((tag) => tag !== "");
 }
 
 /**

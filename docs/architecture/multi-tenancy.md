@@ -126,9 +126,23 @@ Every case has the same shape. First something is shown to work in the tenant it
 | An administrator's access token, on every operation in the OpenAPI document | Not authenticated |
 | A registration link's token and a recovery link's token | The link does not work; it still works where it belongs |
 | The identifier of a user or of a session, asked for by the other tenant's own administrator | No such user, no such session |
+| A code of the person's authenticator application, and one of their recovery codes | Rejected, as any wrong code; both still work where they belong |
+| A passkey, in place of the identifier | Rejected: the credential is unknown there |
+| A security key's answer to the other tenant's challenge | Rejected; the challenge names only the other tenant's own keys |
+| The identifier of a security key or a passkey, given by the other tenant's own administrator to remove it | No such credential |
+| An administrator's token changing the assurance levels | Not authenticated |
+| A client's identifier, at the authorization endpoint | No such client: Hodor's own error page, never a redirect to the client |
+| An authorization code, redeemed with the client it was issued to | Not authenticated: the client is unknown there |
+| An authorization code, redeemed with the other tenant's own client | Refused as an unknown code; the code still redeems where it belongs |
+| An access token, at UserInfo and at introspection by the other tenant's client | Not authenticated; not active |
+| A refresh token, at the token, revocation and introspection endpoints of the other tenant's client | Refused; nothing revoked; not active. It still refreshes where it belongs |
+| A client's secret, asking for a token for itself | Not authenticated: the client is unknown there |
+| The client of a consent the person gave, withdrawn by the other tenant's person or administrator | No such consent; the consent still stands where it belongs |
+| Another tenant's administrator naming a resource server, a role, a person's roles, a binding or a policy version | Not found |
+| Another tenant's administrator giving or taking away a role of the first tenant's person | Not found |
 
-It also checks what must not be shared: one tenant's list of users and audit log name nothing of the other's, and locking a person out by failed attempts in one tenant does not lock out the person with the same address in the other.
+It also checks what must not be shared: one tenant's list of users and audit log name nothing of the other's; locking a person out by failed attempts in one tenant does not lock out the person with the same address in the other; a person with an authenticator application in one tenant signs in to the other with the password alone; each tenant's discovery document names its own assurance levels only; and one tenant's lists of roles, bindings and policy versions name nothing of the other's.
 
 In a browser, a cookie of one tenant is not even sent to another: cookies are limited to the tenant's path. The suite sends them anyway, because the server must not rely on the browser.
 
-What the suite cannot cover yet is listed with the progress of the work: OAuth tokens and codes do not exist yet, and the pages are not built.
+The pages are tried in a browser by their own tests, not by this suite.

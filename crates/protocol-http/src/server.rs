@@ -26,6 +26,10 @@ pub struct Limits {
     /// and its line breaks three times longer, so the body may be larger
     /// than the response it holds.
     pub max_saml_response_bytes: usize,
+    /// Largest accepted body of a report an Open Policy Agent instance
+    /// posts, its status or its decisions, which may name many bundles or
+    /// hold many decisions.
+    pub max_policy_agent_report_bytes: usize,
     /// Longest time a request may take before it is answered with 408.
     pub request_timeout: Duration,
 }
@@ -35,6 +39,7 @@ impl Default for Limits {
         Self {
             max_body_bytes: 64 * 1024,
             max_saml_response_bytes: 2 * hodor_federation::api::MAX_SAML_POSTED_BYTES,
+            max_policy_agent_report_bytes: 1024 * 1024,
             request_timeout: Duration::from_secs(30),
         }
     }
@@ -69,7 +74,10 @@ pub fn public_router(
         .merge(site_routes)
         .fallback(route_not_found)
         .layer(DefaultBodyLimit::max(
-            limits.max_body_bytes.max(limits.max_saml_response_bytes),
+            limits
+                .max_body_bytes
+                .max(limits.max_saml_response_bytes)
+                .max(limits.max_policy_agent_report_bytes),
         ))
         .layer(middleware::from_fn_with_state(limits, limit_bodies))
         .layer(TimeoutLayer::with_status_code(
@@ -91,12 +99,22 @@ fn posts_a_saml_response(request: &Request) -> bool {
         && path.contains("/interaction/sign-in/providers/")
 }
 
+/// Whether a request posts an Open Policy Agent instance's report:
+/// `POST /opa/status` or `POST /opa/logs`.
+fn posts_a_policy_agent_report(request: &Request) -> bool {
+    let path = request.uri().path();
+    request.method() == Method::POST && (path == "/opa/status" || path == "/opa/logs")
+}
+
 /// Refuses a body larger than the limit of its request, whether it says
 /// its length or not: `max_body_bytes` for every request, the larger
-/// `max_saml_response_bytes` for a posted SAML response only.
+/// `max_saml_response_bytes` for a posted SAML response only, and
+/// `max_policy_agent_report_bytes` for an instance's report only.
 async fn limit_bodies(State(limits): State<Limits>, request: Request, next: Next) -> Response {
     let largest = if posts_a_saml_response(&request) {
         limits.max_saml_response_bytes
+    } else if posts_a_policy_agent_report(&request) {
+        limits.max_policy_agent_report_bytes
     } else {
         limits.max_body_bytes
     };

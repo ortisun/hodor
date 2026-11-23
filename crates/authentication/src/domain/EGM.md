@@ -16,17 +16,50 @@ reach other crates only through `hodor_authentication::api` in `../lib.rs`.
 - `AuthFlow { name, version, steps, alternatives, minimum_assurance }`
   (`flow.rs:AuthFlow`); `AuthFlow::built_in()` is the `"sign-in"` flow,
   version 1, with steps `identifier` then `password` and minimum assurance
-  `Assurance::SingleFactor`; `with_alternative(key, authenticator)` adds an
-  alternative step.
-- `FlowStep { key, authenticator, requirement }` (`flow.rs:FlowStep`).
-- `Requirement::Required` (the only variant) (`flow.rs:Requirement`).
+  `Assurance::SingleFactor`; `with_step(key, authenticator, requirement)` adds
+  a step at the end; `with_alternative(key, authenticator)` adds an
+  alternative step; `with_substitute(key, authenticator)` lets the kind of
+  authenticator satisfy the step with that key in its place;
+  `required_steps()` counts the leading required steps.
+- `FlowStep { key, authenticator, requirement, substitutes }`
+  (`flow.rs:FlowStep`); `substitutes` are kinds of authenticator, each
+  submitted under its own kind as key.
+- `Requirement` (`flow.rs:Requirement`): `Required`, `Optional` (performed when
+  the authenticator's `has_means` says yes), `Conditional(Condition)`
+  (performed when the condition holds and `has_means` says yes);
+  `is_required()`.
+- `Condition` (`flow.rs:Condition`): `AssuranceNotReached`, which holds while
+  the satisfied methods are below the assurance the sign-in must reach, and
+  `MultiFactorNotReached`, which holds while they are below multi-factor, and
+  `StrongerAssuranceNeeded`, which holds while they are below the higher of
+  multi-factor and what the sign-in must reach.
 
 ### Engine (`engine.rs`)
 
 - `FlowEngine` (`engine.rs:FlowEngine`): `new()`, `with(authenticator)`
   (a later registration of the same kind replaces the earlier one),
-  `validate(flow)`, `submit(tenant, flow, transaction, input, now) -> Progress`,
-  `assurance(transaction) -> Option<Assurance>`.
+  `validate(flow)`,
+  `submit(tenant, flow, transaction, input, demanded, now) -> Progress`
+  (`demanded` is the assurance the tenant's policy asks beyond the flow's
+  minimum; after a satisfied step the steps to be passed over are passed over,
+  and an error leaves the transaction unchanged),
+  `challenge(tenant, flow, transaction, step, now)` (the current step's, or
+  an alternative's while `current_step` is 0),
+  `assurance(transaction) -> Option<Assurance>` over the carried and satisfied
+  methods, `assurance_of_methods(methods)` (counts `factor` and
+  `second_factor` of every method; two kinds with an authenticator whose
+  `resists_phishing()` is true are `PhishingResistant`),
+  `satisfied_by(flow, carried)` (steps a step-up starts past),
+  `reachable(tenant, flow, transaction, must_reach)` and
+  `settle(tenant, flow, transaction, demanded)` for a step-up just started.
+- `Authenticator::resists_phishing()` defaults to `false`; the WebAuthn and
+  passkey authenticators answer `true`.
+- `AuthTransaction::start_step_up(...)` makes a step-up transaction with
+  `carried_methods`, `demanded` and `raised_session`; `counted_methods()` is
+  the carried methods followed by the satisfied ones.
+- Validity rules added for steps that are not required: they come after every
+  required step, never establish who is signing in, and prove a factor; only
+  required steps count towards the minimum assurance.
 - `Progress` (`engine.rs:Progress`): `Next { step }`, `ReadyToComplete`,
   `Rejected { attempts_left }`, `Failed`.
 
@@ -34,12 +67,21 @@ reach other crates only through `hodor_authentication::api` in `../lib.rs`.
 
 - `Authenticator` trait (`authenticator.rs:Authenticator`), the context's
   extension point: `kind() -> &'static str`, `traits() -> AuthenticatorTraits`,
-  `perform(tenant, transaction, input) -> StepOutcome`.
-- `AuthenticatorTraits { identifies, factor, method }`.
+  `perform(tenant, transaction, input) -> StepOutcome`, and
+  `has_means(tenant, transaction) -> bool`, asked only for steps that are not
+  required; the default answers `true`; and `challenge(tenant, transaction) ->
+  Option<StepChallenge>`, for a step that checks an answer only to a question
+  it asked; the default answers `None`.
+- `StepChallenge { challenge: [u8; 32], options: serde_json::Value }`: what the
+  engine keeps in the transaction, and what the browser needs.
+- `AuthenticatorTraits { identifies, factor, second_factor, method }`;
+  `second_factor` is a second kind of evidence the same step provides, as a
+  passkey's user verification does.
 - `Factor`: `Knowledge`, `Possession`, `Inherence`.
 - `StepInput`: `Identifier(String)`, `Password(Secret<String>)`,
-  `External(ExternalInput)`; `step_key()` gives `"identifier"`, `"password"`
-  or the external input's step.
+  `Totp(Secret<String>)`, `RecoveryCode(Secret<String>)`,
+  `External(ExternalInput)`; `step_key()` gives `"identifier"`,
+  `"password"`, `"totp"`, `"recovery_code"` or the external input's step.
 - `ExternalInput { step, fields }` with `field(name)`.
 - `StepOutcome`: `Identified { candidate, identifier_key }`, `Proven`,
   `Authenticated { user }`, `Rejected`.
@@ -56,6 +98,10 @@ reach other crates only through `hodor_authentication::api` in `../lib.rs`.
   state, including `current_step`, `candidate`, `identifier_key`,
   `satisfied_methods`, `rejections`, `status`, `expires_at`, `client`,
   `binding` and `version`.
+  `record_authenticated` (an alternative identified the person) sets
+  `identifier_key` to `person_attempt_key(user)`: the prefix
+  `attempts of user` and the user's 16 bytes, so that a second factor after
+  a provider or a passkey is counted and can be checked.
 - `TransactionStatus`: `InProgress`, `Completed`, `Failed`, `Cancelled`, with
   stored names `in_progress`, `completed`, `failed`, `cancelled`
   (`as_str`, `from_stored`).
@@ -102,9 +148,15 @@ implements `hodor_kernel::DomainEvent`:
 - `FlowEngine::validate` returns `Invalid` code `authentication.flow_invalid`
   when a flow has no steps, repeats a step key, names an unknown
   authenticator, proves an identity before any step established whose, has
-  no identifying step, does not reach its minimum assurance, or has an
-  alternative that does not both identify and prove at that assurance
-  (`engine.rs:FlowEngine::validate`).
+  no identifying step, does not reach its minimum assurance, has an
+  alternative that does not both identify and prove at that assurance, or
+  has a substitute that stands for a required step, belongs to an
+  alternative, repeats a key, names an unknown authenticator, identifies or
+  proves nothing (`engine.rs:FlowEngine::validate`,
+  `validate_substitutes`).
+- A substitute is accepted only while the sign-in waits for its step; what it
+  proves is recorded under its own method, and a rejected substitute counts
+  as a rejection of the step, which still waits (`engine.rs:FlowEngine::submit`).
 - Assurance: one kind of factor is single-factor, two different kinds are
   multi-factor, none is `None` (`engine.rs:assurance_of`).
 - `FlowEngine::submit` requires the transaction to be in progress, accepts an

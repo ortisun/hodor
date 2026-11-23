@@ -2,10 +2,13 @@
 
 ## Overview
 
-The background process, in one file, `main.rs`. It runs three loops side by
+The background process, in one file, `main.rs`. It runs six loops side by
 side: the outbox dispatch loop, which turns every outbox event into an audit
-record, the mail delivery loop, which sends queued messages over SMTP, and
-the cleanup loop, which removes pending authorizations that expired. It
+record, the mail delivery loop, which sends queued messages over SMTP, two
+cleanup loops, one removing pending authorizations that expired and one
+removing the records of access tokens that expired, the rotation loop,
+which rotates the tenants' signing keys, and the policy check loop, which
+checks, tests and simulates policy versions with `opa`. It
 holds two PostgreSQL pools: one as the application role, to handle each piece
 of work inside its tenant, and one as the platform role, used only to find
 pending work across tenants. An operations listener serves health endpoints.
@@ -28,6 +31,16 @@ Configuration (`Config`, clap, command name `hodor-worker`):
 | `--mail-poll-interval-ms` | `HODOR_MAIL_POLL_INTERVAL_MS` | 1000 |
 | `--cleanup-interval-ms` | `HODOR_CLEANUP_INTERVAL_MS` | 60000 |
 | `--cleanup-batch-size` | `HODOR_CLEANUP_BATCH_SIZE` (rows per tenant per pass) | 500 |
+| `--secret-keys` | `HODOR_SECRET_KEYS` | unset: keys do not rotate |
+| `--key-rotation-days` | `HODOR_KEY_ROTATION_DAYS` | 90 |
+| `--key-publication-hours` | `HODOR_KEY_PUBLICATION_HOURS` | 24 |
+| `--key-overlap-hours` | `HODOR_KEY_OVERLAP_HOURS` | 24 |
+| `--key-rotation-interval-ms` | `HODOR_KEY_ROTATION_INTERVAL_MS` | 600000 |
+| `--open-policy-agent-binary` | `HODOR_OPEN_POLICY_AGENT_BINARY` | unset: no version is checked; the image sets `/usr/local/bin/opa` |
+| `--open-policy-agent-binary-sha256` | `HODOR_OPEN_POLICY_AGENT_BINARY_SHA256` | unset: only the version is checked |
+| `--policy-check-time-limit-seconds` | `HODOR_POLICY_CHECK_TIME_LIMIT_SECONDS` | 30 |
+| `--policy-check-memory-mebibytes` | `HODOR_POLICY_CHECK_MEMORY_MEBIBYTES` | 256 |
+| `--policy-check-interval-ms` | `HODOR_POLICY_CHECK_INTERVAL_MS` | 2000 |
 | `--log-format` (`json`, `pretty`) | `HODOR_LOG_FORMAT` | `json` |
 | `--log-filter` | `HODOR_LOG_FILTER` | `info` |
 | `--otlp-traces-endpoint` | `HODOR_OTLP_TRACES_ENDPOINT` | unset: no export |
@@ -38,12 +51,25 @@ Symbols:
 - `run` builds `DeliveryService` (with `PgMessageQueue`,
   `PgPendingMessages::new(platform)`, `SmtpSender`, `SystemClock`),
   `AuditService` (with `PgAuditLog`, `Sha256Digest`), and
-  `PendingAuthorizationCleanup::new(platform, database)` and
-  `OutboxDispatcher::new(platform, database, [AuditHandler])`, then serves
-  `ops_router(health)` and joins the three loops.
+  `PendingAuthorizationCleanup::new(platform, database)`,
+  `AccessTokenCleanup::new(platform, database)`,
+  `DecisionLogMaintenance::new(platform, database)` and
+  `OutboxDispatcher::new(platform, database, [AuditHandler])`, and, with
+  `HODOR_SECRET_KEYS`, `KeyRotationJob::new(platform, KeyService, policy)`
+  over `PgKeyStore` and `LocalKeyProvider`, and, with
+  `HODOR_OPEN_POLICY_AGENT_BINARY`, `OpaProcessChecker::verified` (the worker
+  does not start with a binary it refuses) and
+  `PolicyCheckJob::new(platform, policy_service(database), checker)`; then
+  serves `ops_router(health)` and joins the seven loops.
 - `dispatch_loop` calls `OutboxDispatcher::dispatch_batch(batch_size)`.
 - `delivery_loop` calls `DeliveryService::deliver_pending(batch_size)`.
-- `cleanup_loop` calls `PendingAuthorizationCleanup::run(now, batch_size)`.
+- `cleanup_loop` calls `CleanupJob::run(now, batch_size)`: `CleanupJob` is
+  `PendingAuthorizations(PendingAuthorizationCleanup)` or
+  `AccessTokens(AccessTokenCleanup)` or `DecisionLog(DecisionLogMaintenance)`,
+  and `name` is its `job` attribute.
+- `rotation_loop` calls `KeyRotationJob::run(now)`.
+- `policy_check_loop` calls `PolicyCheckJob::run()`; `policy_service` builds
+  `PolicyService` over the PostgreSQL stores.
 - `mail_sender` builds the optional `SmtpSender`.
 - `PoolCheck` implements `hodor_protocol_http::ReadinessCheck` over
   `ping_pool`; the checks are named `database` and `platform_database`.
@@ -57,6 +83,13 @@ Symbols:
   `--smtp-url` (`Config.mail_from`).
 - Without `HODOR_SMTP_URL` the worker logs a warning, messages wait, and
   `delivery_loop` returns at once.
+- The rotation policy is checked with `RotationPolicy::new` before any
+  connection: an overlap under 65 minutes, for example, stops the worker
+  with `keys.rotation_policy_invalid`. Without `HODOR_SECRET_KEYS` the worker
+  logs a warning and `rotation_loop` returns at once.
+- The rotation loop runs at start, then after every pause; a pass skipped
+  because another worker held the lock pauses like any other, and a full
+  pass without failures is followed by another at once (`rotation_loop`).
 - `AuditHandler` is the only outbox handler. Comment in `run`: "Every event
   becomes an audit record, in the transaction that marks the event
   delivered."
@@ -85,12 +118,26 @@ Symbols:
   (`delivery_loop`).
 - Deletes expired rows of `federation.pending_authorization`, inside each
   tenant, through `PendingAuthorizationCleanup` (`cleanup_loop`), and logs
-  how many when any were removed.
+  how many when any were removed; and deletes the records of access tokens
+  whose token expired, from `oauth.access_token`, through
+  `AccessTokenCleanup` (`cleanup_loop`); and prepares the partitions of the
+  record of decisions, drops those past 400 days and removes each tenant's
+  records past its retention, through `DecisionLogMaintenance`
+  (`cleanup_loop`, job `decision_log`).
+- Makes, activates and retires signing key versions inside each tenant
+  through `KeyRotationJob` (`rotation_loop`), and logs what changed and
+  each tenant whose step failed.
 - Records metrics on the meter `hodor.worker`: the counters
-  `hodor.outbox.events`, `hodor.outbox.passes`,
+  `hodor.keys.rotation.passes` (attribute `outcome`: `ok`, `skipped`,
+  `error`), `hodor.keys.rotation.changes` (attribute `change`: `created`,
+  `activated`, `retired`), `hodor.outbox.events`, `hodor.outbox.passes`,
   `hodor.notification.messages`, `hodor.notification.passes`,
   `hodor.cleanup.removed` and `hodor.cleanup.passes` (attribute `job` =
-  `pending_authorizations`).
+  `pending_authorizations` or `access_tokens`), `hodor.policy.check.passes`
+  (attribute `outcome`) and `hodor.policy.check.done` (attribute `kind`:
+  `version`, `simulation`).
+- Runs the `opa` binary as a child process for each check, test and
+  simulation, through `OpaProcessChecker` (`policy_check_loop`).
 - Logs and, when the endpoints are set, exports traces and metrics through
   `hodor_observability::Telemetry::init` (`main`).
 - Binds a TCP listener on `HODOR_OPS_ADDR` for health endpoints (`run`).

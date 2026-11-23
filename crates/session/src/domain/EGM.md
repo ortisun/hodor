@@ -13,7 +13,7 @@ below are re-exported through `crate::api`.
 
 - `SessionId`: identifier defined with `hodor_kernel::define_id!`; safe to
   show and log.
-- `Assurance { SingleFactor, MultiFactor }` with `as_str()`
+- `Assurance { SingleFactor, MultiFactor, PhishingResistant }` (ordered) with `as_str()`
   (`"single_factor"` / `"multi_factor"`) and `from_stored(&str)`.
 - `SessionTimeouts { idle: Duration, absolute: Duration }`.
 - `ClientInfo { address: Option<String>, description: Option<String> }`,
@@ -25,7 +25,7 @@ below are re-exported through `crate::api`.
   `from_stored([u8; 32])`, `as_bytes()`.
 - `SessionState { Active, Expired, Revoked }`.
 - `SessionSnapshot`: the stored state (`id`, `user_id`, `token_hash`,
-  `signed_in_at`, `assurance`, `methods`, `started_at`, `last_activity_at`,
+  `signed_in_at`, `assurance`, `methods`, `method_proven_at` (one time per method), `started_at`, `last_activity_at`,
   `idle_timeout`, `absolute_expires_at`, `client`, `revoked_at`,
   `revocation_reason`).
 - `Session` methods: `start(user_id, assurance, methods, timeouts, client, now,
@@ -33,7 +33,11 @@ below are re-exported through `crate::api`.
   `from_snapshot`, `snapshot`, `id`, `user_id`, `expires_at`,
   `state_at(now) -> SessionState`, `record_activity(now) -> bool`,
   `revoke(reason, now) -> Option<SessionEvent>`,
-  `replace_token(now, random, digest) -> Result<SessionToken, DomainError>`;
+  `replace_token(now, random, digest) -> Result<SessionToken, DomainError>`,
+  `proofs() -> Vec<(&str, Timestamp)>` (each method with when it was last proven),
+  `raise(proven, assurance, now, random, digest) -> Result<(SessionToken, SessionEvent), DomainError>`
+  (adds or re-times the proven methods, keeps the higher assurance, sets
+  `signed_in_at`, replaces the token; `Conflict` `session.not_active` unless active);
   constant `ACTIVITY_RESOLUTION = Duration::minutes(1)`.
 
 ### `event.rs`
@@ -43,6 +47,7 @@ below are re-exported through `crate::api`.
 | Variant | Fields | `event_type()` |
 | --- | --- | --- |
 | `Started` | `session_id`, `user_id`, `assurance: &'static str`, `methods: Vec<String>` | `session.started` |
+| `Raised` | `session_id`, `user_id`, `assurance: &'static str`, `methods: Vec<String>` (those the step-up proved) | `session.raised` |
 | `Revoked` | `session_id`, `user_id`, `reason: String` | `session.revoked` |
 
 ## Invariants

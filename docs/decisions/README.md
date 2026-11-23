@@ -28,3 +28,7 @@ All records below are **Proposed** unless marked otherwise: they become Accepted
 | [0020](0020-console-on-the-hodor-session.md) | Until Hodor issues tokens, the admin console rides the administrator's Hodor session (Accepted) |
 | [0021](0021-documentation-site.md) | The documentation site is built from `docs/` with MkDocs and Material, and published on GitHub Pages from `develop` |
 | [0022](0022-installation-packages.md) | Hodor is installed from two packages kept apart from the development stack, and neither holds a secret |
+| [0023](0023-what-0.2.0-holds.md) | 0.2.0 holds the OAuth server, strong authentication and the authorization engine, each cut to what makes it whole (Accepted) |
+| [0024](0024-webauthn-checks.md) | WebAuthn is checked by Hodor's own code, over the cryptography it already has (Accepted) |
+| [0025](0025-condition-language.md) | Conditions are Common Expression Language, interpreted by the `cel` crate in a crate of their own (Accepted) |
+| [0026](0026-policy-checks-in-a-sandbox.md) | Policies are checked by the `opa` binary, run by the worker as a child process with nothing of its own (Accepted) |

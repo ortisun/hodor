@@ -18,20 +18,31 @@ hodor-adapters-postgres.workspace = true
 hodor-audit.workspace = true
 hodor-authentication.workspace = true
 hodor-authorization.workspace = true
+hodor-authorization-native.workspace = true
+hodor-authorization-opa.workspace = true
 hodor-credential.workspace = true
 hodor-federation.workspace = true
 hodor-identity.workspace = true
 hodor-kernel.workspace = true
+hodor-keys.workspace = true
 hodor-notification.workspace = true
+hodor-oauth.workspace = true
 hodor-observability.workspace = true
 hodor-protocol-http.workspace = true
 hodor-session.workspace = true
 hodor-tenant.workspace = true
+serde_json.workspace = true
 time.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+aws-lc-rs.workspace = true
+# The software authenticator, for the factors of the cross-tenant suite.
+hodor-adapters-crypto = { workspace = true, features = ["testing"] }
+base64.workspace = true
+form_urlencoded.workspace = true
+jsonwebtoken = { workspace = true, features = ["aws_lc_rs"] }
 hodor-adapters-postgres = { workspace = true, features = ["testing"] }
 hodor-kernel = { workspace = true, features = ["testing"] }
 reqwest = { workspace = true, features = ["json"] }

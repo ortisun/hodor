@@ -19,11 +19,49 @@ pub enum Permission {
     IdentityProvidersRead,
     /// Adding and changing identity providers.
     IdentityProvidersWrite,
+    /// Seeing key versions, without anything of their keys.
+    KeysRead,
+    /// Rotating a signing key and revoking key versions.
+    KeysWrite,
+    /// Seeing applications, their clients and resource servers, without
+    /// any secret.
+    ApplicationsRead,
+    /// Registering and changing applications, clients and resource
+    /// servers, and giving clients secrets and keys.
+    ApplicationsWrite,
+    /// Seeing the tenant's assurance levels.
+    AssuranceLevelsRead,
+    /// Replacing the tenant's assurance levels.
+    AssuranceLevelsWrite,
+    /// Seeing which second factors a user has, never a secret or a code.
+    CredentialsRead,
+    /// Removing a user's second factors and recovery codes.
+    CredentialsWrite,
+    /// Reading the record of decisions and its settings.
+    DecisionsRead,
+    /// Replacing the settings of the record of decisions.
+    DecisionLogWrite,
+    /// Seeing the permissions of resource servers, the tenant's roles and
+    /// who holds them.
+    RolesRead,
+    /// Declaring and removing permissions, defining and removing roles,
+    /// and giving and taking away roles.
+    RolesWrite,
+    /// Seeing which engine answers for each resource server.
+    BindingsRead,
+    /// Binding a resource server to an engine and removing the binding.
+    BindingsWrite,
+    /// Seeing the tenant's policy versions, reports, simulations and what
+    /// is published.
+    PoliciesRead,
+    /// Drafting policy versions and asking for checks, tests and
+    /// simulations.
+    PoliciesWrite,
 }
 
 impl Permission {
     /// Every permission.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 23] = [
         Self::UsersRead,
         Self::UsersWrite,
         Self::SessionsRead,
@@ -31,6 +69,22 @@ impl Permission {
         Self::AuditRead,
         Self::IdentityProvidersRead,
         Self::IdentityProvidersWrite,
+        Self::KeysRead,
+        Self::KeysWrite,
+        Self::ApplicationsRead,
+        Self::ApplicationsWrite,
+        Self::AssuranceLevelsRead,
+        Self::AssuranceLevelsWrite,
+        Self::CredentialsRead,
+        Self::CredentialsWrite,
+        Self::DecisionsRead,
+        Self::DecisionLogWrite,
+        Self::RolesRead,
+        Self::RolesWrite,
+        Self::BindingsRead,
+        Self::BindingsWrite,
+        Self::PoliciesRead,
+        Self::PoliciesWrite,
     ];
 
     /// The permission written as `resource:action`.
@@ -44,6 +98,22 @@ impl Permission {
             Self::AuditRead => "audit:read",
             Self::IdentityProvidersRead => "identity-providers:read",
             Self::IdentityProvidersWrite => "identity-providers:write",
+            Self::KeysRead => "keys:read",
+            Self::KeysWrite => "keys:write",
+            Self::ApplicationsRead => "applications:read",
+            Self::ApplicationsWrite => "applications:write",
+            Self::AssuranceLevelsRead => "assurance-levels:read",
+            Self::AssuranceLevelsWrite => "assurance-levels:write",
+            Self::CredentialsRead => "credentials:read",
+            Self::CredentialsWrite => "credentials:write",
+            Self::DecisionsRead => "decisions:read",
+            Self::DecisionLogWrite => "decision-log:write",
+            Self::RolesRead => "roles:read",
+            Self::RolesWrite => "roles:write",
+            Self::BindingsRead => "bindings:read",
+            Self::BindingsWrite => "bindings:write",
+            Self::PoliciesRead => "policies:read",
+            Self::PoliciesWrite => "policies:write",
         }
     }
 
@@ -102,6 +172,14 @@ impl Role {
                 Permission::SessionsRead,
                 Permission::AuditRead,
                 Permission::IdentityProvidersRead,
+                Permission::KeysRead,
+                Permission::ApplicationsRead,
+                Permission::AssuranceLevelsRead,
+                Permission::CredentialsRead,
+                Permission::DecisionsRead,
+                Permission::RolesRead,
+                Permission::BindingsRead,
+                Permission::PoliciesRead,
             ],
         }
     }
@@ -114,12 +192,16 @@ impl Role {
 }
 
 /// Whether something may be done.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Effect {
     /// It may.
     Allow,
     /// It may not. This is the answer unless something allows.
     Deny,
+    /// It could not be decided: the engine failed, timed out, was not
+    /// available or said so. Whoever enforces the answer treats it as deny.
+    Indeterminate,
 }
 
 /// The answer to a check, with a reason that is safe to show.

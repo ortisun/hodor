@@ -5,7 +5,21 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { placeOf, type Screen } from "./address";
 import { App } from "./App";
 import { en } from "./messages/en";
-import { ANA, BIA, GOOGLE, json, meBody, problem, providerBody, scripted, userBody } from "./testing";
+import {
+  ANA,
+  applicationBody,
+  BIA,
+  BILLING,
+  clientBody,
+  GOOGLE,
+  json,
+  meBody,
+  problem,
+  providerBody,
+  scripted,
+  userBody,
+  WEB,
+} from "./testing";
 
 afterEach(cleanup);
 
@@ -172,6 +186,77 @@ describe("the page of a user", () => {
   });
 });
 
+describe("the second factors of a user", () => {
+  const withCredentials = [
+    "users:read",
+    "users:write",
+    "sessions:read",
+    "sessions:revoke",
+    "credentials:read",
+    "credentials:write",
+  ];
+  const factors = (more: Record<string, unknown> = {}) =>
+    json(200, {
+      authenticator_application: { in_use: true },
+      keys: [
+        { id: "key-1", name: "Blue key", passkey: false, created_at: "2026-11-21T14:05:00Z", last_used_at: null },
+      ],
+      recovery_codes: { remaining: 8 },
+      second_factor_required: true,
+      ...more,
+    });
+  const script = (permissions: string[], answers: Response[]) => ({
+    "GET /console/api/me": [json(200, meBody(permissions))],
+    [`GET /console/api/users/${BIA}`]: [json(200, userBody(BIA, "bia@example.com", { display_name: "Bia Souza" }))],
+    [`GET /console/api/users/${BIA}/sessions`]: [json(200, { items: [] })],
+    [`GET /console/api/users/${BIA}/factors`]: answers,
+  });
+
+  it("are shown to whoever may see them, and offered for removal only to whoever may remove them", async () => {
+    show(`/t/acme/console/users/${BIA}`, script(["users:read", "sessions:read", "credentials:read"], [factors()]));
+    expect(await screen.findByText("Blue key")).toBeTruthy();
+    expect(screen.getByText(en.inUse)).toBeTruthy();
+    expect(screen.getByText(en.recoveryCodesLeft(8))).toBeTruthy();
+    expect(screen.getByText(en.secondFactorRequired)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: en.remove })).toBeNull();
+  });
+
+  it("are not asked for without the permission to see them", async () => {
+    const { sent } = show(`/t/acme/console/users/${BIA}`, script(["users:read", "sessions:read"], []));
+    expect(await screen.findByRole("heading", { name: en.profile })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: en.factors })).toBeNull();
+    expect(sent.some((request) => request.path.endsWith("/factors"))).toBe(false);
+  });
+
+  it("are removed only with the address typed in full, and the dialog says what follows", async () => {
+    const { sent, user } = show(`/t/acme/console/users/${BIA}`, {
+      ...script(withCredentials, [
+        factors({ authenticator_application: { in_use: false } }),
+        factors({ authenticator_application: { in_use: false }, keys: [], recovery_codes: { remaining: 0 } }),
+      ]),
+      [`DELETE /console/api/users/${BIA}/factors/keys/key-1`]: [new Response(null, { status: 204 })],
+    });
+    // The key's button comes first; the recovery codes have their own.
+    const [ofTheKey] = await screen.findAllByRole("button", { name: en.remove });
+    expect(ofTheKey).toBeTruthy();
+    await user.click(ofTheKey as HTMLElement);
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByRole("heading", { name: en.removePersonKeyTitle("Blue key") })).toBeTruthy();
+    expect(within(dialog).getByText(en.level(2), { exact: false })).toBeTruthy();
+    expect(within(dialog).getByText(en.removeConsequenceLast)).toBeTruthy();
+    expect(within(dialog).getByText(en.removeConsequenceLocked)).toBeTruthy();
+    expect(within(dialog).getByText(en.removeConsequenceSessionsValue)).toBeTruthy();
+    const confirm = within(dialog).getByRole("button", { name: en.remove });
+    expect(confirm.getAttribute("aria-disabled")).toBe("true");
+    await user.type(within(dialog).getByLabelText(en.typeToConfirm("bia@example.com")), "bia@example.com");
+    await user.click(confirm);
+    expect(await screen.findByText(en.noPersonKeys)).toBeTruthy();
+    expect(sent.find((request) => request.method === "DELETE")?.path).toBe(
+      `/console/api/users/${BIA}/factors/keys/key-1`,
+    );
+  });
+});
+
 describe("the audit screen", () => {
   it("lists the records and shows one whole, with its hashes", async () => {
     const record = {
@@ -310,5 +395,288 @@ describe("the identity providers", () => {
     expect(screen.getByText(en.managedElsewhere)).toBeTruthy();
     expect(screen.queryByRole("button", { name: en.changeSettings })).toBeNull();
     expect(screen.getByRole("button", { name: en.disableProvider })).toBeTruthy();
+  });
+});
+
+describe("the applications", () => {
+  const SECRET = "hodor_cs_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd";
+
+  it("are listed, each a link to its page, and an auditor may not register one", async () => {
+    show("/t/acme/console/applications", {
+      "GET /console/api/me": [json(200, meBody(["applications:read"], ["tenant_auditor"]))],
+      "GET /console/api/applications": [json(200, { items: [applicationBody()] })],
+    });
+    const billing = await screen.findByRole("link", { name: "Billing" });
+    expect(billing.getAttribute("href")).toBe(`/t/acme/console/applications/${BILLING}`);
+    expect(screen.getByText(en.firstParty)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: en.addApplication })).toBeNull();
+  });
+
+  it("are registered with a form that says whether people are asked for consent", async () => {
+    const { sent, go, user } = show("/t/acme/console/applications", {
+      "GET /console/api/me": [json(200, meBody())],
+      "GET /console/api/applications": [json(200, { items: [] })],
+      "POST /console/api/applications": [json(201, applicationBody({ first_party: false }))],
+    });
+    expect(await screen.findByText(en.noApplications)).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: en.addApplication }));
+    const dialog = await screen.findByRole("dialog");
+    await user.type(within(dialog).getByLabelText(en.applicationNameLabel), "Billing");
+    expect(within(dialog).getByText(en.consentSkipped("Billing"))).toBeTruthy();
+    await user.click(within(dialog).getByRole("switch", { name: en.firstPartyLabel }));
+    expect(within(dialog).getByText(en.consentAsked("Billing"))).toBeTruthy();
+    await user.click(within(dialog).getByRole("button", { name: en.addApplication }));
+    await waitFor(() => expect(go).toHaveBeenCalledWith({ name: "application", id: BILLING }));
+    expect(sent.at(-1)?.body).toEqual({ name: "Billing", first_party: false });
+  });
+
+  it("show a new client's secret once, and the client's page never shows it", async () => {
+    const { sent, go, user } = show(`/t/acme/console/applications/${BILLING}`, {
+      "GET /console/api/me": [json(200, meBody())],
+      [`GET /console/api/applications/${BILLING}`]: [json(200, applicationBody())],
+      [`GET /console/api/applications/${BILLING}/clients`]: [json(200, { items: [] })],
+      "GET /console/api/resource-servers": [json(200, { items: [] })],
+      [`POST /console/api/applications/${BILLING}/clients`]: [json(201, { ...clientBody(), client_secret: SECRET })],
+    });
+    expect(await screen.findByText(en.noClients)).toBeTruthy();
+    expect(screen.getByText(en.noResourceServer)).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: en.addClient }));
+    const dialog = await screen.findByRole("dialog");
+    await user.type(within(dialog).getByLabelText(en.clientNameLabel), "Billing web site");
+    await user.type(within(dialog).getByLabelText(en.redirectUrisLabel), "https://billing.example.com/callback");
+    await user.type(
+      within(dialog).getByLabelText(en.postLogoutRedirectUrisLabel),
+      "https://billing.example.com/signed-out",
+    );
+    await user.click(within(dialog).getByRole("button", { name: en.addClient }));
+
+    const shown = await screen.findByTestId("shown-once");
+    expect(shown.textContent).toBe(SECRET);
+    expect(sent.at(-1)?.body).toEqual({
+      name: "Billing web site",
+      type: "confidential",
+      authentication_method: "client_secret_basic",
+      grant_types: ["authorization_code"],
+      redirect_uris: ["https://billing.example.com/callback"],
+      post_logout_redirect_uris: ["https://billing.example.com/signed-out"],
+      allowed_scopes: ["openid"],
+    });
+    await user.click(screen.getByRole("button", { name: en.secretKept }));
+    await waitFor(() => expect(go).toHaveBeenCalledWith({ name: "client", id: WEB }));
+    expect(screen.queryByText(SECRET)).toBeNull();
+  });
+
+  it("offer a public client no secret and no way to act as itself", async () => {
+    const { user } = show(`/t/acme/console/applications/${BILLING}`, {
+      "GET /console/api/me": [json(200, meBody())],
+      [`GET /console/api/applications/${BILLING}`]: [json(200, applicationBody())],
+      [`GET /console/api/applications/${BILLING}/clients`]: [json(200, { items: [] })],
+      "GET /console/api/resource-servers": [json(200, { items: [] })],
+    });
+    await user.click(await screen.findByRole("button", { name: en.addClient }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(en.methodLabel)).toBeTruthy();
+    await user.click(within(dialog).getByRole("radio", { name: en.clientTypes["public"] ?? "" }));
+    expect(within(dialog).queryByText(en.methodLabel)).toBeNull();
+    expect(within(dialog).queryByText(en.grants["client_credentials"] ?? "")).toBeNull();
+  });
+
+  it("are disabled only with the name typed in full", async () => {
+    const { sent, user } = show(`/t/acme/console/applications/${BILLING}`, {
+      "GET /console/api/me": [json(200, meBody())],
+      [`GET /console/api/applications/${BILLING}`]: [json(200, applicationBody())],
+      [`GET /console/api/applications/${BILLING}/clients`]: [json(200, { items: [clientBody()] })],
+      "GET /console/api/resource-servers": [json(200, { items: [] })],
+      [`POST /console/api/applications/${BILLING}:disable`]: [json(200, applicationBody({ status: "disabled" }))],
+    });
+    expect(await screen.findByRole("link", { name: "Billing web site" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: en.disableApplication }));
+    const dialog = await screen.findByRole("dialog");
+    const confirm = within(dialog).getByRole("button", { name: en.disableApplication });
+    expect(confirm.getAttribute("aria-disabled")).toBe("true");
+    await user.type(within(dialog).getByLabelText(en.typeToConfirm("Billing")), "Billing");
+    await user.click(confirm);
+    expect(await screen.findByRole("button", { name: en.enableApplication })).toBeTruthy();
+    expect(sent.at(-1)?.path).toBe(`/console/api/applications/${BILLING}:disable`);
+  });
+});
+
+describe("the page of a client", () => {
+  const SECRET = "hodor_cs_fedcba9876543210fedcba9876543210fedcba9876543210fedcba98765432";
+
+  it("shows its settings and secrets by expiry, never a secret", async () => {
+    show(`/t/acme/console/clients/${WEB}`, {
+      "GET /console/api/me": [json(200, meBody())],
+      [`GET /console/api/clients/${WEB}`]: [json(200, clientBody())],
+    });
+    expect(await screen.findByRole("heading", { name: "Billing web site" })).toBeTruthy();
+    expect(screen.getByText(WEB)).toBeTruthy();
+    expect(screen.getByText("https://billing.example.com/callback")).toBeTruthy();
+    expect(screen.getAllByText(en.minutes(5)).length).toBe(2);
+    expect(screen.getByText(en.days(30))).toBeTruthy();
+    expect(screen.queryByText(/hodor_cs_/)).toBeNull();
+  });
+
+  it("gives a new secret only with the name typed in full, and shows it once", async () => {
+    const { sent, user } = show(`/t/acme/console/clients/${WEB}`, {
+      "GET /console/api/me": [json(200, meBody())],
+      [`GET /console/api/clients/${WEB}`]: [json(200, clientBody()), json(200, clientBody())],
+      [`POST /console/api/clients/${WEB}/secrets`]: [
+        json(201, {
+          id: "0193f1c2-0000-7000-8000-0000000000d2",
+          client_secret: SECRET,
+          created_at: "2026-11-22T15:03:11Z",
+          expires_at: "2027-11-22T15:03:11Z",
+        }),
+      ],
+    });
+    await user.click(await screen.findByRole("button", { name: en.rotateSecret }));
+    const dialog = await screen.findByRole("dialog");
+    const confirm = within(dialog).getByRole("button", { name: en.rotateSecret });
+    expect(confirm.getAttribute("aria-disabled")).toBe("true");
+    await user.type(within(dialog).getByLabelText(en.typeToConfirm("Billing web site")), "Billing web site");
+    await user.click(confirm);
+    expect((await screen.findByTestId("shown-once")).textContent).toBe(SECRET);
+    expect(sent.find((request) => request.method === "POST")?.csrfToken).toBe("token-of-the-session");
+    await user.click(screen.getByRole("button", { name: en.secretKept }));
+    await waitFor(() => expect(screen.queryByText(SECRET)).toBeNull());
+  });
+
+  it("refuses a key that is not JSON before asking the server, and removes a key by its kid", async () => {
+    const keyed = clientBody({
+      authentication_method: "private_key_jwt",
+      secrets: [],
+      keys: [{ kid: "2026/11", jwk: { kty: "EC", crv: "P-256", kid: "2026/11" }, added_at: "2026-11-22T14:03:11Z" }],
+    });
+    const { sent, user } = show(`/t/acme/console/clients/${WEB}`, {
+      "GET /console/api/me": [json(200, meBody())],
+      [`GET /console/api/clients/${WEB}`]: [json(200, keyed), json(200, clientBody({ ...keyed, keys: [] }))],
+      [`DELETE /console/api/clients/${WEB}/keys/2026%2F11`]: [new Response(null, { status: 204 })],
+    });
+    await user.click(await screen.findByRole("button", { name: en.addKey }));
+    const dialog = await screen.findByRole("dialog");
+    await user.type(within(dialog).getByLabelText(en.keyLabel), "not a key");
+    await user.click(within(dialog).getByRole("button", { name: en.addKey }));
+    expect(await within(dialog).findByText(en.keyNotJson)).toBeTruthy();
+    await user.click(within(dialog).getByRole("button", { name: en.cancel }));
+
+    await user.click(screen.getByRole("button", { name: en.removeKey }));
+    const removing = await screen.findByRole("dialog");
+    await user.click(within(removing).getByRole("button", { name: en.removeKey }));
+    await waitFor(() => expect(sent.at(-2)?.path).toBe(`/console/api/clients/${WEB}/keys/2026%2F11`));
+    expect(sent.some((request) => request.path.endsWith("/keys") && request.method === "POST")).toBe(false);
+  });
+});
+
+describe("authorization", () => {
+  const PAYROLL = "https://payroll.example.com";
+  const PAYROLL_SERVER = "0193f1c2-0000-7000-8000-0000000000c1";
+  const READS = ["roles:read", "bindings:read", "policies:read", "decisions:read"];
+  const roleBody = {
+    namespace: PAYROLL,
+    name: "approver",
+    description: "Approves invoices",
+    permissions: [{ name: "invoice:approve", condition: "resource.attributes.amount <= 1000" }],
+    includes: [{ namespace: PAYROLL, name: "clerk" }],
+    created_at: "2026-11-22T14:03:11Z",
+    updated_at: "2026-11-22T14:03:11Z",
+  };
+  const serverBody = {
+    id: PAYROLL_SERVER,
+    application_id: BILLING,
+    audience: PAYROLL,
+    name: "Payroll",
+    scopes: [],
+    created_at: "2026-11-22T14:03:11Z",
+    updated_at: "2026-11-22T14:03:11Z",
+  };
+  const answers = (permissions: string[]) => ({
+    "GET /console/api/me": [json(200, meBody(permissions, ["tenant_auditor"]))],
+    "GET /console/api/roles": [json(200, { items: [roleBody] }), json(200, { items: [roleBody] })],
+    "GET /console/api/resource-servers": [json(200, { items: [serverBody] }), json(200, { items: [serverBody] })],
+    "GET /console/api/bindings": [
+      json(200, {
+        items: [
+          {
+            namespace: PAYROLL,
+            engine: "open_policy_agent",
+            time_limit_milliseconds: 200,
+            sensitive: false,
+            fail_open_actions: ["read"],
+            trust_asserted: false,
+            created_at: "2026-11-22T14:03:11Z",
+            updated_at: "2026-11-22T14:03:11Z",
+          },
+        ],
+      }),
+    ],
+    "GET /console/api/policy-status": [
+      json(200, {
+        latest: { revision: 3, written_by: "operator", published_at: "2026-11-22T14:03:11Z", version: 1 },
+        publications: [],
+        instances: [{ instance: "shared", own: false, active_revision: "2", current: false }],
+        pending_activation: true,
+      }),
+    ],
+    "GET /console/api/decisions?limit=50": [
+      json(200, {
+        items: [
+          {
+            decision_id: "decision-1",
+            namespace: PAYROLL,
+            subject: { kind: "user", id: ANA },
+            action: "approve",
+            resource: { type: "invoice", id: "42" },
+            effect: "deny",
+            reason: "condition_not_met",
+            decided_at: "2026-11-22T14:03:11Z",
+            duration_microseconds: 10,
+            input: {},
+            masked: [],
+          },
+        ],
+      }),
+    ],
+  });
+
+  it("shows roles with their conditions, engines, what is published and the latest decisions, and an auditor changes nothing", async () => {
+    show("/t/acme/console/authorization", answers(READS));
+    expect(await screen.findByText(`${PAYROLL}#approver`)).toBeTruthy();
+    expect(screen.getByText(en.conditionShown("resource.attributes.amount <= 1000"), { exact: false })).toBeTruthy();
+    expect(await screen.findByText("open_policy_agent")).toBeTruthy();
+    expect(screen.getByText("read")).toBeTruthy();
+    expect(await screen.findByText(en.activationPending)).toBeTruthy();
+    expect(screen.getByText(en.instanceBehind("2"))).toBeTruthy();
+    expect(await screen.findByText("condition_not_met")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: en.editRole })).toBeNull();
+    expect(screen.queryByRole("button", { name: en.unbind })).toBeNull();
+  });
+
+  it("changes a role with its conditions written as text, and says what the server refused", async () => {
+    const script = {
+      ...answers([...READS, "roles:write"]),
+      [`PUT /console/api/resource-servers/${PAYROLL_SERVER}/roles/approver`]: [
+        problem(422, "authorization.condition_invalid"),
+        json(200, roleBody),
+      ],
+    };
+    const { sent, user } = show("/t/acme/console/authorization", script);
+    await user.click(await screen.findByRole("button", { name: en.editRole }));
+    const dialog = await screen.findByRole("dialog");
+    const lines = within(dialog).getByLabelText(en.rolePermissionsLabel);
+    expect((lines as HTMLTextAreaElement).value).toBe("invoice:approve if resource.attributes.amount <= 1000");
+    await user.clear(lines);
+    await user.type(lines, "invoice:approve if resource.attributes.amount <=");
+    await user.click(within(dialog).getByRole("button", { name: en.saveRole }));
+    expect(await within(dialog).findByText(en.valueInvalid["authorization.condition_invalid"] as string)).toBeTruthy();
+    await user.clear(lines);
+    await user.type(lines, "invoice:approve if resource.attributes.amount <= 5000");
+    await user.click(within(dialog).getByRole("button", { name: en.saveRole }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(sent.filter((request) => request.method === "PUT").at(-1)?.body).toEqual({
+      description: "Approves invoices",
+      permissions: [{ name: "invoice:approve", condition: "resource.attributes.amount <= 5000" }],
+      includes: [{ namespace: PAYROLL, name: "clerk" }],
+    });
   });
 });

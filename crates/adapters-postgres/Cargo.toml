@@ -16,11 +16,14 @@ async-trait.workspace = true
 hodor-audit.workspace = true
 hodor-authentication.workspace = true
 hodor-authorization.workspace = true
+hodor-authorization-opa.workspace = true
 hodor-federation.workspace = true
 hodor-credential.workspace = true
 hodor-identity.workspace = true
 hodor-kernel.workspace = true
+hodor-keys.workspace = true
 hodor-notification.workspace = true
+hodor-oauth.workspace = true
 hodor-session.workspace = true
 hodor-tenant.workspace = true
 serde_json.workspace = true
@@ -37,12 +40,15 @@ hodor-adapters-crypto.workspace = true
 hodor-audit = { workspace = true, features = ["testing"] }
 hodor-authentication = { workspace = true, features = ["testing"] }
 hodor-authorization = { workspace = true, features = ["testing"] }
+hodor-authorization-opa = { workspace = true, features = ["testing"] }
 hodor-federation = { workspace = true, features = ["testing"] }
 hodor-saml = { workspace = true, features = ["testing"] }
 hodor-session = { workspace = true, features = ["testing"] }
 hodor-notification = { workspace = true, features = ["testing"] }
+hodor-oauth = { workspace = true, features = ["testing"] }
 hodor-credential = { workspace = true, features = ["testing"] }
 hodor-identity = { workspace = true, features = ["testing"] }
+hodor-keys = { workspace = true, features = ["testing"] }
 hodor-tenant = { workspace = true, features = ["testing"] }
 async-trait.workspace = true
 hodor-adapters-postgres = { path = ".", features = ["testing"] }

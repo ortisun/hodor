@@ -23,6 +23,33 @@ describe("the client for the interaction interface", () => {
     expect(sent[2]?.body).toEqual({ password: "a password" });
   });
 
+  it("continues a completed sign-in only to this tenant's authorization endpoint", async () => {
+    const answers = [
+      "/t/acme/oauth2/authorize/resume",
+      "https://attacker.example/t/acme/oauth2/authorize/resume",
+      "//attacker.example/t/acme/oauth2/",
+      "/t/globex/oauth2/authorize/resume",
+      "/t/acme/account",
+      "/t/acme/oauth2/authorize/resume?next=https://attacker.example",
+    ].map((next) => json(200, { status: "completed", continue: next }));
+    const count = answers.length;
+    const { client } = scripted({ "POST /sign-in/steps/password": answers });
+    const followed = [];
+    for (let index = 0; index < count; index += 1) {
+      followed.push((await client.submitPassword("a password")).continueTo ?? null);
+    }
+    expect(followed).toEqual(["/t/acme/oauth2/authorize/resume", null, null, null, null, null]);
+  });
+
+  it("continues nowhere from a sign-in that did not complete", async () => {
+    const { client } = scripted({
+      "POST /sign-in/steps/password": [
+        json(200, { status: "rejected", step: "password", attempts_left: 3, csrf_token: "t", continue: "/t/acme/oauth2/authorize/resume" }),
+      ],
+    });
+    expect((await client.submitPassword("a password")).continueTo).toBeUndefined();
+  });
+
   it("reads a rejection as an answer, not as a failure", async () => {
     const { client } = scripted({
       "POST /sign-in/steps/password": [
@@ -30,6 +57,26 @@ describe("the client for the interaction interface", () => {
       ],
     });
     expect(await client.submitPassword("wrong")).toEqual({ status: "rejected", step: "password", attemptsLeft: 3 });
+  });
+
+  it("sends a code of an authenticator application to its step", async () => {
+    const { client, sent } = scripted({
+      "POST /sign-in/steps/totp": [json(200, { status: "completed" })],
+    });
+    expect(await client.submitTotp("123456")).toEqual({ status: "completed", step: null, attemptsLeft: null });
+    expect(sent[0]?.body).toEqual({ code: "123456" });
+  });
+
+  it("sends a recovery code to its own route", async () => {
+    const { client, sent } = scripted({
+      "POST /sign-in/steps/recovery_code": [json(200, { status: "completed" })],
+    });
+    expect(await client.submitRecoveryCode("7K2M-QX9D-4HVN-R8TA")).toEqual({
+      status: "completed",
+      step: null,
+      attemptsLeft: null,
+    });
+    expect(sent[0]?.body).toEqual({ code: "7K2M-QX9D-4HVN-R8TA" });
   });
 
   it("says there is no sign-in when the server knows none", async () => {

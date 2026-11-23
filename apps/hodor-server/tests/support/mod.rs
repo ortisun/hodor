@@ -65,7 +65,10 @@ pub(crate) async fn start_server_with(
         base: format!("http://127.0.0.1:{public}"),
     };
     let ready = format!("http://127.0.0.1:{ops}/readyz");
-    for _ in 0..100 {
+    // Up to thirty seconds: a test file starts a server and a database per
+    // test, all at once, and on a busy machine ten seconds were not always
+    // enough.
+    for _ in 0..300 {
         if reqwest::get(&ready)
             .await
             .is_ok_and(|r| r.status().is_success())
@@ -96,6 +99,73 @@ impl Browser {
             cookies: BTreeMap::new(),
             csrf_token: None,
         }
+    }
+
+    /// A browser that does not follow redirects, so that a test sees where
+    /// each answer sends it.
+    pub(crate) fn not_following(server: &Server) -> Self {
+        Self {
+            client: Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .expect("client"),
+            ..Self::new(server)
+        }
+    }
+
+    fn keep_cookies(&mut self, response: &Response) {
+        for cookie in response.headers().get_all(SET_COOKIE) {
+            let cookie = cookie.to_str().expect("ascii");
+            let (name, value) = cookie
+                .split(';')
+                .next()
+                .and_then(|pair| pair.split_once('='))
+                .expect("name=value");
+            if cookie.contains("Max-Age=0") {
+                self.cookies.remove(name);
+            } else {
+                self.cookies.insert(name.to_owned(), value.to_owned());
+            }
+        }
+    }
+
+    /// Sends a request as a browser navigates: with its cookies, and a
+    /// form body when one is given. Answers the status, where it sends the
+    /// browser if anywhere, and the body as text.
+    pub(crate) async fn navigate(
+        &mut self,
+        method: Method,
+        path: &str,
+        form: Option<&str>,
+    ) -> (StatusCode, Option<String>, String) {
+        let url = if path.starts_with("http") {
+            path.to_owned()
+        } else {
+            format!("{}{path}", self.base)
+        };
+        let mut request = self.client.request(method, url);
+        if !self.cookies.is_empty() {
+            let cookies: Vec<String> = self
+                .cookies
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect();
+            request = request.header(COOKIE, cookies.join("; "));
+        }
+        if let Some(form) = form {
+            request = request
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(form.to_owned());
+        }
+        let response: Response = request.send().await.expect("response");
+        self.keep_cookies(&response);
+        let status = response.status();
+        let location = response
+            .headers()
+            .get("location")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        (status, location, response.text().await.unwrap_or_default())
     }
 
     pub(crate) async fn send(
@@ -162,4 +232,23 @@ impl Browser {
         )
         .await
     }
+}
+
+/// The bytes of a secret written in base32 without padding (RFC 4648).
+pub(crate) fn base32(text: &str) -> Vec<u8> {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+    let (mut bytes, mut buffer, mut bits) = (Vec::new(), 0_u32, 0_u32);
+    for character in text.bytes() {
+        let value = ALPHABET
+            .iter()
+            .position(|&c| c == character)
+            .expect("base32");
+        buffer = (buffer << 5) | u32::try_from(value).expect("small");
+        bits += 5;
+        if bits >= 8 {
+            bits -= 8;
+            bytes.push(u8::try_from((buffer >> bits) & 0xff).expect("a byte"));
+        }
+    }
+    bytes
 }

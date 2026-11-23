@@ -68,11 +68,11 @@ flowchart TB
 
 ## The worker
 
-`hodor-worker` runs background work. Today that is two jobs: delivering outbox events to their handlers ([Decision 0003](../decisions/0003-context-communication.md)), and delivering queued messages to the mail server ([the notification context](../architecture/contexts/notification.md)).
+`hodor-worker` runs background work: delivering outbox events to their handlers ([Decision 0003](../decisions/0003-context-communication.md)), delivering queued messages to the mail server ([the notification context](../architecture/contexts/notification.md)), the cleanup jobs, rotating the tenants' signing keys ([the keys context](../architecture/contexts/keys.md#rotation)), and checking, testing and simulating policy versions for Open Policy Agent ([the policy lifecycle](../architecture/contexts/authorization.md#the-policy-lifecycle)).
 
 The one handler today is the [audit log](../architecture/contexts/audit.md): every event becomes an audit record. An installation without a running worker loses nothing, but its audit log falls behind until a worker runs.
 
-Both jobs work the same way:
+Delivering events and messages works the same way:
 
 - **Loop**: the worker asks for a batch of pending work and handles it. If the batch had work in it, it asks again at once; if it was empty, it pauses for the poll interval. A database error is logged and followed by a pause, never by an exit: the worker waits for the database to come back.
 - **Scaling**: any number of workers can run. Each event or message is locked with `FOR UPDATE SKIP LOCKED` while it is handled, so workers never handle the same one together and need no leader.
@@ -87,6 +87,20 @@ Mail delivery runs only when `HODOR_SMTP_URL` is set. Without it the worker says
 | `hodor.outbox.passes` | Counter | `outcome`: `ok`, `error` |
 | `hodor.notification.messages` | Counter | `outcome`: `sent`, `retrying`, `failed`, `expired` |
 | `hodor.notification.passes` | Counter | `outcome`: `ok`, `error` |
+
+Key rotation runs only when `HODOR_SECRET_KEYS` is set, with the same keys as the server: the worker makes the keys, and the server signs with them. Without it the worker says so once when it starts, and no tenant gets a signing key. Unlike the other jobs, rotation needs a leader: a pass holds a PostgreSQL advisory lock, and a worker that does not get it skips the pass.
+
+| Metric | Kind | Labels |
+|---|---|---|
+| `hodor.keys.rotation.passes` | Counter | `outcome`: `ok`, `skipped` (another worker held the lock), `error` |
+| `hodor.keys.rotation.changes` | Counter | `change`: `created`, `activated`, `retired` |
+
+Policy checks run only when `HODOR_OPEN_POLICY_AGENT_BINARY` is set; the image sets it to the `opa` 1.10.1 binary it carries ([Decision 0026](../decisions/0026-policy-checks-in-a-sandbox.md)). The worker refuses to start with a binary of another version, or of another SHA-256 than `HODOR_OPEN_POLICY_AGENT_BINARY_SHA256` when that is set. Without the binary the worker says so once, versions wait, and none can be published. Like rotation, a pass holds an advisory lock, so only one worker checks at a time. Each run is a child process with an empty environment, a directory of its own and a time limit (`HODOR_POLICY_CHECK_TIME_LIMIT_SECONDS`); its memory is bounded only softly (`HODOR_POLICY_CHECK_MEMORY_MEBIBYTES`), so give the worker container a memory limit, as the chart does, and no route out of its network beyond the database, the mail server and the telemetry collector.
+
+| Metric | Kind | Labels |
+|---|---|---|
+| `hodor.policy.check.passes` | Counter | `outcome`: `ok`, `skipped`, `error` |
+| `hodor.policy.check.done` | Counter | `kind`: `version`, `simulation` |
 
 A growing count of `retrying` messages means the mail server is refusing or unreachable; the reason for each message is in the `last_error` column of `notification.message`.
 
@@ -113,6 +127,11 @@ Nothing tenant-specific is configured through deployment files, so adding a tena
 1. The chart runs `hodor-cli migrate` as a pre-upgrade job. Migrations are *expand* only in the release that introduces them.
 2. Server and worker roll out; old and new versions run side by side against the expanded schema.
 3. The *contract* migration (dropping what the old version needed) ships in the next release.
+4. Some releases ask for a command once the new version runs. The changelog of the release names it, and the installation guides say how to run it.
+
+| Upgrading from | Run once, after the upgrade | Why |
+|---|---|---|
+| 0.1.0 | `hodor-cli secrets reseal`, with the server's `HODOR_DATABASE_URL` and `HODOR_SECRET_KEYS` | Moves the secrets kept by 0.1.0 under a data key of their tenant, then refuses their old format: [secrets at rest](../security/secrets-at-rest.md#moving-the-secrets-of-an-earlier-version). Until it runs they still open as before |
 
 The server checks the schema version at startup and refuses to run against a schema older than it needs or newer than it understands by more than one release. Rollback within one release is a redeploy of the previous image.
 

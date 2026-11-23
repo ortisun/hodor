@@ -1,6 +1,6 @@
 import { CheckboxInput } from "@astryxdesign/core/CheckboxInput";
 import { TextInput } from "@astryxdesign/core/TextInput";
-import { useState } from "react";
+import { type Ref, useState } from "react";
 import type { Messages } from "../messages";
 
 interface FieldProps {
@@ -11,18 +11,23 @@ interface FieldProps {
   name: string;
   type?: "text" | "email" | "password";
   autoComplete: string;
+  /** Which keyboard a phone shows: digits only, for a code. */
+  inputMode?: "numeric";
   autoFocus?: boolean;
   /** Names and addresses are typed as they are: no capital letters or corrections are offered. */
   verbatim?: boolean;
+  /** The input itself, for a page that must move the focus to it after the page is shown. */
+  inputRef?: Ref<HTMLInputElement>;
   value: string;
   onChange: (value: string) => void;
 }
 
 /** A labelled input. Its hint and its error are tied to it. */
-export function Field({ label, hint, error, name, type = "text", autoFocus, verbatim, ...input }: FieldProps) {
+export function Field({ label, hint, error, name, type = "text", autoFocus, verbatim, inputRef, ...input }: FieldProps) {
   return (
     <TextInput
       {...input}
+      ref={inputRef}
       label={label}
       description={hint}
       status={error ? { type: "error", message: error } : undefined}

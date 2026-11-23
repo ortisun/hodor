@@ -28,7 +28,13 @@ Configuration (`Config`, clap, command name `hodor-server`):
 | `--pages-directory` | `HODOR_PAGES_DIRECTORY` | unset |
 | `--console-directory` | `HODOR_CONSOLE_DIRECTORY` | unset |
 | `--secret-keys` | `HODOR_SECRET_KEYS` | unset |
+| `--key-overlap-hours` | `HODOR_KEY_OVERLAP_HOURS` | 24 |
+| `--refresh-retry-seconds` | `HODOR_REFRESH_RETRY_SECONDS` | 10, checked by `TokenService::with_retry_window` (0 to 60) |
 | `--outbound-development-hosts` | `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` | empty, comma separated |
+| `--open-policy-agent-address` | `HODOR_OPEN_POLICY_AGENT_ADDRESS` | unset |
+| `--open-policy-agent-tenant-addresses` | `HODOR_OPEN_POLICY_AGENT_TENANT_ADDRESSES` | empty, comma separated `tenant-identifier=origin` |
+| `--open-policy-agent-token` | `HODOR_OPEN_POLICY_AGENT_TOKEN` | unset; its value is hidden from the help text |
+| `--open-policy-agent-revision-lag-seconds` | `HODOR_OPEN_POLICY_AGENT_REVISION_LAG_SECONDS` | 300; the engine refuses decisions of an older revision after that (`StoredRevisions` over `PgBundleStore`) |
 | `--directory-hosts` | `HODOR_DIRECTORY_HOSTS` | empty, comma separated `host:port` |
 | `--password-hash-memory-kibibytes` | `HODOR_PASSWORD_HASH_MEMORY_KIBIBYTES` | `19 * 1024` |
 | `--password-hash-passes` | `HODOR_PASSWORD_HASH_PASSES` | 2 |
@@ -39,10 +45,27 @@ Configuration (`Config`, clap, command name `hodor-server`):
 Routers, as assembled in `run`:
 
 - `/interaction` nests `hodor_protocol_http::interaction_routes` with the
-  `InteractionState` built by `interaction`.
+  `InteractionState` built by `interaction`, merged with
+  `hodor_protocol_http::consent_routes`, whose `ConsentState` shares the
+  `ConsentService` and `SessionService` of the authorization endpoint.
 - `/api/v1/admin` nests `hodor_protocol_http::admin_routes` with the
   `AdminState` built by `administration`.
 - `/console/api` nests `hodor_protocol_http::console_routes`.
+- `/api/v1/authorization` nests `hodor_protocol_http::authorization_api_routes`
+  with the `AuthorizationApiState` built by `authorization_api`, only when
+  `keys` built a `KeyService`: a `ResourceAccessService` over the register
+  of access tokens, and an `EvaluationService` over `PgRoleAssignmentStore`,
+  `PgEngineBindingStore`, `ServerSubjects` and the registry of
+  `authorization_engines` (the native engine with its simulator, and Open
+  Policy Agent).
+- `/oauth2/jwks`: `hodor_protocol_http::key_set_routes(KeyService)` is merged
+  into the tenant routes when `keys` built a `KeyService` (`PgKeyStore`,
+  `LocalKeyProvider` over `HODOR_SECRET_KEYS`); otherwise a warning is logged
+  and the address is not served.
+- `/opa/…`: `hodor_protocol_http::policy_agent_routes(BundleService)` is
+  merged into the site routes, with `PgInstanceStore`, `PgBundleStore`,
+  `PgInstanceStatusStore` and `PgUploadedDecisionStore`. The server never
+  holds the key that signs bundles: it serves them as published.
 - Hosted pages and the console come from `Pages::load` and
   `Pages::load_console`, merged through `page_routes` and `asset_routes`.
 - The public router is `hodor_protocol_http::public_router`; the operations
@@ -57,11 +80,34 @@ Adapters implemented here:
   name `database`, calling `Database::ping`.
 - `TenantLockout` implements `hodor_federation::api::LockoutPolicy`, reading
   the tenant's lockout settings into `LockoutRules`.
+- `ServerSubjects` (`subjects.rs`) implements
+  `hodor_authorization::api::SubjectAttributeSource`: a user's `status` and
+  `kind` through `IdentityService::get`, a client's `application`,
+  `client_type` and `enabled` through `ApplicationService::client`; an
+  identifier that does not parse or is not found has no attributes.
+- `ServerStanding` (`standing.rs`) implements
+  `hodor_oauth::api::PersonStanding` over `SessionService::list_for_user`
+  (a session is active when it is among the person's active sessions) and
+  `IdentityService::get` (`may_sign_in`; an unknown user may not).
 
 Wiring functions: `interaction` (Argon2id hashing, identity, credential,
-session, attempt guard, sign-in flow, accounts and notification queue),
+WebAuthn with the relying party of `HODOR_PUBLIC_URL`, session, attempt
+guard, sign-in flow, accounts and notification queue; the flow is the
+built-in one with a `webauthn` step after it, conditional on a stronger
+assurance being needed (`StrongerAssuranceNeeded`), a `totp` step when
+secrets can be kept, conditional on the sign-in not being multi-factor yet,
+and the alternative `passkey`), `authorization` (given the interaction's
+`AuthenticationService`, for step-ups, and `tenant_service`, for the
+assurance levels, which `administration` and the discovery document read
+too),
 `external_sign_in` (`ExternalSignIn` with OpenID Connect, GitHub, SAML and,
-through `with_directories`, `LdapDirectoryClient`), `administration`,
+through `with_directories`, `LdapDirectoryClient`), `keys`, `key_rotation`
+(the default policy with `HODOR_KEY_OVERLAP_HOURS`), `token` (the token
+endpoint, with `PgRefreshTokenStore`, `ServerStanding`, the secret box and
+the retry window of `HODOR_REFRESH_RETRY_SECONDS`), `consents` (the
+`ConsentService` over `PgConsentStore`, which the authorization endpoint,
+the consent routes and the administration interface use),
+`administration`,
 `development_hosts`, `directory_hosts`, `wait_for`, `stop_signal`, `main`
 and `run`.
 
@@ -74,6 +120,16 @@ and `run`.
   (`external_sign_in` returns `None`) and has no identity providers to manage
   (`administration`). A malformed value aborts startup through
   `SecretKeys::parse`.
+- The token endpoint is mounted only with both a key service and
+  `HODOR_SECRET_KEYS`; a retry window outside 0 to 60 seconds aborts startup
+  (`token`).
+- Every context that keeps secrets (federation, authenticator applications,
+  refresh token families)
+  gets the same kind of `TenantSecretBox`, built by `secret_box` with
+  `PgKeyStore`, `LocalKeyProvider` over the root keys, `PgSealingStateStore`
+  and the root keys to open the first format.
+- An overlap that `RotationPolicy::new` refuses, under 65 minutes, aborts
+  startup (`key_rotation`, called by `administration`).
 - Invalid hashing parameters or an invalid sign-in flow abort startup
   (`Argon2idHasher::new`, `AuthenticationService::new` in `interaction`).
 - Failure to load a configured pages or console directory aborts startup; an
@@ -103,6 +159,12 @@ and `run`.
 - Outbound HTTPS to identity providers goes through `GuardedHttpClient`;
   LDAP connections go through `LdapDirectoryClient`, limited to
   `HODOR_DIRECTORY_HOSTS` (`external_sign_in`).
+- Builds the engine registry with `NativeEngine` (over `PgRoleAssignmentStore`
+  and `PgNativeRoleStore`) and `OpenPolicyAgentEngine` over a
+  `ServiceHttpClient` limited to the configured Open Policy Agent origins,
+  with a 64-kibibyte limit on answers (`authorization_engines`, called in
+  `run`). A wrong origin or tenant pair stops the server at startup. No
+  route evaluates through the registry yet (Issue-75).
 - Queues notification messages in PostgreSQL through `PgMessageQueue`; it
   sends no mail (`interaction`).
 - Reads the built pages and console from disk (`Pages::load`,

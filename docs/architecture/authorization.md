@@ -69,7 +69,14 @@ pub trait PolicySimulator: Send + Sync {
 }
 ```
 
-`async_trait` is used because engines are selected at run time behind `Arc<dyn AuthorizationEngine>`; native `async fn` in traits is not dyn-compatible. The default `evaluate_batch` runs `evaluate` concurrently with a bound; the Open Policy Agent adapter overrides it to send one request.
+`async_trait` is used because engines are selected at run time behind `Arc<dyn AuthorizationEngine>`; native `async fn` in traits is not dyn-compatible. The Open Policy Agent adapter overrides `evaluate_batch` to send one request.
+
+The contract as built (Issue-72) differs from the sketch above in four details, specified in [the authorization context](contexts/authorization.md#the-engine-contract):
+
+- **An engine returns only its part of the answer**: the effect, the reason, the policy revision and the matched policies. The context adds the decision identifier, the time, the engine's name and the duration, so an engine cannot claim another's name or another moment.
+- **The engine receives the request with the time limit of its binding and the subject's resolved attributes.** The asserted attributes are left out unless the binding trusts them. Errors are the kernel's `DomainError`.
+- **The default `evaluate_batch` answers one request after the other.** Domain crates do not depend on an asynchronous runtime, so concurrency belongs to engines that need it.
+- **The request names its namespace**, the resource server's audience or `hodor:admin`, so that the binding can be found.
 
 `Effect::Indeterminate` means the engine could not decide (error, missing data, no applicable policy when the binding requires one). **A policy enforcement point must treat it as deny.** It exists so that logs and metrics distinguish "denied by policy" from "could not evaluate".
 
@@ -90,11 +97,13 @@ Evaluation order, first decisive step wins:
 5. **Relationship-based access control**: if the resource type has a relation model, check `resource#relation@subject` by bounded graph traversal.
 6. No rule matched → `Deny` with reason `no_matching_policy`.
 
+What is built (Issue-73) is step 3, without groups and organizations: assignments to users and clients, scoped to the tenant or to one application, roles with hierarchy and composites, and `no_matching_role` as the reason of a deny. Step 4 is built (Issue-74) for the conditions a role's permission carries; conditions on policies that target a resource kind are not. Steps 1, 2 and 5 are not built ([Decision 0023](../decisions/0023-what-0.2.0-holds.md)). The exact rules are in [the authorization context](contexts/authorization.md#native-role-based-access-control).
+
 | Model | Implementation notes |
 |---|---|
 | Role-based access control | The role closure per (tenant, principal, scope) is cached and invalidated by `RoleAssigned`/`RoleRevoked`/group events |
 | Access control list | Indexed by `(tenant, resource_type, resource_id)` |
-| Attribute-based access control | Conditions in Common Expression Language, compiled at publish time; no I/O, bounded cost. The interpreter crate is chosen by spike in Phase 5 |
+| Attribute-based access control | Conditions in Common Expression Language, checked and compiled when a role is defined; no input or output, bounded cost. The interpreter is `cel`, in `hodor-authorization-native` ([Decision 0025](../decisions/0025-condition-language.md)) |
 | Relationship-based access control | Zanzibar-style tuples; depth and fan-out limits; no consistency tokens in v1 |
 
 Native relationship-based access control is optional. A full Zanzibar implementation is a product on its own; if the need outgrows bounded checks, the path is `OpenFgaAuthorizationAdapter`, not a larger native engine.
@@ -207,6 +216,17 @@ See [Decision 0010](../decisions/0010-opa-integration.md).
 
 A failure in Open Policy Agent never produces an `Allow` unless an administrator configured `fail_open` for that specific action.
 
+What is built (Issue-77) is specified in [the authorization context](contexts/authorization.md#open-policy-agent-as-an-engine). It departs from this table in two places:
+
+- The retry is made at once, without jitter, because the engine's crate has no timer.
+- There is no health check yet. An instance's health is known from the decisions it answers, through its circuit.
+
+Revision tracking is built as the table says: a decision from an instance that runs an older revision than the published one for longer than the allowed lag is `indeterminate` ([a lagging instance](contexts/authorization.md#a-lagging-instance)).
+
+The bundles, their signatures and the service interface are specified in [the authorization context](contexts/authorization.md#bundles). Bundles are built and signed by the command-line tool, from a version the worker checked and tested: see [the policy lifecycle](contexts/authorization.md#the-policy-lifecycle).
+
+Open Policy Agent cannot limit the built-ins of a running instance, so the capabilities file is enforced when policies are checked and built.
+
 ## Rego policy lifecycle
 
 ```mermaid
@@ -238,16 +258,25 @@ stateDiagram-v2
 
 Native policies follow the same lifecycle minus distribution: publishing swaps the active revision in the database and invalidates caches.
 
+What is built (Issue-79) is specified in [the authorization context](contexts/authorization.md#the-policy-lifecycle). It departs from this design in four places:
+
+- A version never changes: editing is drafting a new version, so there is no way back from `validated` or `tested` to `draft`.
+- A version that does not compile or fails a test is `rejected`, a state of its own, and a simulation is not a step of the state machine: it may be run on any validated or tested version.
+- There is no approval by a second person before publishing, and no automatic rollback when instances report an error. The status shows the error; rolling back is done by the operator.
+- Simulation replays requests given by whoever runs it, not recorded decisions, because recorded decisions keep no input.
+
 ## Authorization API
 
 | Endpoint | Purpose | Required scope |
 |---|---|---|
-| `POST /api/v1/authorization/evaluate` | One decision | `authz:evaluate` |
-| `POST /api/v1/authorization/batch` | Up to 100 decisions | `authz:evaluate` |
-| `POST /api/v1/authorization/simulate` | Evaluate against a draft or a chosen version; never logged as a real decision | `authz:simulate` |
+| `POST /t/{slug}/api/v1/authorization/evaluate` | One decision | `authz:evaluate` |
+| `POST /t/{slug}/api/v1/authorization/batch` | Up to 100 decisions | `authz:evaluate` |
+| `POST /t/{slug}/api/v1/authorization/simulate` | Evaluate against a draft or a chosen version; never logged as a real decision | `authz:simulate` |
 
-The response contains `decision`, `decision_id`, `evaluated_at`, `engine`, `policy_version` and `reason`. `matched_policies` and trace detail are returned only to callers holding `authz:explain`; everyone else gets the stable reason code. Sensitive attributes are never echoed back.
+The response contains `decision`, `decision_id`, `evaluated_at`, `engine`, `policy_version` and `reason`. `matched_policies` and trace detail are returned only to callers holding `authz:explain`; everyone else gets the stable reason code. Sensitive attributes are never echoed back. The caller, the resource server asked about and the subject's attributes are specified in [the authorization context](contexts/authorization.md#the-authorization-api).
 
 ## Decision log
 
-Decisions are written to `decision_log` (partitioned by day) from both engines in one format. Per tenant: full, sampled or deny-only logging; input attributes can be masked by path before storage (applied in Hodor for native decisions and through Open Policy Agent's mask policy for Open Policy Agent decisions). Retention is per tenant.
+Decisions are written to `decision_log` (partitioned by day) from both engines in one format. Per tenant: full, sampled or deny-only logging; input attributes can be masked by path before storage. Retention is per tenant.
+
+As built ([the record of decisions](contexts/authorization.md#the-record-of-decisions)), Hodor writes the record of both engines itself, since it holds the request of every decision, and applies the masks there. An Open Policy Agent instance erases the whole input of the decisions it uploads, with one fixed mask policy given when it starts: a mask from a tenant's bundle cannot reach `system.log.mask`, which lies outside the tenant's tree.

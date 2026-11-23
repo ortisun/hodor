@@ -47,7 +47,7 @@ The value types that go with them:
   - `find_user(uow, provider_id, subject)`
   - `link(uow, provider_id, subject, user_id, caller)`
   - `mark_used(uow, provider_id, subject)`
-- `client_secret(tenant, provider) -> Secret<String>` opens the sealed client secret. Its doc comment says it is only for code that talks to the provider, and that the secret is never returned through an interface.
+- `client_secret(tenant, provider) -> Secret<String>` (asynchronous) opens the sealed client secret. Its doc comment says it is only for code that talks to the provider, and that the secret is never returned through an interface.
 
 ### Signing in (`sign_in.rs`)
 

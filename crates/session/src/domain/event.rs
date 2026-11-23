@@ -16,9 +16,20 @@ pub enum SessionEvent {
         session_id: SessionId,
         /// Whose session it is.
         user_id: UserId,
-        /// `single_factor` or `multi_factor`.
+        /// `single_factor`, `multi_factor` or `phishing_resistant`.
         assurance: &'static str,
         /// The methods used to sign in.
+        methods: Vec<String>,
+    },
+    /// A step-up raised a session.
+    Raised {
+        /// The session.
+        session_id: SessionId,
+        /// Whose session it is.
+        user_id: UserId,
+        /// The session's assurance now.
+        assurance: &'static str,
+        /// The methods the step-up proved.
         methods: Vec<String>,
     },
     /// A session was ended on purpose.
@@ -37,6 +48,7 @@ impl DomainEvent for SessionEvent {
         match self {
             Self::Started { .. } => "session.started",
             Self::Revoked { .. } => "session.revoked",
+            Self::Raised { .. } => "session.raised",
         }
     }
 }

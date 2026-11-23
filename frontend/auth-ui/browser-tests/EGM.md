@@ -54,6 +54,13 @@ watched page and the steps a person repeats.
     `en.continueWith(PROVIDER_NAME)` and fills the development provider's
     page (`Subject`, `Email address`, "The provider vouches for this address",
     default vouched).
+  - `operator(...arguments)` - runs `hodor-cli` in the stack through
+    `docker compose run … server` from the root of the repository, honoring
+    `COMPOSE_FILE` and `COMPOSE_PROJECT_NAME`, and returns what it printed.
+  - `fromBase32(text)` (RFC 4648, spaces ignored) and `phone(secret, steps
+    = 0)` - the code an authenticator application shows, computed with
+    `node:crypto` as RFC 6238 says, `steps` periods of thirty seconds from
+    now.
   - `at(page)` (path of a page of `TENANT`), `newAddress()`
     (`person-{uuid}@example.com`), `PASSWORD`, `PROVIDER_NAME`
     (`"Development provider"`), and re-exports `en`, `PROVIDER`, `TENANT`.
@@ -84,6 +91,61 @@ watched page and the steps a person repeats.
     SAML provider"`) - a person signs in through a SAML identity provider and
     is the same person the next time; a person who cancels at the SAML
     identity provider is told it did not work.
+  - `totp.spec.ts` - a person whose authenticator application an operator
+    enrolled with `hodor-cli totp enroll` and `totp confirm` (run through
+    `docker compose run … server`, honoring `COMPOSE_FILE` and
+    `COMPOSE_PROJECT_NAME`) is asked for a code after the password, is
+    refused with a wrong code, and signs in with the next one; the same with
+    the keyboard alone. The codes are computed with `node:crypto` as RFC 6238
+    says. With the recovery codes `totp confirm` prints, the person signs in
+    with one of them, typed in lowercase with spaces, after a code that is
+    not theirs is refused; the same code is refused the next time and
+    `hodor-cli recovery-codes count` says nine are left; the switch to the
+    recovery code form and back works with the keyboard alone.
+  - `security.spec.ts` - people made through the development identity
+    provider (`signInThroughProvider`), not by registering, since asking to
+    register is limited by the one address all tests come from. On
+    `/account/security`, reached from the account page's link: a person sets
+    up an authenticator application, reading the key shown under the QR code
+    and computing its code, keeps the recovery codes and is asked for a code
+    after the provider at the next sign-in; is offered a new sign-in by
+    `?continue=security` while signed in, adds a passkey through a virtual
+    platform authenticator, generates new codes, renames and removes the
+    passkey, which takes the codes with it; and works the page with the
+    keyboard alone.
+  - `consent.spec.ts` - runs in a tenant of its own, made with
+    `hodor-cli tenant create`, so that its sign-ins and registrations spend
+    nothing of the limits per address of the tenant the other tests share.
+    An operator registers a third-party application
+    and a public client with `hodor-cli application add` and `client add`
+    (through `docker compose run … server`, as in `totp.spec.ts`); the
+    application's site is answered by the test (`page.route`). A signed-in
+    person sent to the authorization endpoint is asked on the consent page,
+    which passes the accessibility check, allows with the keyboard alone,
+    and the application gets a code with its state; the next request gets a
+    code at once; withdrawing the application on the account page makes it
+    ask again. A person who denies sends the application `access_denied`,
+    and the consent page then has nothing to answer.
+  - `step-up.spec.ts` - an application of the tenant, registered with
+    `hodor-cli application add --first-party` and `client add` after
+    `keys rotate`, waits for the browser at a page of its own on
+    `127.0.0.1`, served by the test on a free port. A person signed in
+    through the development identity provider sets up an authenticator
+    application; the application asks for `urn:hodor:acr:mfa`; the sign-in
+    page asks for the code and nothing else, no identifier; the browser
+    goes back with a code, and the tokens it is exchanged for say the
+    multi-factor level, with `otp` and `mfa` in `amr`.
+  - `webauthn.spec.ts` (a virtual authenticator of Chromium, added through
+    the DevTools protocol) - a person registers, signs in with a password,
+    registers a key through the interaction interface from a page of
+    Hodor's origin, signs out, and signs in again with the password and the
+    key; the session's methods are `password` and `webauthn`. With a
+    virtual platform authenticator that verifies the person, a person
+    registers a passkey, signs out and signs in with it alone: once with
+    "sign in with a passkey", with the browser made to offer no passkey in
+    the field (the virtual authenticator takes such an offer at once), and
+    once through the offer in the identifier field; the session's methods
+    are `passkey`, multi-factor.
 
 ## Invariants
 
@@ -91,7 +153,9 @@ watched page and the steps a person repeats.
   `HODOR_URL`, the development mail server at `HODOR_MAIL_URL`, and a tenant
   `HODOR_TENANT` with open registration that offers the three development
   providers (commands in `stack.ts:HELP`). Otherwise `checkTheStack` stops
-  the run before any test.
+  the run before any test. `totp.spec.ts`, `consent.spec.ts` and
+  `step-up.spec.ts` also need `docker compose` on the machine that runs the
+  tests, to run `hodor-cli` in the stack.
 - Tests run one at a time (`workers: 1`, `fullyParallel: false`), because
   the server limits attempts by the address requests come from and every test
   comes from the same one (comment in `../playwright.config.ts`).

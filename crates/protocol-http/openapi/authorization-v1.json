@@ -1,0 +1,445 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Hodor Authorization API",
+    "version": "1.0.0",
+    "description": "Applications ask whether a subject may do an action to one of their resources. Paths are relative to https://{host}/t/{slug}/api/v1/authorization. Every operation needs an access token of the tenant whose audience includes urn:hodor:authorization and that holds the scope in x-hodor-scope. The resource server asked about is the one of the token client's application; the body never names it, nor a tenant."
+  },
+  "servers": [
+    {
+      "url": "/t/{slug}/api/v1/authorization",
+      "variables": {
+        "slug": {
+          "default": "acme",
+          "description": "The tenant's slug."
+        }
+      }
+    }
+  ],
+  "security": [
+    {
+      "accessToken": []
+    }
+  ],
+  "paths": {
+    "/evaluate": {
+      "post": {
+        "operationId": "evaluate",
+        "summary": "One decision",
+        "x-hodor-scope": "authz:evaluate",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Question"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The decision.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Decision"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No token, or one that is not good here: another tenant's, expired, revoked, or without the audience urn:hodor:authorization. WWW-Authenticate says why."
+          },
+          "403": {
+            "description": "The token lacks the scope (error=\"insufficient_scope\"), or its client's application has no resource server (authorization.no_resource_server).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body cannot be read; the problem's code says why.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/batch": {
+      "post": {
+        "operationId": "evaluateBatch",
+        "summary": "Up to 100 decisions, one per request, in order",
+        "x-hodor-scope": "authz:evaluate",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "requests"
+                ],
+                "properties": {
+                  "requests": {
+                    "type": "array",
+                    "maxItems": 100,
+                    "items": {
+                      "$ref": "#/components/schemas/Question"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "One result per request, in the same order: a decision, or a problem for a request that cannot be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "results"
+                  ],
+                  "properties": {
+                    "results": {
+                      "type": "array",
+                      "items": {
+                        "oneOf": [
+                          {
+                            "$ref": "#/components/schemas/Decision"
+                          },
+                          {
+                            "$ref": "#/components/schemas/Problem"
+                          }
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No token, or one that is not good here: another tenant's, expired, revoked, or without the audience urn:hodor:authorization. WWW-Authenticate says why."
+          },
+          "403": {
+            "description": "The token lacks the scope (error=\"insufficient_scope\"), or its client's application has no resource server (authorization.no_resource_server).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body cannot be read; the problem's code says why.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/simulate": {
+      "post": {
+        "operationId": "simulate",
+        "summary": "What would be decided against chosen policies; never recorded as a real decision",
+        "x-hodor-scope": "authz:simulate",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/Question"
+                  }
+                ],
+                "properties": {
+                  "against": {
+                    "type": "object",
+                    "description": "Exactly one of published (true), a revision or a draft.",
+                    "properties": {
+                      "published": {
+                        "type": "boolean",
+                        "const": true
+                      },
+                      "revision": {
+                        "type": "string"
+                      },
+                      "draft": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                },
+                "required": [
+                  "against"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The simulated decision, with trace when the token holds authz:explain.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Decision"
+                    }
+                  ],
+                  "properties": {
+                    "trace": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No token, or one that is not good here: another tenant's, expired, revoked, or without the audience urn:hodor:authorization. WWW-Authenticate says why."
+          },
+          "403": {
+            "description": "The token lacks the scope (error=\"insufficient_scope\"), or its client's application has no resource server (authorization.no_resource_server).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body cannot be read; the problem's code says why.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No engine is bound to the resource server (authorization.no_engine_bound).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "operationId": "openapi",
+        "summary": "This document",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "The OpenAPI document of the Authorization API.",
+            "content": {
+              "application/json": {}
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "accessToken": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "An access token issued by the tenant's token endpoint, with the audience urn:hodor:authorization."
+      }
+    },
+    "schemas": {
+      "Attributes": {
+        "type": "object",
+        "maxProperties": 64,
+        "propertyNames": {
+          "pattern": "^[a-z][a-z0-9._-]{0,63}$"
+        },
+        "additionalProperties": true
+      },
+      "Question": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "subject",
+          "resource",
+          "action"
+        ],
+        "properties": {
+          "subject": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "type",
+              "id"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "user",
+                  "client"
+                ]
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 255
+              }
+            }
+          },
+          "asserted": {
+            "$ref": "#/components/schemas/Attributes",
+            "description": "What the caller claims about the subject. Given to the engine only when the binding trusts it."
+          },
+          "resource": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9._-]{0,63}$"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 255
+              },
+              "attributes": {
+                "$ref": "#/components/schemas/Attributes"
+              }
+            }
+          },
+          "action": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9._-]{0,63}$"
+          },
+          "context": {
+            "$ref": "#/components/schemas/Attributes",
+            "description": "Attributes of the moment."
+          }
+        }
+      },
+      "Decision": {
+        "type": "object",
+        "required": [
+          "decision",
+          "decision_id",
+          "evaluated_at",
+          "engine",
+          "policy_version",
+          "reason"
+        ],
+        "properties": {
+          "decision": {
+            "type": "string",
+            "enum": [
+              "ALLOW",
+              "DENY",
+              "INDETERMINATE"
+            ],
+            "description": "Only ALLOW permits. INDETERMINATE means the engine could not decide."
+          },
+          "decision_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "evaluated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "engine": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The engine that answered; null when none was reached."
+          },
+          "policy_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "description": "A stable code, such as matching_role, no_matching_role or no_engine_bound."
+          },
+          "matched_policies": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Only with the scope authz:explain."
+          }
+        }
+      },
+      "Problem": {
+        "type": "object",
+        "required": [
+          "type",
+          "title",
+          "status",
+          "detail",
+          "code"
+        ],
+        "properties": {
+          "type": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

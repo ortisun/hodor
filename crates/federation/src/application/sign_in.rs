@@ -32,7 +32,8 @@ use time::Duration;
 /// The key of the alternative, in flows and in what is submitted to it.
 pub const EXTERNAL_STEP: &str = "external";
 /// The purpose PKCE verifiers are sealed for.
-const CODE_VERIFIER: &str = "federation.code_verifier";
+/// The purpose the PKCE verifier of a pending authorization is sealed for.
+pub const CODE_VERIFIER: &str = "federation.code_verifier";
 /// A pending authorization lasts as long as a sign-in.
 const PENDING_LIFETIME: Duration = Duration::minutes(10);
 
@@ -263,7 +264,7 @@ impl ExternalSignIn {
             provider_id: provider.id(),
             state_hash: self.digest.sha256(request.state.as_bytes()),
             nonce: request.nonce,
-            code_verifier: self.secrets.seal(tenant, CODE_VERIFIER, &verifier)?,
+            code_verifier: self.secrets.seal(tenant, CODE_VERIFIER, &verifier).await?,
             redirect_uri,
             expires_at: self.clock.now() + PENDING_LIFETIME,
             saml_answer: None,
@@ -449,11 +450,12 @@ impl ExternalSignIn {
         };
         let opened = self
             .secrets
-            .open(tenant, CODE_VERIFIER, &pending.code_verifier)?;
+            .open(tenant, CODE_VERIFIER, &pending.code_verifier)
+            .await?;
         let code_verifier = String::from_utf8(opened.expose().clone())
             .map(Secret::new)
             .map_err(|_| hodor_kernel::sealing::unreadable("the code verifier is not text"))?;
-        let client_secret = self.federation.client_secret(tenant, &provider)?;
+        let client_secret = self.federation.client_secret(tenant, &provider).await?;
         let answered = match provider.snapshot().kind {
             ProviderKind::OpenIdConnect => {
                 self.openid
@@ -600,7 +602,7 @@ impl ExternalSignIn {
         let query = DirectoryQuery {
             address: state.settings.issuer.clone(),
             bind_name: state.settings.client_id.clone(),
-            bind_password: self.federation.client_secret(tenant, &provider)?,
+            bind_password: self.federation.client_secret(tenant, &provider).await?,
             base: directory.base.clone(),
             filter: directory
                 .filter
@@ -800,6 +802,7 @@ impl Authenticator for ExternalIdentityAuthenticator {
             // One factor. Which kind is not known: Hodor does not know
             // how the provider convinced itself.
             factor: Some(Factor::Knowledge),
+            second_factor: None,
             method: Some(EXTERNAL_STEP),
         }
     }

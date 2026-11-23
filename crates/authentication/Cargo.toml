@@ -19,6 +19,7 @@ hodor-kernel.workspace = true
 hodor-notification.workspace = true
 hodor-tenant.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 hodor-session.workspace = true
 time.workspace = true
 

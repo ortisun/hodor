@@ -17,13 +17,30 @@ import { useToast } from "@astryxdesign/core/Toast";
 import { TopNav, TopNavHeading } from "@astryxdesign/core/TopNav";
 import { VStack } from "@astryxdesign/core/VStack";
 import { useHotkeys } from "@astryxdesign/core/hooks";
-import { Clock, DoorOpen, FileText, Link2, LogOut, type LucideIcon, Moon, Search, Sun, Users } from "lucide-react";
+import {
+  AppWindow,
+  Clock,
+  DoorOpen,
+  FileText,
+  Link2,
+  LogOut,
+  type LucideIcon,
+  Moon,
+  Search,
+  ShieldCheck,
+  Sun,
+  Users,
+} from "lucide-react";
 import { type MouseEvent, type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import { accountPath, isIdentifier, pathOf, type Place, type Screen, signInPath } from "./address";
 import type { Client, Me, Permission } from "./client";
 import { moment, named, type Messages } from "./messages";
 import { asFailure, Failed, type Loading, Waiting } from "./parts/Loaded";
+import { ApplicationScreen } from "./screens/ApplicationScreen";
+import { ApplicationsScreen } from "./screens/ApplicationsScreen";
 import { AuditScreen } from "./screens/AuditScreen";
+import { AuthorizationScreen } from "./screens/AuthorizationScreen";
+import { ClientScreen } from "./screens/ClientScreen";
 import { ProviderScreen } from "./screens/ProviderScreen";
 import { ProvidersScreen } from "./screens/ProvidersScreen";
 import { nameOf } from "./screens/UsersScreen";
@@ -65,6 +82,18 @@ const SECTIONS: { title: (text: Messages) => string; entries: Entry[] }[] = [
         label: (text) => text.providers,
         icon: Link2,
         needs: "identity-providers:read",
+      },
+      {
+        screen: { name: "applications" },
+        label: (text) => text.applications,
+        icon: AppWindow,
+        needs: "applications:read",
+      },
+      {
+        screen: { name: "authorization" },
+        label: (text) => text.authorization,
+        icon: ShieldCheck,
+        needs: "roles:read",
       },
     ],
   },
@@ -306,7 +335,9 @@ function Frame({ place, client, text, mode, changeMode, go, leave, me }: AppProp
                       isSelected={
                         screen?.name === entry.screen.name ||
                         (screen?.name === "user" && entry.screen.name === "users") ||
-                        (screen?.name === "provider" && entry.screen.name === "providers")
+                        (screen?.name === "provider" && entry.screen.name === "providers") ||
+                        ((screen?.name === "application" || screen?.name === "client") &&
+                          entry.screen.name === "applications")
                       }
                       onClick={(event) => open(event, entry.screen)}
                     />
@@ -324,6 +355,14 @@ function Frame({ place, client, text, mode, changeMode, go, leave, me }: AppProp
         {screen?.name === "provider" && allowed("identity-providers:read") ? (
           <ProviderScreen key={screen.id} id={screen.id} {...props} />
         ) : null}
+        {screen?.name === "applications" && allowed("applications:read") ? <ApplicationsScreen {...props} /> : null}
+        {screen?.name === "application" && allowed("applications:read") ? (
+          <ApplicationScreen key={screen.id} id={screen.id} {...props} />
+        ) : null}
+        {screen?.name === "client" && allowed("applications:read") ? (
+          <ClientScreen key={screen.id} id={screen.id} {...props} />
+        ) : null}
+        {screen?.name === "authorization" && allowed("roles:read") ? <AuthorizationScreen {...props} /> : null}
         {screen === null || (screen.name !== "home" && !allowed(needsOf(screen))) ? (
           <div className="console-page">
             <VStack gap={3} hAlign="start">
@@ -358,6 +397,12 @@ function needsOf(screen: Screen): Permission {
     case "providers":
     case "provider":
       return "identity-providers:read";
+    case "applications":
+    case "application":
+    case "client":
+      return "applications:read";
+    case "authorization":
+      return "roles:read";
     default:
       return "users:read";
   }

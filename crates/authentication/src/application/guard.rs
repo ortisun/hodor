@@ -75,8 +75,44 @@ impl AttemptGuard {
         address: Option<&str>,
         caller: Caller,
     ) -> Result<(), DomainError> {
+        self.admit_subjects(tenant, rules, Some(identifier_key), address, caller)
+            .await
+    }
+
+    /// Admits one attempt that names no identifier, such as the answer of
+    /// a passkey, counting it against the address only. Without an
+    /// address nothing is counted.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::admit`], when the address is locked out.
+    pub async fn admit_address(
+        &self,
+        tenant: &TenantContext,
+        rules: &LockoutRules,
+        address: Option<&str>,
+        caller: Caller,
+    ) -> Result<(), DomainError> {
+        self.admit_subjects(tenant, rules, None, address, caller)
+            .await
+    }
+
+    async fn admit_subjects(
+        &self,
+        tenant: &TenantContext,
+        rules: &LockoutRules,
+        identifier_key: Option<[u8; 32]>,
+        address: Option<&str>,
+        caller: Caller,
+    ) -> Result<(), DomainError> {
         let now = self.clock.now();
-        let mut subjects = vec![AttemptSubject::Identifier(identifier_key)];
+        let mut subjects: Vec<AttemptSubject> = identifier_key
+            .map(AttemptSubject::Identifier)
+            .into_iter()
+            .collect();
+        if subjects.is_empty() && address.is_none() {
+            return Ok(());
+        }
         if let Some(address) = address {
             subjects.push(AttemptSubject::Address(
                 self.digest.sha256(address.as_bytes()),

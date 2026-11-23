@@ -248,13 +248,15 @@ Invariants: a transaction only advances through its current step; it expires in 
 
 ### `oauth`
 
+Specified in [the OAuth context](contexts/oauth.md). Pairwise subjects are not built for 0.2.0.
+
 ```mermaid
 classDiagram
     class Application {
         ApplicationId id
         Name name
-        AppType type
-        Branding branding
+        bool firstParty
+        Status status
     }
     class Client {
         ClientId id
@@ -262,15 +264,22 @@ classDiagram
         RedirectUri[] redirectUris
         GrantType[] grantTypes
         AuthMethod authMethod
+        Scope[] allowedScopes
+        bool requirePkce
         TokenPolicy tokenPolicy
-        SubjectType subjectType
+        Status status
     }
     class ClientSecret {
         SecretHash hash
         Timestamp expiresAt
     }
+    class ClientKey {
+        KeyId kid
+        Jwk publicKey
+    }
     class ResourceServer {
-        Audience identifier
+        Audience audience
+        Name name
         Scope[] scopes
     }
     class Consent {
@@ -301,25 +310,26 @@ classDiagram
     }
     Application "1" *-- "*" Client
     Application "1" o-- "0..1" ResourceServer
-    Client "1" *-- "*" ClientSecret
+    Client "1" *-- "0..2" ClientSecret
+    Client "1" *-- "0..5" ClientKey
     Grant "1" *-- "0..1" RefreshTokenFamily
     Grant "1" *-- "0..1" AuthorizationCode
     Consent "*" --> "1" Client
 ```
 
-Invariants: redirect URIs are compared by exact equality; a public client has no secret and requires PKCE; an authorization code is redeemed at most once, and a second attempt revokes the grant; presenting an already rotated refresh token revokes the whole family.
+Invariants: redirect URIs are compared by exact equality; a public client has no secret and requires PKCE; at most two secrets of a client work at once, and only their hashes are kept; an authorization code is redeemed at most once, and a second attempt revokes the grant; presenting an already rotated refresh token revokes the whole family.
 
 ### `keys`
 
-A `KeySet` (per tenant and use: `sig`, `enc`, `data`) contains `KeyVersion`s with states `pending → active → retiring → retired → revoked`. Only one version is `active` per algorithm; a `retiring` version stays in the JWKS until the longest-lived token it signed has expired.
+A `KeySet` (per tenant and use: `sig`, `enc`, `data`) contains `KeyVersion`s with states `pending → active → retiring → retired`, and `revoked` from any of them. Only one version is `active` per algorithm; a `retiring` version stays in the JWKS until the longest-lived token it signed has expired. A version's key is made and used by a `KeyProvider` and is never read by the context. Specified in [the keys context](contexts/keys.md).
 
 ### `authorization`
 
 | Aggregate | Role |
 |---|---|
-| `Role` | Name, scope (tenant, organization, application), permissions, inherited roles |
+| `Role` | Resource server (namespace), name, permissions, included roles (a hierarchy within the namespace, a composite across namespaces) |
 | `Permission` | `resource_type` + `action`, owned by a resource server |
-| `RoleAssignment` | Principal or group → role, with scope and validity |
+| `RoleAssignment` | Principal (a user or a client; groups and organizations later) → role, scoped to the tenant or one application, with validity |
 | `AclEntry` | Specific resource → principal → actions |
 | `RelationTuple` | `object#relation@subject` (relationship-based access control) |
 | `Policy` / `PolicyVersion` | Native rule (attribute-based access control condition) or Rego module; immutable version with checksum |

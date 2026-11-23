@@ -99,3 +99,216 @@ async fn the_use_cases_work_end_to_end_on_postgres() {
     .expect("state");
     assert_eq!(left, (0, 0), "the history goes with the password");
 }
+
+#[tokio::test]
+async fn the_postgres_store_of_authenticator_applications_passes_the_contract() {
+    use hodor_adapters_postgres::PgTotpStore;
+    use hodor_credential::testing::{TotpPorts, run_totp_contract};
+    let database = TestDatabase::start().await;
+    run_totp_contract(TotpPorts {
+        units_of_work: database.app(),
+        totps: &PgTotpStore,
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_code_presented_twice_at_once_is_accepted_once_on_postgres() {
+    use hodor_adapters_postgres::PgTotpStore;
+    use hodor_credential::api::{STEP_SECONDS, TotpCheck, TotpService, totp_code_at};
+    use hodor_credential::testing::{FakeHmacSha1, base32_secret};
+    use hodor_kernel::Clock;
+    use hodor_kernel::random::testing::CountingRandom;
+    use hodor_kernel::sealing::testing::FakeSecretBox;
+
+    let database = TestDatabase::start().await;
+    let clock = Arc::new(FixedClock::at(
+        Timestamp::UNIX_EPOCH + time::Duration::seconds(STEP_SECONDS * 60_000_000),
+    ));
+    let service = TotpService::new(
+        Arc::new(database.app().clone()),
+        Arc::new(PgTotpStore),
+        Arc::new(FakeSecretBox),
+        Arc::new(FakeHmacSha1),
+        Arc::new(CountingRandom::default()),
+        clock.clone(),
+    );
+    let tenant = TenantContext::assume(TenantId::generate());
+    let user = UserId::generate();
+    let enrollment = service
+        .begin_enrollment(&tenant, user, "Acme", "ana@example.com")
+        .await
+        .expect("begin");
+    let secret = base32_secret(enrollment.secret());
+    let phone = |moment| secret_code(totp_code_at(&FakeHmacSha1, &secret, moment));
+    service
+        .confirm_enrollment(&tenant, user, &phone(clock.now()), Caller::system())
+        .await
+        .expect("confirm");
+    clock.advance(time::Duration::seconds(STEP_SECONDS));
+
+    let code = phone(clock.now());
+    let (first, second) = tokio::join!(
+        service.verify(&tenant, Some(user), &code),
+        service.verify(&tenant, Some(user), &code),
+    );
+    let answers = [first, second];
+    let verified = answers
+        .iter()
+        .filter(|answer| matches!(answer, Ok(TotpCheck::Verified)))
+        .count();
+    assert_eq!(verified, 1, "{answers:?}");
+
+    // Only the sealed secret is stored, and the events name no secret.
+    let (stored, events): (Vec<u8>, String) = sqlx::query_as(
+        "SELECT (SELECT sealed_secret FROM credential.totp),
+                (SELECT string_agg(payload::text, ' ') FROM platform.outbox)",
+    )
+    .fetch_one(database.owner())
+    .await
+    .expect("state");
+    assert!(
+        !stored
+            .windows(secret.len())
+            .any(|window| window == secret.as_slice())
+    );
+    assert!(!events.contains(enrollment.secret()), "{events}");
+}
+
+fn secret_code(value: String) -> Secret<String> {
+    Secret::from(value)
+}
+
+#[tokio::test]
+async fn the_postgres_store_of_recovery_codes_passes_the_contract() {
+    use hodor_adapters_postgres::PgRecoveryCodeStore;
+    use hodor_credential::testing::{RecoveryCodePorts, run_recovery_code_contract};
+    let database = TestDatabase::start().await;
+    run_recovery_code_contract(RecoveryCodePorts {
+        units_of_work: database.app(),
+        codes: &PgRecoveryCodeStore,
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_recovery_code_presented_many_times_at_once_is_accepted_once_on_postgres() {
+    use hodor_adapters_postgres::PgRecoveryCodeStore;
+    use hodor_credential::api::{RecoveryCodeCheck, RecoveryCodeService};
+    use hodor_kernel::random::testing::{CountingRandom, FakeDigest};
+
+    let database = TestDatabase::start().await;
+    let service = RecoveryCodeService::new(
+        Arc::new(database.app().clone()),
+        Arc::new(PgRecoveryCodeStore),
+        Arc::new(FakeDigest),
+        Arc::new(CountingRandom::default()),
+        Arc::new(FixedClock::at(Timestamp::UNIX_EPOCH)),
+    );
+    let tenant = TenantContext::assume(TenantId::generate());
+    let user = UserId::generate();
+    let codes = service
+        .generate(&tenant, user, Caller::system())
+        .await
+        .expect("generate");
+    let code = secret(codes.codes().next().expect("a code"));
+
+    let attempt = || service.verify(&tenant, Some(user), &code, Caller::system());
+    let (first, second, third, fourth, fifth, sixth) = tokio::join!(
+        attempt(),
+        attempt(),
+        attempt(),
+        attempt(),
+        attempt(),
+        attempt()
+    );
+    let answers = [first, second, third, fourth, fifth, sixth];
+    let verified = answers
+        .iter()
+        .filter(|answer| matches!(answer, Ok(RecoveryCodeCheck::Verified { .. })))
+        .count();
+    assert_eq!(verified, 1, "{answers:?}");
+    assert!(
+        answers.iter().all(|answer| matches!(
+            answer,
+            Ok(RecoveryCodeCheck::Verified { remaining: 9 } | RecoveryCodeCheck::Rejected)
+        )),
+        "{answers:?}"
+    );
+
+    // Only hashes are stored, and the events name no code.
+    let (stored, events): (Vec<u8>, String) = sqlx::query_as(
+        "SELECT (SELECT string_agg(code_hash, ''::bytea) FROM credential.recovery_code),
+                (SELECT string_agg(payload::text, ' ') FROM platform.outbox)",
+    )
+    .fetch_one(database.owner())
+    .await
+    .expect("state");
+    for code in codes.codes() {
+        let bare = code.replace('-', "");
+        assert!(
+            !stored
+                .windows(bare.len())
+                .any(|window| window == bare.as_bytes())
+        );
+        assert!(
+            !events.contains(code) && !events.contains(&bare),
+            "{events}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn two_sets_generated_at_once_leave_one_set_on_postgres() {
+    use hodor_adapters_postgres::PgRecoveryCodeStore;
+    use hodor_credential::api::{RecoveryCodeCheck, RecoveryCodeService};
+    use hodor_kernel::ErrorKind;
+    use hodor_kernel::random::testing::{CountingRandom, FakeDigest};
+
+    let database = TestDatabase::start().await;
+    let service = RecoveryCodeService::new(
+        Arc::new(database.app().clone()),
+        Arc::new(PgRecoveryCodeStore),
+        Arc::new(FakeDigest),
+        Arc::new(CountingRandom::default()),
+        Arc::new(FixedClock::at(Timestamp::UNIX_EPOCH)),
+    );
+    let tenant = TenantContext::assume(TenantId::generate());
+    let user = UserId::generate();
+    let (first, second) = tokio::join!(
+        service.generate(&tenant, user, Caller::system()),
+        service.generate(&tenant, user, Caller::system()),
+    );
+    let made: Vec<_> = [first, second]
+        .into_iter()
+        .filter_map(|answer| match answer {
+            Ok(codes) => Some(codes),
+            Err(error) => {
+                assert_eq!(error.kind(), ErrorKind::Conflict, "{error:?}");
+                assert_eq!(error.code(), "credential.recovery_codes_conflict");
+                None
+            }
+        })
+        .collect();
+    assert!(!made.is_empty());
+    let (sets, codes): (i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM credential.recovery_code_set),
+                (SELECT count(*) FROM credential.recovery_code)",
+    )
+    .fetch_one(database.owner())
+    .await
+    .expect("count");
+    assert_eq!((sets, codes), (1, 10));
+    // The codes in force are those of the last set that was stored.
+    let last = made.last().expect("a set");
+    let code = secret(last.codes().next().expect("a code"));
+    if made.len() == 1 {
+        assert_eq!(
+            service
+                .verify(&tenant, Some(user), &code, Caller::system())
+                .await
+                .expect("verify"),
+            RecoveryCodeCheck::Verified { remaining: 9 }
+        );
+    }
+}

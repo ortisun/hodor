@@ -63,6 +63,28 @@ Every route of the [administration interface](admin-api.md#routes) exists here a
 | `PUT /identity-providers/{provider_id}/client-secret` | `identity-providers:write` |
 | `POST /identity-providers/{provider_id}:disable` | `identity-providers:write` |
 | `POST /identity-providers/{provider_id}:enable` | `identity-providers:write` |
+| `GET /applications` | `applications:read` |
+| `POST /applications` | `applications:write` |
+| `GET /applications/{application_id}` | `applications:read` |
+| `PATCH /applications/{application_id}` | `applications:write` |
+| `POST /applications/{application_id}:disable` | `applications:write` |
+| `POST /applications/{application_id}:enable` | `applications:write` |
+| `GET /applications/{application_id}/clients` | `applications:read` |
+| `POST /applications/{application_id}/clients` | `applications:write` |
+| `GET /clients/{client_id}` | `applications:read` |
+| `PATCH /clients/{client_id}` | `applications:write` |
+| `POST /clients/{client_id}:disable` | `applications:write` |
+| `POST /clients/{client_id}:enable` | `applications:write` |
+| `POST /clients/{client_id}/secrets` | `applications:write` |
+| `DELETE /clients/{client_id}/secrets/{secret_id}` | `applications:write` |
+| `POST /clients/{client_id}/keys` | `applications:write` |
+| `DELETE /clients/{client_id}/keys/{key_id}` | `applications:write` |
+| `GET /resource-servers` | `applications:read` |
+| `POST /resource-servers` | `applications:write` |
+| `GET /resource-servers/{resource_server_id}` | `applications:read` |
+| `PATCH /resource-servers/{resource_server_id}` | `applications:write` |
+| `GET /assurance-levels` | `assurance-levels:read` |
+| `PUT /assurance-levels` | `assurance-levels:write` |
 
 The two interfaces are answered by the same handlers and the same table of permissions; a route added to one is added to the other. The OpenAPI document is not served here: this interface has one client, which ships with the server.
 

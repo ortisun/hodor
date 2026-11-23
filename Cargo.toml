@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*", "apps/*", "tests/*"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.98"
 publish = false
@@ -14,15 +14,20 @@ hodor-adapters-crypto = { path = "crates/adapters-crypto" }
 hodor-adapters-postgres = { path = "crates/adapters-postgres" }
 hodor-adapters-http = { path = "crates/adapters-http" }
 hodor-adapters-ldap = { path = "crates/adapters-ldap" }
+hodor-adapters-policy-check = { path = "crates/adapters-policy-check" }
 hodor-adapters-smtp = { path = "crates/adapters-smtp" }
 hodor-audit = { path = "crates/audit" }
 hodor-authentication = { path = "crates/authentication" }
 hodor-authorization = { path = "crates/authorization" }
+hodor-authorization-native = { path = "crates/authorization-native" }
+hodor-authorization-opa = { path = "crates/authorization-opa" }
 hodor-credential = { path = "crates/credential" }
 hodor-federation = { path = "crates/federation" }
 hodor-identity = { path = "crates/identity" }
 hodor-kernel = { path = "crates/kernel" }
+hodor-keys = { path = "crates/keys" }
 hodor-notification = { path = "crates/notification" }
+hodor-oauth = { path = "crates/oauth" }
 hodor-observability = { path = "crates/observability" }
 hodor-protocol-http = { path = "crates/protocol-http" }
 hodor-saml = { path = "crates/saml" }
@@ -50,6 +55,8 @@ reqwest = { version = "0.13", default-features = false }
 form_urlencoded = "1"
 getrandom = "0.4"
 http-body-util = "0.1"
+# Only to check, in tests, the tokens Hodor signs with a library of its own.
+jsonwebtoken = { version = "12", default-features = false }
 ldap3 = { version = "0.12", default-features = false, features = ["tls-rustls-aws-lc-rs"] }
 miniz_oxide = "0.9"
 lettre = { version = "0.11", default-features = false, features = [

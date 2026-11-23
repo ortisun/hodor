@@ -18,7 +18,9 @@ migrations (doc comment on `Command::Migrate` in `apps/hodor-cli/src/main.rs`).
 From `Cargo.toml`: `async-trait`, `axum`, `clap`, `time`, `tokio`, `tracing`,
 and the workspace crates `hodor-adapters-crypto`, `hodor-adapters-http`,
 `hodor-adapters-ldap`, `hodor-adapters-postgres`, `hodor-audit`,
-`hodor-authentication`, `hodor-authorization`, `hodor-credential`,
+`hodor-authentication`, `hodor-authorization`, `hodor-authorization-native`,
+`hodor-authorization-opa`,
+`hodor-credential`,
 `hodor-federation`, `hodor-identity`, `hodor-kernel`, `hodor-notification`,
 `hodor-observability`, `hodor-protocol-http`, `hodor-session` and
 `hodor-tenant`. The tests use `hodor-adapters-postgres` and `hodor-kernel`

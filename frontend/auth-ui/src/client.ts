@@ -2,6 +2,8 @@
 // knows paths, headers and the shape of answers; the pages see values.
 // See docs/api/interaction-api.md.
 
+import type { KeyRegistration, WebAuthnAnswer } from "./webauthn";
+
 /** Why a request did not do what was asked. */
 export class Failure {
   constructor(
@@ -28,6 +30,12 @@ export interface SignInAnswer {
   /** The step to ask for next, when the sign-in goes on. */
   step: string | null;
   attemptsLeft: number | null;
+  /**
+   * Where to go once the sign-in completed, when an application's request
+   * waits for it: an address of Hodor's own authorization endpoint of this
+   * tenant, and nothing else.
+   */
+  continueTo?: string;
 }
 
 /** An identity provider as the sign-in page shows it. */
@@ -46,7 +54,79 @@ export interface Session {
   expiresAt: string;
 }
 
+/** A security key or a passkey of the person. */
+export interface Key {
+  id: string;
+  name: string;
+  /** Whether it signs the person in on its own. */
+  passkey: boolean;
+  createdAt: string;
+  lastUsedAt: string | null;
+}
+
+/** The person's second factors. */
+export interface Factors {
+  /** `null` when the installation offers no authenticator application. */
+  authenticatorApplication: { inUse: boolean } | null;
+  keys: Key[];
+  recoveryCodesRemaining: number;
+  secondFactorRequired: boolean;
+  /** Until when changes are allowed without signing in again; `null` when they are not now. */
+  recentSignInUntil: string | null;
+}
+
+/** An authenticator application being set up: its secret, shown once. */
+export interface Enrollment {
+  secret: string;
+  uri: string;
+}
+
+/** A registration of a key that was just asked for. */
+export interface BegunKey {
+  registrationId: string;
+  publicKey: Record<string, unknown>;
+}
+
+/** A scope an application asks for, as the consent page shows it. */
+export type AskedScope =
+  | { kind: "openid"; scope: string }
+  | { kind: "resource"; scope: string; description: string; resourceServer: string };
+
+/** What an application's request asks the person to agree to. */
+export interface ConsentQuestion {
+  application: string;
+  scopes: AskedScope[];
+  /** Whether it asks to keep access when the person is not there. */
+  offlineAccess: boolean;
+}
+
+/** An application the person agreed to. */
+export interface GivenConsent {
+  clientId: string;
+  application: string;
+  scopes: string[];
+  givenAt: string;
+  expiresAt: string;
+}
+
 type Fetch = typeof globalThis.fetch;
+
+function keyOf(value: unknown): Key | null {
+  const fields = typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
+  const id = text(fields["id"]);
+  const name = text(fields["name"]);
+  const createdAt = text(fields["created_at"]);
+  if (id === null || name === null || createdAt === null) {
+    return null;
+  }
+  return { id, name, passkey: fields["passkey"] === true, createdAt, lastUsedAt: text(fields["last_used_at"]) };
+}
+
+/** New recovery codes in an answer, if it holds any. */
+function codesOf(body: Record<string, unknown>): string[] | null {
+  const codes = body["recovery_codes"];
+  return Array.isArray(codes) ? codes.filter((code): code is string => typeof code === "string") : null;
+}
 
 interface Reply {
   status: number;
@@ -63,10 +143,13 @@ export class Client {
   /** The token to send back with requests that change something. */
   #csrfToken: string | null = null;
   readonly #base: string;
+  /** The only addresses a completed sign-in may continue to. */
+  readonly #continues: string;
   readonly #fetch: Fetch;
 
   constructor(tenant: string, fetch: Fetch = (...input) => globalThis.fetch(...input)) {
     this.#base = `/t/${tenant}/interaction`;
+    this.#continues = `/t/${tenant}/oauth2/`;
     this.#fetch = fetch;
   }
 
@@ -124,11 +207,21 @@ export class Client {
       this.#csrfToken = null;
     }
     const left = reply.body["attempts_left"];
-    return {
+    const answer: SignInAnswer = {
       status,
       step: text(reply.body["step"]),
       attemptsLeft: typeof left === "number" ? left : null,
     };
+    const next = text(reply.body["continue"]);
+    if (status === "completed" && next !== null && this.#isOwnAuthorization(next)) {
+      answer.continueTo = next;
+    }
+    return answer;
+  }
+
+  /** Whether `path` is an address of this tenant's authorization endpoint, on this origin. */
+  #isOwnAuthorization(path: string): boolean {
+    return path.startsWith(this.#continues) && /^[A-Za-z0-9/_-]+$/.test(path) && !path.includes("//");
   }
 
   /** Who is signed in; `null` when nobody is. */
@@ -235,6 +328,44 @@ export class Client {
     return this.#signIn(await this.#send("POST", "/sign-in/steps/password", { password }));
   }
 
+  /** Sends a code of the person's authenticator application. */
+  async submitTotp(code: string): Promise<SignInAnswer> {
+    return this.#signIn(await this.#send("POST", "/sign-in/steps/totp", { code }));
+  }
+
+  /** The challenge of the WebAuthn step, in the options the interface gives. */
+  async webAuthnOptions(): Promise<Record<string, unknown>> {
+    return this.#publicKey("/sign-in/steps/webauthn/options");
+  }
+
+  async submitWebAuthn(answer: WebAuthnAnswer): Promise<SignInAnswer> {
+    return this.#signIn(await this.#send("POST", "/sign-in/steps/webauthn", answer));
+  }
+
+  /** The challenge of signing in with a passkey, while the sign-in waits for the identifier. */
+  async passkeyOptions(): Promise<Record<string, unknown>> {
+    return this.#publicKey("/sign-in/steps/passkey/options");
+  }
+
+  /** Sends what a passkey answered, in place of the identifier and the password. */
+  async submitPasskey(answer: WebAuthnAnswer): Promise<SignInAnswer> {
+    return this.#signIn(await this.#send("POST", "/sign-in/steps/passkey", answer));
+  }
+
+  async #publicKey(path: string): Promise<Record<string, unknown>> {
+    const reply = await this.#send("POST", path);
+    const options = reply.body["public_key"];
+    if (typeof options !== "object" || options === null) {
+      throw new Failure(null, reply.status);
+    }
+    return options as Record<string, unknown>;
+  }
+
+  /** Sends one of the person's recovery codes, in place of their security key or the code of their application. */
+  async submitRecoveryCode(code: string): Promise<SignInAnswer> {
+    return this.#signIn(await this.#send("POST", "/sign-in/steps/recovery_code", { code }));
+  }
+
   /** Abandons the sign-in. One that is already gone is not an error. */
   async abandonSignIn(): Promise<void> {
     try {
@@ -245,6 +376,89 @@ export class Client {
       }
     } finally {
       this.#csrfToken = null;
+    }
+  }
+
+  /** What the request waiting in this browser asks for; `null` when none waits for this person. */
+  async consentQuestion(): Promise<ConsentQuestion | null> {
+    let reply: Reply;
+    try {
+      reply = await this.#send("GET", "/consent");
+    } catch (failure) {
+      if (failure instanceof Failure && failure.status === 404) {
+        return null;
+      }
+      throw failure;
+    }
+    const application = text(reply.body["application"]);
+    const listed = reply.body["scopes"];
+    if (application === null || !Array.isArray(listed)) {
+      throw new Failure(null, reply.status);
+    }
+    const scopes = listed.flatMap((entry: unknown): AskedScope[] => {
+      const fields = typeof entry === "object" && entry !== null ? (entry as Record<string, unknown>) : {};
+      const scope = text(fields["scope"]);
+      if (scope === null) {
+        return [];
+      }
+      if (fields["kind"] === "openid") {
+        return [{ kind: "openid", scope }];
+      }
+      return [
+        {
+          kind: "resource",
+          scope,
+          description: text(fields["description"]) ?? scope,
+          resourceServer: text(fields["resource_server"]) ?? "",
+        },
+      ];
+    });
+    return { application, scopes, offlineAccess: reply.body["offline_access"] === true };
+  }
+
+  /**
+   * Sends the person's answer. Answers where to go: an address of this
+   * tenant's authorization endpoint, and nothing else.
+   */
+  async answerConsent(decision: "allow" | "deny"): Promise<string> {
+    const reply = await this.#send("POST", "/consent", { decision });
+    const next = text(reply.body["continue"]);
+    if (next === null || !this.#isOwnAuthorization(next)) {
+      throw new Failure(null, reply.status);
+    }
+    return next;
+  }
+
+  /** The applications the person agreed to. Needs `session()` to have answered first to withdraw one. */
+  async consents(): Promise<GivenConsent[]> {
+    const reply = await this.#send("GET", "/consents");
+    const listed = reply.body["consents"];
+    if (!Array.isArray(listed)) {
+      return [];
+    }
+    return listed.flatMap((entry: unknown): GivenConsent[] => {
+      const fields = typeof entry === "object" && entry !== null ? (entry as Record<string, unknown>) : {};
+      const clientId = text(fields["client_id"]);
+      const application = text(fields["application"]);
+      const givenAt = text(fields["given_at"]);
+      const expiresAt = text(fields["expires_at"]);
+      const scopes = Array.isArray(fields["scopes"])
+        ? fields["scopes"].filter((scope): scope is string => typeof scope === "string")
+        : [];
+      return clientId !== null && application !== null && givenAt !== null && expiresAt !== null
+        ? [{ clientId, application, scopes, givenAt, expiresAt }]
+        : [];
+    });
+  }
+
+  /** Withdraws the person's agreement to one application. One already withdrawn is not an error. */
+  async withdrawConsent(clientId: string): Promise<void> {
+    try {
+      await this.#send("DELETE", `/consents/${encodeURIComponent(clientId)}`);
+    } catch (failure) {
+      if (!(failure instanceof Failure) || failure.status !== 404) {
+        throw failure;
+      }
     }
   }
 
@@ -267,5 +481,90 @@ export class Client {
 
   async resetPassword(token: string, password: string): Promise<void> {
     await this.#send("POST", "/recovery/complete", { token, password });
+  }
+
+  /** The person's second factors. */
+  async factors(): Promise<Factors> {
+    const reply = await this.#send("GET", "/factors");
+    const application = reply.body["authenticator_application"];
+    const codes = reply.body["recovery_codes"];
+    const remaining =
+      typeof codes === "object" && codes !== null ? (codes as Record<string, unknown>)["remaining"] : null;
+    const keys = Array.isArray(reply.body["keys"]) ? reply.body["keys"] : [];
+    return {
+      authenticatorApplication:
+        typeof application === "object" && application !== null
+          ? { inUse: (application as Record<string, unknown>)["in_use"] === true }
+          : null,
+      keys: keys.flatMap((key: unknown) => keyOf(key) ?? []),
+      recoveryCodesRemaining: typeof remaining === "number" ? remaining : 0,
+      secondFactorRequired: reply.body["second_factor_required"] === true,
+      recentSignInUntil: text(reply.body["recent_sign_in_until"]),
+    };
+  }
+
+  /** Begins setting up an authenticator application. The secret is given once. */
+  async beginAuthenticatorApplication(): Promise<Enrollment> {
+    const reply = await this.#send("POST", "/factors/authenticator-application");
+    const secret = text(reply.body["secret"]);
+    const uri = text(reply.body["uri"]);
+    if (secret === null || uri === null) {
+      throw new Failure(null, reply.status);
+    }
+    return { secret, uri };
+  }
+
+  /** Confirms the application with a code it shows. Answers new recovery codes, when it is the first factor. */
+  async confirmAuthenticatorApplication(code: string): Promise<string[] | null> {
+    const reply = await this.#send("POST", "/factors/authenticator-application/confirmation", { code });
+    return codesOf(reply.body);
+  }
+
+  async removeAuthenticatorApplication(): Promise<void> {
+    await this.#send("DELETE", "/factors/authenticator-application");
+  }
+
+  /** Begins registering a security key, or a passkey. */
+  async beginKey(passkey: boolean): Promise<BegunKey> {
+    const reply = await this.#send("POST", "/webauthn/registrations", { passkey });
+    const registrationId = text(reply.body["registration_id"]);
+    const publicKey = reply.body["public_key"];
+    if (registrationId === null || typeof publicKey !== "object" || publicKey === null) {
+      throw new Failure(null, reply.status);
+    }
+    return { registrationId, publicKey: publicKey as Record<string, unknown> };
+  }
+
+  /** Finishes registering it. Answers new recovery codes, when it is the first factor. */
+  async finishKey(registrationId: string, registration: KeyRegistration, name: string): Promise<string[] | null> {
+    const named = name.trim();
+    const reply = await this.#send("POST", `/webauthn/registrations/${encodeURIComponent(registrationId)}`, {
+      ...registration,
+      ...(named === "" ? {} : { name: named }),
+    });
+    return codesOf(reply.body);
+  }
+
+  async renameKey(id: string, name: string): Promise<Key> {
+    const reply = await this.#send("PATCH", `/factors/keys/${encodeURIComponent(id)}`, { name });
+    const key = keyOf(reply.body);
+    if (key === null) {
+      throw new Failure(null, reply.status);
+    }
+    return key;
+  }
+
+  async removeKey(id: string): Promise<void> {
+    await this.#send("DELETE", `/factors/keys/${encodeURIComponent(id)}`);
+  }
+
+  /** A new set of recovery codes in place of the old one, shown once. */
+  async generateRecoveryCodes(): Promise<string[]> {
+    const reply = await this.#send("POST", "/factors/recovery-codes");
+    const codes = codesOf(reply.body);
+    if (codes === null) {
+      throw new Failure(null, reply.status);
+    }
+    return codes;
   }
 }

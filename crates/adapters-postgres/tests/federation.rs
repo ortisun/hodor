@@ -1,8 +1,10 @@
 //! The stores of the federation context, on PostgreSQL.
 
-use hodor_adapters_crypto::{OsRandom, SecretKeys};
+use hodor_adapters_crypto::{LocalKeyProvider, OsRandom, SecretKeys};
 use hodor_adapters_postgres::testing::TestDatabase;
-use hodor_adapters_postgres::{PgLinkStore, PgPendingAuthorizationStore, PgProviderStore};
+use hodor_adapters_postgres::{
+    PgKeyStore, PgLinkStore, PgPendingAuthorizationStore, PgProviderStore, PgSealingStateStore,
+};
 use hodor_federation::api::{
     CreateProvider, FederationService, ProviderKind, ProviderSettings, Subject,
 };
@@ -10,6 +12,7 @@ use hodor_federation::testing::{Ports, run_contract};
 use hodor_kernel::{
     Caller, Secret, SystemClock, TenantContext, TenantId, UnitOfWorkFactory, UserId,
 };
+use hodor_keys::api::TenantSecretBox;
 use std::sync::Arc;
 
 const SECRET: &str = "the-client-secret-of-the-provider";
@@ -28,12 +31,21 @@ async fn the_postgres_stores_pass_the_contract() {
 
 fn service(database: &TestDatabase) -> FederationService {
     let key = SecretKeys::generate(&OsRandom);
-    let keys = SecretKeys::parse(&Secret::new(format!("test:{}", key.expose()))).expect("keys");
+    let root =
+        Arc::new(SecretKeys::parse(&Secret::new(format!("test:{}", key.expose()))).expect("keys"));
+    let secrets = TenantSecretBox::new(
+        Arc::new(database.app().clone()),
+        Arc::new(PgKeyStore),
+        Arc::new(LocalKeyProvider::new(root.clone())),
+        Arc::new(PgSealingStateStore),
+        Some(root),
+        Arc::new(SystemClock),
+    );
     FederationService::new(
         Arc::new(database.app().clone()),
         Arc::new(PgProviderStore),
         Arc::new(PgLinkStore),
-        Arc::new(keys),
+        Arc::new(secrets),
         Arc::new(SystemClock),
     )
 }
@@ -95,6 +107,7 @@ async fn a_client_secret_is_nowhere_in_the_database_and_still_comes_back() {
     assert_eq!(
         service
             .client_secret(&tenant, &read)
+            .await
             .expect("open")
             .expose(),
         SECRET
@@ -102,7 +115,7 @@ async fn a_client_secret_is_nowhere_in_the_database_and_still_comes_back() {
 
     // The same bytes under another tenant do not open.
     let elsewhere = TenantContext::assume(TenantId::generate());
-    assert!(service.client_secret(&elsewhere, &read).is_err());
+    assert!(service.client_secret(&elsewhere, &read).await.is_err());
 }
 
 #[tokio::test]

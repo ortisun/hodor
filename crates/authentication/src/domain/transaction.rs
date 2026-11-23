@@ -2,7 +2,7 @@
 
 use crate::domain::flow::AuthFlow;
 use hodor_kernel::{DomainError, Timestamp, UserId};
-use hodor_session::api::ClientInfo;
+use hodor_session::api::{Assurance, ClientInfo, SessionId};
 use time::Duration;
 
 hodor_kernel::define_id!(
@@ -89,8 +89,18 @@ pub struct TransactionSnapshot {
     pub candidate: Option<UserId>,
     /// A digest of the normalized identifier typed.
     pub identifier_key: Option<[u8; 32]>,
-    /// The methods satisfied so far.
+    /// The methods satisfied so far in this transaction.
     pub satisfied_methods: Vec<String>,
+    /// For a step-up only: the methods the session proved earlier that
+    /// still count.
+    pub carried_methods: Vec<String>,
+    /// For a step-up only: the assurance the application asked for.
+    pub demanded: Option<Assurance>,
+    /// For a step-up only: the session it raises instead of starting one.
+    pub raised_session: Option<SessionId>,
+    /// The challenge the current step asked for, if it needs one. Used
+    /// once: submitting the step removes it.
+    pub challenge: Option<[u8; 32]>,
     /// How many times a step was rejected.
     pub rejections: u32,
     /// How the transaction ended, or that it has not.
@@ -142,6 +152,10 @@ impl AuthTransaction {
                 candidate: None,
                 identifier_key: None,
                 satisfied_methods: Vec::new(),
+                carried_methods: Vec::new(),
+                demanded: None,
+                raised_session: None,
+                challenge: None,
                 rejections: 0,
                 status: TransactionStatus::InProgress,
                 started_at: now,
@@ -151,6 +165,49 @@ impl AuthTransaction {
                 version: 0,
             },
         }
+    }
+
+    /// Starts a step-up of `session`, for its user: the identifier is known
+    /// as `identifier_key`, the `carried` methods count already, and the
+    /// first `satisfied_steps` steps of the flow are satisfied. See
+    /// `docs/architecture/contexts/authentication.md`, "Step-up".
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_step_up(
+        flow: &AuthFlow,
+        client: ClientInfo,
+        binding: [u8; 32],
+        now: Timestamp,
+        session: SessionId,
+        user: UserId,
+        identifier_key: [u8; 32],
+        carried: Vec<String>,
+        satisfied_steps: usize,
+        demanded: Option<Assurance>,
+    ) -> Self {
+        let mut transaction = Self::start(flow, client, binding, now);
+        let state = &mut transaction.state;
+        state.current_step = satisfied_steps;
+        state.identified = true;
+        state.candidate = Some(user);
+        state.identifier_key = Some(identifier_key);
+        state.carried_methods = carried;
+        state.demanded = demanded;
+        state.raised_session = Some(session);
+        transaction
+    }
+
+    /// The methods that count for the assurance of the sign-in: those
+    /// carried from the session and those satisfied in this transaction.
+    #[must_use]
+    pub fn counted_methods(&self) -> Vec<String> {
+        let mut methods = self.state.carried_methods.clone();
+        for method in &self.state.satisfied_methods {
+            if !methods.contains(method) {
+                methods.push(method.clone());
+            }
+        }
+        methods
     }
 
     /// Rebuilds a transaction from stored state.
@@ -218,12 +275,25 @@ impl AuthTransaction {
         }
     }
 
+    /// The challenge the current step asked for, if any.
+    #[must_use]
+    pub const fn challenge(&self) -> Option<&[u8; 32]> {
+        self.state.challenge.as_ref()
+    }
+
+    /// Keeps the challenge the current step asked for, in place of any
+    /// earlier one.
+    pub(crate) fn record_challenge(&mut self, challenge: [u8; 32]) {
+        self.state.challenge = Some(challenge);
+    }
+
     /// Records the outcome of the identifier step and moves on.
     pub(crate) fn record_identified(
         &mut self,
         candidate: Option<UserId>,
         identifier_key: [u8; 32],
     ) {
+        self.state.challenge = None;
         self.state.identified = true;
         self.state.candidate = candidate;
         self.state.identifier_key = Some(identifier_key);
@@ -232,6 +302,7 @@ impl AuthTransaction {
 
     /// Records a satisfied step and moves on.
     pub(crate) fn record_satisfied(&mut self, method: Option<&str>) {
+        self.state.challenge = None;
         if let Some(method) = method
             && !self.state.satisfied_methods.iter().any(|m| m == method)
         {
@@ -240,16 +311,25 @@ impl AuthTransaction {
         self.state.current_step += 1;
     }
 
+    /// Records that the current step is passed over and moves on.
+    pub(crate) fn record_passed_over(&mut self) {
+        self.state.current_step += 1;
+    }
+
     /// Records an alternative that established who is signing in and
-    /// proved it: nothing of the flow's `steps` remains to be done.
+    /// proved it: the flow's first `steps`, its required ones, are done.
     pub(crate) fn record_authenticated(
         &mut self,
         user: UserId,
         method: Option<&str>,
         steps: usize,
     ) {
+        self.state.challenge = None;
         self.state.identified = true;
         self.state.candidate = Some(user);
+        // No identifier was typed: a second factor that follows counts its
+        // attempts by the person instead.
+        self.state.identifier_key = Some(person_attempt_key(user));
         if let Some(method) = method
             && !self.state.satisfied_methods.iter().any(|m| m == method)
         {
@@ -262,6 +342,7 @@ impl AuthTransaction {
     /// fails once it has tolerated enough. Returns how many more
     /// rejections it tolerates.
     pub(crate) fn record_rejection(&mut self) -> u32 {
+        self.state.challenge = None;
         self.state.rejections += 1;
         if self.state.rejections >= Self::MAX_REJECTIONS {
             self.state.status = TransactionStatus::Failed;
@@ -297,4 +378,15 @@ impl AuthTransaction {
             self.state.status = TransactionStatus::Cancelled;
         }
     }
+}
+
+/// The key a second factor's attempts are counted by when an alternative
+/// identified the person and no identifier was typed: a fixed prefix and
+/// the person's identifier, which no SHA-256 of an identifier is.
+#[must_use]
+pub(crate) fn person_attempt_key(user: UserId) -> [u8; 32] {
+    let mut key = [0_u8; 32];
+    key[..16].copy_from_slice(b"attempts of user");
+    key[16..].copy_from_slice(user.as_uuid().as_bytes());
+    key
 }

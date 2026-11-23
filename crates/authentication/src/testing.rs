@@ -1,9 +1,10 @@
 //! In-memory stores and the contracts every implementation of them passes.
 
 use crate::api::{
-    AttemptCounter, AttemptStore, AttemptSubject, AuthFlow, AuthTransaction, LockoutRules,
-    TokenPurpose, TransactionId, TransactionStore, VerificationSecret, VerificationToken,
-    VerificationTokenHash, VerificationTokenId, VerificationTokenStore,
+    AttemptCounter, AttemptStore, AttemptSubject, AuthFlow, AuthTransaction, Authenticator,
+    AuthenticatorTraits, Factor, LockoutRules, StepInput, StepOutcome, TokenPurpose, TransactionId,
+    TransactionStore, VerificationSecret, VerificationToken, VerificationTokenHash,
+    VerificationTokenId, VerificationTokenStore,
 };
 use hodor_kernel::random::testing::FakeDigest;
 use hodor_kernel::{
@@ -12,8 +13,155 @@ use hodor_kernel::{
 use hodor_kernel::{RandomSource, UserId};
 use hodor_session::api::ClientInfo;
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 use time::Duration;
+
+/// A stand-in second factor, until real ones exist: something the person
+/// has, which only the people enrolled in it have the means for. It is
+/// satisfied by the field `code` holding [`TestSecondFactor::CODE`].
+#[derive(Debug, Clone, Default)]
+pub struct TestSecondFactor {
+    enrolled: Arc<Mutex<BTreeSet<UserId>>>,
+}
+
+impl TestSecondFactor {
+    /// The kind flows name it by.
+    pub const KIND: &'static str = "test-second-factor";
+    /// The method recorded for a satisfied step.
+    pub const METHOD: &'static str = "test-second-factor";
+    /// The one code it accepts.
+    pub const CODE: &'static str = "246810";
+
+    /// Gives a person the means for this factor.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the lock is poisoned.
+    pub fn enroll(&self, user: UserId) {
+        self.enrolled.lock().expect("enrolled").insert(user);
+    }
+
+    fn is_enrolled(&self, user: Option<UserId>) -> bool {
+        user.is_some_and(|user| self.enrolled.lock().expect("enrolled").contains(&user))
+    }
+}
+
+#[async_trait::async_trait]
+impl Authenticator for TestSecondFactor {
+    fn kind(&self) -> &'static str {
+        Self::KIND
+    }
+
+    fn traits(&self) -> AuthenticatorTraits {
+        AuthenticatorTraits {
+            identifies: false,
+            factor: Some(Factor::Possession),
+            second_factor: None,
+            method: Some(Self::METHOD),
+        }
+    }
+
+    async fn perform(
+        &self,
+        _tenant: &TenantContext,
+        transaction: &AuthTransaction,
+        input: &StepInput,
+    ) -> Result<StepOutcome, DomainError> {
+        let right = matches!(
+            input,
+            StepInput::External(external)
+                if external.field("code").is_some_and(|code| code.expose() == Self::CODE)
+        );
+        Ok(if right && self.is_enrolled(transaction.candidate()) {
+            StepOutcome::Proven
+        } else {
+            StepOutcome::Rejected
+        })
+    }
+
+    async fn has_means(
+        &self,
+        _tenant: &TenantContext,
+        transaction: &AuthTransaction,
+    ) -> Result<bool, DomainError> {
+        Ok(self.is_enrolled(transaction.candidate()))
+    }
+}
+
+/// A stand-in security key: like [`TestSecondFactor`], something the
+/// person has, but one that resists phishing, as the WebAuthn step does. It
+/// is satisfied by the field `code` holding [`TestSecurityKey::CODE`].
+#[derive(Debug, Clone, Default)]
+pub struct TestSecurityKey {
+    enrolled: Arc<Mutex<BTreeSet<UserId>>>,
+}
+
+impl TestSecurityKey {
+    /// The kind flows name it by, and the method recorded for it.
+    pub const KIND: &'static str = "test-security-key";
+    /// The one answer it accepts.
+    pub const CODE: &'static str = "135790";
+
+    /// Gives a person the means for this factor.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the lock is poisoned.
+    pub fn enroll(&self, user: UserId) {
+        self.enrolled.lock().expect("enrolled").insert(user);
+    }
+
+    fn is_enrolled(&self, user: Option<UserId>) -> bool {
+        user.is_some_and(|user| self.enrolled.lock().expect("enrolled").contains(&user))
+    }
+}
+
+#[async_trait::async_trait]
+impl Authenticator for TestSecurityKey {
+    fn kind(&self) -> &'static str {
+        Self::KIND
+    }
+
+    fn traits(&self) -> AuthenticatorTraits {
+        AuthenticatorTraits {
+            identifies: false,
+            factor: Some(Factor::Possession),
+            second_factor: None,
+            method: Some(Self::KIND),
+        }
+    }
+
+    fn resists_phishing(&self) -> bool {
+        true
+    }
+
+    async fn perform(
+        &self,
+        _tenant: &TenantContext,
+        transaction: &AuthTransaction,
+        input: &StepInput,
+    ) -> Result<StepOutcome, DomainError> {
+        let right = matches!(
+            input,
+            StepInput::External(external)
+                if external.field("code").is_some_and(|code| code.expose() == Self::CODE)
+        );
+        Ok(if right && self.is_enrolled(transaction.candidate()) {
+            StepOutcome::Proven
+        } else {
+            StepOutcome::Rejected
+        })
+    }
+
+    async fn has_means(
+        &self,
+        _tenant: &TenantContext,
+        transaction: &AuthTransaction,
+    ) -> Result<bool, DomainError> {
+        Ok(self.is_enrolled(transaction.candidate()))
+    }
+}
 
 /// Attempt counters kept in memory. It does not serialize concurrent
 /// access; tests that need that run against PostgreSQL.
@@ -328,6 +476,23 @@ pub async fn run_transaction_contract(ports: TransactionPorts<'_>) {
     assert!(reloaded.snapshot().identified);
     assert!(reloaded.is_bound_to(&[9; 32]), "the binding is stored");
 
+    // A challenge is stored, and its removal too.
+    let mut challenged = reloaded.clone();
+    challenged.record_challenge([6; 32]);
+    update(&ports, &tenant, &challenged).await.expect("update");
+    let reloaded = stored(&ports, &tenant, transaction.id())
+        .await
+        .expect("exists");
+    assert_eq!(reloaded.challenge(), Some(&[6; 32]));
+    let mut answered = reloaded.clone();
+    answered.record_rejection();
+    update(&ports, &tenant, &answered).await.expect("update");
+    let reloaded = stored(&ports, &tenant, transaction.id())
+        .await
+        .expect("exists");
+    assert_eq!(reloaded.challenge(), None);
+    assert_eq!(reloaded.snapshot().version, 3);
+
     // Of two requests working from the same version, the second is
     // refused. This is what makes completion happen once.
     let (mut first, mut second) = (reloaded.clone(), reloaded.clone());
@@ -352,6 +517,46 @@ pub async fn run_transaction_contract(ports: TransactionPorts<'_>) {
         .await
         .expect_err("cross-tenant");
     assert_eq!(error.code(), "authentication.transaction_not_found");
+
+    // A step-up keeps what it carries, what it demands and the session it
+    // raises, through its updates.
+    let step_up = AuthTransaction::start_step_up(
+        &flow,
+        ClientInfo::default(),
+        [8; 32],
+        MOMENT,
+        hodor_session::api::SessionId::generate(),
+        hodor_kernel::UserId::generate(),
+        [6; 32],
+        vec!["password".to_owned()],
+        2,
+        Some(hodor_session::api::Assurance::PhishingResistant),
+    );
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    ports
+        .transactions
+        .insert(uow.as_mut(), &step_up)
+        .await
+        .expect("insert");
+    uow.commit().await.expect("commit");
+    assert_eq!(
+        stored(&ports, &tenant, step_up.id()).await,
+        Some(step_up.clone())
+    );
+    let mut raised = step_up.clone();
+    raised.record_satisfied(Some("webauthn"));
+    update(&ports, &tenant, &raised).await.expect("update");
+    let reloaded = stored(&ports, &tenant, step_up.id()).await.expect("exists");
+    assert_eq!(reloaded.snapshot().carried_methods, ["password"]);
+    assert_eq!(reloaded.snapshot().satisfied_methods, ["webauthn"]);
+    assert_eq!(
+        reloaded.snapshot().demanded,
+        Some(hodor_session::api::Assurance::PhishingResistant)
+    );
+    assert_eq!(
+        reloaded.snapshot().raised_session,
+        step_up.snapshot().raised_session
+    );
 }
 
 /// Verification tokens kept in memory.

@@ -5,6 +5,7 @@
 //! may be called at all. See `docs/security/outbound-http.md`.
 
 use crate::error::DomainError;
+use std::time::Duration;
 
 /// The methods a context may use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,6 +27,9 @@ pub struct HttpRequest {
     pub headers: Vec<(String, String)>,
     /// The body, if any.
     pub body: Option<Vec<u8>>,
+    /// A time limit for this request alone. The shorter of it and the
+    /// client's own limit applies; running out is `http.timed_out`.
+    pub time_limit: Option<Duration>,
 }
 
 impl HttpRequest {
@@ -37,6 +41,7 @@ impl HttpRequest {
             url: url.into(),
             headers: Vec::new(),
             body: None,
+            time_limit: None,
         }
     }
 
@@ -48,7 +53,15 @@ impl HttpRequest {
             url: url.into(),
             headers: vec![("content-type".to_owned(), content_type.to_owned())],
             body: Some(body),
+            time_limit: None,
         }
+    }
+
+    /// Gives this request a time limit of its own.
+    #[must_use]
+    pub const fn within(mut self, limit: Duration) -> Self {
+        self.time_limit = Some(limit);
+        self
     }
 
     /// Adds a header.
@@ -97,7 +110,7 @@ pub trait HttpClient: Send + Sync {
     /// # Errors
     ///
     /// Returns `http.url_invalid`, `http.destination_forbidden`,
-    /// `http.unreachable` or `http.response_too_large`. No message repeats
-    /// the address.
+    /// `http.unreachable`, `http.timed_out` or `http.response_too_large`.
+    /// No message repeats the address.
     async fn send(&self, request: HttpRequest) -> Result<HttpResponse, DomainError>;
 }

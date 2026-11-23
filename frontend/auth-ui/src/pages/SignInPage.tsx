@@ -1,5 +1,5 @@
-import { type FormEvent, useCallback, useEffect, useState } from "react";
-import type { NoticeName } from "../address";
+import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import type { NoticeName, PageName } from "../address";
 import type { Client, Failure, OfferedProvider, SignInAnswer } from "../client";
 import { describe, type Messages } from "../messages";
 import { Field, PasswordField } from "../parts/Field";
@@ -8,6 +8,7 @@ import { Frame } from "../parts/Frame";
 import { Notice } from "../parts/Notice";
 import { Action, Submit } from "../parts/Submit";
 import { PageLink, Ways, Words } from "../parts/Words";
+import { askAuthenticator, conditionalMediationAvailable, webAuthnAvailable } from "../webauthn";
 import { asFailure, type PageProps } from "./shared";
 
 type View =
@@ -35,10 +36,12 @@ type Found =
 /**
  * Finds out where things stand: somebody is signed in, a sign-in is in
  * progress, or one is started. With `afresh`, starts one without asking.
+ * With `signInAgain`, an application asked for a new sign-in: whoever is
+ * signed in already does not count.
  */
-async function findOut(client: Client, afresh: boolean): Promise<Found> {
+async function findOut(client: Client, afresh: boolean, signInAgain: boolean): Promise<Found> {
   try {
-    if (!afresh && (await client.session()) !== null) {
+    if (!afresh && !signInAgain && (await client.session()) !== null) {
       return { kind: "signed-in" };
     }
     let current: SignInAnswer | null = null;
@@ -77,55 +80,110 @@ function noticeText(notice: NoticeName | null, text: Messages): { kind: "success
 
 interface SignInPageProps extends PageProps {
   notice: NoticeName | null;
+  /** An application's request, or a change of factors, waits for this sign-in: sign in even when signed in. */
+  signInAgain?: boolean;
+  /** The identifier an application suggested: the field starts with it. */
+  loginHint?: string | null;
+  /** Where a completed sign-in goes when the answer names nowhere else. */
+  afterSignIn?: PageName;
 }
+
+/** The steps a recovery code can stand in for. */
+const SECOND_FACTORS = ["webauthn", "totp"];
 
 /**
  * Signing in. The page shows the form for the step the server names and
  * sends back what was typed; it decides nothing.
  */
-export function SignInPage({ tenant, client, text, go, leave, path, notice }: SignInPageProps) {
+export function SignInPage({
+  tenant,
+  client,
+  text,
+  go,
+  leave,
+  path,
+  notice,
+  signInAgain = false,
+  loginHint = null,
+  afterSignIn = "account",
+}: SignInPageProps) {
   const [view, setView] = useState<View>({ kind: "loading" });
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<Failure | null>(null);
   const [expired, setExpired] = useState(false);
-  const [identifier, setIdentifier] = useState("");
+  const [identifier, setIdentifier] = useState(loginHint ?? "");
   const [password, setPassword] = useState("");
+  const [code, setCode] = useState("");
+  /** Whether the person chose to give a recovery code where the code of their application is asked. */
+  const [recovering, setRecovering] = useState(false);
+  /** How many times the person switched between the two; the field shown after a switch takes the focus. */
+  const [switches, setSwitches] = useState(0);
+  const codeField = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    if (switches === 0) {
+      return undefined;
+    }
+    // After the press that switched has been handled whole: the button keeps the focus otherwise.
+    const timer = setTimeout(() => codeField.current?.focus(), 0);
+    return () => clearTimeout(timer);
+  }, [switches]);
+  const switchTo = (recovery: boolean) => {
+    setCode("");
+    setRecovering(recovery);
+    setSwitches((count) => count + 1);
+  };
   const [providers, setProviders] = useState<OfferedProvider[]>([]);
   /** The directory the person chose to sign in through, if any. */
   const [directory, setDirectory] = useState<OfferedProvider | null>(null);
+  /** The security key gave no answer the last time it was asked. */
+  const [noAnswer, setNoAnswer] = useState(false);
+  /** The passkey gave no answer the last time the person asked for it. */
+  const [passkeyNoAnswer, setPasskeyNoAnswer] = useState(false);
+  /** The conditional request that offers passkeys in the identifier field, while it waits. */
+  const offering = useRef<AbortController | null>(null);
 
   const show = useCallback(
     (answer: SignInAnswer) => {
       if (answer.status === "completed") {
-        go("account");
+        if (answer.continueTo === undefined) {
+          go(afterSignIn);
+        } else {
+          leave(answer.continueTo);
+        }
         return;
       }
       if (answer.status === "failed") {
         setView({ kind: "ended" });
         return;
       }
-      setView((before) => ({
-        kind: "step",
-        step: answer.step ?? "",
-        rejected: answer.status === "rejected",
-        attemptsLeft: answer.attemptsLeft,
-        shown: before.kind === "step" ? before.shown + 1 : 0,
-      }));
+      setView((before) => {
+        // A choice made for one step does not carry over to the next.
+        if (before.kind !== "step" || before.step !== (answer.step ?? "")) {
+          setRecovering(false);
+        }
+        return {
+          kind: "step",
+          step: answer.step ?? "",
+          rejected: answer.status === "rejected",
+          attemptsLeft: answer.attemptsLeft,
+          shown: before.kind === "step" ? before.shown + 1 : 0,
+        };
+      });
     },
-    [go],
+    [go, leave, afterSignIn],
   );
 
   const apply = useCallback(
     (found: Found) => {
       if (found.kind === "signed-in") {
-        go("account");
+        go(afterSignIn);
       } else if (found.kind === "stopped") {
         setView({ kind: "stopped", failure: found.failure });
       } else {
         show(found.answer);
       }
     },
-    [go, show],
+    [go, show, afterSignIn],
   );
 
   useEffect(() => {
@@ -139,7 +197,7 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice }: Si
       },
       () => undefined,
     );
-    void findOut(client, false).then((found) => {
+    void findOut(client, false, signInAgain).then((found) => {
       if (current) {
         apply(found);
       }
@@ -147,9 +205,9 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice }: Si
     return () => {
       current = false;
     };
-  }, [client, apply]);
+  }, [client, apply, signInAgain]);
 
-  const open = async (afresh: boolean) => apply(await findOut(client, afresh));
+  const open = async (afresh: boolean) => apply(await findOut(client, afresh, signInAgain));
 
   async function send(request: () => Promise<SignInAnswer>) {
     if (busy) {
@@ -161,16 +219,19 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice }: Si
     try {
       const answer = await request();
       setPassword("");
+      setCode("");
       show(answer);
     } catch (thrown) {
       const failed = asFailure(thrown);
       const code = failed.code ?? "";
       if (GONE.includes(code)) {
         setPassword("");
+        setCode("");
         setExpired(true);
         await open(true);
       } else if (OUT_OF_STEP.includes(code)) {
         setPassword("");
+        setCode("");
         await open(false);
       } else {
         setFailure(failed);
@@ -188,6 +249,8 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice }: Si
     setFailure(null);
     setExpired(false);
     setPassword("");
+    setCode("");
+    setRecovering(false);
     try {
       await client.abandonSignIn();
       await open(true);
@@ -207,6 +270,7 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice }: Si
     if (provider.isDirectory) {
       setFailure(null);
       setPassword("");
+      setCode("");
       setDirectory(provider);
       return;
     }
@@ -227,6 +291,83 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice }: Si
       setBusy(false);
     }
   }
+
+  /**
+   * Asks for the challenge, then the authenticator. When the authenticator
+   * gives no answer, nothing is submitted: the person tries again.
+   */
+  async function askSecurityKey() {
+    setNoAnswer(false);
+    await send(async () => {
+      const answer = await askAuthenticator(await client.webAuthnOptions());
+      if (answer === null) {
+        setNoAnswer(true);
+        return { status: "pending", step: "webauthn", attemptsLeft: null };
+      }
+      return client.submitWebAuthn(answer);
+    });
+  }
+
+  /** Stops offering passkeys in the identifier field. */
+  function stopOffering() {
+    offering.current?.abort();
+    offering.current = null;
+  }
+
+  /**
+   * Signs in with a passkey: asks for the challenge, then the authenticator.
+   * When it gives no answer, nothing is submitted and the identifier is
+   * still asked for.
+   */
+  async function askPasskey() {
+    stopOffering();
+    setPasskeyNoAnswer(false);
+    await send(async () => {
+      const answer = await askAuthenticator(await client.passkeyOptions());
+      if (answer === null) {
+        setPasskeyNoAnswer(true);
+        return { status: "pending", step: "identifier", attemptsLeft: null };
+      }
+      return client.submitPasskey(answer);
+    });
+  }
+
+  const asksIdentifier = view.kind === "step" && view.step === "identifier" && directory === null;
+  const shownAt = view.kind === "step" ? view.shown : -1;
+
+  // Where the browser can, the passkeys it holds are offered in the
+  // identifier field. The request is abandoned when the step is left.
+  useEffect(() => {
+    if (!asksIdentifier) {
+      return undefined;
+    }
+    const controller = new AbortController();
+    offering.current = controller;
+    void (async () => {
+      if (!(await conditionalMediationAvailable()) || controller.signal.aborted) {
+        return;
+      }
+      try {
+        const options = await client.passkeyOptions();
+        if (controller.signal.aborted) {
+          return;
+        }
+        const answer = await askAuthenticator(options, navigator.credentials, {
+          mediation: "conditional",
+          signal: controller.signal,
+        });
+        if (answer !== null && !controller.signal.aborted) {
+          offering.current = null;
+          await send(() => client.submitPasskey(answer));
+        }
+      } catch {
+        // Offering passkeys is a convenience: the identifier is still asked for.
+      }
+    })();
+    return () => controller.abort();
+    // `send` is the same procedure on every render; the request starts once per step shown.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [asksIdentifier, shownAt, client]);
 
   function submit(event: FormEvent, request: () => Promise<SignInAnswer>) {
     event.preventDefault();
@@ -299,6 +440,7 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice }: Si
               setDirectory(null);
               setFailure(null);
               setPassword("");
+              setCode("");
             }}
           />
         </Form>
@@ -307,18 +449,25 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice }: Si
       {view.kind === "step" && view.step === "identifier" && directory === null ? (
         <Form
           key={view.shown}
-          onSubmit={(event) => submit(event, () => client.submitIdentifier(identifier))}
+          onSubmit={(event) => {
+            stopOffering();
+            submit(event, () => client.submitIdentifier(identifier));
+          }}
         >
+          {passkeyNoAnswer ? <Notice kind="danger">{text.passkeyNoAnswer}</Notice> : null}
           <Field
             label={text.identifierLabel}
             name="identifier"
-            autoComplete="username"
+            autoComplete="username webauthn"
             verbatim
             autoFocus
             value={identifier}
             onChange={setIdentifier}
           />
           <Submit label={text.continue} busy={busy} text={text} />
+          {webAuthnAvailable() ? (
+            <Action label={text.signInWithPasskey} busy={busy} onClick={() => void askPasskey()} />
+          ) : null}
         </Form>
       ) : null}
 
@@ -374,7 +523,78 @@ export function SignInPage({ tenant, client, text, go, leave, path, notice }: Si
         </Form>
       ) : null}
 
-      {view.kind === "step" && view.step !== "identifier" && view.step !== "password" ? (
+      {view.kind === "step" && SECOND_FACTORS.includes(view.step) && recovering ? (
+        <Form key={view.shown} onSubmit={(event) => submit(event, () => client.submitRecoveryCode(code))}>
+          {identifier !== "" ? <Words quiet>{text.signingInAs(identifier)}</Words> : null}
+          <Field
+            label={text.recoveryCodeLabel}
+            hint={text.recoveryCodeHint}
+            name="recovery-code"
+            autoComplete="off"
+            autoFocus
+            verbatim
+            inputRef={codeField}
+            value={code}
+            onChange={setCode}
+          />
+          <Submit label={text.signIn} busy={busy} text={text} />
+          <Action
+            variant="ghost"
+            label={view.step === "webauthn" ? text.useSecurityKeyInstead : text.useAuthenticatorApplication}
+            onClick={() => switchTo(false)}
+          />
+          <Action variant="ghost" label={text.useAnotherIdentifier} onClick={() => void startAgain()} />
+        </Form>
+      ) : null}
+
+      {view.kind === "step" && view.step === "totp" && !recovering ? (
+        <Form key={view.shown} onSubmit={(event) => submit(event, () => client.submitTotp(code))}>
+          {identifier !== "" ? <Words quiet>{text.signingInAs(identifier)}</Words> : null}
+          <Field
+            label={text.totpLabel}
+            hint={text.totpHint}
+            name="code"
+            autoComplete="one-time-code"
+            inputMode="numeric"
+            autoFocus
+            verbatim
+            inputRef={codeField}
+            value={code}
+            onChange={setCode}
+          />
+          <Submit label={text.signIn} busy={busy} text={text} />
+          <Action
+            variant="ghost"
+            label={text.useRecoveryCode}
+            onClick={() => switchTo(true)}
+          />
+          <Action variant="ghost" label={text.useAnotherIdentifier} onClick={() => void startAgain()} />
+        </Form>
+      ) : null}
+
+      {view.kind === "step" && view.step === "webauthn" && !recovering ? (
+        <Form
+          key={view.shown}
+          onSubmit={(event) => {
+            event.preventDefault();
+            void askSecurityKey();
+          }}
+        >
+          {noAnswer ? <Notice kind="danger">{text.securityKeyNoAnswer}</Notice> : null}
+          {webAuthnAvailable() ? (
+            <>
+              <Words>{text.securityKeyLead}</Words>
+              <Submit label={text.useSecurityKey} busy={busy} text={text} />
+            </>
+          ) : (
+            <Notice kind="danger">{text.securityKeyUnavailable}</Notice>
+          )}
+          <Action variant="ghost" label={text.useRecoveryCode} onClick={() => switchTo(true)} />
+          <Action variant="ghost" label={text.startAgain} onClick={() => void startAgain()} />
+        </Form>
+      ) : null}
+
+      {view.kind === "step" && !["identifier", "password", "totp", "webauthn"].includes(view.step) ? (
         <>
           <Notice kind="danger">{text.unknownStep}</Notice>
           <Action label={text.startAgain} onClick={() => void startAgain()} />

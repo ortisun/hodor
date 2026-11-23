@@ -75,6 +75,20 @@ export function describe(failure: Failure, text: Messages): string {
       return text.linkInvalid;
     case "credential.hashing_overloaded":
       return text.serverBusy;
+    case "authentication.recent_sign_in_required":
+      return text.recentSignInRequired;
+    case "authentication.last_second_factor":
+      return text.lastSecondFactor;
+    case "credential.totp_code_wrong":
+      return text.totpCodeWrong;
+    case "credential.totp_enrollment_not_found":
+      return text.enrollmentExpired;
+    case "credential.webauthn_name_invalid":
+      return text.keyNameInvalid;
+    case "credential.webauthn_registration_refused":
+    case "credential.webauthn_credential_exists":
+    case "credential.webauthn_registration_not_found":
+      return text.keyNoAnswer;
     default: {
       const quote = failure.requestId ? ` ${text.requestIdentifier(failure.requestId)}` : "";
       return text.somethingWentWrong + quote;

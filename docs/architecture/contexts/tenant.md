@@ -98,7 +98,40 @@ Settings are the tenant's policies. Other contexts read them; only the tenant co
 | Closed (default) | Only administrators and invitations create users |
 | Open | Anyone can register |
 
-Settings outside the allowed ranges are rejected as a whole; a tenant never holds a partly valid policy. Branding, quotas and the multi-factor authentication policy are added by later phases.
+### Authentication policy
+
+| Setting | Default | Allowed |
+|---|---|---|
+| Second factor | Not required | Not required, or required |
+| Assurance levels | Two levels | See [assurance levels](#assurance-levels) |
+
+When a second factor is required, no sign-in to the tenant completes with one factor ([what a sign-in must reach](authentication.md#what-a-sign-in-must-reach)). Settings stored before this policy existed read as the default.
+
+The policy is set with `hodor-cli tenant second-factor --slug <slug> --policy required` (or `not-required`). Turning it on refuses every sign-in of a person who has no second factor yet, since enrolling one during a sign-in is not built; people add one first from [their security page](../hosted-pages.md#a-persons-own-factors), or an operator enrolls one with `hodor-cli totp`.
+
+### Assurance levels
+
+An application names how strongly it wants the person to have proved who they are with an `acr` value, and every token says which level the sign-in reached ([OpenID Connect Core, section 2](https://openid.net/specs/openid-connect-core-1_0.html#IDToken)). A tenant chooses the names of its levels. Each level names one **requirement** from a closed set:
+
+| Requirement | Reached by |
+|---|---|
+| `single_factor` | Any sign-in: one factor |
+| `multi_factor` | Two kinds of factor: something known and something held, or a passkey, which is both |
+| `phishing_resistant` | Two kinds of factor, one of them a key held by the person that answered a challenge for this tenant's address: a security key, a platform authenticator or a passkey. A copied password or code cannot be replayed against it |
+
+The requirements are ordered: a sign-in that reaches one reaches every requirement before it. Which methods amount to which requirement is said by [the authentication context](authentication.md#what-a-sign-in-must-reach).
+
+| Setting | Default | Allowed |
+|---|---|---|
+| Levels | `urn:hodor:acr:single-factor` for `single_factor`, `urn:hodor:acr:mfa` for `multi_factor` | One to three levels. Each name is 1 to 255 characters of printable ASCII without spaces, the characters `acr_values` can carry; no two levels have the same name or the same requirement |
+
+A tenant that wants applications to ask for a phishing-resistant sign-in adds a level for it, under a name of its choosing. A tenant may leave out the `single_factor` level: a sign-in that reaches no level of the tenant then carries no `acr`.
+
+The levels are names inside one tenant only. A request that names a level another tenant defines asks this tenant for nothing.
+
+The levels are set with `hodor-cli tenant assurance-levels --slug <slug> --level <name>=<requirement> …`, or through the [administration interface](../../api/admin-api.md#assurance-levels).
+
+Settings outside the allowed ranges are rejected as a whole; a tenant never holds a partly valid policy. Branding and quotas are added by later phases.
 
 ## Events
 
@@ -175,6 +208,8 @@ Resolving a request starts from a slug, before any tenant is known, so it cannot
 | `hodor-cli tenant list` | Lists every tenant, ordered by slug | One line per tenant: slug, identifier, status |
 | `hodor-cli tenant suspend --slug <slug> --reason <text>` | Suspends a tenant | The tenant's new status |
 | `hodor-cli tenant reactivate --slug <slug>` | Reactivates a suspended tenant | The tenant's new status |
+| `hodor-cli tenant second-factor --slug <slug> --policy <required\|not-required>` | Sets the [authentication policy](#authentication-policy) | The policy now in force |
+| `hodor-cli tenant assurance-levels --slug <slug> [--level <name>=<requirement> …]` | Replaces the [assurance levels](#assurance-levels); without `--level`, prints them | One line per level: its name and its requirement |
 
 These commands connect with `HODOR_DATABASE_URL`, as a member of `hodor_app`. They need no cross-tenant role for the same reason the server does not. A command that fails prints the error's code and message and exits with a non-zero status.
 

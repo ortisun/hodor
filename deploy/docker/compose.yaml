@@ -160,7 +160,8 @@ services:
       # address identity providers send people back to start with it.
       HODOR_PUBLIC_URL: http://localhost:${HODOR_HTTP_PORT:-8080}
       # A placeholder like every credential here: it keeps the secrets of
-      # identity providers encrypted in this stack and nowhere else.
+      # identity providers and the signing keys encrypted in this stack
+      # and nowhere else.
       HODOR_SECRET_KEYS: development:gV8TjmTiZoYOlhsN4OdTTiWMwWa1t/o5RPNGCdbBNro=
       # The development provider is at a private address, over plain
       # HTTP. This is the setting that allows it; never set it anywhere
@@ -168,6 +169,12 @@ services:
       HODOR_OUTBOUND_DEVELOPMENT_HOSTS: provider:9400,localhost:${HODOR_PROVIDER_PORT:-9400},directory:389,localhost:${HODOR_SAML_PROVIDER_PORT:-9500}
       # The development directory, the one directory this stack may use.
       HODOR_DIRECTORY_HOSTS: directory:389
+      # The shared Open Policy Agent instance resource servers bound to it
+      # are asked. Nothing runs there until the demonstration of Milestone 5
+      # starts one, with the configuration it writes: the instance's
+      # credential and the tenant's bundle are only known once the tenant
+      # exists. Until then such a resource server is denied everything.
+      HODOR_OPEN_POLICY_AGENT_ADDRESS: http://policy-agent:8181
       HODOR_LOG_FORMAT: pretty
       HODOR_OTLP_METRICS_ENDPOINT: http://victoriametrics:8428/opentelemetry/v1/metrics
       HODOR_OTLP_TRACES_ENDPOINT: http://victoriatraces:10428/insert/opentelemetry/v1/traces
@@ -198,6 +205,9 @@ services:
     environment:
       HODOR_DATABASE_URL: postgres://hodor_worker:dev-worker@postgres:5432/hodor
       HODOR_PLATFORM_DATABASE_URL: postgres://hodor_worker_platform:dev-worker@postgres:5432/hodor
+      # The server's placeholder key: the worker makes the tenants'
+      # signing keys under it, and the server signs with them.
+      HODOR_SECRET_KEYS: development:gV8TjmTiZoYOlhsN4OdTTiWMwWa1t/o5RPNGCdbBNro=
       HODOR_SMTP_URL: smtp://mail:1025
       HODOR_MAIL_FROM: Hodor <no-reply@hodor.localhost>
       HODOR_LOG_FORMAT: pretty

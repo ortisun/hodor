@@ -1,15 +1,26 @@
 //! Operations tool: migrations, tenant management, the first
-//! administrator and checking the audit log.
+//! administrator, identity providers, applications, authenticator
+//! applications, recovery codes and checking the audit log.
+
+mod applications;
+mod decisions;
+mod policies;
+mod roles;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use hodor_adapters_crypto::{OsRandom, SecretKeys, Sha256Digest};
+use hodor_adapters_crypto::{
+    AwsLcHmacSha1, BundleSigningKey, LocalKeyProvider, OsRandom, SecretKeys, Sha256Digest,
+};
 use hodor_adapters_postgres::{
-    Database, PgAccessTokenStore, PgAuditLog, PgLinkStore, PgPool, PgProviderStore,
-    PgRoleAssignmentStore, PgTenantDirectory, PgTenantRepository, PgUserRepository,
+    Database, PgAccessTokenStore, PgAuditLog, PgBundleStore, PgInstanceStatusStore,
+    PgInstanceStore, PgKeyStore, PgLinkStore, PgPool, PgProviderStore, PgRecoveryCodeStore,
+    PgRoleAssignmentStore, PgSealingStateStore, PgTenantDirectory, PgTenantRepository, PgTotpStore,
+    PgUploadedDecisionStore, PgUserRepository, reseal_tenant,
 };
 use hodor_audit::api::AuditService;
-use hodor_authorization::api::{AuthorizationService, Role};
-use hodor_credential::api::AccessTokenService;
+use hodor_authorization::api::{AuthorizationService, Namespace, Role};
+use hodor_authorization_opa::api::{BundleFile, BundleService, bundle_name, decision_path};
+use hodor_credential::api::{AccessTokenService, RecoveryCodeService, RecoveryCodes, TotpService};
 use hodor_federation::api::{
     CreateProvider, DirectorySettings, FederationService, IdentityProvider, ProviderKind,
     ProviderSettings, ProviderStatus, SamlSettings, callback_address, saml_metadata_address,
@@ -17,8 +28,17 @@ use hodor_federation::api::{
 use hodor_identity::api::{
     CreateUser, IdentifierKind, IdentityService, NormalizedIdentifier, Profile, UserKind,
 };
-use hodor_kernel::{Actor, CorrelationId, DomainError, Secret, SystemClock, TenantContext};
-use hodor_tenant::api::{Caller, CreateTenant, DirectoryEntry, TenantService};
+use hodor_kernel::{
+    Actor, CorrelationId, DomainError, Secret, SecretBox, SystemClock, TenantContext,
+};
+use hodor_keys::api::{
+    KeyAlgorithm, KeyService, KeyState, KeyUse, KeyVersion, KeyVersionId, RotationPolicy,
+    TenantSecretBox,
+};
+use hodor_tenant::api::{
+    AssuranceLevel, AssuranceLevels, AssuranceRequirement, Caller, CreateTenant, DirectoryEntry,
+    SecondFactorPolicy, TenantDirectory as _, TenantService,
+};
 use std::error::Error;
 use std::io::{Read as _, Write as _};
 use std::net::{SocketAddr, TcpStream};
@@ -138,10 +158,160 @@ enum Command {
         command: ProviderCommand,
     },
 
+    /// Read and set the record of decisions an application's questions
+    /// leave.
+    Authorization {
+        /// Connection URL of the application role.
+        #[arg(
+            long,
+            env = "HODOR_DATABASE_URL",
+            hide_env_values = true,
+            global = true
+        )]
+        database_url: Option<String>,
+        #[command(subcommand)]
+        command: decisions::AuthorizationCommand,
+    },
+
+    /// Manage a tenant's applications.
+    Application {
+        /// Connection URL of the application role.
+        #[arg(
+            long,
+            env = "HODOR_DATABASE_URL",
+            hide_env_values = true,
+            global = true
+        )]
+        database_url: Option<String>,
+        #[command(subcommand)]
+        command: applications::ApplicationCommand,
+    },
+
+    /// Manage the clients of a tenant's applications.
+    Client {
+        /// Connection URL of the application role.
+        #[arg(
+            long,
+            env = "HODOR_DATABASE_URL",
+            hide_env_values = true,
+            global = true
+        )]
+        database_url: Option<String>,
+        #[command(subcommand)]
+        command: applications::ClientCommand,
+    },
+
+    /// Manage a tenant's resource servers.
+    ResourceServer {
+        /// Connection URL of the application role.
+        #[arg(
+            long,
+            env = "HODOR_DATABASE_URL",
+            hide_env_values = true,
+            global = true
+        )]
+        database_url: Option<String>,
+        #[command(subcommand)]
+        command: applications::ResourceServerCommand,
+    },
+
+    /// Manage people's authenticator applications, until people can do it
+    /// themselves from the account pages.
+    Totp {
+        /// Connection URL of the application role.
+        #[arg(
+            long,
+            env = "HODOR_DATABASE_URL",
+            hide_env_values = true,
+            global = true
+        )]
+        database_url: Option<String>,
+        /// The keys that keep secrets encrypted at rest, as the server
+        /// has them.
+        #[arg(long, env = "HODOR_SECRET_KEYS", hide_env_values = true, global = true)]
+        secret_keys: Option<String>,
+        #[command(subcommand)]
+        command: TotpCommand,
+    },
+
+    /// Look at a tenant's keys, rotate its signing key and revoke versions.
+    ///
+    /// Keys rotate by themselves in the worker; these commands are for an
+    /// operator who will not wait.
+    Keys {
+        /// Connection URL of the application role.
+        #[arg(
+            long,
+            env = "HODOR_DATABASE_URL",
+            hide_env_values = true,
+            global = true
+        )]
+        database_url: Option<String>,
+        /// The keys that wrap the tenants' keys, as the server has them.
+        #[arg(long, env = "HODOR_SECRET_KEYS", hide_env_values = true, global = true)]
+        secret_keys: Option<String>,
+        /// How long a signing key replaced by hand stays published, in
+        /// hours, as the server and the worker have it.
+        #[arg(
+            long,
+            env = "HODOR_KEY_OVERLAP_HOURS",
+            default_value_t = 24,
+            global = true
+        )]
+        key_overlap_hours: i64,
+        #[command(subcommand)]
+        command: KeysCommand,
+    },
+
+    /// Manage people's recovery codes, until people can do it themselves
+    /// from the account pages.
+    RecoveryCodes {
+        /// Connection URL of the application role.
+        #[arg(
+            long,
+            env = "HODOR_DATABASE_URL",
+            hide_env_values = true,
+            global = true
+        )]
+        database_url: Option<String>,
+        #[command(subcommand)]
+        command: RecoveryCodeCommand,
+    },
+
     /// Work with the keys that keep secrets encrypted at rest.
     Secrets {
         #[command(subcommand)]
         command: SecretsCommand,
+    },
+
+    /// Register Open Policy Agent instances, publish their bundles and
+    /// read what they report.
+    PolicyAgent {
+        /// Connection URL of the application role.
+        #[arg(
+            long,
+            env = "HODOR_DATABASE_URL",
+            hide_env_values = true,
+            global = true
+        )]
+        database_url: Option<String>,
+        #[command(subcommand)]
+        command: PolicyAgentCommand,
+    },
+
+    /// Draft, check, test, simulate, publish and roll back a tenant's
+    /// policy for Open Policy Agent.
+    Policy {
+        /// Connection URL of the application role.
+        #[arg(
+            long,
+            env = "HODOR_DATABASE_URL",
+            hide_env_values = true,
+            global = true
+        )]
+        database_url: Option<String>,
+        #[command(subcommand)]
+        command: policies::PolicyCommand,
     },
 
     /// Check a health endpoint and exit non-zero unless it answers 200.
@@ -156,6 +326,64 @@ enum Command {
         #[arg(long, default_value = "/readyz")]
         path: String,
     },
+}
+
+#[derive(Subcommand)]
+enum PolicyAgentCommand {
+    /// Make a key that signs bundles, and print it and its public key.
+    ///
+    /// The private key goes into the file `HODOR_OPEN_POLICY_AGENT_SIGNING_KEY_FILE`
+    /// names; the public key into each instance's configuration.
+    SigningKey,
+    /// Print the name of a tenant's bundle, or with a namespace the Rego
+    /// package of a resource server's `decision` rule.
+    BundleName {
+        /// The tenant's slug.
+        #[arg(long)]
+        tenant: String,
+        /// A resource server's audience.
+        #[arg(long)]
+        namespace: Option<String>,
+    },
+    /// Manage the registered instances.
+    Instance {
+        #[command(subcommand)]
+        command: InstanceCommand,
+    },
+    /// Show which revision each instance reports for a tenant's bundle.
+    Status {
+        /// The tenant's slug.
+        #[arg(long)]
+        tenant: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum InstanceCommand {
+    /// Register an instance and print its credential, once.
+    Add {
+        /// 1 to 63 lower-case letters, digits and `-`.
+        #[arg(long)]
+        name: String,
+        /// The tenant whose instance it is; without it, a shared instance
+        /// that runs only bundles written by the operator.
+        #[arg(long)]
+        tenant: Option<String>,
+    },
+    /// List the instances.
+    List,
+    /// Disable an instance: its credential is refused from now on.
+    Disable {
+        /// The instance's name.
+        #[arg(long)]
+        name: String,
+    },
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+pub(crate) enum WrittenByArg {
+    Operator,
+    Tenant,
 }
 
 #[derive(Subcommand)]
@@ -285,6 +513,60 @@ enum ProviderCommand {
     },
 }
 
+#[derive(Clone, Copy, ValueEnum)]
+enum KeySetArg {
+    /// The signing keys.
+    Sig,
+    /// The data keys.
+    Data,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum SigningAlgorithmArg {
+    /// ECDSA on P-256, the default.
+    Es256,
+    /// RSA with PKCS#1 version 1.5 padding, for interoperability.
+    Rs256,
+    /// RSA with PSS padding, for interoperability.
+    Ps256,
+}
+
+#[derive(Subcommand)]
+enum KeysCommand {
+    /// List a tenant's key versions, newest first.
+    List {
+        /// The tenant's slug.
+        #[arg(long)]
+        tenant: String,
+        /// Which key set.
+        #[arg(long, value_enum, default_value = "sig")]
+        key_set: KeySetArg,
+    },
+    /// Activate a new signing key at once. The one it replaces stays
+    /// published for the overlap.
+    Rotate {
+        /// The tenant's slug.
+        #[arg(long)]
+        tenant: String,
+        /// The algorithm to rotate.
+        #[arg(long, value_enum, default_value = "es256")]
+        algorithm: SigningAlgorithmArg,
+    },
+    /// Revoke a key version. A signing key leaves the published key set at
+    /// once: rotate first if it is the active one.
+    Revoke {
+        /// The tenant's slug.
+        #[arg(long)]
+        tenant: String,
+        /// The version's identifier, as `keys list` shows it.
+        #[arg(long)]
+        version: String,
+        /// Why, for the audit log: 1 to 200 characters.
+        #[arg(long)]
+        reason: String,
+    },
+}
+
 #[derive(Subcommand)]
 enum SecretsCommand {
     /// Print a new key for `HODOR_SECRET_KEYS`: 32 random bytes in Base64.
@@ -292,6 +574,25 @@ enum SecretsCommand {
     /// The key is printed once and stored nowhere. Give it an identifier
     /// and put the pair first in the setting.
     GenerateKey,
+
+    /// Seal again every secret that is not sealed as new secrets are, in
+    /// every tenant or in one, and make each tenant with nothing left in
+    /// the first format refuse it.
+    ///
+    /// Each secret is its own transaction: the command can be stopped and
+    /// run again as often as wanted. See `docs/security/secrets-at-rest.md`.
+    Reseal {
+        /// Connection URL of the application role.
+        #[arg(long, env = "HODOR_DATABASE_URL", hide_env_values = true)]
+        database_url: Option<String>,
+        /// The keys that keep secrets encrypted at rest, as the server
+        /// has them.
+        #[arg(long, env = "HODOR_SECRET_KEYS", hide_env_values = true)]
+        secret_keys: Option<String>,
+        /// Only this tenant, by its slug.
+        #[arg(long)]
+        tenant: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -303,6 +604,84 @@ enum AuditCommand {
         #[arg(long)]
         tenant: String,
     },
+}
+
+#[derive(Subcommand)]
+enum TotpCommand {
+    /// Begin enrolling an authenticator application for a person: print
+    /// its secret and the `otpauth://` address for a QR code, once.
+    ///
+    /// Nothing is in use until a code is confirmed with `totp confirm`
+    /// within ten minutes.
+    Enroll {
+        /// The tenant's slug.
+        #[arg(long)]
+        tenant: String,
+        /// The person's login identifier.
+        #[arg(long)]
+        login: String,
+    },
+    /// Put the enrolled application in use with a code it shows.
+    Confirm {
+        /// The tenant's slug.
+        #[arg(long)]
+        tenant: String,
+        /// The person's login identifier.
+        #[arg(long)]
+        login: String,
+        /// The six digits the application shows.
+        #[arg(long)]
+        code: String,
+    },
+    /// Remove a person's authenticator application.
+    Remove {
+        /// The tenant's slug.
+        #[arg(long)]
+        tenant: String,
+        /// The person's login identifier.
+        #[arg(long)]
+        login: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum RecoveryCodeCommand {
+    /// Make a new set of ten recovery codes for a person, in place of any
+    /// earlier set, and print it once.
+    Generate {
+        /// The tenant's slug.
+        #[arg(long)]
+        tenant: String,
+        /// The person's login identifier.
+        #[arg(long)]
+        login: String,
+    },
+    /// Say how many unused recovery codes a person has.
+    Count {
+        /// The tenant's slug.
+        #[arg(long)]
+        tenant: String,
+        /// The person's login identifier.
+        #[arg(long)]
+        login: String,
+    },
+    /// Remove a person's recovery codes.
+    Remove {
+        /// The tenant's slug.
+        #[arg(long)]
+        tenant: String,
+        /// The person's login identifier.
+        #[arg(long)]
+        login: String,
+    },
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum SecondFactorArg {
+    /// Every sign-in must prove a second factor.
+    Required,
+    /// A second factor is asked only of the people who have one.
+    NotRequired,
 }
 
 #[derive(Subcommand)]
@@ -337,6 +716,30 @@ enum TenantCommand {
         /// The tenant's slug.
         #[arg(long)]
         slug: String,
+    },
+    /// Say whether every sign-in to the tenant must prove a second factor.
+    ///
+    /// Turned on, a person without a second factor can no longer sign in:
+    /// enroll people first with `totp enroll`.
+    SecondFactor {
+        /// The tenant's slug.
+        #[arg(long)]
+        slug: String,
+        /// Whether a second factor is required.
+        #[arg(long, value_enum)]
+        policy: SecondFactorArg,
+    },
+    /// Replace the assurance levels applications ask for in `acr_values`
+    /// and tokens name in `acr`; without `--level`, print them.
+    AssuranceLevels {
+        /// The tenant's slug.
+        #[arg(long)]
+        slug: String,
+        /// A level, as `<name>=<requirement>`, the requirement being
+        /// `single_factor`, `multi_factor` or `phishing_resistant`. Given
+        /// once per level; the levels given replace all the others.
+        #[arg(long = "level")]
+        levels: Vec<String>,
     },
 }
 
@@ -436,6 +839,220 @@ async fn run_tenant(
                 .await?;
             Ok(format!("{} {}", entry.slug, tenant.status().as_str()))
         }
+        TenantCommand::SecondFactor { slug, policy } => {
+            let entry = existing(service, &slug).await?;
+            let tenant = TenantContext::assume(entry.tenant_id);
+            let mut settings = service.get(&tenant).await?.snapshot().settings.clone();
+            let (policy, said) = match policy {
+                SecondFactorArg::Required => (SecondFactorPolicy::Required, "required"),
+                SecondFactorArg::NotRequired => (SecondFactorPolicy::NotRequired, "not-required"),
+            };
+            settings.authentication.second_factor = policy;
+            service.change_settings(&tenant, settings, caller()).await?;
+            Ok(format!("{} second-factor {said}", entry.slug))
+        }
+        TenantCommand::AssuranceLevels { slug, levels } => {
+            let entry = existing(service, &slug).await?;
+            let tenant = TenantContext::assume(entry.tenant_id);
+            let mut settings = service.get(&tenant).await?.snapshot().settings.clone();
+            if !levels.is_empty() {
+                let parsed = levels
+                    .iter()
+                    .map(|given| {
+                        given
+                            .split_once('=')
+                            .and_then(|(acr, requirement)| {
+                                Some(AssuranceLevel {
+                                    acr: acr.to_owned(),
+                                    requirement: AssuranceRequirement::from_name(requirement)?,
+                                })
+                            })
+                            .ok_or_else(|| {
+                                DomainError::invalid(
+                                    "tenant.settings_invalid",
+                                    "a level is written <name>=<requirement>, the requirement \
+                                     being single_factor, multi_factor or phishing_resistant",
+                                )
+                            })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                settings.authentication.assurance_levels = AssuranceLevels::new(parsed)?;
+                settings = service
+                    .change_settings(&tenant, settings, caller())
+                    .await?
+                    .snapshot()
+                    .settings
+                    .clone();
+            }
+            let lines: Vec<String> = settings
+                .authentication
+                .assurance_levels
+                .levels()
+                .iter()
+                .map(|level| {
+                    format!(
+                        "{} {} {}",
+                        entry.slug,
+                        level.acr,
+                        level.requirement.as_str()
+                    )
+                })
+                .collect();
+            Ok(lines.join("\n"))
+        }
+    }
+}
+
+/// Runs a command about authenticator applications against a person of a
+/// tenant, both named by the operator.
+async fn run_totp(
+    database: &Database,
+    secret_keys: Option<String>,
+    command: TotpCommand,
+) -> Result<String, DomainError> {
+    let setting = secret_keys.ok_or_else(|| {
+        DomainError::invalid(
+            "secret.keys_missing",
+            "HODOR_SECRET_KEYS or --secret-keys is required: the secrets of authenticator applications are kept encrypted",
+        )
+    })?;
+    let units = || Arc::new(database.clone());
+    let clock = Arc::new(SystemClock);
+    let tenants = TenantService::new(
+        units(),
+        Arc::new(PgTenantRepository),
+        Arc::new(PgTenantDirectory::new(database.clone())),
+        clock.clone(),
+    );
+    let totp = TotpService::new(
+        units(),
+        Arc::new(PgTotpStore),
+        secret_box(database, setting)?,
+        Arc::new(AwsLcHmacSha1),
+        Arc::new(OsRandom),
+        clock.clone(),
+    );
+    let (slug, login) = match &command {
+        TotpCommand::Enroll { tenant, login }
+        | TotpCommand::Confirm { tenant, login, .. }
+        | TotpCommand::Remove { tenant, login } => (tenant.clone(), login.clone()),
+    };
+    let (tenant, user) = person(database, &tenants, &slug, &login).await?;
+
+    match command {
+        TotpCommand::Enroll { .. } => {
+            let issuer = tenants.get(&tenant).await?.snapshot().display_name.clone();
+            let enrollment = totp
+                .begin_enrollment(&tenant, user, &issuer, &login)
+                .await?;
+            Ok(format!(
+                "secret {}\naddress {}",
+                enrollment.secret(),
+                enrollment.address()
+            ))
+        }
+        TotpCommand::Confirm { code, .. } => {
+            totp.confirm_enrollment(&tenant, user, &Secret::from(code), caller())
+                .await?;
+            // A first second factor comes with recovery codes, shown once;
+            // a person who still has unused codes keeps them.
+            let codes = recovery_code_service(database)
+                .generate_if_none(&tenant, user, caller())
+                .await?;
+            Ok(match codes {
+                Some(codes) => format!("confirmed\n{}", code_lines(&codes)),
+                None => "confirmed".to_owned(),
+            })
+        }
+        TotpCommand::Remove { .. } => Ok(if totp.remove(&tenant, user, caller()).await? {
+            "removed".to_owned()
+        } else {
+            "nothing to remove".to_owned()
+        }),
+    }
+}
+
+/// The tenant a slug names and the person of that tenant a login
+/// identifier names.
+async fn person(
+    database: &Database,
+    tenants: &TenantService,
+    slug: &str,
+    login: &str,
+) -> Result<(TenantContext, hodor_kernel::UserId), DomainError> {
+    let entry = existing(tenants, slug).await?;
+    // The command-line tool is one of the places allowed to establish a
+    // tenant context: the operator names the tenant.
+    let tenant = TenantContext::assume(entry.tenant_id);
+    let identity = IdentityService::new(
+        Arc::new(database.clone()),
+        Arc::new(PgUserRepository),
+        Arc::new(SystemClock),
+    );
+    let user = identity
+        .find_by_login(&tenant, login)
+        .await?
+        .ok_or_else(|| {
+            DomainError::not_found(
+                "identity.user_not_found",
+                "no person of this tenant has this login identifier",
+            )
+        })?
+        .id();
+    Ok((tenant, user))
+}
+
+fn recovery_code_service(database: &Database) -> RecoveryCodeService {
+    RecoveryCodeService::new(
+        Arc::new(database.clone()),
+        Arc::new(PgRecoveryCodeStore),
+        Arc::new(Sha256Digest),
+        Arc::new(OsRandom),
+        Arc::new(SystemClock),
+    )
+}
+
+/// The codes of a set, one per line after a line that says what they are.
+fn code_lines(codes: &RecoveryCodes) -> String {
+    let mut lines = format!("recovery codes, shown once: {}", codes.len());
+    for code in codes.codes() {
+        lines.push('\n');
+        lines.push_str(code);
+    }
+    lines
+}
+
+/// Runs a command about recovery codes against a person of a tenant, both
+/// named by the operator.
+async fn run_recovery_codes(
+    database: &Database,
+    command: RecoveryCodeCommand,
+) -> Result<String, DomainError> {
+    let tenants = TenantService::new(
+        Arc::new(database.clone()),
+        Arc::new(PgTenantRepository),
+        Arc::new(PgTenantDirectory::new(database.clone())),
+        Arc::new(SystemClock),
+    );
+    let (slug, login) = match &command {
+        RecoveryCodeCommand::Generate { tenant, login }
+        | RecoveryCodeCommand::Count { tenant, login }
+        | RecoveryCodeCommand::Remove { tenant, login } => (tenant.clone(), login.clone()),
+    };
+    let (tenant, user) = person(database, &tenants, &slug, &login).await?;
+    let codes = recovery_code_service(database);
+    match command {
+        RecoveryCodeCommand::Generate { .. } => {
+            Ok(code_lines(&codes.generate(&tenant, user, caller()).await?))
+        }
+        RecoveryCodeCommand::Count { .. } => {
+            Ok(format!("unused {}", codes.unused(&tenant, user).await?))
+        }
+        RecoveryCodeCommand::Remove { .. } => Ok(if codes.remove(&tenant, user, caller()).await? {
+            "removed".to_owned()
+        } else {
+            "nothing to remove".to_owned()
+        }),
     }
 }
 
@@ -489,7 +1106,7 @@ async fn run_provider(
         units(),
         Arc::new(PgProviderStore),
         Arc::new(PgLinkStore),
-        Arc::new(SecretKeys::parse(&Secret::from(setting))?),
+        secret_box(database, setting)?,
         clock,
     )
     .allowing_development_hosts(development_hosts)
@@ -637,6 +1254,377 @@ async fn run_provider(
     }
 }
 
+/// A moment as RFC 3339, to the second.
+fn written(moment: time::OffsetDateTime) -> String {
+    moment
+        .replace_nanosecond(0)
+        .unwrap_or(moment)
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default()
+}
+
+/// One line of `keys list`: the version, its algorithm, its state and
+/// the times that matter for that state.
+fn key_line(version: &KeyVersion) -> String {
+    let state = version.snapshot();
+    let at = |moment: Option<time::OffsetDateTime>| moment.map(written).unwrap_or_default();
+    let mut line = format!(
+        "{} {} {} created {}",
+        state.id,
+        state.algorithm.as_str(),
+        state.state.as_str(),
+        written(state.created_at)
+    );
+    match state.state {
+        KeyState::Active => line.push_str(&format!(" activated {}", at(state.activated_at))),
+        KeyState::Retiring => line.push_str(&format!(" retire-after {}", at(state.retire_after))),
+        KeyState::Retired => line.push_str(&format!(" retired {}", at(state.retired_at))),
+        KeyState::Revoked => line.push_str(&format!(
+            " revoked {} {}",
+            at(state.revoked_at),
+            state.revocation_reason.as_deref().unwrap_or_default()
+        )),
+        KeyState::Pending => {}
+    }
+    line
+}
+
+/// Runs a keys command against a tenant named by its slug.
+/// The files of a bundle: every file under `directory`, at its path
+/// relative to it.
+pub(crate) fn bundle_files(directory: &std::path::Path) -> Result<Vec<BundleFile>, DomainError> {
+    let unreadable = |error: std::io::Error| {
+        DomainError::invalid(
+            "authorization.bundle_directory_unreadable",
+            "the directory of the bundle could not be read",
+        )
+        .with_detail(error.to_string())
+    };
+    let mut files = Vec::new();
+    let mut pending = vec![directory.to_path_buf()];
+    while let Some(next) = pending.pop() {
+        for entry in std::fs::read_dir(&next).map_err(unreadable)? {
+            let entry = entry.map_err(unreadable)?;
+            let kind = entry.file_type().map_err(unreadable)?;
+            let path = entry.path();
+            if kind.is_dir() {
+                pending.push(path);
+            } else if kind.is_file() {
+                let relative = path
+                    .strip_prefix(directory)
+                    .map_err(|_| unreadable(std::io::Error::other("outside the directory")))?
+                    .components()
+                    .map(|part| part.as_os_str().to_string_lossy().into_owned())
+                    .collect::<Vec<_>>()
+                    .join("/");
+                files.push(BundleFile {
+                    path: relative,
+                    contents: std::fs::read(&path).map_err(unreadable)?,
+                });
+            } else {
+                return Err(unreadable(std::io::Error::other(
+                    "a bundle's directory holds only files and directories",
+                )));
+            }
+        }
+    }
+    Ok(files)
+}
+
+pub(crate) fn bundle_service(database: &Database) -> BundleService {
+    BundleService::new(
+        Arc::new(PgInstanceStore::new(database.clone())),
+        Arc::new(PgBundleStore),
+        Arc::new(PgInstanceStatusStore),
+        Arc::new(PgUploadedDecisionStore),
+        Arc::new(database.clone()),
+        Arc::new(Sha256Digest),
+        Arc::new(OsRandom),
+        Arc::new(SystemClock),
+    )
+}
+
+fn when(time: Option<hodor_kernel::Timestamp>) -> String {
+    time.and_then(|time| {
+        time.format(&time::format_description::well_known::Rfc3339)
+            .ok()
+    })
+    .unwrap_or_else(|| "-".to_owned())
+}
+
+async fn run_policy_agent(
+    database_url: Option<String>,
+    command: PolicyAgentCommand,
+) -> Result<String, DomainError> {
+    if matches!(command, PolicyAgentCommand::SigningKey) {
+        let (private, public) = BundleSigningKey::generate()?;
+        return Ok(format!("{private}{public}").trim_end().to_owned());
+    }
+    let url = database_url.ok_or_else(|| {
+        DomainError::invalid(
+            "database.url_missing",
+            "HODOR_DATABASE_URL or --database-url is required",
+        )
+    })?;
+    let database = Database::connect(&Secret::from(url), 2)
+        .await
+        .map_err(|error| {
+            DomainError::internal("database.error", "the database could not be reached")
+                .with_detail(error.to_string())
+        })?;
+    let tenants = TenantService::new(
+        Arc::new(database.clone()),
+        Arc::new(PgTenantRepository),
+        Arc::new(PgTenantDirectory::new(database.clone())),
+        Arc::new(SystemClock),
+    );
+    let bundles = bundle_service(&database);
+    match command {
+        PolicyAgentCommand::SigningKey => Ok(String::new()),
+        PolicyAgentCommand::BundleName { tenant, namespace } => {
+            let entry = existing(&tenants, &tenant).await?;
+            match namespace {
+                None => Ok(bundle_name(entry.tenant_id)),
+                Some(namespace) => {
+                    let namespace = Namespace::parse(&namespace)?;
+                    let path = decision_path(
+                        &TenantContext::assume(entry.tenant_id),
+                        &namespace,
+                        &Sha256Digest,
+                    );
+                    Ok(path
+                        .trim_start_matches("/v1/data/")
+                        .trim_end_matches("/decision")
+                        .replace('/', "."))
+                }
+            }
+        }
+        PolicyAgentCommand::Instance {
+            command: InstanceCommand::Add { name, tenant },
+        } => {
+            let tenant = match tenant {
+                Some(slug) => Some(existing(&tenants, &slug).await?.tenant_id),
+                None => None,
+            };
+            let (instance, credential) = bundles.register(&name, tenant).await?;
+            Ok(format!(
+                "{}\t{}\n{}",
+                instance.id(),
+                instance.name().as_str(),
+                credential.expose()
+            ))
+        }
+        PolicyAgentCommand::Instance {
+            command: InstanceCommand::List,
+        } => Ok(bundles
+            .instances()
+            .await?
+            .iter()
+            .map(|instance| {
+                format!(
+                    "{}\t{}\t{}\t{}",
+                    instance.name().as_str(),
+                    instance
+                        .tenant()
+                        .map_or_else(|| "shared".to_owned(), |tenant| tenant.to_string()),
+                    when(Some(instance.registered_at())),
+                    instance.disabled_at().map_or_else(
+                        || "enabled".to_owned(),
+                        |at| format!("disabled {}", when(Some(at)))
+                    )
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")),
+        PolicyAgentCommand::Instance {
+            command: InstanceCommand::Disable { name },
+        } => {
+            if bundles.disable(&name).await? {
+                Ok(String::new())
+            } else {
+                Err(DomainError::not_found(
+                    "authorization.policy_agent_instance_not_found",
+                    "no enabled instance has this name",
+                ))
+            }
+        }
+        PolicyAgentCommand::Status { tenant } => {
+            let entry = existing(&tenants, &tenant).await?;
+            let instances = bundles.instances().await?;
+            Ok(bundles
+                .statuses(&TenantContext::assume(entry.tenant_id))
+                .await?
+                .iter()
+                .map(|status| {
+                    let name = instances
+                        .iter()
+                        .find(|instance| instance.id() == status.instance)
+                        .map_or_else(
+                            || status.instance.to_string(),
+                            |i| i.name().as_str().to_owned(),
+                        );
+                    format!(
+                        "{name}\t{}\t{}\t{}",
+                        status.active_revision.as_deref().unwrap_or("-"),
+                        when(Some(status.reported_at)),
+                        status.error.as_deref().unwrap_or("")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n"))
+        }
+    }
+}
+
+async fn run_keys(
+    database: &Database,
+    secret_keys: Option<String>,
+    key_overlap_hours: i64,
+    command: KeysCommand,
+) -> Result<String, DomainError> {
+    let setting = secret_keys.ok_or_else(|| {
+        DomainError::invalid(
+            "secret.keys_missing",
+            "HODOR_SECRET_KEYS or --secret-keys is required: keys are kept wrapped under them",
+        )
+    })?;
+    let default = RotationPolicy::DEFAULT;
+    let policy = RotationPolicy::new(
+        default.period(),
+        default.publication(),
+        time::Duration::hours(key_overlap_hours),
+    )?;
+    let units = || Arc::new(database.clone());
+    let clock = Arc::new(SystemClock);
+    let tenants = TenantService::new(
+        units(),
+        Arc::new(PgTenantRepository),
+        Arc::new(PgTenantDirectory::new(database.clone())),
+        clock.clone(),
+    );
+    let keys = KeyService::new(
+        units(),
+        Arc::new(PgKeyStore),
+        Arc::new(LocalKeyProvider::new(Arc::new(SecretKeys::parse(
+            &Secret::from(setting),
+        )?))),
+        clock,
+    );
+    let slug = match &command {
+        KeysCommand::List { tenant, .. }
+        | KeysCommand::Rotate { tenant, .. }
+        | KeysCommand::Revoke { tenant, .. } => tenant.clone(),
+    };
+    let entry = existing(&tenants, &slug).await?;
+    // The command-line tool is one of the places allowed to establish a
+    // tenant context: the operator names the tenant.
+    let tenant = TenantContext::assume(entry.tenant_id);
+
+    match command {
+        KeysCommand::List { key_set, .. } => {
+            let key_use = match key_set {
+                KeySetArg::Sig => KeyUse::Signing,
+                KeySetArg::Data => KeyUse::Data,
+            };
+            let set = keys.key_set(&tenant, key_use).await?;
+            Ok(set
+                .versions()
+                .iter()
+                .map(key_line)
+                .collect::<Vec<_>>()
+                .join("\n"))
+        }
+        KeysCommand::Rotate { algorithm, .. } => {
+            let algorithm = match algorithm {
+                SigningAlgorithmArg::Es256 => KeyAlgorithm::Es256,
+                SigningAlgorithmArg::Rs256 => KeyAlgorithm::Rs256,
+                SigningAlgorithmArg::Ps256 => KeyAlgorithm::Ps256,
+            };
+            let version = keys
+                .rotate_now(&tenant, algorithm, &policy, caller())
+                .await?;
+            Ok(key_line(&version))
+        }
+        KeysCommand::Revoke {
+            version, reason, ..
+        } => {
+            let id: KeyVersionId = version.parse().map_err(|_| {
+                DomainError::not_found("keys.version_not_found", "the key version does not exist")
+            })?;
+            let version = keys.revoke(&tenant, id, &reason, caller()).await?;
+            Ok(key_line(&version))
+        }
+    }
+}
+
+/// Where secrets at rest are sealed, as the server seals them: under the
+/// tenant's data keys, the root keys still opening the first format until
+/// the tenant refuses it.
+fn secret_box(database: &Database, setting: String) -> Result<Arc<dyn SecretBox>, DomainError> {
+    Ok(Arc::new(tenant_secret_box(database, setting)?))
+}
+
+fn tenant_secret_box(database: &Database, setting: String) -> Result<TenantSecretBox, DomainError> {
+    let root = Arc::new(SecretKeys::parse(&Secret::from(setting))?);
+    Ok(TenantSecretBox::new(
+        Arc::new(database.clone()),
+        Arc::new(PgKeyStore),
+        Arc::new(LocalKeyProvider::new(root.clone())),
+        Arc::new(PgSealingStateStore),
+        Some(root),
+        Arc::new(SystemClock),
+    ))
+}
+
+/// Seals again what needs it, tenant by tenant, and returns one line per
+/// tenant and whether every tenant now refuses the first format.
+async fn run_reseal(
+    database: &Database,
+    secret_keys: Option<String>,
+    only: Option<&str>,
+) -> Result<(String, bool), DomainError> {
+    let setting = secret_keys.ok_or_else(|| {
+        DomainError::invalid(
+            "secret.keys_missing",
+            "HODOR_SECRET_KEYS or --secret-keys is required: secrets are opened and sealed again with them",
+        )
+    })?;
+    let secrets = tenant_secret_box(database, setting)?;
+    let directory = PgTenantDirectory::new(database.clone());
+    let entries = match only {
+        Some(slug) => {
+            let tenants = TenantService::new(
+                Arc::new(database.clone()),
+                Arc::new(PgTenantRepository),
+                Arc::new(directory),
+                Arc::new(SystemClock),
+            );
+            vec![existing(&tenants, slug).await?]
+        }
+        None => directory.list().await?,
+    };
+    let mut lines = Vec::with_capacity(entries.len());
+    let mut complete = true;
+    for entry in entries {
+        // The command-line tool is one of the places allowed to establish
+        // a tenant context: the operator runs it for the installation.
+        let tenant = TenantContext::assume(entry.tenant_id);
+        let report = reseal_tenant(database, &secrets, &tenant).await?;
+        let refused = if report.complete() {
+            secrets.refuse_first_format(&tenant).await?;
+            "the first format is refused"
+        } else {
+            complete = false;
+            "the first format is still accepted"
+        };
+        lines.push(format!(
+            "{}: {} sealed again, {} already current, {} did not open; {refused}",
+            entry.slug, report.resealed, report.current, report.unreadable
+        ));
+    }
+    Ok((lines.join("\n"), complete))
+}
+
 async fn bootstrap_administrator(
     database: &Database,
     slug: &str,
@@ -769,6 +1757,22 @@ fn probe(addr: SocketAddr, path: &str) -> Result<bool, std::io::Error> {
     Ok(&status_line == b"HTTP/1.1 200")
 }
 
+/// Connects as the application role, which the commands need.
+async fn connect(database_url: Option<String>) -> Result<Database, Box<dyn Error>> {
+    let url = database_url.ok_or("HODOR_DATABASE_URL or --database-url is required")?;
+    Ok(Database::connect(&Secret::from(url), 2).await?)
+}
+
+/// Writes what a command printed, or turns its refusal into the error the
+/// tool exits with.
+fn print(result: Result<String, DomainError>) -> Result<(), Box<dyn Error>> {
+    let output = result.map_err(|error| format!("{}: {}", error.code(), error.message()))?;
+    if !output.is_empty() {
+        writeln!(std::io::stdout(), "{output}")?;
+    }
+    Ok(())
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn Error>> {
     match Cli::parse().command {
@@ -848,11 +1852,122 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 writeln!(std::io::stdout(), "{output}")?;
             }
         }
+        Command::Authorization {
+            database_url,
+            command,
+        } => {
+            let database = connect(database_url).await?;
+            print(decisions::run_authorization(&database, command).await)?;
+        }
+        Command::Application {
+            database_url,
+            command,
+        } => {
+            let database = connect(database_url).await?;
+            print(applications::run_application(&database, command).await)?;
+        }
+        Command::Client {
+            database_url,
+            command,
+        } => {
+            let database = connect(database_url).await?;
+            print(applications::run_client(&database, command).await)?;
+        }
+        Command::ResourceServer {
+            database_url,
+            command,
+        } => {
+            let database = connect(database_url).await?;
+            print(applications::run_resource_server(&database, command).await)?;
+        }
+        Command::Totp {
+            database_url,
+            secret_keys,
+            command,
+        } => {
+            let url = database_url.ok_or("HODOR_DATABASE_URL or --database-url is required")?;
+            let database = Database::connect(&Secret::from(url), 2).await?;
+            let output = run_totp(&database, secret_keys, command)
+                .await
+                .map_err(|error| format!("{}: {}", error.code(), error.message()))?;
+            writeln!(std::io::stdout(), "{output}")?;
+        }
+        Command::Keys {
+            database_url,
+            secret_keys,
+            key_overlap_hours,
+            command,
+        } => {
+            let url = database_url.ok_or("HODOR_DATABASE_URL or --database-url is required")?;
+            let database = Database::connect(&Secret::from(url), 2).await?;
+            let output = run_keys(&database, secret_keys, key_overlap_hours, command)
+                .await
+                .map_err(|error| format!("{}: {}", error.code(), error.message()))?;
+            if !output.is_empty() {
+                writeln!(std::io::stdout(), "{output}")?;
+            }
+        }
+        Command::RecoveryCodes {
+            database_url,
+            command,
+        } => {
+            let url = database_url.ok_or("HODOR_DATABASE_URL or --database-url is required")?;
+            let database = Database::connect(&Secret::from(url), 2).await?;
+            let output = run_recovery_codes(&database, command)
+                .await
+                .map_err(|error| format!("{}: {}", error.code(), error.message()))?;
+            writeln!(std::io::stdout(), "{output}")?;
+        }
+        Command::PolicyAgent {
+            database_url,
+            command,
+        } => {
+            let output = run_policy_agent(database_url, command)
+                .await
+                .map_err(|error| format!("{}: {}", error.code(), error.message()))?;
+            if !output.is_empty() {
+                writeln!(std::io::stdout(), "{output}")?;
+            }
+        }
+        Command::Policy {
+            database_url,
+            command,
+        } => {
+            let output = policies::run_policy(database_url, command)
+                .await
+                .map_err(|error| match error.detail() {
+                    Some(detail) if !detail.is_empty() => {
+                        format!("{}: {}\n{detail}", error.code(), error.message())
+                    }
+                    _ => format!("{}: {}", error.code(), error.message()),
+                })?;
+            if !output.is_empty() {
+                writeln!(std::io::stdout(), "{output}")?;
+            }
+        }
         Command::Secrets {
             command: SecretsCommand::GenerateKey,
         } => {
             let key = SecretKeys::generate(&OsRandom);
             writeln!(std::io::stdout(), "{}", key.expose())?;
+        }
+        Command::Secrets {
+            command:
+                SecretsCommand::Reseal {
+                    database_url,
+                    secret_keys,
+                    tenant,
+                },
+        } => {
+            let url = database_url.ok_or("HODOR_DATABASE_URL or --database-url is required")?;
+            let database = Database::connect(&Secret::from(url), 2).await?;
+            let (output, complete) = run_reseal(&database, secret_keys, tenant.as_deref())
+                .await
+                .map_err(|error| format!("{}: {}", error.code(), error.message()))?;
+            writeln!(std::io::stdout(), "{output}")?;
+            if !complete {
+                return Err("some secrets did not open and were left as they were".into());
+            }
         }
         Command::Probe { addr, path } => {
             if !probe(addr, &path)? {

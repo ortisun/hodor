@@ -26,6 +26,8 @@ use hodor_protocol_http::{
 };
 use hodor_session::api::{Assurance, ClientInfo, SessionService, SessionTimeouts, StartSession};
 use hodor_session::testing::{InMemorySessions, SequentialRandom};
+use hodor_tenant::api::TenantService;
+use hodor_tenant::testing::InMemoryTenants;
 use http_body_util::BodyExt as _;
 use std::sync::Arc;
 use time::Duration;
@@ -70,6 +72,145 @@ struct SignedIn {
     csrf_token: String,
 }
 
+/// The applications use cases on in-memory stores.
+fn applications(
+    units_of_work: &InMemoryUnitOfWorkFactory,
+    clock: Arc<FixedClock>,
+) -> (
+    hodor_oauth::api::ApplicationService,
+    hodor_oauth::api::ConsentService,
+) {
+    let stores = hodor_oauth::testing::InMemoryStores::default();
+    let consents = hodor_oauth::testing::consent_service(
+        Arc::new(units_of_work.clone()),
+        &stores,
+        clock.clone(),
+    );
+    let applications =
+        hodor_oauth::api::ApplicationService::new(hodor_oauth::api::ApplicationPorts {
+            units_of_work: Arc::new(units_of_work.clone()),
+            applications: Arc::new(stores.applications),
+            clients: Arc::new(stores.clients),
+            resource_servers: Arc::new(stores.resource_servers),
+            digest: Arc::new(FakeDigest),
+            random: Arc::new(hodor_oauth::testing::DistinctRandom),
+            clock,
+        });
+    (applications, consents)
+}
+
+/// The use cases of people's factors on in-memory stores, with
+/// authenticator applications. Returns the key store too, for a test to
+/// give someone a key as a finished registration would.
+fn factors(
+    units_of_work: &InMemoryUnitOfWorkFactory,
+    clock: Arc<FixedClock>,
+    identity: &IdentityService,
+    tenants: &hodor_tenant::api::TenantService,
+) -> (
+    hodor_authentication::api::FactorService,
+    hodor_credential::testing::InMemoryWebAuthn,
+    hodor_credential::api::TotpService,
+) {
+    let units = || Arc::new(units_of_work.clone());
+    let keys = hodor_credential::testing::InMemoryWebAuthn::default();
+    let webauthn = hodor_credential::api::WebAuthnService::new(
+        units(),
+        Arc::new(keys.clone()),
+        hodor_credential::api::RelyingParty::from_public_address("https://auth.example")
+            .expect("valid"),
+        Arc::new(hodor_adapters_crypto::Sha256Digest),
+        Arc::new(hodor_adapters_crypto::AwsLcVerifier),
+        Arc::new(hodor_adapters_crypto::OsRandom),
+        clock.clone(),
+    );
+    let recovery_codes = hodor_credential::api::RecoveryCodeService::new(
+        units(),
+        Arc::new(hodor_credential::testing::InMemoryRecoveryCodes::default()),
+        Arc::new(hodor_adapters_crypto::Sha256Digest),
+        Arc::new(hodor_adapters_crypto::OsRandom),
+        clock.clone(),
+    );
+    let totp = hodor_credential::api::TotpService::new(
+        units(),
+        Arc::new(hodor_credential::testing::InMemoryTotps::default()),
+        Arc::new(hodor_kernel::sealing::testing::FakeSecretBox),
+        Arc::new(hodor_credential::testing::FakeHmacSha1),
+        Arc::new(hodor_adapters_crypto::OsRandom),
+        clock,
+    );
+    let service = hodor_authentication::api::FactorService::new(
+        identity.clone(),
+        tenants.clone(),
+        webauthn,
+        recovery_codes,
+    )
+    .with_totp(totp.clone());
+    (service, keys, totp)
+}
+
+/// The use cases of roles, bindings and policy versions on in-memory
+/// stores, with the native engine registered.
+fn authorization_services(
+    units_of_work: &InMemoryUnitOfWorkFactory,
+    clock: Arc<FixedClock>,
+) -> (
+    hodor_authorization::api::RoleService,
+    hodor_authorization::api::EvaluationService,
+    hodor_authorization_opa::api::PolicyService,
+) {
+    use hodor_authorization::testing::{
+        InMemoryEngineBindings, InMemoryNativeRoles, StaticSubjectAttributes,
+    };
+    use hodor_authorization_opa::testing::{
+        InMemoryBundles, InMemoryInstances, InMemoryPolicyVersions, InMemoryPublications,
+        InMemorySimulations, InMemoryStatuses, InMemoryUploadedDecisions,
+    };
+    let units = || -> Arc<dyn hodor_kernel::UnitOfWorkFactory> { Arc::new(units_of_work.clone()) };
+    let assignments = hodor_authorization::testing::InMemoryRoleAssignments::default();
+    let roles = InMemoryNativeRoles::default();
+    let engine = hodor_authorization::api::NativeEngine::new(
+        units(),
+        Arc::new(assignments.clone()),
+        Arc::new(roles.clone()),
+        clock.clone(),
+    );
+    let mut registry = hodor_authorization::api::EngineRegistry::new();
+    registry.register(Arc::new(engine)).expect("register");
+    let evaluation = hodor_authorization::api::EvaluationService::new(
+        units(),
+        Arc::new(assignments),
+        Arc::new(InMemoryEngineBindings::default()),
+        Arc::new(StaticSubjectAttributes::default()),
+        registry,
+        clock.clone(),
+    );
+    let bundles = hodor_authorization_opa::api::BundleService::new(
+        Arc::new(InMemoryInstances::default()),
+        Arc::new(InMemoryBundles::default()),
+        Arc::new(InMemoryStatuses::default()),
+        Arc::new(InMemoryUploadedDecisions::default()),
+        units(),
+        Arc::new(hodor_adapters_crypto::Sha256Digest),
+        Arc::new(SequentialRandom::default()),
+        clock.clone(),
+    );
+    let policies = hodor_authorization_opa::api::PolicyService::new(
+        Arc::new(InMemoryPolicyVersions::default()),
+        Arc::new(InMemoryPublications::default()),
+        Arc::new(InMemorySimulations::default()),
+        bundles,
+        units(),
+        Arc::new(hodor_adapters_crypto::Sha256Digest),
+        clock.clone(),
+    );
+    (
+        hodor_authorization::api::RoleService::new(units(), Arc::new(roles), clock),
+        evaluation,
+        policies,
+    )
+}
+
 fn world() -> World {
     let units_of_work = InMemoryUnitOfWorkFactory::default();
     let clock = Arc::new(FixedClock::at(Timestamp::UNIX_EPOCH));
@@ -105,6 +246,8 @@ fn world() -> World {
 
     let acme = TenantContext::assume(TenantId::generate());
     let globex = TenantContext::assume(TenantId::generate());
+    let oauth = applications(&units_of_work, clock.clone());
+    let authorization_parts = authorization_services(&units_of_work, clock.clone());
     let administration = AdminState {
         tokens: tokens.clone(),
         authorization: authorization.clone(),
@@ -113,6 +256,39 @@ fn world() -> World {
         audit,
         // Identity providers are tested in `admin.rs`; here they are not configured.
         federation: None,
+        keys: None,
+        key_rotation: hodor_keys::api::RotationPolicy::DEFAULT,
+        applications: oauth.0,
+        consents: oauth.1,
+        tenants: TenantService::new(
+            Arc::new(units_of_work.clone()),
+            Arc::new(InMemoryTenants::default()),
+            Arc::new(InMemoryTenants::default()),
+            clock.clone(),
+        ),
+        // People's factors are tested in `admin.rs`; here no tenant has a
+        // row, so only the routes' refusals are reached.
+        factors: factors(
+            &units_of_work,
+            clock.clone(),
+            &identity,
+            &hodor_tenant::api::TenantService::new(
+                units(),
+                Arc::new(hodor_tenant::testing::InMemoryTenants::default()),
+                Arc::new(hodor_tenant::testing::InMemoryTenants::default()),
+                clock.clone(),
+            ),
+        )
+        .0,
+        decisions: hodor_authorization::api::DecisionLog::new(
+            Arc::new(units_of_work.clone()),
+            Arc::new(hodor_authorization::testing::InMemoryDecisionLog::default()),
+            Arc::new(SequentialRandom::default()),
+            clock.clone(),
+        ),
+        roles: authorization_parts.0,
+        evaluation: authorization_parts.1,
+        policies: Some(authorization_parts.2),
         public_url: "https://auth.example".to_owned(),
     };
     let router = public_router(

@@ -2,8 +2,10 @@
 
 ## Overview
 
-The PostgreSQL schema, as twenty-one numbered SQL files. They are embedded in the
-binaries by `static MIGRATOR: Migrator = sqlx::migrate!("../../migrations")`
+The PostgreSQL schema, as forty-three numbered SQL files. A number is
+reserved when a piece of work starts, so a number can be missing until that
+work merges; every file not yet applied is applied, in order. They are
+embedded in the binaries by `static MIGRATOR: Migrator = sqlx::migrate!("../../migrations")`
 in `crates/adapters-postgres/src/migrate.rs` and applied by
 `hodor_adapters_postgres::migrate`, which `hodor-cli migrate` calls with a
 pool connected as the schema owner. The doc comment on `migrate` says
@@ -38,6 +40,28 @@ Tables created, by file:
 | `0019_federation_directories.sql` | adds the kind `ldap` and the `directory_*` columns to `federation.identity_provider` |
 | `0020_federation_saml.sql` | adds the kind `saml` and the `saml_*` columns to `federation.identity_provider`; adds `saml_response` and `saml_receipt_hash` to `federation.pending_authorization` |
 | `0021_federation_pending_authorization_expiry.sql` | adds the index `pending_authorization_expiry_idx` on `federation.pending_authorization (expires_at)`, for the cleanup job of `hodor-worker` |
+| `0022_federation_saml_answer.sql` | keeps only the answer of a SAML response in `federation.pending_authorization`, never the response |
+| `0023_keys.sql` | schema `keys`; table `keys.key_version` with the partial unique index `key_version_one_active` (one `active` row per tenant, use and algorithm) |
+| `0024_oauth_clients.sql` | schema `oauth`; `oauth.application`; `oauth.client`; `oauth.client_secret`; `oauth.client_key`; `oauth.resource_server`; `oauth.resource_server_scope` |
+| `0026_credential_totp.sql` | `credential.totp`: authenticator applications, with the secret sealed (`totp_one_per_status`, `totp_confirmed_when_active`) |
+| `0027_credential_webauthn.sql` | `credential.webauthn_credential` (unique `webauthn_credential_id_unique` on tenant and credential identifier); `credential.webauthn_registration`; adds the column `challenge` to `authentication.transaction` |
+| `0029_oauth_authorization.sql` | `oauth.authorization_request`; `oauth.authorization_grant`; `oauth.authorization_code` (a code lives at most 60 seconds; an S256 challenge is 43 base64url characters) |
+| `0030_authorization_engine_binding.sql` | `"authorization".engine_binding`: which engine answers for a resource server, never `hodor:admin` |
+| `0031_credential_recovery_codes.sql` | `credential.recovery_code_set` (`recovery_code_set_one_per_user`) and `credential.recovery_code`, with only the SHA-256 of each code (`recovery_code_hash_length`, `recovery_code_unique_in_set`) |
+| `0032_keys_sealing_state.sql` | `keys.sealing_state`: whether a tenant refuses secrets of the first format; `hodor_app` may insert and read, never update or delete |
+| `0033_authorization_native_roles.sql` | `"authorization".permission`, `role`, `role_permission`, `role_inclusion`, `role_revision`; changes `"authorization".role_assignment` to hold users and clients, roles of any namespace, a scope and a start and end, with the earlier rows as built-in assignments of `hodor:admin` |
+| `0035_oauth_client_assertion.sql` | `oauth.client_assertion`: the `jti` of every client assertion until it expires, once per client (`client_assertion_jti_shape`) |
+| `0036_credential_passkey_registration.sql` | adds the column `passkey` to `credential.webauthn_registration` |
+| `0037_authorization_policy_bundles.sql` | `platform.policy_agent_instance` (a platform table: Open Policy Agent instances with the digest of each credential; the application role may not delete); `"authorization".policy_bundle` (append only for the application role); `"authorization".policy_agent_status`; `"authorization".policy_agent_decision` |
+| `0038_oauth_refresh_token.sql` | `oauth.refresh_token_family`: each family of refresh tokens with its grant, scopes, sealed secret, generation, the hash of its newest token, what its last move asked for and its lifetimes, under the bounds of the token policy; `oauth.refresh_token`: the hash of every token a family has had, one per generation |
+| `0040_authorization_role_conditions.sql` | Adds `condition` to `"authorization".role_permission`: the text of a role's condition on the permission, or `NULL`, 1 to 1000 characters (`role_permission_condition_length`) |
+| `0042_oauth_post_logout_redirect_uris.sql` | adds `post_logout_redirect_uris` to `oauth.client`, compared byte for byte, at most 10 (`client_post_logout_at_most_ten`) and only with `authorization_code` (`client_post_logout_needs_code`) |
+| `0043_assurance_levels_and_step_up.sql` | lets `session.session` be `phishing_resistant` and adds `method_proven_at`; adds `carried_methods`, `demanded_assurance` and `raised_session_id` to `authentication.transaction`; adds `acr` to `oauth.authorization_code` and `oauth.refresh_token_family` |
+| `0044_authorization_policy_lifecycle.sql` | `"authorization".policy_version` (a tenant's policy versions: files as JSON, digest, state, last report; never deleted by the application role), `"authorization".policy_publication` (the version each bundle revision came from; append only), `"authorization".policy_simulation` (inputs only while waiting, results once done); all under row-level security, with partial indexes on what waits for the worker |
+| `0045_oauth_access_token.sql` | `oauth.access_token`: the register of access tokens, a record of each one by its `jti` with its client, grant and refresh token family (referenced with the tenant), when it expires and whether and why it was revoked; never the token; the index `access_token_expiry_idx` on `expires_at`, for the cleanup job |
+| `0046_oauth_consent.sql` | `oauth.consent`: what a person agreed to for a client (never `offline_access`, at most 730 days); `oauth.consent_history`, which the application role may add to and read, never change or remove; adds `consent_seconds` to `oauth.client` (1 to 730 days) and to `oauth.authorization_request` whom a request waits for consent for and the answer (`authorization_request_consent_whole`, `authorization_request_consent_answer_known`) |
+| `0047_oauth_client_id_token_algorithm.sql` | `oauth.client.id_token_algorithm`: how a client's ID tokens are signed, `ES256` (the default, and the value of every client made before it) or `RS256`, by the check constraint `client_id_token_algorithm_known` |
+| `0048_authorization_decision_log.sql` | `"authorization".decision_log_setting` (a tenant's mode, share of allows, masks and retention) and `"authorization".decision_log`, partitioned by day on `decided_at` with a default partition, under row-level security on the partitioned table only, never updated; `"authorization".maintain_decision_log_partitions(today, days_ahead, keep_days)`, `SECURITY DEFINER`, executable by `hodor_platform` only, which prepares partitions (moving their day's rows out of the default one first) and drops the old; partitions for the week of the migration; an index for the retention of uploaded decisions |
 
 No migration creates a type, an extension or seed rows; enumerations are text
 columns with `CHECK ... IN (...)` constraints.
@@ -71,13 +95,23 @@ columns with `CHECK ... IN (...)` constraints.
   `verification_token_hash_is_sha256` and
   `identity_provider_secret_is_sealed`. Every access token expires
   (constraint `access_token_expires` in `0014_credential_access_token.sql`).
-- The role names allowed in `"authorization".role_assignment` are
-  `tenant_administrator` and `tenant_auditor` (constraint
-  `role_assignment_role_known`).
+- In `"authorization".role_assignment`, the namespace `hodor:admin` holds
+  only `tenant_administrator` and `tenant_auditor`, given to users for the
+  whole tenant without a start or end (constraint `role_assignment_built_in`);
+  any other assignment names a role of `"authorization".role` through the
+  generated column `role_namespace` (constraint `role_assignment_role_exists`,
+  deleted with the role). No tenant table of native roles names
+  `hodor:admin`, and a role cannot be removed while another includes it
+  (constraint `role_inclusion_included_exists`).
 - Each identity provider kind carries only its own settings: the
   `directory_*` columns are set only for `ldap`
   (`identity_provider_directory_settings`), and the `saml_*` columns only for
   `saml` (`identity_provider_saml_settings`).
+- `keys.key_version` holds key material only as a provider sealed it
+  (constraint `key_version_material_present`); the algorithm fits the use
+  and the public key fits the algorithm, each state has the times it needs
+  (`key_version_times_fit_state`), and `DELETE` is revoked from `hodor_app`
+  (`0023_keys.sql`).
 
 ## Side Effects
 

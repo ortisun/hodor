@@ -24,7 +24,10 @@ pub mod api {
         MAX_SAML_POSTED_BYTES, SamlClient, saml_assertion_consumer_address, saml_metadata_address,
         saml_service_provider,
     };
-    pub use crate::application::service::{ChangeProvider, CreateProvider, FederationService};
+    pub use crate::application::service::{
+        CLIENT_SECRET as CLIENT_SECRET_PURPOSE, ChangeProvider, CreateProvider, FederationService,
+    };
+    pub use crate::application::sign_in::CODE_VERIFIER as CODE_VERIFIER_PURPOSE;
     pub use crate::application::sign_in::{
         EXTERNAL_STEP, ExternalIdentityAuthenticator, ExternalSignIn, OfferedProvider,
         callback_address,

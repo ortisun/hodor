@@ -1,0 +1,1050 @@
+//! Applications, clients and resource servers, as the administration and
+//! console interfaces manage them.
+//!
+//! Specified in `docs/api/admin-api.md`, "Applications, clients and
+//! resource servers". The rules are the OAuth context's; these handlers
+//! translate them. A client's secret is written out in exactly two
+//! answers, the one that creates the client and the one that makes a new
+//! secret, and no type here that holds one is `Debug`.
+
+use super::{Shared, authorize, body, failed, parameter, problem, respond, written};
+use axum::Router;
+use axum::body::Bytes;
+use axum::extract::{RawPathParams, State};
+use axum::http::StatusCode;
+use axum::http::header::HeaderMap;
+use axum::response::{IntoResponse, Response};
+use axum::routing::{delete, get, post};
+use axum::{Extension, Json};
+use hodor_kernel::{DomainError, TenantContext};
+use hodor_oauth::api::{
+    Application, ApplicationId, ApplicationSettings, AuthenticationMethod, Client, ClientId,
+    ClientSecret, ClientSecretId, ClientSettings, ClientType, CreateClient, CreateResourceServer,
+    GrantType, IdTokenAlgorithm, ResourceServer, ResourceServerId, ResourceServerSettings,
+    RotateSecret, ScopeDefinition, Status, TokenPolicy,
+};
+use serde::{Deserialize, Serialize};
+use time::Duration;
+
+/// More days than any lifetime the OAuth context accepts, so that a large
+/// number given is refused by its rule instead of overflowing.
+const MOST_DAYS: u32 = 100_000;
+
+/// How long a new secret lives unless the request says.
+const DEFAULT_LIFETIME_DAYS: u32 = 365;
+
+/// How much longer the newest previous secret works unless the request
+/// says.
+const DEFAULT_KEEP_PREVIOUS_DAYS: u32 = 7;
+
+pub(super) fn routes() -> Router<Shared> {
+    Router::new()
+        .route(
+            "/applications",
+            get(list_applications).post(create_application),
+        )
+        // `:disable` and `:enable` arrive here as well, as part of the last
+        // segment.
+        .route(
+            "/applications/{application}",
+            get(get_application)
+                .patch(change_application)
+                .post(application_action),
+        )
+        .route(
+            "/applications/{application}/clients",
+            get(list_clients).post(create_client),
+        )
+        .route(
+            "/clients/{client}",
+            get(get_client).patch(change_client).post(client_action),
+        )
+        .route("/clients/{client}/secrets", post(rotate_secret))
+        .route("/clients/{client}/secrets/{secret}", delete(revoke_secret))
+        .route("/clients/{client}/keys", post(add_key))
+        .route("/clients/{client}/keys/{key}", delete(remove_key))
+        .route(
+            "/resource-servers",
+            get(list_resource_servers).post(create_resource_server),
+        )
+        .route(
+            "/resource-servers/{resource_server}",
+            get(get_resource_server).patch(change_resource_server),
+        )
+}
+
+fn application_not_found() -> Box<Response> {
+    failed(DomainError::not_found(
+        "oauth.application_not_found",
+        "there is no such application",
+    ))
+}
+
+fn client_not_found() -> Box<Response> {
+    failed(DomainError::not_found(
+        "oauth.client_not_found",
+        "there is no such client",
+    ))
+}
+
+fn secret_not_found() -> Box<Response> {
+    failed(DomainError::not_found(
+        "oauth.client_secret_not_found",
+        "the client has no such secret",
+    ))
+}
+
+fn resource_server_not_found() -> Box<Response> {
+    failed(DomainError::not_found(
+        "oauth.resource_server_not_found",
+        "there is no such resource server",
+    ))
+}
+
+/// A body that may be left out: an empty one is the same as `{}`.
+fn optional_body<T: serde::de::DeserializeOwned + Default>(
+    bytes: &Bytes,
+) -> Result<T, Box<Response>> {
+    if bytes.iter().all(u8::is_ascii_whitespace) {
+        Ok(T::default())
+    } else {
+        body(bytes)
+    }
+}
+
+fn days(given: Option<u32>, otherwise: u32) -> Duration {
+    Duration::days(i64::from(given.unwrap_or(otherwise).min(MOST_DAYS)))
+}
+
+/// A list as both kinds of list in this interface answer it.
+#[derive(Debug, Serialize)]
+struct Items<T> {
+    items: Vec<T>,
+}
+
+// Applications.
+
+#[derive(Debug, Serialize)]
+struct ApplicationBody {
+    id: String,
+    name: String,
+    first_party: bool,
+    status: &'static str,
+    created_at: String,
+    updated_at: String,
+}
+
+impl From<&Application> for ApplicationBody {
+    fn from(application: &Application) -> Self {
+        let state = application.snapshot();
+        Self {
+            id: state.id.to_string(),
+            name: state.settings.name.clone(),
+            first_party: state.settings.first_party,
+            status: state.status.as_str(),
+            created_at: written(state.created_at),
+            updated_at: written(state.updated_at),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NewApplicationBody {
+    name: String,
+    /// Required: whether people are asked for consent follows from it.
+    first_party: bool,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApplicationChangesBody {
+    name: Option<String>,
+    first_party: Option<bool>,
+}
+
+async fn list_applications(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+) -> Response {
+    respond(
+        async {
+            authorize(&state, &tenant, &headers, "GET", "/applications").await?;
+            let applications = state
+                .applications
+                .applications(&tenant)
+                .await
+                .map_err(failed)?;
+            let items = applications.iter().map(ApplicationBody::from).collect();
+            Ok(Json(Items { items }).into_response())
+        }
+        .await,
+    )
+}
+
+async fn create_application(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+    bytes: Bytes,
+) -> Response {
+    respond(
+        async {
+            let caller = authorize(&state, &tenant, &headers, "POST", "/applications").await?;
+            let new: NewApplicationBody = body(&bytes)?;
+            let application = state
+                .applications
+                .create_application(
+                    &tenant,
+                    ApplicationSettings {
+                        name: new.name,
+                        first_party: new.first_party,
+                    },
+                    caller,
+                )
+                .await
+                .map_err(failed)?;
+            Ok((
+                StatusCode::CREATED,
+                Json(ApplicationBody::from(&application)),
+            )
+                .into_response())
+        }
+        .await,
+    )
+}
+
+async fn get_application(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+    parameters: RawPathParams,
+) -> Response {
+    respond(
+        async {
+            let operation = "/applications/{application_id}";
+            authorize(&state, &tenant, &headers, "GET", operation).await?;
+            let id: ApplicationId =
+                parameter(&parameters, "application").ok_or_else(application_not_found)?;
+            let application = state
+                .applications
+                .application(&tenant, id)
+                .await
+                .map_err(failed)?;
+            Ok(Json(ApplicationBody::from(&application)).into_response())
+        }
+        .await,
+    )
+}
+
+async fn change_application(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+    parameters: RawPathParams,
+    bytes: Bytes,
+) -> Response {
+    respond(
+        async {
+            let operation = "/applications/{application_id}";
+            let caller = authorize(&state, &tenant, &headers, "PATCH", operation).await?;
+            let id: ApplicationId =
+                parameter(&parameters, "application").ok_or_else(application_not_found)?;
+            let changes: ApplicationChangesBody = body(&bytes)?;
+            // What is left out stays as it is.
+            let current = state
+                .applications
+                .application(&tenant, id)
+                .await
+                .map_err(failed)?;
+            let now = current.snapshot().settings.clone();
+            let settings = ApplicationSettings {
+                name: changes.name.unwrap_or(now.name),
+                first_party: changes.first_party.unwrap_or(now.first_party),
+            };
+            let application = state
+                .applications
+                .change_application(&tenant, id, settings, caller)
+                .await
+                .map_err(failed)?;
+            Ok(Json(ApplicationBody::from(&application)).into_response())
+        }
+        .await,
+    )
+}
+
+/// The status an action in the last segment of a path asks for, the
+/// identifier before it, and the operation it is in the table under.
+fn action<'a>(
+    segment: &'a str,
+    disable: &'static str,
+    enable: &'static str,
+) -> Option<(&'a str, Status, &'static str)> {
+    if let Some(id) = segment.strip_suffix(":disable") {
+        Some((id, Status::Disabled, disable))
+    } else {
+        segment
+            .strip_suffix(":enable")
+            .map(|id| (id, Status::Enabled, enable))
+    }
+}
+
+/// Checked like the actions that exist before it is answered, so that a
+/// caller without a token learns nothing about paths.
+async fn no_such_action(
+    state: &Shared,
+    tenant: &TenantContext,
+    headers: &HeaderMap,
+    operation: &'static str,
+) -> Box<Response> {
+    if let Err(refused) = authorize(state, tenant, headers, "POST", operation).await {
+        return refused;
+    }
+    problem(
+        StatusCode::NOT_FOUND,
+        "route.not_found",
+        "there is no such action",
+    )
+}
+
+/// `POST /applications/{application_id}:disable` and `:enable`.
+async fn application_action(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+    parameters: RawPathParams,
+) -> Response {
+    respond(
+        async {
+            let disable = "/applications/{application_id}:disable";
+            let segment: String =
+                parameter(&parameters, "application").ok_or_else(application_not_found)?;
+            let Some((id, status, operation)) =
+                action(&segment, disable, "/applications/{application_id}:enable")
+            else {
+                return Err(no_such_action(&state, &tenant, &headers, disable).await);
+            };
+            let caller = authorize(&state, &tenant, &headers, "POST", operation).await?;
+            let id: ApplicationId = id.parse().map_err(|_| application_not_found())?;
+            let application = state
+                .applications
+                .set_application_status(&tenant, id, status, caller)
+                .await
+                .map_err(failed)?;
+            Ok(Json(ApplicationBody::from(&application)).into_response())
+        }
+        .await,
+    )
+}
+
+// Clients.
+
+#[derive(Debug, Serialize)]
+struct TokenPolicyBody {
+    access_token_seconds: i64,
+    id_token_seconds: i64,
+    refresh_token_seconds: i64,
+    refresh_idle_seconds: i64,
+    consent_seconds: i64,
+}
+
+/// A token policy as given: what is left out is what it was, or the
+/// default for a new client.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TokenPolicyInput {
+    access_token_seconds: Option<u32>,
+    id_token_seconds: Option<u32>,
+    refresh_token_seconds: Option<u32>,
+    refresh_idle_seconds: Option<u32>,
+    consent_seconds: Option<u32>,
+}
+
+impl TokenPolicyInput {
+    fn over(self, on: TokenPolicy) -> TokenPolicy {
+        let seconds = |given: Option<u32>, was: Duration| {
+            given.map_or(was, |seconds| Duration::seconds(i64::from(seconds)))
+        };
+        TokenPolicy {
+            access_token: seconds(self.access_token_seconds, on.access_token),
+            id_token: seconds(self.id_token_seconds, on.id_token),
+            refresh_token: seconds(self.refresh_token_seconds, on.refresh_token),
+            refresh_idle: seconds(self.refresh_idle_seconds, on.refresh_idle),
+            consent: seconds(self.consent_seconds, on.consent),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct SecretBody {
+    id: String,
+    created_at: String,
+    expires_at: String,
+}
+
+#[derive(Debug, Serialize)]
+struct KeyBody {
+    kid: String,
+    jwk: serde_json::Value,
+    added_at: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ClientBody {
+    id: String,
+    application_id: String,
+    name: String,
+    #[serde(rename = "type")]
+    client_type: &'static str,
+    authentication_method: &'static str,
+    grant_types: Vec<&'static str>,
+    redirect_uris: Vec<String>,
+    post_logout_redirect_uris: Vec<String>,
+    allowed_scopes: Vec<String>,
+    require_pkce: bool,
+    id_token_signed_response_alg: &'static str,
+    token_policy: TokenPolicyBody,
+    /// What identifies each secret and when it expires: never the secret
+    /// or its hash.
+    secrets: Vec<SecretBody>,
+    keys: Vec<KeyBody>,
+    status: &'static str,
+    created_at: String,
+    updated_at: String,
+}
+
+impl From<&Client> for ClientBody {
+    fn from(client: &Client) -> Self {
+        let state = client.snapshot();
+        let settings = &state.settings;
+        let policy = settings.token_policy;
+        Self {
+            id: state.id.to_string(),
+            application_id: state.application_id.to_string(),
+            name: settings.name.clone(),
+            client_type: state.client_type.as_str(),
+            authentication_method: settings.authentication_method.as_str(),
+            grant_types: settings.grant_types.iter().map(|g| g.as_str()).collect(),
+            redirect_uris: settings.redirect_uris.clone(),
+            post_logout_redirect_uris: settings.post_logout_redirect_uris.clone(),
+            allowed_scopes: settings.allowed_scopes.clone(),
+            require_pkce: settings.require_pkce,
+            id_token_signed_response_alg: settings.id_token_algorithm.as_str(),
+            token_policy: TokenPolicyBody {
+                access_token_seconds: policy.access_token.whole_seconds(),
+                id_token_seconds: policy.id_token.whole_seconds(),
+                refresh_token_seconds: policy.refresh_token.whole_seconds(),
+                refresh_idle_seconds: policy.refresh_idle.whole_seconds(),
+                consent_seconds: policy.consent.whole_seconds(),
+            },
+            secrets: state
+                .secrets
+                .iter()
+                .map(|secret| SecretBody {
+                    id: secret.id.to_string(),
+                    created_at: written(secret.created_at),
+                    expires_at: written(secret.expires_at),
+                })
+                .collect(),
+            keys: state
+                .keys
+                .iter()
+                .map(|key| KeyBody {
+                    kid: key.key_id.clone(),
+                    // Stored as the JSON it was checked as.
+                    jwk: serde_json::from_str(&key.jwk).unwrap_or(serde_json::Value::Null),
+                    added_at: written(key.added_at),
+                })
+                .collect(),
+            status: state.status.as_str(),
+            created_at: written(state.created_at),
+            updated_at: written(state.updated_at),
+        }
+    }
+}
+
+/// A new client, with its first secret when it has one. No `Debug`: this
+/// holds the secret on its way out.
+#[derive(Serialize)]
+struct CreatedClientBody {
+    #[serde(flatten)]
+    client: ClientBody,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    client_secret: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NewClientBody {
+    name: String,
+    #[serde(rename = "type")]
+    client_type: String,
+    authentication_method: Option<String>,
+    grant_types: Vec<String>,
+    redirect_uris: Option<Vec<String>>,
+    post_logout_redirect_uris: Option<Vec<String>>,
+    allowed_scopes: Option<Vec<String>>,
+    require_pkce: Option<bool>,
+    id_token_signed_response_alg: Option<String>,
+    token_policy: Option<TokenPolicyInput>,
+    secret_lifetime_days: Option<u32>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ClientChangesBody {
+    name: Option<String>,
+    authentication_method: Option<String>,
+    grant_types: Option<Vec<String>>,
+    redirect_uris: Option<Vec<String>>,
+    post_logout_redirect_uris: Option<Vec<String>>,
+    allowed_scopes: Option<Vec<String>>,
+    require_pkce: Option<bool>,
+    id_token_signed_response_alg: Option<String>,
+    token_policy: Option<TokenPolicyInput>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NewSecretRequest {
+    lifetime_days: Option<u32>,
+    keep_previous_days: Option<u32>,
+}
+
+/// A new secret. No `Debug`: this holds the secret on its way out.
+#[derive(Serialize)]
+struct NewSecretBody {
+    id: String,
+    client_secret: String,
+    created_at: String,
+    expires_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NewKeyBody {
+    jwk: serde_json::Value,
+}
+
+fn client_type(value: &str) -> Result<ClientType, Box<Response>> {
+    match value {
+        "confidential" => Ok(ClientType::Confidential),
+        "public" => Ok(ClientType::Public),
+        _ => Err(failed(DomainError::invalid(
+            "oauth.client_type_invalid",
+            "a client is `confidential` or `public`",
+        ))),
+    }
+}
+
+fn grant_types(values: &[String]) -> Result<Vec<GrantType>, Box<Response>> {
+    values
+        .iter()
+        .map(|value| GrantType::parse(value).map_err(failed))
+        .collect()
+}
+
+async fn list_clients(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+    parameters: RawPathParams,
+) -> Response {
+    respond(
+        async {
+            let operation = "/applications/{application_id}/clients";
+            authorize(&state, &tenant, &headers, "GET", operation).await?;
+            let id: ApplicationId =
+                parameter(&parameters, "application").ok_or_else(application_not_found)?;
+            let clients = state
+                .applications
+                .clients(&tenant, id)
+                .await
+                .map_err(failed)?;
+            let items = clients.iter().map(ClientBody::from).collect();
+            Ok(Json(Items { items }).into_response())
+        }
+        .await,
+    )
+}
+
+async fn create_client(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+    parameters: RawPathParams,
+    bytes: Bytes,
+) -> Response {
+    respond(
+        async {
+            let operation = "/applications/{application_id}/clients";
+            let caller = authorize(&state, &tenant, &headers, "POST", operation).await?;
+            let application_id: ApplicationId =
+                parameter(&parameters, "application").ok_or_else(application_not_found)?;
+            let new: NewClientBody = body(&bytes)?;
+            let kind = client_type(&new.client_type)?;
+            let mut settings = ClientSettings::new(
+                &new.name,
+                kind,
+                grant_types(&new.grant_types)?,
+                new.redirect_uris.unwrap_or_default(),
+            );
+            if let Some(method) = new.authentication_method {
+                settings.authentication_method =
+                    AuthenticationMethod::parse(&method).map_err(failed)?;
+            }
+            settings.post_logout_redirect_uris = new.post_logout_redirect_uris.unwrap_or_default();
+            settings.allowed_scopes = new.allowed_scopes.unwrap_or_default();
+            if let Some(require_pkce) = new.require_pkce {
+                settings.require_pkce = require_pkce;
+            }
+            if let Some(algorithm) = new.id_token_signed_response_alg {
+                settings.id_token_algorithm =
+                    IdTokenAlgorithm::parse(&algorithm).map_err(failed)?;
+            }
+            if let Some(policy) = new.token_policy {
+                settings.token_policy = policy.over(settings.token_policy);
+            }
+            let (client, secret) = state
+                .applications
+                .create_client(
+                    &tenant,
+                    CreateClient {
+                        application_id,
+                        client_type: kind,
+                        settings,
+                        secret_lifetime: new
+                            .secret_lifetime_days
+                            .map(|given| days(Some(given), DEFAULT_LIFETIME_DAYS)),
+                    },
+                    caller,
+                )
+                .await
+                .map_err(failed)?;
+            let created = CreatedClientBody {
+                client: ClientBody::from(&client),
+                client_secret: secret.map(|secret| secret.expose().to_owned()),
+            };
+            Ok((StatusCode::CREATED, Json(created)).into_response())
+        }
+        .await,
+    )
+}
+
+async fn get_client(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+    parameters: RawPathParams,
+) -> Response {
+    respond(
+        async {
+            authorize(&state, &tenant, &headers, "GET", "/clients/{client_id}").await?;
+            let id: ClientId = parameter(&parameters, "client").ok_or_else(client_not_found)?;
+            let client = state
+                .applications
+                .client(&tenant, id)
+                .await
+                .map_err(failed)?;
+            Ok(Json(ClientBody::from(&client)).into_response())
+        }
+        .await,
+    )
+}
+
+async fn change_client(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+    parameters: RawPathParams,
+    bytes: Bytes,
+) -> Response {
+    respond(
+        async {
+            let caller =
+                authorize(&state, &tenant, &headers, "PATCH", "/clients/{client_id}").await?;
+            let id: ClientId = parameter(&parameters, "client").ok_or_else(client_not_found)?;
+            let changes: ClientChangesBody = body(&bytes)?;
+            // What is left out stays as it is; the whole is checked again.
+            let current = state
+                .applications
+                .client(&tenant, id)
+                .await
+                .map_err(failed)?;
+            let now = current.snapshot().settings.clone();
+            let settings = ClientSettings {
+                name: changes.name.unwrap_or(now.name),
+                authentication_method: match changes.authentication_method {
+                    Some(method) => AuthenticationMethod::parse(&method).map_err(failed)?,
+                    None => now.authentication_method,
+                },
+                grant_types: match changes.grant_types {
+                    Some(given) => grant_types(&given)?,
+                    None => now.grant_types,
+                },
+                redirect_uris: changes.redirect_uris.unwrap_or(now.redirect_uris),
+                post_logout_redirect_uris: changes
+                    .post_logout_redirect_uris
+                    .unwrap_or(now.post_logout_redirect_uris),
+                allowed_scopes: changes.allowed_scopes.unwrap_or(now.allowed_scopes),
+                require_pkce: changes.require_pkce.unwrap_or(now.require_pkce),
+                id_token_algorithm: match changes.id_token_signed_response_alg {
+                    Some(algorithm) => IdTokenAlgorithm::parse(&algorithm).map_err(failed)?,
+                    None => now.id_token_algorithm,
+                },
+                token_policy: changes
+                    .token_policy
+                    .map_or(now.token_policy, |given| given.over(now.token_policy)),
+            };
+            let client = state
+                .applications
+                .change_client(&tenant, id, settings, caller)
+                .await
+                .map_err(failed)?;
+            Ok(Json(ClientBody::from(&client)).into_response())
+        }
+        .await,
+    )
+}
+
+/// `POST /clients/{client_id}:disable` and `:enable`.
+async fn client_action(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+    parameters: RawPathParams,
+) -> Response {
+    respond(
+        async {
+            let disable = "/clients/{client_id}:disable";
+            let segment: String = parameter(&parameters, "client").ok_or_else(client_not_found)?;
+            let Some((id, status, operation)) =
+                action(&segment, disable, "/clients/{client_id}:enable")
+            else {
+                return Err(no_such_action(&state, &tenant, &headers, disable).await);
+            };
+            let caller = authorize(&state, &tenant, &headers, "POST", operation).await?;
+            let id: ClientId = id.parse().map_err(|_| client_not_found())?;
+            let client = state
+                .applications
+                .set_client_status(&tenant, id, status, caller)
+                .await
+                .map_err(failed)?;
+            Ok(Json(ClientBody::from(&client)).into_response())
+        }
+        .await,
+    )
+}
+
+async fn rotate_secret(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+    parameters: RawPathParams,
+    bytes: Bytes,
+) -> Response {
+    respond(
+        async {
+            let operation = "/clients/{client_id}/secrets";
+            let caller = authorize(&state, &tenant, &headers, "POST", operation).await?;
+            let id: ClientId = parameter(&parameters, "client").ok_or_else(client_not_found)?;
+            let asked: NewSecretRequest = optional_body(&bytes)?;
+            let value = state
+                .applications
+                .rotate_client_secret(
+                    &tenant,
+                    id,
+                    RotateSecret {
+                        lifetime: days(asked.lifetime_days, DEFAULT_LIFETIME_DAYS),
+                        keep_previous_for: days(
+                            asked.keep_previous_days,
+                            DEFAULT_KEEP_PREVIOUS_DAYS,
+                        ),
+                    },
+                    caller,
+                )
+                .await
+                .map_err(failed)?;
+            // The new secret is the one made last.
+            let client = state
+                .applications
+                .client(&tenant, id)
+                .await
+                .map_err(failed)?;
+            let newest: Option<&ClientSecret> = client
+                .snapshot()
+                .secrets
+                .iter()
+                .max_by_key(|secret| secret.created_at);
+            let newest = newest.ok_or_else(secret_not_found)?;
+            let made = NewSecretBody {
+                id: newest.id.to_string(),
+                client_secret: value.expose().to_owned(),
+                created_at: written(newest.created_at),
+                expires_at: written(newest.expires_at),
+            };
+            Ok((StatusCode::CREATED, Json(made)).into_response())
+        }
+        .await,
+    )
+}
+
+async fn revoke_secret(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+    parameters: RawPathParams,
+) -> Response {
+    respond(
+        async {
+            let operation = "/clients/{client_id}/secrets/{secret_id}";
+            let caller = authorize(&state, &tenant, &headers, "DELETE", operation).await?;
+            let id: ClientId = parameter(&parameters, "client").ok_or_else(client_not_found)?;
+            let secret: ClientSecretId =
+                parameter(&parameters, "secret").ok_or_else(secret_not_found)?;
+            state
+                .applications
+                .revoke_client_secret(&tenant, id, secret, caller)
+                .await
+                .map_err(failed)?;
+            Ok(StatusCode::NO_CONTENT.into_response())
+        }
+        .await,
+    )
+}
+
+async fn add_key(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+    parameters: RawPathParams,
+    bytes: Bytes,
+) -> Response {
+    respond(
+        async {
+            let operation = "/clients/{client_id}/keys";
+            let caller = authorize(&state, &tenant, &headers, "POST", operation).await?;
+            let id: ClientId = parameter(&parameters, "client").ok_or_else(client_not_found)?;
+            let new: NewKeyBody = body(&bytes)?;
+            let client = state
+                .applications
+                .add_client_key(&tenant, id, &new.jwk.to_string(), caller)
+                .await
+                .map_err(failed)?;
+            Ok((StatusCode::CREATED, Json(ClientBody::from(&client))).into_response())
+        }
+        .await,
+    )
+}
+
+async fn remove_key(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+    parameters: RawPathParams,
+) -> Response {
+    respond(
+        async {
+            let operation = "/clients/{client_id}/keys/{key_id}";
+            let caller = authorize(&state, &tenant, &headers, "DELETE", operation).await?;
+            let id: ClientId = parameter(&parameters, "client").ok_or_else(client_not_found)?;
+            // Decoded from the path: a `kid` may hold characters a path
+            // writes with percent-encoding.
+            let key: String = parameter(&parameters, "key").unwrap_or_default();
+            state
+                .applications
+                .remove_client_key(&tenant, id, &key, caller)
+                .await
+                .map_err(failed)?;
+            Ok(StatusCode::NO_CONTENT.into_response())
+        }
+        .await,
+    )
+}
+
+// Resource servers.
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ScopeBody {
+    name: String,
+    #[serde(default)]
+    description: String,
+}
+
+impl From<ScopeBody> for ScopeDefinition {
+    fn from(scope: ScopeBody) -> Self {
+        Self {
+            name: scope.name,
+            description: scope.description,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct ResourceServerBody {
+    id: String,
+    application_id: String,
+    audience: String,
+    name: String,
+    scopes: Vec<ScopeBody>,
+    created_at: String,
+    updated_at: String,
+}
+
+impl From<&ResourceServer> for ResourceServerBody {
+    fn from(server: &ResourceServer) -> Self {
+        let state = server.snapshot();
+        Self {
+            id: state.id.to_string(),
+            application_id: state.application_id.to_string(),
+            audience: state.audience.as_str().to_owned(),
+            name: state.settings.name.clone(),
+            scopes: state
+                .settings
+                .scopes
+                .iter()
+                .map(|scope| ScopeBody {
+                    name: scope.name.clone(),
+                    description: scope.description.clone(),
+                })
+                .collect(),
+            created_at: written(state.created_at),
+            updated_at: written(state.updated_at),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NewResourceServerBody {
+    application_id: String,
+    audience: String,
+    name: String,
+    #[serde(default)]
+    scopes: Vec<ScopeBody>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ResourceServerChangesBody {
+    name: Option<String>,
+    scopes: Option<Vec<ScopeBody>>,
+}
+
+async fn list_resource_servers(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+) -> Response {
+    respond(
+        async {
+            authorize(&state, &tenant, &headers, "GET", "/resource-servers").await?;
+            let servers = state
+                .applications
+                .resource_servers(&tenant)
+                .await
+                .map_err(failed)?;
+            let items = servers.iter().map(ResourceServerBody::from).collect();
+            Ok(Json(Items { items }).into_response())
+        }
+        .await,
+    )
+}
+
+async fn create_resource_server(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+    bytes: Bytes,
+) -> Response {
+    respond(
+        async {
+            let caller = authorize(&state, &tenant, &headers, "POST", "/resource-servers").await?;
+            let new: NewResourceServerBody = body(&bytes)?;
+            let application_id: ApplicationId = new
+                .application_id
+                .parse()
+                .map_err(|_| application_not_found())?;
+            let server = state
+                .applications
+                .create_resource_server(
+                    &tenant,
+                    CreateResourceServer {
+                        application_id,
+                        audience: new.audience,
+                        settings: ResourceServerSettings {
+                            name: new.name,
+                            scopes: new.scopes.into_iter().map(Into::into).collect(),
+                        },
+                    },
+                    caller,
+                )
+                .await
+                .map_err(failed)?;
+            Ok((StatusCode::CREATED, Json(ResourceServerBody::from(&server))).into_response())
+        }
+        .await,
+    )
+}
+
+async fn get_resource_server(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+    parameters: RawPathParams,
+) -> Response {
+    respond(
+        async {
+            let operation = "/resource-servers/{resource_server_id}";
+            authorize(&state, &tenant, &headers, "GET", operation).await?;
+            let id: ResourceServerId =
+                parameter(&parameters, "resource_server").ok_or_else(resource_server_not_found)?;
+            let server = state
+                .applications
+                .resource_server(&tenant, id)
+                .await
+                .map_err(failed)?;
+            Ok(Json(ResourceServerBody::from(&server)).into_response())
+        }
+        .await,
+    )
+}
+
+async fn change_resource_server(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+    parameters: RawPathParams,
+    bytes: Bytes,
+) -> Response {
+    respond(
+        async {
+            let operation = "/resource-servers/{resource_server_id}";
+            let caller = authorize(&state, &tenant, &headers, "PATCH", operation).await?;
+            let id: ResourceServerId =
+                parameter(&parameters, "resource_server").ok_or_else(resource_server_not_found)?;
+            let changes: ResourceServerChangesBody = body(&bytes)?;
+            let current = state
+                .applications
+                .resource_server(&tenant, id)
+                .await
+                .map_err(failed)?;
+            let now = current.snapshot().settings.clone();
+            let settings = ResourceServerSettings {
+                name: changes.name.unwrap_or(now.name),
+                scopes: changes.scopes.map_or(now.scopes, |given| {
+                    given.into_iter().map(Into::into).collect()
+                }),
+            };
+            let server = state
+                .applications
+                .change_resource_server(&tenant, id, settings, caller)
+                .await
+                .map_err(failed)?;
+            Ok(Json(ResourceServerBody::from(&server)).into_response())
+        }
+        .await,
+    )
+}

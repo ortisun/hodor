@@ -10,16 +10,17 @@ schema owner (`Command::Migrate` in `src/main.rs`).
 ## Subdirectories & Boundaries
 
 - src: [./src/EGM.md](./src/EGM.md) - the commands `migrate`, `tenant`,
-  `admin bootstrap`, `audit verify`, `provider`, `secrets generate-key` and
-  `probe`, and the services each one calls.
+  `admin bootstrap`, `audit verify`, `provider`, `secrets generate-key`, `secrets reseal`,
+  `policy-agent`, `policy` and `probe`, and the services each one calls.
 
 ## Dependencies
 
-From `Cargo.toml`: `clap`, `tokio`, `time`, and the workspace crates
+From `Cargo.toml`: `clap`, `serde_json`, `tokio`, `time`, and the workspace crates
 `hodor-adapters-crypto`, `hodor-adapters-postgres`, `hodor-audit`,
 `hodor-authorization`, `hodor-credential`, `hodor-federation`,
 `hodor-identity`, `hodor-kernel` and `hodor-tenant`. The tests use
-`hodor-adapters-postgres` with the `testing` feature.
+`hodor-adapters-postgres` and `hodor-authorization-opa` with the `testing`
+feature.
 
 ## Verification
 

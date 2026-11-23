@@ -36,7 +36,7 @@ The final image runs as `nonroot:nonroot`, exposes `8080` and `9090`, sets `HODO
 | `server` | `hodor:dev` (default entrypoint `hodor-server`) | the server, as database role `hodor_server`; health check `hodor-cli probe --addr 127.0.0.1:9090 --path /readyz` | `HODOR_HTTP_PORT`, 8080; `HODOR_OPS_PORT`, 9090 |
 | `worker` | `hodor:dev`, entrypoint `hodor-worker` | the worker, as `hodor_worker` and `hodor_worker_platform`, sending mail to `smtp://mail:1025`; same `probe` health check | none |
 
-Environment the stack gives the server: `HODOR_DATABASE_URL`, `HODOR_PUBLIC_URL` (`http://localhost:${HODOR_HTTP_PORT:-8080}`), `HODOR_SECRET_KEYS` (a placeholder key that encrypts identity provider secrets in this stack only), `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` (`provider:9400`, the browser address of `provider`, `directory:389`, the browser address of `saml-provider`), `HODOR_DIRECTORY_HOSTS` (`directory:389`), `HODOR_LOG_FORMAT=pretty`, `HODOR_OTLP_METRICS_ENDPOINT`, `HODOR_OTLP_TRACES_ENDPOINT`. The worker additionally gets `HODOR_PLATFORM_DATABASE_URL`, `HODOR_SMTP_URL` and `HODOR_MAIL_FROM`.
+Environment the stack gives the server: `HODOR_DATABASE_URL`, `HODOR_PUBLIC_URL` (`http://localhost:${HODOR_HTTP_PORT:-8080}`), `HODOR_SECRET_KEYS` (a placeholder key that encrypts identity provider secrets and wraps the signing keys in this stack only), `HODOR_OPEN_POLICY_AGENT_ADDRESS` (`http://policy-agent:8181`, where the demonstration of Milestone 5 starts a shared instance; nothing answers there otherwise), `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` (`provider:9400`, the browser address of `provider`, `directory:389`, the browser address of `saml-provider`), `HODOR_DIRECTORY_HOSTS` (`directory:389`), `HODOR_LOG_FORMAT=pretty`, `HODOR_OTLP_METRICS_ENDPOINT`, `HODOR_OTLP_TRACES_ENDPOINT`. The worker gets `HODOR_SECRET_KEYS` too, the same placeholder, to make the tenants' signing keys, and additionally `HODOR_PLATFORM_DATABASE_URL`, `HODOR_SMTP_URL` and `HODOR_MAIL_FROM`.
 
 Named volumes: `postgres-data`, `victoriametrics-data`, `victoriatraces-data`.
 
@@ -66,7 +66,7 @@ Named volumes: `postgres-data`, `victoriametrics-data`, `victoriatraces-data`.
 
 ## Side Effects
 
-- `docker compose ... up --build` builds the image `hodor:dev` from the repository root, downloading Node.js and Rust dependencies (with cache mounts for `/root/.npm`, the cargo registry and `/src/target`).
+- `docker compose ... up --build` builds the image `hodor:dev` from the repository root, downloading Node.js and Rust dependencies (with cache mounts for `/root/.npm`, the cargo registry and `/src/target`). The target cache is shared by every build of every branch on the machine, so the build stage touches the workspace's files before `cargo build`: cargo compares modification times, and a file older than what another branch left in the cache would be taken as built.
 - `postgres-init.sql` runs only when the `postgres-data` volume is first initialized (it is mounted into `/docker-entrypoint-initdb.d/`).
 - `migrate` changes the database schema; `system-tenant` inserts the system tenant if missing.
 - Data persists across restarts in the three named volumes; metrics and traces are kept seven days.

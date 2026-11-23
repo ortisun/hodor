@@ -6,39 +6,66 @@
 
 use clap::{Parser, ValueEnum};
 use hodor_adapters_crypto::{
-    Argon2Parameters, Argon2idHasher, AwsLcVerifier, HashingLimits, OsRandom, SecretKeys,
-    Sha256Digest,
+    Argon2Parameters, Argon2idHasher, AwsLcHmacSha1, AwsLcVerifier, HashingLimits,
+    LocalKeyProvider, OsRandom, SecretKeys, Sha256Digest,
 };
-use hodor_adapters_http::{GuardedHttpClient, OutboundPolicy};
+use hodor_adapters_http::{GuardedHttpClient, OutboundPolicy, ServiceHttpClient};
 use hodor_adapters_ldap::LdapDirectoryClient;
 use hodor_adapters_postgres::{
-    Database, PgAccessTokenStore, PgAttemptStore, PgAuditLog, PgLinkStore, PgMessageQueue,
-    PgPasswordStore, PgPendingAuthorizationStore, PgProviderStore, PgRoleAssignmentStore,
-    PgSessionStore, PgTenantDirectory, PgTenantRepository, PgTransactionStore, PgUserRepository,
-    PgVerificationTokenStore,
+    Database, PgAccessTokenRecordStore, PgAccessTokenStore, PgApplicationStore, PgAttemptStore,
+    PgAuditLog, PgAuthorizationCodeStore, PgAuthorizationRequestStore, PgBundleStore,
+    PgClientAssertionStore, PgClientStore, PgConsentStore, PgDecisionLogStore,
+    PgEngineBindingStore, PgGrantStore, PgInstanceStatusStore, PgInstanceStore, PgKeyStore,
+    PgLinkStore, PgMessageQueue, PgNativeRoleStore, PgPasswordStore, PgPendingAuthorizationStore,
+    PgPolicyVersionStore, PgProviderStore, PgPublicationStore, PgRecoveryCodeStore,
+    PgRefreshTokenStore, PgResourceServerStore, PgRoleAssignmentStore, PgSealingStateStore,
+    PgSessionStore, PgSimulationStore, PgTenantDirectory, PgTenantRepository, PgTotpStore,
+    PgTransactionStore, PgUploadedDecisionStore, PgUserRepository, PgVerificationTokenStore,
+    PgWebAuthnStore,
 };
 use hodor_audit::api::AuditService;
 use hodor_authentication::api::{
-    AccountService, AttemptGuard, AuthFlow, AuthenticationService, FlowEngine,
-    IdentifierAuthenticator, LockoutRules, PasswordAuthenticator,
+    AccountService, AttemptGuard, AuthFlow, AuthenticationService, Condition, FactorService,
+    FlowEngine, IdentifierAuthenticator, LockoutRules, PasskeyAuthenticator, PasswordAuthenticator,
+    RecoveryCodeAuthenticator, Requirement, TotpAuthenticator, WebAuthnAuthenticator,
 };
-use hodor_authorization::api::AuthorizationService;
-use hodor_credential::api::{AccessTokenService, CredentialService};
+use hodor_authorization::api::{
+    AuthorizationService, DecisionLog, EngineRegistry, EvaluationService, NativeEngine, RoleService,
+};
+use hodor_authorization_native::CelConditionLanguage;
+use hodor_authorization_opa::api::{
+    BundleService, Instances, OpenPolicyAgentEngine, PolicyService, StoredRevisions,
+};
+use hodor_credential::api::{
+    AccessTokenService, CredentialService, RecoveryCodeService, RelyingParty, TotpService,
+    WebAuthnService,
+};
 use hodor_federation::api::{
     EXTERNAL_STEP, ExternalIdentityAuthenticator, ExternalSignIn, FederationService, GitHubClient,
     LockoutPolicy, OpenIdClient, SamlClient,
 };
 use hodor_identity::api::IdentityService;
-use hodor_kernel::{DomainError, Secret, SystemClock, TenantContext};
+use hodor_kernel::{DomainError, Secret, SecretBox, SystemClock, TenantContext};
+use hodor_keys::api::{KeyService, RotationPolicy, TenantSecretBox};
 use hodor_notification::api::Notifier;
+use hodor_oauth::api::{
+    AccessTokenRegister, ApplicationPorts, ApplicationService, AuthorizationCodePorts,
+    AuthorizationCodeService, ConsentPorts, ConsentService, LogoutPorts, LogoutService,
+    ResourceAccessPorts, ResourceAccessService, TokenPorts, TokenService, UserInfoPorts,
+    UserInfoService,
+};
 use hodor_observability::{LogFormat, Telemetry};
 use hodor_protocol_http::{
-    AdminState, ConsoleState, Health, InteractionState, Limits, Pages, ReadinessCheck,
-    ResolvedTenant, TenantResolver, TenantStatus as HttpTenantStatus, admin_routes, console_routes,
-    interaction_routes, ops_router, public_router, serve,
+    AdminState, AuthorizationApiState, AuthorizationState, ConsentState, ConsoleState,
+    DiscoveryState, Health, InteractionState, Limits, LogoutState, Pages, ReadinessCheck,
+    ResolvedTenant, TenantResolver, TenantStatus as HttpTenantStatus, TokenState, UserInfoState,
+    admin_routes, authorization_api_routes, authorization_routes, consent_routes, console_routes,
+    discovery_routes, interaction_routes, key_set_routes, logout_routes, ops_router,
+    policy_agent_routes, public_router, serve, token_routes, userinfo_routes,
 };
 use hodor_session::api::SessionService;
 use hodor_tenant::api::{TenantDirectory as _, TenantService, TenantStatus};
+use standing::ServerStanding;
 use std::error::Error;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -46,6 +73,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
+
+mod standing;
+mod subjects;
 
 #[derive(Clone, Copy, ValueEnum)]
 enum LogFormatArg {
@@ -121,11 +151,49 @@ struct Config {
     #[arg(long, env = "HODOR_SECRET_KEYS", hide_env_values = true)]
     secret_keys: Option<String>,
 
+    /// How long a refresh token one generation old is answered again with
+    /// the same next token, in seconds: 0 to 60. 0 turns retries off.
+    #[arg(long, env = "HODOR_REFRESH_RETRY_SECONDS", default_value_t = 10)]
+    refresh_retry_seconds: i64,
+
+    /// How long a signing key replaced by hand stays published, in hours.
+    /// The worker's rotation reads the same setting.
+    #[arg(long, env = "HODOR_KEY_OVERLAP_HOURS", default_value_t = 24)]
+    key_overlap_hours: i64,
+
     /// Hosts with their ports that outbound requests may reach without
     /// the address check and over plain HTTP, separated by commas. For a
     /// development stack on one machine; never set it anywhere real.
     #[arg(long, env = "HODOR_OUTBOUND_DEVELOPMENT_HOSTS", value_delimiter = ',')]
     outbound_development_hosts: Vec<String>,
+
+    /// The shared Open Policy Agent instance, an origin such as
+    /// `http://localhost:8181`, for policy written by the operator.
+    #[arg(long, env = "HODOR_OPEN_POLICY_AGENT_ADDRESS")]
+    open_policy_agent_address: Option<String>,
+
+    /// Open Policy Agent instances dedicated to one tenant each, as
+    /// `tenant-identifier=origin` pairs separated by commas.
+    #[arg(
+        long,
+        env = "HODOR_OPEN_POLICY_AGENT_TENANT_ADDRESSES",
+        default_value = ""
+    )]
+    open_policy_agent_tenant_addresses: String,
+
+    /// The bearer token presented to every Open Policy Agent instance.
+    #[arg(long, env = "HODOR_OPEN_POLICY_AGENT_TOKEN", hide_env_values = true)]
+    open_policy_agent_token: Option<String>,
+
+    /// How long after a tenant publishes a revision an instance may still
+    /// answer with an older one, in seconds. After that its decisions are
+    /// indeterminate.
+    #[arg(
+        long,
+        env = "HODOR_OPEN_POLICY_AGENT_REVISION_LAG_SECONDS",
+        default_value_t = 300
+    )]
+    open_policy_agent_revision_lag_seconds: u32,
 
     /// The LDAP directories identity providers may name, as `host:port`
     /// separated by commas. Empty: no directory can be used.
@@ -233,25 +301,87 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
     )
     .await?;
     let health = Health::new(vec![Arc::new(DatabaseCheck(database.clone()))]);
+    // Checked now, so that a wrong address stops the server at startup.
+    // The Authorization API evaluates through these engines.
+    let engines = authorization_engines(&config, &database)?;
 
+    let keys = keys(&config, &database)?;
+    let interaction = interaction(&config, &database)?;
+    let authorization = authorization(&config, &database, interaction.authentication.clone());
+    let mut oauth2 = authorization_routes(authorization.clone());
+    if let (Some(keys), Some(setting)) = (&keys, &config.secret_keys) {
+        oauth2 = oauth2.merge(token_routes(token(
+            &config,
+            &database,
+            keys.clone(),
+            authorization.authorization,
+            secret_box(setting, &database)?,
+        )?));
+        oauth2 = oauth2.merge(userinfo_routes(userinfo(&config, &database, keys.clone())));
+        oauth2 = oauth2.merge(logout_routes(logout(
+            &config,
+            &database,
+            keys.clone(),
+            authorization.sessions.clone(),
+        )));
+    }
     let mut tenant_routes = axum::Router::new()
         .nest(
             "/interaction",
-            interaction_routes(interaction(&config, &database)?),
+            interaction_routes(interaction).merge(consent_routes(ConsentState {
+                consents: authorization.consents.clone(),
+                sessions: authorization.sessions.clone(),
+                digest: Arc::new(Sha256Digest),
+            })),
         )
+        .nest("/oauth2", oauth2)
         .nest(
             "/api/v1/admin",
-            admin_routes(administration(&config, &database)?),
+            admin_routes(administration(&config, &database, &engines)?),
         )
         .nest(
             "/console/api",
             console_routes(ConsoleState {
-                administration: administration(&config, &database)?,
+                administration: administration(&config, &database, &engines)?,
                 digest: Arc::new(Sha256Digest),
                 clock: Arc::new(SystemClock),
             }),
         );
-    let mut site_routes = axum::Router::new();
+    match keys {
+        Some(keys) => {
+            tenant_routes = tenant_routes
+                .nest(
+                    "/api/v1/authorization",
+                    authorization_api_routes(authorization_api(
+                        &config,
+                        &database,
+                        keys.clone(),
+                        engines,
+                    )),
+                )
+                .merge(key_set_routes(keys))
+                .merge(discovery_routes(DiscoveryState {
+                    public_url: config.public_url.clone(),
+                    tenants: tenant_service(&database),
+                }));
+        }
+        None => tracing::warn!(
+            "HODOR_SECRET_KEYS is not set: no key set is published, keys cannot be managed and \
+             no token is issued"
+        ),
+    }
+    // Open Policy Agent instances pull their bundles and report here,
+    // each by its own credential.
+    let mut site_routes = axum::Router::new().merge(policy_agent_routes(BundleService::new(
+        Arc::new(PgInstanceStore::new(database.clone())),
+        Arc::new(PgBundleStore),
+        Arc::new(PgInstanceStatusStore),
+        Arc::new(PgUploadedDecisionStore),
+        Arc::new(database.clone()),
+        Arc::new(Sha256Digest),
+        Arc::new(OsRandom),
+        Arc::new(SystemClock),
+    )));
     match &config.pages_directory {
         Some(directory) => {
             let pages = Pages::load(directory)?;
@@ -356,6 +486,15 @@ fn interaction(config: &Config, database: &Database) -> Result<InteractionState,
         digest.clone(),
         clock.clone(),
     );
+    let webauthn = WebAuthnService::new(
+        units(),
+        Arc::new(PgWebAuthnStore),
+        RelyingParty::from_public_address(&config.public_url)?,
+        digest.clone(),
+        Arc::new(AwsLcVerifier),
+        random.clone(),
+        clock.clone(),
+    );
     let mut engine = FlowEngine::new()
         .with(Arc::new(IdentifierAuthenticator::new(
             identity.clone(),
@@ -366,10 +505,58 @@ fn interaction(config: &Config, database: &Database) -> Result<InteractionState,
             identity.clone(),
             tenants.clone(),
             guard.clone(),
+        )))
+        .with(Arc::new(WebAuthnAuthenticator::new(webauthn.clone())))
+        .with(Arc::new(RecoveryCodeAuthenticator::new(
+            RecoveryCodeService::new(
+                units(),
+                Arc::new(PgRecoveryCodeStore),
+                digest.clone(),
+                random.clone(),
+                clock.clone(),
+            ),
+            tenants.clone(),
+            guard.clone(),
+        )))
+        .with(Arc::new(PasskeyAuthenticator::new(
+            webauthn.clone(),
+            identity.clone(),
+            tenants.clone(),
+            guard.clone(),
         )));
-    // Signing in through an identity provider is an alternative of the
-    // flow, offered only by an installation that can keep secrets.
-    let mut flow = AuthFlow::built_in();
+    // A person who registered a security key is asked for it after the
+    // first factor, unless the sign-in is multi-factor already. A passkey
+    // is an alternative of the flow, which is multi-factor by itself.
+    // Signing in through an identity provider is another alternative, and
+    // a code of an authenticator application one more step, both offered
+    // only by an installation that can keep secrets. A recovery code
+    // stands in for either second factor. The security key is also asked
+    // for when an application asked a step-up for more than multi-factor:
+    // it is the step that makes a sign-in phishing-resistant.
+    let second_factor = Requirement::Conditional(Condition::MultiFactorNotReached);
+    let stronger = Requirement::Conditional(Condition::StrongerAssuranceNeeded);
+    let mut flow = AuthFlow::built_in()
+        .with_step(
+            WebAuthnAuthenticator::KIND,
+            WebAuthnAuthenticator::KIND,
+            stronger,
+        )
+        .with_substitute(WebAuthnAuthenticator::KIND, RecoveryCodeAuthenticator::KIND)
+        .with_alternative(PasskeyAuthenticator::KIND, PasskeyAuthenticator::KIND);
+    if let Some(totp) = totp_service(config, database, random.clone())? {
+        engine = engine.with(Arc::new(TotpAuthenticator::new(
+            totp,
+            tenants.clone(),
+            guard.clone(),
+        )));
+        flow = flow
+            .with_step(
+                TotpAuthenticator::KIND,
+                TotpAuthenticator::KIND,
+                second_factor,
+            )
+            .with_substitute(TotpAuthenticator::KIND, RecoveryCodeAuthenticator::KIND);
+    }
     let external = external_sign_in(config, database, &identity, &tenants, &guard)?;
     if let Some(external) = &external {
         engine = engine.with(Arc::new(ExternalIdentityAuthenticator::new(
@@ -392,6 +579,7 @@ fn interaction(config: &Config, database: &Database) -> Result<InteractionState,
         clock.clone(),
         &config.public_url,
     );
+    let factors = factor_service(config, database, &identity, &tenants, webauthn)?;
     let authentication = AuthenticationService::new(
         units(),
         Arc::new(PgTransactionStore),
@@ -408,10 +596,224 @@ fn interaction(config: &Config, database: &Database) -> Result<InteractionState,
         authentication,
         accounts,
         sessions,
+        factors,
         external,
         digest,
         clock,
     })
+}
+
+/// The tenant use cases, for the settings other routes read.
+fn tenant_service(database: &Database) -> TenantService {
+    TenantService::new(
+        Arc::new(database.clone()),
+        Arc::new(PgTenantRepository),
+        Arc::new(PgTenantDirectory::new(database.clone())),
+        Arc::new(SystemClock),
+    )
+}
+
+/// Builds the use cases of consent.
+fn consents(database: &Database) -> ConsentService {
+    ConsentService::new(ConsentPorts {
+        units_of_work: Arc::new(database.clone()),
+        consents: Arc::new(PgConsentStore),
+        requests: Arc::new(PgAuthorizationRequestStore),
+        grants: Arc::new(PgGrantStore),
+        clients: Arc::new(PgClientStore),
+        applications: Arc::new(PgApplicationStore),
+        resource_servers: Arc::new(PgResourceServerStore),
+        digest: Arc::new(Sha256Digest),
+        random: Arc::new(OsRandom),
+        clock: Arc::new(SystemClock),
+    })
+}
+
+/// Builds everything the authorization endpoint needs.
+fn authorization(
+    config: &Config,
+    database: &Database,
+    authentication: AuthenticationService,
+) -> AuthorizationState {
+    let units = Arc::new(database.clone());
+    let clock = Arc::new(SystemClock);
+    let digest = Arc::new(Sha256Digest);
+    let random = Arc::new(OsRandom);
+    AuthorizationState {
+        authorization: AuthorizationCodeService::new(AuthorizationCodePorts {
+            units_of_work: units.clone(),
+            applications: Arc::new(PgApplicationStore),
+            clients: Arc::new(PgClientStore),
+            resource_servers: Arc::new(PgResourceServerStore),
+            requests: Arc::new(PgAuthorizationRequestStore),
+            grants: Arc::new(PgGrantStore),
+            codes: Arc::new(PgAuthorizationCodeStore),
+            digest: digest.clone(),
+            random: random.clone(),
+            clock: clock.clone(),
+        }),
+        consents: consents(database),
+        sessions: SessionService::new(units, Arc::new(PgSessionStore), digest, random, clock),
+        authentication,
+        tenants: tenant_service(database),
+        public_url: config.public_url.clone(),
+    }
+}
+
+/// Builds everything the token endpoint needs. Tokens are signed with the
+/// tenants' keys, so there is no token endpoint without them; the secrets
+/// of refresh token families are sealed with the same keys.
+fn token(
+    config: &Config,
+    database: &Database,
+    keys: KeyService,
+    codes: AuthorizationCodeService,
+    secrets: Arc<dyn SecretBox>,
+) -> Result<TokenState, DomainError> {
+    let units = Arc::new(database.clone());
+    let clock = Arc::new(SystemClock);
+    let digest = Arc::new(Sha256Digest);
+    let random = Arc::new(OsRandom);
+    let standing = ServerStanding {
+        sessions: SessionService::new(
+            units.clone(),
+            Arc::new(PgSessionStore),
+            digest.clone(),
+            random.clone(),
+            clock.clone(),
+        ),
+        identity: IdentityService::new(units.clone(), Arc::new(PgUserRepository), clock.clone()),
+    };
+    let tokens = TokenService::new(TokenPorts {
+        units_of_work: units,
+        applications: Arc::new(PgApplicationStore),
+        clients: Arc::new(PgClientStore),
+        resource_servers: Arc::new(PgResourceServerStore),
+        grants: Arc::new(PgGrantStore),
+        assertions: Arc::new(PgClientAssertionStore),
+        refresh_tokens: Arc::new(PgRefreshTokenStore),
+        access_tokens: Arc::new(PgAccessTokenRecordStore),
+        standing: Arc::new(standing),
+        secrets,
+        codes,
+        keys,
+        verifier: Arc::new(AwsLcVerifier),
+        digest,
+        random,
+        clock,
+    })
+    .with_retry_window(time::Duration::seconds(config.refresh_retry_seconds))?;
+    Ok(TokenState {
+        tokens,
+        public_url: config.public_url.clone(),
+    })
+}
+
+/// Builds everything UserInfo needs. It checks access tokens against the
+/// tenants' keys, so there is no UserInfo without them.
+fn userinfo(config: &Config, database: &Database, keys: KeyService) -> UserInfoState {
+    let clock = Arc::new(SystemClock);
+    UserInfoState {
+        userinfo: UserInfoService::new(UserInfoPorts {
+            keys,
+            verifier: Arc::new(AwsLcVerifier),
+            identity: IdentityService::new(
+                Arc::new(database.clone()),
+                Arc::new(PgUserRepository),
+                clock.clone(),
+            ),
+            register: AccessTokenRegister::new(
+                Arc::new(database.clone()),
+                Arc::new(PgAccessTokenRecordStore),
+                Arc::new(PgGrantStore),
+                Arc::new(PgRefreshTokenStore),
+            ),
+            clock,
+        }),
+        public_url: config.public_url.clone(),
+    }
+}
+
+/// Builds everything the Authorization API needs. It checks access tokens
+/// against the tenants' keys, so there is no Authorization API without
+/// them.
+fn authorization_api(
+    config: &Config,
+    database: &Database,
+    keys: KeyService,
+    engines: EngineRegistry,
+) -> AuthorizationApiState {
+    let clock = Arc::new(SystemClock);
+    let units = || -> Arc<dyn hodor_kernel::UnitOfWorkFactory> { Arc::new(database.clone()) };
+    let applications = ApplicationService::new(ApplicationPorts {
+        units_of_work: units(),
+        applications: Arc::new(PgApplicationStore),
+        clients: Arc::new(PgClientStore),
+        resource_servers: Arc::new(PgResourceServerStore),
+        digest: Arc::new(Sha256Digest),
+        random: Arc::new(OsRandom),
+        clock: clock.clone(),
+    });
+    AuthorizationApiState {
+        access: ResourceAccessService::new(ResourceAccessPorts {
+            keys,
+            verifier: Arc::new(AwsLcVerifier),
+            register: AccessTokenRegister::new(
+                units(),
+                Arc::new(PgAccessTokenRecordStore),
+                Arc::new(PgGrantStore),
+                Arc::new(PgRefreshTokenStore),
+            ),
+            applications: applications.clone(),
+            clock: clock.clone(),
+        }),
+        evaluation: EvaluationService::new(
+            units(),
+            Arc::new(PgRoleAssignmentStore),
+            Arc::new(PgEngineBindingStore),
+            Arc::new(subjects::ServerSubjects {
+                identity: IdentityService::new(units(), Arc::new(PgUserRepository), clock.clone()),
+                applications,
+            }),
+            engines,
+            clock,
+        )
+        .with_decision_log(decision_log(database)),
+        public_url: config.public_url.clone(),
+    }
+}
+
+/// The record of decisions, written by the Authorization API and read by
+/// the administration interface.
+fn decision_log(database: &Database) -> DecisionLog {
+    DecisionLog::new(
+        Arc::new(database.clone()),
+        Arc::new(PgDecisionLogStore),
+        Arc::new(OsRandom),
+        Arc::new(SystemClock),
+    )
+}
+
+/// Builds everything the end-session endpoint needs. A hint is checked
+/// against the tenant's keys, so there is no end-session endpoint without
+/// them, as there is no ID token.
+fn logout(
+    config: &Config,
+    database: &Database,
+    keys: KeyService,
+    sessions: SessionService,
+) -> LogoutState {
+    LogoutState {
+        logout: LogoutService::new(LogoutPorts {
+            units_of_work: Arc::new(database.clone()),
+            applications: Arc::new(PgApplicationStore),
+            clients: Arc::new(PgClientStore),
+            keys,
+            verifier: Arc::new(AwsLcVerifier),
+        }),
+        sessions,
+        public_url: config.public_url.clone(),
+    }
 }
 
 /// The hosts that may be reached at a private address and over plain
@@ -423,6 +825,67 @@ fn development_hosts(config: &Config) -> Vec<String> {
         .map(|host| host.trim().to_owned())
         .filter(|host| !host.is_empty())
         .collect()
+}
+
+/// The engines that answer for resource servers, beside the native engine
+/// the authorization context keeps for Hodor's administration: the native
+/// engine over the tenant's own roles, and Open Policy Agent. Open Policy
+/// Agent is always registered, so that a binding to it fails closed when no
+/// instance is configured instead of being refused.
+fn authorization_engines(
+    config: &Config,
+    database: &Database,
+) -> Result<EngineRegistry, DomainError> {
+    let instances = Instances::parse(
+        config.open_policy_agent_address.as_deref(),
+        &config.open_policy_agent_tenant_addresses,
+    )?;
+    let addresses = instances.addresses();
+    let http = ServiceHttpClient::new(
+        &addresses,
+        OutboundPolicy {
+            max_response_bytes: 64 * 1024,
+            ..OutboundPolicy::default()
+        },
+    )?;
+    if addresses.is_empty() {
+        tracing::info!("no Open Policy Agent instance is configured");
+    } else {
+        tracing::info!(
+            instances = addresses.len(),
+            "Open Policy Agent instances configured"
+        );
+    }
+    let mut engine = OpenPolicyAgentEngine::new(
+        Arc::new(http),
+        Arc::new(Sha256Digest),
+        Arc::new(SystemClock),
+        instances,
+    );
+    if let Some(token) = &config.open_policy_agent_token {
+        engine = engine.with_token(Secret::from(token.clone()));
+    }
+    let engine = engine.with_revisions(
+        Arc::new(StoredRevisions::new(
+            Arc::new(database.clone()),
+            Arc::new(PgBundleStore),
+            Arc::new(SystemClock),
+        )),
+        time::Duration::seconds(i64::from(config.open_policy_agent_revision_lag_seconds)),
+    );
+    let mut registry = EngineRegistry::new();
+    let native = Arc::new(
+        NativeEngine::new(
+            Arc::new(database.clone()),
+            Arc::new(PgRoleAssignmentStore),
+            Arc::new(PgNativeRoleStore),
+            Arc::new(SystemClock),
+        )
+        .with_condition_language(Arc::new(CelConditionLanguage::new())),
+    );
+    registry.register_with_simulator(native.clone(), native)?;
+    registry.register(Arc::new(engine))?;
+    Ok(registry)
 }
 
 /// The directories that may be connected to: empty unless set.
@@ -462,6 +925,26 @@ impl LockoutPolicy for TenantLockout {
 
 /// Builds what signing in through an identity provider needs, if this
 /// installation has keys to keep secrets with.
+/// Authenticator applications, whose secrets are kept sealed: none
+/// without `HODOR_SECRET_KEYS`.
+fn totp_service(
+    config: &Config,
+    database: &Database,
+    random: Arc<OsRandom>,
+) -> Result<Option<TotpService>, DomainError> {
+    let Some(setting) = &config.secret_keys else {
+        return Ok(None);
+    };
+    Ok(Some(TotpService::new(
+        Arc::new(database.clone()),
+        Arc::new(PgTotpStore),
+        secret_box(setting, database)?,
+        Arc::new(AwsLcHmacSha1),
+        random,
+        Arc::new(SystemClock),
+    )))
+}
+
 fn external_sign_in(
     config: &Config,
     database: &Database,
@@ -473,7 +956,7 @@ fn external_sign_in(
         tracing::warn!("HODOR_SECRET_KEYS is not set: no identity provider can be used");
         return Ok(None);
     };
-    let secrets = Arc::new(SecretKeys::parse(&Secret::from(setting.clone()))?);
+    let secrets = secret_box(setting, database)?;
     let units = || Arc::new(database.clone());
     let clock = Arc::new(SystemClock);
     let digest = Arc::new(Sha256Digest);
@@ -521,8 +1004,81 @@ fn external_sign_in(
     Ok(Some(sign_in))
 }
 
+/// The rotation policy as far as the server uses it: the overlap of a
+/// rotation by hand.
+fn key_rotation(config: &Config) -> Result<RotationPolicy, DomainError> {
+    let default = RotationPolicy::DEFAULT;
+    RotationPolicy::new(
+        default.period(),
+        default.publication(),
+        time::Duration::hours(config.key_overlap_hours),
+    )
+}
+
+/// The keys context, when there are root keys to wrap the tenants' keys
+/// with.
+fn keys(config: &Config, database: &Database) -> Result<Option<KeyService>, DomainError> {
+    let Some(setting) = &config.secret_keys else {
+        return Ok(None);
+    };
+    let root = Arc::new(SecretKeys::parse(&Secret::from(setting.clone()))?);
+    Ok(Some(KeyService::new(
+        Arc::new(database.clone()),
+        Arc::new(PgKeyStore),
+        Arc::new(LocalKeyProvider::new(root)),
+        Arc::new(SystemClock),
+    )))
+}
+
+/// Where secrets at rest are sealed: under the tenant's data keys, with
+/// the root keys of `HODOR_SECRET_KEYS` wrapping those keys and still
+/// opening secrets of the first format until the tenant refuses them
+/// (`docs/security/secrets-at-rest.md`).
+fn secret_box(setting: &str, database: &Database) -> Result<Arc<dyn SecretBox>, DomainError> {
+    let root = Arc::new(SecretKeys::parse(&Secret::from(setting.to_owned()))?);
+    Ok(Arc::new(TenantSecretBox::new(
+        Arc::new(database.clone()),
+        Arc::new(PgKeyStore),
+        Arc::new(LocalKeyProvider::new(root.clone())),
+        Arc::new(PgSealingStateStore),
+        Some(root),
+        Arc::new(SystemClock),
+    )))
+}
+
+/// People's own factors, with authenticator applications when the
+/// installation can keep secrets.
+fn factor_service(
+    config: &Config,
+    database: &Database,
+    identity: &IdentityService,
+    tenants: &TenantService,
+    webauthn: WebAuthnService,
+) -> Result<FactorService, DomainError> {
+    let factors = FactorService::new(
+        identity.clone(),
+        tenants.clone(),
+        webauthn,
+        RecoveryCodeService::new(
+            Arc::new(database.clone()),
+            Arc::new(PgRecoveryCodeStore),
+            Arc::new(Sha256Digest),
+            Arc::new(OsRandom),
+            Arc::new(SystemClock),
+        ),
+    );
+    Ok(match totp_service(config, database, Arc::new(OsRandom))? {
+        Some(totp) => factors.with_totp(totp),
+        None => factors,
+    })
+}
+
 /// Builds everything the administration interface needs.
-fn administration(config: &Config, database: &Database) -> Result<AdminState, DomainError> {
+fn administration(
+    config: &Config,
+    database: &Database,
+    engines: &EngineRegistry,
+) -> Result<AdminState, DomainError> {
     let units = || Arc::new(database.clone());
     let clock = Arc::new(SystemClock);
     let digest = Arc::new(Sha256Digest);
@@ -535,7 +1091,7 @@ fn administration(config: &Config, database: &Database) -> Result<AdminState, Do
                 units(),
                 Arc::new(PgProviderStore),
                 Arc::new(PgLinkStore),
-                Arc::new(SecretKeys::parse(&Secret::from(setting.clone()))?),
+                secret_box(setting, database)?,
                 clock.clone(),
             )
             .allowing_development_hosts(&development_hosts(config))
@@ -543,6 +1099,16 @@ fn administration(config: &Config, database: &Database) -> Result<AdminState, Do
         ),
         None => None,
     };
+    let applications = ApplicationService::new(ApplicationPorts {
+        units_of_work: units(),
+        applications: Arc::new(PgApplicationStore),
+        clients: Arc::new(PgClientStore),
+        resource_servers: Arc::new(PgResourceServerStore),
+        digest: digest.clone(),
+        random: random.clone(),
+        clock: clock.clone(),
+    });
+    let applications_for_subjects = applications.clone();
     Ok(AdminState {
         tokens: AccessTokenService::new(
             units(),
@@ -565,8 +1131,64 @@ fn administration(config: &Config, database: &Database) -> Result<AdminState, Do
             clock.clone(),
         ),
         // The server reads the audit log; the worker writes it.
-        audit: AuditService::new(units(), Arc::new(PgAuditLog), digest, clock),
+        audit: AuditService::new(units(), Arc::new(PgAuditLog), digest, clock.clone()),
         federation,
+        keys: keys(config, database)?,
+        key_rotation: key_rotation(config)?,
+        applications,
+        tenants: tenant_service(database),
+        factors: {
+            let identity = IdentityService::new(units(), Arc::new(PgUserRepository), clock.clone());
+            let tenants = TenantService::new(
+                units(),
+                Arc::new(PgTenantRepository),
+                Arc::new(PgTenantDirectory::new(database.clone())),
+                clock.clone(),
+            );
+            let webauthn = WebAuthnService::new(
+                units(),
+                Arc::new(PgWebAuthnStore),
+                RelyingParty::from_public_address(&config.public_url)?,
+                Arc::new(Sha256Digest),
+                Arc::new(AwsLcVerifier),
+                Arc::new(OsRandom),
+                Arc::new(SystemClock),
+            );
+            factor_service(config, database, &identity, &tenants, webauthn)?
+        },
+        consents: consents(database),
+        decisions: decision_log(database),
+        roles: RoleService::new(units(), Arc::new(PgNativeRoleStore), clock.clone())
+            .with_condition_language(Arc::new(CelConditionLanguage::new())),
+        evaluation: EvaluationService::new(
+            units(),
+            Arc::new(PgRoleAssignmentStore),
+            Arc::new(PgEngineBindingStore),
+            Arc::new(subjects::ServerSubjects {
+                identity: IdentityService::new(units(), Arc::new(PgUserRepository), clock.clone()),
+                applications: applications_for_subjects,
+            }),
+            engines.clone(),
+            clock.clone(),
+        ),
+        policies: Some(PolicyService::new(
+            Arc::new(PgPolicyVersionStore),
+            Arc::new(PgPublicationStore),
+            Arc::new(PgSimulationStore),
+            BundleService::new(
+                Arc::new(PgInstanceStore::new(database.clone())),
+                Arc::new(PgBundleStore),
+                Arc::new(PgInstanceStatusStore),
+                Arc::new(PgUploadedDecisionStore),
+                Arc::new(database.clone()),
+                Arc::new(Sha256Digest),
+                Arc::new(OsRandom),
+                Arc::new(SystemClock),
+            ),
+            Arc::new(database.clone()),
+            Arc::new(Sha256Digest),
+            Arc::new(SystemClock),
+        )),
         public_url: config.public_url.clone(),
     })
 }

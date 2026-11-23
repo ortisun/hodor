@@ -138,6 +138,7 @@ nav:
       - Install with Docker: operations/install-with-docker.md
       - Install on Kubernetes: operations/install-on-kubernetes.md
       - Deployment: operations/deployment.md
+      - OpenID conformance: operations/conformance.md
   - Examples:
       - examples/README.md
       - examples/first-tenant-and-administrator.md
@@ -160,16 +161,19 @@ nav:
           - architecture/contexts/identity.md
           - architecture/contexts/credential.md
           - architecture/contexts/session.md
+          - architecture/contexts/keys.md
           - architecture/contexts/authentication.md
           - architecture/contexts/notification.md
           - architecture/contexts/audit.md
           - architecture/contexts/authorization.md
           - architecture/contexts/federation.md
+          - architecture/contexts/oauth.md
   - Interfaces and protocols:
       - api/api-spec.md
       - api/interaction-api.md
       - api/admin-api.md
       - api/admin-reference.md
+      - api/authorization-reference.md
       - api/console-interface.md
       - protocols/sequences.md
   - Security:
@@ -212,6 +216,10 @@ nav:
       - decisions/0020-console-on-the-hodor-session.md
       - decisions/0021-documentation-site.md
       - decisions/0022-installation-packages.md
+      - decisions/0023-what-0.2.0-holds.md
+      - decisions/0024-webauthn-checks.md
+      - decisions/0025-condition-language.md
+      - decisions/0026-policy-checks-in-a-sandbox.md
   - Contributing:
       - development/conventions.md
       - development/documentation-site.md

@@ -45,20 +45,24 @@ OAuth endpoints follow their RFCs instead: form-encoded requests and the `error`
 
 ## OAuth 2.x and OpenID Connect
 
+The paths are relative to the tenant, `https://{host}/t/{slug}`, whose issuer is `{HODOR_PUBLIC_URL}/t/{slug}`. The authorization endpoint, the token endpoint and the OpenID Provider are specified in [the OAuth context](../architecture/contexts/oauth.md#authorization-endpoint).
+
 | Method and path | Purpose | Standard |
 |---|---|---|
-| `GET /.well-known/openid-configuration` | Provider metadata | OpenID Connect Discovery |
-| `GET /.well-known/oauth-authorization-server` | Authorization server metadata | RFC 8414 |
-| `GET /oauth2/jwks` | Public signing keys | RFC 7517 |
+| `GET /.well-known/openid-configuration` | Provider metadata (built: [discovery](../architecture/contexts/oauth.md#discovery)) | OpenID Connect Discovery |
+| `GET /.well-known/oauth-authorization-server` | Authorization server metadata, the same document (built) | RFC 8414 |
+| `GET /oauth2/jwks` | Public signing keys (built: [the published key set](../architecture/contexts/keys.md#the-published-key-set)) | RFC 7517 |
 | `GET, POST /oauth2/authorize` | Authorization endpoint | RFC 6749, OpenID Connect Core |
+| `GET /oauth2/authorize/resume` | Where the hosted pages send the browser after a sign-in, to go on with the pending authorization request ([the OAuth context](../architecture/contexts/oauth.md#signing-in-and-coming-back)) | — |
 | `POST /oauth2/par` | Pushed authorization request | RFC 9126 |
-| `POST /oauth2/token` | Token endpoint: `authorization_code`, `refresh_token`, `client_credentials`, `urn:ietf:params:oauth:grant-type:device_code`, `…:token-exchange`, `…:jwt-bearer` | RFC 6749, 8628, 8693, 7523 |
-| `POST /oauth2/revoke` | Revocation | RFC 7009 |
-| `POST /oauth2/introspect` | Introspection | RFC 7662 |
-| `GET, POST /oauth2/userinfo` | UserInfo | OpenID Connect Core |
+| `POST /oauth2/token` | Token endpoint: `authorization_code`, `refresh_token` and `client_credentials` (built: [the token endpoint](../architecture/contexts/oauth.md#token-endpoint-and-client-authentication)), `urn:ietf:params:oauth:grant-type:device_code`, `…:token-exchange`, `…:jwt-bearer` | RFC 6749, 8628, 8693, 7523 |
+| `POST /oauth2/revoke` | Revocation (built: [revocation](../architecture/contexts/oauth.md#revocation)) | RFC 7009 |
+| `POST /oauth2/introspect` | Introspection (built: [introspection](../architecture/contexts/oauth.md#introspection)) | RFC 7662 |
+| `GET, POST /oauth2/userinfo` | UserInfo (built: [UserInfo](../architecture/contexts/oauth.md#userinfo)) | OpenID Connect Core |
 | `POST /oauth2/device_authorization` | Device authorization | RFC 8628 |
 | `GET /oauth2/device` | User code entry page | RFC 8628 |
-| `GET, POST /oauth2/logout` | Logout initiated by the relying party | OpenID Connect RP-Initiated Logout |
+| `GET, POST /oauth2/logout` | Logout initiated by the relying party (built: [logout](../architecture/contexts/oauth.md#logout-initiated-by-the-relying-party)) | OpenID Connect RP-Initiated Logout |
+| `GET /oauth2/logout/finish` | Where a logout that asked the person ends ([finishing](../architecture/contexts/oauth.md#finishing)) | — |
 | `POST /oauth2/register`, `GET, PUT, DELETE /oauth2/register/{client_id}` | Dynamic client registration and management | RFC 7591, 7592 |
 
 Advertised in metadata and enforced: `response_types_supported: ["code"]`, `code_challenge_methods_supported: ["S256"]`, `authorization_response_iss_parameter_supported: true`, `id_token_signing_alg_values_supported` starting with `ES256` and `RS256`.
@@ -114,7 +118,7 @@ Standard collection and item routes (`GET` list, `POST`, `GET`, `PATCH`, `DELETE
 | Identity providers | `/admin/identity-providers`, `/admin/routing-rules` | `POST /identity-providers/{id}:test`, `:deactivate` |
 | Authentication | `/admin/auth-flows`, `/auth-flows/{id}/versions` | `POST /versions/{v}:validate`, `:simulate`, `:publish` |
 | Authorization | `/admin/roles`, `/permissions`, `/role-assignments`, `/acl`, `/relation-tuples`, `/policies`, `/policies/{id}/versions`, `/bundles`, `/engine-bindings`, `/decision-logs` | `POST /versions/{v}:validate`, `:test`, `:simulate`, `:publish`; `POST /policies/{id}:rollback` |
-| Keys | `/admin/keys` | `POST /keys/{set}:rotate`, `POST /keys/{set}/versions/{kid}:revoke` |
+| Keys | `/admin/keys/{set}` | `POST /keys/{set}:rotate`, `POST /keys/{set}/versions/{kid}:revoke` (built: [the administration interface](admin-api.md#keys)) |
 | Sessions | `/admin/sessions` | `DELETE`, `POST /sessions:revoke-all` |
 | Audit | `/admin/audit-records` (read-only) | `POST /audit-records:export` |
 | Security posture | `/admin/posture` (read-only summary), `/admin/posture/findings`, `/findings/{id}/acceptances` | `POST /posture:evaluate`; an acceptance carries a reason and an expiry ([control plane](../design/control-plane.md#security-posture)) |
@@ -123,6 +127,17 @@ Standard collection and item routes (`GET` list, `POST`, `GET`, `PATCH`, `DELETE
 Custom actions use the `:verb` suffix so that they never collide with resource identifiers.
 
 ## Authorization API
+
+Applications ask Hodor whether a subject may do an action to one of their resources. Specified in [the authorization context](../architecture/contexts/authorization.md#the-authorization-api); [the reference](authorization-reference.md) shows every operation.
+
+| Method and path, under `/t/{slug}/api/v1/authorization` | Purpose | Scope |
+|---|---|---|
+| `POST /evaluate` | One decision | `authz:evaluate` |
+| `POST /batch` | Up to 100 decisions, one per request, in order | `authz:evaluate` |
+| `POST /simulate` | What would be decided against chosen policies; never recorded as a real decision | `authz:simulate` |
+| `GET /openapi.json` | The OpenAPI document of this API, without authentication | |
+
+The caller sends `Authorization: Bearer` with an access token of the tenant whose audience includes `urn:hodor:authorization`. The resource server asked about is the one of the token client's application; the body never names it, and never names a tenant.
 
 ```http
 POST /t/acme/api/v1/authorization/evaluate
@@ -147,13 +162,26 @@ Content-Type: application/json
   "decision": "ALLOW",
   "decision_id": "0193f1c9-...",
   "evaluated_at": "2026-11-20T14:03:11Z",
-  "engine": "opa",
-  "policy_version": "rev-42",
-  "reason": "policy_matched"
+  "engine": "native",
+  "policy_version": null,
+  "reason": "matching_role"
 }
 ```
 
-Differences from the example in the specification: there is no `tenant_id` in the body (the tenant is the URL's), and roles sent by the caller go under `asserted` so that policy can distinguish them from roles Hodor resolved. `/batch` takes `{ "requests": [...] }` and returns `{ "results": [...] }` in the same order, each item either a decision or a problem object. `/simulate` adds `"against": { "policy_version": "draft" }`.
+- `subject.type` is `user` or `client`; `asserted`, `resource.id`, `resource.attributes` and `context` may be left out.
+- `decision` is `ALLOW`, `DENY` or `INDETERMINATE`; only `ALLOW` permits, and `INDETERMINATE` means the engine could not decide.
+- With `authz:explain` the answer also holds `matched_policies`, and a simulation holds `trace`.
+- `/batch` takes `{ "requests": [...] }` and answers `{ "results": [...] }` in the same order. A request that cannot be read is answered by a problem object in its place; the others are decided.
+- `/simulate` takes the request's fields and `"against"`: `{ "published": true }`, `{ "revision": "rev-42" }` or `{ "draft": "policy-reference" }`. The engines that cannot simulate that selection answer `authorization.simulation_unsupported`.
+
+Differences from the example in the specification: there is no `tenant_id` in the body (the tenant is the URL's), roles sent by the caller go under `asserted` so that policy can distinguish them from roles Hodor resolved, and the resource server is the caller's own.
+
+| Answer | When |
+|---|---|
+| `401` with `WWW-Authenticate: Bearer` | No token, or a token that is not good here: another tenant's, expired, revoked, or without the API's audience |
+| `403` with `error="insufficient_scope"` | The token lacks the route's scope |
+| `403` `authorization.no_resource_server` | The token client's application has no resource server |
+| `422` | The body cannot be read; the problem's `code` says why |
 
 ## SCIM 2.0
 
@@ -177,6 +205,8 @@ Differences from the example in the specification: there is no `tenant_id` in th
 | `GET /opa/bundles/{name}` | Download the bundle (`ETag` / `If-None-Match`) |
 | `POST /opa/logs` | Upload decision log batches |
 | `POST /opa/status` | Report bundle activation and health |
+
+Every request carries the credential of the instance as a bearer token, issued when the instance is registered. What an instance may pull, and what is kept of its reports, is in [the authorization context](../architecture/contexts/authorization.md#bundles).
 
 ## Platform API
 

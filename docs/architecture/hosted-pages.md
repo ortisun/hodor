@@ -15,10 +15,21 @@ All paths are relative to the tenant: `https://{host}/t/{slug}`.
 | `/account/complete-registration` | Arrives from the link in the message, chooses a password | `POST /interaction/registration/complete` |
 | `/account/recover` | Asks for a link to choose a new password | `POST /interaction/recovery` |
 | `/account/reset-password` | Arrives from the link in the message, chooses a new password | `POST /interaction/recovery/complete` |
-| `/account` | Sees that they are signed in, and signs out | `GET` and `DELETE /interaction/session` |
+| `/account` | Sees that they are signed in and which applications they agreed to, withdraws an agreement, and signs out | `GET` and `DELETE /interaction/session`, [`GET` and `DELETE /interaction/consents`](../api/interaction-api.md#the-persons-consents) |
+| `/account/sign-out` | Is asked whether to sign out, when an application asked Hodor to sign them out | `GET` and `DELETE /interaction/session` |
+| `/account/security` | Manages their second factors and recovery codes | [The factor routes](../api/interaction-api.md#managing-ones-factors) and the WebAuthn registration routes |
+| `/account/consent` | Is asked whether an application may have the access it asks for | [`GET` and `POST /interaction/consent`](../api/interaction-api.md#consent) |
 | `/account/providers/{alias}/callback` | Arrives back from an identity provider | The sign-in routes, to [finish](../api/interaction-api.md#signing-in-through-an-identity-provider) |
 
-`/account` sends a person who is not signed in to `/account/sign-in`, and `/account/sign-in` sends a person who is already signed in to `/account`.
+`/account` and `/account/security` send a person who is not signed in to `/account/sign-in`, and `/account/sign-in` sends a person who is already signed in to `/account`.
+
+**Signing in for an application.** When an application sends a person to Hodor's [authorization endpoint](contexts/oauth.md#signing-in-and-coming-back) and they must sign in, the server sends them to `/account/sign-in?continue=authorization`. With `continue=authorization` in its address the sign-in page does not stop at the session it finds: it goes on with the sign-in in progress, or starts one, even when someone is signed in already, since the application asked for one. A [step-up](contexts/authentication.md#step-up) that the authorization endpoint started is such a sign-in in progress: the page shows the step it names, the second factor or the password, without asking for the identifier. When a sign-in completes, by any way, the identity providers' page that the person comes back to included, and the answer carries `continue`, the page goes there instead of to the account page. The page goes only to an address that starts with `/t/{slug}/oauth2/` of its own tenant; anything else is ignored and the account page is shown. When the application sent `login_hint`, the address carries it too and the sign-in page starts with that identifier filled in; when it sent `ui_locales`, the address carries them and the pages use the first of those languages they have ([the OpenID Provider](contexts/oauth.md#what-a-request-may-ask-of-the-sign-in)).
+
+**Signing out for an application.** When an application asks Hodor to sign a person out and the request does not prove that it comes from the browser's own session, the [end-session endpoint](contexts/oauth.md#asking-the-person) sends the browser to `/account/sign-out`. The page asks who is signed in. When nobody is, it goes on at once to `/t/{slug}/oauth2/logout/finish`. Otherwise it asks "Sign out of {tenant}?" with two buttons: "Sign out" ends the session as the account page does and goes on to the same address; "Stay signed in" goes to the account page. A session that ended in the meantime counts as signed out. The page never learns where the application wants the person back: that stays with the server, which sends the browser there from the finish.
+
+**Coming back from a provider to a second factor.** When the provider is accepted and the sign-in asks for a second factor next, the page the provider sends the person back to goes to `/account/sign-in`, which asks for it, with nothing said against the provider.
+
+**Signing in again.** `/account/sign-in?continue=security` starts a sign-in even when someone is signed in already, as `continue=authorization` does, and goes back to `/account/security` when it completes. The security page sends the person there when a change needs [a recent sign-in](contexts/authentication.md#proving-oneself-again).
 
 Any other path under `/account` is answered with `404` by the server.
 
@@ -40,7 +51,11 @@ stateDiagram-v2
 The page is a renderer for the answer of the interaction interface:
 
 - On opening, it asks who is signed in. If nobody is, it asks where the current sign-in stands, and starts one if there is none. A reloaded page therefore continues where it was.
-- It shows the form for the `step` in the answer: `identifier` or `password`. A step the page does not know is shown as "this page cannot continue this sign-in", never guessed at.
+- It shows the form for the `step` in the answer: `identifier`, `password`, `webauthn` or `totp`. A step the page does not know is shown as "this page cannot continue this sign-in", never guessed at.
+- The `totp` form asks for the code the person's authenticator application shows, in one field with `autocomplete="one-time-code"` and a numeric keyboard on phones, and offers to start again with another identifier.
+- The `identifier` step also offers a passkey, in a browser that can use one: a button, "sign in with a passkey", and, where the browser supports conditional requests, the passkeys it holds offered in the identifier field itself (`autocomplete="username webauthn"`). Either asks the server for [the passkey challenge](../api/interaction-api.md#signing-in-with-a-passkey); a passkey that answers signs the person in with nothing more. The conditional request is abandoned as soon as the person types an identifier, presses the button or leaves the step.
+- The `webauthn` step is one button, "use the security key". Pressing it asks the server for [the challenge](../api/interaction-api.md#the-webauthn-step), then the person's authenticator through the browser, and sends the answer. When the authenticator gives none, because the person cancelled or it timed out, nothing is sent and the page says the key did not answer; a browser that cannot use security keys is told so.
+- The `totp` form and the `webauthn` step also offer "use a recovery code instead". It changes the form, in place, to one field for a recovery code, with no numeric keyboard and no automatic capitals or corrections, submitted to the `recovery_code` substitute; a way back to the code of the application, or to the security key, is offered too. A rejected recovery code shows the generic "that did not work" message on the recovery code form.
 - A `rejected` answer shows the same form again with one message, "that did not work", whatever the reason. The page has no way of knowing the reason and does not try.
 - "Use another address" on the password step abandons the sign-in and starts a new one.
 - A sign-in that expired while the person was typing is started again, and the page says so.
@@ -63,6 +78,19 @@ A SAML identity provider does not send the person back with a code: it posts its
 
 The page decides nothing and shows nothing of what the provider sent.
 
+### Asking for consent
+
+When a third-party application asks for access the person has not agreed to, the [authorization endpoint](contexts/oauth.md#asking) sends the browser to `/account/consent`. The page:
+
+- reads what the request asks for. Without a request waiting for this browser, it says there is nothing to answer and offers the account page;
+- names the application, in the heading: "Billing wants to access your account";
+- lists what it asks for, one line per scope. The scopes of OpenID Connect are worded by the page in the person's language: `openid` "know who you are", `profile` "see your name and username", `email` "see your email address", `address` and `phone` likewise. A scope of a resource server shows the description its administrator wrote, with the resource server's name; that text is shown as text, never as markup;
+- says so plainly when the application asks for offline access: "keep this access when you are not using it";
+- offers two buttons, "allow" and "deny". Neither is chosen for the person: nothing is answered until one is pressed;
+- sends the answer, then goes where the answer says, which is only ever an address of the tenant's own authorization endpoint, as after a sign-in.
+
+The account page lists the applications the person agreed to, each with what it may do and until when, and a button, "withdraw", that asks nothing more: a withdrawn agreement only means the application asks again.
+
 ### Registering and recovering
 
 Asking shows the same message whatever the address: "if this address can be used, a message is on its way". The page sends the language it is being shown in as `locale`, so the message arrives in that language.
@@ -70,6 +98,21 @@ Asking shows the same message whatever the address: "if this address can be used
 The link in the message carries its token after `#`, which a browser never sends to a server. The page that finishes reads it from there and sends it in the body of its one request. The token never goes into storage, into another address or into a log.
 
 After finishing, the person is sent to sign in, with a message saying the account is ready or the password was changed. Neither page signs the person in.
+
+### A person's own factors
+
+`/account/security` shows the person's second factors and lets them change them, by the rules of [the authentication context](contexts/authentication.md#a-persons-own-factors). The account page links to it.
+
+| Part | What the person sees and does |
+|---|---|
+| Authenticator application | Whether one is in use. Setting one up shows a QR code and the secret as text, in groups of four, then asks for a code; removing one asks to confirm first. Not shown when the installation offers none |
+| Security keys and passkeys | Each key with its name, whether it is a passkey, when it was added and last used. Adding a security key or a passkey asks for a name and then for the key; a key can be renamed and removed, removing after confirming |
+| Recovery codes | How many unused codes are left. Generating a new set, after confirming, shows it once |
+| A recent sign-in | When changes need the person to sign in again, a notice says so, with a button to the sign-in page; the change buttons appear when the sign-in is recent |
+
+Recovery codes made with the first factor, or on request, are shown once in a list the person can copy, with a button the person presses once they have kept them. Leaving the page forgets them.
+
+The QR code is drawn in the page from the `otpauth://` address as an SVG of squares, with the `qrcode-generator` library (MIT, no dependencies): no image is fetched, no markup is made from text, so the [Content Security Policy](#content-security-policy) is unchanged. The address never leaves the page.
 
 ### What a person is told when something goes wrong
 
@@ -83,11 +126,17 @@ The pages show their own words, chosen by the `code` of the [problem document](.
 | `credential.password_too_short`, `credential.password_too_long`, `credential.password_is_own_name`, `credential.password_reused` | What is wrong with the password, next to the field |
 | `identity.display_name_invalid` | The name cannot be used, next to the field |
 | `credential.hashing_overloaded` | The server is busy; try again in a moment |
+| `authentication.recent_sign_in_required` | Sign in again to make this change, with a button to do it |
+| `authentication.last_second_factor` | This is the last second factor and the organization requires one; add another first |
+| `credential.totp_code_wrong` | That is not the code the application shows |
+| `credential.totp_enrollment_not_found` | Setting up took too long; start again |
+| `credential.webauthn_name_invalid` | The name cannot be used, next to the field |
+| `credential.webauthn_registration_refused`, `credential.webauthn_credential_exists` | The key could not be added, or is added already |
 | No answer at all | The server could not be reached |
 
 ## Language
 
-The pages exist in English (`en`) and Brazilian Portuguese (`pt-BR`). The language is the first of the browser's preferred languages that the pages have; anything else falls back to English. All copy lives in one file per language, and a test fails if one language has a message the other lacks.
+The pages exist in English (`en`) and Brazilian Portuguese (`pt-BR`). The language is the first of the languages an application asked for with `ui_locales` that the pages have, then the first of the browser's preferred languages that they have; anything else falls back to English. All copy lives in one file per language, and a test fails if one language has a message the other lacks.
 
 ## Appearance
 
@@ -111,7 +160,7 @@ Both are files with the content in their name, kept by the browser for good afte
 - Every page can be used with the keyboard alone, in the order a person reads it.
 - When a page opens or shows something else, focus moves to its heading, so that a screen reader announces it. When a form asks for something to be typed first, focus moves to that field instead: a person types the address, presses Enter, types the password and presses Enter.
 - Every field has a visible label. An error about a field is tied to the field; an error about the whole form is announced as an alert.
-- Fields carry the `autocomplete` values password managers rely on: `username`, `current-password`, `new-password`, `email`, `name`.
+- Fields carry the `autocomplete` values password managers rely on: `username`, `current-password`, `new-password`, `email`, `name`, `one-time-code`.
 - The pages are checked by an automated accessibility checker in the browser tests, against Web Content Accessibility Guidelines 2.2 level AA.
 
 ## How the pages are served
@@ -196,7 +245,7 @@ npm run browser-tests
 | Unit tests of the application | The client turns answers and problem documents into what the pages show; both languages have the same messages; each page renders the step it is given | `npm test` in `frontend/auth-ui`, with no server |
 | Tests of the HTTP layer | The listed pages get `index.html` with the policy above, other paths get `404`, files get the right caching, and a path cannot climb out of the directory | `cargo test`, with a directory made by the test; Node.js is not needed |
 | Tests of the server binary | The real `hodor-server` serves the pages of the directory it is given, serves none without the setting, and refuses to start with a directory that has no application | `cargo test`, with a directory made by the test |
-| Browser tests | A person registers, reads the message, chooses a password, signs in and signs out; recovers a password; is refused with a wrong password; signs in with the keyboard alone. No page reports a Content Security Policy violation, a script error or an accessibility violation | Playwright with Chromium against the Compose stack, in continuous integration |
+| Browser tests | A person registers, reads the message, chooses a password, signs in and signs out; recovers a password; is refused with a wrong password; signs in with the keyboard alone; registers a security key and signs in with it, and registers a passkey and signs in with it alone, through virtual authenticators of Chromium; on the security page, as a person made through the development identity provider, sets up an authenticator application with a code computed by the test and keeps the recovery codes, is asked for its code at the next sign-in, is offered a new sign-in by `continue=security`, adds a passkey, generates new codes, renames and removes the passkey, and does all of it with the keyboard alone. No page reports a Content Security Policy violation, a script error or an accessibility violation | Playwright with Chromium against the Compose stack, in continuous integration |
 
 The browser tests read the messages from the development mail server of the Compose stack, as a person would read their mailbox, and sign in through [the development identity provider](../development/local-setup.md#the-development-identity-provider) of the same stack: created on the first visit, recognized on the second, refused when the address belongs to an account that exists, and told so when the person cancels.
 
@@ -206,7 +255,8 @@ The browser tests read the messages from the development mail server of the Comp
 |---|---|
 | The tenant's name, logo and colors on the pages. The pages show the tenant's slug | With tenant branding, Phase 3 |
 | Hiding the link to register when the tenant does not accept registrations. The page says so after the person asks | With a public description of the tenant, Phase 2 |
-| Returning to the application that sent the person to sign in | With OAuth, Phase 2 |
 | The person's sessions on the account page | The account console, Phase 2 |
 | A choice of language on the page, and a remembered theme | The account console, Phase 2 |
 | Browsers other than Chromium in the browser tests | Hardening pass |
+| The person's sessions on the security page, and ending them | The account console, Phase 2 |
+| Coming back to the security page after signing in again through an identity provider. `continue=security` is not carried through the provider, so the person comes back to the account page and opens the security page again | With the account console, Phase 2 |

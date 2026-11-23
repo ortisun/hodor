@@ -12,7 +12,7 @@ Start with the [critical review](architecture/critical-review.md): it lists wher
 | 2 | Functional Requirements | [product/requirements.md](product/requirements.md#functional-requirements) |
 | 3 | Non-functional Requirements | [product/requirements.md](product/requirements.md#non-functional-requirements) |
 | 4 | Domain Model | [architecture/domain-model.md](architecture/domain-model.md) |
-| — | Context specifications, one page per bounded context, written before the context is built | [tenant](architecture/contexts/tenant.md), [identity](architecture/contexts/identity.md), [credential](architecture/contexts/credential.md), [session](architecture/contexts/session.md), [authentication](architecture/contexts/authentication.md), [notification](architecture/contexts/notification.md), [audit](architecture/contexts/audit.md), [authorization](architecture/contexts/authorization.md), [federation](architecture/contexts/federation.md) |
+| — | Context specifications, one page per bounded context, written before the context is built | [tenant](architecture/contexts/tenant.md), [identity](architecture/contexts/identity.md), [credential](architecture/contexts/credential.md), [session](architecture/contexts/session.md), [keys](architecture/contexts/keys.md), [oauth](architecture/contexts/oauth.md), [authentication](architecture/contexts/authentication.md), [notification](architecture/contexts/notification.md), [audit](architecture/contexts/audit.md), [authorization](architecture/contexts/authorization.md), [federation](architecture/contexts/federation.md) |
 | 5 | Bounded Context Map | [architecture/domain-model.md](architecture/domain-model.md#bounded-context-map) |
 | 6 | C4 Context Diagram | [architecture/overview.md](architecture/overview.md#c4-level-1-context) |
 | 7 | C4 Container Diagram | [architecture/overview.md](architecture/overview.md#c4-level-2-containers) |
@@ -44,6 +44,7 @@ Start with the [critical review](architecture/critical-review.md): it lists wher
 | — | Installing with Docker: Hodor on one machine, with passwords of your own, PostgreSQL and HTTPS | [operations/install-with-docker.md](operations/install-with-docker.md) |
 | — | Installing on Kubernetes: the Helm chart, what it creates and what it expects to find | [operations/install-on-kubernetes.md](operations/install-on-kubernetes.md) |
 | — | Quick-start: from a clean checkout to a tenant people sign in to, and the demonstration of Milestone 1 | [operations/quick-start.md](operations/quick-start.md) |
+| — | OpenID conformance: the OpenID Foundation's suite run against Hodor on every pull request, and the results it is expected to give | [operations/conformance.md](operations/conformance.md) |
 | — | Examples: a tenant and its first administrator, signing in through identity providers, calling the administration interface | [examples/](examples/README.md) |
 | 27 | Decision records | [decisions/](decisions/README.md) |
 | 28 | Product Roadmap | [product/roadmap.md](product/roadmap.md) |

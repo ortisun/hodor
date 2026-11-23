@@ -2,7 +2,7 @@
 
 ## Overview
 
-The cryptography adapter. Hodor implements no cryptography of its own: this crate connects the ports that contexts define to audited libraries (`argon2`, `aws-lc-rs`, `sha2`, `getrandom`), so replacing a library changes only this crate (`lib.rs` crate documentation, which points to `docs/decisions/0008-cryptography.md`). The modules `digest`, `password`, `random`, `sealing` and `signature` are private. Their types are re-exported at the crate root (`lib.rs` `pub use` lines).
+The cryptography adapter. Hodor implements no cryptography of its own: this crate connects the ports that contexts define to audited libraries (`argon2`, `aws-lc-rs`, `sha2`, `getrandom`), so replacing a library changes only this crate (`lib.rs` crate documentation, which points to `docs/decisions/0008-cryptography.md`). The modules `digest`, `keys`, `password`, `random`, `sealing` and `signature` are private. Their types are re-exported at the crate root (`lib.rs` `pub use` lines).
 
 ## Interface
 
@@ -12,9 +12,11 @@ The cryptography adapter. Hodor implements no cryptography of its own: this crat
 | --- | --- | --- |
 | `impl Digest for Sha256Digest` (`digest.rs:10`) | `hodor_kernel::Digest` | `Sha256Digest` |
 | `impl RandomSource for OsRandom` (`random.rs:10`) | `hodor_kernel::RandomSource` | `OsRandom` |
-| `impl SecretBox for SecretKeys` (`sealing.rs:157`) | `hodor_kernel::SecretBox` | `SecretKeys` |
+| `impl FirstFormatSecrets for SecretKeys` (`sealing.rs:253`) | `hodor_keys::api::FirstFormatSecrets` | `SecretKeys` |
 | `impl SignatureVerifier for AwsLcVerifier` (`signature.rs:14`) | `hodor_kernel::SignatureVerifier` | `AwsLcVerifier` |
+| `impl KeyProvider for LocalKeyProvider` (`keys.rs`) | `hodor_keys::api::KeyProvider` (keys context port) | `LocalKeyProvider` |
 | `impl PasswordHasher for Argon2idHasher` (`password.rs:228`) | `hodor_credential::api::PasswordHasher` (credential context port) | `Argon2idHasher` |
+| `impl HmacSha1 for AwsLcHmacSha1` (`hmac.rs`) | `hodor_credential::api::HmacSha1` (credential context port) | `AwsLcHmacSha1` |
 | `impl HttpClient for TestProvider` (`testing.rs:241`, test support only) | `hodor_kernel::HttpClient` | `testing::TestProvider` |
 
 ### Public items
@@ -29,13 +31,18 @@ The cryptography adapter. Hodor implements no cryptography of its own: this crat
   - `SecretKeys::parse(&Secret<String>)` reads the `HODOR_SECRET_KEYS` format: comma-separated `identifier:key` pairs, with each key in standard Base64.
   - `SecretKeys::generate(&dyn RandomSource) -> Secret<String>` makes a new 32-byte key in Base64.
 - `AwsLcVerifier`: verifies signatures with `aws-lc-rs` (`signature.rs:AwsLcVerifier`).
+- `LocalKeyProvider::new(root: Arc<SecretKeys>)`: the local key provider, named `local` (`keys.rs:LocalKeyProvider`). It makes P-256 keys for ES256, RSA keys of 2048 bits for RS256 and PS256, and 32-byte data keys for AES-256-GCM, and keeps each as a PKCS#8 document or raw key sealed with `root` for the tenant and the purpose `keys.<algorithm in lowercase>.<version without hyphens>`.
+- `BundleSigningKey` (`bundle_signing.rs`): the installation key that signs bundles for Open Policy Agent. `from_pem(text, key_id)` reads an ECDSA P-256 private key in PKCS #8 PEM, anything else being `authorization.bundle_signing_key_invalid`; `generate()` returns a new private key and its public key, both in PEM; `public_key_pem()`; `sign` gives the 64-byte ES256 signature.
+- `AwsLcHmacSha1`: HMAC-SHA-1 with `aws-lc-rs` (`HMAC_SHA1_FOR_LEGACY_USE_ONLY`), for the codes of authenticator applications. Tested against RFC 2202 and the SHA-1 cases of RFC 6238 (`hmac.rs`).
 - `testing` (public test-support module): compiled only under `#[cfg(any(test, feature = "testing"))]` (`lib.rs:12`). The Cargo feature `testing` pulls in the optional `form_urlencoded` and `serde_json`. It provides:
   - the constants `CLIENT_ID` and `CLIENT_SECRET`;
   - `SigningKey`, with `rsa()`, `p256()`, `published(id)` (a JSON Web Key), `sign(algorithm, message)` and `token(header, claims)`;
-  - `TestProvider`, an in-memory OpenID Connect provider that serves discovery, keys and token answers through `HttpClient::send` and records every request (`testing.rs`).
+  - `TestProvider`, an in-memory OpenID Connect provider that serves discovery, keys and token answers through `HttpClient::send` and records every request (`testing.rs`);
+  - `webauthn::SoftwareAuthenticator` (`testing/webauthn.rs`), a security key in software with a real P-256 key: `new(origin)`, `passkey(origin)` (a passkey: it verifies the person and answers with the user handle it was registered for), `at_origin(origin)` (the same key on another site), `without_verification()` (the same key, not verifying the person), `credential_id()`, `set_counter(value)`, `register(options)` and `answer(options)`, which take the options of the interaction interface and give the bodies it takes.
 
 ## Invariants
 
+- `LocalKeyProvider` opens material only for the tenant, version, algorithm and use it was made for, and only for versions whose provider is `local`; every failure to use a key gives the internal error `keys.unusable`, with the reason in `detail`, and a failure to make one gives `keys.provider_failed` (`keys.rs`). The key in the clear lives only for one operation. A data-key ciphertext is a format byte `1`, a 12-byte nonce, and the AES-256-GCM ciphertext with its tag, the associated data authenticated and not stored (`keys.rs:LocalKeyProvider::encrypt`).
 - Password hashes use Argon2id, version 19 (`Version::V0x13`), a 32-byte output and a fresh 16-byte salt from the injected `RandomSource` on every `hash` call (`password.rs:Argon2idHasher::new`, `password.rs:Argon2idHasher::hash`).
 - `Argon2idHasher::new` rejects `limits.concurrent == 0` and parameters that `argon2::Params::new` refuses. Both become an internal error (`password.rs:Argon2idHasher::new`).
 - Admission control (`password.rs:Argon2idHasher::run`, `password.rs:Admission`):
@@ -46,7 +53,7 @@ The cryptography adapter. Hodor implements no cryptography of its own: this crat
 - `verify` rejects stored hashes that do not start with `$argon2id$`. A wrong password gives `matches = false`, not an error. `needs_renewal` is true when the stored hash's prefix differs from the current parameters (`password.rs:Argon2idHasher::verify_encoded`, `password.rs:Argon2idHasher::verify`, `password.rs:Argon2Parameters::encoded_prefix`).
 - `verify_nothing` verifies against a decoy hash built at construction with the current parameters, so the work matches a real verification (`password.rs:Argon2idHasher::new`, `password.rs:Argon2idHasher::verify_nothing`).
 - `OsRandom::fill` panics if `getrandom::fill` fails. It never continues with weak randomness (`random.rs:OsRandom::fill`).
-- Sealing (`sealing.rs`):
+- Sealing (`sealing.rs`). The root keys of `HODOR_SECRET_KEYS` wrap the material of key versions (through `LocalKeyProvider`) and open the secrets of the first format, the one 0.1.0 sealed directly with them; new secrets are sealed by `TenantSecretBox` in `crates/keys` under the tenant's data key. `seal`, `open` and `needs_resealing` are methods of `SecretKeys` itself, no longer the kernel's `SecretBox`:
   - Keys are AES-256-GCM `RandomizedNonceKey` values of exactly 32 bytes; the library generates the nonce (`SecretKeys::parse`, `SecretKeys::seal`).
   - The authenticated associated data is `hodor-secret-v1`, the tenant identifier and the purpose, so a sealed secret is bound to its tenant and purpose without storing them (`associated_data`).
   - The purpose must be 1 to 128 bytes of lowercase ASCII letters, digits, `.` or `_`; otherwise the result is `secret.purpose_invalid` (`check_purpose`).
@@ -69,6 +76,7 @@ The cryptography adapter. Hodor implements no cryptography of its own: this crat
 
 - Reads operating system randomness (`random.rs:OsRandom::fill`) and draws from the injected `RandomSource` for salts, the decoy hash and new keys (`password.rs:Argon2idHasher`, `sealing.rs:SecretKeys::generate`).
 - Runs Argon2 work on the `tokio` blocking thread pool through `tokio::task::spawn_blocking` (`password.rs:Argon2idHasher::run`).
+- Runs RSA signatures (RS256 and PS256, about a millisecond each) on the same blocking pool; ES256 signatures, about a thousand times faster, run in place (`keys.rs:LocalKeyProvider::sign`).
 - Queries the processor count through `std::thread::available_parallelism` (`password.rs:HashingLimits::for_this_machine`).
 - No file or network access. `testing::TestProvider` answers in memory, behind an `Arc<Mutex<_>>`, and makes no network calls (`testing.rs:TestProvider`).
 

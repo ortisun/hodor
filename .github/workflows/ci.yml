@@ -164,6 +164,15 @@ jobs:
       - name: Run the demonstration of Milestone 2
         working-directory: .
         run: python3 deploy/demo/external_identities.py
+      - name: Run the demonstration of Milestone 3
+        working-directory: .
+        run: python3 deploy/demo/applications.py
+      - name: Run the demonstration of Milestone 4
+        working-directory: .
+        run: python3 deploy/demo/strong_authentication.py
+      - name: Run the demonstration of Milestone 5
+        working-directory: .
+        run: python3 deploy/demo/authorization.py
       - name: Show what the stack logged
         if: failure()
         working-directory: .
@@ -174,6 +183,49 @@ jobs:
           name: browser-tests-report
           path: frontend/auth-ui/playwright-report
           retention-days: 7
+
+  # The Basic OpenID Provider and Config OpenID Provider plans of the OpenID
+  # conformance suite, against the image. docs/operations/conformance.md says
+  # what runs and which results are expected.
+  conformance:
+    name: OpenID conformance
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: deploy/conformance
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: deploy/conformance/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npx playwright install --with-deps chromium
+      - name: Build the image
+        working-directory: .
+        run: docker build --file deploy/docker/Dockerfile --tag hodor:conformance .
+      - name: Start Hodor and the suite
+        run: docker compose -f compose.yaml up --wait
+        env:
+          HODOR_IMAGE: hodor:conformance
+      - name: Run the plans
+        run: node run.mjs
+        env:
+          HODOR_IMAGE: hodor:conformance
+          CONFORMANCE_REPORT: conformance-results.json
+      - name: Show what Hodor logged
+        if: failure()
+        run: docker compose -f compose.yaml logs --no-color --tail 300 hodor worker
+        env:
+          HODOR_IMAGE: hodor:conformance
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: conformance-results
+          path: deploy/conformance/conformance-results.json
+          retention-days: 14
 
   # The two installation packages in deploy/install: the Helm chart renders and the Compose file is valid.
   # Neither is installed here; docs/operations/install-with-docker.md and install-on-kubernetes.md say how

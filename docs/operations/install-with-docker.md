@@ -50,7 +50,7 @@ Run every command of this page from the root of the checkout.
 ## 1. Build the image
 
 ```bash
-docker build --file deploy/docker/Dockerfile --tag hodor:0.1.0 .
+docker build --file deploy/docker/Dockerfile --tag hodor:0.2.0 .
 ```
 
 The first build takes several minutes. The image holds the three programs, the hosted pages and the admin console.
@@ -75,7 +75,7 @@ Then fill in the five values that have no default. Compose refuses to start whil
 | `HODOR_OWNER_DATABASE_PASSWORD` | A password for the role that owns the schema, used by `migrate` only |
 | `HODOR_SERVER_DATABASE_PASSWORD` | A password for the server's role |
 | `HODOR_WORKER_DATABASE_PASSWORD` | A password for the worker's two roles |
-| `HODOR_SECRET_KEYS` | The key that keeps the secrets of identity providers encrypted in the database, as `identifier:key` |
+| `HODOR_SECRET_KEYS` | The key that keeps the secrets of identity providers and the tenants' signing keys encrypted in the database, as `identifier:key`. The server and the worker both read it |
 
 Make each of the three passwords with the command below. They are written into connection addresses, so they must be letters and digits only, which is what this prints:
 
@@ -86,10 +86,10 @@ openssl rand -hex 24
 Make the key with the image you built, and write it after an identifier of your choice, such as `2026-11:` followed by what is printed:
 
 ```bash
-docker run --rm --entrypoint /usr/local/bin/hodor-cli hodor:0.1.0 secrets generate-key
+docker run --rm --entrypoint /usr/local/bin/hodor-cli hodor:0.2.0 secrets generate-key
 ```
 
-Keep a copy of the key outside the machine. What it encrypted cannot be read without it; [secrets at rest](../security/secrets-at-rest.md#keys) explains the format and how to change the key later.
+Keep a copy of the key outside the machine. What it encrypted cannot be read without it; [secrets at rest](../security/secrets-at-rest.md#root-keys) explains the format and how to change the key later.
 
 For messages to be delivered, also set `HODOR_SMTP_URL` and `HODOR_MAIL_FROM`. The other settings are optional and explained in `.env.example`.
 
@@ -169,6 +169,11 @@ Keep the backups and the key of `HODOR_SECRET_KEYS` in different places, both ou
 1. Get the new version of the code and build its image under a new tag, as in [step 1](#1-build-the-image).
 2. Write the new tag in `HODOR_IMAGE`.
 3. Run the command of [step 3](#3-start) again. The migrations of the new version are applied first, then the server and the worker are replaced.
+4. If [deployment](deployment.md#upgrades) lists a command for the version you upgraded from, run it with the service `cli`. From 0.1.0:
+
+```bash
+docker compose -f deploy/install/docker/compose.yaml run --rm cli secrets reseal
+```
 
 Upgrade one release at a time: [deployment](deployment.md#upgrades) explains why the migrations allow that and no more.
 
