@@ -4,7 +4,8 @@
 //! It holds the applications a tenant registers, the clients that ask for
 //! tokens on their behalf, the resource servers those tokens are for, and
 //! the authorization endpoint's requests, grants and codes, and the token
-//! endpoint with the access tokens it issues. It does not sign anyone in.
+//! endpoint with the access tokens it issues, the OpenID Provider, and
+//! logout initiated by the relying party. It does not sign anyone in.
 //!
 //! The specification is `docs/architecture/contexts/oauth.md`; this crate
 //! follows it.
@@ -19,6 +20,7 @@ pub mod api {
     pub use crate::application::authorization::{
         AuthorizationCodePorts, AuthorizationCodeService, RedeemedCode, ResumedRequest,
     };
+    pub use crate::application::logout::{LogoutPorts, LogoutRefusal, LogoutService};
     pub use crate::application::ports::{
         ApplicationStore, AuthorizationCodeStore, AuthorizationRequestStore, ClientAssertionStore,
         ClientStore, GrantStore, PersonStanding, RefreshTokenStore, ResourceServerStore,
@@ -45,6 +47,11 @@ pub mod api {
     };
     pub use crate::domain::event::OauthEvent;
     pub use crate::domain::key::{ClientKey, MAX_KEYS};
+    pub use crate::domain::logout::{
+        CurrentSession, IdTokenHint, LogoutDecision, LogoutParameters, LogoutRequest,
+        MAX_LOGOUT_LOCALES_LENGTH, MAX_LOGOUT_STATE_LENGTH, ReturnAddress, check_id_token_hint,
+        refusal as logout_refusal,
+    };
     pub use crate::domain::openid::{
         ACR_MULTI_FACTOR, ACR_SINGLE_FACTOR, BearerRefusal, CheckedAccessToken, OPENID_SCOPE,
         PersonClaims, PublishedKey, UI_LOCALES, access_token_hash, asks_for_openid, assurance,

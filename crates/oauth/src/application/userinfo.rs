@@ -12,6 +12,31 @@ use serde_json::Value;
 use std::fmt;
 use std::sync::Arc;
 
+/// The tenant's published signing keys, as the checks of tokens it issued
+/// need them.
+///
+/// # Errors
+///
+/// Returns an error if storage fails.
+pub(crate) async fn published_keys(
+    keys: &KeyService,
+    tenant: &TenantContext,
+) -> Result<Vec<PublishedKey>, DomainError> {
+    Ok(keys
+        .published_keys(tenant)
+        .await?
+        .iter()
+        .filter_map(|version| {
+            let algorithm = SignatureAlgorithm::from_name(version.algorithm().as_str())?;
+            Some(PublishedKey {
+                key_id: version.id().to_string(),
+                algorithm,
+                key: version.public_key()?.clone(),
+            })
+        })
+        .collect())
+}
+
 /// The ports [`UserInfoService`] works through.
 #[derive(Clone)]
 pub struct UserInfoPorts {
@@ -65,21 +90,7 @@ impl UserInfoService {
         let Some(token) = token else {
             return Ok(Err(BearerRefusal::Missing));
         };
-        let keys: Vec<PublishedKey> = self
-            .ports
-            .keys
-            .published_keys(tenant)
-            .await?
-            .iter()
-            .filter_map(|version| {
-                let algorithm = SignatureAlgorithm::from_name(version.algorithm().as_str())?;
-                Some(PublishedKey {
-                    key_id: version.id().to_string(),
-                    algorithm,
-                    key: version.public_key()?.clone(),
-                })
-            })
-            .collect();
+        let keys = published_keys(&self.ports.keys, tenant).await?;
         let checked = match check_access_token(
             token,
             issuer,

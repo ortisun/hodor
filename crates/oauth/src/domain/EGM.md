@@ -80,6 +80,17 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   `revokes_the_family` and `revokes_the_grant`), and `OFFLINE_ACCESS`,
   `FAMILY_SECRET_PURPOSE`, `DEFAULT_RETRY_WINDOW`, `LONGEST_RETRY_WINDOW`.
   Its cases are in `refresh/tests.rs`.
+- `logout.rs`: logout initiated by the relying party. `LogoutParameters`,
+  `check_id_token_hint` (an ID token of the tenant, signature checked,
+  expiry not), `IdTokenHint`, `check_shape` and `check_request`
+  (crate-visible; the codes are in `refusal`), `LogoutRequest::decide`
+  (`Finish`, `EndSession` only for a `GET` whose hint names the browser's
+  session, `Ask` otherwise and always for a form), `ReturnAddress`,
+  `still_returns` (crate-visible). Its cases are in `logout/tests.rs`.
+- `client.rs` also keeps `post_logout_redirect_uris`: the rules of redirect
+  addresses, at most 10, only with `authorization_code`
+  (`oauth.client_post_logout_redirect_uri_invalid`);
+  `accepts_post_logout_redirect_uri`.
 - `event.rs`: `OauthEvent`, twenty-one variants, each named `oauth.*`.
 - `text.rs`: the rules of names and of scopes (`is_scope`).
 

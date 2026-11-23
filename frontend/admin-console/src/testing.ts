@@ -144,6 +144,7 @@ export function clientBody(more: Record<string, unknown> = {}) {
     authentication_method: "client_secret_basic",
     grant_types: ["authorization_code"],
     redirect_uris: ["https://billing.example.com/callback"],
+    post_logout_redirect_uris: [],
     allowed_scopes: ["openid"],
     require_pkce: true,
     token_policy: {

@@ -1899,6 +1899,7 @@ async fn an_administrator_registers_an_application_with_its_clients_and_resource
             &format!("/clients/{client}"),
             Some(serde_json::json!({
                 "redirect_uris": ["https://billing.example.com/callback", "https://billing.example.com/other"],
+                "post_logout_redirect_uris": ["https://billing.example.com/signed-out"],
                 "token_policy": { "access_token_seconds": 600 },
             })),
         )
@@ -1907,6 +1908,10 @@ async fn an_administrator_registers_an_application_with_its_clients_and_resource
     assert_eq!(
         changed.body["redirect_uris"].as_array().map(Vec::len),
         Some(2)
+    );
+    assert_eq!(
+        changed.body["post_logout_redirect_uris"],
+        serde_json::json!(["https://billing.example.com/signed-out"])
     );
     assert_eq!(changed.body["token_policy"]["access_token_seconds"], 600);
     assert_eq!(changed.body["token_policy"]["id_token_seconds"], 300);

@@ -46,6 +46,7 @@ export function ClientForm({ current, submit, onClose, text }: Props) {
   const [method, setMethod] = useState(current?.authenticationMethod ?? "client_secret_basic");
   const [grants, setGrants] = useState<string[]>(current?.grantTypes ?? ["authorization_code"]);
   const [redirects, setRedirects] = useState((current?.redirectUris ?? []).join("\n"));
+  const [afterLogout, setAfterLogout] = useState((current?.postLogoutRedirectUris ?? []).join("\n"));
   const [scopes, setScopes] = useState((current?.allowedScopes ?? ["openid"]).join(" "));
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<Failure | null>(null);
@@ -66,6 +67,7 @@ export function ClientForm({ current, submit, onClose, text }: Props) {
         // Kept in the order the server documents them.
         grantTypes: GRANTS.filter((grant) => grants.includes(grant)),
         redirectUris: linesOf(redirects),
+        postLogoutRedirectUris: linesOf(afterLogout),
         allowedScopes: scopesOf(scopes),
       });
     } catch (thrown) {
@@ -126,6 +128,14 @@ export function ClientForm({ current, submit, onClose, text }: Props) {
             value={redirects}
             onChange={setRedirects}
             rows={3}
+            width="100%"
+          />
+          <TextArea
+            label={text.postLogoutRedirectUrisLabel}
+            description={text.postLogoutRedirectUrisHint}
+            value={afterLogout}
+            onChange={setAfterLogout}
+            rows={2}
             width="100%"
           />
           <TextInput

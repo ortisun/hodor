@@ -123,6 +123,22 @@ refresh tokens is `DEFAULT_RETRY_WINDOW`, 10 seconds;
   the tenant's published `ES256` keys, then reads the person through
   `IdentityService::get`: an unknown person, or one who is not `Active`, is
   `InvalidToken`. Answers `userinfo_claims` for the token's scopes.
+- `published_keys(keys, tenant)` (crate-visible): the tenant's published
+  signing keys as `PublishedKey`s, shared with logout.
+
+### Logout (`logout.rs`)
+
+`LogoutService::new(LogoutPorts { units_of_work, applications, clients, keys,
+verifier })`:
+
+- `check(tenant, issuer, parameters)`: the outer `Result` is storage; the
+  inner one a `LogoutRefusal { code, reason }`. Checks the shape
+  (`check_shape`), then the `id_token_hint` against the published keys
+  (`check_id_token_hint`), then loads the client named by `client_id` or
+  the hint's `aud` with its application and applies `check_request`.
+- `still_returns(tenant, kept)`: whether a `ReturnAddress` kept in the
+  browser while the person was asked still holds (`still_returns` of the
+  domain).
 
 ## Invariants
 
@@ -136,4 +152,5 @@ refresh tokens is `DEFAULT_RETRY_WINDOW`, 10 seconds;
   `cargo test -p hodor-oauth --test authorization`,
   `cargo test -p hodor-oauth --test token` and
   `cargo test -p hodor-oauth --test refresh`; `cargo test -p hodor-oauth
-  --lib openid` for the OpenID Provider's domain
+  --lib openid` for the OpenID Provider's domain and `--lib logout` for
+  logout's

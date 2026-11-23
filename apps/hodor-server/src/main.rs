@@ -44,15 +44,15 @@ use hodor_keys::api::{KeyService, RotationPolicy, TenantSecretBox};
 use hodor_notification::api::Notifier;
 use hodor_oauth::api::{
     ApplicationPorts, ApplicationService, AuthorizationCodePorts, AuthorizationCodeService,
-    TokenPorts, TokenService, UserInfoPorts, UserInfoService,
+    LogoutPorts, LogoutService, TokenPorts, TokenService, UserInfoPorts, UserInfoService,
 };
 use hodor_observability::{LogFormat, Telemetry};
 use hodor_protocol_http::{
-    AdminState, AuthorizationState, ConsoleState, Health, InteractionState, Limits, Pages,
-    ReadinessCheck, ResolvedTenant, TenantResolver, TenantStatus as HttpTenantStatus, TokenState,
-    UserInfoState, admin_routes, authorization_routes, console_routes, discovery_routes,
-    interaction_routes, key_set_routes, ops_router, policy_agent_routes, public_router, serve,
-    token_routes, userinfo_routes,
+    AdminState, AuthorizationState, ConsoleState, Health, InteractionState, Limits, LogoutState,
+    Pages, ReadinessCheck, ResolvedTenant, TenantResolver, TenantStatus as HttpTenantStatus,
+    TokenState, UserInfoState, admin_routes, authorization_routes, console_routes,
+    discovery_routes, interaction_routes, key_set_routes, logout_routes, ops_router,
+    policy_agent_routes, public_router, serve, token_routes, userinfo_routes,
 };
 use hodor_session::api::SessionService;
 use hodor_tenant::api::{TenantDirectory as _, TenantService, TenantStatus};
@@ -297,6 +297,12 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
             secret_box(setting, &database)?,
         )?));
         oauth2 = oauth2.merge(userinfo_routes(userinfo(&config, &database, keys.clone())));
+        oauth2 = oauth2.merge(logout_routes(logout(
+            &config,
+            &database,
+            keys.clone(),
+            authorization.sessions.clone(),
+        )));
     }
     let mut tenant_routes = axum::Router::new()
         .nest(
@@ -644,6 +650,28 @@ fn userinfo(config: &Config, database: &Database, keys: KeyService) -> UserInfoS
             ),
             clock,
         }),
+        public_url: config.public_url.clone(),
+    }
+}
+
+/// Builds everything the end-session endpoint needs. A hint is checked
+/// against the tenant's keys, so there is no end-session endpoint without
+/// them, as there is no ID token.
+fn logout(
+    config: &Config,
+    database: &Database,
+    keys: KeyService,
+    sessions: SessionService,
+) -> LogoutState {
+    LogoutState {
+        logout: LogoutService::new(LogoutPorts {
+            units_of_work: Arc::new(database.clone()),
+            applications: Arc::new(PgApplicationStore),
+            clients: Arc::new(PgClientStore),
+            keys,
+            verifier: Arc::new(AwsLcVerifier),
+        }),
+        sessions,
         public_url: config.public_url.clone(),
     }
 }

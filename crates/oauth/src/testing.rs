@@ -389,6 +389,7 @@ fn client(application_id: ApplicationId, at: Timestamp) -> Client {
             "http://127.0.0.1:8080/callback".to_owned(),
         ],
     );
+    settings.post_logout_redirect_uris = vec!["https://payroll.example.com/signed-out".to_owned()];
     settings.allowed_scopes = vec!["openid".to_owned(), "payroll:read".to_owned()];
     Client::create(
         application_id,

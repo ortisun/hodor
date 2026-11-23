@@ -61,7 +61,8 @@ The paths are relative to the tenant, `https://{host}/t/{slug}`, whose issuer is
 | `GET, POST /oauth2/userinfo` | UserInfo (built: [UserInfo](../architecture/contexts/oauth.md#userinfo)) | OpenID Connect Core |
 | `POST /oauth2/device_authorization` | Device authorization | RFC 8628 |
 | `GET /oauth2/device` | User code entry page | RFC 8628 |
-| `GET, POST /oauth2/logout` | Logout initiated by the relying party | OpenID Connect RP-Initiated Logout |
+| `GET, POST /oauth2/logout` | Logout initiated by the relying party (built: [logout](../architecture/contexts/oauth.md#logout-initiated-by-the-relying-party)) | OpenID Connect RP-Initiated Logout |
+| `GET /oauth2/logout/finish` | Where a logout that asked the person ends ([finishing](../architecture/contexts/oauth.md#finishing)) | — |
 | `POST /oauth2/register`, `GET, PUT, DELETE /oauth2/register/{client_id}` | Dynamic client registration and management | RFC 7591, 7592 |
 
 Advertised in metadata and enforced: `response_types_supported: ["code"]`, `code_challenge_methods_supported: ["S256"]`, `authorization_response_iss_parameter_supported: true`, `id_token_signing_alg_values_supported` starting with `ES256` and `RS256`.

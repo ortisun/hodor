@@ -221,6 +221,9 @@ pub struct ClientSettings {
     pub grant_types: Vec<GrantType>,
     /// Where a person may be sent back to, compared by exact equality.
     pub redirect_uris: Vec<String>,
+    /// Where a person may be sent back to after signing out at Hodor's
+    /// end-session endpoint, compared by exact equality.
+    pub post_logout_redirect_uris: Vec<String>,
     /// The scopes it may ask for.
     pub allowed_scopes: Vec<String>,
     /// Whether it must send a code challenge. Always true for a public
@@ -235,6 +238,15 @@ fn redirect_invalid(reason: &'static str) -> DomainError {
         "oauth.client_redirect_uri_invalid",
         "a redirect address is HTTPS, plain HTTP to 127.0.0.1 or [::1], or for a public client \
          a private-use scheme such as `com.example.app:/callback`; without a fragment or a `*`",
+    )
+    .with_detail(reason)
+}
+
+fn post_logout_invalid(reason: impl Into<String>) -> DomainError {
+    DomainError::invalid(
+        "oauth.client_post_logout_redirect_uri_invalid",
+        "a post-logout redirect address follows the rules of a redirect address, and only a \
+         client with `authorization_code` has them, at most 10",
     )
     .with_detail(reason)
 }
@@ -355,6 +367,7 @@ impl ClientSettings {
             },
             grant_types,
             redirect_uris,
+            post_logout_redirect_uris: Vec::new(),
             allowed_scopes: Vec::new(),
             require_pkce: true,
             token_policy: TokenPolicy::default(),
@@ -417,6 +430,22 @@ impl ClientSettings {
         for uri in &redirect_uris {
             check_redirect_uri(uri, client_type)?;
         }
+        let post_logout_redirect_uris = without_repeats(self.post_logout_redirect_uris);
+        if post_logout_redirect_uris.len() > MAX_REDIRECT_URIS {
+            return Err(post_logout_invalid(
+                "a client has at most 10 post-logout redirect addresses",
+            ));
+        }
+        if !has_code && !post_logout_redirect_uris.is_empty() {
+            return Err(post_logout_invalid(
+                "a client without `authorization_code` has no post-logout redirect address",
+            ));
+        }
+        for uri in &post_logout_redirect_uris {
+            check_redirect_uri(uri, client_type).map_err(|error| {
+                post_logout_invalid(error.detail().unwrap_or_default().to_owned())
+            })?;
+        }
         let allowed_scopes = without_repeats(self.allowed_scopes);
         if allowed_scopes.len() > MAX_SCOPES || !allowed_scopes.iter().all(|s| text::is_scope(s)) {
             return Err(DomainError::invalid(
@@ -430,6 +459,7 @@ impl ClientSettings {
             authentication_method: self.authentication_method,
             grant_types,
             redirect_uris,
+            post_logout_redirect_uris,
             allowed_scopes,
             require_pkce: self.require_pkce,
             token_policy: self.token_policy.checked()?,
@@ -561,6 +591,17 @@ impl Client {
         self.state
             .settings
             .redirect_uris
+            .iter()
+            .any(|registered| registered == presented)
+    }
+
+    /// Whether `presented` is, character for character, one of its
+    /// post-logout redirect addresses.
+    #[must_use]
+    pub fn accepts_post_logout_redirect_uri(&self, presented: &str) -> bool {
+        self.state
+            .settings
+            .post_logout_redirect_uris
             .iter()
             .any(|registered| registered == presented)
     }
@@ -862,6 +903,73 @@ mod tests {
 
     fn redirect(value: &str, client_type: ClientType) -> Result<(), DomainError> {
         check_redirect_uri(value, client_type)
+    }
+
+    #[test]
+    fn post_logout_addresses_follow_the_rules_of_redirect_addresses() {
+        let mut settings = web();
+        settings.post_logout_redirect_uris = vec![
+            "https://payroll.example.com/signed-out".to_owned(),
+            "https://payroll.example.com/signed-out".to_owned(),
+        ];
+        let (client, _) = create(ClientType::Confidential, settings).expect("valid");
+        assert_eq!(
+            client.snapshot().settings.post_logout_redirect_uris,
+            ["https://payroll.example.com/signed-out"],
+            "repeats are removed"
+        );
+        assert!(client.accepts_post_logout_redirect_uri("https://payroll.example.com/signed-out"));
+        assert!(
+            !client.accepts_post_logout_redirect_uri("https://payroll.example.com/signed-out/")
+        );
+        assert!(
+            !client.accepts_post_logout_redirect_uri("https://payroll.example.com/callback"),
+            "a redirect address is not a post-logout one"
+        );
+        assert!(!client.accepts_redirect_uri("https://payroll.example.com/signed-out"));
+
+        for bad in [
+            "http://payroll.example.com/out",
+            "https://payroll.example.com/out#here",
+            "com.example.app:/out",
+        ] {
+            let mut settings = web();
+            settings.post_logout_redirect_uris = vec![bad.to_owned()];
+            let error = create(ClientType::Confidential, settings).expect_err(bad);
+            assert_eq!(
+                error.code(),
+                "oauth.client_post_logout_redirect_uri_invalid",
+                "{bad}"
+            );
+        }
+
+        let mut many = web();
+        many.post_logout_redirect_uris =
+            (0..11).map(|n| format!("https://a.example/{n}")).collect();
+        assert_eq!(
+            create(ClientType::Confidential, many)
+                .expect_err("too many")
+                .code(),
+            "oauth.client_post_logout_redirect_uri_invalid"
+        );
+
+        let mut service = ClientSettings::new(
+            "Payroll batch",
+            ClientType::Confidential,
+            vec![GrantType::ClientCredentials],
+            Vec::new(),
+        );
+        service.post_logout_redirect_uris = vec!["https://payroll.example.com/out".to_owned()];
+        assert_eq!(
+            create(ClientType::Confidential, service)
+                .expect_err("no code")
+                .code(),
+            "oauth.client_post_logout_redirect_uri_invalid"
+        );
+
+        let mut public = spa();
+        public.post_logout_redirect_uris = vec!["com.example.payroll:/signed-out".to_owned()];
+        create(ClientType::Public, public).expect("a public client may use a private-use scheme");
     }
 
     #[test]

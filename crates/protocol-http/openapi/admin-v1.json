@@ -3926,6 +3926,7 @@
           "authentication_method",
           "grant_types",
           "redirect_uris",
+          "post_logout_redirect_uris",
           "allowed_scopes",
           "require_pkce",
           "token_policy",
@@ -3976,6 +3977,12 @@
             }
           },
           "redirect_uris": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "post_logout_redirect_uris": {
             "type": "array",
             "items": {
               "type": "string"
@@ -4123,6 +4130,12 @@
               "type": "string"
             }
           },
+          "post_logout_redirect_uris": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "allowed_scopes": {
             "type": "array",
             "items": {
@@ -4172,6 +4185,12 @@
             }
           },
           "redirect_uris": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "post_logout_redirect_uris": {
             "type": "array",
             "items": {
               "type": "string"

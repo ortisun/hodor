@@ -73,6 +73,10 @@ export const ptBR: Messages = {
   signedInSince: (moment) => `Conectado desde ${moment}.`,
   signOut: "Sair",
 
+  signOutTitle: "Sair?",
+  signOutQuestion: (tenant) => `Uma aplicação pediu para você sair de ${tenant}. Sair aqui também?`,
+  staySignedIn: "Continuar conectado",
+
   noticeRegistered: "Sua conta está pronta. Entre para continuar.",
   noticePasswordChanged: "Sua senha foi trocada. Entre com a nova.",
   noticeSignedOut: "Você saiu.",

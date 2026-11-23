@@ -71,6 +71,10 @@ export const en = {
   signedInSince: (moment: string) => `Signed in since ${moment}.`,
   signOut: "Sign out",
 
+  signOutTitle: "Sign out?",
+  signOutQuestion: (tenant: string) => `An application asked to sign you out of ${tenant}. Sign out here too?`,
+  staySignedIn: "Stay signed in",
+
   noticeRegistered: "Your account is ready. Sign in to go on.",
   noticePasswordChanged: "Your password was changed. Sign in with the new one.",
   noticeSignedOut: "You signed out.",

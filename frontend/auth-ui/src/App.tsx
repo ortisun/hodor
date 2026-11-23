@@ -6,6 +6,7 @@ import { AskPage } from "./pages/AskPage";
 import { ComingBackPage } from "./pages/ComingBackPage";
 import { FinishPage } from "./pages/FinishPage";
 import { SignInPage } from "./pages/SignInPage";
+import { SignOutPage } from "./pages/SignOutPage";
 import { Frame } from "./parts/Frame";
 import { PageLink, Ways, Words } from "./parts/Words";
 
@@ -57,6 +58,8 @@ export function App({
       return <FinishPage {...page} purpose="recovery" token={token} />;
     case "account":
       return <AccountPage {...page} />;
+    case "sign-out":
+      return <SignOutPage {...page} />;
     case "provider-callback":
       return <ComingBackPage {...page} provider={place.provider ?? ""} answer={providerAnswer} />;
     default:

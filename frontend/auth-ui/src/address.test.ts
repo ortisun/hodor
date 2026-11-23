@@ -13,6 +13,7 @@ describe("placeOf", () => {
   it("takes /account, with or without a final slash, as the account page", () => {
     expect(placeOf("/t/acme/account")).toEqual({ tenant: "acme", page: "account" });
     expect(placeOf("/t/acme/account/")).toEqual({ tenant: "acme", page: "account" });
+    expect(placeOf("/t/acme/account/sign-out")).toEqual({ tenant: "acme", page: "sign-out" });
   });
 
   it("knows the tenant but no page for a name it does not have", () => {

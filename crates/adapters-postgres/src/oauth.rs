@@ -178,8 +178,8 @@ impl ApplicationStore for PgApplicationStore {
 pub struct PgClientStore;
 
 const CLIENT_COLUMNS: &str = "id, application_id, name, client_type, authentication_method, \
-     grant_types, redirect_uris, allowed_scopes, require_pkce, access_token_seconds, \
-     id_token_seconds, refresh_token_seconds, refresh_idle_seconds, status, created_at, \
+     grant_types, redirect_uris, post_logout_redirect_uris, allowed_scopes, require_pkce, \
+     access_token_seconds, id_token_seconds, refresh_token_seconds, refresh_idle_seconds, status, created_at, \
      updated_at, version";
 
 async fn load_client(
@@ -250,6 +250,7 @@ async fn load_client(
                 .map(|grant| GrantType::parse(grant).map_err(|_| corrupted("grant type")))
                 .collect::<Result<_, _>>()?,
             redirect_uris: row.try_get("redirect_uris").map_err(get)?,
+            post_logout_redirect_uris: row.try_get("post_logout_redirect_uris").map_err(get)?,
             allowed_scopes: row.try_get("allowed_scopes").map_err(get)?,
             require_pkce: row.try_get("require_pkce").map_err(get)?,
             token_policy: TokenPolicy {
@@ -331,11 +332,11 @@ impl ClientStore for PgClientStore {
         let inserted = sqlx::query(
             "INSERT INTO oauth.client
                  (tenant_id, id, application_id, name, client_type, authentication_method,
-                  grant_types, redirect_uris, allowed_scopes, require_pkce,
-                  access_token_seconds, id_token_seconds, refresh_token_seconds,
+                  grant_types, redirect_uris, post_logout_redirect_uris, allowed_scopes,
+                  require_pkce, access_token_seconds, id_token_seconds, refresh_token_seconds,
                   refresh_idle_seconds, status, created_at, updated_at, version)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-                     $17, 0)",
+                     $17, $18, 0)",
         )
         .bind(tenant)
         .bind(state.id.as_uuid())
@@ -345,6 +346,7 @@ impl ClientStore for PgClientStore {
         .bind(settings.authentication_method.as_str())
         .bind(grant_names(settings))
         .bind(&settings.redirect_uris)
+        .bind(&settings.post_logout_redirect_uris)
         .bind(&settings.allowed_scopes)
         .bind(settings.require_pkce)
         .bind(seconds(policy.access_token)?)
@@ -379,11 +381,11 @@ impl ClientStore for PgClientStore {
         let updated = sqlx::query(
             "UPDATE oauth.client
              SET name = $3, authentication_method = $4, grant_types = $5, redirect_uris = $6,
-                 allowed_scopes = $7, require_pkce = $8, access_token_seconds = $9,
-                 id_token_seconds = $10, refresh_token_seconds = $11,
-                 refresh_idle_seconds = $12, status = $13, updated_at = $14,
-                 version = version + 1
-             WHERE tenant_id = $1 AND id = $2 AND version = $15",
+                 post_logout_redirect_uris = $7, allowed_scopes = $8, require_pkce = $9,
+                 access_token_seconds = $10, id_token_seconds = $11,
+                 refresh_token_seconds = $12, refresh_idle_seconds = $13, status = $14,
+                 updated_at = $15, version = version + 1
+             WHERE tenant_id = $1 AND id = $2 AND version = $16",
         )
         .bind(tenant)
         .bind(state.id.as_uuid())
@@ -391,6 +393,7 @@ impl ClientStore for PgClientStore {
         .bind(settings.authentication_method.as_str())
         .bind(grant_names(settings))
         .bind(&settings.redirect_uris)
+        .bind(&settings.post_logout_redirect_uris)
         .bind(&settings.allowed_scopes)
         .bind(settings.require_pkce)
         .bind(seconds(policy.access_token)?)
