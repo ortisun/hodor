@@ -50,7 +50,7 @@ Run every command of this page from the root of the checkout.
 ## 1. Build the image
 
 ```bash
-docker build --file deploy/docker/Dockerfile --tag hodor:0.1.0 .
+docker build --file deploy/docker/Dockerfile --tag hodor:0.2.0 .
 ```
 
 The first build takes several minutes. The image holds the three programs, the hosted pages and the admin console.
@@ -86,7 +86,7 @@ openssl rand -hex 24
 Make the key with the image you built, and write it after an identifier of your choice, such as `2026-11:` followed by what is printed:
 
 ```bash
-docker run --rm --entrypoint /usr/local/bin/hodor-cli hodor:0.1.0 secrets generate-key
+docker run --rm --entrypoint /usr/local/bin/hodor-cli hodor:0.2.0 secrets generate-key
 ```
 
 Keep a copy of the key outside the machine. What it encrypted cannot be read without it; [secrets at rest](../security/secrets-at-rest.md#root-keys) explains the format and how to change the key later.
