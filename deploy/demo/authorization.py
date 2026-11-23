@@ -299,6 +299,7 @@ def open_policy_agent(admin, tenant, suffix, directory):
     public = keys[keys.index("-----BEGIN PUBLIC KEY-----"):]
     with open(os.path.join(directory, "signing.pem"), "w", encoding="utf-8") as file:
         file.write(private)
+    os.chmod(os.path.join(directory, "signing.pem"), 0o644)
     name = f"shared-{suffix}"
     registered = cli("policy-agent", "instance", "add", "--name", name).splitlines()
     credential = registered[-1].strip()
@@ -308,6 +309,8 @@ def open_policy_agent(admin, tenant, suffix, directory):
     with open(os.path.join(directory, "config.yaml"), "w", encoding="utf-8") as file:
         file.write(configuration(credential, bundle, public))
     shutil.copy(os.path.join(REPOSITORY, "deploy", "open-policy-agent", "decision-log-mask.rego"), directory)
+    for name in ("config.yaml", "decision-log-mask.rego"):
+        os.chmod(os.path.join(directory, name), 0o644)
     agent = PolicyAgent(name, directory)
     agent.start(stack_network())
     admin.call("PUT", f"/resource-servers/{ledger_server}/binding",
@@ -317,11 +320,14 @@ def open_policy_agent(admin, tenant, suffix, directory):
 
     def drafted(deletes):
         files = os.path.join(directory, f"policy-{'deletes' if deletes else 'reads'}")
-        os.makedirs(os.path.join(files, "ledger"), exist_ok=True)
+        os.makedirs(os.path.join(files, "ledger"), mode=0o755, exist_ok=True)
+        os.chmod(files, 0o755)
+        os.chmod(os.path.join(files, "ledger"), 0o755)
         module, test = policy(package, deletes)
         for path, text in [("ledger/policy.rego", module), ("ledger/policy_test.rego", test)]:
             with open(os.path.join(files, path), "w", encoding="utf-8") as file:
                 file.write(text)
+            os.chmod(os.path.join(files, path), 0o644)
         said = cli("policy", "draft", "--tenant", tenant, "--directory", "/policy", "--written-by", "operator",
                    volumes=[f"{files}:/policy:ro"])
         return int(said.splitlines()[-1].split()[0])
@@ -406,6 +412,11 @@ def main():
     suffix = format(int(time.time() * 1000), "x")
     tenant, other = f"acme-{suffix}", f"globex-{suffix}"
     directory = tempfile.mkdtemp(prefix="hodor-authorization-")
+    # The containers run as users of their own, which must read what is
+    # mounted from here: the key that signs bundles, the policy files and
+    # the instance's configuration. They are this run's and nobody else's,
+    # and are removed at the end.
+    os.chmod(directory, 0o755)
     agent = PolicyAgent(f"shared-{suffix}", directory)
     try:
         admin = two_tenants(tenant, other, f"operator-{suffix}@example.com")
