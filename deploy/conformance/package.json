@@ -1,0 +1,13 @@
+{
+  "name": "hodor-conformance",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Runs the OpenID conformance suite against Hodor and drives the browser for it. See docs/operations/conformance.md.",
+  "scripts": {
+    "conformance": "node run.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.65.1"
+  }
+}
