@@ -164,6 +164,9 @@ jobs:
       - name: Run the demonstration of Milestone 2
         working-directory: .
         run: python3 deploy/demo/external_identities.py
+      - name: Run the demonstration of Milestone 3
+        working-directory: .
+        run: python3 deploy/demo/applications.py
       - name: Run the demonstration of Milestone 4
         working-directory: .
         run: python3 deploy/demo/strong_authentication.py

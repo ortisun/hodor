@@ -2,10 +2,11 @@
 
 ## Overview
 
-Three demonstration scripts that run against the development stack of [docker](../docker/EGM.md) and check, step by step, what the milestones promise. All use Python 3 and nothing outside the standard library, and all run `hodor-cli` through Docker Compose. Every answer is checked; the first one that is not what it should be stops the demonstration with exit status 1.
+Four demonstration scripts that run against the development stack of [docker](../docker/EGM.md) and check, step by step, what the milestones promise. All use Python 3 and nothing outside the standard library, and all run `hodor-cli` through Docker Compose. Every answer is checked; the first one that is not what it should be stops the demonstration with exit status 1.
 
 - `demo.py`: the demonstration of Milestone 1. A person registers, verifies an address and signs in to a tenant, and tenants are kept apart.
 - `external_identities.py`: the demonstration of Milestone 2. Signing in with external identities through the development OpenID Connect provider ([dev-provider](../dev-provider/EGM.md)), the development LDAP directory and the development SAML identity provider ([dev-saml-provider](../dev-saml-provider/EGM.md)).
+- `applications.py`: the demonstration of Milestone 3. A third-party application registered with the command-line tool, the consent page, the ID token and UserInfo, a refresh token that ends when an old one comes back, a token a client gets for itself, revocation and introspection, a rotated key, and tenants kept apart.
 - `strong_authentication.py`: the demonstration of Milestone 4. An authenticator application, recovery codes, a tenant that requires a second factor, a passkey that signs in alone, a step-up asked for by an application, and an administrator removing a person's factors.
 
 ## Interface
@@ -55,10 +56,17 @@ Steps of `main()`, in order: `the_stack_answers`, `two_tenants` (`tenant create 
 - `Application`: `authorize(browser, **extra)` with PKCE `S256`, `tokens(location, parameters, verifier)` with `client_secret_basic`, and `checked(token, what)`, which checks an ES256 signature against `/t/{tenant}/oauth2/jwks` (`verified`).
 - Steps of `main()`, in order: `a_tenant_and_a_person` (`tenant create` for `acme-<suffix>` and `globex-<suffix>`, `keys rotate`, `tenant assurance-levels` with three levels, a registration), `an_application` (`application add --first-party`, `client add`), `a_password_session`, `an_authenticator_application`, `a_step_up`, `a_tenant_that_requires_it` (`tenant second-factor --policy required`), `a_recovery_code`, `a_passkey`, `tenants_apart`, `an_administrator` (`admin bootstrap` for `operator-ana-<suffix>@example.com`, `audit verify`).
 
+### `applications.py`
+
+- Imports from `demo`, from `external_identities` (`post_form`, `query_of`) and from `strong_authentication` (`REDIRECT_URI`, `Application`, `decode`); reads the same environment variables.
+- Constants: `PASSWORD`, `AUDIENCE` (`https://api.billing.example.com`), `SCOPES` (`openid email offline_access invoices:read`), `AGREED` (the same without `offline_access`, which is asked every time), `RETRY_WINDOW_SECONDS` (10, the development stack's `HODOR_REFRESH_RETRY_SECONDS`).
+- `ThirdPartyApplication(Application)`: `endpoint(name, fields)` posts to `/t/{tenant}/oauth2/{name}` with `client_secret_basic`; `exchange` redeems a code and answers the token response with both tokens' checked claims; `code_at_once` asks for a code a person agreed to already; `active` introspects.
+- Steps of `main()`, in order: `two_tenants_and_a_person`, `a_third_party_application` (`application add`, `application list`, `resource-server add`, `client add` with three grants), `asked_once` (the consent page over `/interaction/consent`), `userinfo_answers`, `a_refresh_token` (waits `RETRY_WINDOW_SECONDS + 1`), `a_token_for_itself`, `revocation_and_introspection`, `a_rotated_key` (`keys rotate`), `tenants_apart`.
+
 ## Invariants
 
 - Each run makes its own tenants and addresses from a hexadecimal time suffix (`acme-`, `globex-`, `initech-`, `umbrella-`, `ana-`, `bia-`, `sam-`, `mallory-`, `operator-ana-`), so the scripts can run again against the same stack.
-- `external_identities.py` and `strong_authentication.py` import their siblings as modules, so they must be run as scripts from their file paths (the script's directory is then on the import path).
+- `external_identities.py`, `applications.py` and `strong_authentication.py` import their siblings as modules, so they must be run as scripts from their file paths (the script's directory is then on the import path).
 - `cli` runs `hodor-cli` with the placeholder `hodor_server` connection string (`CLI_DATABASE_URL`), the way the server connects.
 - Checks the scripts rely on, with the problem codes they expect: a verification link of one tenant is refused by the other (`404`, `authentication.verification_token_invalid`) and works only once; a session cookie of one tenant is refused by the other (`401`, `session.not_authenticated`); after five wrong passwords the right one is refused (`429`, `authentication.too_many_attempts`) in that tenant only; an administrator token of one tenant is refused by the other (`401`, `admin.not_authenticated`); the audit log of the first tenant holds `identity.user_created`, `authentication.registration_completed`, `session.started` and `authentication.succeeded` but not the other tenant's `authentication.locked_out`; a provider of one tenant does not exist in another (`404`, `federation.provider_not_found`); an external identity with a vouched email address that already has a password account is refused; a SAML response whose `NameID` was changed after signing is refused and recorded as `federation.sign_in_refused` with reason `digest`. In `strong_authentication.py`: a password session's tokens say `amr` `pwd` and the single-factor level; a step-up to the multi-factor level asks only for `totp` and the tokens then say `pwd`, `otp` and `mfa`; with `tenant second-factor --policy required` a password alone leaves the sign-in at `totp`; a recovery code completes it once and is rejected the second time, leaving nine; a passkey completes a sign-in from the identifier step, and its tokens say `pop`, `user` and `mfa` and the phishing-resistant level; the passkey is rejected by the other tenant; the administrator's token is refused by the other tenant (`401`, `admin.not_authenticated`); after the administrator removes the passkey and the application nothing is left, the password alone ends the sign-in as `failed`, and the log of the tenant holds `credential.webauthn_removed` and `credential.totp_removed` with the administrator as the actor.
 
@@ -78,5 +86,6 @@ These scripts are the verification of the stack. As their docstrings and `.githu
 docker compose -f deploy/docker/compose.yaml up --build --wait
 python3 deploy/demo/demo.py
 python3 deploy/demo/external_identities.py
+python3 deploy/demo/applications.py
 python3 deploy/demo/strong_authentication.py
 ```

@@ -1126,3 +1126,358 @@ async fn one_tenants_assurance_levels_are_not_another_tenants() {
         serde_json::json!(["urn:hodor:acr:single-factor", "urn:hodor:acr:mfa"])
     );
 }
+
+const REDIRECT: &str = "https://billing.example.com/callback";
+const VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+const AUDIENCE: &str = "https://api.billing.example.com";
+
+/// A third-party application of a tenant, with a resource server and a
+/// confidential client allowed a code, refresh tokens and a token for
+/// itself. Answers the client's identifier and its secret.
+async fn third_party_client(world: &World, tenant: &Tenant) -> (String, String) {
+    use hodor_adapters_postgres::{PgApplicationStore, PgClientStore, PgResourceServerStore};
+    use hodor_oauth::api::{
+        ApplicationPorts, ApplicationService, ApplicationSettings, ClientSettings, ClientType,
+        CreateClient, CreateResourceServer, GrantType, ResourceServerSettings, ScopeDefinition,
+    };
+    let applications = ApplicationService::new(ApplicationPorts {
+        units_of_work: Arc::new(world.database.app().clone()),
+        applications: Arc::new(PgApplicationStore),
+        clients: Arc::new(PgClientStore),
+        resource_servers: Arc::new(PgResourceServerStore),
+        digest: Arc::new(Sha256Digest),
+        random: Arc::new(OsRandom),
+        clock: Arc::new(SystemClock),
+    });
+    let application = applications
+        .create_application(
+            &tenant.context,
+            ApplicationSettings {
+                name: "Billing".to_owned(),
+                first_party: false,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("application");
+    applications
+        .create_resource_server(
+            &tenant.context,
+            CreateResourceServer {
+                application_id: application.id(),
+                audience: AUDIENCE.to_owned(),
+                settings: ResourceServerSettings {
+                    name: "Invoices".to_owned(),
+                    scopes: vec![ScopeDefinition {
+                        name: "invoices:read".to_owned(),
+                        description: "Read your invoices".to_owned(),
+                    }],
+                },
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("resource server");
+    let mut settings = ClientSettings::new(
+        "Billing web",
+        ClientType::Confidential,
+        vec![
+            GrantType::AuthorizationCode,
+            GrantType::RefreshToken,
+            GrantType::ClientCredentials,
+        ],
+        vec![REDIRECT.to_owned()],
+    );
+    settings.allowed_scopes = vec![
+        "openid".to_owned(),
+        "offline_access".to_owned(),
+        "invoices:read".to_owned(),
+    ];
+    let (client, secret) = applications
+        .create_client(
+            &tenant.context,
+            CreateClient {
+                application_id: application.id(),
+                client_type: ClientType::Confidential,
+                settings,
+                secret_lifetime: None,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("client");
+    (
+        client.id().to_string(),
+        secret.expect("a secret").expose().to_owned(),
+    )
+}
+
+fn authorize_path(slug: &str, client_id: &str) -> String {
+    let challenge = hodor_oauth::api::s256_challenge(VERIFIER, &Sha256Digest);
+    format!(
+        "/t/{slug}/oauth2/authorize?{}",
+        form_urlencoded::Serializer::new(String::new())
+            .extend_pairs([
+                ("response_type", "code"),
+                ("client_id", client_id),
+                ("redirect_uri", REDIRECT),
+                ("scope", "openid offline_access invoices:read"),
+                ("state", "the state"),
+                ("code_challenge", challenge.as_str()),
+                ("code_challenge_method", "S256"),
+            ])
+            .finish()
+    )
+}
+
+/// A form sent to one of a tenant's OAuth endpoints, with a client's
+/// identifier and secret as Basic authentication.
+async fn oauth_form(
+    world: &World,
+    tenant: &Tenant,
+    endpoint: &str,
+    client: (&str, &str),
+    pairs: &[(&str, &str)],
+) -> (StatusCode, serde_json::Value) {
+    use base64::Engine as _;
+    let basic =
+        base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", client.0, client.1));
+    let response = Client::new()
+        .post(format!(
+            "{}/t/{}/oauth2/{endpoint}",
+            world.server.base, tenant.slug
+        ))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .header("authorization", format!("Basic {basic}"))
+        .body(
+            form_urlencoded::Serializer::new(String::new())
+                .extend_pairs(pairs)
+                .finish(),
+        )
+        .send()
+        .await
+        .expect("response");
+    let status = response.status();
+    (
+        status,
+        response.json().await.unwrap_or(serde_json::Value::Null),
+    )
+}
+
+async fn userinfo(world: &World, tenant: &Tenant, access: &str) -> StatusCode {
+    Client::new()
+        .get(format!(
+            "{}/t/{}/oauth2/userinfo",
+            world.server.base, tenant.slug
+        ))
+        .bearer_auth(access)
+        .send()
+        .await
+        .expect("response")
+        .status()
+}
+
+/// Whether a tenant's client is told a token is active.
+async fn active(world: &World, tenant: &Tenant, client: (&str, &str), token: &str) -> bool {
+    let (status, body) = oauth_form(world, tenant, "introspect", client, &[("token", token)]).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    if body["active"] == true {
+        true
+    } else {
+        assert_eq!(body, serde_json::json!({ "active": false }), "nothing more");
+        false
+    }
+}
+
+#[tokio::test]
+async fn an_applications_codes_tokens_clients_and_consents_mean_nothing_in_another_tenant() {
+    let world = world_with(&[("HODOR_SECRET_KEYS", ROOT_KEY)]).await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    let (acme_client, acme_secret) = third_party_client(&world, acme).await;
+    let (globex_client, globex_secret) = third_party_client(&world, globex).await;
+    let acme_pair = (acme_client.as_str(), acme_secret.as_str());
+    let globex_pair = (globex_client.as_str(), globex_secret.as_str());
+
+    // The client of Acme is no client in Globex: an error page of Hodor's,
+    // never a redirect to the address it names.
+    let mut stranger = Browser::not_following(&world.server);
+    let (_, body) = stranger.sign_in(globex.slug, EMAIL, PASSWORD).await;
+    assert_eq!(body["status"], "completed", "{body}");
+    let (status, location, _) = stranger
+        .navigate(
+            Method::GET,
+            &authorize_path(globex.slug, &acme_client),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(location, None, "nothing is sent to the client's address");
+
+    // In Acme, the person agrees and the application gets a code.
+    let mut browser = Browser::not_following(&world.server);
+    let (_, body) = browser.sign_in(acme.slug, EMAIL, PASSWORD).await;
+    assert_eq!(body["status"], "completed", "{body}");
+    let (status, location, _) = browser
+        .navigate(Method::GET, &authorize_path(acme.slug, &acme_client), None)
+        .await;
+    assert_eq!(status, StatusCode::FOUND);
+    assert_eq!(location.as_deref(), Some("/t/acme/account/consent"));
+    let (status, question) = browser
+        .send(Method::GET, "/t/acme/interaction/consent", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{question}");
+    let (status, answer) = browser
+        .send(
+            Method::POST,
+            "/t/acme/interaction/consent",
+            Some(serde_json::json!({ "decision": "allow" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    let (status, location, _) = browser
+        .navigate(Method::GET, "/t/acme/oauth2/authorize/resume", None)
+        .await;
+    assert_eq!(status, StatusCode::FOUND);
+    let location = location.expect("a redirect");
+    let (address, query) = location.split_once('?').expect("a query");
+    assert_eq!(address, REDIRECT);
+    let code = form_urlencoded::parse(query.as_bytes())
+        .find(|(name, _)| name == "code")
+        .expect("a code")
+        .1
+        .into_owned();
+    let redeem = [
+        ("grant_type", "authorization_code"),
+        ("code", code.as_str()),
+        ("redirect_uri", REDIRECT),
+        ("code_verifier", VERIFIER),
+    ];
+
+    // Acme's code at Globex: with Acme's client, which Globex does not
+    // know, and with Globex's own client, to which it was not issued.
+    let (status, body) = oauth_form(&world, globex, "token", acme_pair, &redeem).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert_eq!(body["error"], "invalid_client");
+    let (status, body) = oauth_form(&world, globex, "token", globex_pair, &redeem).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"], "invalid_grant");
+
+    // The code still redeems where it belongs, once.
+    let (status, tokens) = oauth_form(&world, acme, "token", acme_pair, &redeem).await;
+    assert_eq!(status, StatusCode::OK, "{tokens}");
+    let access = tokens["access_token"].as_str().expect("access").to_owned();
+    let refresh = tokens["refresh_token"]
+        .as_str()
+        .expect("refresh")
+        .to_owned();
+
+    // The access token: refused by Globex's UserInfo, not active for
+    // Globex's client, and still good in Acme.
+    assert_eq!(
+        userinfo(&world, globex, &access).await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert!(!active(&world, globex, globex_pair, &access).await);
+    assert_eq!(userinfo(&world, acme, &access).await, StatusCode::OK);
+    assert!(active(&world, acme, acme_pair, &access).await);
+
+    // The refresh token: Globex refuses it, revokes nothing with it, and
+    // does not call it active.
+    let refreshing = [
+        ("grant_type", "refresh_token"),
+        ("refresh_token", refresh.as_str()),
+    ];
+    let (status, body) = oauth_form(&world, globex, "token", globex_pair, &refreshing).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"], "invalid_grant");
+    let (status, _) = oauth_form(
+        &world,
+        globex,
+        "revoke",
+        globex_pair,
+        &[("token", &refresh)],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the same empty answer as for any token"
+    );
+    let (status, _) =
+        oauth_form(&world, globex, "revoke", globex_pair, &[("token", &access)]).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!active(&world, globex, globex_pair, &refresh).await);
+    assert!(active(&world, acme, acme_pair, &refresh).await);
+    assert!(
+        active(&world, acme, acme_pair, &access).await,
+        "nothing was revoked"
+    );
+    let (status, refreshed) = oauth_form(&world, acme, "token", acme_pair, &refreshing).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "it still refreshes in Acme: {refreshed}"
+    );
+
+    // A token for the client itself: Acme's secret means nothing in Globex.
+    let itself = [
+        ("grant_type", "client_credentials"),
+        ("scope", "invoices:read"),
+    ];
+    let (status, body) = oauth_form(&world, acme, "token", acme_pair, &itself).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = oauth_form(&world, globex, "token", acme_pair, &itself).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert_eq!(body["error"], "invalid_client");
+
+    // The consent: neither the person nor the administrator of Globex can
+    // withdraw it, and it still stands in Acme. The page reads the session
+    // first, which gives it the session's CSRF token.
+    let (status, _) = stranger
+        .send(Method::GET, "/t/globex/interaction/session", None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body) = stranger
+        .send(
+            Method::DELETE,
+            &format!("/t/globex/interaction/consents/{acme_client}"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(body["code"], "oauth.consent_not_found");
+    let (status, body) = world
+        .admin(
+            globex,
+            &globex.administrator_token,
+            Method::DELETE,
+            &format!("/users/{}/consents/{acme_client}", acme.ana),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    let (status, _) = world
+        .admin(
+            globex,
+            &acme.administrator_token,
+            Method::GET,
+            &format!("/users/{}/consents", acme.ana),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, consents) = world
+        .admin(
+            acme,
+            &acme.administrator_token,
+            Method::GET,
+            &format!("/users/{}/consents", acme.ana),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{consents}");
+    assert!(
+        consents.to_string().contains(&acme_client),
+        "the consent stands in Acme: {consents}"
+    );
+}
