@@ -27,6 +27,8 @@ A permission names something that can be done: a kind of resource and an action 
 | `applications:write` | Registering and changing applications, clients and resource servers, giving clients secrets and keys, and enabling and disabling them |
 | `assurance-levels:read` | Seeing the tenant's assurance levels |
 | `assurance-levels:write` | Replacing the tenant's assurance levels |
+| `credentials:read` | Seeing which second factors a user has and how many recovery codes are left, never a secret or a code |
+| `credentials:write` | Removing a user's authenticator application, security keys, passkeys and recovery codes |
 
 ## Roles
 
@@ -35,7 +37,7 @@ A role is a named set of permissions. The roles of Hodor's administration are fi
 | Role | Permissions | Meant for |
 |---|---|---|
 | `tenant_administrator` | All of the above | The people who run a tenant |
-| `tenant_auditor` | `users:read`, `sessions:read`, `audit:read`, `identity-providers:read`, `keys:read`, `applications:read`, `assurance-levels:read` | People who must be able to see everything and change nothing |
+| `tenant_auditor` | `users:read`, `sessions:read`, `audit:read`, `identity-providers:read`, `keys:read`, `applications:read`, `assurance-levels:read`, `credentials:read` | People who must be able to see everything and change nothing |
 
 A user holds a role in one tenant. Holding a role in one tenant means nothing in another: an assignment is a row of its tenant, like everything else.
 

@@ -30,8 +30,10 @@ reach other crates through `hodor_authorization::api`.
   | `ApplicationsWrite` | `applications:write` |
   | `AssuranceLevelsRead` | `assurance-levels:read` (also the auditor's) |
   | `AssuranceLevelsWrite` | `assurance-levels:write` |
+  | `CredentialsRead` | `credentials:read` |
+  | `CredentialsWrite` | `credentials:write` |
 
-  `Permission::ALL` lists all eleven; `from_name(name) -> Option<Permission>`.
+  `Permission::ALL` lists all fifteen; `from_name(name) -> Option<Permission>`.
 - `Role` (`role.rs:Role`): `TenantAdministrator` (`tenant_administrator`) and
   `TenantAuditor` (`tenant_auditor`); `Role::ALL`, `as_str`,
   `from_name(name) -> Result<Role, DomainError>`, `permissions()`,

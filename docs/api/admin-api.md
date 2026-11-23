@@ -65,6 +65,10 @@ It needs `HODOR_DATABASE_URL`, like the tenant commands.
 | `GET /users/{user_id}` | `users:read` | Read one user |
 | `POST /users/{user_id}:suspend` | `users:write` | Suspend a user |
 | `GET /users/{user_id}/sessions` | `sessions:read` | List a user's active sessions |
+| `GET /users/{user_id}/factors` | `credentials:read` | List a user's second factors and how many recovery codes are left |
+| `DELETE /users/{user_id}/factors/authenticator-application` | `credentials:write` | Remove a user's authenticator application |
+| `DELETE /users/{user_id}/factors/keys/{key_id}` | `credentials:write` | Remove one of a user's security keys or passkeys |
+| `DELETE /users/{user_id}/factors/recovery-codes` | `credentials:write` | Remove a user's recovery codes |
 | `DELETE /sessions/{session_id}` | `sessions:revoke` | End a session |
 | `GET /audit-records` | `audit:read` | Read the audit log |
 | `GET /identity-providers` | `identity-providers:read` | List the tenant's identity providers |
@@ -155,6 +159,27 @@ An address that already has an account is refused with `409` and `identity.ident
 ```
 
 `DELETE /sessions/{session_id}` ends a session: `204`. A session that does not exist is `404` with `session.not_found`; ending one that has already ended changes nothing and answers `204`.
+
+### A user's factors
+
+`GET /users/{user_id}/factors` answers with what [the person sees of their own](interaction-api.md#listing-them), without `recent_sign_in_until`:
+
+```json
+{
+  "authenticator_application": { "in_use": true },
+  "keys": [ { "id": "0193f1d1-…", "name": "Blue key", "passkey": false, "created_at": "…", "last_used_at": null } ],
+  "recovery_codes": { "remaining": 8 },
+  "second_factor_required": true
+}
+```
+
+It never holds a secret, a public key or a code. An administrator removes a factor for a person who lost it:
+
+- `DELETE /users/{user_id}/factors/authenticator-application`: `204`, or `404` with `credential.totp_not_found` when none is in use;
+- `DELETE /users/{user_id}/factors/keys/{key_id}`: `204`, or `404` with `credential.webauthn_credential_not_found`;
+- `DELETE /users/{user_id}/factors/recovery-codes`: `204`, or `404` with `credential.recovery_codes_not_found` when the user has none.
+
+The tenant's second factor policy does not refuse an administrator's removal, and removing a factor ends none of the user's sessions; [the authentication context](../architecture/contexts/authentication.md#what-an-administrator-may-do) says why. When the last second factor goes, the user's recovery codes go with it. A user that does not exist is `404` with `identity.user_not_found`. Each removal is in the audit log with the administrator as the actor.
 
 ### The audit log
 

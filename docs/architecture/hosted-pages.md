@@ -17,13 +17,16 @@ All paths are relative to the tenant: `https://{host}/t/{slug}`.
 | `/account/reset-password` | Arrives from the link in the message, chooses a new password | `POST /interaction/recovery/complete` |
 | `/account` | Sees that they are signed in, and signs out | `GET` and `DELETE /interaction/session` |
 | `/account/sign-out` | Is asked whether to sign out, when an application asked Hodor to sign them out | `GET` and `DELETE /interaction/session` |
+| `/account/security` | Manages their second factors and recovery codes | [The factor routes](../api/interaction-api.md#managing-ones-factors) and the WebAuthn registration routes |
 | `/account/providers/{alias}/callback` | Arrives back from an identity provider | The sign-in routes, to [finish](../api/interaction-api.md#signing-in-through-an-identity-provider) |
 
-`/account` sends a person who is not signed in to `/account/sign-in`, and `/account/sign-in` sends a person who is already signed in to `/account`.
+`/account` and `/account/security` send a person who is not signed in to `/account/sign-in`, and `/account/sign-in` sends a person who is already signed in to `/account`.
 
 **Signing in for an application.** When an application sends a person to Hodor's [authorization endpoint](contexts/oauth.md#signing-in-and-coming-back) and they must sign in, the server sends them to `/account/sign-in?continue=authorization`. With `continue=authorization` in its address the sign-in page does not stop at the session it finds: it goes on with the sign-in in progress, or starts one, even when someone is signed in already, since the application asked for one. A [step-up](contexts/authentication.md#step-up) that the authorization endpoint started is such a sign-in in progress: the page shows the step it names, the second factor or the password, without asking for the identifier. When a sign-in completes, by any way, the identity providers' page that the person comes back to included, and the answer carries `continue`, the page goes there instead of to the account page. The page goes only to an address that starts with `/t/{slug}/oauth2/` of its own tenant; anything else is ignored and the account page is shown. When the application sent `login_hint`, the address carries it too and the sign-in page starts with that identifier filled in; when it sent `ui_locales`, the address carries them and the pages use the first of those languages they have ([the OpenID Provider](contexts/oauth.md#what-a-request-may-ask-of-the-sign-in)).
 
 **Signing out for an application.** When an application asks Hodor to sign a person out and the request does not prove that it comes from the browser's own session, the [end-session endpoint](contexts/oauth.md#asking-the-person) sends the browser to `/account/sign-out`. The page asks who is signed in. When nobody is, it goes on at once to `/t/{slug}/oauth2/logout/finish`. Otherwise it asks "Sign out of {tenant}?" with two buttons: "Sign out" ends the session as the account page does and goes on to the same address; "Stay signed in" goes to the account page. A session that ended in the meantime counts as signed out. The page never learns where the application wants the person back: that stays with the server, which sends the browser there from the finish.
+
+**Signing in again.** `/account/sign-in?continue=security` starts a sign-in even when someone is signed in already, as `continue=authorization` does, and goes back to `/account/security` when it completes. The security page sends the person there when a change needs [a recent sign-in](contexts/authentication.md#proving-oneself-again).
 
 Any other path under `/account` is answered with `404` by the server.
 
@@ -80,6 +83,21 @@ The link in the message carries its token after `#`, which a browser never sends
 
 After finishing, the person is sent to sign in, with a message saying the account is ready or the password was changed. Neither page signs the person in.
 
+### A person's own factors
+
+`/account/security` shows the person's second factors and lets them change them, by the rules of [the authentication context](contexts/authentication.md#a-persons-own-factors). The account page links to it.
+
+| Part | What the person sees and does |
+|---|---|
+| Authenticator application | Whether one is in use. Setting one up shows a QR code and the secret as text, in groups of four, then asks for a code; removing one asks to confirm first. Not shown when the installation offers none |
+| Security keys and passkeys | Each key with its name, whether it is a passkey, when it was added and last used. Adding a security key or a passkey asks for a name and then for the key; a key can be renamed and removed, removing after confirming |
+| Recovery codes | How many unused codes are left. Generating a new set, after confirming, shows it once |
+| A recent sign-in | When changes need the person to sign in again, a notice says so, with a button to the sign-in page; the change buttons appear when the sign-in is recent |
+
+Recovery codes made with the first factor, or on request, are shown once in a list the person can copy, with a button the person presses once they have kept them. Leaving the page forgets them.
+
+The QR code is drawn in the page from the `otpauth://` address as an SVG of squares, with the `qrcode-generator` library (MIT, no dependencies): no image is fetched, no markup is made from text, so the [Content Security Policy](#content-security-policy) is unchanged. The address never leaves the page.
+
 ### What a person is told when something goes wrong
 
 The pages show their own words, chosen by the `code` of the [problem document](../api/api-spec.md#conventions-for-the-json-apis), never the server's `detail`. A code the pages have no words for is shown as "something went wrong", with the request identifier to quote.
@@ -92,6 +110,12 @@ The pages show their own words, chosen by the `code` of the [problem document](.
 | `credential.password_too_short`, `credential.password_too_long`, `credential.password_is_own_name`, `credential.password_reused` | What is wrong with the password, next to the field |
 | `identity.display_name_invalid` | The name cannot be used, next to the field |
 | `credential.hashing_overloaded` | The server is busy; try again in a moment |
+| `authentication.recent_sign_in_required` | Sign in again to make this change, with a button to do it |
+| `authentication.last_second_factor` | This is the last second factor and the organization requires one; add another first |
+| `credential.totp_code_wrong` | That is not the code the application shows |
+| `credential.totp_enrollment_not_found` | Setting up took too long; start again |
+| `credential.webauthn_name_invalid` | The name cannot be used, next to the field |
+| `credential.webauthn_registration_refused`, `credential.webauthn_credential_exists` | The key could not be added, or is added already |
 | No answer at all | The server could not be reached |
 
 ## Language
@@ -205,7 +229,7 @@ npm run browser-tests
 | Unit tests of the application | The client turns answers and problem documents into what the pages show; both languages have the same messages; each page renders the step it is given | `npm test` in `frontend/auth-ui`, with no server |
 | Tests of the HTTP layer | The listed pages get `index.html` with the policy above, other paths get `404`, files get the right caching, and a path cannot climb out of the directory | `cargo test`, with a directory made by the test; Node.js is not needed |
 | Tests of the server binary | The real `hodor-server` serves the pages of the directory it is given, serves none without the setting, and refuses to start with a directory that has no application | `cargo test`, with a directory made by the test |
-| Browser tests | A person registers, reads the message, chooses a password, signs in and signs out; recovers a password; is refused with a wrong password; signs in with the keyboard alone; registers a security key and signs in with it, and registers a passkey and signs in with it alone, through virtual authenticators of Chromium. No page reports a Content Security Policy violation, a script error or an accessibility violation | Playwright with Chromium against the Compose stack, in continuous integration |
+| Browser tests | A person registers, reads the message, chooses a password, signs in and signs out; recovers a password; is refused with a wrong password; signs in with the keyboard alone; registers a security key and signs in with it, and registers a passkey and signs in with it alone, through virtual authenticators of Chromium; on the security page, signs in again when asked, sets up an authenticator application with a code computed by the test, keeps the recovery codes, adds a passkey, renames and removes it, and generates new codes. No page reports a Content Security Policy violation, a script error or an accessibility violation | Playwright with Chromium against the Compose stack, in continuous integration |
 
 The browser tests read the messages from the development mail server of the Compose stack, as a person would read their mailbox, and sign in through [the development identity provider](../development/local-setup.md#the-development-identity-provider) of the same stack: created on the first visit, recognized on the second, refused when the address belongs to an account that exists, and told so when the person cancels.
 
@@ -218,4 +242,4 @@ The browser tests read the messages from the development mail server of the Comp
 | The person's sessions on the account page | The account console, Phase 2 |
 | A choice of language on the page, and a remembered theme | The account console, Phase 2 |
 | Browsers other than Chromium in the browser tests | Hardening pass |
-| Registering, naming and removing security keys from the pages | Issue-70 |
+| The person's sessions on the security page, and ending them | The account console, Phase 2 |

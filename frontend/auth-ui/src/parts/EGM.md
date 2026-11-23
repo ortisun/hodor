@@ -35,6 +35,10 @@ width, accessible roles). None of them talk to the server.
   as="p"`), secondary color when `quiet`, `role="status"` when `announced`.
 - `Words.tsx:PageLink({ href, children })` - an Astryx `Link` with
   `hasUnderline`.
+- `QrCode.tsx:QrCode({ value, label })` - an `svg.auth-qr` with `role="img"`
+  and `aria-label={label}`: one white `rect`, then a black `rect` per dark
+  module of `modulesOf(value)` (`qrcode-generator`, type number 0, level `M`,
+  byte mode), with a margin of four modules. No markup is made from text.
 - `Words.tsx:Ways({ children })` - a `VStack as="ul"` with class `auth-ways`,
   for the other places a person may go.
 

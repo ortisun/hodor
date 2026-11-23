@@ -274,6 +274,13 @@ On a host that serves several tenants by path, cookies are separated by `Path`, 
 | `DELETE /interaction/sessions` | End all of the person's sessions except this one |
 | `POST /interaction/webauthn/registrations` | Begin registering a WebAuthn credential |
 | `POST /interaction/webauthn/registrations/{registration_id}` | Finish registering it |
+| `GET /interaction/factors` | List the person's factors |
+| `POST /interaction/factors/authenticator-application` | Begin enrolling an authenticator application |
+| `POST /interaction/factors/authenticator-application/confirmation` | Confirm it with a code |
+| `DELETE /interaction/factors/authenticator-application` | Remove the authenticator application |
+| `PATCH /interaction/factors/keys/{key_id}` | Rename a security key or a passkey |
+| `DELETE /interaction/factors/keys/{key_id}` | Remove a security key or a passkey |
+| `POST /interaction/factors/recovery-codes` | Generate a new set of recovery codes |
 
 Every one of them needs a valid session cookie. Without one the answer is `401` with `session.not_authenticated`, whatever the reason: no cookie, an unknown token, an expired or a revoked session.
 
@@ -335,7 +342,7 @@ Signing out ends one session. The person's sessions in other browsers continue.
 
 A signed-in person registers a security key or a platform authenticator in two requests. Both change something and carry the session's CSRF token.
 
-`POST /interaction/webauthn/registrations`, with no body or with `{ "passkey": false }`, registers a security key, and with `{ "passkey": true }` a [passkey](../architecture/contexts/credential.md#passkeys). It answers `201`:
+`POST /interaction/webauthn/registrations`, with no body or with `{ "passkey": false }`, registers a security key, and with `{ "passkey": true }` a [passkey](../architecture/contexts/credential.md#passkeys). It needs [a recent sign-in](#a-recent-sign-in). It answers `201`:
 
 ```json
 {
@@ -377,6 +384,8 @@ A signed-in person registers a security key or a platform authenticator in two r
 { "id": "0193f1d1-…", "name": "Blue key", "created_at": "2026-11-20T14:05:00Z" }
 ```
 
+When this is the person's first second factor and they have no unused recovery code, the answer also holds a new set, once: `"recovery_codes": ["7K2M-QX9D-4HVN-R8TA", …]`. Otherwise `recovery_codes` is absent.
+
 | Situation | Status | Code |
 |---|---|---|
 | The registration is unknown, another person's, already used or older than five minutes | `404` | `credential.webauthn_registration_not_found` |
@@ -385,13 +394,89 @@ A signed-in person registers a security key or a platform authenticator in two r
 
 A registration that fails is used up anyway: the person asks again.
 
-These two routes are what the pages of Issue-70 will use. Until then a person registers a credential from a page of their own on Hodor's origin, or a test does; nothing asks them to prove themselves again before registering.
+### Managing one's factors
+
+These routes are what [the person's own pages](../architecture/hosted-pages.md#a-persons-own-factors) use. The rules behind them are in [the authentication context](../architecture/contexts/authentication.md#a-persons-own-factors).
+
+#### A recent sign-in
+
+Every request below that changes something, and beginning a WebAuthn registration, needs a session signed in to at most five minutes before. Confirming an authenticator application and finishing a WebAuthn registration do not: they finish what was begun with one. Without a recent sign-in the answer is:
+
+| Situation | Status | Code |
+|---|---|---|
+| The session was signed in to more than five minutes ago | `403` | `authentication.recent_sign_in_required` |
+
+The pages then send the person to sign in again and bring them back.
+
+#### Listing them
+
+`GET /interaction/factors` answers:
+
+```json
+{
+  "authenticator_application": { "in_use": true },
+  "keys": [
+    {
+      "id": "0193f1d1-…",
+      "name": "Blue key",
+      "passkey": false,
+      "created_at": "2026-11-20T14:05:00Z",
+      "last_used_at": "2026-11-21T09:12:40Z"
+    }
+  ],
+  "recovery_codes": { "remaining": 8 },
+  "second_factor_required": false,
+  "recent_sign_in_until": "2026-11-21T09:17:40Z"
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `authenticator_application` | Whether an application is in use; `null` when the installation offers none, because it cannot keep secrets |
+| `keys` | Security keys and passkeys, oldest first. `passkey` is whether the credential is discoverable; `last_used_at` is `null` until it is used |
+| `recovery_codes.remaining` | How many unused recovery codes the person has |
+| `second_factor_required` | Whether the tenant requires a second factor, so that removing the last one is refused |
+| `recent_sign_in_until` | Until when changes are allowed without signing in again; `null` when they are not allowed now |
+
+#### The authenticator application
+
+`POST /interaction/factors/authenticator-application`, with no body, begins enrolling one and answers `201`, once:
+
+```json
+{
+  "secret": "JBSWY3DPEHPK3PXP…",
+  "uri": "otpauth://totp/Acme:ana%40example.com?secret=JBSW…&issuer=Acme&algorithm=SHA1&digits=6&period=30"
+}
+```
+
+The pages show `uri` as a QR code and `secret` as text, for an application that cannot scan. `POST /interaction/factors/authenticator-application/confirmation` with `{ "code": "123456" }` puts the application in use: `200` with `{}`, or with `recovery_codes` as for a first WebAuthn credential. `DELETE /interaction/factors/authenticator-application` removes it: `204`.
+
+#### Keys
+
+`PATCH /interaction/factors/keys/{key_id}` with `{ "name": "Office key" }` answers `200` with the key, as listed. `DELETE /interaction/factors/keys/{key_id}` answers `204`.
+
+#### Recovery codes
+
+`POST /interaction/factors/recovery-codes`, with no body, makes a new set in place of the old one and answers `201`, once: `{ "recovery_codes": ["7K2M-QX9D-4HVN-R8TA", …] }`.
+
+#### Errors
+
+| Situation | Status | Code |
+|---|---|---|
+| The installation offers no authenticator application | `404` | `credential.totp_unavailable` |
+| No enrollment waits to be confirmed, or it waited more than ten minutes | `404` | `credential.totp_enrollment_not_found` |
+| The code is not the one the application shows | `422` | `credential.totp_code_wrong` |
+| The key is not the person's, or does not exist | `404` | `credential.webauthn_credential_not_found` |
+| The name is empty, longer than 64 characters or holds control characters | `422` | `credential.webauthn_name_invalid` |
+| Removing the last second factor while the tenant requires one | `422` | `authentication.last_second_factor` |
+| Generating recovery codes without a second factor | `422` | `authentication.second_factor_missing` |
+| Another set of recovery codes was generated at the same moment | `409` | `credential.recovery_codes_conflict` |
 
 ### Protection for these requests
 
-The three `DELETE` requests and the two WebAuthn registration requests change something, so each must carry the CSRF token from `GET /interaction/session` in the `X-CSRF-Token` header. The token is derived from the session token, and only a page from this origin can read it. A request without it, or with a wrong one, is refused with `403` and `request.csrf_token_invalid`, and changes nothing. The origin check applies as everywhere.
+The `DELETE`, `PATCH` and `POST` requests above change something, so each must carry the CSRF token from `GET /interaction/session` in the `X-CSRF-Token` header. The token is derived from the session token, and only a page from this origin can read it. A request without it, or with a wrong one, is refused with `403` and `request.csrf_token_invalid`, and changes nothing. The origin check applies as everywhere.
 
-The session cookie is `SameSite=Lax`, which already keeps a browser from attaching it to a `DELETE` another site starts. The token is a second, independent measure.
+The session cookie is `SameSite=Lax`, which already keeps a browser from attaching it to a `DELETE` another site starts. The token is a second, independent measure. The bodies are JSON, which a plain cross-site form cannot send.
 
 ## Registering and recovering a password
 
@@ -431,4 +516,3 @@ The address recorded for a sign-in, and used to limit attempts, is the address o
 | Trusting a forwarded client address from named proxies | Before any deployment behind a load balancer |
 | Limiting requests per address on these paths, beyond the attempt limits of the password step | Later in Phase 1 |
 | The `__Host-` cookie variant for a tenant's own host | Phase 3 |
-| Proving oneself again before registering a WebAuthn credential, and pages for it | Issue-70 |

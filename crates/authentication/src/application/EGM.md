@@ -130,12 +130,36 @@ Both implement the `Authenticator` trait from [`../domain/EGM.md`](../domain/EGM
   `WebAuthnService::verify_passkey` names, and rejects without a challenge,
   for an answer that is refused, and for a user who may not sign in;
   `challenge` asks for a passkey challenge, which names no credential.
-- `FactorService` (`factors.rs`): `new(identity, tenants, webauthn)`,
-  `begin_webauthn_registration(tenant, user_id)` (names the person by their
-  primary email address, else username, and display name),
-  `begin_passkey_registration(tenant, user_id)` (the same, with the tenant's
-  display name in brackets after the display name) and
-  `finish_webauthn_registration(tenant, user_id, id, response, caller)`.
+- `FactorService` (`factors.rs`): `new(identity, tenants, webauthn,
+  recovery_codes)` and `with_totp(totp)`; without it no authenticator
+  application is offered (`NotFound` `credential.totp_unavailable`).
+  - `factors(tenant, user_id) -> Factors { authenticator_application:
+    Option<bool>, keys, recovery_codes_remaining, second_factor_required }`;
+    `Factors::second_factors()` counts the application in use and the keys.
+  - `begin_authenticator_application` (issuer: the tenant's display name;
+    account: the primary email address, else username) and
+    `confirm_authenticator_application(tenant, user_id, code, caller) ->
+    Option<RecoveryCodes>`.
+  - `begin_webauthn_registration(tenant, user_id)` (names the person by their
+    primary email address, else username, and display name),
+    `begin_passkey_registration(tenant, user_id)` (the same, with the
+    tenant's display name in brackets after the display name) and
+    `finish_webauthn_registration(tenant, user_id, id, response, caller) ->
+    RegisteredKey { credential, recovery_codes }`. Both confirmations call
+    `RecoveryCodeService::generate_if_none`.
+  - `rename_key`, `remove_key(.., by: Remover, caller)`,
+    `remove_authenticator_application(.., by, caller)`: removing the last
+    second factor under `SecondFactorPolicy::Required` is `Invalid`
+    `authentication.last_second_factor` for `Remover::Person` only; when no
+    second factor is left the recovery codes are removed.
+  - `generate_recovery_codes` (`Invalid` `authentication.second_factor_missing`
+    without a second factor) and `remove_recovery_codes` (`NotFound`
+    `credential.recovery_codes_not_found`).
+- `factors.rs` also holds `RECENT_SIGN_IN` (five minutes),
+  `signed_in_recently(signed_in_at, now)`, `recent_sign_in_until` and
+  `recent_sign_in_required()` (`Forbidden`
+  `authentication.recent_sign_in_required`), which the interaction routes
+  apply to the session's `signed_in_at`.
 - `AuthenticationService::challenge(tenant, id, secret, step) -> Value`: asks
   the current step, or an alternative at the start, for a challenge through
   `FlowEngine::challenge` and stores the transaction.
