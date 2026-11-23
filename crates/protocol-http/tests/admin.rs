@@ -117,6 +117,68 @@ fn applications(
     (applications, consents)
 }
 
+/// The use cases of roles, bindings and policy versions on in-memory
+/// stores, with the native engine registered.
+fn authorization_services(
+    units_of_work: &InMemoryUnitOfWorkFactory,
+    clock: Arc<FixedClock>,
+) -> (
+    hodor_authorization::api::RoleService,
+    hodor_authorization::api::EvaluationService,
+    hodor_authorization_opa::api::PolicyService,
+) {
+    use hodor_authorization::testing::{
+        InMemoryEngineBindings, InMemoryNativeRoles, StaticSubjectAttributes,
+    };
+    use hodor_authorization_opa::testing::{
+        InMemoryBundles, InMemoryInstances, InMemoryPolicyVersions, InMemoryPublications,
+        InMemorySimulations, InMemoryStatuses, InMemoryUploadedDecisions,
+    };
+    let units = || -> Arc<dyn hodor_kernel::UnitOfWorkFactory> { Arc::new(units_of_work.clone()) };
+    let assignments = hodor_authorization::testing::InMemoryRoleAssignments::default();
+    let roles = InMemoryNativeRoles::default();
+    let engine = hodor_authorization::api::NativeEngine::new(
+        units(),
+        Arc::new(assignments.clone()),
+        Arc::new(roles.clone()),
+        clock.clone(),
+    );
+    let mut registry = hodor_authorization::api::EngineRegistry::new();
+    registry.register(Arc::new(engine)).expect("register");
+    let evaluation = hodor_authorization::api::EvaluationService::new(
+        units(),
+        Arc::new(assignments),
+        Arc::new(InMemoryEngineBindings::default()),
+        Arc::new(StaticSubjectAttributes::default()),
+        registry,
+        clock.clone(),
+    );
+    let bundles = hodor_authorization_opa::api::BundleService::new(
+        Arc::new(InMemoryInstances::default()),
+        Arc::new(InMemoryBundles::default()),
+        Arc::new(InMemoryStatuses::default()),
+        Arc::new(InMemoryUploadedDecisions::default()),
+        units(),
+        Arc::new(hodor_adapters_crypto::Sha256Digest),
+        Arc::new(SequentialRandom::default()),
+        clock.clone(),
+    );
+    let policies = hodor_authorization_opa::api::PolicyService::new(
+        Arc::new(InMemoryPolicyVersions::default()),
+        Arc::new(InMemoryPublications::default()),
+        Arc::new(InMemorySimulations::default()),
+        bundles,
+        units(),
+        Arc::new(hodor_adapters_crypto::Sha256Digest),
+        clock.clone(),
+    );
+    (
+        hodor_authorization::api::RoleService::new(units(), Arc::new(roles), clock),
+        evaluation,
+        policies,
+    )
+}
+
 /// The use cases of people's factors on in-memory stores, with
 /// authenticator applications. Returns the key store too, for a test to
 /// give someone a key as a finished registration would.
@@ -251,6 +313,7 @@ async fn world_with_keys(with_keys: bool) -> World {
         factors(&units_of_work, clock.clone(), &identity, &tenants);
     let oauth = applications(&units_of_work, clock.clone());
     let decision_store = hodor_authorization::testing::InMemoryDecisionLog::default();
+    let authorization_parts = authorization_services(&units_of_work, clock.clone());
     let state = AdminState {
         tokens: tokens.clone(),
         authorization: authorization.clone(),
@@ -270,6 +333,9 @@ async fn world_with_keys(with_keys: bool) -> World {
             Arc::new(SequentialRandom::default()),
             clock.clone(),
         ),
+        roles: authorization_parts.0,
+        evaluation: authorization_parts.1,
+        policies: Some(authorization_parts.2),
         public_url: "https://auth.example".to_owned(),
     };
     let router = public_router(
@@ -481,6 +547,10 @@ impl Operation {
                 .replace("{secret_id}", &UserId::generate().to_string())
                 .replace("{key_id}", "a-key")
                 .replace("{resource_server_id}", &UserId::generate().to_string())
+                .replace("{permission}", "document:read")
+                .replace("{role}", "editor")
+                .replace("{number}", "7")
+                .replace("{simulation_id}", &UserId::generate().to_string())
         )
     }
 }
@@ -527,7 +597,7 @@ fn the_document_and_the_routes_list_the_same_operations_and_permissions() {
         })
         .collect();
     assert_eq!(documented, served);
-    assert_eq!(served.len(), 48);
+    assert_eq!(served.len(), 71);
 
     // Every operation says how it refuses.
     let document: serde_json::Value = serde_json::from_str(ADMIN_OPENAPI).expect("valid JSON");
@@ -3035,4 +3105,252 @@ async fn an_administrator_sets_and_reads_the_record_of_decisions_of_their_tenant
         )
         .await;
     assert_eq!(refused.status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn an_administrator_manages_roles_assignments_bindings_and_policy_versions() {
+    let world = world().await;
+    let application = world
+        .as_administrator(
+            Method::POST,
+            "/applications",
+            Some(serde_json::json!({ "name": "Documents", "first_party": true })),
+        )
+        .await;
+    assert_eq!(
+        application.status,
+        StatusCode::CREATED,
+        "{}",
+        application.body
+    );
+    let application = application.body["id"].as_str().expect("id").to_owned();
+    let server = world
+        .as_administrator(
+            Method::POST,
+            "/resource-servers",
+            Some(serde_json::json!({
+                "application_id": application,
+                "audience": "https://api.documents.example.com",
+                "name": "Documents interface",
+            })),
+        )
+        .await;
+    assert_eq!(server.status, StatusCode::CREATED, "{}", server.body);
+    let server = server.body["id"].as_str().expect("id").to_owned();
+    let namespace = "https://api.documents.example.com";
+
+    // Permissions, then a role that holds them and one that includes it.
+    for permission in ["document:read", "document:write"] {
+        let declared = world
+            .as_administrator(
+                Method::PUT,
+                &format!("/resource-servers/{server}/permissions/{permission}"),
+                Some(serde_json::json!({ "description": "A document" })),
+            )
+            .await;
+        assert_eq!(declared.status, StatusCode::OK, "{}", declared.body);
+    }
+    let listed = world
+        .as_administrator(
+            Method::GET,
+            &format!("/resource-servers/{server}/permissions"),
+            None,
+        )
+        .await;
+    assert_eq!(listed.body["items"][0]["name"], "document:read");
+    let reader = world
+        .as_administrator(
+            Method::PUT,
+            &format!("/resource-servers/{server}/roles/reader"),
+            Some(serde_json::json!({ "permissions": [{ "name": "document:read" }] })),
+        )
+        .await;
+    assert_eq!(reader.status, StatusCode::OK, "{}", reader.body);
+    let editor = world
+        .as_administrator(
+            Method::PUT,
+            &format!("/resource-servers/{server}/roles/editor"),
+            Some(serde_json::json!({
+                "description": "Edits documents",
+                "permissions": [{ "name": "document:write" }],
+                "includes": [{ "namespace": namespace, "name": "reader" }],
+            })),
+        )
+        .await;
+    assert_eq!(editor.status, StatusCode::OK, "{}", editor.body);
+    assert_eq!(editor.body["includes"][0]["name"], "reader");
+
+    // A role leading back to itself, and one holding an undeclared
+    // permission, are refused.
+    let cycle = world
+        .as_administrator(
+            Method::PUT,
+            &format!("/resource-servers/{server}/roles/reader"),
+            Some(serde_json::json!({
+                "includes": [{ "namespace": namespace, "name": "editor" }],
+            })),
+        )
+        .await;
+    assert_eq!(cycle.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(cycle.code(), "authorization.role_cycle");
+    let undeclared = world
+        .as_administrator(
+            Method::PUT,
+            &format!("/resource-servers/{server}/roles/deleter"),
+            Some(serde_json::json!({ "permissions": [{ "name": "document:delete" }] })),
+        )
+        .await;
+    assert_eq!(undeclared.code(), "authorization.permission_not_declared");
+    // A role another includes cannot be removed.
+    let in_use = world
+        .as_administrator(
+            Method::DELETE,
+            &format!("/resource-servers/{server}/roles/reader"),
+            None,
+        )
+        .await;
+    assert_eq!(in_use.status, StatusCode::CONFLICT);
+
+    // A role given to a person, for one application, then taken away.
+    let given = world
+        .as_administrator(
+            Method::POST,
+            "/role-assignments",
+            Some(serde_json::json!({
+                "principal": { "kind": "user", "id": world.administrator.to_string() },
+                "role": { "namespace": namespace, "name": "editor" },
+                "application_id": application,
+                "valid_until": "2099-01-01T00:00:00Z",
+            })),
+        )
+        .await;
+    assert_eq!(given.status, StatusCode::CREATED, "{}", given.body);
+    let held = world
+        .as_administrator(
+            Method::GET,
+            &format!("/users/{}/role-assignments", world.administrator),
+            None,
+        )
+        .await;
+    assert_eq!(held.body["items"][0]["role"]["name"], "editor");
+    assert_eq!(
+        held.body["items"][0]["application_id"],
+        application.as_str()
+    );
+    let nobody = world
+        .as_administrator(
+            Method::POST,
+            "/role-assignments",
+            Some(serde_json::json!({
+                "principal": { "kind": "user", "id": UserId::generate().to_string() },
+                "role": { "namespace": namespace, "name": "editor" },
+            })),
+        )
+        .await;
+    assert_eq!(nobody.status, StatusCode::NOT_FOUND);
+    let revoke = serde_json::json!({
+        "principal": { "kind": "user", "id": world.administrator.to_string() },
+        "role": { "namespace": namespace, "name": "editor" },
+        "application_id": application,
+    });
+    let taken = world
+        .as_administrator(
+            Method::POST,
+            "/role-assignments:revoke",
+            Some(revoke.clone()),
+        )
+        .await;
+    assert_eq!(taken.status, StatusCode::NO_CONTENT, "{}", taken.body);
+    let again = world
+        .as_administrator(Method::POST, "/role-assignments:revoke", Some(revoke))
+        .await;
+    assert_eq!(again.code(), "authorization.assignment_not_found");
+
+    // The resource server bound to the native engine, then unbound.
+    let missing = world
+        .as_administrator(
+            Method::GET,
+            &format!("/resource-servers/{server}/binding"),
+            None,
+        )
+        .await;
+    assert_eq!(missing.code(), "authorization.binding_not_found");
+    let bound = world
+        .as_administrator(
+            Method::PUT,
+            &format!("/resource-servers/{server}/binding"),
+            Some(serde_json::json!({ "engine": "native", "time_limit_milliseconds": 300 })),
+        )
+        .await;
+    assert_eq!(bound.status, StatusCode::OK, "{}", bound.body);
+    assert_eq!(bound.body["time_limit_milliseconds"], 300);
+    let unknown = world
+        .as_administrator(
+            Method::PUT,
+            &format!("/resource-servers/{server}/binding"),
+            Some(serde_json::json!({ "engine": "elsewhere" })),
+        )
+        .await;
+    assert_eq!(unknown.code(), "authorization.unknown_engine");
+    let bindings = world.as_administrator(Method::GET, "/bindings", None).await;
+    assert_eq!(bindings.body["items"][0]["namespace"], namespace);
+    let unbound = world
+        .as_administrator(
+            Method::DELETE,
+            &format!("/resource-servers/{server}/binding"),
+            None,
+        )
+        .await;
+    assert_eq!(unbound.status, StatusCode::NO_CONTENT);
+
+    // A policy version is drafted and asked to be checked; nothing is
+    // published, so the status names no revision.
+    let package = format!(
+        "hodor.tenants.t{}",
+        world.acme.tenant_id().to_string().replace('-', "")
+    );
+    let drafted = world
+        .as_administrator(
+            Method::POST,
+            "/policy-versions",
+            Some(serde_json::json!({
+                "files": [{ "path": "policy.rego", "contents": format!("package {package}\n\ndefault allow := false\n") }],
+            })),
+        )
+        .await;
+    assert_eq!(drafted.status, StatusCode::CREATED, "{}", drafted.body);
+    assert_eq!(drafted.body["state"], "draft");
+    assert_eq!(drafted.body["written_by"], "tenant");
+    let number = drafted.body["number"].as_u64().expect("number");
+    let asked = world
+        .as_administrator(
+            Method::POST,
+            &format!("/policy-versions/{number}:validate"),
+            None,
+        )
+        .await;
+    assert_eq!(asked.status, StatusCode::ACCEPTED, "{}", asked.body);
+    assert_eq!(asked.body["state"], "validating");
+    let status = world
+        .as_administrator(Method::GET, "/policy-status", None)
+        .await;
+    assert_eq!(status.status, StatusCode::OK);
+    assert!(status.body.get("latest").is_none());
+
+    // Every change is announced.
+    world.record_audit().await;
+    let records = world
+        .as_administrator(Method::GET, "/audit-records?limit=200", None)
+        .await;
+    let said = records.body.to_string();
+    for event in [
+        "authorization.permission_declared",
+        "authorization.role_defined",
+        "authorization.principal_role_assigned",
+        "authorization.principal_role_revoked",
+        "authorization.engine_bound",
+        "authorization.engine_unbound",
+    ] {
+        assert!(said.contains(event), "{event} is not in the audit log");
+    }
 }

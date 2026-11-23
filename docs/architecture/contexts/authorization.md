@@ -29,6 +29,12 @@ A permission names something that can be done: a kind of resource and an action 
 | `assurance-levels:write` | Replacing the tenant's assurance levels |
 | `credentials:read` | Seeing which second factors a user has and how many recovery codes are left, never a secret or a code |
 | `credentials:write` | Removing a user's authenticator application, security keys, passkeys and recovery codes |
+| `roles:read` | Seeing the permissions of resource servers, the tenant's roles and who holds them |
+| `roles:write` | Declaring and removing permissions, defining and removing roles, and giving and taking away roles |
+| `bindings:read` | Seeing which engine answers for each resource server |
+| `bindings:write` | Binding a resource server to an engine and removing the binding |
+| `policies:read` | Seeing the tenant's policy versions, their reports and simulations, and what is published |
+| `policies:write` | Drafting policy versions, asking for their checks and tests, and asking for simulations |
 
 ## Roles
 

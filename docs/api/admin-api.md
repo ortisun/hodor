@@ -108,6 +108,29 @@ It needs `HODOR_DATABASE_URL`, like the tenant commands.
 | `GET /decision-log` | `decisions:read` | Read the settings of the record of decisions |
 | `PUT /decision-log` | `decision-log:write` | Replace the settings of the record of decisions |
 | `GET /decisions` | `decisions:read` | List recorded decisions, newest first |
+| `GET /resource-servers/{resource_server_id}/permissions` | `roles:read` | List the permissions of a resource server |
+| `PUT /resource-servers/{resource_server_id}/permissions/{permission}` | `roles:write` | Declare a permission, or describe it again |
+| `DELETE /resource-servers/{resource_server_id}/permissions/{permission}` | `roles:write` | Remove a permission, and remove it from every role |
+| `GET /roles` | `roles:read` | List the tenant's roles |
+| `GET /resource-servers/{resource_server_id}/roles/{role}` | `roles:read` | Read one role |
+| `PUT /resource-servers/{resource_server_id}/roles/{role}` | `roles:write` | Define a role, or replace it |
+| `DELETE /resource-servers/{resource_server_id}/roles/{role}` | `roles:write` | Remove a role that no other role includes |
+| `GET /users/{user_id}/role-assignments` | `roles:read` | List the roles a user holds |
+| `GET /clients/{client_id}/role-assignments` | `roles:read` | List the roles a client holds |
+| `POST /role-assignments` | `roles:write` | Give a role to a user or a client |
+| `POST /role-assignments:revoke` | `roles:write` | Take a role away |
+| `GET /bindings` | `bindings:read` | List which engine answers for each resource server |
+| `GET /resource-servers/{resource_server_id}/binding` | `bindings:read` | Read a resource server's binding |
+| `PUT /resource-servers/{resource_server_id}/binding` | `bindings:write` | Bind a resource server to an engine, or change the binding |
+| `DELETE /resource-servers/{resource_server_id}/binding` | `bindings:write` | Remove the binding: everything is denied afterwards |
+| `GET /policy-versions` | `policies:read` | List the latest policy versions |
+| `POST /policy-versions` | `policies:write` | Draft a policy version |
+| `GET /policy-versions/{number}` | `policies:read` | Read a version with its files and report |
+| `POST /policy-versions/{number}:validate` | `policies:write` | Ask for a draft to be checked |
+| `POST /policy-versions/{number}:test` | `policies:write` | Ask for a checked version's tests to be run |
+| `POST /policy-versions/{number}/simulations` | `policies:write` | Ask for a version to be simulated on given inputs |
+| `GET /policy-simulations/{simulation_id}` | `policies:read` | Read a simulation and its answers |
+| `GET /policy-status` | `policies:read` | Read what is published and what each instance runs |
 
 ### A user
 
@@ -528,6 +551,82 @@ The settings of [the record of decisions](../architecture/contexts/authorization
 ```
 
 A filter that cannot be read is answered `422` with `request.query_invalid`.
+
+### Roles and their permissions
+
+Specified in [native role-based access control](../architecture/contexts/authorization.md#native-role-based-access-control). A resource server is named in the path by its identifier; its audience is the namespace of its permissions and roles. `hodor:admin` cannot be reached through these routes: Hodor's own roles are built in.
+
+`PUT /resource-servers/{resource_server_id}/permissions/{permission}` takes `{ "description": "Read a document" }` and answers the permission. `{permission}` is `resource:action`, such as `document:read`.
+
+`PUT /resource-servers/{resource_server_id}/roles/{role}` takes the whole role and answers it:
+
+```json
+{
+  "description": "Edits documents during office hours",
+  "permissions": [
+    { "name": "document:read" },
+    { "name": "document:write", "condition": "context.time.matches('T(0[89]|1[0-7]):')" }
+  ],
+  "includes": [{ "namespace": "https://api.example.com", "name": "reader" }]
+}
+```
+
+An included role of the same resource server makes a hierarchy, one of another a composite. A condition is checked when the role is saved: one that does not compile answers `authorization.condition_invalid`, one that is too costly `authorization.condition_too_costly`, both `422` with the permission in the detail.
+
+`POST /role-assignments` gives a role; `POST /role-assignments:revoke` takes the same body without the times and takes it away:
+
+```json
+{
+  "principal": { "kind": "client", "id": "0193f1c4-…" },
+  "role": { "namespace": "https://api.example.com", "name": "editor" },
+  "application_id": "0193f0aa-…",
+  "valid_from": "2026-12-01T00:00:00Z",
+  "valid_until": "2027-01-01T00:00:00Z"
+}
+```
+
+Without `application_id` the role applies to the whole tenant. Revoking a role that was not held answers `404` with `authorization.assignment_not_found`.
+
+| Situation | Status | Code |
+|---|---|---|
+| No resource server of that identifier | `404` | `oauth.resource_server_not_found` |
+| A permission or role name that is not one | `422` | `authorization.permission_invalid`, `authorization.role_name_invalid` |
+| A role that includes a role leading back to it | `422` | `authorization.role_cycle` |
+| A role that holds a permission its resource server does not declare | `422` | `authorization.permission_not_declared` |
+| Removing a role another role includes | `409` | `authorization.role_in_use` |
+| Giving a role that does not exist | `422` | `authorization.role_not_found` |
+
+### Bindings
+
+`PUT /resource-servers/{resource_server_id}/binding` takes and answers [a binding](../architecture/contexts/authorization.md#bindings):
+
+```json
+{
+  "engine": "native",
+  "time_limit_milliseconds": 200,
+  "sensitive": false,
+  "fail_open_actions": [],
+  "trust_asserted": false
+}
+```
+
+The engine is `native` or `open_policy_agent`. An action that fails open is allowed when the engine fails, and is recorded each time: the console asks for it to be confirmed. An unknown engine answers `422` with `authorization.unknown_engine`.
+
+### Policies for Open Policy Agent
+
+Specified in [the policy lifecycle](../architecture/contexts/authorization.md#the-policy-lifecycle). Versions written through these routes are the tenant's own, and run only in an instance of the tenant's own.
+
+`POST /policy-versions` takes the files of a version, each with its path in the tenant's tree and its text:
+
+```json
+{ "files": [{ "path": "resource_servers/r…/policy.rego", "contents": "package hodor.tenants.t….resource_servers.r…\n…" }] }
+```
+
+`:validate` and `:test` answer at once with the version waiting; the worker checks it, and the version's `state` and `report` say how it went. `POST /policy-versions/{number}/simulations` takes `{ "resource_server_id": "…", "inputs": [ … ] }`, at most 100 inputs, and answers the simulation waiting; `GET /policy-simulations/{simulation_id}` answers its results once the worker has run it.
+
+**Publishing and rolling back are not routes.** A published bundle is signed with the installation's bundle signing key, which only `hodor-cli policy publish` and `hodor-cli policy rollback` hold: the server never holds it ([Decision 0026](../decisions/0026-policy-checks-in-a-sandbox.md)). `GET /policy-status` shows what was published and, per instance that should run it, whether it does.
+
+Registering and disabling Open Policy Agent instances is likewise the operator's, with `hodor-cli policy-agent instance`: an instance may serve every tenant.
 
 ## Not built yet
 
