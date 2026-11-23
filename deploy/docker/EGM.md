@@ -66,7 +66,7 @@ Named volumes: `postgres-data`, `victoriametrics-data`, `victoriatraces-data`.
 
 ## Side Effects
 
-- `docker compose ... up --build` builds the image `hodor:dev` from the repository root, downloading Node.js and Rust dependencies (with cache mounts for `/root/.npm`, the cargo registry and `/src/target`).
+- `docker compose ... up --build` builds the image `hodor:dev` from the repository root, downloading Node.js and Rust dependencies (with cache mounts for `/root/.npm`, the cargo registry and `/src/target`). The target cache is shared by every build of every branch on the machine, so the build stage touches the workspace's files before `cargo build`: cargo compares modification times, and a file older than what another branch left in the cache would be taken as built.
 - `postgres-init.sql` runs only when the `postgres-data` volume is first initialized (it is mounted into `/docker-entrypoint-initdb.d/`).
 - `migrate` changes the database schema; `system-tenant` inserts the system tenant if missing.
 - Data persists across restarts in the three named volumes; metrics and traces are kept seven days.
