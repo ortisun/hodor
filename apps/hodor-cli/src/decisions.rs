@@ -24,6 +24,8 @@ use time::format_description::well_known::Rfc3339;
 
 #[derive(Subcommand)]
 pub(crate) enum AuthorizationCommand {
+    #[command(flatten)]
+    Manage(crate::roles::ManageCommand),
     /// Read or set what the record of decisions keeps.
     DecisionLog {
         #[command(subcommand)]
@@ -153,6 +155,7 @@ pub(crate) async fn run_authorization(
     command: AuthorizationCommand,
 ) -> Result<String, DomainError> {
     match command {
+        AuthorizationCommand::Manage(command) => crate::roles::run_manage(database, command).await,
         AuthorizationCommand::DecisionLog {
             command: DecisionLogCommand::Show { tenant },
         } => {

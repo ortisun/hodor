@@ -5,6 +5,7 @@
 mod applications;
 mod decisions;
 mod policies;
+mod roles;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use hodor_adapters_crypto::{
