@@ -179,6 +179,16 @@ describe("the sign-in page", () => {
     expect(sent.map((request) => `${request.method} ${request.path}`)).not.toContain("GET /session");
   });
 
+  it("starts with the identifier an application suggested", async () => {
+    const { props } = page({
+      "GET /session": [nobody],
+      "GET /sign-in": [pending("identifier")],
+    });
+    render(<SignInPage {...props} notice={null} signInAgain loginHint="ana@example.com" />);
+    const field = await screen.findByLabelText<HTMLInputElement>(en.identifierLabel);
+    expect(field.value).toBe("ana@example.com");
+  });
+
   it("shows a rejection with one message and an empty password field", async () => {
     const { props, user } = page({
       "GET /session": [nobody],

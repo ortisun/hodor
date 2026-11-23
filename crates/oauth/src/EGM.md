@@ -15,13 +15,20 @@ follows is `docs/architecture/contexts/oauth.md`.
   - Services: `ApplicationService`, `ApplicationPorts`, `CreateClient`,
     `RotateSecret`, `CreateResourceServer`; `AuthorizationCodeService`,
     `AuthorizationCodePorts`, `ResumedRequest`, `RedeemedCode`;
-    `TokenService`, `TokenPorts`, `Issuer`, `IssuedTokens`.
+    `TokenService`, `TokenPorts`, `Issuer`, `IssuedTokens`;
+    `UserInfoService`, `UserInfoPorts`.
   - The token endpoint's domain: `TokenRequest` (with `parse`),
     `PresentedClient`, `BasicCredentials`, `GrantRequest`, `TokenError`,
     `check_assertion`, `assertion_issuer`, `AssertionAudience`,
     `CheckedAssertion`, `access_token_claims`, `AccessTokenClaims`, and
     `ASSERTION_TYPE`, `MAX_ASSERTION_BYTES`, `MAX_ASSERTION_ID_LENGTH`,
-    `ASSERTION_LONGEST_AHEAD`, `CLOCK_ALLOWANCE`.
+    `ASSERTION_LONGEST_AHEAD`, `CLOCK_ALLOWANCE`, `SUPPORTED_GRANT_TYPES`.
+  - The OpenID Provider's domain: `id_token_claims`, `access_token_hash`,
+    `authentication_methods`, `assurance`, `is_multi_factor`,
+    `asks_for_openid`, `check_access_token`, `PublishedKey`,
+    `CheckedAccessToken`, `BearerRefusal`, `PersonClaims`,
+    `userinfo_claims`, `discovery_document`, and `OPENID_SCOPE`,
+    `ACR_MULTI_FACTOR`, `ACR_SINGLE_FACTOR`, `UI_LOCALES`.
   - The authorization endpoint's domain: `AuthorizationParameters`,
     `check_request`, `AuthorizationRequest`, `AuthorizationRefusal`,
     `AuthorizationError`, `SignedInPerson`, `SessionDecision`,

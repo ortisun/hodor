@@ -45,12 +45,12 @@ OAuth endpoints follow their RFCs instead: form-encoded requests and the `error`
 
 ## OAuth 2.x and OpenID Connect
 
-The paths are relative to the tenant, `https://{host}/t/{slug}`, whose issuer is `{HODOR_PUBLIC_URL}/t/{slug}`. The authorization endpoint and the token endpoint are specified in [the OAuth context](../architecture/contexts/oauth.md#authorization-endpoint).
+The paths are relative to the tenant, `https://{host}/t/{slug}`, whose issuer is `{HODOR_PUBLIC_URL}/t/{slug}`. The authorization endpoint, the token endpoint and the OpenID Provider are specified in [the OAuth context](../architecture/contexts/oauth.md#authorization-endpoint).
 
 | Method and path | Purpose | Standard |
 |---|---|---|
-| `GET /.well-known/openid-configuration` | Provider metadata | OpenID Connect Discovery |
-| `GET /.well-known/oauth-authorization-server` | Authorization server metadata | RFC 8414 |
+| `GET /.well-known/openid-configuration` | Provider metadata (built: [discovery](../architecture/contexts/oauth.md#discovery)) | OpenID Connect Discovery |
+| `GET /.well-known/oauth-authorization-server` | Authorization server metadata, the same document (built) | RFC 8414 |
 | `GET /oauth2/jwks` | Public signing keys (built: [the published key set](../architecture/contexts/keys.md#the-published-key-set)) | RFC 7517 |
 | `GET, POST /oauth2/authorize` | Authorization endpoint | RFC 6749, OpenID Connect Core |
 | `GET /oauth2/authorize/resume` | Where the hosted pages send the browser after a sign-in, to go on with the pending authorization request ([the OAuth context](../architecture/contexts/oauth.md#signing-in-and-coming-back)) | — |
@@ -58,7 +58,7 @@ The paths are relative to the tenant, `https://{host}/t/{slug}`, whose issuer is
 | `POST /oauth2/token` | Token endpoint: `authorization_code` (built: [the token endpoint](../architecture/contexts/oauth.md#token-endpoint-and-client-authentication)), `refresh_token`, `client_credentials`, `urn:ietf:params:oauth:grant-type:device_code`, `…:token-exchange`, `…:jwt-bearer` | RFC 6749, 8628, 8693, 7523 |
 | `POST /oauth2/revoke` | Revocation | RFC 7009 |
 | `POST /oauth2/introspect` | Introspection | RFC 7662 |
-| `GET, POST /oauth2/userinfo` | UserInfo | OpenID Connect Core |
+| `GET, POST /oauth2/userinfo` | UserInfo (built: [UserInfo](../architecture/contexts/oauth.md#userinfo)) | OpenID Connect Core |
 | `POST /oauth2/device_authorization` | Device authorization | RFC 8628 |
 | `GET /oauth2/device` | User code entry page | RFC 8628 |
 | `GET, POST /oauth2/logout` | Logout initiated by the relying party | OpenID Connect RP-Initiated Logout |

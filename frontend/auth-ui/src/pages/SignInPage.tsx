@@ -82,6 +82,8 @@ interface SignInPageProps extends PageProps {
   notice: NoticeName | null;
   /** An application's request waits for this sign-in: sign in even when signed in. */
   signInAgain?: boolean;
+  /** The identifier an application suggested: the field starts with it. */
+  loginHint?: string | null;
 }
 
 /** The steps a recovery code can stand in for. */
@@ -91,12 +93,22 @@ const SECOND_FACTORS = ["webauthn", "totp"];
  * Signing in. The page shows the form for the step the server names and
  * sends back what was typed; it decides nothing.
  */
-export function SignInPage({ tenant, client, text, go, leave, path, notice, signInAgain = false }: SignInPageProps) {
+export function SignInPage({
+  tenant,
+  client,
+  text,
+  go,
+  leave,
+  path,
+  notice,
+  signInAgain = false,
+  loginHint = null,
+}: SignInPageProps) {
   const [view, setView] = useState<View>({ kind: "loading" });
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<Failure | null>(null);
   const [expired, setExpired] = useState(false);
-  const [identifier, setIdentifier] = useState("");
+  const [identifier, setIdentifier] = useState(loginHint ?? "");
   const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
   /** Whether the person chose to give a recovery code where the code of their application is asked. */

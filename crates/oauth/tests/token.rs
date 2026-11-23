@@ -17,7 +17,7 @@ use hodor_oauth::api::{
     AuthorizationParameters, BasicCredentials, ClientId, ClientSecretValue, ClientSettings,
     ClientType, CreateClient, CreateResourceServer, GrantStatus, GrantStore, GrantType,
     IssuedTokens, Issuer, ResourceServerSettings, ScopeDefinition, SignedInPerson, Status,
-    TokenError, TokenPorts, TokenRequest, TokenService, s256_challenge,
+    TokenError, TokenPorts, TokenRequest, TokenService, access_token_hash, s256_challenge,
 };
 use hodor_oauth::testing::{
     AssertionStorePorts, DistinctRandom, FakeVerifier, InMemoryAuthorizationCodes,
@@ -338,7 +338,7 @@ async fn a_public_client_exchanges_its_code_for_a_signed_access_token() {
     assert_eq!(tokens.token_type, "Bearer");
     assert_eq!(tokens.expires_in, 300);
     assert_eq!(tokens.scope, "openid read");
-    assert!(tokens.refresh_token.is_none() && tokens.id_token.is_none());
+    assert!(tokens.refresh_token.is_none());
 
     let token = tokens.access_token.expose();
     let parts: Vec<&str> = token.split('.').collect();
@@ -369,11 +369,37 @@ async fn a_public_client_exchanges_its_code_for_a_signed_access_token() {
     )));
     let claims = decoded(claims);
     assert_eq!(claims["iss"], ISSUER);
-    assert_eq!(claims["aud"], AUDIENCE);
+    assert_eq!(
+        claims["aud"],
+        json!([AUDIENCE, ISSUER]),
+        "with openid, the token reads UserInfo too"
+    );
     assert_eq!(claims["client_id"], id);
     assert_eq!(claims["scope"], "openid read");
     assert_eq!(
         claims["exp"].as_i64().expect("exp") - claims["iat"].as_i64().expect("iat"),
+        300
+    );
+
+    // `openid` was asked for: an ID token for the client, signed by the
+    // same key, bound to this access token.
+    let id_token = tokens.id_token.as_ref().expect("an ID token").expose();
+    let id_parts: Vec<&str> = id_token.split('.').collect();
+    assert_eq!(
+        decoded(id_parts[0]),
+        json!({"alg": "ES256", "typ": "JWT", "kid": active.id().to_string()})
+    );
+    let id_claims = decoded(id_parts[1]);
+    assert_eq!(id_claims["iss"], ISSUER);
+    assert_eq!(id_claims["aud"], id, "the client alone");
+    assert_eq!(id_claims["sub"], claims["sub"]);
+    assert_eq!(id_claims["auth_time"], claims["auth_time"]);
+    assert_eq!(id_claims["at_hash"], access_token_hash(token, &FakeDigest));
+    assert_eq!(id_claims["amr"], json!(["pwd"]));
+    assert_eq!(id_claims["acr"], "urn:hodor:acr:single-factor");
+    assert!(id_claims.get("nonce").is_none(), "the request had none");
+    assert_eq!(
+        id_claims["exp"].as_i64().expect("exp") - id_claims["iat"].as_i64().expect("iat"),
         300
     );
 
@@ -428,6 +454,7 @@ async fn a_token_carries_only_the_audiences_asked_for() {
     )
     .await
     .expect("tokens");
+    assert!(tokens.id_token.is_none(), "no openid, no ID token");
     assert_eq!(audience_of(tokens), json!(AUDIENCE));
 
     let none = code_for(&world, &tenant, client, "openid", &[]).await;

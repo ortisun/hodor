@@ -27,6 +27,7 @@ pub mod api {
         ApplicationPorts, ApplicationService, CreateClient, CreateResourceServer, RotateSecret,
     };
     pub use crate::application::token::{IssuedTokens, Issuer, TokenPorts, TokenService};
+    pub use crate::application::userinfo::{UserInfoPorts, UserInfoService};
     pub use crate::domain::application::{
         Application, ApplicationId, ApplicationSettings, ApplicationSnapshot, MAX_APPLICATIONS,
         Status,
@@ -44,6 +45,12 @@ pub mod api {
     };
     pub use crate::domain::event::OauthEvent;
     pub use crate::domain::key::{ClientKey, MAX_KEYS};
+    pub use crate::domain::openid::{
+        ACR_MULTI_FACTOR, ACR_SINGLE_FACTOR, BearerRefusal, CheckedAccessToken, OPENID_SCOPE,
+        PersonClaims, PublishedKey, UI_LOCALES, access_token_hash, asks_for_openid, assurance,
+        authentication_methods, check_access_token, discovery_document, id_token_claims,
+        is_multi_factor, userinfo_claims,
+    };
     pub use crate::domain::resource_server::{
         Audience, OPENID_SCOPES, ResourceServer, ResourceServerId, ResourceServerSettings,
         ResourceServerSnapshot, ScopeDefinition,
@@ -55,7 +62,7 @@ pub mod api {
     pub use crate::domain::token::{
         ASSERTION_LONGEST_AHEAD, ASSERTION_TYPE, AccessTokenClaims, AssertionAudience,
         BasicCredentials, CLOCK_ALLOWANCE, CheckedAssertion, GrantRequest, MAX_ASSERTION_BYTES,
-        MAX_ASSERTION_ID_LENGTH, PresentedClient, TokenError, TokenRequest, access_token_claims,
-        assertion_issuer, check_assertion,
+        MAX_ASSERTION_ID_LENGTH, PresentedClient, SUPPORTED_GRANT_TYPES, TokenError, TokenRequest,
+        access_token_claims, assertion_issuer, check_assertion,
     };
 }

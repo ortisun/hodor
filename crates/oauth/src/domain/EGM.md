@@ -53,8 +53,18 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   of RFC 7523 in the specification's order; `assertion_issuer`, the `iss`
   read before the signature only to find the client;
   `access_token_claims` (RFC 9068; the issuer is the audience when the code
-  has none); and, inside the crate, `access_token_header`,
-  `signing_input` and `compact`. Its cases are in `token/tests.rs`.
+  has none, and one of the audiences when the scopes hold `openid`);
+  `SUPPORTED_GRANT_TYPES`, the grants the discovery document names; and,
+  inside the crate, `access_token_header`, `decode_json`, `signing_input`
+  and `compact`. Its cases are in `token/tests.rs`.
+- `openid.rs`: the OpenID Provider. `authentication_methods` (Hodor's
+  method names as RFC 8176 `amr`, each once, in a fixed order, with `mfa`),
+  `assurance` (`ACR_MULTI_FACTOR` or `ACR_SINGLE_FACTOR`),
+  `is_multi_factor`, `access_token_hash` (`at_hash`), `id_token_claims`,
+  `check_access_token` (the checks of UserInfo, in order, against
+  `PublishedKey`s; `BearerRefusal`, `CheckedAccessToken`), `PersonClaims`
+  and `userinfo_claims` (the claims of `profile` and `email`), and
+  `discovery_document`. Its cases are in `openid/tests.rs`.
 - `event.rs`: `OauthEvent`, seventeen variants, each named `oauth.*`.
 - `text.rs`: the rules of names and of scopes (`is_scope`).
 

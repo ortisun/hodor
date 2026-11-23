@@ -97,6 +97,8 @@ Security properties enforced here: PKCE S256 only (`plain` rejected), exact redi
 
 ## 3. OpenID Provider
 
+Built by Issue-59, without `sid`, which comes with logout (Issue-60), and with `acr_values` kept but not yet enforced (Issue-69). [The OAuth context](../architecture/contexts/oauth.md#openid-provider) holds the details.
+
 ```mermaid
 sequenceDiagram
     autonumber
@@ -116,13 +118,14 @@ sequenceDiagram
     Note over Server: Sequence 2, with the session facts checked against max_age and acr_values
     Server-->>Browser: 302 redirect_uri?code&state&iss
     RelyingParty->>Server: POST /token
-    OAuth->>Identity: GetClaims(user, consented scopes)
-    OAuth->>OAuth: subject = public identifier or pairwise(sector, user, salt)
-    OAuth->>Keys: Sign ID Token {iss, sub, aud, exp, iat, auth_time, nonce, acr, amr, sid, at_hash}
+    OAuth->>OAuth: subject = the user identifier (public subjects)
+    OAuth->>Keys: Sign ID Token {iss, sub, aud, exp, iat, auth_time, nonce, acr, amr, at_hash}
     Server-->>RelyingParty: {id_token, access_token, refresh_token}
     RelyingParty->>RelyingParty: validate signature, iss, aud, exp, nonce
     RelyingParty->>Server: GET /t/acme/oauth2/userinfo with bearer token
-    Server-->>RelyingParty: claims for consented scopes
+    OAuth->>Keys: published keys, to check the access token
+    OAuth->>Identity: the person, for the claims of the token's scopes
+    Server-->>RelyingParty: claims for the token's scopes
     Note over RelyingParty,Server: Logout
     RelyingParty->>Browser: redirect to /logout?id_token_hint&post_logout_redirect_uri&state
     Browser->>Server: GET /t/acme/oauth2/logout

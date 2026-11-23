@@ -14,13 +14,16 @@ its header); the pages see plain values.
 - `main.tsx` (entry, loaded by `../index.html`) - imports the IBM Plex Sans
   font files, `@astryxdesign/core/reset.css`, `@astryxdesign/core/astryx.css`
   and `auth-ui.css`. When `#root` exists and `placeOf(location.pathname)` is
-  not `null`, it sets `document.documentElement.lang`, reads `noticeOf`,
-  `providerAnswerOf` and `tokenOf`, and renders `<Theme
+  not `null`, it picks the language with `chooseMessages` from
+  `uiLocalesOf(location.search)` followed by `navigator.languages`, sets
+  `document.documentElement.lang`, reads `noticeOf`, `providerAnswerOf`,
+  `tokenOf`, `continuesAuthorization` and `loginHintOf`, and renders `<Theme
   theme={themes[defaultThemeSlug]} mode="light"><App .../></Theme>` with
   `client={new Client(place.tenant)}`, `go` (`window.location.assign(pathOf(...))`)
   and `leave` (`window.location.assign(url)`).
 - `App.tsx:App(AppProps)` - `AppProps` is `{ place, client, text, notice,
-  token, go, leave, providerAnswer }`. It renders `sign-in` as `SignInPage`,
+  token, go, leave, providerAnswer, signInAgain?, loginHint? }`; the last two
+  go to `SignInPage`. It renders `sign-in` as `SignInPage`,
   `register` / `recover` as `AskPage`, `complete-registration` /
   `reset-password` as `FinishPage`, `account` as `AccountPage`,
   `provider-callback` as `ComingBackPage`, and anything else as a "page not
@@ -39,6 +42,11 @@ its header); the pages see plain values.
   - `pathOf(tenant, page, notice?)` - `/t/{tenant}/account` or
     `/t/{tenant}/account/{page}`, with `?notice={notice}` when given.
   - `noticeOf(search)` - the `notice` query parameter if it is in `NOTICES`.
+  - `continuesAuthorization(search)` - whether `continue=authorization`.
+  - `loginHintOf(search)` - `login_hint`, or `null` when missing, blank or
+    longer than 255 characters.
+  - `uiLocalesOf(search)` - the tags of `ui_locales`, separated by spaces, in
+    their order.
   - `tokenOf(hash)` - the `token` of the fragment if it matches
     `^[0-9a-f]{16,128}$`.
   - `ProviderAnswer` / `providerAnswerOf(search)` - `code`, `state`, `error`,

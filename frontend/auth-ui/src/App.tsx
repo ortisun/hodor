@@ -24,16 +24,29 @@ export interface AppProps {
   providerAnswer: ProviderAnswer;
   /** An application's request waits for a new sign-in. */
   signInAgain?: boolean;
+  /** The identifier an application suggested, to fill the sign-in field. */
+  loginHint?: string | null;
 }
 
 /** Shows the page the address names. */
-export function App({ place, client, text, notice, token, go, leave, providerAnswer, signInAgain = false }: AppProps) {
+export function App({
+  place,
+  client,
+  text,
+  notice,
+  token,
+  go,
+  leave,
+  providerAnswer,
+  signInAgain = false,
+  loginHint = null,
+}: AppProps) {
   const { tenant } = place;
   const page = { tenant, client, text, go, leave, path: (name: PageName) => pathOf(tenant, name) };
 
   switch (place.page) {
     case "sign-in":
-      return <SignInPage {...page} notice={notice} signInAgain={signInAgain} />;
+      return <SignInPage {...page} notice={notice} signInAgain={signInAgain} loginHint={loginHint} />;
     case "register":
       return <AskPage {...page} purpose="registration" />;
     case "recover":

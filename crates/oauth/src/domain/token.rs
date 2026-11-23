@@ -172,6 +172,10 @@ impl PresentedClient {
     }
 }
 
+/// The grants the token endpoint answers, as the discovery document names
+/// them. A grant added to [`GrantRequest`] is added here too.
+pub const SUPPORTED_GRANT_TYPES: [&str; 1] = ["authorization_code"];
+
 /// What the client asks for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GrantRequest {
@@ -321,7 +325,7 @@ fn presented_client(
     }
 }
 
-fn decode_json(part: &str) -> Option<Map<String, Value>> {
+pub(crate) fn decode_json(part: &str) -> Option<Map<String, Value>> {
     let bytes = URL_SAFE_NO_PAD.decode(part).ok()?;
     match serde_json::from_slice(&bytes).ok()? {
         Value::Object(object) => Some(object),
@@ -495,7 +499,15 @@ pub fn access_token_claims(
     random.fill(&mut bytes);
     let token_id = URL_SAFE_NO_PAD.encode(bytes);
     let expires_at = now + lifetime;
-    let audience = match code.audiences.as_slice() {
+    // With `openid`, the issuer is an audience too, so that the token
+    // reads UserInfo.
+    let mut audiences = code.audiences.clone();
+    if code.scopes.iter().any(|scope| scope == "openid")
+        && !audiences.iter().any(|audience| audience == issuer)
+    {
+        audiences.push(issuer.to_owned());
+    }
+    let audience = match audiences.as_slice() {
         [] => json!(issuer),
         [one] => json!(one),
         many => json!(many),
