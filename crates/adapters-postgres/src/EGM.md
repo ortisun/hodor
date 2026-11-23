@@ -7,7 +7,8 @@ crates declare: the unit of work and the unit of work factory from
 `hodor-kernel`, and one store or repository per bounded context (audit,
 authentication, authorization, credential, federation, identity,
 notification, session, tenant). It also holds the outbox dispatcher, the
-cleanup job for expired pending authorizations, the embedded schema
+cleanup jobs for expired pending authorizations and records of access
+tokens, the embedded schema
 migrations, and a feature-gated test-support module.
 
 Tenant data is reached only through a `TenantTransaction`
@@ -34,6 +35,7 @@ All modules are private; the public surface is the set of re-exports in
 | `migrate(owner_pool)` | `migrate.rs` | Applies all pending migrations. |
 | `OutboxDispatcher`, `DispatchReport` | `outbox.rs` | Delivers pending outbox events to `hodor_kernel::EventHandler`s. |
 | `PendingAuthorizationCleanup`, `CleanupReport` | `cleanup.rs` | `new(platform, database)`; `run(now, batch)` finds, through the platform pool, up to 100 tenants (`TENANTS_PER_PASS`) that have pending authorizations expired at `now`, and in each tenant removes up to `batch` of them in its own unit of work, through `PgPendingAuthorizationStore::remove_expired`. The report counts the tenants and the rows removed. |
+| `AccessTokenCleanup` | `cleanup.rs` | The same for the register: `new(platform, database)`; `run(now, batch)` finds up to 100 tenants with records of access tokens expired at `now`, and in each removes up to `batch` through `PgAccessTokenRecordStore::remove_expired`. |
 | `KeyRotationJob`, `RotationPass` | `key_rotation.rs` | `new(platform, keys: KeyService, policy: RotationPolicy)`; `run(now)` takes `pg_try_advisory_xact_lock` (key `0x686f646f726b6579`, "hodorkey") in a transaction of the platform pool and, without it, answers `skipped`. With it, it finds up to 100 active tenants (`platform.tenant_directory`) that have something due by the rules of `KeySet::rotation_plan`, runs `KeyService::rotate_due` in each, and records a tenant's error in `failures` and goes on. `RotationPass { skipped, tenants, failures, changes }` with `was_full()`. The lock ends with the transaction. |
 | `MigrateError`, `Error`, `PgPool` | `lib.rs` | Re-exported from `sqlx`. |
 
@@ -68,7 +70,8 @@ Each store is a unit struct (except where noted) that runs its queries on
 | `PgAuthorizationRequestStore` | `impl AuthorizationRequestStore` (`oauth_authorization.rs`); the request as `jsonb`; `authorization_request_client_fk` is `oauth.client_not_found`; `remove` deletes and answers whether a row went | `oauth.authorization_request` |
 | `PgGrantStore` | `impl GrantStore` (`oauth_authorization.rs`); `authorization_grant_client_fk` is `oauth.client_not_found` | `oauth.authorization_grant` |
 | `PgAuthorizationCodeStore` | `impl AuthorizationCodeStore` (`oauth_authorization.rs`); `redeem` is one `UPDATE … WHERE redeemed_at IS NULL`, so of two at once one wins; `authorization_code_grant_fk` is `oauth.grant_not_found` | `oauth.authorization_code` |
-| `PgRefreshTokenStore` | `impl RefreshTokenStore` (`oauth_refresh.rs`); `start` inserts the family and its first token; `find` joins a token's hash to its family; `advance` is one `UPDATE … WHERE generation = $3 AND status = 'active'`, so of two at once one moves the family, then inserts the next token; `refresh_token_family_grant_fk` and `refresh_token_family_client_fk` are `oauth.grant_not_found` | `oauth.refresh_token_family`, `oauth.refresh_token` |
+| `PgRefreshTokenStore` | `impl RefreshTokenStore` (`oauth_refresh.rs`); `start` inserts the family and its first token; `find` joins a token's hash to its family; `advance` is one `UPDATE … WHERE generation = $3 AND status = 'active'`, so of two at once one moves the family, then inserts the next token; `get` reads a family by its identifier; `refresh_token_family_grant_fk` and `refresh_token_family_client_fk` are `oauth.grant_not_found` | `oauth.refresh_token_family`, `oauth.refresh_token` |
+| `PgAccessTokenRecordStore` | `impl AccessTokenRecordStore` (`oauth_access_token.rs`); `record` inserts a record; `access_token_client_fk`, `access_token_grant_fk` and `access_token_family_fk` are `oauth.client_not_found`, `oauth.grant_not_found` and `oauth.refresh_token_family_not_found`; `revoke` is one `UPDATE … WHERE client_id = $3 AND revoked_at IS NULL`, so of two at once one revokes; `remove_expired` removes a locked batch chosen once | `oauth.access_token` |
 | `PgClientAssertionStore` | `impl ClientAssertionStore` (`oauth_token.rs`); `remember` is one `INSERT … ON CONFLICT DO NOTHING` on the primary key, so of two at once one is first; `client_assertion_client_fk` is `oauth.client_not_found` | `oauth.client_assertion` |
 | `PgResourceServerStore` | `impl ResourceServerStore for PgResourceServerStore` (`oauth.rs`, `hodor_oauth::api`); maps the constraints `resource_server_audience_unique`, `resource_server_application_unique` and `resource_server_application_fk` to `oauth.audience_taken`, `oauth.application_has_resource_server` and `oauth.application_not_found` | `oauth.resource_server`, `oauth.resource_server_scope` |
 | `PgUserRepository` | `impl UserRepository for PgUserRepository` (`identity.rs`, `hodor_identity::api`) | `identity."user"`, `identity.user_identifier` |

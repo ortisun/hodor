@@ -20,10 +20,12 @@ pub mod api {
     pub use crate::application::authorization::{
         AuthorizationCodePorts, AuthorizationCodeService, RedeemedCode, ResumedRequest,
     };
+    pub use crate::application::introspection::AccessTokenRegister;
     pub use crate::application::logout::{LogoutPorts, LogoutRefusal, LogoutService};
     pub use crate::application::ports::{
-        ApplicationStore, AuthorizationCodeStore, AuthorizationRequestStore, ClientAssertionStore,
-        ClientStore, GrantStore, PersonStanding, RefreshTokenStore, ResourceServerStore,
+        AccessTokenRecordStore, ApplicationStore, AuthorizationCodeStore,
+        AuthorizationRequestStore, ClientAssertionStore, ClientStore, GrantStore, PersonStanding,
+        RefreshTokenStore, ResourceServerStore,
     };
     pub use crate::application::service::{
         ApplicationPorts, ApplicationService, CreateClient, CreateResourceServer, RotateSecret,
@@ -46,6 +48,10 @@ pub mod api {
         GrantType, MAX_CLIENTS, MAX_REDIRECT_URIS, MAX_SCOPES, TokenPolicy,
     };
     pub use crate::domain::event::OauthEvent;
+    pub use crate::domain::introspection::{
+        AccessTokenRecord, ActiveRefreshToken, REVOKED_BY_CLIENT, TokenQuery, TokenTypeHint,
+        active_access_token, active_refresh_token, inactive,
+    };
     pub use crate::domain::key::{ClientKey, MAX_KEYS};
     pub use crate::domain::logout::{
         CurrentSession, IdTokenHint, LogoutDecision, LogoutParameters, LogoutRequest,
@@ -53,9 +59,10 @@ pub mod api {
         refusal as logout_refusal,
     };
     pub use crate::domain::openid::{
-        BearerRefusal, CheckedAccessToken, OPENID_SCOPE, PersonClaims, PublishedKey, UI_LOCALES,
-        access_token_hash, asks_for_openid, authentication_methods, check_access_token,
-        discovery_document, id_token_claims, is_multi_factor, userinfo_claims,
+        BearerRefusal, CheckedAccessToken, OPENID_SCOPE, PersonClaims, PublishedKey,
+        ReadAccessToken, UI_LOCALES, access_token_hash, asks_for_openid, authentication_methods,
+        check_access_token, discovery_document, id_token_claims, is_multi_factor,
+        read_access_token, userinfo_claims,
     };
     pub use crate::domain::refresh::{
         DEFAULT_RETRY_WINDOW, FAMILY_SECRET_PURPOSE, FamilySecret, FamilyStatus,

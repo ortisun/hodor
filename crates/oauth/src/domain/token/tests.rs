@@ -267,6 +267,7 @@ fn check(assertion: &str, client: &Client) -> Result<CheckedAssertion, &'static 
         AssertionAudience {
             issuer: ISSUER,
             token_endpoint: ENDPOINT,
+            endpoint: ENDPOINT,
         },
         now(),
         &FakeVerifier,

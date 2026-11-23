@@ -266,4 +266,26 @@ impl RefreshTokenStore for PgRefreshTokenStore {
             ))
         }
     }
+
+    async fn get(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: RefreshFamilyId,
+    ) -> Result<Option<RefreshFamily>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let row = sqlx::query(
+            "SELECT id, grant_id, client_id, user_id, session_id, scopes, audiences, offline,
+                    signed_in_at, methods, sealed_secret, generation, current_hash, moved_at,
+                    moved_scopes, moved_resource, status, created_at, expires_at, idle_seconds,
+                    last_used_at, revoked_at, revocation_reason, acr
+             FROM oauth.refresh_token_family
+             WHERE tenant_id = $1 AND id = $2",
+        )
+        .bind(tenant.as_uuid())
+        .bind(id.as_uuid())
+        .fetch_optional(connection(uow)?)
+        .await
+        .map_err(get)?;
+        row.as_ref().map(family_from).transpose()
+    }
 }

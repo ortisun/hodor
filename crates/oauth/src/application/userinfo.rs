@@ -1,5 +1,6 @@
 //! UserInfo: the claims of the person an access token was issued for.
 
+use crate::application::introspection::AccessTokenRegister;
 use crate::domain::openid::{
     BearerRefusal, PersonClaims, PublishedKey, check_access_token, userinfo_claims,
 };
@@ -46,6 +47,8 @@ pub struct UserInfoPorts {
     pub verifier: Arc<dyn SignatureVerifier>,
     /// Reads the person.
     pub identity: IdentityService,
+    /// Whether the token is still in force.
+    pub register: AccessTokenRegister,
     /// The time.
     pub clock: Arc<dyn Clock>,
 }
@@ -101,6 +104,16 @@ impl UserInfoService {
             Ok(checked) => checked,
             Err(refusal) => return Ok(Err(refusal)),
         };
+        if !self
+            .ports
+            .register
+            .in_force(tenant, &checked.token_id, &checked.client_id)
+            .await?
+        {
+            return Ok(Err(BearerRefusal::InvalidToken(
+                "the token is not in force",
+            )));
+        }
         let user = match self.ports.identity.get(tenant, checked.user_id).await {
             Ok(user) => user,
             Err(error) if error.kind() == ErrorKind::NotFound => {

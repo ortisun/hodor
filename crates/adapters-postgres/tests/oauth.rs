@@ -547,3 +547,197 @@ async fn of_two_redemptions_at_the_same_moment_one_wins_and_the_grant_is_revoked
     .expect("dump");
     assert!(!everything.contains(code.expose()));
 }
+
+#[tokio::test]
+async fn the_postgres_access_token_register_passes_the_contract() {
+    use hodor_adapters_postgres::PgAccessTokenRecordStore;
+    use hodor_oauth::testing::{AccessTokenRecordStorePorts, run_access_token_record_contract};
+
+    let database = TestDatabase::start().await;
+    run_access_token_record_contract(AccessTokenRecordStorePorts {
+        units_of_work: database.app(),
+        applications: &PgApplicationStore,
+        clients: &PgClientStore,
+        access_tokens: &PgAccessTokenRecordStore,
+    })
+    .await;
+}
+
+/// A tenant with one public client, made through the application service.
+async fn a_tenant_with_a_client(
+    database: &TestDatabase,
+    now: Timestamp,
+) -> (TenantContext, hodor_oauth::api::ClientId) {
+    let applications = ApplicationService::new(ApplicationPorts {
+        units_of_work: Arc::new(database.app().clone()),
+        applications: Arc::new(PgApplicationStore),
+        clients: Arc::new(PgClientStore),
+        resource_servers: Arc::new(PgResourceServerStore),
+        digest: Arc::new(FakeDigest),
+        random: Arc::new(DistinctRandom),
+        clock: Arc::new(FixedClock::at(now)),
+    });
+    let tenant = TenantContext::assume(TenantId::generate());
+    let application = applications
+        .create_application(
+            &tenant,
+            ApplicationSettings {
+                name: "Payroll".to_owned(),
+                first_party: true,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("application");
+    let (client, _) = applications
+        .create_client(
+            &tenant,
+            CreateClient {
+                application_id: application.id(),
+                client_type: ClientType::Public,
+                settings: ClientSettings::new(
+                    "Payroll mobile",
+                    ClientType::Public,
+                    vec![GrantType::AuthorizationCode],
+                    vec!["com.example.payroll:/callback".to_owned()],
+                ),
+                secret_lifetime: None,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("client");
+    (tenant, client.id())
+}
+
+#[tokio::test]
+async fn a_record_references_its_grant_and_two_revocations_revoke_once() {
+    use hodor_adapters_postgres::PgAccessTokenRecordStore;
+    use hodor_kernel::UnitOfWorkFactory;
+    use hodor_oauth::api::{AccessTokenRecord, AccessTokenRecordStore as _, GrantId};
+
+    let database = TestDatabase::start().await;
+    let now = Timestamp::UNIX_EPOCH + Duration::days(20_000);
+    let (tenant, client) = a_tenant_with_a_client(&database, now).await;
+
+    let mut uow = UnitOfWorkFactory::begin(database.app(), &tenant)
+        .await
+        .expect("begin");
+    let error = PgAccessTokenRecordStore
+        .record(
+            uow.as_mut(),
+            &AccessTokenRecord::issued(
+                "jti-of-no-grant".to_owned(),
+                client,
+                Some(GrantId::generate()),
+                None,
+                now + Duration::minutes(5),
+            ),
+        )
+        .await
+        .expect_err("an unknown grant");
+    assert_eq!(error.code(), "oauth.grant_not_found");
+    drop(uow);
+
+    let mut uow = UnitOfWorkFactory::begin(database.app(), &tenant)
+        .await
+        .expect("begin");
+    PgAccessTokenRecordStore
+        .record(
+            uow.as_mut(),
+            &AccessTokenRecord::issued(
+                "jti-raced".to_owned(),
+                client,
+                None,
+                None,
+                now + Duration::minutes(5),
+            ),
+        )
+        .await
+        .expect("record");
+    uow.commit().await.expect("commit");
+
+    let revoke = || {
+        let tenant = tenant.clone();
+        let database = database.app().clone();
+        async move {
+            let mut uow = UnitOfWorkFactory::begin(&database, &tenant)
+                .await
+                .expect("begin");
+            let revoked = PgAccessTokenRecordStore
+                .revoke(uow.as_mut(), client, "jti-raced", now, "revoked_by_client")
+                .await
+                .expect("revoke");
+            uow.commit().await.expect("commit");
+            revoked
+        }
+    };
+    let (one, two) = tokio::join!(revoke(), revoke());
+    assert!(one ^ two, "exactly one revokes the record: {one} {two}");
+}
+
+#[tokio::test]
+async fn expired_access_token_records_are_removed_in_every_tenant_and_no_other_is() {
+    use hodor_adapters_postgres::{AccessTokenCleanup, PgAccessTokenRecordStore};
+    use hodor_kernel::UnitOfWorkFactory;
+    use hodor_oauth::api::{AccessTokenRecord, AccessTokenRecordStore as _};
+
+    let database = TestDatabase::start().await;
+    let now = Timestamp::now_utc();
+    let mut kept = Vec::new();
+    for _ in 0..2 {
+        let (tenant, client) = a_tenant_with_a_client(&database, now).await;
+        let mut uow = UnitOfWorkFactory::begin(database.app(), &tenant)
+            .await
+            .expect("begin");
+        // Three that expired, one that has not.
+        for (index, expires_at) in [
+            now - Duration::minutes(30),
+            now - Duration::minutes(1),
+            now,
+            now + Duration::minutes(5),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let token_id = format!("jti-{index}");
+            PgAccessTokenRecordStore
+                .record(
+                    uow.as_mut(),
+                    &AccessTokenRecord::issued(token_id.clone(), client, None, None, expires_at),
+                )
+                .await
+                .expect("record");
+            if expires_at > now {
+                kept.push((tenant.clone(), token_id));
+            }
+        }
+        uow.commit().await.expect("commit");
+    }
+
+    let cleanup = AccessTokenCleanup::new(database.platform().clone(), database.app().clone());
+    // A batch of two in each tenant, then the rest.
+    let first = cleanup.run(now, 2).await.expect("cleanup");
+    assert_eq!((first.tenants, first.removed), (2, 4));
+    let second = cleanup.run(now, 2).await.expect("cleanup");
+    assert_eq!((second.tenants, second.removed), (2, 2));
+    let third = cleanup.run(now, 2).await.expect("cleanup");
+    assert_eq!(
+        (third.tenants, third.removed),
+        (0, 0),
+        "nothing expired is left"
+    );
+    for (tenant, token_id) in kept {
+        let mut uow = UnitOfWorkFactory::begin(database.app(), &tenant)
+            .await
+            .expect("begin");
+        assert!(
+            PgAccessTokenRecordStore
+                .find(uow.as_mut(), &token_id)
+                .await
+                .expect("find")
+                .is_some(),
+            "a record of a token still in its lifetime stays"
+        );
+    }
+}

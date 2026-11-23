@@ -12,14 +12,14 @@ use hodor_adapters_crypto::{
 use hodor_adapters_http::{GuardedHttpClient, OutboundPolicy, ServiceHttpClient};
 use hodor_adapters_ldap::LdapDirectoryClient;
 use hodor_adapters_postgres::{
-    Database, PgAccessTokenStore, PgApplicationStore, PgAttemptStore, PgAuditLog,
-    PgAuthorizationCodeStore, PgAuthorizationRequestStore, PgBundleStore, PgClientAssertionStore,
-    PgClientStore, PgGrantStore, PgInstanceStatusStore, PgInstanceStore, PgKeyStore, PgLinkStore,
-    PgMessageQueue, PgNativeRoleStore, PgPasswordStore, PgPendingAuthorizationStore,
-    PgProviderStore, PgRecoveryCodeStore, PgRefreshTokenStore, PgResourceServerStore,
-    PgRoleAssignmentStore, PgSealingStateStore, PgSessionStore, PgTenantDirectory,
-    PgTenantRepository, PgTotpStore, PgTransactionStore, PgUploadedDecisionStore, PgUserRepository,
-    PgVerificationTokenStore, PgWebAuthnStore,
+    Database, PgAccessTokenRecordStore, PgAccessTokenStore, PgApplicationStore, PgAttemptStore,
+    PgAuditLog, PgAuthorizationCodeStore, PgAuthorizationRequestStore, PgBundleStore,
+    PgClientAssertionStore, PgClientStore, PgGrantStore, PgInstanceStatusStore, PgInstanceStore,
+    PgKeyStore, PgLinkStore, PgMessageQueue, PgNativeRoleStore, PgPasswordStore,
+    PgPendingAuthorizationStore, PgProviderStore, PgRecoveryCodeStore, PgRefreshTokenStore,
+    PgResourceServerStore, PgRoleAssignmentStore, PgSealingStateStore, PgSessionStore,
+    PgTenantDirectory, PgTenantRepository, PgTotpStore, PgTransactionStore,
+    PgUploadedDecisionStore, PgUserRepository, PgVerificationTokenStore, PgWebAuthnStore,
 };
 use hodor_audit::api::AuditService;
 use hodor_authentication::api::{
@@ -43,8 +43,9 @@ use hodor_kernel::{DomainError, Secret, SecretBox, SystemClock, TenantContext};
 use hodor_keys::api::{KeyService, RotationPolicy, TenantSecretBox};
 use hodor_notification::api::Notifier;
 use hodor_oauth::api::{
-    ApplicationPorts, ApplicationService, AuthorizationCodePorts, AuthorizationCodeService,
-    LogoutPorts, LogoutService, TokenPorts, TokenService, UserInfoPorts, UserInfoService,
+    AccessTokenRegister, ApplicationPorts, ApplicationService, AuthorizationCodePorts,
+    AuthorizationCodeService, LogoutPorts, LogoutService, TokenPorts, TokenService, UserInfoPorts,
+    UserInfoService,
 };
 use hodor_observability::{LogFormat, Telemetry};
 use hodor_protocol_http::{
@@ -640,6 +641,7 @@ fn token(
         grants: Arc::new(PgGrantStore),
         assertions: Arc::new(PgClientAssertionStore),
         refresh_tokens: Arc::new(PgRefreshTokenStore),
+        access_tokens: Arc::new(PgAccessTokenRecordStore),
         standing: Arc::new(standing),
         secrets,
         codes,
@@ -668,6 +670,12 @@ fn userinfo(config: &Config, database: &Database, keys: KeyService) -> UserInfoS
                 Arc::new(database.clone()),
                 Arc::new(PgUserRepository),
                 clock.clone(),
+            ),
+            register: AccessTokenRegister::new(
+                Arc::new(database.clone()),
+                Arc::new(PgAccessTokenRecordStore),
+                Arc::new(PgGrantStore),
+                Arc::new(PgRefreshTokenStore),
             ),
             clock,
         }),

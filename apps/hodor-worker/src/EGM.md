@@ -2,11 +2,12 @@
 
 ## Overview
 
-The background process, in one file, `main.rs`. It runs four loops side by
+The background process, in one file, `main.rs`. It runs five loops side by
 side: the outbox dispatch loop, which turns every outbox event into an audit
-record, the mail delivery loop, which sends queued messages over SMTP, the
-cleanup loop, which removes pending authorizations that expired, and the
-rotation loop, which rotates the tenants' signing keys. It
+record, the mail delivery loop, which sends queued messages over SMTP, two
+cleanup loops, one removing pending authorizations that expired and one
+removing the records of access tokens that expired, and the rotation loop,
+which rotates the tenants' signing keys. It
 holds two PostgreSQL pools: one as the application role, to handle each piece
 of work inside its tenant, and one as the platform role, used only to find
 pending work across tenants. An operations listener serves health endpoints.
@@ -44,14 +45,17 @@ Symbols:
 - `run` builds `DeliveryService` (with `PgMessageQueue`,
   `PgPendingMessages::new(platform)`, `SmtpSender`, `SystemClock`),
   `AuditService` (with `PgAuditLog`, `Sha256Digest`), and
-  `PendingAuthorizationCleanup::new(platform, database)` and
+  `PendingAuthorizationCleanup::new(platform, database)`,
+  `AccessTokenCleanup::new(platform, database)` and
   `OutboxDispatcher::new(platform, database, [AuditHandler])`, and, with
   `HODOR_SECRET_KEYS`, `KeyRotationJob::new(platform, KeyService, policy)`
   over `PgKeyStore` and `LocalKeyProvider`; then serves
-  `ops_router(health)` and joins the four loops.
+  `ops_router(health)` and joins the five loops.
 - `dispatch_loop` calls `OutboxDispatcher::dispatch_batch(batch_size)`.
 - `delivery_loop` calls `DeliveryService::deliver_pending(batch_size)`.
-- `cleanup_loop` calls `PendingAuthorizationCleanup::run(now, batch_size)`.
+- `cleanup_loop` calls `CleanupJob::run(now, batch_size)`: `CleanupJob` is
+  `PendingAuthorizations(PendingAuthorizationCleanup)` or
+  `AccessTokens(AccessTokenCleanup)`, and `name` is its `job` attribute.
 - `rotation_loop` calls `KeyRotationJob::run(now)`.
 - `mail_sender` builds the optional `SmtpSender`.
 - `PoolCheck` implements `hodor_protocol_http::ReadinessCheck` over
@@ -101,7 +105,9 @@ Symbols:
   (`delivery_loop`).
 - Deletes expired rows of `federation.pending_authorization`, inside each
   tenant, through `PendingAuthorizationCleanup` (`cleanup_loop`), and logs
-  how many when any were removed.
+  how many when any were removed; and deletes the records of access tokens
+  whose token expired, from `oauth.access_token`, through
+  `AccessTokenCleanup` (`cleanup_loop`).
 - Makes, activates and retires signing key versions inside each tenant
   through `KeyRotationJob` (`rotation_loop`), and logs what changed and
   each tenant whose step failed.
@@ -111,7 +117,7 @@ Symbols:
   `activated`, `retired`), `hodor.outbox.events`, `hodor.outbox.passes`,
   `hodor.notification.messages`, `hodor.notification.passes`,
   `hodor.cleanup.removed` and `hodor.cleanup.passes` (attribute `job` =
-  `pending_authorizations`).
+  `pending_authorizations` or `access_tokens`).
 - Logs and, when the endpoints are set, exports traces and metrics through
   `hodor_observability::Telemetry::init` (`main`).
 - Binds a TCP listener on `HODOR_OPS_ADDR` for health endpoints (`run`).

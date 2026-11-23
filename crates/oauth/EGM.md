@@ -12,8 +12,10 @@ Issue-56: the token endpoint, which authenticates clients and exchanges a
 code for a JWT access token signed through the keys context;
 Issue-57: refresh tokens in families that move at every use, and client
 credentials; Issue-59: the OpenID Provider, with the ID token, UserInfo
-and the discovery document; and Issue-60: logout initiated by the relying
-party, with post-logout redirect addresses on clients. Storage,
+and the discovery document; Issue-60: logout initiated by the relying
+party, with post-logout redirect addresses on clients; and Issue-58:
+revocation, introspection and the register of access tokens they and
+UserInfo ask. Storage,
 randomness, hashing, signature checking and time are reached through ports
 and kernel traits.
 
@@ -30,6 +32,8 @@ and kernel traits.
   `ClientAssertionStore`, by `PgClientAssertionStore` in
   `crates/adapters-postgres/src/oauth_token.rs`; `RefreshTokenStore`, by
   `PgRefreshTokenStore` in `crates/adapters-postgres/src/oauth_refresh.rs`;
+  `AccessTokenRecordStore`, by `PgAccessTokenRecordStore` in
+  `crates/adapters-postgres/src/oauth_access_token.rs`;
   `PersonStanding`, by `ServerStanding` in `apps/hodor-server/src/standing.rs`.
 - Used by `crates/protocol-http/src/authorize.rs`,
   `crates/protocol-http/src/token.rs` and
@@ -60,8 +64,13 @@ and kernel traits.
 - An access token and an ID token leave the crate once, from
   `TokenService::token`; neither is stored, and `oauth.access_token_issued`
   carries only the access token's `jti`.
-- UserInfo uses nothing an access token says before its signature has been
-  checked against a key the tenant publishes (`check_access_token`).
+- UserInfo, revocation and introspection use nothing an access token says
+  before its signature has been checked against a key the tenant publishes
+  (`read_access_token`). UserInfo and introspection refuse a token the
+  register does not say is in force.
+- Revocation ends only the presenting client's own tokens, and answers the
+  same whatever the token; introspection changes nothing, and answers
+  `{"active": false}` and nothing more for what the caller may not learn.
 - A refresh token leaves the crate from `TokenService::token` only; only
   its SHA-256 hash is stored, the family's secret only sealed, and events
   carry neither.
@@ -75,8 +84,8 @@ and kernel traits.
 
 - Through the stores: reads and writes applications, clients, resource
   servers, pending authorization requests, grants, codes, the `jti`s of
-  client assertions, and refresh token families with their tokens'
-  hashes. Through `KeyService`: signs access and ID tokens, and lists the
+  client assertions, refresh token families with their tokens' hashes, and
+  the records of access tokens by `jti`. Through `KeyService`: signs access and ID tokens, and lists the
   published keys. Through `SecretBox`: seals and opens the secrets of
   refresh token families. Through `IdentityService`: reads people. Through
   `UnitOfWork::record_event`: records the `oauth.*` events.

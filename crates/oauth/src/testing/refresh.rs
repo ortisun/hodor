@@ -148,6 +148,15 @@ impl RefreshTokenStore for InMemoryRefreshTokens {
             .clone_from(&family.revocation_reason);
         Ok(())
     }
+
+    async fn get(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: RefreshFamilyId,
+    ) -> Result<Option<RefreshFamily>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        Ok(lock(&self.rows).families.get(&(tenant, id)).cloned())
+    }
 }
 
 /// A stand-in for the session and identity contexts: every person may sign
@@ -321,6 +330,50 @@ pub async fn run_refresh_token_contract(ports: RefreshStorePorts<'_>) {
     a_family_moves_once_from_a_generation_and_keeps_its_tokens(ports).await;
     a_revocation_is_kept_and_stops_moving(ports).await;
     families_belong_to_their_own_tenant(ports).await;
+    a_family_is_found_by_its_identifier(ports).await;
+}
+
+async fn a_family_is_found_by_its_identifier(ports: RefreshStorePorts<'_>) {
+    let tenant = tenant();
+    let grant = a_grant(ports, &tenant).await;
+    let (family, _) = family_of(&grant, grant.client_id);
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    ports
+        .refresh_tokens
+        .start(uow.as_mut(), &family)
+        .await
+        .expect("start");
+    uow.commit().await.expect("commit");
+
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    let found = ports
+        .refresh_tokens
+        .get(uow.as_mut(), family.id)
+        .await
+        .expect("get")
+        .expect("found");
+    assert_eq!(found, family, "found whole");
+    assert!(
+        ports
+            .refresh_tokens
+            .get(uow.as_mut(), RefreshFamilyId::generate())
+            .await
+            .expect("get")
+            .is_none()
+    );
+    drop(uow);
+
+    let elsewhere = self::tenant();
+    let mut uow = ports.units_of_work.begin(&elsewhere).await.expect("begin");
+    assert!(
+        ports
+            .refresh_tokens
+            .get(uow.as_mut(), family.id)
+            .await
+            .expect("get")
+            .is_none(),
+        "another tenant does not see the family"
+    );
 }
 
 async fn a_family_is_stored_whole_and_found_by_its_token(ports: RefreshStorePorts<'_>) {

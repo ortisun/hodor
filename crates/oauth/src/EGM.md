@@ -11,13 +11,15 @@ follows is `docs/architecture/contexts/oauth.md`.
 - `api` re-exports:
   - Ports: `ApplicationStore`, `ClientStore`, `ResourceServerStore`,
     `AuthorizationRequestStore`, `GrantStore`, `AuthorizationCodeStore`,
-    `ClientAssertionStore`, `RefreshTokenStore`, `PersonStanding`.
+    `ClientAssertionStore`, `RefreshTokenStore`, `AccessTokenRecordStore`,
+    `PersonStanding`.
   - Services: `ApplicationService`, `ApplicationPorts`, `CreateClient`,
     `RotateSecret`, `CreateResourceServer`; `AuthorizationCodeService`,
     `AuthorizationCodePorts`, `ResumedRequest`, `RedeemedCode`;
-    `TokenService`, `TokenPorts`, `Issuer`, `IssuedTokens`;
-    `UserInfoService`, `UserInfoPorts`; `LogoutService`, `LogoutPorts`,
-    `LogoutRefusal`.
+    `TokenService`, `TokenPorts`, `Issuer`, `IssuedTokens`, with
+    `TokenService::revoke`, `introspect` and `register`;
+    `AccessTokenRegister`; `UserInfoService`, `UserInfoPorts`;
+    `LogoutService`, `LogoutPorts`, `LogoutRefusal`.
   - The end-session endpoint's domain: `LogoutParameters`,
     `check_id_token_hint`, `IdTokenHint`, `LogoutRequest` (with `decide`),
     `LogoutDecision`, `CurrentSession`, `ReturnAddress`, `logout_refusal`
@@ -32,8 +34,8 @@ follows is `docs/architecture/contexts/oauth.md`.
     `ASSERTION_LONGEST_AHEAD`, `CLOCK_ALLOWANCE`, `SUPPORTED_GRANT_TYPES`.
   - The OpenID Provider's domain: `id_token_claims`, `access_token_hash`,
     `authentication_methods`, `assurance`, `is_multi_factor`,
-    `asks_for_openid`, `check_access_token`, `PublishedKey`,
-    `CheckedAccessToken`, `BearerRefusal`, `PersonClaims`,
+    `asks_for_openid`, `check_access_token`, `read_access_token`,
+    `ReadAccessToken`, `PublishedKey`, `CheckedAccessToken`, `BearerRefusal`, `PersonClaims`,
     `userinfo_claims`, `discovery_document`, and `OPENID_SCOPE`,
     `ACR_MULTI_FACTOR`, `ACR_SINGLE_FACTOR`, `UI_LOCALES`.
   - The authorization endpoint's domain: `AuthorizationParameters`,
@@ -48,6 +50,9 @@ follows is `docs/architecture/contexts/oauth.md`.
     `FamilyStatus`, `RefreshAsk`, `RefreshDecision`, `RefreshRefusal`, and
     `OFFLINE_ACCESS`, `FAMILY_SECRET_PURPOSE`, `DEFAULT_RETRY_WINDOW`,
     `LONGEST_RETRY_WINDOW`.
+  - Revocation and introspection: `TokenQuery` (with `parse`),
+    `TokenTypeHint`, `AccessTokenRecord`, `ActiveRefreshToken`, `inactive`,
+    `active_access_token`, `active_refresh_token`, `REVOKED_BY_CLIENT`.
   - Event: `OauthEvent`.
   - Domain: `Application`, `ApplicationId`, `ApplicationSettings`,
     `ApplicationSnapshot`, `Status`, `Client`, `ClientId`, `ClientType`,
@@ -82,7 +87,12 @@ follows is `docs/architecture/contexts/oauth.md`.
     end a session or bar a person; `RefreshStorePorts` and
     `run_refresh_token_contract(ports)`: a family stored whole and found by
     its token, a move once from a generation that keeps the earlier tokens
-    known, a revocation that stops moves, and tenants apart.
+    known, a revocation that stops moves, tenants apart, and a family found
+    by its identifier.
+  - `testing/register.rs`: `InMemoryAccessTokenRecords::new(&clients)`,
+    which refuses a record whose client the tenant does not have, with
+    `all(tenant)`; `AccessTokenRecordStorePorts` and
+    `run_access_token_record_contract(ports)`.
 - Subdirectories:
   - [application](./application/EGM.md): the ports and the use cases.
   - [domain](./domain/EGM.md): the aggregates and their rules.
@@ -107,6 +117,11 @@ follows is `docs/architecture/contexts/oauth.md`.
   client (the second call answers `false`), that the same `jti` of another
   client is another assertion, and that a row cannot name a client of
   another tenant (`oauth.client_not_found`).
+- The register contract requires that a record loads back whole by its
+  `jti`; that it is revoked once and only by the client it names (later
+  calls answer `false`); that records of tokens expired at the moment, that
+  one included, are removed a batch at a time and no other; and that no
+  record is seen, revoked, removed or made for a client of another tenant.
 
 ## Side Effects
 

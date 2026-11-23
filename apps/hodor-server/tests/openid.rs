@@ -380,6 +380,21 @@ async fn the_discovery_document_names_what_answers() {
         StatusCode::FOUND,
         "answers: nobody to sign out, so to the sign-in page"
     );
+    for endpoint in ["revocation_endpoint", "introspection_endpoint"] {
+        let response = http
+            .post(local(&document[endpoint]))
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body("token=anything&client_id=unknown")
+            .send()
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{endpoint}");
+        let refusal: Value = response.json().await.expect("JSON");
+        assert_eq!(
+            refusal["error"], "invalid_client",
+            "{endpoint} answers, as OAuth"
+        );
+    }
 
     // The grants it names are answered by the token endpoint, and the ones
     // it does not name are refused as unsupported.

@@ -186,7 +186,17 @@ pub enum OauthEvent {
         grant_id: GrantId,
         /// The client.
         client_id: ClientId,
-        /// Why: `refresh_token_reused` or `other_client`.
+        /// Why: `refresh_token_reused`, `other_client` or
+        /// `revoked_by_client`.
+        reason: &'static str,
+    },
+    /// A client revoked an access token. Never carries the token.
+    AccessTokenRevoked {
+        /// The client it was issued to.
+        client_id: ClientId,
+        /// The token's `jti`.
+        token_id: String,
+        /// Why: `revoked_by_client`.
         reason: &'static str,
     },
 }
@@ -215,6 +225,7 @@ impl DomainEvent for OauthEvent {
             Self::RefreshTokenFamilyStarted { .. } => "oauth.refresh_token_family_started",
             Self::RefreshTokenRotated { .. } => "oauth.refresh_token_rotated",
             Self::RefreshTokenFamilyRevoked { .. } => "oauth.refresh_token_family_revoked",
+            Self::AccessTokenRevoked { .. } => "oauth.access_token_revoked",
         }
     }
 }

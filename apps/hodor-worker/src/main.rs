@@ -8,12 +8,13 @@
 use clap::{Parser, ValueEnum};
 use hodor_adapters_crypto::{LocalKeyProvider, SecretKeys, Sha256Digest};
 use hodor_adapters_postgres::{
-    Database, KeyRotationJob, OutboxDispatcher, PendingAuthorizationCleanup, PgAuditLog,
-    PgKeyStore, PgMessageQueue, PgPendingMessages, PgPool, connect_pool, ping_pool,
+    AccessTokenCleanup, CleanupReport, Database, KeyRotationJob, OutboxDispatcher,
+    PendingAuthorizationCleanup, PgAuditLog, PgKeyStore, PgMessageQueue, PgPendingMessages, PgPool,
+    connect_pool, ping_pool,
 };
 use hodor_adapters_smtp::SmtpSender;
 use hodor_audit::api::{AuditHandler, AuditService};
-use hodor_kernel::{Clock as _, Secret, SystemClock};
+use hodor_kernel::{Clock as _, DomainError, Secret, SystemClock, Timestamp};
 use hodor_keys::api::{KeyService, RotationPolicy};
 use hodor_notification::api::DeliveryService;
 use hodor_observability::{LogFormat, Telemetry};
@@ -241,7 +242,12 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
         Arc::new(Sha256Digest),
         Arc::new(SystemClock),
     );
-    let cleanup = PendingAuthorizationCleanup::new(platform.clone(), database.clone());
+    let pending_cleanup = CleanupJob::PendingAuthorizations(PendingAuthorizationCleanup::new(
+        platform.clone(),
+        database.clone(),
+    ));
+    let access_token_cleanup =
+        CleanupJob::AccessTokens(AccessTokenCleanup::new(platform.clone(), database.clone()));
     let rotation = root_keys.map(|root| {
         let keys = KeyService::new(
             Arc::new(database.clone()),
@@ -289,7 +295,13 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
             stopped.clone(),
         ),
         cleanup_loop(
-            &cleanup,
+            &pending_cleanup,
+            config.cleanup_batch_size,
+            Duration::from_millis(config.cleanup_interval_ms),
+            stopped.clone(),
+        ),
+        cleanup_loop(
+            &access_token_cleanup,
             config.cleanup_batch_size,
             Duration::from_millis(config.cleanup_interval_ms),
             stopped.clone(),
@@ -306,11 +318,36 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Runs the cleanup jobs until asked to stop: now, then after every pause.
-/// A pass that removed a full batch somewhere is followed by another at
-/// once, since more may be waiting.
+/// A cleanup job: what it removes, and how.
+enum CleanupJob {
+    /// Pending authorizations that expired.
+    PendingAuthorizations(PendingAuthorizationCleanup),
+    /// Records of access tokens that expired.
+    AccessTokens(AccessTokenCleanup),
+}
+
+impl CleanupJob {
+    /// The job's name, in metrics and logs.
+    const fn name(&self) -> &'static str {
+        match self {
+            Self::PendingAuthorizations(_) => "pending_authorizations",
+            Self::AccessTokens(_) => "access_tokens",
+        }
+    }
+
+    async fn run(&self, now: Timestamp, batch: u32) -> Result<CleanupReport, DomainError> {
+        match self {
+            Self::PendingAuthorizations(job) => job.run(now, batch).await,
+            Self::AccessTokens(job) => job.run(now, batch).await,
+        }
+    }
+}
+
+/// Runs a cleanup job until asked to stop: now, then after every pause. A
+/// pass that removed a full batch somewhere is followed by another at once,
+/// since more may be waiting.
 async fn cleanup_loop(
-    cleanup: &PendingAuthorizationCleanup,
+    cleanup: &CleanupJob,
     batch_size: u32,
     interval: Duration,
     mut stopped: watch::Receiver<bool>,
@@ -324,7 +361,7 @@ async fn cleanup_loop(
         .u64_counter("hodor.cleanup.passes")
         .with_description("Passes of the cleanup jobs, by job and outcome")
         .build();
-    let job = KeyValue::new("job", "pending_authorizations");
+    let job = KeyValue::new("job", cleanup.name());
 
     while !*stopped.borrow() {
         let now = SystemClock.now();
@@ -334,9 +371,10 @@ async fn cleanup_loop(
                 removed.add(report.removed, std::slice::from_ref(&job));
                 if report.removed > 0 {
                     tracing::info!(
+                        job = cleanup.name(),
                         tenants = report.tenants,
                         removed = report.removed,
-                        "expired pending authorizations removed"
+                        "expired rows removed"
                     );
                 }
                 // A full batch in every tenant looked at: there may be more.
@@ -346,7 +384,12 @@ async fn cleanup_loop(
             }
             Err(error) => {
                 passes.add(1, &[job.clone(), KeyValue::new("outcome", "error")]);
-                tracing::warn!(code = error.code(), detail = ?error.detail(), "cleanup pass failed");
+                tracing::warn!(
+                    job = cleanup.name(),
+                    code = error.code(),
+                    detail = ?error.detail(),
+                    "cleanup pass failed"
+                );
                 Some(interval.max(MIN_ERROR_PAUSE))
             }
         };

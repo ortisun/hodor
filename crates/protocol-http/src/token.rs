@@ -1,9 +1,11 @@
-//! The token endpoint of OAuth 2.x: where a client proves who it is and
-//! exchanges a grant for tokens.
+//! The token endpoint of OAuth 2.x, where a client proves who it is and
+//! exchanges a grant for tokens, and the revocation and introspection
+//! endpoints, where it ends a token or asks about one.
 //!
 //! Specified in `docs/architecture/contexts/oauth.md`, "Token endpoint and
-//! client authentication". These handlers translate between HTTP and the
-//! OAuth context; the rules are the context's.
+//! client authentication" and "Revocation, introspection and metadata".
+//! These handlers translate between HTTP and the OAuth context; the rules
+//! are the context's.
 
 use crate::tenant::TenantSlug;
 use axum::body::Bytes;
@@ -17,7 +19,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use hodor_kernel::{CorrelationId, Secret, TenantContext};
 use hodor_oauth::api::{
-    BasicCredentials, IssuedTokens, Issuer, TokenError, TokenRequest, TokenService,
+    BasicCredentials, IssuedTokens, Issuer, TokenError, TokenQuery, TokenRequest, TokenService,
 };
 use serde::Serialize;
 
@@ -37,10 +39,14 @@ impl std::fmt::Debug for TokenState {
     }
 }
 
-/// The route of the token endpoint, to be mounted under a tenant at
-/// `/oauth2`.
+/// The routes of the token, revocation and introspection endpoints, to be
+/// mounted under a tenant at `/oauth2`.
 pub fn token_routes(state: TokenState) -> Router {
-    Router::new().route("/token", post(token)).with_state(state)
+    Router::new()
+        .route("/token", post(token))
+        .route("/revoke", post(revoke))
+        .route("/introspect", post(introspect))
+        .with_state(state)
 }
 
 #[derive(Serialize)]
@@ -82,7 +88,7 @@ fn refused(error: TokenError, used_basic: bool, issuer: &str) -> Response {
     tracing::info!(
         error = error.error,
         reason = error.reason,
-        "token request refused"
+        "OAuth request refused"
     );
     let mut response = (
         status,
@@ -183,15 +189,16 @@ fn authorization(headers: &HeaderMap) -> Authorization {
     basic_credentials(value).map_or(Authorization::Malformed, Authorization::Basic)
 }
 
-async fn token(
-    State(state): State<TokenState>,
-    Extension(tenant): Extension<TenantContext>,
-    Extension(TenantSlug(slug)): Extension<TenantSlug>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Response {
-    let issuer = format!("{}/t/{slug}", state.public_url.trim_end_matches('/'));
-    let token_endpoint = format!("{issuer}/oauth2/token");
+/// What every one of these endpoints reads first: that the body is a form,
+/// and the `Basic` credentials if any.
+struct FormRequest {
+    basic: Option<BasicCredentials>,
+    used_basic: bool,
+}
+
+/// The form request, or the refusal to answer with and whether `Basic` was
+/// used.
+fn read_form(headers: &HeaderMap) -> Result<FormRequest, (TokenError, bool)> {
     let is_form = headers
         .get(header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
@@ -201,29 +208,44 @@ async fn token(
                 .eq_ignore_ascii_case("application/x-www-form-urlencoded")
         });
     if !is_form {
-        return refused(
-            TokenError::invalid_request("the body is not a form"),
-            false,
-            &issuer,
-        );
+        return Err((TokenError::invalid_request("the body is not a form"), false));
     }
-    let (basic, used_basic) = match authorization(&headers) {
-        Authorization::None => (None, false),
-        Authorization::Basic(credentials) => (Some(credentials), true),
-        Authorization::Malformed => {
-            return refused(
-                TokenError::invalid_client("the Authorization header is malformed"),
-                true,
-                &issuer,
-            );
-        }
-        Authorization::OtherScheme => {
-            return refused(
-                TokenError::invalid_request("the Authorization header is not Basic"),
-                false,
-                &issuer,
-            );
-        }
+    match authorization(headers) {
+        Authorization::None => Ok(FormRequest {
+            basic: None,
+            used_basic: false,
+        }),
+        Authorization::Basic(credentials) => Ok(FormRequest {
+            basic: Some(credentials),
+            used_basic: true,
+        }),
+        Authorization::Malformed => Err((
+            TokenError::invalid_client("the Authorization header is malformed"),
+            true,
+        )),
+        Authorization::OtherScheme => Err((
+            TokenError::invalid_request("the Authorization header is not Basic"),
+            false,
+        )),
+    }
+}
+
+fn issuer_of(public_url: &str, slug: &str) -> String {
+    format!("{}/t/{slug}", public_url.trim_end_matches('/'))
+}
+
+async fn token(
+    State(state): State<TokenState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(TenantSlug(slug)): Extension<TenantSlug>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let issuer = issuer_of(&state.public_url, &slug);
+    let token_endpoint = format!("{issuer}/oauth2/token");
+    let FormRequest { basic, used_basic } = match read_form(&headers) {
+        Ok(form) => form,
+        Err((error, used_basic)) => return refused(error, used_basic, &issuer),
     };
     let request = match TokenRequest::parse(basic, form_urlencoded::parse(&body).into_owned()) {
         Ok(request) => request,
@@ -249,6 +271,97 @@ async fn token(
             tracing::error!(%error, "the token endpoint could not answer");
             refused(
                 TokenError::server_error("storage or signing failed"),
+                used_basic,
+                &issuer,
+            )
+        }
+    }
+}
+
+async fn revoke(
+    State(state): State<TokenState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(TenantSlug(slug)): Extension<TenantSlug>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let issuer = issuer_of(&state.public_url, &slug);
+    let token_endpoint = format!("{issuer}/oauth2/token");
+    let endpoint = format!("{issuer}/oauth2/revoke");
+    let FormRequest { basic, used_basic } = match read_form(&headers) {
+        Ok(form) => form,
+        Err((error, used_basic)) => return refused(error, used_basic, &issuer),
+    };
+    let query = match TokenQuery::parse(basic, form_urlencoded::parse(&body).into_owned()) {
+        Ok(query) => query,
+        Err(error) => return refused(error, used_basic, &issuer),
+    };
+    let answer = state
+        .tokens
+        .revoke(
+            &tenant,
+            Issuer {
+                issuer: &issuer,
+                token_endpoint: &token_endpoint,
+            },
+            &endpoint,
+            query,
+            CorrelationId::generate(),
+        )
+        .await;
+    match answer {
+        // Whatever the token was, a client that proved who it is is
+        // answered the same (RFC 7009, section 2.2).
+        Ok(Ok(())) => not_cached(StatusCode::OK.into_response()),
+        Ok(Err(error)) => refused(error, used_basic, &issuer),
+        Err(error) => {
+            tracing::error!(%error, "the revocation endpoint could not answer");
+            refused(
+                TokenError::server_error("storage failed"),
+                used_basic,
+                &issuer,
+            )
+        }
+    }
+}
+
+async fn introspect(
+    State(state): State<TokenState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(TenantSlug(slug)): Extension<TenantSlug>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let issuer = issuer_of(&state.public_url, &slug);
+    let token_endpoint = format!("{issuer}/oauth2/token");
+    let endpoint = format!("{issuer}/oauth2/introspect");
+    let FormRequest { basic, used_basic } = match read_form(&headers) {
+        Ok(form) => form,
+        Err((error, used_basic)) => return refused(error, used_basic, &issuer),
+    };
+    let query = match TokenQuery::parse(basic, form_urlencoded::parse(&body).into_owned()) {
+        Ok(query) => query,
+        Err(error) => return refused(error, used_basic, &issuer),
+    };
+    let answer = state
+        .tokens
+        .introspect(
+            &tenant,
+            Issuer {
+                issuer: &issuer,
+                token_endpoint: &token_endpoint,
+            },
+            &endpoint,
+            query,
+        )
+        .await;
+    match answer {
+        Ok(Ok(answer)) => not_cached(Json(answer).into_response()),
+        Ok(Err(error)) => refused(error, used_basic, &issuer),
+        Err(error) => {
+            tracing::error!(%error, "the introspection endpoint could not answer");
+            refused(
+                TokenError::server_error("storage or the keys failed"),
                 used_basic,
                 &issuer,
             )

@@ -6,6 +6,7 @@ use crate::domain::authorization::{
     AuthorizationCode, CodeHash, Grant, GrantId, PendingAuthorization, PendingAuthorizationId,
 };
 use crate::domain::client::{Client, ClientId};
+use crate::domain::introspection::AccessTokenRecord;
 use crate::domain::refresh::{
     RefreshAsk, RefreshFamily, RefreshFamilyId, RefreshTokenHash, RefreshTokenRecord,
 };
@@ -345,6 +346,76 @@ pub trait RefreshTokenStore: Send + Sync {
         uow: &mut dyn UnitOfWork,
         family: &RefreshFamily,
     ) -> Result<(), DomainError>;
+
+    /// The family with this identifier, if the tenant has it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn get(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: RefreshFamilyId,
+    ) -> Result<Option<RefreshFamily>, DomainError>;
+}
+
+/// The register of access tokens: a record of every access token issued,
+/// by its `jti`. Never the token.
+#[async_trait::async_trait]
+pub trait AccessTokenRecordStore: Send + Sync {
+    /// Records a token just issued.
+    ///
+    /// # Errors
+    ///
+    /// Returns `oauth.client_not_found` if the tenant has no such client,
+    /// and `oauth.grant_not_found` or
+    /// `oauth.refresh_token_family_not_found` for a grant or family it does
+    /// not have.
+    async fn record(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        record: &AccessTokenRecord,
+    ) -> Result<(), DomainError>;
+
+    /// The record of the token with this `jti`, if the tenant has it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn find(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        token_id: &str,
+    ) -> Result<Option<AccessTokenRecord>, DomainError>;
+
+    /// Revokes the record of `token_id`, issued to `client`, at `at` for
+    /// `reason`, unless it was revoked already. Returns whether this call
+    /// revoked it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn revoke(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        client: ClientId,
+        token_id: &str,
+        at: Timestamp,
+        reason: &str,
+    ) -> Result<bool, DomainError>;
+
+    /// Removes up to `batch` records of tokens that had expired at `now`.
+    /// Returns how many it removed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn remove_expired(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        now: Timestamp,
+        batch: u32,
+    ) -> Result<u64, DomainError>;
 }
 
 /// What the OAuth context needs to know of a person, from the session and

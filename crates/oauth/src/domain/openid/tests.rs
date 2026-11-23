@@ -194,6 +194,8 @@ fn good_claims(user: UserId) -> Value {
         "scope": "openid profile",
         "exp": (now() + Duration::minutes(5)).unix_timestamp(),
         "iat": now().unix_timestamp(),
+        "jti": "token-1",
+        "client_id": "a-client",
     })
 }
 
@@ -207,6 +209,8 @@ fn a_good_access_token_is_accepted_with_its_scopes() {
     let checked = check(&sign(&good_header(), &good_claims(user))).expect("accepted");
     assert_eq!(checked.user_id, user);
     assert_eq!(checked.scopes, ["openid", "profile"]);
+    assert_eq!(checked.token_id, "token-1");
+    assert_eq!(checked.client_id, "a-client");
     let mut alone = good_claims(user);
     alone["aud"] = json!(ISSUER);
     check(&sign(&good_header(), &alone)).expect("the issuer alone as audience");
@@ -267,6 +271,14 @@ fn every_bad_access_token_is_refused_for_its_own_reason() {
         (
             changed_claim("sub", json!("not-a-user")),
             invalid("the token names no person"),
+        ),
+        (
+            changed_claim("jti", Value::Null),
+            invalid("the token has no jti"),
+        ),
+        (
+            changed_claim("client_id", Value::Null),
+            invalid("the token names no client"),
         ),
         (
             changed_claim("scope", json!("orders:read")),
@@ -363,9 +375,33 @@ fn discovery_names_only_what_is_built() {
         document["code_challenge_methods_supported"],
         json!(["S256"])
     );
+    assert_eq!(
+        document["revocation_endpoint"],
+        format!("{ISSUER}/oauth2/revoke")
+    );
+    assert_eq!(
+        document["introspection_endpoint"],
+        format!("{ISSUER}/oauth2/introspect")
+    );
+    assert_eq!(
+        document["revocation_endpoint_auth_methods_supported"],
+        json!([
+            "client_secret_basic",
+            "client_secret_post",
+            "private_key_jwt",
+            "none"
+        ])
+    );
+    assert_eq!(
+        document["introspection_endpoint_auth_methods_supported"],
+        json!([
+            "client_secret_basic",
+            "client_secret_post",
+            "private_key_jwt"
+        ]),
+        "a public client may not introspect"
+    );
     for absent in [
-        "revocation_endpoint",
-        "introspection_endpoint",
         "registration_endpoint",
         "pushed_authorization_request_endpoint",
         "device_authorization_endpoint",
