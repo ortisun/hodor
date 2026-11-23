@@ -265,6 +265,71 @@ A subject Hodor does not know, including an identifier that is not one of its ow
 
 Open Policy Agent has no simulator behind this route yet. A version of a tenant's Rego is simulated through [the policy lifecycle](#the-policy-lifecycle) instead: `hodor-cli policy simulate` asks the worker to evaluate a validated or tested version against inputs the operator writes, and the answer comes back when the worker has run `opa eval`. The route answers `authorization.simulation_unsupported` for a resource server bound to Open Policy Agent.
 
+## The record of decisions
+
+Every decision an application asks for is recorded, whichever engine made it, in one format, so that a tenant can see who was allowed or refused what, and why.
+
+### Who writes it
+
+**Hodor records what it decided, at the moment it decided.** `EvaluationService` writes the record of each `evaluate` and of each request of a `batch`, for the native engine and for Open Policy Agent alike: Hodor holds the request, the subject's attributes and the answer, so one writer gives one format and one place where masking happens.
+
+- **The record is written after the answer is decided, in its own short transaction**, one insert for an `evaluate` and one for a whole `batch`. The answer does not wait for anything else, and a record that cannot be written never changes the answer: the failure is counted and the answer is given as decided. A record is therefore lost only when its own write fails. Writing in the outbox would have doubled the writes of every decision for a record nobody acts on.
+- **A simulation is never recorded**, and neither is a decision about `hodor:admin`, which the audit log of each action already covers.
+- **What Open Policy Agent uploads stays a report of the instance.** Its uploaded decisions ([decision logs](#the-service-interface)) keep no input; they are not merged into the record, since every decision an instance makes for Hodor is already recorded by Hodor with its input masked. They are kept as long as the tenant's record and removed with it.
+- **An instance erases the whole input before uploading.** The bundles of a tenant may write only under the tenant's own tree, so a mask in `system.log.mask` cannot come with them; a shared instance would need one mask for every tenant. Instances are started with `deploy/open-policy-agent/decision-log-mask.rego`, which erases `/input` from every decision before it leaves the instance.
+
+### What a record holds
+
+| Field | Holds |
+|---|---|
+| Decision | Its identifier, the one the answer carries |
+| Resource server | The namespace asked about |
+| Subject | Its kind and identifier |
+| Action | The action |
+| Resource | Its type, and its identifier when the request named one |
+| Effect and reason | `allow`, `deny` or `indeterminate`, and the stable reason code |
+| Engine and policy version | The engine that decided, and the revision or version it decided with |
+| Time and duration | When it was decided, and how long it took in microseconds |
+| Input | What the engine was given, with the tenant's masks applied: the subject's resolved attributes, the asserted attributes when the binding trusts them, the resource's attributes, the context's attributes and the application |
+| Masked | The paths that were masked, never what they held |
+
+### The tenant's settings
+
+| Setting | Values | Default |
+|---|---|---|
+| Mode | `full` (every decision), `sampled` (every refusal and indeterminate decision, and a share of the allows), `deny_only` (refusals and indeterminate decisions), `off` | `full` |
+| Share of allows kept | 1 to 99 percent, for `sampled` only | — |
+| Masks | Up to 32 paths, each erased from the input before it is stored | none |
+| Retention | 1 to 400 days | 30 days |
+
+**A mask** names a path into the input: `subject.attributes.<name>`, `asserted.<name>`, `resource.attributes.<name>` or `context.attributes.<name>`, possibly deeper into an object, with `*` alone as the last segment for every member at that level, such as `resource.attributes.*`. A path is at most 200 characters. What a mask names is removed before the record is written, so it is never stored; the record lists the paths that removed something. The identifiers of the subject and of the resource are not masked: they are what a record is found by.
+
+Sampling draws from the operating system's random source, so it does not follow any pattern of the requests. The settings change with `hodor-cli authorization decision-log` and [the administration interface](../../api/admin-api.md#the-record-of-decisions); a change is recorded as `authorization.decision_log_changed` and applies to decisions made after it.
+
+### Reading it
+
+The administration interface lists a tenant's records newest first, a page at a time, filtered by time range, effect, resource server and subject; `hodor-cli authorization decisions` prints the same. A tenant reads only its own records.
+
+### Storage of the record
+
+| Table | Kind | Holds |
+|---|---|---|
+| `"authorization".decision_log` | Tenant table, partitioned by day on the time of the decision | The records. Its primary key is the tenant, the time and the decision |
+| `"authorization".decision_log_setting` | Tenant table | The tenant's settings; no row means the defaults |
+
+**Partitioned by day, shared by every tenant, and emptied per tenant.** One partition per day holds every tenant's records of that day. A partition per tenant and day would let a tenant's old records be dropped at once, but it multiplies partitions by the number of tenants, which PostgreSQL plans poorly beyond a few thousand. So the worker does two things:
+
+- **It prepares the partitions** of the next seven days and drops those older than the longest retention, 400 days, through `"authorization".maintain_decision_log_partitions`, a function owned by the schema's owner that only the platform role may call. A default partition catches a record whose day has no partition yet; preparing that day moves its rows out of the default first.
+- **It deletes, tenant by tenant, the records older than the tenant's retention**, a bounded number per pass, as the application role, and with them the decisions the tenant's instances uploaded.
+
+Row-level security applies to the partitioned table; the application role is granted the partitioned table only, never a partition, so records are reached only through it and its policy.
+
+### Events of the record
+
+| Event | When | Data |
+|---|---|---|
+| `authorization.decision_log_changed` | The tenant's settings changed | The mode, the share of allows, the number of masks and the retention, never the paths |
+
 ## Native role-based access control
 
 The native engine answers for the resource servers a tenant binds to it, `native`, and always for `hodor:admin`. It answers from **permissions**, **roles** and **assignments** kept in this context, and needs nothing outside it.
@@ -612,6 +677,8 @@ status:
 decision_logs:
   service: hodor
 ```
+
+Every instance is started with the mask policy of the record of decisions next to its configuration, `opa run --server --config-file config.yaml deploy/open-policy-agent/decision-log-mask.rego`, so that no input leaves it ([who writes the record](#who-writes-it)).
 
 An instance of a tenant's own lists that tenant's bundle. A shared instance lists one bundle for each tenant it answers. `hodor-cli policy-agent bundle-name --tenant` prints the name, and `--namespace` prints the package a resource server's `decision` rule belongs to.
 

@@ -164,7 +164,7 @@ Slug lookup goes through `platform.tenant_directory`, a routing table outside ro
 | `policy_bundle` | `id`, `namespace`, `revision`, `artifact bytea` or object reference, `signature`, `built_at` | — |
 | `engine_binding` | `namespace`, `engine`, `endpoint_ref`, `failure_policy jsonb`, `timeout_ms`, `cache_policy` | — |
 | `opa_instance_status` | `instance_id`, `bundle_revision`, `healthy`, `reported_at` | — |
-| `decision_log` | `decision_id`, `namespace`, `subject`, `resource`, `action`, `effect`, `engine`, `revision`, `reason`, `input_masked jsonb`, `duration_us`, `occurred_at` | Partitioned by day |
+| `decision_log` | `decided_at`, `decision_id`, `namespace`, `subject_kind`, `subject_id`, `action`, `resource_type`, `resource_id`, `effect`, `reason`, `engine`, `policy_version`, `duration_us`, `input jsonb` (masked), `masked` | Partitioned by day; see [the record of decisions](contexts/authorization.md#storage-of-the-record) |
 
 ### `audit` and `platform`
 

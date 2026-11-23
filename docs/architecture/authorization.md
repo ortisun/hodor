@@ -277,4 +277,6 @@ The response contains `decision`, `decision_id`, `evaluated_at`, `engine`, `poli
 
 ## Decision log
 
-Decisions are written to `decision_log` (partitioned by day) from both engines in one format. Per tenant: full, sampled or deny-only logging; input attributes can be masked by path before storage (applied in Hodor for native decisions and through Open Policy Agent's mask policy for Open Policy Agent decisions). Retention is per tenant.
+Decisions are written to `decision_log` (partitioned by day) from both engines in one format. Per tenant: full, sampled or deny-only logging; input attributes can be masked by path before storage. Retention is per tenant.
+
+As built ([the record of decisions](contexts/authorization.md#the-record-of-decisions)), Hodor writes the record of both engines itself, since it holds the request of every decision, and applies the masks there. An Open Policy Agent instance erases the whole input of the decisions it uploads, with one fixed mask policy given when it starts: a mask from a tenant's bundle cannot reach `system.log.mask`, which lies outside the tenant's tree.
