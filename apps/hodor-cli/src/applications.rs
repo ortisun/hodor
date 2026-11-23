@@ -90,6 +90,10 @@ pub(crate) enum ClientCommand {
         /// address.
         #[arg(long = "redirect-uri")]
         redirect_uris: Vec<String>,
+        /// Where logout may send a person back to, compared by exact
+        /// equality; given once per address.
+        #[arg(long = "post-logout-redirect-uri")]
+        post_logout_redirect_uris: Vec<String>,
         /// A scope it may ask for; given once per scope.
         #[arg(long = "scope")]
         scopes: Vec<String>,
@@ -337,6 +341,7 @@ pub(crate) async fn run_client(
             client_type: kind,
             grants,
             redirect_uris,
+            post_logout_redirect_uris,
             scopes,
             method,
             secret_days,
@@ -351,6 +356,7 @@ pub(crate) async fn run_client(
             if let Some(method) = method {
                 settings.authentication_method = AuthenticationMethod::parse(&method)?;
             }
+            settings.post_logout_redirect_uris = post_logout_redirect_uris;
             settings.allowed_scopes = scopes;
             let (client, secret) = service
                 .create_client(

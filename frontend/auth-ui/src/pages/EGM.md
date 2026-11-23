@@ -79,6 +79,13 @@ address.
   `go("sign-in")`; else it shows `signedInSince` (the `signedInAt` time
   formatted with `Intl.DateTimeFormat` in `text.locale`) and a sign-out
   `Action` that calls `client.signOut()` and `go("sign-in", "signed-out")`.
+- `SignOutPage.tsx:SignOutPage(PageProps)` - the question an application's
+  logout asks. `client.session()`: none means `leave` to
+  `/t/{tenant}/oauth2/logout/finish` at once; else it shows
+  `signOutQuestion(tenant)` with a primary `signOut` `Action` (calls
+  `client.signOut()`, then `leave` to the finish; a 401 counts as signed
+  out) and `staySignedIn` (`go("account")`). It never learns the return
+  address: the server keeps it.
 - `ComingBackPage.tsx:ComingBackPage({ ...PageProps, provider, answer })` -
   from the `ProviderAnswer`: with `binding === "saml"` it needs `state` and
   `receipt`; otherwise any `error`, or a missing `code` or `state`, means

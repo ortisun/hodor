@@ -9,6 +9,7 @@ import { AskPage } from "./AskPage";
 import { ComingBackPage } from "./ComingBackPage";
 import { FinishPage } from "./FinishPage";
 import { SignInPage } from "./SignInPage";
+import { SignOutPage } from "./SignOutPage";
 
 afterEach(cleanup);
 
@@ -569,6 +570,60 @@ describe("the account page", () => {
 
     await waitFor(() => expect(go).toHaveBeenCalledWith("sign-in", "signed-out"));
     expect(sent.at(-1)).toMatchObject({ method: "DELETE", path: "/session", csrfToken: "of-the-session" });
+  });
+});
+
+describe("the sign-out page", () => {
+  const session = () =>
+    json(200, {
+      user_id: "u",
+      session_id: "s",
+      signed_in_at: "2026-11-20T14:03:11Z",
+      expires_at: "2026-11-20T15:03:11Z",
+      csrf_token: "of-the-session",
+    });
+  const finish = "/t/acme/oauth2/logout/finish";
+
+  it("goes on at once when nobody is signed in", async () => {
+    const { props, leave } = page({ "GET /session": [nobody] });
+    render(<SignOutPage {...props} />);
+    await waitFor(() => expect(leave).toHaveBeenCalledWith(finish));
+    expect(screen.queryByRole("button", { name: en.signOut })).toBeNull();
+  });
+
+  it("asks, signs out and goes on to the finish", async () => {
+    const { props, sent, leave, user } = page({ "GET /session": [session], "DELETE /session": [empty(204)] });
+    render(<SignOutPage {...props} />);
+    expect(await screen.findByText(en.signOutQuestion("acme"))).toBeTruthy();
+    expect(leave).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: en.signOut }));
+    await waitFor(() => expect(leave).toHaveBeenCalledWith(finish));
+    expect(sent.at(-1)).toMatchObject({ method: "DELETE", path: "/session", csrfToken: "of-the-session" });
+  });
+
+  it("stays signed in when the person says so, and the application is not told", async () => {
+    const { props, sent, go, leave, user } = page({ "GET /session": [session] });
+    render(<SignOutPage {...props} />);
+    await user.click(await screen.findByRole("button", { name: en.staySignedIn }));
+    expect(go).toHaveBeenCalledWith("account");
+    expect(leave).not.toHaveBeenCalled();
+    expect(sent.some((request) => request.method === "DELETE")).toBe(false);
+  });
+
+  it("counts a session that ended in the meantime as signed out", async () => {
+    const { props, leave, user } = page({ "GET /session": [session], "DELETE /session": [nobody] });
+    render(<SignOutPage {...props} />);
+    await user.click(await screen.findByRole("button", { name: en.signOut }));
+    await waitFor(() => expect(leave).toHaveBeenCalledWith(finish));
+  });
+
+  it("says what went wrong and stays when signing out fails", async () => {
+    const { props, leave, user } = page({ "GET /session": [session], "DELETE /session": [unreachable] });
+    render(<SignOutPage {...props} />);
+    await user.click(await screen.findByRole("button", { name: en.signOut }));
+    expect((await alertShown()).textContent).toBe(en.unreachable);
+    expect(leave).not.toHaveBeenCalled();
   });
 });
 

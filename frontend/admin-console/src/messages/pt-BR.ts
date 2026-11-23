@@ -289,6 +289,8 @@ export const ptBR: Messages = {
   grantsLabel: "O que pode pedir",
   redirectUrisLabel: "Endereços de retorno",
   redirectUrisHint: "Um por linha. A pessoa só volta para um endereço escrito aqui, caractere por caractere.",
+  postLogoutRedirectUrisLabel: "Endereços depois de sair",
+  postLogoutRedirectUrisHint: "Um por linha. Para onde a aplicação pode mandar a pessoa de volta depois de sair do Hodor, caractere por caractere.",
   allowedScopesLabel: "Escopos que pode pedir",
   allowedScopesHint: "Separados por espaços, como openid email.",
   pkceLabel: "Desafio de código (PKCE)",

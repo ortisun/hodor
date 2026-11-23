@@ -14,6 +14,7 @@ mod authorize;
 mod health;
 mod interaction;
 mod key_set;
+mod logout;
 mod openid;
 mod pages;
 mod policy_agent;
@@ -31,6 +32,7 @@ pub use authorize::{AuthorizationState, authorization_routes};
 pub use health::{Health, ReadinessCheck, ops_router};
 pub use interaction::{InteractionState, interaction_routes};
 pub use key_set::key_set_routes;
+pub use logout::{LogoutState, logout_routes};
 pub use openid::{UserInfoState, discovery_routes, userinfo_routes};
 pub use pages::{
     CONSOLE_ASSETS_PATH, CONSOLE_PATHS, PAGE_ASSETS_PATH, PAGE_PATHS,

@@ -71,7 +71,7 @@ fn issuer(state: &AuthorizationState, slug: &str) -> String {
 
 /// Hodor's own page, for a request that cannot be answered at its
 /// redirect address. It names the reason by its code and holds no script.
-fn error_page(code: &'static str) -> Response {
+pub(crate) fn error_page(code: &'static str) -> Response {
     let body = format!(
         "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
@@ -90,7 +90,7 @@ fn error_page(code: &'static str) -> Response {
 }
 
 /// Sends the browser to `uri` with `parameters` added to its query.
-fn redirect_to(uri: &str, parameters: &[(&str, &str)]) -> Response {
+pub(crate) fn redirect_to(uri: &str, parameters: &[(&str, &str)]) -> Response {
     let mut query = form_urlencoded::Serializer::new(String::new());
     for (name, value) in parameters {
         query.append_pair(name, value);

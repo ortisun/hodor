@@ -25,7 +25,8 @@ its header); the pages see plain values.
   token, go, leave, providerAnswer, signInAgain?, loginHint? }`; the last two
   go to `SignInPage`. It renders `sign-in` as `SignInPage`,
   `register` / `recover` as `AskPage`, `complete-registration` /
-  `reset-password` as `FinishPage`, `account` as `AccountPage`,
+  `reset-password` as `FinishPage`, `account` as `AccountPage`, `sign-out`
+  as `SignOutPage`,
   `provider-callback` as `ComingBackPage`, and anything else as a "page not
   found" frame with a link to sign-in.
 - `address.ts`:
@@ -108,7 +109,7 @@ its header); the pages see plain values.
   - [messages](./messages/EGM.md) - the English and Portuguese catalogs,
     `chooseMessages`, `describe`, `fieldProblem`.
   - [pages](./pages/EGM.md) - `SignInPage`, `AskPage`, `FinishPage`,
-    `AccountPage`, `ComingBackPage`, `PageProps`.
+    `AccountPage`, `SignOutPage`, `ComingBackPage`, `PageProps`.
   - [parts](./parts/EGM.md) - `Frame`, `Form`, `Field`, `PasswordField`,
     `Submit`, `Action`, `Notice`, `Words`, `PageLink`, `Ways`.
   - [themes](./themes/EGM.md) - the Hodor theme source and its compiled

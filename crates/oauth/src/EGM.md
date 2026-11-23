@@ -16,7 +16,13 @@ follows is `docs/architecture/contexts/oauth.md`.
     `RotateSecret`, `CreateResourceServer`; `AuthorizationCodeService`,
     `AuthorizationCodePorts`, `ResumedRequest`, `RedeemedCode`;
     `TokenService`, `TokenPorts`, `Issuer`, `IssuedTokens`;
-    `UserInfoService`, `UserInfoPorts`.
+    `UserInfoService`, `UserInfoPorts`; `LogoutService`, `LogoutPorts`,
+    `LogoutRefusal`.
+  - The end-session endpoint's domain: `LogoutParameters`,
+    `check_id_token_hint`, `IdTokenHint`, `LogoutRequest` (with `decide`),
+    `LogoutDecision`, `CurrentSession`, `ReturnAddress`, `logout_refusal`
+    (the codes of the page), `MAX_LOGOUT_STATE_LENGTH`,
+    `MAX_LOGOUT_LOCALES_LENGTH`.
   - The token endpoint's domain: `TokenRequest` (with `parse`),
     `PresentedClient`, `BasicCredentials`, `GrantRequest`, `TokenError`,
     `check_assertion`, `assertion_issuer`, `AssertionAudience`,

@@ -8,6 +8,7 @@ export const PAGES = [
   "recover",
   "reset-password",
   "account",
+  "sign-out",
 ] as const;
 
 export type PageName = (typeof PAGES)[number];

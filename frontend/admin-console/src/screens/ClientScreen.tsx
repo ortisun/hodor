@@ -186,6 +186,17 @@ export function ClientScreen({ id, client, me, text, go, path, say }: ScreenProp
                 ))}
               </VStack>
             </MetadataListItem>
+            {found.postLogoutRedirectUris.length > 0 ? (
+              <MetadataListItem label={text.postLogoutRedirectUrisLabel}>
+                <VStack gap={1}>
+                  {found.postLogoutRedirectUris.map((address) => (
+                    <span key={address} className="console-mono console-wrap">
+                      {address}
+                    </span>
+                  ))}
+                </VStack>
+              </MetadataListItem>
+            ) : null}
             <MetadataListItem label={text.allowedScopesLabel}>
               <span className="console-mono">{found.allowedScopes.join(" ")}</span>
             </MetadataListItem>

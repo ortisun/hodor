@@ -158,6 +158,9 @@ pub fn id_token_claims(
         "at_hash".to_owned(),
         json!(access_token_hash(access_token, digest)),
     );
+    // The session, never its token: logout needs to know whether an ID
+    // token names the browser's current session.
+    claims.insert("sid".to_owned(), json!(code.session_id.to_string()));
     Value::Object(claims)
 }
 
@@ -334,6 +337,7 @@ pub fn discovery_document(issuer: &str) -> Value {
         "token_endpoint": format!("{issuer}/oauth2/token"),
         "userinfo_endpoint": format!("{issuer}/oauth2/userinfo"),
         "jwks_uri": format!("{issuer}/oauth2/jwks"),
+        "end_session_endpoint": format!("{issuer}/oauth2/logout"),
         "response_types_supported": ["code"],
         "response_modes_supported": ["query"],
         "grant_types_supported": crate::domain::token::SUPPORTED_GRANT_TYPES,
@@ -346,7 +350,7 @@ pub fn discovery_document(issuer: &str) -> Value {
         "subject_types_supported": ["public"],
         "scopes_supported": ["openid", "profile", "email"],
         "claims_supported": [
-            "iss", "sub", "aud", "exp", "iat", "auth_time", "nonce", "acr", "amr", "at_hash",
+            "iss", "sub", "aud", "exp", "iat", "auth_time", "nonce", "acr", "amr", "at_hash", "sid",
             "name", "preferred_username", "locale", "updated_at", "email", "email_verified"
         ],
         "acr_values_supported": [ACR_MULTI_FACTOR, ACR_SINGLE_FACTOR],

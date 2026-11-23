@@ -2,7 +2,7 @@
 
 ## Overview
 
-The PostgreSQL schema, as thirty-six numbered SQL files. A number is
+The PostgreSQL schema, as thirty-seven numbered SQL files. A number is
 reserved when a piece of work starts, so a number can be missing until that
 work merges; every file not yet applied is applied, in order. They are
 embedded in the binaries by `static MIGRATOR: Migrator = sqlx::migrate!("../../migrations")`
@@ -55,6 +55,7 @@ Tables created, by file:
 | `0037_authorization_policy_bundles.sql` | `platform.policy_agent_instance` (a platform table: Open Policy Agent instances with the digest of each credential; the application role may not delete); `"authorization".policy_bundle` (append only for the application role); `"authorization".policy_agent_status`; `"authorization".policy_agent_decision` |
 | `0038_oauth_refresh_token.sql` | `oauth.refresh_token_family`: each family of refresh tokens with its grant, scopes, sealed secret, generation, the hash of its newest token, what its last move asked for and its lifetimes, under the bounds of the token policy; `oauth.refresh_token`: the hash of every token a family has had, one per generation |
 | `0040_authorization_role_conditions.sql` | Adds `condition` to `"authorization".role_permission`: the text of a role's condition on the permission, or `NULL`, 1 to 1000 characters (`role_permission_condition_length`) |
+| `0042_oauth_post_logout_redirect_uris.sql` | adds `post_logout_redirect_uris` to `oauth.client`, compared byte for byte, at most 10 (`client_post_logout_at_most_ten`) and only with `authorization_code` (`client_post_logout_needs_code`) |
 
 No migration creates a type, an extension or seed rows; enumerations are text
 columns with `CHECK ... IN (...)` constraints.

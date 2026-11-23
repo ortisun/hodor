@@ -397,6 +397,7 @@ struct ClientBody {
     authentication_method: &'static str,
     grant_types: Vec<&'static str>,
     redirect_uris: Vec<String>,
+    post_logout_redirect_uris: Vec<String>,
     allowed_scopes: Vec<String>,
     require_pkce: bool,
     token_policy: TokenPolicyBody,
@@ -422,6 +423,7 @@ impl From<&Client> for ClientBody {
             authentication_method: settings.authentication_method.as_str(),
             grant_types: settings.grant_types.iter().map(|g| g.as_str()).collect(),
             redirect_uris: settings.redirect_uris.clone(),
+            post_logout_redirect_uris: settings.post_logout_redirect_uris.clone(),
             allowed_scopes: settings.allowed_scopes.clone(),
             require_pkce: settings.require_pkce,
             token_policy: TokenPolicyBody {
@@ -475,6 +477,7 @@ struct NewClientBody {
     authentication_method: Option<String>,
     grant_types: Vec<String>,
     redirect_uris: Option<Vec<String>>,
+    post_logout_redirect_uris: Option<Vec<String>>,
     allowed_scopes: Option<Vec<String>>,
     require_pkce: Option<bool>,
     token_policy: Option<TokenPolicyInput>,
@@ -488,6 +491,7 @@ struct ClientChangesBody {
     authentication_method: Option<String>,
     grant_types: Option<Vec<String>>,
     redirect_uris: Option<Vec<String>>,
+    post_logout_redirect_uris: Option<Vec<String>>,
     allowed_scopes: Option<Vec<String>>,
     require_pkce: Option<bool>,
     token_policy: Option<TokenPolicyInput>,
@@ -582,6 +586,7 @@ async fn create_client(
                 settings.authentication_method =
                     AuthenticationMethod::parse(&method).map_err(failed)?;
             }
+            settings.post_logout_redirect_uris = new.post_logout_redirect_uris.unwrap_or_default();
             settings.allowed_scopes = new.allowed_scopes.unwrap_or_default();
             if let Some(require_pkce) = new.require_pkce {
                 settings.require_pkce = require_pkce;
@@ -667,6 +672,9 @@ async fn change_client(
                     None => now.grant_types,
                 },
                 redirect_uris: changes.redirect_uris.unwrap_or(now.redirect_uris),
+                post_logout_redirect_uris: changes
+                    .post_logout_redirect_uris
+                    .unwrap_or(now.post_logout_redirect_uris),
                 allowed_scopes: changes.allowed_scopes.unwrap_or(now.allowed_scopes),
                 require_pkce: changes.require_pkce.unwrap_or(now.require_pkce),
                 token_policy: changes

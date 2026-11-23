@@ -163,6 +163,7 @@ export interface ApplicationClient {
   authenticationMethod: string;
   grantTypes: string[];
   redirectUris: string[];
+  postLogoutRedirectUris: string[];
   allowedScopes: string[];
   requirePkce: boolean;
   tokenPolicy: TokenPolicy;
@@ -179,6 +180,7 @@ export interface ClientSettings {
   authenticationMethod: string;
   grantTypes: string[];
   redirectUris: string[];
+  postLogoutRedirectUris: string[];
   allowedScopes: string[];
 }
 
@@ -344,6 +346,7 @@ function applicationClient(body: Fields): ApplicationClient {
     authenticationMethod: required(body["authentication_method"]),
     grantTypes: strings(body["grant_types"]),
     redirectUris: strings(body["redirect_uris"]),
+    postLogoutRedirectUris: strings(body["post_logout_redirect_uris"]),
     allowedScopes: strings(body["allowed_scopes"]),
     requirePkce: body["require_pkce"] === true,
     tokenPolicy: {
@@ -389,6 +392,7 @@ function clientBody(settings: ClientSettings): Fields {
     authentication_method: settings.authenticationMethod,
     grant_types: settings.grantTypes,
     redirect_uris: settings.redirectUris,
+    post_logout_redirect_uris: settings.postLogoutRedirectUris,
     allowed_scopes: settings.allowedScopes,
   };
 }

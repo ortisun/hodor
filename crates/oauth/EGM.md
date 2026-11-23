@@ -11,8 +11,9 @@ endpoint, with pending requests, grants and authorization codes; and
 Issue-56: the token endpoint, which authenticates clients and exchanges a
 code for a JWT access token signed through the keys context;
 Issue-57: refresh tokens in families that move at every use, and client
-credentials; and Issue-59: the OpenID Provider, with the ID token, UserInfo
-and the discovery document. Storage,
+credentials; Issue-59: the OpenID Provider, with the ID token, UserInfo
+and the discovery document; and Issue-60: logout initiated by the relying
+party, with post-logout redirect addresses on clients. Storage,
 randomness, hashing, signature checking and time are reached through ports
 and kernel traits.
 
@@ -32,7 +33,8 @@ and kernel traits.
   `PersonStanding`, by `ServerStanding` in `apps/hodor-server/src/standing.rs`.
 - Used by `crates/protocol-http/src/authorize.rs`,
   `crates/protocol-http/src/token.rs` and
-  `crates/protocol-http/src/openid.rs` (UserInfo and discovery) over HTTP.
+  `crates/protocol-http/src/openid.rs` (UserInfo and discovery) and
+  `crates/protocol-http/src/logout.rs` (the end-session endpoint) over HTTP.
 - Workspace dependencies: `hodor-identity` (`IdentityService` reads the
   person for UserInfo), `hodor-kernel`, `hodor-keys` (`KeyService` signs
   access and ID tokens and lists the published keys;

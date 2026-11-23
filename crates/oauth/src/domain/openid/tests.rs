@@ -118,7 +118,12 @@ fn the_id_token_says_who_signed_in_for_which_client() {
         Some(22),
         "16 bytes of base64url"
     );
-    for absent in ["azp", "email", "name", "scope", "client_id", "sid"] {
+    assert_eq!(
+        claims["sid"],
+        code.session_id.to_string(),
+        "the session, for logout"
+    );
+    for absent in ["azp", "email", "name", "scope", "client_id"] {
         assert!(claims.get(absent).is_none(), "{absent}");
     }
 }
@@ -346,6 +351,10 @@ fn discovery_names_only_what_is_built() {
     );
     assert_eq!(document["jwks_uri"], format!("{ISSUER}/oauth2/jwks"));
     assert_eq!(
+        document["end_session_endpoint"],
+        format!("{ISSUER}/oauth2/logout")
+    );
+    assert_eq!(
         document["grant_types_supported"],
         json!(SUPPORTED_GRANT_TYPES)
     );
@@ -358,7 +367,6 @@ fn discovery_names_only_what_is_built() {
     for absent in [
         "revocation_endpoint",
         "introspection_endpoint",
-        "end_session_endpoint",
         "registration_endpoint",
         "pushed_authorization_request_endpoint",
         "device_authorization_endpoint",

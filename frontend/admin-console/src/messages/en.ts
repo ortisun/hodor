@@ -299,6 +299,8 @@ export const en = {
   grantsLabel: "What it may ask for",
   redirectUrisLabel: "Redirect addresses",
   redirectUrisHint: "One per line. A person is sent back only to an address written here, character for character.",
+  postLogoutRedirectUrisLabel: "Addresses after signing out",
+  postLogoutRedirectUrisHint: "One per line. Where the application may send a person back to after signing out at Hodor, character for character.",
   allowedScopesLabel: "Scopes it may ask for",
   allowedScopesHint: "Separated by spaces, such as openid email.",
   pkceLabel: "Code challenge (PKCE)",

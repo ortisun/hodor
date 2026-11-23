@@ -16,11 +16,14 @@ All paths are relative to the tenant: `https://{host}/t/{slug}`.
 | `/account/recover` | Asks for a link to choose a new password | `POST /interaction/recovery` |
 | `/account/reset-password` | Arrives from the link in the message, chooses a new password | `POST /interaction/recovery/complete` |
 | `/account` | Sees that they are signed in, and signs out | `GET` and `DELETE /interaction/session` |
+| `/account/sign-out` | Is asked whether to sign out, when an application asked Hodor to sign them out | `GET` and `DELETE /interaction/session` |
 | `/account/providers/{alias}/callback` | Arrives back from an identity provider | The sign-in routes, to [finish](../api/interaction-api.md#signing-in-through-an-identity-provider) |
 
 `/account` sends a person who is not signed in to `/account/sign-in`, and `/account/sign-in` sends a person who is already signed in to `/account`.
 
 **Signing in for an application.** When an application sends a person to Hodor's [authorization endpoint](contexts/oauth.md#signing-in-and-coming-back) and they must sign in, the server sends them to `/account/sign-in?continue=authorization`. With `continue=authorization` in its address the sign-in page starts a sign-in even when someone is signed in already, since the application asked for a new one. When a sign-in completes, by any way, the identity providers' page that the person comes back to included, and the answer carries `continue`, the page goes there instead of to the account page. The page goes only to an address that starts with `/t/{slug}/oauth2/` of its own tenant; anything else is ignored and the account page is shown. When the application sent `login_hint`, the address carries it too and the sign-in page starts with that identifier filled in; when it sent `ui_locales`, the address carries them and the pages use the first of those languages they have ([the OpenID Provider](contexts/oauth.md#what-a-request-may-ask-of-the-sign-in)).
+
+**Signing out for an application.** When an application asks Hodor to sign a person out and the request does not prove that it comes from the browser's own session, the [end-session endpoint](contexts/oauth.md#asking-the-person) sends the browser to `/account/sign-out`. The page asks who is signed in. When nobody is, it goes on at once to `/t/{slug}/oauth2/logout/finish`. Otherwise it asks "Sign out of {tenant}?" with two buttons: "Sign out" ends the session as the account page does and goes on to the same address; "Stay signed in" goes to the account page. A session that ended in the meantime counts as signed out. The page never learns where the application wants the person back: that stays with the server, which sends the browser there from the finish.
 
 Any other path under `/account` is answered with `404` by the server.
 

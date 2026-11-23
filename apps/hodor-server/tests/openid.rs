@@ -367,6 +367,19 @@ async fn the_discovery_document_names_what_answers() {
         .await
         .expect("response");
     assert_eq!(info.status(), StatusCode::UNAUTHORIZED, "answers, as OAuth");
+    let logout = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("client")
+        .get(local(&document["end_session_endpoint"]))
+        .send()
+        .await
+        .expect("response");
+    assert_eq!(
+        logout.status(),
+        StatusCode::FOUND,
+        "answers: nobody to sign out, so to the sign-in page"
+    );
 
     // The grants it names are answered by the token endpoint, and the ones
     // it does not name are refused as unsupported.
@@ -497,6 +510,13 @@ async fn an_application_learns_who_signed_in_and_reads_their_claims() {
     let digest = Sha256Digest.sha256(access_token.as_bytes());
     assert_eq!(claims["at_hash"], URL_SAFE_NO_PAD.encode(&digest[..16]));
     assert!(claims.get("email").is_none(), "claims come from UserInfo");
+    let (_, session) = browser
+        .send(Method::GET, "/t/acme/interaction/session", None)
+        .await;
+    assert_eq!(
+        claims["sid"], session["session_id"],
+        "the session the person signed in with"
+    );
 
     // UserInfo, by GET and by POST.
     for method in [Method::GET, Method::POST] {

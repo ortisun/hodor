@@ -4,7 +4,7 @@ The `oauth` context makes Hodor an OAuth 2.x authorization server and an OpenID 
 
 It does not sign anyone in. When a request needs a person, it hands the request to the `authentication` context and takes the session that comes back. The two contexts do not depend on each other: the HTTP layer joins them ([crates.md](../crates.md)).
 
-This page specifies what Issue-53 builds: applications, clients and resource servers, and the rules they keep; what Issue-55 builds: the authorization endpoint, grants and authorization codes; and what Issue-56 builds: the token endpoint, client authentication and access tokens. The other endpoints, the other tokens and consent are added by Issue-57 to Issue-62, under the headings at the end of this page.
+This page specifies what Issue-53 builds: applications, clients and resource servers, and the rules they keep; what Issue-55 builds: the authorization endpoint, grants and authorization codes; what Issue-56 builds: the token endpoint, client authentication and access tokens; what Issue-59 builds: the OpenID Provider; and what Issue-60 builds: logout initiated by the relying party. The other endpoints, the other tokens and consent are added by Issue-57 to Issue-62, under the headings at the end of this page.
 
 ## Applications
 
@@ -32,6 +32,7 @@ A client is what talks to Hodor's endpoints. Its identifier is the `client_id` o
 | Authentication method | How it proves who it is at the token endpoint: `client_secret_basic`, `client_secret_post`, `private_key_jwt` or `none` |
 | Grants | What it may ask for: `authorization_code`, `refresh_token`, `client_credentials` |
 | Redirect addresses | Where the authorization endpoint may send a person back to. At most 10 |
+| Post-logout redirect addresses | Where [logout](#logout-initiated-by-the-relying-party) may send a person back to. At most 10 |
 | Scopes | The scopes it may ask for. At most 50 |
 | PKCE | Whether it must send a code challenge. Always for a public client; on by default for a confidential one |
 | Token policy | How long its tokens live |
@@ -50,6 +51,7 @@ Every change to a client is checked against all of these at once; a change that 
 - **`client_credentials` is for confidential clients only**, since that grant is the client acting as itself.
 - **`refresh_token` comes with `authorization_code`.** A refresh token is only ever issued with tokens from a code.
 - **A client with `authorization_code` has at least one redirect address, and one without it has none.**
+- **Only a client with `authorization_code` has post-logout redirect addresses**, since only it gets ID tokens and signs people in. It may have none.
 - **A client has at least one grant.**
 - **Switching the authentication method drops what the old one used.** A client that moves away from a secret method loses its secrets, and one that moves away from `private_key_jwt` loses its keys.
 
@@ -64,6 +66,8 @@ A redirect address is where a person's browser is sent with a code. Sending a co
 - At most 2000 characters, all of them printable ASCII without spaces.
 
 An address is kept exactly as it was given.
+
+**Post-logout redirect addresses** follow the same rules, checked the same way, and are a list of their own: an address where a person may be sent with a code is not, for that reason, one where they may be sent after signing out, and the reverse.
 
 ### Scopes a client may ask for
 
@@ -144,7 +148,7 @@ For an operator who can reach the database, as for tenants and identity provider
 | `hodor-cli application add --tenant acme --name Billing [--first-party]` | Registers an application, enabled; third party unless `--first-party` is given. Prints its identifier |
 | `hodor-cli application list --tenant acme` | One line per application: identifier, status, first or third party, name |
 | `hodor-cli application disable --tenant acme --id …`, `enable` | |
-| `hodor-cli client add --tenant acme --application … --name … --type confidential --grant authorization_code --redirect-uri https://… --scope openid` | Creates a client. `--grant`, `--redirect-uri` and `--scope` are given once per value; `--method` chooses the authentication method and `--secret-days` the lifetime of the first secret. Prints the `client_id` and, for a client with a secret method, the secret, once |
+| `hodor-cli client add --tenant acme --application … --name … --type confidential --grant authorization_code --redirect-uri https://… --scope openid` | Creates a client. `--grant`, `--redirect-uri`, `--post-logout-redirect-uri` and `--scope` are given once per value; `--method` chooses the authentication method and `--secret-days` the lifetime of the first secret. Prints the `client_id` and, for a client with a secret method, the secret, once |
 | `hodor-cli client list --tenant acme --application …` | One line per client: `client_id`, status, type, authentication method, name |
 | `hodor-cli client rotate-secret --tenant acme --id … [--lifetime-days 365] [--keep-previous-days 7]` | Gives a client a new secret and prints it, once |
 | `hodor-cli client disable --tenant acme --id …`, `enable` | |
@@ -197,7 +201,7 @@ Every table is a tenant table under row-level security, in the schema `oauth`. R
 | `tenant_id`, `id` | `uuid` | Primary key |
 | `application_id` | `uuid` | References `oauth.application` |
 | `name`, `client_type`, `authentication_method`, `status` | `text` | A check constraint keeps a public client on `none` |
-| `grant_types`, `redirect_uris`, `allowed_scopes` | `text[]` | Redirect addresses are compared byte for byte (`COLLATE "C"`) |
+| `grant_types`, `redirect_uris`, `post_logout_redirect_uris`, `allowed_scopes` | `text[]` | Redirect addresses of both kinds are compared byte for byte (`COLLATE "C"`) |
 | `require_pkce` | `boolean` | A check constraint keeps it true for a public client |
 | `access_token_seconds`, `id_token_seconds`, `refresh_token_seconds`, `refresh_idle_seconds` | `integer` | The token policy |
 | `created_at`, `updated_at` | `timestamptz` | |
@@ -449,7 +453,7 @@ The access token is a JSON Web Token per [RFC 9068](https://www.rfc-editor.org/r
 | `jti` | 16 random bytes, base64url, unique to this token |
 | `auth_time` | When the person signed in; absent for client credentials, where nobody signed in |
 
-`acr` and `amr` are in the [ID token](#the-id-token), not in the access token, which is for resource servers. `sid` comes with logout (Issue-60).
+`acr`, `amr` and `sid` are in the [ID token](#the-id-token), not in the access token, which is for resource servers.
 
 **No signed token outlives the rotation overlap.** The keys context keeps a retiring key published for `RotationPolicy::LONGEST_SIGNED_LIFETIME`, one hour, after it stops signing. The token policy therefore refuses an access or ID token lifetime longer than that, and the token endpoint refuses to sign one: a token checked after its key left the key set would be refused by everyone.
 
@@ -577,7 +581,7 @@ Issue-58.
 
 ## OpenID Provider
 
-Issue-59 makes Hodor an OpenID Provider ([OpenID Connect Core 1.0](https://openid.net/specs/openid-connect-core-1_0.html)): a client that asks for the scope `openid` learns who signed in from an ID token, reads the person's claims at UserInfo, and finds everything it needs in the tenant's discovery document. Logout initiated by the relying party is Issue-60. The sequence is [sequence 3](../../protocols/sequences.md#3-openid-provider).
+Issue-59 makes Hodor an OpenID Provider ([OpenID Connect Core 1.0](https://openid.net/specs/openid-connect-core-1_0.html)): a client that asks for the scope `openid` learns who signed in from an ID token, reads the person's claims at UserInfo, and finds everything it needs in the tenant's discovery document. Logout initiated by the relying party is [its own section](#logout-initiated-by-the-relying-party). The sequence is [sequence 3](../../protocols/sequences.md#3-openid-provider).
 
 ### The ID token
 
@@ -595,6 +599,7 @@ When the scopes of a code hold `openid`, the token endpoint answers with an `id_
 | `acr` | The assurance the sign-in reached, as the next section says |
 | `amr` | The methods of the sign-in, as the next section says. Left out when none of them has a name in RFC 8176 |
 | `at_hash` | The base64url of the left half of the SHA-256 of the access token, so that the client can tell the two belong together |
+| `sid` | The identifier of the session the person signed in with: a UUID that names the session, never its token. [Logout](#logout-initiated-by-the-relying-party) uses it to know whether an ID token names the browser's current session |
 
 `azp` is not added: the audience is always the one client, and OpenID Connect asks for `azp` only when it is not.
 
@@ -681,7 +686,7 @@ It names only what is built:
 | Member | Value |
 |---|---|
 | `issuer` | The tenant's issuer, exactly as every token and redirect carries it |
-| `authorization_endpoint`, `token_endpoint`, `userinfo_endpoint`, `jwks_uri` | The four addresses under `{issuer}/oauth2` |
+| `authorization_endpoint`, `token_endpoint`, `userinfo_endpoint`, `jwks_uri`, `end_session_endpoint` | The five addresses under `{issuer}/oauth2`; the last is [logout](#logout-initiated-by-the-relying-party) |
 | `response_types_supported` | `code` |
 | `response_modes_supported` | `query` |
 | `grant_types_supported` | The grants the token endpoint answers: `authorization_code`, `refresh_token` and `client_credentials` |
@@ -698,7 +703,7 @@ It names only what is built:
 | `authorization_response_iss_parameter_supported` | `true` |
 | `request_parameter_supported`, `request_uri_parameter_supported`, `claims_parameter_supported` | `false` |
 
-Revocation, introspection and the end-session endpoint are added to the document with the issues that build them. The document may be kept by caches for five minutes and carries `Access-Control-Allow-Origin: *`, as the key set does: it is public.
+Revocation and introspection are added to the document with Issue-58. The document may be kept by caches for five minutes and carries `Access-Control-Allow-Origin: *`, as the key set does: it is public.
 
 ### Ports
 
@@ -708,6 +713,78 @@ Revocation, introspection and the end-session endpoint are added to the document
 | `SignatureVerifier` | Checks the access token's signature, from the kernel |
 | `IdentityService` | Reads the person, for UserInfo, from the identity context |
 
+## Logout initiated by the relying party
+
+Issue-60. An application that signed a person in through Hodor can send their browser to Hodor to sign out there too ([OpenID Connect RP-Initiated Logout 1.0](https://openid.net/specs/openid-connect-rpinitiated-1_0.html)). The **end-session endpoint** is at `/t/{slug}/oauth2/logout`, advertised in [discovery](#discovery) as `end_session_endpoint`. It answers `GET` with the parameters in the query and `POST` with them in a form.
+
+### The parameters
+
+| Parameter | Meaning |
+|---|---|
+| `id_token_hint` | An ID token Hodor issued to the application. It says who the application believes is signed in, with which session (`sid`), and for which client (`aud`) |
+| `client_id` | The client, for an application that has no ID token at hand |
+| `post_logout_redirect_uri` | Where to send the person back to afterwards. It must be one of the client's [post-logout redirect addresses](#redirect-addresses), character for character |
+| `state` | Given back with the person at that address, as it came |
+| `ui_locales` | The languages the question to the person is asked in, as at the authorization endpoint |
+
+`logout_hint` and parameters the endpoint does not know are ignored.
+
+### Checking the request
+
+The request is checked before anything happens. A request that fails is answered with Hodor's own page, status `400`, that names the reason by its code, and **the browser is never sent to the address the request names**: until the request has been checked, that address could be anyone's.
+
+| Failure | Code |
+|---|---|
+| A parameter is given more than once; `state` is longer than 1024 characters or holds characters outside printable ASCII; `ui_locales` is longer than 255 characters | `oauth.logout_request_invalid` |
+| `id_token_hint` is not an ID token of this tenant: not three parts, a header that is not `typ` `JWT` and `alg` `ES256`, a `kid` the tenant does not publish, a signature that does not verify, or an `iss` that is not the tenant's issuer | `oauth.logout_id_token_hint_invalid` |
+| `client_id` is not a client of this tenant, or the client or its application is disabled; or `post_logout_redirect_uri` is given and the request names no client, by `client_id` or by the hint's `aud` | `oauth.logout_client_unknown` |
+| `client_id` and the hint's `aud` name different clients | `oauth.logout_client_mismatch` |
+| `post_logout_redirect_uri` is not one of the client's post-logout redirect addresses | `oauth.logout_redirect_uri_unregistered` |
+
+**The hint's `exp` is not checked.** The specification allows an expired ID token here: it is a hint of who is signed in, not a credential, and an ID token lives five minutes while a session lives hours. Its signature is checked, so that its `aud` can be trusted for the return address and its `sid` for skipping the question below.
+
+### What happens
+
+| The browser… | What happens |
+|---|---|
+| has no valid session of the tenant | There is nothing to end; the request [finishes](#finishing) |
+| sent a `GET` with a valid session, and an `id_token_hint` whose `sub` is that person and whose `sid` is that session | The session ends at once and the request finishes |
+| anything else: no hint, a hint for another session or another person, or a `POST` | The person is [asked](#asking-the-person) |
+
+A `POST` always asks. A form that another site posts does not carry the session cookie (it is `SameSite=Lax`), so Hodor cannot see from such a request which session the browser holds; the question is asked from Hodor's own pages, which can.
+
+The person is asked whenever the request does not prove that it comes from the session it ends, as the specification requires: otherwise any site could sign a person out of Hodor by sending their browser to this address.
+
+**Ending the session** is what signing out does ([the interaction interface](../../api/interaction-api.md#routes-for-a-signed-in-person)): the session is revoked, with the reason `relying_party_logout` in its event and so in the audit log, and the browser is told to forget the session cookie. With it ends every refresh token family made in that session without `offline_access` (Issue-57). Access tokens already issued live out their few minutes; revoking them is Issue-58. Grants are not revoked: access the person gave with `offline_access` goes on.
+
+### Asking the person
+
+1. The checked request is kept in the cookie `__Secure-hodor_logout`: the client, the return address and `state`. It holds nothing secret; it only says where to go afterwards, and it is checked again when it is used. It is `HttpOnly`, `Secure`, `SameSite=Strict`, with `Path=/t/{slug}` and a `Max-Age` of 600 seconds.
+2. The browser is sent to the hosted pages, `/t/{slug}/account/sign-out`, with `ui_locales` when the request had it.
+3. The page asks who is signed in. When nobody is, it goes on to the [finish](#finishing) at once. Otherwise it asks "Sign out of {tenant}?", with two buttons:
+   - **Sign out** ends the session through the interaction interface, as the account page does, and goes on to the finish.
+   - **Stay signed in** goes to the account page. The application is not told: the person stays signed in to Hodor and can sign in to the application again.
+
+### Finishing
+
+`GET /t/{slug}/oauth2/logout/finish` is where a request that was asked about ends; a request that was not asked about ends the same way without it.
+
+- The cookie is read and removed. Its client must still be a client of the tenant, enabled, and its return address still one of the client's post-logout redirect addresses; otherwise the return address is dropped.
+- When the browser still has a valid session, the person chose to stay or came here some other way: the browser is sent to the account page.
+- Otherwise, with a return address, the browser is sent there, with `state` when the request had one. Without one, it is sent to the sign-in page, which says the person is signed out.
+
+Every answer of the end-session endpoint carries `Cache-Control: no-store`.
+
+### Ports
+
+| Port | Purpose |
+|---|---|
+| `KeyService` | Lists the tenant's published keys, to check the `id_token_hint` |
+| `SignatureVerifier` | Checks the hint's signature, from the kernel |
+| `ClientStore` | Loads the client, to check the return address |
+
+The session is looked up and ended by the HTTP layer through the session context, as the authorization endpoint looks it up.
+
 ## Consent
 
 Issue-62.
@@ -716,7 +793,11 @@ Issue-62.
 
 | Item | Planned in |
 |---|---|
-| Revocation, among them revoking a refresh token and its family; introspection that refuses the access tokens of a revoked family or grant; and the end-session endpoint | Issue-58 and Issue-60 |
+| Revocation, among them revoking a refresh token and its family; introspection that refuses the access tokens of a revoked family or grant | Issue-58 |
+| Back-channel and front-channel logout: telling the applications of a session that it ended | Phase 2, after 0.2.0 ([Decision 0023](../../decisions/0023-what-0.2.0-holds.md)) |
+| Sending the person back to the application when they choose to stay signed in at the logout question | When an application asks for it |
+| `logout_hint`, which names who to sign out | Not used: a browser holds one session per tenant |
+| An `id_token_hint` signed by a key that has left the tenant's key set: it is refused, and the application can send `client_id` instead, which asks the person | When it matters |
 | The metadata at the address RFC 8414 prefers for an issuer with a path, `/.well-known/oauth-authorization-server/t/{slug}`: it is outside the tenant's addresses, so only the address after the issuer is served | When a client needs it |
 | Calling UserInfo from a browser on another origin | With origins in the client settings |
 | The person's claims in the ID token when asked for with the `claims` parameter | Not planned for 0.2.0 |

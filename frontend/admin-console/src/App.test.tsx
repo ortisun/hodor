@@ -373,6 +373,10 @@ describe("the applications", () => {
     const dialog = await screen.findByRole("dialog");
     await user.type(within(dialog).getByLabelText(en.clientNameLabel), "Billing web site");
     await user.type(within(dialog).getByLabelText(en.redirectUrisLabel), "https://billing.example.com/callback");
+    await user.type(
+      within(dialog).getByLabelText(en.postLogoutRedirectUrisLabel),
+      "https://billing.example.com/signed-out",
+    );
     await user.click(within(dialog).getByRole("button", { name: en.addClient }));
 
     const shown = await screen.findByTestId("shown-once");
@@ -383,6 +387,7 @@ describe("the applications", () => {
       authentication_method: "client_secret_basic",
       grant_types: ["authorization_code"],
       redirect_uris: ["https://billing.example.com/callback"],
+      post_logout_redirect_uris: ["https://billing.example.com/signed-out"],
       allowed_scopes: ["openid"],
     });
     await user.click(screen.getByRole("button", { name: en.secretKept }));
