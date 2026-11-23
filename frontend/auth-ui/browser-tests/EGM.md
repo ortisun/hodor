@@ -101,8 +101,11 @@ watched page and the steps a person repeats.
     Hodor's origin, signs out, and signs in again with the password and the
     key; the session's methods are `password` and `webauthn`. With a
     virtual platform authenticator that verifies the person, a person
-    registers a passkey, signs out and signs in with "sign in with a
-    passkey" alone; the session's methods are `passkey`, multi-factor.
+    registers a passkey, signs out and signs in with it alone: once with
+    "sign in with a passkey", with the browser made to offer no passkey in
+    the field (the virtual authenticator takes such an offer at once), and
+    once through the offer in the identifier field; the session's methods
+    are `passkey`, multi-factor.
 
 ## Invariants
 

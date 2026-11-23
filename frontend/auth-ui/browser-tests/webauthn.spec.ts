@@ -107,27 +107,50 @@ test("a person with a security key signs in with the password and the key", asyn
   expect(methods).toEqual(["password", "webauthn"]);
 });
 
-test("a person with a passkey signs in with it alone", async ({ page }) => {
-  await addVirtualPlatformAuthenticator(page);
+/** Registers a person and a passkey, and signs them out. */
+async function registeredWithPasskey(page: Page): Promise<void> {
   const address = newAddress();
   await register(page, address);
   await signIn(page, address, PASSWORD);
   await expect(page.getByRole("heading", { name: en.accountTitle })).toBeVisible();
   expect(await registerKey(page, true)).toBe(201);
-
   await page.getByRole("button", { name: en.signOut }).click();
-  await expect(page.getByText(en.noticeSignedOut)).toBeVisible();
+}
 
-  // No identifier and no password: the passkey names the person and is enough.
-  await expect(page.getByLabel(en.identifierLabel)).toBeVisible();
-  await expectAccessible(page);
-  await page.getByRole("button", { name: en.signInWithPasskey }).click();
-  await expect(page.getByRole("heading", { name: en.accountTitle })).toBeVisible();
-
-  const session = await page.evaluate(
+async function sessionOf(page: Page): Promise<{ methods: string[]; assurance: string }> {
+  return page.evaluate(
     async (base) => (await (await fetch(`${base}/session`)).json()) as { methods: string[]; assurance: string },
     `/t/${TENANT}/interaction`,
   );
+}
+
+test("a person with a passkey signs in with it alone, from the button", async ({ page }) => {
+  // The virtual authenticator answers a passkey offered in the field at once, as if the person
+  // chose it; here the browser is made to offer none, so that the button is what is tried.
+  await page.addInitScript(() => {
+    Object.defineProperty(window.PublicKeyCredential, "isConditionalMediationAvailable", {
+      value: () => Promise.resolve(false),
+    });
+  });
+  await addVirtualPlatformAuthenticator(page);
+  await registeredWithPasskey(page);
+  await expect(page.getByText(en.noticeSignedOut)).toBeVisible();
+
+  // No identifier and no password: the passkey names the person and is enough.
+  await expectAccessible(page);
+  await page.getByRole("button", { name: en.signInWithPasskey }).click();
+  await expect(page.getByRole("heading", { name: en.accountTitle })).toBeVisible();
+  const session = await sessionOf(page);
   expect(session.methods).toEqual(["passkey"]);
   expect(session.assurance).toBe("multi_factor");
+});
+
+test("a person with a passkey signs in with the one the browser offers in the field", async ({ page }) => {
+  await addVirtualPlatformAuthenticator(page);
+  await registeredWithPasskey(page);
+  // The sign-in page offers the passkey in the identifier field, and the virtual authenticator
+  // takes the offer: the person is signed in without typing anything.
+  await expect(page.getByRole("heading", { name: en.accountTitle })).toBeVisible();
+  const session = await sessionOf(page);
+  expect(session.methods).toEqual(["passkey"]);
 });
