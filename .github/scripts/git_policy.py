@@ -1176,12 +1176,24 @@ def check_pr(settings_path: str, checkout: str, base_ref: str, head_ref: str, ba
     failures += [("gitflow", p) for p in check_flow(head_ref, base_ref, settings)]
     if title:
         failures += [("title", "the pull request title: %s" % p) for p in check_header(title, settings)]
+        # A pull request into the development branch is squash-merged, and its title becomes the commit's first line
+        # with " (#number)" added, which the commit checks never see: leave room for it.
+        room = settings.header_max_length - len(" (#99999)")
+        if base_ref == settings.develop_branch and HEADER_RE.match(title) and room < len(title) <= settings.header_max_length:
+            failures.append(("title", "the pull request title has %d characters; a squash merge adds ' (#number)', so "
+                                      "keep it to %d" % (len(title), room)))
     else:
         failures.append(("title", "the pull request has no title"))
     for sha in (base_sha, head_sha):
         if not re.match(r"^[0-9a-f]{40}$", sha):
             raise UsageError("--base-sha and --head-sha must be full commit hashes")
-    commits = commits_in(checkout, ["%s..%s" % (base_sha, head_sha)])
+    revisions = ["%s..%s" % (base_sha, head_sha)]
+    # Into the main branch, what is already on the development branch was checked when it reached it: a release or
+    # a back-merge carries all of it, and one commit that slipped through there would stop every release.
+    develop_ref = "refs/remotes/origin/%s" % settings.develop_branch
+    if base_ref == settings.main_branch and git(checkout, "rev-parse", "--verify", "--quiet", develop_ref)[0] == 0:
+        revisions += ["--not", develop_ref]
+    commits = commits_in(checkout, revisions)
     failures += [("commits", p) for p in report_commits(commits, settings, allow_autosquash=False)]
     annotate = os.environ.get("GITHUB_ACTIONS") == "true"
     if not failures:
