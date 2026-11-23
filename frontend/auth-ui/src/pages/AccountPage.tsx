@@ -4,11 +4,11 @@ import { describe } from "../messages";
 import { Frame } from "../parts/Frame";
 import { Notice } from "../parts/Notice";
 import { Action } from "../parts/Submit";
-import { Words } from "../parts/Words";
+import { PageLink, Ways, Words } from "../parts/Words";
 import { asFailure, type PageProps } from "./shared";
 
-/** Where a signed-in person lands: who they are to the server, and the way out. */
-export function AccountPage({ tenant, client, text, go }: PageProps) {
+/** Where a signed-in person lands: who they are to the server, their second factors, and the way out. */
+export function AccountPage({ tenant, client, text, go, path }: PageProps) {
   const [session, setSession] = useState<Session | null>(null);
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<Failure | null>(null);
@@ -72,6 +72,11 @@ export function AccountPage({ tenant, client, text, go }: PageProps) {
       {since !== null ? (
         <>
           <Words>{text.signedInSince(since)}</Words>
+          <Ways>
+            <li>
+              <PageLink href={path("security")}>{text.securityLink}</PageLink>
+            </li>
+          </Ways>
           <Action label={busy ? text.working : text.signOut} busy={busy} onClick={() => void signOut()} />
         </>
       ) : null}

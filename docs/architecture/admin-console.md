@@ -43,7 +43,7 @@ The console opens in the dark mode and remembers the person's choice in the brow
 |---|---|---|
 | `/` | Sends to the first screen the person may open | — |
 | `/users` | Users: a table, oldest first, with status and identifiers, loaded a page at a time; create a user | `users:read`; `users:write` to create |
-| `/users/{user_id}` | One user: profile, identifiers with their verification, active sessions; suspend the user; end a session | `users:read`; `sessions:read` for the sessions; `users:write` and `sessions:revoke` for the actions |
+| `/users/{user_id}` | One user: profile, identifiers with their verification, active sessions, second factors and how many recovery codes are left; suspend the user; end a session; remove the authenticator application, a key or the recovery codes | `users:read`; `sessions:read` for the sessions; `credentials:read` for the factors; `users:write`, `sessions:revoke` and `credentials:write` for the actions |
 | `/audit` | Audit records: a table, a page at a time, with a panel showing the whole record and its hashes | `audit:read` |
 | `/identity-providers` | Identity providers: a table ordered by alias, with status and whether each creates users; add a provider | `identity-providers:read`; `identity-providers:write` to add |
 | `/identity-providers/{provider_id}` | One provider: the callback address to register at the provider, its settings; change them, replace the client secret, disable or enable it | `identity-providers:read`; `identity-providers:write` for the actions |
@@ -63,6 +63,7 @@ Each action has one level, written once in the console's action catalog (`src/ac
 |---|---|---|
 | Create a user | 0 | None: a form |
 | End one session | 1 | A dialog that names the consequence |
+| Remove a user's authenticator application, a key, or their recovery codes | 2 | The user's address typed in full: the person can no longer use it, and when it is the last second factor the recovery codes go too and, under a policy that requires one, the person cannot sign in until one is enrolled for them |
 | Suspend a user | 2 | The reason, which the server requires, and the user's address typed in full |
 | Add an identity provider | 1 | The form says who will be able to sign in, and whether they get an account, before its button |
 | Change an identity provider's settings | 1 | The form, with the same sentence when people it lets in will be created |

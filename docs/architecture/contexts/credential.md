@@ -101,7 +101,7 @@ Enrolling takes two calls, so that an application that never received the secret
 1. **Begin.** A new secret is made and stored as an enrollment waiting to be confirmed, replacing any earlier one that was never confirmed. The answer, given once, holds the secret in Base32 and an `otpauth://totp/` address for a QR code, naming the tenant as the issuer and the person's login identifier as the account. A user who already has an application in use keeps it until the new one is confirmed.
 2. **Confirm.** The person types a code their application shows. A right code puts the new application in use and removes the old one; that code counts as used. A wrong code leaves everything as it was. An enrollment not confirmed within ten minutes of beginning is gone: confirming it is refused, and the person begins again.
 
-Who may enroll is decided by the caller. Until the account pages of Issue-70, enrolling is done with the command-line tool by an operator.
+Who may enroll is decided by the caller: the person, from [their own pages](authentication.md#a-persons-own-factors) after proving themselves again, or an operator with the command-line tool.
 
 ### Checking a code
 
@@ -113,7 +113,8 @@ A code is right when it is the code of the current step or of the step just befo
 
 ### Removing
 
-Removing takes away the application in use and any enrollment waiting to be confirmed. Removing a user's last second factor under a tenant policy that requires one is refused by the caller (Issue-70), not here.
+Removing takes away the application in use and any enrollment waiting to be confirmed. Removing a user's last second factor under a tenant policy that requires one is refused by the caller, [the authentication context](authentication.md#the-last-second-factor), not here.
+
 ## Security keys and platform authenticators
 
 A **WebAuthn credential** is a key pair made by an authenticator: a security key, or the one built into a telephone or a computer. The private key never leaves the authenticator; Hodor keeps the public key, and later checks that the authenticator signed a challenge Hodor chose. It proves something the person has. How the checks are written is [Decision 0024](../../decisions/0024-webauthn-checks.md).
@@ -169,6 +170,14 @@ Registration is done by a person who is signed in, in two requests.
 | The public key | It is not an ES256 key on P-256 or an RS256 key of at least 2,048 bits |
 
 The credential is stored with the counter the authenticator reported, and `credential.webauthn_registered` is recorded.
+
+### Renaming and removing a credential
+
+A person tells their keys apart by name, and removes one they lost or no longer use.
+
+- **Renaming** gives a credential a new name, by the rules of a name given at registration: trimmed, at most 64 characters, not empty and without control characters. A name that breaks them is refused, `credential.webauthn_name_invalid`, rather than replaced by the default. `credential.webauthn_renamed` is recorded.
+- **Removing** deletes the credential. An authenticator that still holds it can no longer answer for it: its answers are rejected as from an unknown credential. `credential.webauthn_removed` is recorded.
+- Both act only on a credential of the user named, in the tenant. Another user's credential, or one that does not exist, is answered in the same way, `credential.webauthn_credential_not_found`, so that a person cannot learn about another's.
 
 ### Checking a credential
 
@@ -251,7 +260,7 @@ The alphabet leaves out `I`, `L`, `O` and `U`, so that a code copied by hand is 
 ### Generating
 
 - **Generating makes a new set and ends the old one whole.** Every code of the earlier set, used or not, stops working in the same transaction. Two requests that generate at the same moment never leave two sets: one of them is refused, and the person asks again.
-- **A set is generated when a person enrolls their first second factor**, if they have no set with an unused code: whatever enrolls the factor asks for one and shows it with the confirmation. Until the account pages of Issue-70, that is the command-line tool, which shows the set after confirming an authenticator application. Registering a security key through the interaction interface does not make a set yet; an operator makes one with `hodor-cli recovery-codes generate`, until Issue-70 shows it with the registration.
+- **A set is generated when a person enrolls their first second factor of any kind**, an authenticator application, a security key or a passkey, if they have no set with an unused code: whatever enrolls the factor asks for one and shows it with the confirmation. [The person's own pages](authentication.md#a-persons-own-factors) show it after confirming an authenticator application or registering a key; the command-line tool shows it after confirming an authenticator application.
 - **A set can be generated again on request**, which is what a person does after using several codes or when they fear a copy was seen.
 
 ### Using a code
@@ -263,7 +272,7 @@ The alphabet leaves out `I`, `L`, `O` and `U`, so that a code copied by hand is 
 
 ### Removing
 
-Removing takes away the user's set. Removing the last second factor does not remove the set by itself: the codes are useless without a second factor step to stand in for, and the account pages of Issue-70 decide what removing a factor does.
+Removing takes away the user's set. The credential context does not remove a set by itself when the last second factor goes; [the authentication context](authentication.md#the-last-second-factor) does, since the codes are useless without a second factor step to stand in for.
 
 ## Operations
 
@@ -291,6 +300,9 @@ Removing takes away the user's set. Removing the last second factor does not rem
 | Begin passkey registration | Makes a pending registration for a passkey and returns the options for the browser |
 | Passkey challenge | Makes a challenge that any discoverable credential may answer, with the options for the browser |
 | Verify passkey assertion | Answers which user signed in, or nothing, for an answer to a passkey challenge, and stores the new counter |
+| List WebAuthn credentials | A user's credentials, oldest first, with their names and when they were registered and last used |
+| Rename WebAuthn credential | Gives one of a user's credentials a new name |
+| Remove WebAuthn credential | Deletes one of a user's credentials |
 | Generate recovery codes | Makes a set of ten codes in place of the user's set, if any, and returns it once |
 | Generate recovery codes if none | The same, only when the user has no set with an unused code; answers nothing otherwise. Asked when a first second factor is enrolled |
 | Verify recovery code | Answers "verified", with the number of unused codes left, or "rejected", and marks an accepted code as used |
@@ -310,7 +322,8 @@ Removing takes away the user's set. Removing the last second factor does not rem
 | `credential.totp_removed` | A user's authenticator application was removed; carries the user |
 | `credential.webauthn_registered` | A WebAuthn credential was registered; carries the user and Hodor's identifier of the credential |
 | `credential.webauthn_counter_not_increased` | An answer came with a counter that did not grow; carries the user and Hodor's identifier of the credential |
-
+| `credential.webauthn_renamed` | A credential was given a new name; carries the user and Hodor's identifier of the credential, not the name |
+| `credential.webauthn_removed` | A credential was removed; carries the user and Hodor's identifier of the credential |
 | `credential.recovery_codes_generated` | A set of recovery codes was made in place of any earlier one; carries the user |
 | `credential.recovery_code_used` | A recovery code was accepted; carries the user and how many unused codes are left |
 | `credential.recovery_codes_removed` | A user's set of recovery codes was removed; carries the user |
@@ -329,7 +342,7 @@ Events carry the user's identifier and nothing derived from the password, from a
 | `TotpStore` | Store a user's authenticator application and the enrollment waiting to be confirmed; put one in use; mark a step used only if it is later than the last one, in one statement |
 | `HmacSha1` | Compute HMAC-SHA-1, from which the codes are made |
 | `SecretBox` | The kernel's port that seals and opens the secret of an authenticator application |
-| `WebAuthnStore` | Keep pending registrations and use one up exactly once; store credentials, list a user's, find one in the tenant by the identifier the authenticator made, store a new counter only over the one that was read |
+| `WebAuthnStore` | Keep pending registrations and use one up exactly once; store credentials, list a user's, find one in the tenant by the identifier the authenticator made, store a new counter only over the one that was read; rename and remove one of a user's credentials |
 | `SignatureVerifier` (kernel) | Check a signature made with a WebAuthn credential's key |
 | `RecoveryCodeStore` | Store a user's set of recovery codes in place of the earlier one; mark a code used only if it is unused, in one statement; count the unused codes; remove the set |
 | `Digest` | The kernel's port that computes the SHA-256 of a recovery code |
@@ -437,10 +450,8 @@ The design's data model has a general `credential` table with one row per creden
 |---|---|
 | Refusing passwords found in breach lists. The tenant setting exists and is stored, but nothing checks it yet | Later in Phase 1 |
 | A secret key mixed into every hash, kept outside the database | With the keys context, Phase 2 |
-| Enrolling and removing an authenticator application, and seeing and generating recovery codes, from the account pages, after proving oneself again | Issue-70 |
 | HOTP, the counter-based codes of RFC 4226, and codes sent by email or text message | Phase 4, outside the plan of 0.2.0 |
 | A relying party of each tenant's own, so that a browser offers only that tenant's passkeys | With custom domains for tenants, Phase 3 |
-| Listing, renaming and removing WebAuthn credentials, and proving oneself again before registering one | Issue-70 |
 | Removing pending WebAuthn registrations that were never finished | With the other cleanup jobs |
 | Checking attestation, EdDSA keys | When someone needs them ([Decision 0024](../../decisions/0024-webauthn-checks.md)) |
 | Keys for programs and certificates | Phases 5 and 6 |

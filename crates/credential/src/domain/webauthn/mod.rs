@@ -37,6 +37,16 @@ const MAX_CREDENTIAL_ID_BYTES: usize = 1023;
 const MAX_NAME_CHARACTERS: usize = 64;
 /// The name of a credential the person did not name.
 const DEFAULT_NAME: &str = "Security key";
+
+/// A name a person gives a credential when renaming it: trimmed, 1 to 64
+/// characters, no control character. `None` when it breaks a rule.
+#[must_use]
+pub fn credential_name(name: &str) -> Option<String> {
+    let name = name.trim();
+    let length = name.chars().count();
+    (length > 0 && length <= MAX_NAME_CHARACTERS && !name.chars().any(char::is_control))
+        .then(|| name.to_owned())
+}
 /// The smallest RSA modulus accepted, in bytes: 2,048 bits.
 const MIN_RSA_MODULUS_BYTES: usize = 256;
 /// How authenticators are reached, as browsers name it. Anything else the
@@ -1131,6 +1141,20 @@ pub enum WebAuthnEvent {
         /// Hodor's identifier of the credential.
         credential_id: WebAuthnCredentialId,
     },
+    /// A credential was given a new name. The name is not in the event.
+    Renamed {
+        /// The user.
+        user_id: UserId,
+        /// Hodor's identifier of the credential.
+        credential_id: WebAuthnCredentialId,
+    },
+    /// A credential was removed.
+    Removed {
+        /// The user.
+        user_id: UserId,
+        /// Hodor's identifier of the credential.
+        credential_id: WebAuthnCredentialId,
+    },
 }
 
 impl DomainEvent for WebAuthnEvent {
@@ -1138,6 +1162,8 @@ impl DomainEvent for WebAuthnEvent {
         match self {
             Self::Registered { .. } => "credential.webauthn_registered",
             Self::CounterNotIncreased { .. } => "credential.webauthn_counter_not_increased",
+            Self::Renamed { .. } => "credential.webauthn_renamed",
+            Self::Removed { .. } => "credential.webauthn_removed",
         }
     }
 }

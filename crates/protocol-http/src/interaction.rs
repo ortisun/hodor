@@ -30,6 +30,8 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use time::format_description::well_known::Rfc3339;
 
+pub(crate) mod factors;
+
 const SIGN_IN_COOKIE: &str = "__Secure-hodor_signin";
 pub(crate) const SESSION_COOKIE: &str = "__Secure-hodor_session";
 pub(crate) const CSRF_HEADER: HeaderName = HeaderName::from_static("x-csrf-token");
@@ -94,6 +96,24 @@ pub fn interaction_routes(state: InteractionState) -> Router {
         .route("/sessions", get(list_sessions).delete(end_other_sessions))
         .route("/sessions/{session_id}", delete(end_session))
         .route("/webauthn/registrations", post(begin_webauthn_registration))
+        .route("/factors", get(factors::list_factors))
+        .route(
+            "/factors/authenticator-application",
+            post(factors::begin_authenticator_application)
+                .delete(factors::remove_authenticator_application),
+        )
+        .route(
+            "/factors/authenticator-application/confirmation",
+            post(factors::confirm_authenticator_application),
+        )
+        .route(
+            "/factors/keys/{key_id}",
+            axum::routing::patch(factors::rename_key).delete(factors::remove_key),
+        )
+        .route(
+            "/factors/recovery-codes",
+            post(factors::generate_recovery_codes),
+        )
         .route(
             "/webauthn/registrations/{registration_id}",
             post(finish_webauthn_registration),
@@ -643,6 +663,10 @@ struct WebAuthnCredentialBody {
     id: String,
     name: String,
     created_at: String,
+    /// A new set, shown once, when this is the person's first second
+    /// factor.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recovery_codes: Option<Vec<String>>,
 }
 
 /// The challenge of the WebAuthn step of the current sign-in.
@@ -750,7 +774,7 @@ async fn begin_webauthn_registration(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let person = match signed_in_to_change(&state, &tenant, &headers).await {
+    let person = match factors::recently_signed_in(&state, &tenant, &headers).await {
         Ok(person) => person,
         Err(response) => return *response,
     };
@@ -840,16 +864,13 @@ async fn finish_webauthn_registration(
         )
         .await;
     match finished {
-        Ok(credential) => (
+        Ok(registered) => (
             StatusCode::CREATED,
             Json(WebAuthnCredentialBody {
-                id: credential.id().to_string(),
-                name: credential.snapshot().name.clone(),
-                created_at: credential
-                    .snapshot()
-                    .created_at
-                    .format(&Rfc3339)
-                    .unwrap_or_default(),
+                id: registered.credential.id().to_string(),
+                name: registered.credential.snapshot().name.clone(),
+                created_at: written(registered.credential.snapshot().created_at),
+                recovery_codes: factors::codes_of(registered.recovery_codes.as_ref()),
             }),
         )
             .into_response(),

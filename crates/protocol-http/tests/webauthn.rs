@@ -231,7 +231,12 @@ async fn world() -> World {
         authentication,
         accounts,
         sessions,
-        factors: FactorService::new(identity.clone(), tenants.clone(), webauthn),
+        factors: FactorService::new(
+            identity.clone(),
+            tenants.clone(),
+            webauthn,
+            recovery_codes.clone(),
+        ),
         external: None,
         digest,
         clock: clock.clone(),
@@ -1046,4 +1051,110 @@ async fn a_person_who_lost_their_key_gives_a_recovery_code_in_its_place() {
         session.body["methods"],
         serde_json::json!(["password", "recovery_code"])
     );
+}
+
+#[tokio::test]
+async fn the_first_key_comes_with_recovery_codes_shown_once() {
+    let world = world().await;
+    let mut browser = Browser::signed_in_with_password(&world).await;
+    let first = browser
+        .register(&world, &SoftwareAuthenticator::new(ORIGIN))
+        .await;
+    assert_eq!(first.status, StatusCode::CREATED, "{:?}", first.body);
+    assert_eq!(
+        first.body["recovery_codes"].as_array().map(Vec::len),
+        Some(10)
+    );
+    let second = browser
+        .register(&world, &SoftwareAuthenticator::new(ORIGIN))
+        .await;
+    assert_eq!(second.status, StatusCode::CREATED);
+    assert!(second.body.get("recovery_codes").is_none());
+    let factors = browser
+        .send(&world, Method::GET, "/t/acme/interaction/factors", None)
+        .await;
+    assert_eq!(factors.body["keys"].as_array().map(Vec::len), Some(2));
+    assert_eq!(factors.body["recovery_codes"]["remaining"], 10);
+    // Without `HODOR_SECRET_KEYS` in this world, no application is offered.
+    assert!(factors.body["authenticator_application"].is_null());
+    let offered = browser
+        .send(
+            &world,
+            Method::POST,
+            "/t/acme/interaction/factors/authenticator-application",
+            None,
+        )
+        .await;
+    assert_eq!(offered.status, StatusCode::NOT_FOUND);
+    assert_eq!(offered.code(), "credential.totp_unavailable");
+}
+
+#[tokio::test]
+async fn a_person_renames_and_removes_their_key_and_it_no_longer_answers() {
+    let world = world().await;
+    let (mut browser, key) = registered_key(&world).await;
+    let listed = browser
+        .send(&world, Method::GET, "/t/acme/interaction/factors", None)
+        .await;
+    let id = listed.body["keys"][0]["id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    assert_eq!(listed.body["keys"][0]["passkey"], false);
+    assert!(listed.body["keys"][0]["last_used_at"].is_null());
+
+    let renamed = browser
+        .send(
+            &world,
+            Method::PATCH,
+            &format!("/t/acme/interaction/factors/keys/{id}"),
+            Some(serde_json::json!({ "name": "Office key" })),
+        )
+        .await;
+    assert_eq!(renamed.status, StatusCode::OK, "{:?}", renamed.body);
+    assert_eq!(renamed.body["name"], "Office key");
+    let refused = browser
+        .send(
+            &world,
+            Method::PATCH,
+            &format!("/t/acme/interaction/factors/keys/{id}"),
+            Some(serde_json::json!({ "name": "   " })),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(refused.code(), "credential.webauthn_name_invalid");
+    for unknown in ["0193f1d1-0000-7000-8000-000000000000", "not-an-identifier"] {
+        let missing = browser
+            .send(
+                &world,
+                Method::DELETE,
+                &format!("/t/acme/interaction/factors/keys/{unknown}"),
+                None,
+            )
+            .await;
+        assert_eq!(missing.status, StatusCode::NOT_FOUND, "{unknown}");
+        assert_eq!(missing.code(), "credential.webauthn_credential_not_found");
+    }
+
+    let removed = browser
+        .send(
+            &world,
+            Method::DELETE,
+            &format!("/t/acme/interaction/factors/keys/{id}"),
+            None,
+        )
+        .await;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT);
+    // The key is no longer asked for, and the codes went with it.
+    let mut again = Browser::default();
+    again.start(&world).await;
+    again.identifier(&world, "ana@example.com").await;
+    let done = again.password(&world, PASSWORD).await;
+    assert_eq!(done.body["status"], "completed", "{:?}", done.body);
+    let left = browser
+        .send(&world, Method::GET, "/t/acme/interaction/factors", None)
+        .await;
+    assert_eq!(left.body["keys"], serde_json::json!([]));
+    assert_eq!(left.body["recovery_codes"]["remaining"], 0);
+    drop(key);
 }

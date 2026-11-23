@@ -95,6 +95,17 @@ watched page and the steps a person repeats.
     not theirs is refused; the same code is refused the next time and
     `hodor-cli recovery-codes count` says nine are left; the switch to the
     recovery code form and back works with the keyboard alone.
+  - `security.spec.ts` - people made through the development identity
+    provider (`signInThroughProvider`), not by registering, since asking to
+    register is limited by the one address all tests come from. On
+    `/account/security`, reached from the account page's link: a person sets
+    up an authenticator application, reading the key shown under the QR code
+    and computing its code, keeps the recovery codes and is asked for a code
+    after the provider at the next sign-in; is offered a new sign-in by
+    `?continue=security` while signed in, adds a passkey through a virtual
+    platform authenticator, generates new codes, renames and removes the
+    passkey, which takes the codes with it; and works the page with the
+    keyboard alone.
   - `webauthn.spec.ts` (a virtual authenticator of Chromium, added through
     the DevTools protocol) - a person registers, signs in with a password,
     registers a key through the interaction interface from a page of

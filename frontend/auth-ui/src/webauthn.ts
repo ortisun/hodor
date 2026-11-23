@@ -124,3 +124,88 @@ export async function askAuthenticator(
     throw thrown;
   }
 }
+
+/** What finishing a registration is sent with, as the interface takes it. */
+export interface KeyRegistration {
+  client_data: string;
+  attestation_object: string;
+  transports: string[];
+  discoverable?: boolean;
+}
+
+function record(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
+}
+
+/** The options the interface gave for a registration, as `navigator.credentials.create` takes them. */
+export function creationOptions(options: Record<string, unknown>): PublicKeyCredentialCreationOptions {
+  const party = record(options["rp"]);
+  const user = record(options["user"]);
+  const selection = record(options["authenticatorSelection"]);
+  const timeout = options["timeout"];
+  const parameters = Array.isArray(options["pubKeyCredParams"]) ? options["pubKeyCredParams"] : [];
+  const excluded = Array.isArray(options["excludeCredentials"]) ? options["excludeCredentials"] : [];
+  const level = (value: unknown): UserVerificationRequirement | undefined =>
+    value === "required" || value === "preferred" || value === "discouraged" ? value : undefined;
+  const resident = selection["residentKey"];
+  return {
+    rp: { id: field(party, "id"), name: field(party, "name") },
+    user: {
+      id: fromBase64url(field(user, "id")),
+      name: field(user, "name"),
+      displayName: field(user, "displayName"),
+    },
+    challenge: fromBase64url(field(options, "challenge")),
+    pubKeyCredParams: parameters.flatMap((entry: unknown) => {
+      const algorithm = record(entry)["alg"];
+      return typeof algorithm === "number" ? [{ type: "public-key" as const, alg: algorithm }] : [];
+    }),
+    excludeCredentials: excluded.flatMap((entry: unknown) => {
+      const id = record(entry)["id"];
+      return typeof id === "string" ? [{ type: "public-key" as const, id: fromBase64url(id) }] : [];
+    }),
+    authenticatorSelection: {
+      residentKey: resident === "required" || resident === "preferred" || resident === "discouraged" ? resident : undefined,
+      requireResidentKey: resident === "required",
+      userVerification: level(selection["userVerification"]),
+    },
+    attestation: "none",
+    extensions: { credProps: true },
+    timeout: typeof timeout === "number" ? timeout : undefined,
+  };
+}
+
+/** The browser's answer to a registration, as finishing it is sent. */
+export function registrationOf(credential: PublicKeyCredential): KeyRegistration {
+  const response = credential.response as AuthenticatorAttestationResponse;
+  const transports =
+    typeof response.getTransports === "function" ? response.getTransports().filter((name) => typeof name === "string") : [];
+  const properties = record(record(credential.getClientExtensionResults())["credProps"]);
+  const discoverable = properties["rk"];
+  return {
+    client_data: toBase64url(response.clientDataJSON),
+    attestation_object: toBase64url(response.attestationObject),
+    transports,
+    ...(typeof discoverable === "boolean" ? { discoverable } : {}),
+  };
+}
+
+/**
+ * Asks the person's authenticator to make a credential. Answers `null`
+ * when it made none: the person cancelled, it timed out, or it holds one
+ * of the credentials it was told about already.
+ */
+export async function askToCreate(
+  options: Record<string, unknown>,
+  credentials: Pick<CredentialsContainer, "create"> = navigator.credentials,
+): Promise<KeyRegistration | null> {
+  try {
+    const credential = await credentials.create({ publicKey: creationOptions(options) });
+    return credential !== null && "rawId" in credential ? registrationOf(credential as PublicKeyCredential) : null;
+  } catch (thrown) {
+    if (thrown instanceof DOMException) {
+      return null;
+    }
+    throw thrown;
+  }
+}

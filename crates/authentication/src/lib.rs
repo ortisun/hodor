@@ -19,7 +19,10 @@ pub mod api {
         IdentifierAuthenticator, PasskeyAuthenticator, PasswordAuthenticator,
         RecoveryCodeAuthenticator, TotpAuthenticator, WebAuthnAuthenticator,
     };
-    pub use crate::application::factors::FactorService;
+    pub use crate::application::factors::{
+        FactorService, Factors, RECENT_SIGN_IN, RegisteredKey, Remover, recent_sign_in_required,
+        recent_sign_in_until, signed_in_recently,
+    };
     pub use crate::application::guard::AttemptGuard;
     pub use crate::application::ports::{AttemptStore, TransactionStore, VerificationTokenStore};
     pub use crate::application::service::{

@@ -27,7 +27,11 @@ console interface.
   sessions loaded with `client.listSessions(id)`. "Suspend user"
   (`suspendUser`) calls `client.suspendUser(id, reason)`; "End session"
   (`endSession`) calls `client.endSession(sessionId)`; both go through
-  `Confirm`.
+  `Confirm`. With `credentials:read` it shows the user's factors from
+  `client.listFactors(id)`; with `credentials:write` (`removeFactor`, level 2,
+  the typed primary identifier) it removes the application, a key or the
+  recovery codes, and the dialog says when it is the last second factor and
+  that no session ends.
 - `ProvidersScreen.tsx:ProvidersScreen` - the identity provider table, loaded
   with `client.listProviders()`; "Add provider" (`addProvider`) opens
   `ProviderForm`, which calls `client.addProvider(added)`.

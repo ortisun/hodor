@@ -5,6 +5,7 @@ import { AccountPage } from "./pages/AccountPage";
 import { AskPage } from "./pages/AskPage";
 import { ComingBackPage } from "./pages/ComingBackPage";
 import { FinishPage } from "./pages/FinishPage";
+import { SecurityPage } from "./pages/SecurityPage";
 import { SignInPage } from "./pages/SignInPage";
 import { SignOutPage } from "./pages/SignOutPage";
 import { Frame } from "./parts/Frame";
@@ -23,10 +24,14 @@ export interface AppProps {
   leave: (url: string) => void;
   /** What an identity provider put in the address, on the page it sends people back to. */
   providerAnswer: ProviderAnswer;
-  /** An application's request waits for a new sign-in. */
+  /** An application's request, or a change of factors, waits for a new sign-in. */
   signInAgain?: boolean;
   /** The identifier an application suggested, to fill the sign-in field. */
   loginHint?: string | null;
+  /** Where a completed sign-in goes when nothing else is said. */
+  afterSignIn?: PageName;
+  /** Sends the person to sign in again and come back to the security page. */
+  reauthenticate?: () => void;
 }
 
 /** Shows the page the address names. */
@@ -41,13 +46,23 @@ export function App({
   providerAnswer,
   signInAgain = false,
   loginHint = null,
+  afterSignIn = "account",
+  reauthenticate = () => undefined,
 }: AppProps) {
   const { tenant } = place;
   const page = { tenant, client, text, go, leave, path: (name: PageName) => pathOf(tenant, name) };
 
   switch (place.page) {
     case "sign-in":
-      return <SignInPage {...page} notice={notice} signInAgain={signInAgain} loginHint={loginHint} />;
+      return (
+        <SignInPage
+          {...page}
+          notice={notice}
+          signInAgain={signInAgain}
+          loginHint={loginHint}
+          afterSignIn={afterSignIn}
+        />
+      );
     case "register":
       return <AskPage {...page} purpose="registration" />;
     case "recover":
@@ -60,6 +75,8 @@ export function App({
       return <AccountPage {...page} />;
     case "sign-out":
       return <SignOutPage {...page} />;
+    case "security":
+      return <SecurityPage {...page} reauthenticate={reauthenticate} />;
     case "provider-callback":
       return <ComingBackPage {...page} provider={place.provider ?? ""} answer={providerAnswer} />;
     default:

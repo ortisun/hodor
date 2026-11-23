@@ -33,11 +33,15 @@ pub enum Permission {
     AssuranceLevelsRead,
     /// Replacing the tenant's assurance levels.
     AssuranceLevelsWrite,
+    /// Seeing which second factors a user has, never a secret or a code.
+    CredentialsRead,
+    /// Removing a user's second factors and recovery codes.
+    CredentialsWrite,
 }
 
 impl Permission {
     /// Every permission.
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 15] = [
         Self::UsersRead,
         Self::UsersWrite,
         Self::SessionsRead,
@@ -51,6 +55,8 @@ impl Permission {
         Self::ApplicationsWrite,
         Self::AssuranceLevelsRead,
         Self::AssuranceLevelsWrite,
+        Self::CredentialsRead,
+        Self::CredentialsWrite,
     ];
 
     /// The permission written as `resource:action`.
@@ -70,6 +76,8 @@ impl Permission {
             Self::ApplicationsWrite => "applications:write",
             Self::AssuranceLevelsRead => "assurance-levels:read",
             Self::AssuranceLevelsWrite => "assurance-levels:write",
+            Self::CredentialsRead => "credentials:read",
+            Self::CredentialsWrite => "credentials:write",
         }
     }
 
@@ -131,6 +139,7 @@ impl Role {
                 Permission::KeysRead,
                 Permission::ApplicationsRead,
                 Permission::AssuranceLevelsRead,
+                Permission::CredentialsRead,
             ],
         }
     }

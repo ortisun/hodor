@@ -76,6 +76,12 @@ struct World {
     recorded: AtomicUsize,
     acme: TenantContext,
     globex: TenantContext,
+    /// The tenants, for changing their policy.
+    tenants: hodor_tenant::api::TenantService,
+    /// People's keys, given as a finished registration would.
+    keys_of_people: hodor_credential::testing::InMemoryWebAuthn,
+    /// People's authenticator applications.
+    totp: hodor_credential::api::TotpService,
     /// The administrator of Acme and their token.
     administrator: UserId,
     administrator_token: String,
@@ -96,6 +102,56 @@ fn applications(
         random: Arc::new(hodor_oauth::testing::DistinctRandom),
         clock,
     })
+}
+
+/// The use cases of people's factors on in-memory stores, with
+/// authenticator applications. Returns the key store too, for a test to
+/// give someone a key as a finished registration would.
+fn factors(
+    units_of_work: &InMemoryUnitOfWorkFactory,
+    clock: Arc<FixedClock>,
+    identity: &IdentityService,
+    tenants: &hodor_tenant::api::TenantService,
+) -> (
+    hodor_authentication::api::FactorService,
+    hodor_credential::testing::InMemoryWebAuthn,
+    hodor_credential::api::TotpService,
+) {
+    let units = || Arc::new(units_of_work.clone());
+    let keys = hodor_credential::testing::InMemoryWebAuthn::default();
+    let webauthn = hodor_credential::api::WebAuthnService::new(
+        units(),
+        Arc::new(keys.clone()),
+        hodor_credential::api::RelyingParty::from_public_address("https://auth.example")
+            .expect("valid"),
+        Arc::new(hodor_adapters_crypto::Sha256Digest),
+        Arc::new(hodor_adapters_crypto::AwsLcVerifier),
+        Arc::new(hodor_adapters_crypto::OsRandom),
+        clock.clone(),
+    );
+    let recovery_codes = hodor_credential::api::RecoveryCodeService::new(
+        units(),
+        Arc::new(hodor_credential::testing::InMemoryRecoveryCodes::default()),
+        Arc::new(hodor_adapters_crypto::Sha256Digest),
+        Arc::new(hodor_adapters_crypto::OsRandom),
+        clock.clone(),
+    );
+    let totp = hodor_credential::api::TotpService::new(
+        units(),
+        Arc::new(hodor_credential::testing::InMemoryTotps::default()),
+        Arc::new(FakeSecretBox),
+        Arc::new(hodor_credential::testing::FakeHmacSha1),
+        Arc::new(hodor_adapters_crypto::OsRandom),
+        clock,
+    );
+    let service = hodor_authentication::api::FactorService::new(
+        identity.clone(),
+        tenants.clone(),
+        webauthn,
+        recovery_codes,
+    )
+    .with_totp(totp.clone());
+    (service, keys, totp)
 }
 
 async fn world() -> World {
@@ -178,6 +234,8 @@ async fn world_with_keys(with_keys: bool) -> World {
         contexts.push(TenantContext::assume(created.id()));
     }
     let (acme, globex) = (contexts[0].clone(), contexts[1].clone());
+    let (factor_service, keys_of_people, totp) =
+        factors(&units_of_work, clock.clone(), &identity, &tenants);
     let state = AdminState {
         tokens: tokens.clone(),
         authorization: authorization.clone(),
@@ -188,7 +246,8 @@ async fn world_with_keys(with_keys: bool) -> World {
         keys,
         key_rotation: RotationPolicy::DEFAULT,
         applications: applications(&units_of_work, clock.clone()),
-        tenants,
+        tenants: tenants.clone(),
+        factors: factor_service,
         public_url: "https://auth.example".to_owned(),
     };
     let router = public_router(
@@ -213,6 +272,9 @@ async fn world_with_keys(with_keys: bool) -> World {
         recorded: AtomicUsize::new(0),
         acme,
         globex,
+        tenants,
+        keys_of_people,
+        totp,
         administrator: UserId::generate(),
         administrator_token: String::new(),
     };
@@ -441,7 +503,7 @@ fn the_document_and_the_routes_list_the_same_operations_and_permissions() {
         })
         .collect();
     assert_eq!(documented, served);
-    assert_eq!(served.len(), 39);
+    assert_eq!(served.len(), 43);
 
     // Every operation says how it refuses.
     let document: serde_json::Value = serde_json::from_str(ADMIN_OPENAPI).expect("valid JSON");
@@ -2504,4 +2566,180 @@ async fn levels_that_break_a_rule_are_refused_and_an_auditor_only_reads_them() {
         )
         .await;
     assert_eq!(written.status, StatusCode::FORBIDDEN);
+}
+
+impl World {
+    /// Gives a person an authenticator application in use, as their pages
+    /// would, and moves past the step of the code that confirmed it.
+    async fn give_application(&self, user: UserId) {
+        use hodor_kernel::Clock as _;
+        let enrollment = self
+            .totp
+            .begin_enrollment(&self.acme, user, "acme", "ana@example.com")
+            .await
+            .expect("begin");
+        let code = hodor_credential::api::totp_code_at(
+            &hodor_credential::testing::FakeHmacSha1,
+            &hodor_credential::testing::base32_secret(enrollment.secret()),
+            self.clock.now(),
+        );
+        self.totp
+            .confirm_enrollment(
+                &self.acme,
+                user,
+                &hodor_kernel::Secret::from(code),
+                Caller::system(),
+            )
+            .await
+            .expect("confirm");
+        self.clock
+            .advance(Duration::seconds(hodor_credential::api::STEP_SECONDS));
+    }
+
+    /// Gives a person a key, as a finished registration would.
+    async fn give_key(&self, user: UserId) -> hodor_credential::api::WebAuthnCredentialId {
+        use hodor_credential::api::WebAuthnStore as _;
+        use hodor_kernel::Clock as _;
+        let key = hodor_credential::testing::stored_credential(
+            user,
+            hodor_credential::api::WebAuthnCredentialId::generate()
+                .as_uuid()
+                .as_bytes()
+                .to_vec(),
+            self.clock.now(),
+        );
+        let mut uow = self.units_of_work.begin(&self.acme).await.expect("begin");
+        self.keys_of_people
+            .insert(uow.as_mut(), &key)
+            .await
+            .expect("insert");
+        uow.commit().await.expect("commit");
+        key.id()
+    }
+}
+
+#[tokio::test]
+async fn an_administrator_sees_and_removes_a_persons_factors_whatever_the_policy() {
+    let world = world().await;
+    let acme = world.acme.clone();
+    let (ana, _) = world.person(&acme, "ana@example.com", &[]).await;
+    world.give_application(ana).await;
+    let key = world.give_key(ana).await;
+    // The policy requires a second factor: it holds the person back, not
+    // an administrator.
+    let mut settings = world
+        .tenants
+        .get(&acme)
+        .await
+        .expect("tenant")
+        .snapshot()
+        .settings
+        .clone();
+    settings.authentication.second_factor = hodor_tenant::api::SecondFactorPolicy::Required;
+    world
+        .tenants
+        .change_settings(&acme, settings, Caller::system())
+        .await
+        .expect("settings");
+    let listed = world
+        .as_administrator(Method::GET, &format!("/users/{ana}/factors"), None)
+        .await;
+    assert_eq!(listed.status, StatusCode::OK);
+    assert_eq!(listed.body["authenticator_application"]["in_use"], true);
+    assert_eq!(listed.body["second_factor_required"], true);
+    assert_eq!(listed.body["keys"][0]["id"], key.to_string());
+    assert_eq!(listed.body["keys"][0]["name"], "Blue key");
+    assert_eq!(listed.body["keys"][0]["passkey"], true);
+    assert!(listed.body.get("recent_sign_in_until").is_none());
+    // Nothing of a key's material is in the answer.
+    assert!(listed.body["keys"][0].get("public_key").is_none());
+    assert!(listed.body["keys"][0].get("credential_id").is_none());
+
+    let removed = world
+        .as_administrator(
+            Method::DELETE,
+            &format!("/users/{ana}/factors/authenticator-application"),
+            None,
+        )
+        .await;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT);
+    let again = world
+        .as_administrator(
+            Method::DELETE,
+            &format!("/users/{ana}/factors/authenticator-application"),
+            None,
+        )
+        .await;
+    assert_eq!(again.status, StatusCode::NOT_FOUND);
+    assert_eq!(again.code(), "credential.totp_not_found");
+
+    // The last second factor goes too, for an administrator.
+    let removed = world
+        .as_administrator(
+            Method::DELETE,
+            &format!("/users/{ana}/factors/keys/{key}"),
+            None,
+        )
+        .await;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT);
+    let left = world
+        .as_administrator(Method::GET, &format!("/users/{ana}/factors"), None)
+        .await;
+    assert_eq!(left.body["authenticator_application"]["in_use"], false);
+    assert_eq!(left.body["keys"].as_array().map(Vec::len), Some(0));
+    assert_eq!(left.body["recovery_codes"]["remaining"], 0);
+
+    let none = world
+        .as_administrator(
+            Method::DELETE,
+            &format!("/users/{ana}/factors/recovery-codes"),
+            None,
+        )
+        .await;
+    assert_eq!(none.status, StatusCode::NOT_FOUND);
+    assert_eq!(none.code(), "credential.recovery_codes_not_found");
+    let unknown = world
+        .as_administrator(
+            Method::DELETE,
+            &format!("/users/{ana}/factors/keys/{key}"),
+            None,
+        )
+        .await;
+    assert_eq!(unknown.code(), "credential.webauthn_credential_not_found");
+}
+
+#[tokio::test]
+async fn the_factors_of_a_person_do_not_exist_for_another_tenants_administrator() {
+    let world = world().await;
+    let acme = world.acme.clone();
+    let globex = world.globex.clone();
+    let (ana, _) = world.person(&acme, "ana@example.com", &[]).await;
+    let key = world.give_key(ana).await;
+    let (_, theirs) = world
+        .person(&globex, "root@globex.example", &[Role::TenantAdministrator])
+        .await;
+    let bearer = format!("Bearer {theirs}");
+    for (method, path) in [
+        (
+            Method::GET,
+            format!("/t/globex/api/v1/admin/users/{ana}/factors"),
+        ),
+        (
+            Method::DELETE,
+            format!("/t/globex/api/v1/admin/users/{ana}/factors/keys/{key}"),
+        ),
+        (
+            Method::DELETE,
+            format!("/t/globex/api/v1/admin/users/{ana}/factors/recovery-codes"),
+        ),
+    ] {
+        let reply = world.send(method.clone(), &path, Some(&bearer), None).await;
+        assert_eq!(reply.status, StatusCode::NOT_FOUND, "{method} {path}");
+        assert_eq!(reply.code(), "identity.user_not_found", "{method} {path}");
+    }
+    // Ana's key is still hers.
+    let listed = world
+        .as_administrator(Method::GET, &format!("/users/{ana}/factors"), None)
+        .await;
+    assert_eq!(listed.body["keys"].as_array().map(Vec::len), Some(1));
 }

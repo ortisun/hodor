@@ -35,7 +35,7 @@ async function addVirtualPlatformAuthenticator(page: Page): Promise<void> {
 
 /**
  * Registers the key through the interaction interface, from a page of
- * Hodor's origin, as the pages of Issue-70 will. Answers the status of the
+ * Hodor's origin, as the security page does. Answers the status of the
  * request that finishes.
  */
 async function registerKey(page: Page, passkey = false): Promise<number> {

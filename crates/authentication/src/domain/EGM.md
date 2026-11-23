@@ -98,6 +98,10 @@ reach other crates only through `hodor_authentication::api` in `../lib.rs`.
   state, including `current_step`, `candidate`, `identifier_key`,
   `satisfied_methods`, `rejections`, `status`, `expires_at`, `client`,
   `binding` and `version`.
+  `record_authenticated` (an alternative identified the person) sets
+  `identifier_key` to `person_attempt_key(user)`: the prefix
+  `attempts of user` and the user's 16 bytes, so that a second factor after
+  a provider or a passkey is counted and can be checked.
 - `TransactionStatus`: `InProgress`, `Completed`, `Failed`, `Cancelled`, with
   stored names `in_progress`, `completed`, `failed`, `cancelled`
   (`as_str`, `from_stored`).

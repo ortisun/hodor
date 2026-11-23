@@ -1,5 +1,5 @@
 import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
-import type { NoticeName } from "../address";
+import type { NoticeName, PageName } from "../address";
 import type { Client, Failure, OfferedProvider, SignInAnswer } from "../client";
 import { describe, type Messages } from "../messages";
 import { Field, PasswordField } from "../parts/Field";
@@ -80,10 +80,12 @@ function noticeText(notice: NoticeName | null, text: Messages): { kind: "success
 
 interface SignInPageProps extends PageProps {
   notice: NoticeName | null;
-  /** An application's request waits for this sign-in: sign in even when signed in. */
+  /** An application's request, or a change of factors, waits for this sign-in: sign in even when signed in. */
   signInAgain?: boolean;
   /** The identifier an application suggested: the field starts with it. */
   loginHint?: string | null;
+  /** Where a completed sign-in goes when the answer names nowhere else. */
+  afterSignIn?: PageName;
 }
 
 /** The steps a recovery code can stand in for. */
@@ -103,6 +105,7 @@ export function SignInPage({
   notice,
   signInAgain = false,
   loginHint = null,
+  afterSignIn = "account",
 }: SignInPageProps) {
   const [view, setView] = useState<View>({ kind: "loading" });
   const [busy, setBusy] = useState(false);
@@ -143,7 +146,7 @@ export function SignInPage({
     (answer: SignInAnswer) => {
       if (answer.status === "completed") {
         if (answer.continueTo === undefined) {
-          go("account");
+          go(afterSignIn);
         } else {
           leave(answer.continueTo);
         }
@@ -167,20 +170,20 @@ export function SignInPage({
         };
       });
     },
-    [go, leave],
+    [go, leave, afterSignIn],
   );
 
   const apply = useCallback(
     (found: Found) => {
       if (found.kind === "signed-in") {
-        go("account");
+        go(afterSignIn);
       } else if (found.kind === "stopped") {
         setView({ kind: "stopped", failure: found.failure });
       } else {
         show(found.answer);
       }
     },
-    [go, show],
+    [go, show, afterSignIn],
   );
 
   useEffect(() => {

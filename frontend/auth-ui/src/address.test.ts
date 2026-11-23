@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { loginHintOf, noticeOf, pathOf, placeOf, providerAnswerOf, tokenOf, uiLocalesOf } from "./address";
+import {
+  continuationOf,
+  loginHintOf,
+  noticeOf,
+  pathOf,
+  placeOf,
+  providerAnswerOf,
+  signInAgainPath,
+  tokenOf,
+  uiLocalesOf,
+} from "./address";
 
 describe("placeOf", () => {
   it("reads the tenant and the page from the path", () => {
@@ -111,5 +121,16 @@ describe("what an application asked of the sign-in", () => {
     expect(uiLocalesOf("?ui_locales=pt-BR%20en")).toEqual(["pt-BR", "en"]);
     expect(uiLocalesOf("?ui_locales=pt-BR+en")).toEqual(["pt-BR", "en"]);
     expect(uiLocalesOf("?continue=authorization")).toEqual([]);
+  });
+});
+
+describe("signing in again", () => {
+  it("knows the security page and what a sign-in continues", () => {
+    expect(placeOf("/t/acme/account/security")).toEqual({ tenant: "acme", page: "security" });
+    expect(continuationOf("?continue=authorization")).toBe("authorization");
+    expect(continuationOf("?continue=security")).toBe("security");
+    expect(continuationOf("?continue=https://elsewhere.example")).toBeNull();
+    expect(continuationOf("")).toBeNull();
+    expect(signInAgainPath("acme")).toBe("/t/acme/account/sign-in?continue=security");
   });
 });

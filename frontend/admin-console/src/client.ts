@@ -30,7 +30,27 @@ export type Permission =
   | "keys:read"
   | "keys:write"
   | "applications:read"
-  | "applications:write";
+  | "applications:write"
+  | "credentials:read"
+  | "credentials:write";
+
+/** A security key or a passkey of a person. Nothing of its key is ever here. */
+export interface PersonKey {
+  id: string;
+  name: string;
+  passkey: boolean;
+  createdAt: string;
+  lastUsedAt: string | null;
+}
+
+/** A person's second factors, as an administrator sees them. */
+export interface PersonFactors {
+  /** `null` when the installation offers no authenticator application. */
+  authenticatorApplication: { inUse: boolean } | null;
+  keys: PersonKey[];
+  recoveryCodesRemaining: number;
+  secondFactorRequired: boolean;
+}
 
 export interface Identifier {
   id: string;
@@ -261,6 +281,26 @@ function user(body: Fields): User {
     })),
     createdAt: required(body["created_at"]),
     updatedAt: required(body["updated_at"]),
+  };
+}
+
+function personFactors(body: Fields): PersonFactors {
+  const application = body["authenticator_application"];
+  const remaining = fields(body["recovery_codes"])["remaining"];
+  return {
+    authenticatorApplication:
+      typeof application === "object" && application !== null
+        ? { inUse: fields(application)["in_use"] === true }
+        : null,
+    keys: list(body["keys"]).map((key) => ({
+      id: required(key["id"]),
+      name: required(key["name"]),
+      passkey: key["passkey"] === true,
+      createdAt: required(key["created_at"]),
+      lastUsedAt: text(key["last_used_at"]),
+    })),
+    recoveryCodesRemaining: typeof remaining === "number" ? remaining : 0,
+    secondFactorRequired: body["second_factor_required"] === true,
   };
 }
 
@@ -507,6 +547,25 @@ export class Client {
 
   async endSession(sessionId: string): Promise<void> {
     await this.#send("DELETE", `/sessions/${encodeURIComponent(sessionId)}`);
+  }
+
+  async listFactors(userId: string): Promise<PersonFactors> {
+    return personFactors(await this.#send("GET", `/users/${encodeURIComponent(userId)}/factors`));
+  }
+
+  async removeAuthenticatorApplication(userId: string): Promise<void> {
+    await this.#send("DELETE", `/users/${encodeURIComponent(userId)}/factors/authenticator-application`);
+  }
+
+  async removePersonKey(userId: string, keyId: string): Promise<void> {
+    await this.#send(
+      "DELETE",
+      `/users/${encodeURIComponent(userId)}/factors/keys/${encodeURIComponent(keyId)}`,
+    );
+  }
+
+  async removeRecoveryCodes(userId: string): Promise<void> {
+    await this.#send("DELETE", `/users/${encodeURIComponent(userId)}/factors/recovery-codes`);
   }
 
   async listProviders(): Promise<Provider[]> {

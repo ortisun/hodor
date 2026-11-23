@@ -199,6 +199,8 @@ test("a person signs in and out with the keyboard alone", async ({ page }) => {
 
   await expect(page.getByRole("heading", { name: en.accountTitle })).toBeFocused();
   await page.keyboard.press("Tab");
+  await expect(page.getByRole("link", { name: en.securityLink })).toBeFocused();
+  await page.keyboard.press("Tab");
   await expect(page.getByRole("button", { name: en.signOut })).toBeFocused();
   await page.keyboard.press("Enter");
   await expect(page.getByText(en.noticeSignedOut)).toBeVisible();

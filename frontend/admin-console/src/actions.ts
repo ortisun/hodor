@@ -19,6 +19,12 @@ export const ACTIONS = {
   endSession: { level: 1, permission: "sessions:revoke" },
   /** A person can no longer sign in, and every session of theirs ends. */
   suspendUser: { level: 2, permission: "users:write" },
+  /**
+   * A person can no longer use the factor; their last one takes their
+   * recovery codes with it, and under a policy that requires one they
+   * cannot sign in until one is enrolled for them.
+   */
+  removeFactor: { level: 2, permission: "credentials:write" },
   /** People with an account at the provider can sign in, and may be created. */
   addProvider: { level: 1, permission: "identity-providers:write" },
   /** Changes who the provider lets in, or whether they are created. */

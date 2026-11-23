@@ -340,6 +340,13 @@ async fn world_with(directory: Option<(String, Arc<dyn DirectoryClient>)>) -> Wo
             identity.clone(),
             tenants.clone(),
             webauthn_service(units_of_work.clone(), clock.clone()),
+            hodor_credential::api::RecoveryCodeService::new(
+                Arc::new(units_of_work.clone()),
+                Arc::new(hodor_credential::testing::InMemoryRecoveryCodes::default()),
+                Arc::new(hodor_adapters_crypto::Sha256Digest),
+                Arc::new(hodor_adapters_crypto::OsRandom),
+                clock.clone(),
+            ),
         ),
         external: Some(external),
         digest,

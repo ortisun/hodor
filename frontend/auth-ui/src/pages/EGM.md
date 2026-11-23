@@ -77,8 +77,9 @@ address.
   matching field.
 - `AccountPage.tsx:AccountPage(PageProps)` - `client.session()`: none means
   `go("sign-in")`; else it shows `signedInSince` (the `signedInAt` time
-  formatted with `Intl.DateTimeFormat` in `text.locale`) and a sign-out
-  `Action` that calls `client.signOut()` and `go("sign-in", "signed-out")`.
+  formatted with `Intl.DateTimeFormat` in `text.locale`), a link to the
+  security page and a sign-out `Action` that calls `client.signOut()` and
+  `go("sign-in", "signed-out")`.
 - `SignOutPage.tsx:SignOutPage(PageProps)` - the question an application's
   logout asks. `client.session()`: none means `leave` to
   `/t/{tenant}/oauth2/logout/finish` at once; else it shows
@@ -86,14 +87,26 @@ address.
   `client.signOut()`, then `leave` to the finish; a 401 counts as signed
   out) and `staySignedIn` (`go("account")`). It never learns the return
   address: the server keeps it.
+- `SecurityPage.tsx:SecurityPage({ ...PageProps, reauthenticate })` -
+  `client.session()` (none means `go("sign-in")`), then `client.factors()`.
+  Changes are offered only while `recentSignInUntil` is in the future;
+  otherwise a notice and a "sign in again" `Action` that calls
+  `reauthenticate`. Views: the overview; setting up an application (`QrCode`
+  of `uri`, the secret in groups of four, a code field); the recovery codes
+  shown once, until "I have kept them"; a confirmation before removing the
+  application or a key, or generating new codes; renaming a key in place.
+  `authentication.recent_sign_in_required` from any change goes back to the
+  overview with the sign-in-again notice. Adding a key goes through
+  `askToCreate` (`webauthn.ts`) and `client.finishKey`.
 - `ComingBackPage.tsx:ComingBackPage({ ...PageProps, provider, answer })` -
   from the `ProviderAnswer`: with `binding === "saml"` it needs `state` and
   `receipt`; otherwise any `error`, or a missing `code` or `state`, means
   `go("sign-in", "provider-cancelled")`. It then calls
   `client.currentSignIn()` (a `null` answer means `provider-refused`) and
   `client.finishWithProvider(provider, state, { code } | { receipt })`;
-  `completed` means `go("account")`, anything else `go("sign-in",
-  "provider-refused")`.
+  `completed` means `go("account")` (or `leave(continueTo)`), `pending`, a
+  second factor asked next, `go("sign-in")` with no notice, anything else
+  `go("sign-in", "provider-refused")`.
 
 ## Invariants
 

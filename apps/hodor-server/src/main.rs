@@ -545,7 +545,7 @@ fn interaction(config: &Config, database: &Database) -> Result<InteractionState,
         clock.clone(),
         &config.public_url,
     );
-    let factors = FactorService::new(identity.clone(), tenants.clone(), webauthn);
+    let factors = factor_service(config, database, &identity, &tenants, webauthn)?;
     let authentication = AuthenticationService::new(
         units(),
         Arc::new(PgTransactionStore),
@@ -926,6 +926,33 @@ fn secret_box(setting: &str, database: &Database) -> Result<Arc<dyn SecretBox>, 
     )))
 }
 
+/// People's own factors, with authenticator applications when the
+/// installation can keep secrets.
+fn factor_service(
+    config: &Config,
+    database: &Database,
+    identity: &IdentityService,
+    tenants: &TenantService,
+    webauthn: WebAuthnService,
+) -> Result<FactorService, DomainError> {
+    let factors = FactorService::new(
+        identity.clone(),
+        tenants.clone(),
+        webauthn,
+        RecoveryCodeService::new(
+            Arc::new(database.clone()),
+            Arc::new(PgRecoveryCodeStore),
+            Arc::new(Sha256Digest),
+            Arc::new(OsRandom),
+            Arc::new(SystemClock),
+        ),
+    );
+    Ok(match totp_service(config, database, Arc::new(OsRandom))? {
+        Some(totp) => factors.with_totp(totp),
+        None => factors,
+    })
+}
+
 /// Builds everything the administration interface needs.
 fn administration(config: &Config, database: &Database) -> Result<AdminState, DomainError> {
     let units = || Arc::new(database.clone());
@@ -979,12 +1006,31 @@ fn administration(config: &Config, database: &Database) -> Result<AdminState, Do
             clock.clone(),
         ),
         // The server reads the audit log; the worker writes it.
-        audit: AuditService::new(units(), Arc::new(PgAuditLog), digest, clock),
+        audit: AuditService::new(units(), Arc::new(PgAuditLog), digest, clock.clone()),
         federation,
         keys: keys(config, database)?,
         key_rotation: key_rotation(config)?,
         applications,
         tenants: tenant_service(database),
+        factors: {
+            let identity = IdentityService::new(units(), Arc::new(PgUserRepository), clock.clone());
+            let tenants = TenantService::new(
+                units(),
+                Arc::new(PgTenantRepository),
+                Arc::new(PgTenantDirectory::new(database.clone())),
+                clock.clone(),
+            );
+            let webauthn = WebAuthnService::new(
+                units(),
+                Arc::new(PgWebAuthnStore),
+                RelyingParty::from_public_address(&config.public_url)?,
+                Arc::new(Sha256Digest),
+                Arc::new(AwsLcVerifier),
+                Arc::new(OsRandom),
+                Arc::new(SystemClock),
+            );
+            factor_service(config, database, &identity, &tenants, webauthn)?
+        },
         public_url: config.public_url.clone(),
     })
 }

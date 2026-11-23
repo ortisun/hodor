@@ -27,6 +27,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, put};
 use axum::{Extension, Json, Router, middleware};
 use hodor_audit::api::{AuditRecord, AuditService};
+use hodor_authentication::api::FactorService;
 use hodor_authorization::api::{AuthorizationService, Permission};
 use hodor_credential::api::AccessTokenService;
 use hodor_federation::api::{
@@ -49,6 +50,7 @@ use std::sync::Arc;
 use time::format_description::well_known::Rfc3339;
 
 mod applications;
+mod factors;
 
 /// The OpenAPI document of the interface, as served at `/openapi.json`.
 pub const ADMIN_OPENAPI: &str = include_str!("../openapi/admin-v1.json");
@@ -63,6 +65,26 @@ pub const ADMIN_OPERATIONS: &[(&str, &str, Permission)] = &[
     ("GET", "/users/{user_id}", Permission::UsersRead),
     ("POST", "/users/{user_id}:suspend", Permission::UsersWrite),
     ("GET", "/users/{user_id}/sessions", Permission::SessionsRead),
+    (
+        "GET",
+        "/users/{user_id}/factors",
+        Permission::CredentialsRead,
+    ),
+    (
+        "DELETE",
+        "/users/{user_id}/factors/authenticator-application",
+        Permission::CredentialsWrite,
+    ),
+    (
+        "DELETE",
+        "/users/{user_id}/factors/keys/{key_id}",
+        Permission::CredentialsWrite,
+    ),
+    (
+        "DELETE",
+        "/users/{user_id}/factors/recovery-codes",
+        Permission::CredentialsWrite,
+    ),
     (
         "DELETE",
         "/sessions/{session_id}",
@@ -220,6 +242,8 @@ pub struct AdminState {
     pub applications: ApplicationService,
     /// The tenant, for its assurance levels.
     pub tenants: TenantService,
+    /// The users' second factors, which an administrator sees and removes.
+    pub factors: FactorService,
     /// The address people reach this installation at, without a path.
     pub public_url: String,
 }
@@ -314,6 +338,7 @@ fn shared_routes() -> Router<Shared> {
             get(read_assurance_levels).put(replace_assurance_levels),
         )
         .merge(applications::routes())
+        .merge(factors::routes())
 }
 
 /// One assurance level, as the interface writes it.

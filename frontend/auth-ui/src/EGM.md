@@ -22,16 +22,22 @@ its header); the pages see plain values.
   `client={new Client(place.tenant)}`, `go` (`window.location.assign(pathOf(...))`)
   and `leave` (`window.location.assign(url)`).
 - `App.tsx:App(AppProps)` - `AppProps` is `{ place, client, text, notice,
-  token, go, leave, providerAnswer, signInAgain?, loginHint? }`; the last two
-  go to `SignInPage`. It renders `sign-in` as `SignInPage`,
+  token, go, leave, providerAnswer, signInAgain?, loginHint?, afterSignIn?,
+  reauthenticate? }`; `signInAgain`, `loginHint` and `afterSignIn` go to
+  `SignInPage`; `main.tsx` sets `signInAgain`, `afterSignIn` and
+  `reauthenticate` from `continuationOf(location.search)` and
+  `signInAgainPath`. It renders `sign-in` as `SignInPage`,
   `register` / `recover` as `AskPage`, `complete-registration` /
   `reset-password` as `FinishPage`, `account` as `AccountPage`, `sign-out`
-  as `SignOutPage`,
+  as `SignOutPage`, `security` as `SecurityPage`,
   `provider-callback` as `ComingBackPage`, and anything else as a "page not
   found" frame with a link to sign-in.
 - `address.ts`:
   - `PAGES` / `PageName` - `sign-in`, `register`, `complete-registration`,
-    `recover`, `reset-password`, `account`.
+    `recover`, `reset-password`, `account`, `security`.
+  - `continuationOf(search)` - `"authorization"`, `"security"` or `null`, from
+    `?continue=`; `signInAgainPath(tenant)` is
+    `/t/{tenant}/account/sign-in?continue=security`.
   - `NOTICES` / `NoticeName` - `registered`, `password-changed`, `signed-out`,
     `provider-refused`, `provider-cancelled`.
   - `Place` - `{ tenant, page: PageName | "provider-callback" | null,

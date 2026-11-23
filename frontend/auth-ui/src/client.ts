@@ -2,7 +2,7 @@
 // knows paths, headers and the shape of answers; the pages see values.
 // See docs/api/interaction-api.md.
 
-import type { WebAuthnAnswer } from "./webauthn";
+import type { KeyRegistration, WebAuthnAnswer } from "./webauthn";
 
 /** Why a request did not do what was asked. */
 export class Failure {
@@ -54,7 +54,57 @@ export interface Session {
   expiresAt: string;
 }
 
+/** A security key or a passkey of the person. */
+export interface Key {
+  id: string;
+  name: string;
+  /** Whether it signs the person in on its own. */
+  passkey: boolean;
+  createdAt: string;
+  lastUsedAt: string | null;
+}
+
+/** The person's second factors. */
+export interface Factors {
+  /** `null` when the installation offers no authenticator application. */
+  authenticatorApplication: { inUse: boolean } | null;
+  keys: Key[];
+  recoveryCodesRemaining: number;
+  secondFactorRequired: boolean;
+  /** Until when changes are allowed without signing in again; `null` when they are not now. */
+  recentSignInUntil: string | null;
+}
+
+/** An authenticator application being set up: its secret, shown once. */
+export interface Enrollment {
+  secret: string;
+  uri: string;
+}
+
+/** A registration of a key that was just asked for. */
+export interface BegunKey {
+  registrationId: string;
+  publicKey: Record<string, unknown>;
+}
+
 type Fetch = typeof globalThis.fetch;
+
+function keyOf(value: unknown): Key | null {
+  const fields = typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
+  const id = text(fields["id"]);
+  const name = text(fields["name"]);
+  const createdAt = text(fields["created_at"]);
+  if (id === null || name === null || createdAt === null) {
+    return null;
+  }
+  return { id, name, passkey: fields["passkey"] === true, createdAt, lastUsedAt: text(fields["last_used_at"]) };
+}
+
+/** New recovery codes in an answer, if it holds any. */
+function codesOf(body: Record<string, unknown>): string[] | null {
+  const codes = body["recovery_codes"];
+  return Array.isArray(codes) ? codes.filter((code): code is string => typeof code === "string") : null;
+}
 
 interface Reply {
   status: number;
@@ -326,5 +376,90 @@ export class Client {
 
   async resetPassword(token: string, password: string): Promise<void> {
     await this.#send("POST", "/recovery/complete", { token, password });
+  }
+
+  /** The person's second factors. */
+  async factors(): Promise<Factors> {
+    const reply = await this.#send("GET", "/factors");
+    const application = reply.body["authenticator_application"];
+    const codes = reply.body["recovery_codes"];
+    const remaining =
+      typeof codes === "object" && codes !== null ? (codes as Record<string, unknown>)["remaining"] : null;
+    const keys = Array.isArray(reply.body["keys"]) ? reply.body["keys"] : [];
+    return {
+      authenticatorApplication:
+        typeof application === "object" && application !== null
+          ? { inUse: (application as Record<string, unknown>)["in_use"] === true }
+          : null,
+      keys: keys.flatMap((key: unknown) => keyOf(key) ?? []),
+      recoveryCodesRemaining: typeof remaining === "number" ? remaining : 0,
+      secondFactorRequired: reply.body["second_factor_required"] === true,
+      recentSignInUntil: text(reply.body["recent_sign_in_until"]),
+    };
+  }
+
+  /** Begins setting up an authenticator application. The secret is given once. */
+  async beginAuthenticatorApplication(): Promise<Enrollment> {
+    const reply = await this.#send("POST", "/factors/authenticator-application");
+    const secret = text(reply.body["secret"]);
+    const uri = text(reply.body["uri"]);
+    if (secret === null || uri === null) {
+      throw new Failure(null, reply.status);
+    }
+    return { secret, uri };
+  }
+
+  /** Confirms the application with a code it shows. Answers new recovery codes, when it is the first factor. */
+  async confirmAuthenticatorApplication(code: string): Promise<string[] | null> {
+    const reply = await this.#send("POST", "/factors/authenticator-application/confirmation", { code });
+    return codesOf(reply.body);
+  }
+
+  async removeAuthenticatorApplication(): Promise<void> {
+    await this.#send("DELETE", "/factors/authenticator-application");
+  }
+
+  /** Begins registering a security key, or a passkey. */
+  async beginKey(passkey: boolean): Promise<BegunKey> {
+    const reply = await this.#send("POST", "/webauthn/registrations", { passkey });
+    const registrationId = text(reply.body["registration_id"]);
+    const publicKey = reply.body["public_key"];
+    if (registrationId === null || typeof publicKey !== "object" || publicKey === null) {
+      throw new Failure(null, reply.status);
+    }
+    return { registrationId, publicKey: publicKey as Record<string, unknown> };
+  }
+
+  /** Finishes registering it. Answers new recovery codes, when it is the first factor. */
+  async finishKey(registrationId: string, registration: KeyRegistration, name: string): Promise<string[] | null> {
+    const named = name.trim();
+    const reply = await this.#send("POST", `/webauthn/registrations/${encodeURIComponent(registrationId)}`, {
+      ...registration,
+      ...(named === "" ? {} : { name: named }),
+    });
+    return codesOf(reply.body);
+  }
+
+  async renameKey(id: string, name: string): Promise<Key> {
+    const reply = await this.#send("PATCH", `/factors/keys/${encodeURIComponent(id)}`, { name });
+    const key = keyOf(reply.body);
+    if (key === null) {
+      throw new Failure(null, reply.status);
+    }
+    return key;
+  }
+
+  async removeKey(id: string): Promise<void> {
+    await this.#send("DELETE", `/factors/keys/${encodeURIComponent(id)}`);
+  }
+
+  /** A new set of recovery codes in place of the old one, shown once. */
+  async generateRecoveryCodes(): Promise<string[]> {
+    const reply = await this.#send("POST", "/factors/recovery-codes");
+    const codes = codesOf(reply.body);
+    if (codes === null) {
+      throw new Failure(null, reply.status);
+    }
+    return codes;
   }
 }

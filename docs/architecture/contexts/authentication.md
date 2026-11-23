@@ -255,6 +255,7 @@ Failed password attempts are counted, per tenant, against two things: the identi
 - **While locked out, no password is checked.** The attempt is refused with "too many attempts" and the time to wait. Not checking is the point: guesses made during a lockout teach the attacker nothing.
 - **A successful sign-in clears the identifier's count and its lockout history.**
 - **Counting is by a digest of the normalized identifier.** The identifier itself is not stored with the counts.
+- **After an alternative, counting is by the person.** A sign-in through an identity provider or a passkey types no identifier. When it goes on to a second factor, an authenticator application's code or a recovery code, those attempts are counted against a key made from the person's identifier in Hodor, with the same limits; without one, a second factor after an alternative could never be accepted.
 - **An attempt is counted when it is admitted, before the password is checked**, and the identifier's count is cleared if the attempt succeeds. Counting first is what makes the limit exact: when many attempts arrive at the same moment, only as many as the limit reach the password check. The price is that an attempt cut short by an outage still counts.
 - **The same sign-in submitted many times at once** counts once per submission until one of them succeeds. If more arrive together than the limit allows, the surplus is answered with "too many attempts"; one submission completes the sign-in, exactly one session starts, and the success clears the count, so nothing remains locked.
 - **Addresses keep their count after a success.** Signing in to one's own account does not buy an address more guesses.
@@ -416,6 +417,52 @@ Making a token and putting its message in the [message queue](notification.md) h
 
 Finishing spans several contexts, each of which commits on its own. The order above is chosen so that a failure part-way never leaves a hole: once the token is used up, anything that fails afterwards costs the person a new request, never a second use of the token or an account without a password that anyone can reach.
 
+## A person's own factors
+
+A signed-in person manages their second factors themselves: an authenticator application, security keys and passkeys, and their recovery codes. `FactorService` holds these use cases; it asks the [credential context](credential.md) to do each thing and decides the rules that span several kinds of factor. The person reaches it through [their own pages](../hosted-pages.md#a-persons-own-factors) and [the interaction interface](../../api/interaction-api.md#managing-ones-factors); an administrator reaches part of it through [the administration interface](../../api/admin-api.md#a-users-factors).
+
+### What a second factor is
+
+A **second factor** is an authenticator application in use or a WebAuthn credential, a security key or a passkey. Recovery codes are not a factor: they stand in for one, once each.
+
+### Proving oneself again
+
+Every change to a person's factors must come soon after they proved who they are. Someone who finds a browser left signed in must not be able to add their own key to the account, nor take away the owner's.
+
+- **A change needs a recent sign-in**: the session's sign-in time, the moment the person last [proved who they are](session.md#what-a-session-is), at most **five minutes** before the change begins. Nothing new is stored for this: the session already records when it was signed in to.
+- **A change that takes two requests needs it at its beginning only.** Confirming an authenticator application and finishing a WebAuthn registration finish what was begun with a recent sign-in, and what was begun lives ten and five minutes.
+- **A change without a recent sign-in is refused**, `authentication.recent_sign_in_required`, before anything is read or changed.
+- **Proving oneself again is a whole sign-in.** The pages send the person to the sign-in page, which asks for every step their factors call for, as any sign-in does, and brings them back. The browser then holds a new session whose sign-in time is now. Looking at one's factors needs no recent sign-in.
+
+Five minutes is enough to make one change after signing in, and short enough that a browser left alone is soon of no use for this. It is the time a pending WebAuthn registration lives.
+
+### Adding a factor
+
+- **An authenticator application** is enrolled in two requests, [as the credential context describes](credential.md#enrolling): the secret is shown once, as a QR code and as text, with the tenant's name as the issuer and the person's primary login identifier as the account, and the person confirms with a code. An installation that cannot keep secrets (`HODOR_SECRET_KEYS`) offers no authenticator application.
+- **A security key or a passkey** is registered in two requests, [as the credential context describes](credential.md#registering-a-credential), with a name the person chooses.
+- **Recovery codes come with the first factor.** When adding a factor leaves the person with a second factor and no unused recovery code, a set is generated and returned with the answer, once. A person who already had codes keeps them.
+
+### Changing and removing a factor
+
+- A security key or a passkey can be renamed and removed. The authenticator application can be removed; replacing it is enrolling a new one, which takes the old one's place once confirmed.
+- **A new set of recovery codes** can be generated on request, in place of the old one, and is shown once. A person without a second factor cannot generate one: the codes would stand in for nothing (`authentication.second_factor_missing`).
+
+### The last second factor
+
+- **Under a policy that requires a second factor**, the [tenant's](tenant.md#authentication-policy) `second_factor`, removing a person's last second factor is refused, `authentication.last_second_factor`: without it they could not sign in. They add another first and remove the old one after.
+- **When the last second factor goes**, with the policy off, the person's recovery codes go with it: they would stand in for nothing, and a set left over would be mistaken for a way in. Adding a factor later makes a new set.
+- Two removals of different factors at the same moment are not serialized against each other: each sees the other factor still there. Under the policy this can leave a person with no second factor; they then cannot sign in until an operator enrolls one for them. It locks them out; it lets nobody in.
+
+### What an administrator may do
+
+An administrator sees which factors a person has and removes them, for a person who lost their phone or their key ([the administration interface](../../api/admin-api.md#a-users-factors), the console's person screen). An administrator cannot add a factor for someone, see a secret, or generate recovery codes for them.
+
+- **The policy does not hold an administrator back.** An administrator may remove a person's last second factor: that is what helping someone who lost it means. Under a policy that requires one, the person then cannot sign in until a factor is enrolled for them, today by an operator with `hodor-cli totp enroll`; enrolling one during the sign-in is [not built yet](#not-built-yet). The recovery codes go with the last factor, as above.
+- **Removing a factor ends no session.** A factor that is gone cannot be used again; whether the sessions made with it should end is a separate decision, which the administrator makes by ending them.
+- What an administrator removes is recorded with the administrator as the actor.
+
+Every change, by the person or by an administrator, is recorded through the events of [the credential context](credential.md#events), which carry the user and never a secret, a code or a name.
+
 ## Operations
 
 | Use case | What it does |
@@ -427,7 +474,13 @@ Finishing spans several contexts, each of which commits on its own. The order ab
 | Describe sign-in | Returns the current step of a transaction, so that a page can be shown again after a reload |
 | Challenge for a step | Asks the current step's authenticator for a challenge, keeps it in the transaction and returns the options for the browser |
 | Begin WebAuthn registration | For a signed-in person: asks the credential context for a pending registration, naming the person by their primary login identifier and display name |
-| Finish WebAuthn registration | For a signed-in person: hands what the authenticator answered to the credential context |
+| Finish WebAuthn registration | For a signed-in person: hands what the authenticator answered to the credential context, and generates recovery codes with the first second factor |
+| List factors | A person's authenticator application, security keys and passkeys, how many unused recovery codes they have, and whether their tenant requires a second factor |
+| Begin and confirm authenticator application enrollment | For a signed-in person: enrolls an application in their name, and generates recovery codes with the first second factor |
+| Rename and remove a WebAuthn credential | For a signed-in person, or an administrator for removing; refuses removing the last second factor under the policy, for the person only |
+| Remove the authenticator application | The same |
+| Generate recovery codes | For a signed-in person with a second factor: a new set in place of the old one |
+| Remove recovery codes | For an administrator |
 | Cancel sign-in | Ends a transaction |
 | Request registration | Sends a registration link, or a note that the address already has an account |
 | Complete registration | Uses a registration token: creates the user and sets the password |
@@ -456,7 +509,7 @@ This context calls the `identity`, `credential`, `session`, `tenant` and `notifi
 | `current_step` | `integer` | Position in the flow |
 | `identified` | `boolean` | Whether the identifier step has run |
 | `candidate_user_id` | `uuid` | Null until the identifier step, and when the identifier belongs to nobody |
-| `identifier_key` | `bytea` | SHA-256 of the normalized identifier typed |
+| `identifier_key` | `bytea` | SHA-256 of the normalized identifier typed, or, after an alternative identified the person, the key their attempts are counted by |
 | `satisfied_methods` | `text[]` | |
 | `carried_methods` | `text[]` | Empty unless the transaction is a step-up |
 | `demanded_assurance` | `text` | Null unless the transaction is a step-up that an application asked an assurance of |
@@ -504,10 +557,11 @@ All three are tenant tables under row-level security.
 | Item | Planned in |
 |---|---|
 | Editing flows and simulating them | Phase 4 |
-| Setting the tenant's second factor policy from the administration interface or the console. Today the command-line tool sets it | Issue-70 |
-| Registering a security key from the pages, and proving oneself again first. Today a key is registered through the interaction interface only, by a person already signed in | Issue-70 |
-| Enrolling a second factor during a sign-in, for a person whose tenant requires one and who has none. Today their sign-in fails at completion | Issue-70 |
-| Offering a choice between several second factors at one step. Today a person with both a security key and an authenticator application is asked for the key, which comes first, and cannot choose the code instead. A recovery code is a substitute, not a choice of factor | Issue-70 |
+| Setting the tenant's second factor policy from the administration interface or the console. Today the command-line tool sets it | With the tenant settings of the administration interface, after 0.2.0 |
+| Enrolling a second factor during a sign-in, for a person whose tenant requires one and who has none. Today their sign-in fails at completion, and an operator enrolls an authenticator application for them with the command-line tool | Phase 4, outside the plan of 0.2.0 |
+| Offering a choice between several second factors at one step. Today a person with both a security key and an authenticator application is asked for the key, which comes first, and cannot choose the code instead. A recovery code is a substitute, not a choice of factor | Phase 4, outside the plan of 0.2.0 |
+| Serializing two removals of a person's factors at the same moment, so that the policy holds even then | When a person's factors share one store |
+| Ending the session a browser held when it signs in again to prove the person again. Today the earlier session stays until it expires or the person ends it from their list of sessions | With the account console |
 | A reason in `authentication.failed` that tells a missing second factor, or a step-up that did not reach what was asked, from a rejected step | With the audit views of Phase 5 |
 | Further authenticators, risk signals, recognizing a user's own device | Phases 3 and 4 |
 | Making a user choose a new password when the current one is marked as temporary. The mark is stored and returned by the credential context, but sign-in does not act on it yet | With the administration interface, Issue-29, which is what sets the mark |
