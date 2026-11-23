@@ -245,7 +245,7 @@ stateDiagram-v2
 |---|---|---|---|---|
 | Authorization code | Opaque, 256-bit random | SHA-256 hash | 60 s, single use | Consumed on use |
 | Access token | JWT (RFC 9068) signed by the tenant key; opaque as a per-client option | Not stored (JWT) or hash (opaque) | 5 min | Short lifetime; `jti` deny-list for immediate revocation; introspection reflects the grant state |
-| Refresh token | Opaque, 256-bit random | SHA-256 hash, family and generation | 30 days absolute, 14 days idle | Rotation; reuse revokes the family |
+| Refresh token | Opaque, 256 bits: random for the first of a family, derived from the one before and the family's sealed secret after it | SHA-256 hash, family and generation | 30 days absolute, 7 days idle, from the client's token policy | Rotation; reuse revokes the family and its grant |
 | ID token | JWT | Not stored | 5 min | Not revocable; it is a login assertion, not a credential |
 | Pushed authorization requests `request_uri` | Opaque reference | Row with time to live | 60 s, single use | Consumed on use |
 | Device code | Opaque + short user code | Hash | 10 min | Consumed or expired |
@@ -253,7 +253,7 @@ stateDiagram-v2
 Rules:
 
 - Sessions, access tokens and refresh tokens have independent lifetimes. A refresh token issued with `offline_access` survives session end; one without it is revoked with the session.
-- Rotation tolerates one benign retry: the immediately previous generation is accepted for a few seconds and returns the same successor, so a client that lost the response does not pending authorization reuse detection.
+- Rotation tolerates one benign retry: the immediately previous generation, presented again by the same client for the same scopes within the retry window (10 seconds by default), returns the same successor, so a client that lost the response does not set off reuse detection. See [refresh tokens](../architecture/contexts/oauth.md#refresh-tokens).
 - Sender-constrained tokens (DPoP, mTLS) carry `cnf`; bearer refresh tokens for public clients are always rotated.
 - Signing keys rotate on a schedule. A key leaves the JWKS only after every token it signed has expired.
 
