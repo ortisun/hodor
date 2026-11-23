@@ -155,6 +155,10 @@ const RULES: &[Rule] = &[
     ),
     adapter("hodor-adapters-kms", &["hodor-kernel", "hodor-keys"]),
     adapter("hodor-adapters-http", &["hodor-kernel"]),
+    adapter(
+        "hodor-adapters-policy-check",
+        &["hodor-kernel", "hodor-authorization-opa"],
+    ),
     adapter("hodor-adapters-ldap", &["hodor-kernel", "hodor-federation"]),
     adapter(
         "hodor-adapters-smtp",

@@ -20,9 +20,12 @@ mod canonical;
 mod engine;
 mod instance;
 mod instances;
+mod lifecycle;
 mod path;
+mod policy;
 mod ports;
 mod reports;
+mod revisions;
 mod service;
 
 #[cfg(any(test, feature = "testing"))]
@@ -33,16 +36,28 @@ pub mod api {
     pub use crate::archive::gzip;
     pub use crate::breaker::BreakerSettings;
     pub use crate::bundle::{
-        Author, BundleFile, BundleSigner, PublishedBundle, bundle_name, tenant_of, tenant_root,
+        Author, BundleFile, BundleSigner, PublishedBundle, bundle_name, is_test, normalize,
+        tenant_of, tenant_root,
     };
     pub use crate::canonical::to_canonical;
-    pub use crate::engine::{ENGINE, OpenPolicyAgentEngine};
+    pub use crate::engine::{DEFAULT_REVISION_LAG, ENGINE, OpenPolicyAgentEngine};
     pub use crate::instance::{CREDENTIAL_PREFIX, Instance, InstanceId, InstanceName};
     pub use crate::instances::Instances;
+    pub use crate::lifecycle::{
+        Activation, LifecycleEvent, PolicyService, PolicyStatus, Publication, WaitingWork,
+    };
+    pub use crate::path::decision_package;
     pub use crate::path::decision_path;
+    pub use crate::policy::{
+        Diagnostic, MAX_SIMULATION_BYTES, MAX_SIMULATION_INPUTS, PolicyVersion, Report,
+        SimulatedAnswer, Simulation, SimulationId, SimulationState, TestResult, VersionState,
+        check_inputs, compare, files_document, hexadecimal, version_digest,
+    };
     pub use crate::ports::{
-        BundleStore, InstanceStatus, InstanceStatusStore, InstanceStore, UploadedDecision,
+        BundleStore, InstanceStatus, InstanceStatusStore, InstanceStore, PolicyChecker,
+        PolicyVersionStore, PublicationStore, SimulationStore, UploadedDecision,
         UploadedDecisionStore,
     };
+    pub use crate::revisions::{PublishedRevisions, StoredRevisions};
     pub use crate::service::{BundleEvent, BundleService, MAX_EXPANDED_UPLOAD_BYTES, Pull};
 }

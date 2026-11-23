@@ -1,12 +1,14 @@
 //! `OpenPolicyAgentEngine`: one request, one question to one instance.
 
 use crate::answer::{
-    ERROR, NOT_CONFIGURED, TIMED_OUT, UNAVAILABLE, UNREACHABLE, indeterminate, read, revision,
+    ERROR, NOT_CONFIGURED, REVISION_UNKNOWN, STALE, TIMED_OUT, UNAVAILABLE, UNREACHABLE,
+    indeterminate, read, revision,
 };
 use crate::breaker::{Admission, Breaker, BreakerSettings};
 use crate::bundle::bundle_name;
 use crate::instances::Instances;
 use crate::path::decision_path;
+use crate::revisions::PublishedRevisions;
 use hodor_authorization::api::{
     Attributes, AuthorizationEngine, EngineAnswer, EngineCapabilities, EngineId, EvaluationInput,
 };
@@ -17,6 +19,10 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 /// The engine's name, as a binding names it.
 pub const ENGINE: &str = "open_policy_agent";
+
+/// How long after a revision is published an instance may still answer
+/// with an older one, by default.
+pub const DEFAULT_REVISION_LAG: time::Duration = time::Duration::minutes(5);
 
 /// How a request to an instance ended, for its circuit.
 enum Exchange {
@@ -35,6 +41,7 @@ pub struct OpenPolicyAgentEngine {
     token: Option<Secret<String>>,
     settings: BreakerSettings,
     breakers: Mutex<BTreeMap<String, Breaker>>,
+    revisions: Option<(Arc<dyn PublishedRevisions>, time::Duration)>,
 }
 
 impl std::fmt::Debug for OpenPolicyAgentEngine {
@@ -64,6 +71,47 @@ impl OpenPolicyAgentEngine {
             token: None,
             settings: BreakerSettings::default(),
             breakers: Mutex::new(BTreeMap::new()),
+            revisions: None,
+        }
+    }
+
+    /// Refuses decisions made with an older revision than the tenant's
+    /// latest, once that one has been published for longer than `lag`:
+    /// see "A lagging instance" in the authorization context.
+    #[must_use]
+    pub fn with_revisions(
+        mut self,
+        revisions: Arc<dyn PublishedRevisions>,
+        lag: time::Duration,
+    ) -> Self {
+        self.revisions = Some((revisions, lag));
+        self
+    }
+
+    /// The answer, unless it was made with a revision the tenant replaced
+    /// more than the allowed lag ago.
+    async fn current(&self, tenant: &TenantContext, answer: EngineAnswer) -> EngineAnswer {
+        let Some((revisions, lag)) = &self.revisions else {
+            return answer;
+        };
+        let latest = match revisions.latest(tenant.tenant_id()).await {
+            Ok(latest) => latest,
+            Err(_) => return indeterminate(REVISION_UNKNOWN),
+        };
+        let Some((latest, published_at)) = latest else {
+            return answer;
+        };
+        if self.clock.now() - published_at <= *lag {
+            return answer;
+        }
+        let answered = answer
+            .policy_version
+            .as_ref()
+            .and_then(|revision| revision.as_str().parse::<u64>().ok());
+        if answered.is_some_and(|answered| answered >= latest) {
+            answer
+        } else {
+            indeterminate(STALE)
         }
     }
 
@@ -219,7 +267,7 @@ impl AuthorizationEngine for OpenPolicyAgentEngine {
                 // An undefined or malformed answer is the policy's fault,
                 // not the instance's: the instance answered.
                 self.record(&instance, false);
-                Ok(answer)
+                Ok(self.current(tenant, answer).await)
             }
             Exchange::Failed(reason) => {
                 self.record(&instance, true);

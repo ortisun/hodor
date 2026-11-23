@@ -15,6 +15,8 @@ pub(crate) const UNREACHABLE: &str = "policy_engine_unreachable";
 pub(crate) const ERROR: &str = "policy_engine_error";
 pub(crate) const UNAVAILABLE: &str = "policy_engine_unavailable";
 pub(crate) const NOT_CONFIGURED: &str = "policy_engine_not_configured";
+pub(crate) const STALE: &str = "policy_revision_stale";
+pub(crate) const REVISION_UNKNOWN: &str = "policy_revision_unknown";
 
 /// A reason of this crate. Each constant above is a valid code; the tests
 /// say so.

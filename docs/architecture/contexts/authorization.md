@@ -470,7 +470,7 @@ The engine asks with `?provenance=true`, and Open Policy Agent answers with the 
 
 Its `allow_net` is empty, so no built-in may reach the network even if one were added back. The functions that only compute on addresses (`net.cidr_contains` and the others of `net.cidr_*`) stay: they read nothing outside the policy.
 
-Open Policy Agent has no setting that limits the built-ins of a running instance. The file is enforced when a policy is checked and built (`opa check --capabilities`, `opa build --capabilities`, Issue-79), so no bundle using a removed built-in is ever published. An instance should run without a route out of its network as well.
+Open Policy Agent has no setting that limits the built-ins of a running instance. The file is enforced when a policy version is checked, tested and simulated (`opa check`, `opa test` and `opa eval`, each with `--capabilities`; see [the policy lifecycle](#the-policy-lifecycle)), so no bundle using a removed built-in is ever published. An instance should run without a route out of its network as well.
 
 ## Bundles
 
@@ -504,11 +504,11 @@ A bundle is built for one tenant and holds:
 - `.manifest`, with the revision and one root, `hodor/tenants/t<tenant>`;
 - `.signatures.json`, Hodor's signature over every other file.
 
-The root is what keeps tenants apart in a shared instance: Open Policy Agent refuses a bundle that writes outside its roots, and two bundles whose roots overlap. Before signing, Hodor checks every module: its `package` must be `hodor.tenants.t<tenant>` or a package below it, and a data document must sit under the tenant's tree. A file of any other kind is refused. Whether the modules compile, against [the capabilities file](#the-capabilities-file), is the policy lifecycle's to check (Issue-79).
+The root is what keeps tenants apart in a shared instance: Open Policy Agent refuses a bundle that writes outside its roots, and two bundles whose roots overlap. Before signing, Hodor checks every module: its `package` must be `hodor.tenants.t<tenant>` or a package below it, and a data document must sit under the tenant's tree. A file of any other kind is refused. Whether the modules compile, against [the capabilities file](#the-capabilities-file), is [the policy lifecycle](#the-policy-lifecycle)'s to check: a bundle is built only from a tested version.
 
-Each bundle records **who wrote it**: the operator or the tenant. Only a bundle written by the operator is served to a shared instance. `hodor-cli policy-agent publish` takes `--written-by operator` or `--written-by tenant`, and it is `tenant` unless the operator says otherwise, so that a mistake keeps a bundle off the shared instance rather than putting it there.
+Each bundle records **who wrote it**: the operator or the tenant. Only a bundle written by the operator is served to a shared instance. `hodor-cli policy draft` takes `--written-by operator` or `--written-by tenant`, and it is `tenant` unless the operator says otherwise, so that a mistake keeps a bundle off the shared instance rather than putting it there.
 
-The revision is a number per tenant: 1, then 2, and so on, written as text in the manifest. A bundle is never changed or removed once it is published. Publishing a previous version again is a new revision; that is the rollback of Issue-79.
+The revision is a number per tenant: 1, then 2, and so on, written as text in the manifest. A bundle is never changed or removed once it is published. Publishing a previous version again is a new revision; that is [the rollback](#publishing-and-rolling-back).
 
 ### Signing
 
@@ -530,7 +530,7 @@ The routes belong to no tenant, since a shared instance serves several. Every re
 
 **Bundles.** A bundle the instance may not pull is answered `404`, exactly like a tenant with no bundle, so an instance cannot tell another tenant's bundle from no bundle at all. The answer carries an `ETag`, the SHA-256 of the archive. A request whose `If-None-Match` matches it is answered `304` without the archive. The archive is `application/gzip`.
 
-**Status.** Open Policy Agent's status report names each bundle with its active revision, when it was last activated and its last error. For each bundle of a tenant the instance serves (its own tenant, or any tenant for a shared instance), Hodor keeps the latest report, one per instance and tenant. Bundles of other tenants are ignored. This is the record the policy lifecycle reads to know when a revision is active everywhere (Issue-79).
+**Status.** Open Policy Agent's status report names each bundle with its active revision, when it was last activated and its last error. For each bundle of a tenant the instance serves (its own tenant, or any tenant for a shared instance), Hodor keeps the latest report, one per instance and tenant. Bundles of other tenants are ignored. This is the record [the policy lifecycle](#activation) reads to know when a revision is active everywhere.
 
 **Decision logs.** Open Policy Agent uploads its decisions as gzip-compressed JSON arrays. Hodor accepts at most 1 mebibyte compressed and 8 mebibytes once expanded, and at most 10,000 decisions per upload. For each decision under the tree of a tenant the instance serves, Hodor keeps:
 
@@ -591,6 +591,126 @@ The instance table is the second platform table after the tenant directory. It h
 |---|---|---|
 | `authorization.policy_bundle_published` | A bundle is published | Revision, who wrote it, the SHA-256 of the archive |
 
+## The policy lifecycle
+
+A bundle is published only from a **policy version that was checked and tested** with the `opa` binary. Between the files someone writes and the bundle an instance pulls there are four steps: a version is drafted, validated, tested and published. A simulation may be run on the way. A rollback publishes an earlier version again. The mechanism that runs `opa` is [Decision 0026](../../decisions/0026-policy-checks-in-a-sandbox.md). The whole lifecycle lives in `hodor-authorization-opa`, like the bundles; running the binary is the adapter `hodor-adapters-policy-check`.
+
+### Versions
+
+A tenant's policy is the set of files its bundle holds: Rego modules and data documents, at their paths under the tenant's tree. A **version** is one such set, numbered 1, 2 and so on per tenant. It records:
+
+- who wrote it, the operator or the tenant, as for a bundle;
+- its files, checked as a bundle's are when it is drafted (paths, kinds, the package of every module, size), with data documents in canonical form;
+- its **digest**: the SHA-256 of the canonical JSON `{"files":[{"path":…,"sha256":…},…]}`, files by path, which names its contents whoever reads it;
+- its state, and the report of its last check.
+
+**A version never changes.** Editing a policy is drafting a new version. Files whose name ends in `_test.rego` are the version's tests. They are checked and run like the other modules, and left out of every bundle the version is published in.
+
+### States
+
+```mermaid
+stateDiagram-v2
+    [*] --> draft: draft
+    draft --> validating: validate
+    validating --> validated: compiles
+    validating --> rejected: does not compile
+    validated --> testing: test
+    testing --> tested: every test passes
+    testing --> rejected: a test fails
+    tested --> tested: publish, roll back to
+```
+
+| State | Means |
+|---|---|
+| `draft` | Drafted, not checked |
+| `validating` | Waiting for the worker to check it |
+| `validated` | Compiles in strict mode against the capabilities file |
+| `testing` | Waiting for the worker to run its tests |
+| `tested` | Its tests pass. Only a tested version can be published |
+| `rejected` | It did not compile, a test failed, or a run took too long. Final: the report says why, and the fix is a new version |
+
+`validate` and `test` only ask: the worker does the work on its next pass and records the report. A version with no test file is tested with no test; the report says it holds none. Whoever publishes it sees that.
+
+### What the worker runs
+
+The worker looks for versions waiting in `validating` or `testing`, and simulations waiting, in every tenant. It works through them one tenant at a time, under an advisory lock so that two workers do not check the same version. For each run it writes the version's files into a new directory, under the tenant's tree as a bundle holds them, with Hodor's capabilities file, and runs:
+
+| Step | Command | Refused when |
+|---|---|---|
+| Validate | `opa check --strict --capabilities capabilities.json policy` | Any error: a parse error, a type error, an unsafe variable, a removed built-in, anything strict mode refuses |
+| Test | `opa test --capabilities capabilities.json --format json policy` | A test fails or errs, or the modules do not compile |
+| Simulate | `opa eval --capabilities capabilities.json --data policy --data simulation …` | It is not refused; it reports |
+
+A run that takes longer than its limit is killed and the version refused with `policy_check_timed_out`. A run that cannot start, because the binary is missing or the directory cannot be written, leaves the version waiting and is tried on a later pass. The report keeps, for each problem, the file and line within the tenant's tree, the code `opa` gave and its message; for each test, its name, its package and whether it passed.
+
+### Simulation
+
+A simulation evaluates a validated or tested version against **requests given by whoever runs it**, never against the decisions Hodor recorded. Those hold no input, so that no personal data is kept for them (see [Bundles](#the-service-interface)).
+
+- It names a resource server and up to 100 inputs, each the `input` document the engine would send ([the input](#the-input)), 1 mebibyte in all.
+- The worker evaluates the resource server's `decision` rule for every input with the version. It does the same with the version of the tenant's latest bundle, when that bundle was published from a version. Both run in one process each, through a module of Hodor's own that is never published.
+- The result, for each input, is the version's answer, the published answer, and whether they differ. An input whose rule is not defined is reported as undefined.
+- **The inputs are erased when the simulation is done**: only the results are kept, by position in the list. Whoever writes inputs should still write made-up subjects, as they would in a test.
+
+### Publishing and rolling back
+
+- **Publishing** takes a tested version, builds and signs its bundle as [Bundles](#bundles) say, without its test files, and records which version each revision was built from. Bundle and record are written in one transaction.
+- **Rolling back** to revision `n` publishes the version revision `n` was built from **as a new revision**. History is never rewritten: after a rollback from 3 to 1, the latest revision is 4, with the files of 1. An instance runs it after its next pull, as it would any revision. A revision published before versions existed, or written into the store some other way, has no version and cannot be rolled back to.
+
+Publishing directly from a directory of files, as `hodor-cli policy-agent publish` did, is no longer possible: every bundle comes from a tested version.
+
+### Activation
+
+A revision is published when it is stored; it is **active** when every instance that should run it says it does. The instances that should run a tenant's bundle are its enabled instances that may pull it:
+
+- an instance of the tenant's own, always;
+- a shared instance, when the bundle was written by the operator and the instance has reported this tenant's bundle at least once. A shared instance pulls only the tenants listed in its configuration, so it is not waited for until it shows it is one of them.
+
+The status of a tenant's policy lists those instances with the revision each last reported, when, and its last error. It says **pending activation** while one of them runs an older revision or has never reported. With no such instance, nothing is waited for, and the status says that no instance runs it.
+
+### A lagging instance
+
+An instance that runs an older revision than the latest published one is lagging. A short lag is normal: an instance pulls on its own schedule, a minute or two by default. A long one means it cannot pull, or refuses the bundle. Its answers then come from a policy someone replaced, perhaps because it allowed too much.
+
+So the engine compares the revision a decision was made with ([the revision of a decision](#the-revision-of-a-decision)) to the tenant's latest published revision. When the latest was published **more than the allowed lag ago**, five minutes by default (`HODOR_OPEN_POLICY_AGENT_REVISION_LAG_SECONDS`), and the decision was made with an older revision or with none, the answer is `indeterminate` with the reason `policy_revision_stale`, and the binding's failure policy applies. Within the lag, the older revision's answer stands.
+
+The latest revision of each tenant is read from storage and kept for 10 seconds. If it cannot be read, the answer is `indeterminate` with `policy_revision_unknown`. A tenant with no published bundle has nothing to lag behind.
+
+### Operations of the lifecycle
+
+| Operation | Who | Does |
+|---|---|---|
+| `draft` | Operator, command line | Checks the files and stores a new version in `draft` |
+| `validate` | Operator, command line | Moves a draft to `validating` |
+| `test` | Operator, command line | Moves a validated version to `testing` |
+| `simulate` | Operator, command line | Stores a simulation of a validated or tested version, waiting for the worker |
+| `run_pending` | Worker | Checks, tests and simulates what waits in a tenant |
+| `publish` | Operator, command line | Publishes a tested version as the next revision |
+| `roll_back` | Operator, command line | Publishes the version of an earlier revision as the next revision |
+| `status` | Operator, command line | The latest revisions, what each instance runs, whether activation is pending |
+
+`hodor-cli policy draft|validate|test|simulate|publish|rollback|status|versions|show` call them. `validate`, `test` and `simulate` wait for the worker's report, a minute by default (`--wait`). The administration interface and the console are Issue-80.
+
+### Events of the lifecycle
+
+| Event | When | Data |
+|---|---|---|
+| `authorization.policy_version_drafted` | A version is drafted | Its number, who wrote it, its digest |
+| `authorization.policy_version_checked` | The worker validated or tested a version | Its number and the state it reached |
+| `authorization.policy_version_published` | A version is published | Its number, the revision, whether it was a rollback |
+
+No event carries a file, an input or a result.
+
+### Storage of the lifecycle
+
+| Table | Holds |
+|---|---|
+| `"authorization".policy_version` | Number (primary key with the tenant), who wrote it, the files as JSON, the digest, the state, the last report as JSON, when it was drafted and last changed |
+| `"authorization".policy_publication` | One row per revision built from a version: the revision and the version's number. Append only for the application role, like the bundles |
+| `"authorization".policy_simulation` | Identifier, the version, the resource server, the inputs while it waits, the results once done, its state, when it was asked for and done |
+
+All three are tenant tables under row-level security. The files and the reports are text: no column of them holds a secret.
+
 ## Not built yet
 
 | Item | Planned in |
@@ -600,10 +720,8 @@ The instance table is the second platform table after the tenant directory. It h
 | Conditions on per-resource access control lists, on policies that target a resource kind, and static type checking of conditions | Not planned before 0.2.0 ([Decision 0023](../../decisions/0023-what-0.2.0-holds.md), [Decision 0025](../../decisions/0025-condition-language.md)) |
 | The authorization interface for applications, which calls the evaluation; and an implementation of `SubjectAttributeSource`. Until then no binary evaluates through the engine contract, and the administration interface still asks the check above | Issue-75 |
 | The record of decisions | Issue-76 |
-| A decision from an instance that runs a revision older than the published one, by more than an allowed lag, answered `indeterminate` | Issue-79, with activation tracking |
 | Retention of the decisions instances upload, and joining them to the record of decisions | Issue-76 |
 | A discovery bundle, so that a shared instance learns the tenants it answers without listing them in its configuration | When the number of tenants calls for it |
-| The policy lifecycle, with checks and builds against the capabilities file | Issue-79 |
 | A health check of each instance every 5 seconds. Today an instance's health is known from the decisions it answers, through its circuit, and from the status it reports | Issue-80 |
 | Instances and their credentials managed through the administration interface, a query token of each instance's own for the Data API, and mutual TLS | Issue-80 |
 | A cache of decisions | When a binding declares its policy deterministic |

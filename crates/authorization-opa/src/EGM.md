@@ -2,7 +2,7 @@
 
 ## Overview
 
-The engine `open_policy_agent` and the bundles. The modules `answer`, `archive`, `breaker`, `bundle`, `canonical`, `engine`, `instance`, `instances`, `path`, `ports`, `reports` and `service` are private; `lib.rs` re-exports through `api`. `testing` is public behind the `testing` feature.
+The engine `open_policy_agent` and the bundles. The modules `answer`, `archive`, `breaker`, `bundle`, `canonical`, `engine`, `instance`, `instances`, `lifecycle`, `path`, `policy`, `ports`, `reports`, `revisions` and `service` are private; `lib.rs` re-exports through `api`. `testing` is public behind the `testing` feature.
 
 ## Interface
 
@@ -24,6 +24,18 @@ The engine `open_policy_agent` and the bundles. The modules `answer`, `archive`,
 - `api::bundle_name(tenant)` is `t` and 32 hexadecimal digits; `api::tenant_of(name)` reads it back; `api::tenant_root(tenant)` is `hodor/tenants/<bundle name>`.
 - `api::Instance`, `api::InstanceId`, `api::InstanceName` (1 to 63 of `a-z`, `0-9`, `-`, not starting with `-`), `api::CREDENTIAL_PREFIX` (`instance.rs`).
 - `api::gzip` and `api::to_canonical`: the archive's compression and the canonical JSON, for tests and tools.
+- `api::PolicyService` (`lifecycle.rs`), over `PolicyVersionStore`, `PublicationStore`, `SimulationStore` (`ports.rs`), a `BundleService`, a `UnitOfWorkFactory`, `Digest` and `Clock`:
+  - `draft(tenant, author, files, caller)` checks the files with `api::normalize` (the rules of `bundle::build`) and stores the next version (latest plus one, from 1) in `draft`, recording `authorization.policy_version_drafted` (`LifecycleEvent::Drafted`: version, `written_by`, digest);
+  - `validate(tenant, number)` moves `draft` to `validating`, `test(tenant, number)` moves `validated` to `testing`; any other state is `authorization.policy_version_state` (`ErrorKind::Conflict`), an unknown number `authorization.policy_version_not_found`;
+  - `simulate(tenant, number, namespace, inputs)` checks the inputs (`api::check_inputs`: 1 to 100 objects, 1 mebibyte) and stores a waiting `Simulation` of a validated, testing or tested version; `simulation(tenant, id)` reads it, `authorization.policy_simulation_not_found` if it is not the tenant's;
+  - `run_waiting(tenant, checker)` takes up to 10 waiting versions and 10 waiting simulations: `checker.check` for `validating`, `checker.test` for `testing`, then `validated` or `tested` if `Report::passed`, else `rejected`, with the report and `authorization.policy_version_checked` (`LifecycleEvent::Checked`); a simulation evaluates the version's published files and those of the version of the latest revision with `checker.evaluate` on `decision_package(tenant, namespace)`, compares them (`api::compare`) and ends `done`, or `failed` with the report, its inputs erased. A checker error stops the pass and leaves the work waiting;
+  - `publish(tenant, number, signer, caller)` takes a `tested` version, publishes its files without tests through `BundleService` in the same unit of work as the publication record and `authorization.policy_version_published` (`LifecycleEvent::Published`: version, revision, rollback); `roll_back(tenant, revision, signer, caller)` publishes the version that revision came from, or is `authorization.policy_revision_without_version`;
+  - `status(tenant)` is `PolicyStatus`: the latest revision with its author, time and version, the last 20 publications, the `Activation` of each instance that should run it (`BundleService::expected_instances`) and `pending_activation`.
+- `api::PolicyVersion`, `api::VersionState`, `api::Report` (`diagnostics`, `tests`, `passed`, `bounded`), `api::Diagnostic`, `api::TestResult`, `api::Simulation`, `api::SimulationId`, `api::SimulationState`, `api::SimulatedAnswer`, `api::version_digest` and `api::files_document` (the SHA-256 of `{"files":[{"path","sha256"}…]}`, by path), `api::hexadecimal`, `api::is_test` (`policy.rs`, `bundle.rs`).
+- `api::PolicyChecker` (`ports.rs`): `check`, `test` and `evaluate` answer what the policy did in a `Report`; `Err` only when a run could not start.
+- `api::decision_package(tenant, namespace, digest)` (`path.rs`): the decision path as a Rego package.
+- `api::PublishedRevisions` and `api::StoredRevisions` (`revisions.rs`): the latest revision of a tenant from `BundleStore::latest_revision`, kept 10 seconds, at most 10,000 tenants. `OpenPolicyAgentEngine::with_revisions(revisions, lag)` applies the lag rule; `api::DEFAULT_REVISION_LAG` is 5 minutes.
+- `BundleService::latest(tenant)` and `BundleService::expected_instances(tenant, author)`: the enabled instances that may pull the bundle, a shared one only once it has reported the tenant.
 
 ## Invariants
 
@@ -48,3 +60,4 @@ The engine `open_policy_agent` and the bundles. The modules `answer`, `archive`,
 
 - Outbound requests through the `HttpClient` it was given; nothing else. The circuits are kept in memory, per engine.
 - `BundleService` writes through its stores, one unit of work per tenant touched, and records one event per publication.
+- `PolicyService` writes through its stores and records the lifecycle's events; the checker it is given runs `opa`. `StoredRevisions` reads the bundles' store and keeps what it read in memory.

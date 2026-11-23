@@ -30,6 +30,20 @@ pub fn decision_path(tenant: &TenantContext, namespace: &Namespace, digest: &dyn
     format!("/v1/data/hodor/tenants/t{tenant}/resource_servers/r{resource_server}/decision")
 }
 
+/// The Rego package whose rule `decision` answers for `namespace` in
+/// `tenant`: the decision path as a package, `hodor.tenants.t….resource_servers.r…`.
+#[must_use]
+pub fn decision_package(
+    tenant: &TenantContext,
+    namespace: &Namespace,
+    digest: &dyn Digest,
+) -> String {
+    decision_path(tenant, namespace, digest)
+        .trim_start_matches("/v1/data/")
+        .trim_end_matches("/decision")
+        .replace('/', ".")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

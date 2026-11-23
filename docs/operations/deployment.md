@@ -68,7 +68,7 @@ flowchart TB
 
 ## The worker
 
-`hodor-worker` runs background work: delivering outbox events to their handlers ([Decision 0003](../decisions/0003-context-communication.md)), delivering queued messages to the mail server ([the notification context](../architecture/contexts/notification.md)), the cleanup jobs, and rotating the tenants' signing keys ([the keys context](../architecture/contexts/keys.md#rotation)).
+`hodor-worker` runs background work: delivering outbox events to their handlers ([Decision 0003](../decisions/0003-context-communication.md)), delivering queued messages to the mail server ([the notification context](../architecture/contexts/notification.md)), the cleanup jobs, rotating the tenants' signing keys ([the keys context](../architecture/contexts/keys.md#rotation)), and checking, testing and simulating policy versions for Open Policy Agent ([the policy lifecycle](../architecture/contexts/authorization.md#the-policy-lifecycle)).
 
 The one handler today is the [audit log](../architecture/contexts/audit.md): every event becomes an audit record. An installation without a running worker loses nothing, but its audit log falls behind until a worker runs.
 
@@ -94,6 +94,13 @@ Key rotation runs only when `HODOR_SECRET_KEYS` is set, with the same keys as th
 |---|---|---|
 | `hodor.keys.rotation.passes` | Counter | `outcome`: `ok`, `skipped` (another worker held the lock), `error` |
 | `hodor.keys.rotation.changes` | Counter | `change`: `created`, `activated`, `retired` |
+
+Policy checks run only when `HODOR_OPEN_POLICY_AGENT_BINARY` is set; the image sets it to the `opa` 1.10.1 binary it carries ([Decision 0026](../decisions/0026-policy-checks-in-a-sandbox.md)). The worker refuses to start with a binary of another version, or of another SHA-256 than `HODOR_OPEN_POLICY_AGENT_BINARY_SHA256` when that is set. Without the binary the worker says so once, versions wait, and none can be published. Like rotation, a pass holds an advisory lock, so only one worker checks at a time. Each run is a child process with an empty environment, a directory of its own and a time limit (`HODOR_POLICY_CHECK_TIME_LIMIT_SECONDS`); its memory is bounded only softly (`HODOR_POLICY_CHECK_MEMORY_MEBIBYTES`), so give the worker container a memory limit, as the chart does, and no route out of its network beyond the database, the mail server and the telemetry collector.
+
+| Metric | Kind | Labels |
+|---|---|---|
+| `hodor.policy.check.passes` | Counter | `outcome`: `ok`, `skipped`, `error` |
+| `hodor.policy.check.done` | Counter | `kind`: `version`, `simulation` |
 
 A growing count of `retrying` messages means the mail server is refusing or unreachable; the reason for each message is in the `last_error` column of `notification.message`.
 

@@ -11,7 +11,7 @@ use crate::ports::{
 use crate::reports::{read_decisions, read_status};
 use hodor_kernel::{
     Caller, Clock, Digest, DomainError, DomainEvent, ErrorKind, EventEnvelope, EventMetadata,
-    RandomSource, Secret, TenantContext, TenantId, UnitOfWorkFactory,
+    RandomSource, Secret, TenantContext, TenantId, UnitOfWork, UnitOfWorkFactory,
 };
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -180,11 +180,29 @@ impl BundleService {
         caller: Caller,
     ) -> Result<PublishedBundle, DomainError> {
         let mut uow = self.units.begin(tenant).await?;
+        let bundle = self
+            .publish_in(uow.as_mut(), author, files, signer, caller)
+            .await?;
+        uow.commit().await?;
+        Ok(bundle)
+    }
+
+    /// What [`Self::publish`] does, in a unit of work of the caller's, so
+    /// that the caller may write more in the same transaction.
+    pub(crate) async fn publish_in(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        author: Author,
+        files: &[BundleFile],
+        signer: &dyn BundleSigner,
+        caller: Caller,
+    ) -> Result<PublishedBundle, DomainError> {
+        let tenant = uow.tenant().clone();
         let revision = self
             .bundles
-            .latest(uow.as_mut())
+            .latest_revision(uow)
             .await?
-            .map_or(1, |latest| latest.revision + 1);
+            .map_or(1, |(latest, _)| latest + 1);
         let archive = build(
             tenant.tenant_id(),
             revision,
@@ -199,7 +217,7 @@ impl BundleService {
             archive,
             published_at: self.clock.now(),
         };
-        self.bundles.append(uow.as_mut(), &bundle).await?;
+        self.bundles.append(uow, &bundle).await?;
         let mut digest = String::with_capacity(64);
         for byte in bundle.digest {
             // Writing to a `String` cannot fail.
@@ -217,8 +235,38 @@ impl BundleService {
             self.clock.as_ref(),
         );
         uow.record_event(EventEnvelope::new(metadata, &event)?);
-        uow.commit().await?;
         Ok(bundle)
+    }
+
+    /// The instances that should run `tenant`'s bundle of `author`, and
+    /// the last status each reported for it: its enabled instances that may
+    /// pull it, a shared one only once it has reported this tenant's
+    /// bundle. See "Activation" in the authorization context.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    pub async fn expected_instances(
+        &self,
+        tenant: &TenantContext,
+        author: Author,
+    ) -> Result<Vec<(Instance, Option<InstanceStatus>)>, DomainError> {
+        let statuses = self.statuses(tenant).await?;
+        let id = tenant.tenant_id();
+        Ok(self
+            .instances
+            .list()
+            .await?
+            .into_iter()
+            .filter(|instance| instance.disabled_at().is_none() && instance.may_pull(id, author))
+            .filter_map(|instance| {
+                let status = statuses
+                    .iter()
+                    .find(|status| status.instance == instance.id())
+                    .cloned();
+                (instance.tenant().is_some() || status.is_some()).then_some((instance, status))
+            })
+            .collect())
     }
 
     /// The enabled instance a credential belongs to.
@@ -365,6 +413,33 @@ impl BundleService {
             uow.commit().await?;
         }
         Ok(new)
+    }
+
+    /// The latest revision in the tenant of `uow`, if any.
+    pub(crate) async fn latest_revision_in(
+        &self,
+        uow: &mut dyn UnitOfWork,
+    ) -> Result<Option<u64>, DomainError> {
+        Ok(self
+            .bundles
+            .latest_revision(uow)
+            .await?
+            .map(|(revision, _)| revision))
+    }
+
+    /// `tenant`'s latest bundle, if it published one.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    pub async fn latest(
+        &self,
+        tenant: &TenantContext,
+    ) -> Result<Option<PublishedBundle>, DomainError> {
+        let mut uow = self.units.begin(tenant).await?;
+        let latest = self.bundles.latest(uow.as_mut()).await?;
+        uow.commit().await?;
+        Ok(latest)
     }
 
     /// The last status every instance reported for `tenant`.

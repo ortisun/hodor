@@ -29,7 +29,9 @@ use hodor_authentication::api::{
 };
 use hodor_authorization::api::{AuthorizationService, EngineRegistry, NativeEngine};
 use hodor_authorization_native::CelConditionLanguage;
-use hodor_authorization_opa::api::{BundleService, Instances, OpenPolicyAgentEngine};
+use hodor_authorization_opa::api::{
+    BundleService, Instances, OpenPolicyAgentEngine, StoredRevisions,
+};
 use hodor_credential::api::{
     AccessTokenService, CredentialService, RecoveryCodeService, RelyingParty, TotpService,
     WebAuthnService,
@@ -176,6 +178,16 @@ struct Config {
     /// The bearer token presented to every Open Policy Agent instance.
     #[arg(long, env = "HODOR_OPEN_POLICY_AGENT_TOKEN", hide_env_values = true)]
     open_policy_agent_token: Option<String>,
+
+    /// How long after a tenant publishes a revision an instance may still
+    /// answer with an older one, in seconds. After that its decisions are
+    /// indeterminate.
+    #[arg(
+        long,
+        env = "HODOR_OPEN_POLICY_AGENT_REVISION_LAG_SECONDS",
+        default_value_t = 300
+    )]
+    open_policy_agent_revision_lag_seconds: u32,
 
     /// The LDAP directories identity providers may name, as `host:port`
     /// separated by commas. Empty: no directory can be used.
@@ -754,6 +766,14 @@ fn authorization_engines(
     if let Some(token) = &config.open_policy_agent_token {
         engine = engine.with_token(Secret::from(token.clone()));
     }
+    let engine = engine.with_revisions(
+        Arc::new(StoredRevisions::new(
+            Arc::new(database.clone()),
+            Arc::new(PgBundleStore),
+            Arc::new(SystemClock),
+        )),
+        time::Duration::seconds(i64::from(config.open_policy_agent_revision_lag_seconds)),
+    );
     let mut registry = EngineRegistry::new();
     registry.register(Arc::new(
         NativeEngine::new(

@@ -24,6 +24,7 @@ mod oauth_refresh;
 mod oauth_token;
 mod outbox;
 mod policy_bundles;
+mod policy_lifecycle;
 mod resealing;
 mod session;
 mod tenant;
@@ -55,6 +56,9 @@ pub use oauth_token::PgClientAssertionStore;
 pub use outbox::{DispatchReport, OutboxDispatcher};
 pub use policy_bundles::{
     PgBundleStore, PgInstanceStatusStore, PgInstanceStore, PgUploadedDecisionStore,
+};
+pub use policy_lifecycle::{
+    PgPolicyVersionStore, PgPublicationStore, PgSimulationStore, PolicyCheckJob, PolicyCheckPass,
 };
 pub use resealing::{ResealReport, SEALED_COLUMNS, SealedColumn, reseal_tenant};
 pub use session::PgSessionStore;

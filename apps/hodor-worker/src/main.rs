@@ -2,18 +2,23 @@
 //!
 //! The worker delivers outbox events to their handlers, of which the audit
 //! log is the first, delivers queued messages to the mail server, runs the
-//! cleanup jobs and rotates the tenants' signing keys. See
+//! cleanup jobs, rotates the tenants' signing keys, and checks, tests and
+//! simulates policy versions with the `opa` binary. See
 //! `docs/operations/deployment.md`, "The worker".
 
 use clap::{Parser, ValueEnum};
-use hodor_adapters_crypto::{LocalKeyProvider, SecretKeys, Sha256Digest};
+use hodor_adapters_crypto::{LocalKeyProvider, OsRandom, SecretKeys, Sha256Digest};
+use hodor_adapters_policy_check::{OpaProcessChecker, RunLimits};
 use hodor_adapters_postgres::{
     AccessTokenCleanup, CleanupReport, Database, KeyRotationJob, OutboxDispatcher,
-    PendingAuthorizationCleanup, PgAuditLog, PgKeyStore, PgMessageQueue, PgPendingMessages, PgPool,
-    connect_pool, ping_pool,
+    PendingAuthorizationCleanup, PgAuditLog, PgBundleStore, PgInstanceStatusStore, PgInstanceStore,
+    PgKeyStore, PgMessageQueue, PgPendingMessages, PgPolicyVersionStore, PgPool,
+    PgPublicationStore, PgSimulationStore, PgUploadedDecisionStore, PolicyCheckJob, connect_pool,
+    ping_pool,
 };
 use hodor_adapters_smtp::SmtpSender;
 use hodor_audit::api::{AuditHandler, AuditService};
+use hodor_authorization_opa::api::{BundleService, PolicyService};
 use hodor_kernel::{Clock as _, DomainError, Secret, SystemClock, Timestamp};
 use hodor_keys::api::{KeyService, RotationPolicy};
 use hodor_notification::api::DeliveryService;
@@ -117,6 +122,36 @@ struct Config {
         default_value_t = 600_000
     )]
     key_rotation_interval_ms: u64,
+
+    /// The `opa` binary that checks, tests and simulates policy versions.
+    /// Unset, no version is checked, and so none can be published.
+    #[arg(long, env = "HODOR_OPEN_POLICY_AGENT_BINARY")]
+    open_policy_agent_binary: Option<std::path::PathBuf>,
+
+    /// The SHA-256 the binary must have, as 64 hexadecimal digits. Unset,
+    /// only its version is checked.
+    #[arg(long, env = "HODOR_OPEN_POLICY_AGENT_BINARY_SHA256")]
+    open_policy_agent_binary_sha256: Option<String>,
+
+    /// The longest one run of the binary may take, in seconds.
+    #[arg(
+        long,
+        env = "HODOR_POLICY_CHECK_TIME_LIMIT_SECONDS",
+        default_value_t = 30
+    )]
+    policy_check_time_limit_seconds: u64,
+
+    /// What `GOMEMLIMIT` asks a run to stay under, in mebibytes.
+    #[arg(
+        long,
+        env = "HODOR_POLICY_CHECK_MEMORY_MEBIBYTES",
+        default_value_t = 256
+    )]
+    policy_check_memory_mebibytes: u32,
+
+    /// Pause between passes of the policy check job.
+    #[arg(long, env = "HODOR_POLICY_CHECK_INTERVAL_MS", default_value_t = 2000)]
+    policy_check_interval_ms: u64,
 
     /// Log rendering.
     #[arg(long, env = "HODOR_LOG_FORMAT", value_enum, default_value = "json")]
@@ -260,6 +295,33 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
     if rotation.is_none() {
         tracing::warn!("HODOR_SECRET_KEYS is not set: keys do not rotate and no tenant gets one");
     }
+    let policy_checks = match &config.open_policy_agent_binary {
+        Some(binary) => {
+            let checker = OpaProcessChecker::verified(
+                binary.clone(),
+                config.open_policy_agent_binary_sha256.as_deref(),
+                &Sha256Digest,
+                RunLimits {
+                    time: Duration::from_secs(config.policy_check_time_limit_seconds.max(1)),
+                    memory_mebibytes: config.policy_check_memory_mebibytes,
+                    ..RunLimits::default()
+                },
+                None,
+            )
+            .await?;
+            Some(PolicyCheckJob::new(
+                platform.clone(),
+                policy_service(&database),
+                Arc::new(checker),
+            ))
+        }
+        None => {
+            tracing::warn!(
+                "HODOR_OPEN_POLICY_AGENT_BINARY is not set: no policy version is checked, so none can be published"
+            );
+            None
+        }
+    };
     let dispatcher =
         OutboxDispatcher::new(platform, database, vec![Arc::new(AuditHandler::new(audit))]);
 
@@ -309,6 +371,11 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
         rotation_loop(
             rotation.as_ref(),
             Duration::from_millis(config.key_rotation_interval_ms),
+            stopped.clone(),
+        ),
+        policy_check_loop(
+            policy_checks.as_ref(),
+            Duration::from_millis(config.policy_check_interval_ms),
             stopped,
         ),
     );
@@ -406,6 +473,92 @@ async fn cleanup_loop(
 /// every pause. A pass that looked at as many tenants as it may is
 /// followed by another at once, unless a step failed in one of them.
 /// Without root keys there is nothing to do.
+/// The policy lifecycle over the application role's database.
+fn policy_service(database: &Database) -> PolicyService {
+    let bundles = BundleService::new(
+        Arc::new(PgInstanceStore::new(database.clone())),
+        Arc::new(PgBundleStore),
+        Arc::new(PgInstanceStatusStore),
+        Arc::new(PgUploadedDecisionStore),
+        Arc::new(database.clone()),
+        Arc::new(Sha256Digest),
+        Arc::new(OsRandom),
+        Arc::new(SystemClock),
+    );
+    PolicyService::new(
+        Arc::new(PgPolicyVersionStore),
+        Arc::new(PgPublicationStore),
+        Arc::new(PgSimulationStore),
+        bundles,
+        Arc::new(database.clone()),
+        Arc::new(Sha256Digest),
+        Arc::new(SystemClock),
+    )
+}
+
+/// Runs the policy check job until asked to stop: now, then after every
+/// pause; at once again after a pass that may have left work waiting.
+async fn policy_check_loop(
+    job: Option<&PolicyCheckJob>,
+    interval: Duration,
+    mut stopped: watch::Receiver<bool>,
+) {
+    let Some(job) = job else {
+        return;
+    };
+    let meter = opentelemetry::global::meter("hodor.worker");
+    let passes: Counter<u64> = meter
+        .u64_counter("hodor.policy.check.passes")
+        .with_description("Passes of the policy check job, by outcome")
+        .build();
+    let done: Counter<u64> = meter
+        .u64_counter("hodor.policy.check.done")
+        .with_description("Policy versions checked or tested, and simulations run")
+        .build();
+
+    while !*stopped.borrow() {
+        let pause = match job.run().await {
+            Ok(pass) if pass.skipped => {
+                passes.add(1, &[KeyValue::new("outcome", "skipped")]);
+                Some(interval)
+            }
+            Ok(pass) => {
+                passes.add(1, &[KeyValue::new("outcome", "ok")]);
+                done.add(pass.versions, &[KeyValue::new("kind", "version")]);
+                done.add(pass.simulations, &[KeyValue::new("kind", "simulation")]);
+                if pass.versions + pass.simulations > 0 {
+                    tracing::info!(
+                        tenants = pass.tenants,
+                        versions = pass.versions,
+                        simulations = pass.simulations,
+                        "policy versions checked"
+                    );
+                }
+                for (tenant, error) in &pass.failures {
+                    tracing::warn!(
+                        %tenant,
+                        code = error.code(),
+                        detail = ?error.detail(),
+                        "a policy check could not run in a tenant"
+                    );
+                }
+                (!pass.full || !pass.failures.is_empty()).then_some(interval)
+            }
+            Err(error) => {
+                passes.add(1, &[KeyValue::new("outcome", "error")]);
+                tracing::warn!(code = error.code(), detail = ?error.detail(), "policy check pass failed");
+                Some(interval.max(MIN_ERROR_PAUSE))
+            }
+        };
+        if let Some(pause) = pause {
+            tokio::select! {
+                () = tokio::time::sleep(pause) => {}
+                _ = stopped.changed() => {}
+            }
+        }
+    }
+}
+
 async fn rotation_loop(
     rotation: Option<&KeyRotationJob>,
     interval: Duration,
