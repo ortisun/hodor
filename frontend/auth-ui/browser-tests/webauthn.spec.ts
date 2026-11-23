@@ -142,7 +142,7 @@ test("a person with a passkey signs in with it alone, from the button", async ({
   await expect(page.getByRole("heading", { name: en.accountTitle })).toBeVisible();
   const session = await sessionOf(page);
   expect(session.methods).toEqual(["passkey"]);
-  expect(session.assurance).toBe("multi_factor");
+  expect(session.assurance).toBe("phishing_resistant");
 });
 
 test("a person with a passkey signs in with the one the browser offers in the field", async ({ page }) => {
