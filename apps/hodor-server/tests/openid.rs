@@ -20,7 +20,7 @@ use hodor_kernel::{Caller, Digest as _, Secret, SystemClock, TenantContext};
 use hodor_keys::api::{KeyAlgorithm, KeyService, RotationPolicy};
 use hodor_oauth::api::{
     ApplicationPorts, ApplicationService, ApplicationSettings, AuthenticationMethod, ClientId,
-    ClientSettings, ClientType, CreateClient, CreateResourceServer, GrantType,
+    ClientSettings, ClientType, CreateClient, CreateResourceServer, GrantType, IdTokenAlgorithm,
     ResourceServerSettings, ScopeDefinition, s256_challenge,
 };
 use hodor_tenant::api::{CreateTenant, TenantService};
@@ -49,6 +49,14 @@ fn issuer(slug: &str) -> String {
 /// A tenant with Ana, who has a password and a name, an active signing key,
 /// and a public client of a first-party application with a resource server.
 async fn tenant(database: &TestDatabase, slug: &str) -> ClientId {
+    tenant_signing_with(database, slug, IdTokenAlgorithm::Es256).await
+}
+
+async fn tenant_signing_with(
+    database: &TestDatabase,
+    slug: &str,
+    id_token_algorithm: IdTokenAlgorithm,
+) -> ClientId {
     let units = || Arc::new(database.app().clone());
     let clock = Arc::new(SystemClock);
     let created = TenantService::new(
@@ -186,6 +194,7 @@ async fn tenant(database: &TestDatabase, slug: &str) -> ClientId {
         vec![REDIRECT.to_owned()],
     );
     settings.authentication_method = AuthenticationMethod::None;
+    settings.id_token_algorithm = id_token_algorithm;
     settings.allowed_scopes = ["openid", "profile", "email", "payroll:read"]
         .map(str::to_owned)
         .to_vec();
@@ -579,6 +588,93 @@ async fn an_application_learns_who_signed_in_and_reads_their_claims() {
 }
 
 /// Who Ana is in a tenant, by its slug.
+#[tokio::test]
+async fn a_client_that_asks_for_rs256_gets_id_tokens_from_the_published_rsa_key() {
+    let database = TestDatabase::start().await;
+    let client_id = tenant_signing_with(&database, "acme", IdTokenAlgorithm::Rs256).await;
+    let server = server(&database).await;
+    let key_set = || async {
+        reqwest::get(format!("{}/t/acme/oauth2/jwks", server.base))
+            .await
+            .expect("key set")
+            .json::<JwkSet>()
+            .await
+            .expect("JSON")
+    };
+    let rsa = |set: &JwkSet| {
+        set.keys
+            .iter()
+            .filter(|key| key.common.key_algorithm == Some(jsonwebtoken::jwk::KeyAlgorithm::RS256))
+            .count()
+    };
+    // The first read of the key set gives the tenant a key for every
+    // algorithm its tokens may be signed with, before any such token.
+    let before = key_set().await;
+    assert_eq!(
+        rsa(&before),
+        1,
+        "an RSA key is published before the first RS256 token"
+    );
+
+    let mut browser = Browser::not_following(&server);
+    browser.sign_in("acme", "ana@example.com", PASSWORD).await;
+    let first = code(
+        &mut browser,
+        "acme",
+        &authorize_query(client_id, "openid", &[("nonce", NONCE)]),
+    )
+    .await;
+    let tokens = redeem(&server, "acme", client_id, &first).await;
+    let id_token = tokens["id_token"].as_str().expect("an ID token");
+    let header = decode_header(id_token).expect("header");
+    assert_eq!(header.alg, Algorithm::RS256);
+    let published = key_set().await;
+    assert_eq!(rsa(&published), 1, "no other key was made for it");
+    assert!(
+        before.find(header.kid.as_deref().expect("kid")).is_some(),
+        "a relying party that read the set before finds the key that signed"
+    );
+    let jwk = published
+        .find(&header.kid.expect("kid"))
+        .expect("the key that signed");
+    let mut validation = Validation::new(Algorithm::RS256);
+    validation.set_audience(&[client_id.to_string()]);
+    validation.set_issuer(&[issuer("acme")]);
+    let claims = decode::<Value>(
+        id_token,
+        &DecodingKey::from_jwk(jwk).expect("key"),
+        &validation,
+    )
+    .expect("the ID token checks")
+    .claims;
+    assert_eq!(claims["nonce"], NONCE);
+
+    // The access token is still signed with the default.
+    let access =
+        decode_header(tokens["access_token"].as_str().expect("access token")).expect("header");
+    assert_eq!(access.alg, Algorithm::ES256);
+
+    // A second token is signed by the same key: none is made again.
+    let again = code(
+        &mut browser,
+        "acme",
+        &authorize_query(client_id, "openid", &[("nonce", NONCE)]),
+    )
+    .await;
+    redeem(&server, "acme", client_id, &again).await;
+    assert_eq!(rsa(&key_set().await), 1);
+
+    // An ID token signed with RS256 is a hint logout accepts.
+    let (status, location, _) = browser
+        .navigate(
+            Method::GET,
+            &format!("/t/acme/oauth2/logout?id_token_hint={id_token}"),
+            None,
+        )
+        .await;
+    assert_ne!(status, StatusCode::BAD_REQUEST, "{location:?}");
+}
+
 async fn ana_of(database: &TestDatabase, slug: &str) -> (TenantContext, hodor_kernel::UserId) {
     let units = Arc::new(database.app().clone());
     let entry = TenantService::new(

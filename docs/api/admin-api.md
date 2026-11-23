@@ -389,6 +389,7 @@ A client:
   "post_logout_redirect_uris": ["https://billing.example.com/signed-out"],
   "allowed_scopes": ["openid", "email", "invoices:read"],
   "require_pkce": true,
+  "id_token_signed_response_alg": "ES256",
   "token_policy": {
     "access_token_seconds": 300,
     "id_token_seconds": 300,
@@ -419,9 +420,9 @@ A client:
 }
 ```
 
-`name`, `type` and `grant_types` are required. `authentication_method` is `client_secret_basic` for a confidential client and `none` for a public one unless given; `redirect_uris`, `post_logout_redirect_uris` and `allowed_scopes` are empty, `require_pkce` is `true` and `token_policy` is the default of the OAuth context unless given, and `token_policy` may give any of its four fields. `secret_lifetime_days`, from 1 to 730, is how long the first secret lives; 365 unless given. The answer is `201` with the client. **A client with a secret method also has `client_secret` in this answer, once**: the secret itself, which no other answer holds and which Hodor cannot show again.
+`name`, `type` and `grant_types` are required. `authentication_method` is `client_secret_basic` for a confidential client and `none` for a public one unless given; `redirect_uris`, `post_logout_redirect_uris` and `allowed_scopes` are empty, `require_pkce` is `true`, `id_token_signed_response_alg` is `ES256` (or `RS256`; how its ID tokens are signed) and `token_policy` is the default of the OAuth context unless given, and `token_policy` may give any of its four fields. `secret_lifetime_days`, from 1 to 730, is how long the first secret lives; 365 unless given. The answer is `201` with the client. **A client with a secret method also has `client_secret` in this answer, once**: the secret itself, which no other answer holds and which Hodor cannot show again.
 
-`PATCH /clients/{client_id}` takes any of `name`, `authentication_method`, `grant_types`, `redirect_uris`, `post_logout_redirect_uris`, `allowed_scopes`, `require_pkce` and `token_policy` (with any of its fields); what is left out stays as it is, and the result is checked against every rule at once. The type and the application never change. Moving away from a secret method drops the client's secrets, and moving away from `private_key_jwt` drops its keys. The answer is `200` with the client.
+`PATCH /clients/{client_id}` takes any of `name`, `authentication_method`, `grant_types`, `redirect_uris`, `post_logout_redirect_uris`, `allowed_scopes`, `require_pkce`, `id_token_signed_response_alg` and `token_policy` (with any of its fields); what is left out stays as it is, and the result is checked against every rule at once. The type and the application never change. Moving away from a secret method drops the client's secrets, and moving away from `private_key_jwt` drops its keys. The answer is `200` with the client.
 
 `POST /clients/{client_id}/secrets` with `{ "lifetime_days": 365, "keep_previous_days": 7 }` makes a new secret. Both fields are optional: the new secret lives 365 days and the newest previous one keeps working 7 more days unless given; `keep_previous_days` is 0 to 30, and 0 ends it at once. Every older secret ends at once. The answer is `201` with `{ "id": "…", "client_secret": "hodor_cs_…", "created_at": "…", "expires_at": "…" }`, once. A client without a secret method is refused with `422` and `oauth.client_secret_not_allowed`.
 

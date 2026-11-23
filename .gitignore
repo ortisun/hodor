@@ -13,3 +13,7 @@
 
 # What the test environments start and keep on this machine.
 deploy/test-environment/.local/
+
+# The OpenID conformance run: its dependencies and the results it writes.
+deploy/conformance/node_modules/
+deploy/conformance/conformance-results.json

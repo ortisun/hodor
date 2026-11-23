@@ -12,6 +12,10 @@ use hodor_kernel::{
 use std::sync::Arc;
 use time::Duration;
 
+/// Why a version made as the first of its algorithm is revoked when another
+/// request made one at the same moment.
+pub const LOST_FIRST_RACE: &str = "lost the race to become the first key of its algorithm";
+
 /// A signature, and the version that made it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Signature {
@@ -108,6 +112,56 @@ impl KeyService {
         self.record(uow.as_mut(), caller, &event)?;
         uow.commit().await?;
         Ok(version)
+    }
+
+    /// The active version of a signing algorithm, made and activated at
+    /// once when the tenant has none: the first time something must sign
+    /// with an algorithm other than the default. When another request makes
+    /// the first version at the same moment, the version made here is
+    /// revoked and the other one is returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Invalid` `keys.algorithm_unsuitable` for an algorithm that
+    /// does not sign, and an error if the provider or storage fails.
+    pub async fn ensure_active(
+        &self,
+        tenant: &TenantContext,
+        algorithm: KeyAlgorithm,
+        caller: Caller,
+    ) -> Result<KeyVersion, DomainError> {
+        if algorithm.key_use() != KeyUse::Signing {
+            return Err(DomainError::invalid(
+                "keys.algorithm_unsuitable",
+                "the algorithm does not sign",
+            ));
+        }
+        if let Some(active) = self
+            .key_set(tenant, KeyUse::Signing)
+            .await?
+            .active(algorithm)
+        {
+            return Ok(active.clone());
+        }
+        let made = self.create_version(tenant, algorithm, caller).await?;
+        match self.activate_first(tenant, made.id(), caller).await {
+            Ok(active) => Ok(active),
+            Err(error)
+                if matches!(
+                    error.code(),
+                    "keys.activation_conflict" | "keys.already_active"
+                ) =>
+            {
+                self.revoke(tenant, made.id(), LOST_FIRST_RACE, caller)
+                    .await?;
+                self.key_set(tenant, KeyUse::Signing)
+                    .await?
+                    .active(algorithm)
+                    .cloned()
+                    .ok_or(error)
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// Makes a pending version the active one of its algorithm. The version

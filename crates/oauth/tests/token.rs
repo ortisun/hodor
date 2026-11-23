@@ -843,7 +843,7 @@ async fn an_unknown_disabled_or_foreign_client_gets_nothing() {
 }
 
 #[tokio::test]
-async fn a_tenant_without_an_active_key_cannot_issue_tokens() {
+async fn a_tenant_whose_key_was_revoked_signs_with_a_new_one_never_the_revoked() {
     let world = world();
     let (tenant, application) = tenant(&world).await;
     let (client, _) = client(
@@ -867,16 +867,34 @@ async fn a_tenant_without_an_active_key_cannot_issue_tokens() {
         .expect("revoked");
     let id = client.to_string();
     let code = code_for(&world, &tenant, client, "read", &[]).await;
-    let error = ask(
+    let tokens = ask(
         &world,
         &tenant,
         None,
         code_form(&code, &[("client_id", &id)]),
     )
     .await
-    .expect_err("no key");
-    assert_eq!(error.error, "server_error");
-    assert!(error.is_server_error());
+    .expect("a new key signs");
+    let header = decoded(
+        tokens
+            .access_token
+            .expose()
+            .split('.')
+            .next()
+            .expect("header"),
+    );
+    assert_ne!(
+        header["kid"],
+        active.id().to_string(),
+        "never the revoked key"
+    );
+    let published = world.keys.published_keys(&tenant).await.expect("keys");
+    assert_eq!(
+        published.len(),
+        1,
+        "the new key is published, the revoked one is not"
+    );
+    assert_eq!(header["kid"], published[0].id().to_string());
 }
 
 #[tokio::test]

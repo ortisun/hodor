@@ -649,6 +649,8 @@ async fn a_client_change_replaces_its_secrets_and_keys(ports: Ports<'_>) {
     let mut keyed = stored.clone();
     let mut settings = keyed.snapshot().settings.clone();
     settings.authentication_method = AuthenticationMethod::PrivateKeyJwt;
+    // And its ID tokens are now signed with RS256, which is kept too.
+    settings.id_token_algorithm = crate::api::IdTokenAlgorithm::Rs256;
     keyed.change(settings, later).expect("changed");
     for kid in ["second", "first"] {
         let key = ClientKey::parse(
@@ -673,6 +675,10 @@ async fn a_client_change_replaces_its_secrets_and_keys(ports: Ports<'_>) {
     assert!(stored.snapshot().secrets.is_empty());
     assert_eq!(stored.snapshot().keys, keyed.snapshot().keys);
     assert_eq!(stored.snapshot().settings, keyed.snapshot().settings);
+    assert_eq!(
+        stored.snapshot().settings.id_token_algorithm,
+        crate::api::IdTokenAlgorithm::Rs256
+    );
     assert_eq!(stored.snapshot().version, 2);
 }
 

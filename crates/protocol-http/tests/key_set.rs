@@ -16,7 +16,6 @@ use hodor_protocol_http::{
 };
 use http_body_util::BodyExt as _;
 use std::sync::Arc;
-use time::Duration;
 use tower::ServiceExt as _;
 
 struct Tenants {
@@ -104,25 +103,51 @@ impl World {
         }
     }
 
-    /// The key identifiers Acme publishes, in order.
+    /// The key identifiers a tenant publishes, in order.
     async fn published(&self, slug: &str) -> Vec<String> {
+        self.published_of(slug, None).await
+    }
+
+    /// The identifiers of the ES256 keys a tenant publishes, in order.
+    async fn published_es256(&self, slug: &str) -> Vec<String> {
+        self.published_of(slug, Some("ES256")).await
+    }
+
+    async fn published_of(&self, slug: &str, algorithm: Option<&str>) -> Vec<String> {
         let reply = self.get(&format!("/t/{slug}/oauth2/jwks")).await;
         assert_eq!(reply.status, StatusCode::OK);
         reply.body["keys"]
             .as_array()
             .expect("keys")
             .iter()
+            .filter(|key| algorithm.is_none_or(|wanted| key["alg"] == wanted))
             .map(|key| key["kid"].as_str().expect("kid").to_owned())
             .collect()
     }
 }
 
 #[tokio::test]
-async fn a_tenant_without_keys_publishes_an_empty_set_that_may_be_kept_five_minutes() {
+async fn a_tenant_without_keys_gets_one_for_each_token_algorithm_on_the_first_read_of_its_set() {
     let world = world();
     let reply = world.get("/t/acme/oauth2/jwks").await;
     assert_eq!(reply.status, StatusCode::OK);
-    assert_eq!(reply.body, serde_json::json!({ "keys": [] }));
+    let mut algorithms: Vec<_> = reply.body["keys"]
+        .as_array()
+        .expect("keys")
+        .iter()
+        .map(|key| key["alg"].as_str().expect("alg").to_owned())
+        .collect();
+    algorithms.sort();
+    assert_eq!(
+        algorithms,
+        ["ES256", "RS256"],
+        "the key of the first token is known before it"
+    );
+    assert_eq!(
+        world.published("acme").await.len(),
+        2,
+        "a second read makes nothing more"
+    );
     assert_eq!(
         reply.headers[header::CACHE_CONTROL],
         "public, max-age=300",
@@ -191,7 +216,7 @@ async fn pending_active_and_retiring_keys_are_published_and_retired_and_revoked_
         .rotate_due(&world.acme, &policy, Caller::system())
         .await
         .expect("first key");
-    let first = world.published("acme").await;
+    let first = world.published_es256("acme").await;
     assert_eq!(first.len(), 1);
 
     // The next key is published a day ahead of signing.
@@ -201,7 +226,7 @@ async fn pending_active_and_retiring_keys_are_published_and_retired_and_revoked_
         .rotate_due(&world.acme, &policy, Caller::system())
         .await
         .expect("prepare");
-    let both = world.published("acme").await;
+    let both = world.published_es256("acme").await;
     assert_eq!(both.len(), 2);
     assert_eq!(both[1], first[0]);
 
@@ -212,7 +237,7 @@ async fn pending_active_and_retiring_keys_are_published_and_retired_and_revoked_
         .rotate_due(&world.acme, &policy, Caller::system())
         .await
         .expect("activate");
-    assert_eq!(world.published("acme").await, both);
+    assert_eq!(world.published_es256("acme").await, both);
 
     // Retired after the overlap: gone.
     world.clock.advance(policy.overlap());
@@ -221,24 +246,17 @@ async fn pending_active_and_retiring_keys_are_published_and_retired_and_revoked_
         .rotate_due(&world.acme, &policy, Caller::system())
         .await
         .expect("retire");
-    assert_eq!(world.published("acme").await, vec![both[0].clone()]);
+    assert_eq!(world.published_es256("acme").await, vec![both[0].clone()]);
 
-    // Revoked: gone at once, with nothing published in its place until
-    // rotation makes a new key.
+    // Revoked: gone at once, and a new key is published in its place, never
+    // the revoked one.
     let revoked = both[0].parse().expect("identifier");
     world
         .keys
         .revoke(&world.acme, revoked, "leaked", Caller::system())
         .await
         .expect("revoke");
-    assert!(world.published("acme").await.is_empty());
-    world.clock.advance(Duration::minutes(1));
-    world
-        .keys
-        .rotate_due(&world.acme, &policy, Caller::system())
-        .await
-        .expect("replace");
-    let replaced = world.published("acme").await;
+    let replaced = world.published_es256("acme").await;
     assert_eq!(replaced.len(), 1);
     assert!(!both.contains(&replaced[0]));
 }
@@ -252,7 +270,6 @@ async fn a_tenant_publishes_only_its_own_keys() {
         .rotate_due(&world.acme, &policy, Caller::system())
         .await
         .expect("acme");
-    assert!(world.published("globex").await.is_empty());
     world
         .keys
         .rotate_due(&world.globex, &policy, Caller::system())
@@ -260,8 +277,11 @@ async fn a_tenant_publishes_only_its_own_keys() {
         .expect("globex");
     let acme = world.published("acme").await;
     let globex = world.published("globex").await;
-    assert_eq!((acme.len(), globex.len()), (1, 1));
-    assert_ne!(acme, globex);
+    assert_eq!((acme.len(), globex.len()), (2, 2), "ES256 and RS256 each");
+    assert!(
+        acme.iter().all(|key| !globex.contains(key)),
+        "no key of one tenant is in the other's set"
+    );
 
     let unknown = world.get("/t/initech/oauth2/jwks").await;
     assert_eq!(unknown.status, StatusCode::NOT_FOUND);

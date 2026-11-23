@@ -1,0 +1,142 @@
+# The OpenID conformance suite of the OpenID Foundation, run against Hodor.
+# docs/operations/conformance.md says what runs, how and why.
+#
+# NOT FOR ANYTHING REAL: every password and key here is written in the
+# repository, and the suite and Hodor trust whatever certificate the other
+# shows.
+#
+#   HODOR_IMAGE=hodor:conformance docker compose -f deploy/conformance/compose.yaml up --wait
+#   node deploy/conformance/run.mjs
+#   docker compose -f deploy/conformance/compose.yaml down --volumes
+#
+# Two names reach this stack, from a browser on this machine and from inside
+# it alike:
+#   https://hodor.localhost:8453        Hodor, behind a web server with its own certificate
+#   https://localhost.emobix.co.uk:8443 the suite (a public name that points to 127.0.0.1)
+
+name: hodor-conformance
+
+x-hodor: &hodor
+  image: ${HODOR_IMAGE:?Set HODOR_IMAGE to the Hodor image to test, such as hodor:conformance}
+  pull_policy: never
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: hodor_owner
+      POSTGRES_PASSWORD: conformance-owner
+      POSTGRES_DB: hodor
+    volumes:
+      - ../docker/postgres-init.sql:/docker-entrypoint-initdb.d/10-roles.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hodor_owner -d hodor"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  migrate:
+    <<: *hodor
+    entrypoint: ["/usr/local/bin/hodor-cli"]
+    command: ["migrate"]
+    environment:
+      HODOR_DATABASE_OWNER_URL: postgres://hodor_owner:conformance-owner@postgres:5432/hodor
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  system-tenant:
+    <<: *hodor
+    entrypoint: ["/usr/local/bin/hodor-cli"]
+    command: ["tenant", "create-system"]
+    environment:
+      HODOR_DATABASE_URL: postgres://hodor_server:dev-server@postgres:5432/hodor
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
+  # Accepts every message and delivers none: the registration link of the
+  # person the suite signs in as is read from its interface.
+  mail:
+    image: axllent/mailpit:v1.27
+    ports:
+      - "127.0.0.1:${HODOR_CONFORMANCE_MAIL_PORT:-28025}:8025"
+
+  hodor:
+    <<: *hodor
+    environment:
+      HODOR_DATABASE_URL: postgres://hodor_server:dev-server@postgres:5432/hodor
+      HODOR_PUBLIC_URL: https://hodor.localhost:8453
+      HODOR_SECRET_KEYS: conformance:gV8TjmTiZoYOlhsN4OdTTiWMwWa1t/o5RPNGCdbBNro=
+      HODOR_LOG_FORMAT: pretty
+    depends_on:
+      system-tenant:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/hodor-cli", "probe", "--addr", "127.0.0.1:9090", "--path", "/readyz"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  worker:
+    <<: *hodor
+    entrypoint: ["/usr/local/bin/hodor-worker"]
+    environment:
+      HODOR_DATABASE_URL: postgres://hodor_worker:dev-worker@postgres:5432/hodor
+      HODOR_PLATFORM_DATABASE_URL: postgres://hodor_worker_platform:dev-worker@postgres:5432/hodor
+      HODOR_SECRET_KEYS: conformance:gV8TjmTiZoYOlhsN4OdTTiWMwWa1t/o5RPNGCdbBNro=
+      HODOR_SMTP_URL: smtp://mail:1025
+      HODOR_MAIL_FROM: Hodor <no-reply@hodor.localhost>
+    depends_on:
+      system-tenant:
+        condition: service_completed_successfully
+
+  # HTTPS in front of Hodor, as the installation packages put it: the
+  # session cookies are `Secure`, and the suite expects an issuer over HTTPS.
+  https:
+    image: caddy:2.10-alpine
+    command: ["caddy", "reverse-proxy", "--from", "https://hodor.localhost:8453", "--to", "hodor:8080", "--internal-certs"]
+    ports:
+      - "127.0.0.1:8453:8453"
+    networks:
+      default:
+        aliases:
+          - hodor.localhost
+    depends_on:
+      hodor:
+        condition: service_healthy
+
+  mongodb:
+    image: mongo:6.0.13
+
+  # The suite. Its web server below reaches it by the name `server`.
+  server:
+    image: registry.gitlab.com/openid/conformance-suite:release-v5.3.4
+    environment:
+      BASE_URL: https://localhost.emobix.co.uk:8443
+      BASE_MTLS_URL: https://localhost.emobix.co.uk:8444
+      MONGODB_HOST: mongodb
+      SPRING_PROFILES_ACTIVE: dev
+      # Signing in to the suite's own interface is off in its development
+      # profile, but it still wants these placeholders to start.
+      OIDC_GOOGLE_CLIENTID: google-client
+      OIDC_GOOGLE_SECRET: google-secret
+      OIDC_GITLAB_CLIENTID: gitlab-client
+      OIDC_GITLAB_SECRET: gitlab-secret
+    depends_on:
+      - mongodb
+
+  # The suite's own web server, in front of it.
+  suite-https:
+    image: registry.gitlab.com/openid/conformance-suite/nginx:release-v5.3.4
+    ports:
+      - "127.0.0.1:8443:8443"
+    networks:
+      default:
+        aliases:
+          # The suite calls its own public name, which outside points to this machine.
+          - localhost.emobix.co.uk
+    depends_on:
+      - server

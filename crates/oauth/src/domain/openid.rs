@@ -5,7 +5,7 @@
 //! Specified in `docs/architecture/contexts/oauth.md`, "OpenID Provider".
 
 use crate::domain::authorization::AuthorizationCode;
-use crate::domain::client::ClientId;
+use crate::domain::client::{ClientId, IdTokenAlgorithm};
 use crate::domain::token::decode_json;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -413,7 +413,7 @@ pub fn discovery_document(issuer: &str, acr_values: &[&str]) -> Value {
             "client_secret_basic", "client_secret_post", "private_key_jwt"
         ],
         "introspection_endpoint_auth_signing_alg_values_supported": ["ES256", "RS256", "PS256"],
-        "id_token_signing_alg_values_supported": ["ES256"],
+        "id_token_signing_alg_values_supported": IdTokenAlgorithm::ALL.map(IdTokenAlgorithm::as_str),
         "subject_types_supported": ["public"],
         "scopes_supported": ["openid", "profile", "email"],
         "claims_supported": [

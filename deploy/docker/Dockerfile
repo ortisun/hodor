@@ -37,9 +37,15 @@ RUN case "$TARGETARCH" in \
 FROM rust:1.98-bookworm AS build
 WORKDIR /src
 COPY . .
+# The target directory is a cache shared by every build on the machine, of
+# every branch. Cargo decides what to rebuild by comparing modification
+# times, and COPY keeps those of the checkout, so a file older than what
+# another branch's build left behind would be taken as built: the workspace's
+# own files are touched, and only the dependencies come from the cache.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
-    cargo build --release --locked \
+    find . -path ./target -prune -o -type f -exec touch {} + \
+    && cargo build --release --locked \
         --bin hodor-server --bin hodor-worker --bin hodor-cli \
     && mkdir /out \
     && cp target/release/hodor-server target/release/hodor-worker target/release/hodor-cli /out/

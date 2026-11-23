@@ -19,7 +19,7 @@ pub mod api {
         FirstFormatSecrets, KeyProvider, KeyStore, SealingStateStore,
     };
     pub use crate::application::secret_box::{FORMAT as SEALED_FORMAT, LOST_RACE, TenantSecretBox};
-    pub use crate::application::service::{KeyService, RotationReport, Signature};
+    pub use crate::application::service::{KeyService, LOST_FIRST_RACE, RotationReport, Signature};
     pub use crate::domain::event::KeyEvent;
     pub use crate::domain::key::{
         GeneratedKey, KeyAlgorithm, KeyMaterial, KeyState, KeyUse, KeyVersion, KeyVersionId,

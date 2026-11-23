@@ -20,8 +20,8 @@ use hodor_kernel::{DomainError, TenantContext};
 use hodor_oauth::api::{
     Application, ApplicationId, ApplicationSettings, AuthenticationMethod, Client, ClientId,
     ClientSecret, ClientSecretId, ClientSettings, ClientType, CreateClient, CreateResourceServer,
-    GrantType, ResourceServer, ResourceServerId, ResourceServerSettings, RotateSecret,
-    ScopeDefinition, Status, TokenPolicy,
+    GrantType, IdTokenAlgorithm, ResourceServer, ResourceServerId, ResourceServerSettings,
+    RotateSecret, ScopeDefinition, Status, TokenPolicy,
 };
 use serde::{Deserialize, Serialize};
 use time::Duration;
@@ -403,6 +403,7 @@ struct ClientBody {
     post_logout_redirect_uris: Vec<String>,
     allowed_scopes: Vec<String>,
     require_pkce: bool,
+    id_token_signed_response_alg: &'static str,
     token_policy: TokenPolicyBody,
     /// What identifies each secret and when it expires: never the secret
     /// or its hash.
@@ -429,6 +430,7 @@ impl From<&Client> for ClientBody {
             post_logout_redirect_uris: settings.post_logout_redirect_uris.clone(),
             allowed_scopes: settings.allowed_scopes.clone(),
             require_pkce: settings.require_pkce,
+            id_token_signed_response_alg: settings.id_token_algorithm.as_str(),
             token_policy: TokenPolicyBody {
                 access_token_seconds: policy.access_token.whole_seconds(),
                 id_token_seconds: policy.id_token.whole_seconds(),
@@ -484,6 +486,7 @@ struct NewClientBody {
     post_logout_redirect_uris: Option<Vec<String>>,
     allowed_scopes: Option<Vec<String>>,
     require_pkce: Option<bool>,
+    id_token_signed_response_alg: Option<String>,
     token_policy: Option<TokenPolicyInput>,
     secret_lifetime_days: Option<u32>,
 }
@@ -498,6 +501,7 @@ struct ClientChangesBody {
     post_logout_redirect_uris: Option<Vec<String>>,
     allowed_scopes: Option<Vec<String>>,
     require_pkce: Option<bool>,
+    id_token_signed_response_alg: Option<String>,
     token_policy: Option<TokenPolicyInput>,
 }
 
@@ -595,6 +599,10 @@ async fn create_client(
             if let Some(require_pkce) = new.require_pkce {
                 settings.require_pkce = require_pkce;
             }
+            if let Some(algorithm) = new.id_token_signed_response_alg {
+                settings.id_token_algorithm =
+                    IdTokenAlgorithm::parse(&algorithm).map_err(failed)?;
+            }
             if let Some(policy) = new.token_policy {
                 settings.token_policy = policy.over(settings.token_policy);
             }
@@ -681,6 +689,10 @@ async fn change_client(
                     .unwrap_or(now.post_logout_redirect_uris),
                 allowed_scopes: changes.allowed_scopes.unwrap_or(now.allowed_scopes),
                 require_pkce: changes.require_pkce.unwrap_or(now.require_pkce),
+                id_token_algorithm: match changes.id_token_signed_response_alg {
+                    Some(algorithm) => IdTokenAlgorithm::parse(&algorithm).map_err(failed)?,
+                    None => now.id_token_algorithm,
+                },
                 token_policy: changes
                     .token_policy
                     .map_or(now.token_policy, |given| given.over(now.token_policy)),

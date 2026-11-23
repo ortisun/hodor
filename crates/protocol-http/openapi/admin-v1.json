@@ -4794,6 +4794,7 @@
           "post_logout_redirect_uris",
           "allowed_scopes",
           "require_pkce",
+          "id_token_signed_response_alg",
           "token_policy",
           "secrets",
           "keys",
@@ -4861,6 +4862,14 @@
           },
           "require_pkce": {
             "type": "boolean"
+          },
+          "id_token_signed_response_alg": {
+            "type": "string",
+            "enum": [
+              "ES256",
+              "RS256"
+            ],
+            "description": "How the client's ID tokens are signed. ES256 unless given."
           },
           "token_policy": {
             "$ref": "#/components/schemas/TokenPolicy"
@@ -5010,6 +5019,14 @@
           "require_pkce": {
             "type": "boolean"
           },
+          "id_token_signed_response_alg": {
+            "type": "string",
+            "enum": [
+              "ES256",
+              "RS256"
+            ],
+            "description": "How the client's ID tokens are signed. ES256 unless given."
+          },
           "token_policy": {
             "$ref": "#/components/schemas/TokenPolicyInput"
           },
@@ -5069,6 +5086,14 @@
           },
           "require_pkce": {
             "type": "boolean"
+          },
+          "id_token_signed_response_alg": {
+            "type": "string",
+            "enum": [
+              "ES256",
+              "RS256"
+            ],
+            "description": "How the client's ID tokens are signed. ES256 unless given."
           },
           "token_policy": {
             "$ref": "#/components/schemas/TokenPolicyInput"

@@ -111,9 +111,12 @@ refresh tokens is `DEFAULT_RETRY_WINDOW`, 10 seconds;
   - The access token: claims from `claims_for` with a `TokenSubject`,
     signed with `KeyAlgorithm::DEFAULT_SIGNING` through
     `KeyService::sign_naming_key` so that the header's `kid` is the version
-    that signs; `keys.no_active_version` is `server_error`.
+    that signs. `TokenService::signed` makes the tenant's first key of the
+    algorithm with `KeyService::ensure_active` when it has none, and only
+    when even then nothing signs is it `server_error`.
   - The ID token, when the scopes hold `openid`: claims from
     `id_token_claims`, signed the same way with the client's ID token
+    algorithm (`ClientSettings::id_token_algorithm`, ES256 or RS256) and
     lifetime, header `typ` `JWT`.
   - The register: every access token issued is recorded with
     `AccessTokenRecordStore::record` in the unit of work of its event: the
