@@ -442,14 +442,14 @@ The access token is a JSON Web Token per [RFC 9068](https://www.rfc-editor.org/r
 | Header | `alg` `ES256`, `typ` `at+jwt`, `kid` the identifier of the key version that signed, as the [published key set](keys.md) names it |
 | `iss` | The tenant's issuer |
 | `sub` | The person's user identifier |
-| `aud` | The audiences of the code: the resource servers of the request. A request that named none and asked only for OpenID Connect's scopes gets the issuer itself as its audience, for Hodor's own endpoints such as UserInfo (Issue-59) |
+| `aud` | The audiences of the code: the resource servers of the request. When the scopes hold `openid`, the issuer is one of the audiences too, so that the same token reads [UserInfo](#userinfo); a request that named no resource server gets the issuer alone |
 | `client_id` | The client |
 | `scope` | The scopes of the code, separated by spaces |
 | `iat`, `exp` | When it was issued, and that plus the client's access token lifetime |
 | `jti` | 16 random bytes, base64url, unique to this token |
 | `auth_time` | When the person signed in |
 
-`acr` and `amr` are added with assurance levels (Issue-69): the methods a session records, such as `password` and `totp`, are Hodor's own names, and `amr` takes the names of [RFC 8176](https://www.rfc-editor.org/rfc/rfc8176), which need a mapping that Issue-69 decides. `sid` comes with logout (Issue-60).
+`acr` and `amr` are in the [ID token](#the-id-token), not in the access token, which is for resource servers. `sid` comes with logout (Issue-60).
 
 **No signed token outlives the rotation overlap.** The keys context keeps a retiring key published for `RotationPolicy::LONGEST_SIGNED_LIFETIME`, one hour, after it stops signing. The token policy therefore refuses an access or ID token lifetime longer than that, and the token endpoint refuses to sign one: a token checked after its key left the key set would be refused by everyone.
 
@@ -469,7 +469,7 @@ A tenant without an active signing key cannot issue tokens. The worker makes the
 - **Caching:** the answer carries `Cache-Control: no-store` and `Pragma: no-cache`.
 - **Errors:** they are JSON with `error` and `error_description` ([RFC 6749, section 5.2](https://www.rfc-editor.org/rfc/rfc6749#section-5.2)).
 - **Refresh token:** `refresh_token` is added by Issue-57.
-- **ID token:** `id_token` is added by Issue-59 when the scopes hold `openid`.
+- **ID token:** `id_token` is added when the scopes hold `openid`, as [the ID token](#the-id-token) says.
 
 ### Events
 
@@ -495,7 +495,136 @@ Issue-58.
 
 ## OpenID Provider
 
-Issue-59 and Issue-60.
+Issue-59 makes Hodor an OpenID Provider ([OpenID Connect Core 1.0](https://openid.net/specs/openid-connect-core-1_0.html)): a client that asks for the scope `openid` learns who signed in from an ID token, reads the person's claims at UserInfo, and finds everything it needs in the tenant's discovery document. Logout initiated by the relying party is Issue-60. The sequence is [sequence 3](../../protocols/sequences.md#3-openid-provider).
+
+### The ID token
+
+When the scopes of a code hold `openid`, the token endpoint answers with an `id_token` beside the access token. It is a JSON Web Token signed by the [keys context](keys.md) exactly as the access token is, with the tenant's active `ES256` key, and it lives the client's ID token lifetime (five minutes unless changed, never more than `TokenPolicy::LONGEST_SIGNED_LIFETIME`).
+
+| Part | Value |
+|---|---|
+| Header | `alg` `ES256`, `typ` `JWT`, `kid` the key version that signed |
+| `iss` | The tenant's issuer |
+| `sub` | The person's user identifier. Subjects are public: the same for every client of the tenant. Pairwise subjects are left to Phase 2 ([Decision 0023](../../decisions/0023-what-0.2.0-holds.md)) |
+| `aud` | The client's identifier, alone |
+| `iat`, `exp` | When it was issued, and that plus the client's ID token lifetime |
+| `auth_time` | When the person signed in |
+| `nonce` | The `nonce` of the authorization request, exactly as it was sent. Left out when the request had none |
+| `acr` | The assurance the sign-in reached, as the next section says |
+| `amr` | The methods of the sign-in, as the next section says. Left out when none of them has a name in RFC 8176 |
+| `at_hash` | The base64url of the left half of the SHA-256 of the access token, so that the client can tell the two belong together |
+
+`azp` is not added: the audience is always the one client, and OpenID Connect asks for `azp` only when it is not.
+
+**The person's claims are not in the ID token.** OpenID Connect returns the claims of the `profile` and `email` scopes from UserInfo whenever an access token is issued as well ([section 5.4](https://openid.net/specs/openid-connect-core-1_0.html#ScopeClaims)), and Hodor always issues one. A client that wants the person's name or address reads UserInfo with the access token. This keeps personal data out of a token that a browser may hold.
+
+### Methods and assurance
+
+A session records the methods of its sign-in by Hodor's own names, such as `password` and `totp`. The ID token names them as [RFC 8176](https://www.rfc-editor.org/rfc/rfc8176) does:
+
+| Hodor's method | `amr` | Kind of factor |
+|---|---|---|
+| `password` | `pwd` | Something the person knows |
+| `totp` | `otp` | Something the person has |
+| `recovery_code` | `otp`: a code that is good once. RFC 8176 has no closer name | Something the person has |
+| `webauthn` | `pop`: proof that the person holds a key. Whether the key is in hardware is not known, so neither `hwk` nor `swk` is claimed | Something the person has |
+| `passkey` | `pop` and `user`: a key the person holds, unlocked by their fingerprint, face or code | Two factors in one gesture |
+| `external` | Nothing: Hodor did not see how the identity provider signed the person in | Counted as one factor |
+
+`mfa` is added when the sign-in proved two kinds of factor: something known and something held, or a passkey. Each value appears once, in a fixed order.
+
+`acr` names the assurance reached. Until a tenant can define its own levels with step-up (Issue-69), every tenant has two:
+
+| `acr` | When |
+|---|---|
+| `urn:hodor:acr:mfa` | The sign-in proved two kinds of factor, as for `mfa` |
+| `urn:hodor:acr:single-factor` | Any other sign-in |
+
+A request's `acr_values` is kept and not yet enforced (Issue-69); the ID token always says what was reached, never what was asked.
+
+### UserInfo
+
+UserInfo is at `/t/{slug}/oauth2/userinfo` and answers `GET` and `POST` ([section 5.3](https://openid.net/specs/openid-connect-core-1_0.html#UserInfo)). The access token comes in the `Authorization` header as `Bearer` ([RFC 6750, section 2.1](https://www.rfc-editor.org/rfc/rfc6750#section-2.1)); a token in the query or in a form is not read.
+
+The token is checked before anything is read:
+
+| Check | Refused when |
+|---|---|
+| Shape | It is not a compact JSON Web Signature, or its header or claims are not JSON objects |
+| Header | `typ` is not `at+jwt`, or `alg` is not `ES256` |
+| Key | `kid` is not a key version the tenant publishes, so a token of another tenant is refused here |
+| Signature | It does not verify |
+| `iss` | It is not this tenant's issuer |
+| `aud` | It does not hold the issuer |
+| `exp` | It has passed |
+| Scope | `scope` does not hold `openid` |
+| Person | The user does not exist or is not active |
+
+A token that fails any check but the scope is answered `401` with `WWW-Authenticate: Bearer error="invalid_token"`; a request without a token, `401` with `WWW-Authenticate: Bearer` and no error. A token without `openid` is answered `403` with `error="insufficient_scope"`. The answer names no reason; Hodor's logs do. Tokens that were revoked are refused once revocation exists (Issue-58).
+
+The answer is JSON with `sub` and the claims of the token's scopes:
+
+| Scope | Claims |
+|---|---|
+| `openid` | `sub` |
+| `profile` | `name`, the person's display name; `preferred_username`, their primary username; `locale`; `updated_at`. Each is left out when the person has none |
+| `email` | `email`, the person's primary email address, and `email_verified`. Left out when they have no address |
+
+The answer carries `Cache-Control: no-store`. A browser on another origin cannot call UserInfo yet: clients have no registered origins, so no cross-origin headers are sent.
+
+### What a request may ask of the sign-in
+
+The authorization endpoint already checks and keeps these parameters ([checking the request](#checking-the-request)). What each one does:
+
+| Parameter | What happens |
+|---|---|
+| `prompt=none` | No page is shown. Without a session that is enough, the answer is `login_required` at the redirect address |
+| `prompt=login`, `prompt=select_account` | The person signs in again, even with a session |
+| `prompt=consent` | Nothing more until consent exists (Issue-62); only clients of first-party applications are answered |
+| `max_age` | A session that signed in longer ago than this has the person sign in again, and `auth_time` in the ID token says when they did |
+| `login_hint` | The sign-in page starts with the identifier filled in. The person can change it; it is a hint, never a claim |
+| `ui_locales` | The pages use the first of these languages they have, before the browser's own |
+
+`login_hint` and `ui_locales` reach the pages in the address of the sign-in page, as `login_hint` and `ui_locales`.
+
+### Discovery
+
+The tenant describes itself at two addresses, with the same document:
+
+- `/t/{slug}/.well-known/openid-configuration`, where [OpenID Connect Discovery](https://openid.net/specs/openid-connect-discovery-1_0.html) looks for it, the issuer followed by the well-known path;
+- `/t/{slug}/.well-known/oauth-authorization-server`, for OAuth clients that look for [RFC 8414](https://www.rfc-editor.org/rfc/rfc8414) metadata after the issuer the same way.
+
+It names only what is built:
+
+| Member | Value |
+|---|---|
+| `issuer` | The tenant's issuer, exactly as every token and redirect carries it |
+| `authorization_endpoint`, `token_endpoint`, `userinfo_endpoint`, `jwks_uri` | The four addresses under `{issuer}/oauth2` |
+| `response_types_supported` | `code` |
+| `response_modes_supported` | `query` |
+| `grant_types_supported` | The grants the token endpoint answers: `authorization_code` |
+| `code_challenge_methods_supported` | `S256` |
+| `token_endpoint_auth_methods_supported` | `client_secret_basic`, `client_secret_post`, `private_key_jwt`, `none` |
+| `token_endpoint_auth_signing_alg_values_supported` | `ES256`, `RS256`, `PS256` |
+| `id_token_signing_alg_values_supported` | `ES256` |
+| `subject_types_supported` | `public` |
+| `scopes_supported` | `openid`, `profile`, `email`. A tenant's own scopes belong to its resource servers and are not listed |
+| `claims_supported` | The claims of the ID token and of UserInfo |
+| `acr_values_supported` | The two values of [methods and assurance](#methods-and-assurance) |
+| `prompt_values_supported` | `none`, `login`, `consent`, `select_account` |
+| `ui_locales_supported` | `en`, `pt-BR` |
+| `authorization_response_iss_parameter_supported` | `true` |
+| `request_parameter_supported`, `request_uri_parameter_supported`, `claims_parameter_supported` | `false` |
+
+Revocation, introspection and the end-session endpoint are added to the document with the issues that build them. The document may be kept by caches for five minutes and carries `Access-Control-Allow-Origin: *`, as the key set does: it is public.
+
+### Ports
+
+| Port | Purpose |
+|---|---|
+| `KeyService` | Lists the tenant's published keys, to check an access token at UserInfo |
+| `SignatureVerifier` | Checks the access token's signature, from the kernel |
+| `IdentityService` | Reads the person, for UserInfo, from the identity context |
 
 ## Consent
 
@@ -506,7 +635,10 @@ Issue-62.
 | Item | Planned in |
 |---|---|
 | Refresh tokens and the client credentials grant | Issue-57 |
-| The other endpoints | Issue-58 to Issue-60 |
+| Revocation, introspection and the end-session endpoint | Issue-58 and Issue-60 |
+| The metadata at the address RFC 8414 prefers for an issuer with a path, `/.well-known/oauth-authorization-server/t/{slug}`: it is outside the tenant's addresses, so only the address after the issuer is served | When a client needs it |
+| Calling UserInfo from a browser on another origin | With origins in the client settings |
+| The person's claims in the ID token when asked for with the `claims` parameter | Not planned for 0.2.0 |
 | Calling the token endpoint from a browser on another origin: clients have no registered origins yet, so no cross-origin headers are sent | With origins in the client settings |
 | Client assertions signed with `ES384` or `EdDSA`, which client keys on P-384 and Ed25519 would need | When the kernel's signature checking covers them |
 | Limits on requests to the token endpoint per address | With the other limits per address |

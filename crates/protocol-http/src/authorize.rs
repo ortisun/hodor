@@ -222,23 +222,39 @@ async fn authorize(
             &error_for(&request, "login_required", "the person is not signed in"),
             &issuer(state, slug),
         ),
-        (SessionDecision::SignIn, _) => match state.authorization.hold(tenant, request).await {
-            Ok((id, secret)) => {
-                let location = format!("/t/{slug}/account/sign-in?continue=authorization");
-                let mut response = redirect_to_path(&location);
-                set_cookie(
-                    &mut response,
-                    &authorization_cookie(
-                        slug,
-                        &format!("{id}.{}", secret.expose()),
-                        PENDING_LIFETIME.whole_seconds(),
-                    ),
-                );
-                response
+        (SessionDecision::SignIn, _) => {
+            let location = sign_in_address(slug, &request);
+            match state.authorization.hold(tenant, request).await {
+                Ok((id, secret)) => {
+                    let mut response = redirect_to_path(&location);
+                    set_cookie(
+                        &mut response,
+                        &authorization_cookie(
+                            slug,
+                            &format!("{id}.{}", secret.expose()),
+                            PENDING_LIFETIME.whole_seconds(),
+                        ),
+                    );
+                    response
+                }
+                Err(error) => Problem::from(error).into_response(),
             }
-            Err(error) => Problem::from(error).into_response(),
-        },
+        }
     }
+}
+
+/// The sign-in page, told that an application's request waits for it and
+/// given the request's `login_hint` and `ui_locales`.
+fn sign_in_address(slug: &str, request: &AuthorizationRequest) -> String {
+    let mut query = form_urlencoded::Serializer::new(String::new());
+    query.append_pair("continue", "authorization");
+    if let Some(hint) = &request.login_hint {
+        query.append_pair("login_hint", hint);
+    }
+    if let Some(locales) = &request.ui_locales {
+        query.append_pair("ui_locales", locales);
+    }
+    format!("/t/{slug}/account/sign-in?{}", query.finish())
 }
 
 fn redirect_to_path(path: &str) -> Response {

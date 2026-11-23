@@ -42,14 +42,15 @@ use hodor_keys::api::{KeyService, RotationPolicy, TenantSecretBox};
 use hodor_notification::api::Notifier;
 use hodor_oauth::api::{
     ApplicationPorts, ApplicationService, AuthorizationCodePorts, AuthorizationCodeService,
-    TokenPorts, TokenService,
+    TokenPorts, TokenService, UserInfoPorts, UserInfoService,
 };
 use hodor_observability::{LogFormat, Telemetry};
 use hodor_protocol_http::{
     AdminState, AuthorizationState, ConsoleState, Health, InteractionState, Limits, Pages,
     ReadinessCheck, ResolvedTenant, TenantResolver, TenantStatus as HttpTenantStatus, TokenState,
-    admin_routes, authorization_routes, console_routes, interaction_routes, key_set_routes,
-    ops_router, public_router, serve, token_routes,
+    UserInfoState, admin_routes, authorization_routes, console_routes, discovery_routes,
+    interaction_routes, key_set_routes, ops_router, public_router, serve, token_routes,
+    userinfo_routes,
 };
 use hodor_session::api::SessionService;
 use hodor_tenant::api::{TenantDirectory as _, TenantService, TenantStatus};
@@ -284,6 +285,7 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
             keys.clone(),
             authorization.authorization,
         )));
+        oauth2 = oauth2.merge(userinfo_routes(userinfo(&config, &database, keys.clone())));
     }
     let mut tenant_routes = axum::Router::new()
         .nest(
@@ -304,7 +306,11 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
             }),
         );
     match keys {
-        Some(keys) => tenant_routes = tenant_routes.merge(key_set_routes(keys)),
+        Some(keys) => {
+            tenant_routes = tenant_routes
+                .merge(key_set_routes(keys))
+                .merge(discovery_routes(config.public_url.clone()));
+        }
         None => tracing::warn!(
             "HODOR_SECRET_KEYS is not set: no key set is published, keys cannot be managed and \
              no token is issued"
@@ -574,6 +580,25 @@ fn token(
             digest: Arc::new(Sha256Digest),
             random: Arc::new(OsRandom),
             clock: Arc::new(SystemClock),
+        }),
+        public_url: config.public_url.clone(),
+    }
+}
+
+/// Builds everything UserInfo needs. It checks access tokens against the
+/// tenants' keys, so there is no UserInfo without them.
+fn userinfo(config: &Config, database: &Database, keys: KeyService) -> UserInfoState {
+    let clock = Arc::new(SystemClock);
+    UserInfoState {
+        userinfo: UserInfoService::new(UserInfoPorts {
+            keys,
+            verifier: Arc::new(AwsLcVerifier),
+            identity: IdentityService::new(
+                Arc::new(database.clone()),
+                Arc::new(PgUserRepository),
+                clock.clone(),
+            ),
+            clock,
         }),
         public_url: config.public_url.clone(),
     }

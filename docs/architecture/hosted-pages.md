@@ -20,7 +20,7 @@ All paths are relative to the tenant: `https://{host}/t/{slug}`.
 
 `/account` sends a person who is not signed in to `/account/sign-in`, and `/account/sign-in` sends a person who is already signed in to `/account`.
 
-**Signing in for an application.** When an application sends a person to Hodor's [authorization endpoint](contexts/oauth.md#signing-in-and-coming-back) and they must sign in, the server sends them to `/account/sign-in?continue=authorization`. With `continue=authorization` in its address the sign-in page starts a sign-in even when someone is signed in already, since the application asked for a new one. When a sign-in completes, by any way, the identity providers' page that the person comes back to included, and the answer carries `continue`, the page goes there instead of to the account page. The page goes only to an address that starts with `/t/{slug}/oauth2/` of its own tenant; anything else is ignored and the account page is shown.
+**Signing in for an application.** When an application sends a person to Hodor's [authorization endpoint](contexts/oauth.md#signing-in-and-coming-back) and they must sign in, the server sends them to `/account/sign-in?continue=authorization`. With `continue=authorization` in its address the sign-in page starts a sign-in even when someone is signed in already, since the application asked for a new one. When a sign-in completes, by any way, the identity providers' page that the person comes back to included, and the answer carries `continue`, the page goes there instead of to the account page. The page goes only to an address that starts with `/t/{slug}/oauth2/` of its own tenant; anything else is ignored and the account page is shown. When the application sent `login_hint`, the address carries it too and the sign-in page starts with that identifier filled in; when it sent `ui_locales`, the address carries them and the pages use the first of those languages they have ([the OpenID Provider](contexts/oauth.md#what-a-request-may-ask-of-the-sign-in)).
 
 Any other path under `/account` is answered with `404` by the server.
 
@@ -93,7 +93,7 @@ The pages show their own words, chosen by the `code` of the [problem document](.
 
 ## Language
 
-The pages exist in English (`en`) and Brazilian Portuguese (`pt-BR`). The language is the first of the browser's preferred languages that the pages have; anything else falls back to English. All copy lives in one file per language, and a test fails if one language has a message the other lacks.
+The pages exist in English (`en`) and Brazilian Portuguese (`pt-BR`). The language is the first of the languages an application asked for with `ui_locales` that the pages have, then the first of the browser's preferred languages that they have; anything else falls back to English. All copy lives in one file per language, and a test fails if one language has a message the other lacks.
 
 ## Appearance
 

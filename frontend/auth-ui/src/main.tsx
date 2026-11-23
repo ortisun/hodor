@@ -12,6 +12,7 @@ import { Theme } from "@astryxdesign/core/theme";
 import { createRoot } from "react-dom/client";
 import {
   continuesAuthorization,
+  loginHintOf,
   type NoticeName,
   noticeOf,
   type PageName,
@@ -19,6 +20,7 @@ import {
   placeOf,
   providerAnswerOf,
   tokenOf,
+  uiLocalesOf,
 } from "./address";
 import { App } from "./App";
 import { defaultThemeSlug, themes } from "./astryx-themes";
@@ -31,7 +33,8 @@ const place = placeOf(window.location.pathname);
 // The server serves this application only at addresses `placeOf`
 // understands; anything else is left as an empty page.
 if (root !== null && place !== null) {
-  const text = chooseMessages(navigator.languages);
+  // The languages an application asked for come before the browser's own.
+  const text = chooseMessages([...uiLocalesOf(window.location.search), ...navigator.languages]);
   document.documentElement.lang = text.locale;
 
   const notice = noticeOf(window.location.search);
@@ -59,6 +62,7 @@ if (root !== null && place !== null) {
         leave={(url) => window.location.assign(url)}
         providerAnswer={providerAnswer}
         signInAgain={continuesAuthorization(window.location.search)}
+        loginHint={loginHintOf(window.location.search)}
       />
     </Theme>,
   );

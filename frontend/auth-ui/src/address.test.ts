@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { noticeOf, pathOf, placeOf, providerAnswerOf, tokenOf } from "./address";
+import { loginHintOf, noticeOf, pathOf, placeOf, providerAnswerOf, tokenOf, uiLocalesOf } from "./address";
 
 describe("placeOf", () => {
   it("reads the tenant and the page from the path", () => {
@@ -95,5 +95,20 @@ describe("the page a provider sends people back to", () => {
       receipt: "ghi",
     });
     expect(providerAnswerOf("?binding=other&state=def").binding).toBeNull();
+  });
+});
+
+describe("what an application asked of the sign-in", () => {
+  it("reads the login hint, and nothing for an empty or long one", () => {
+    expect(loginHintOf("?continue=authorization&login_hint=ana%40example.com")).toBe("ana@example.com");
+    expect(loginHintOf("?continue=authorization")).toBeNull();
+    expect(loginHintOf("?login_hint=%20")).toBeNull();
+    expect(loginHintOf(`?login_hint=${"a".repeat(256)}`)).toBeNull();
+  });
+
+  it("reads the languages in the order they were asked for", () => {
+    expect(uiLocalesOf("?ui_locales=pt-BR%20en")).toEqual(["pt-BR", "en"]);
+    expect(uiLocalesOf("?ui_locales=pt-BR+en")).toEqual(["pt-BR", "en"]);
+    expect(uiLocalesOf("?continue=authorization")).toEqual([]);
   });
 });

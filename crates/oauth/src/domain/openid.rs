@@ -1,0 +1,363 @@
+//! The OpenID Provider: the ID token, the methods and assurance it names,
+//! the access token checked at UserInfo, the claims UserInfo answers with,
+//! and the discovery document.
+//!
+//! Specified in `docs/architecture/contexts/oauth.md`, "OpenID Provider".
+
+use crate::domain::authorization::AuthorizationCode;
+use crate::domain::client::ClientId;
+use crate::domain::token::decode_json;
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use hodor_kernel::{Digest, PublicKey, SignatureAlgorithm, SignatureVerifier, Timestamp, UserId};
+use serde_json::{Map, Value, json};
+use time::Duration;
+
+/// The scope that makes a request an OpenID Connect one.
+pub const OPENID_SCOPE: &str = "openid";
+/// The `acr` of a sign-in that proved two kinds of factor.
+pub const ACR_MULTI_FACTOR: &str = "urn:hodor:acr:mfa";
+/// The `acr` of any other sign-in.
+pub const ACR_SINGLE_FACTOR: &str = "urn:hodor:acr:single-factor";
+/// The languages the hosted pages are written in.
+pub const UI_LOCALES: [&str; 2] = ["en", "pt-BR"];
+
+/// The values of `amr` (RFC 8176) in the order an ID token lists them.
+const AMR_ORDER: [&str; 5] = ["pwd", "otp", "pop", "user", "mfa"];
+
+/// What a sign-in by one of Hodor's methods says, in the terms of RFC 8176.
+struct MethodFacts {
+    amr: &'static [&'static str],
+    knows: bool,
+    holds: bool,
+    both: bool,
+}
+
+fn facts(method: &str) -> MethodFacts {
+    let none = MethodFacts {
+        amr: &[],
+        knows: false,
+        holds: false,
+        both: false,
+    };
+    match method {
+        "password" => MethodFacts {
+            amr: &["pwd"],
+            knows: true,
+            ..none
+        },
+        "totp" | "recovery_code" => MethodFacts {
+            amr: &["otp"],
+            holds: true,
+            ..none
+        },
+        "webauthn" => MethodFacts {
+            amr: &["pop"],
+            holds: true,
+            ..none
+        },
+        "passkey" => MethodFacts {
+            amr: &["pop", "user"],
+            both: true,
+            ..none
+        },
+        // `external` and anything unknown: Hodor did not see how the
+        // person was signed in, so it claims nothing about it.
+        _ => none,
+    }
+}
+
+/// Whether the methods of a sign-in proved two kinds of factor.
+#[must_use]
+pub fn is_multi_factor(methods: &[String]) -> bool {
+    let all: Vec<MethodFacts> = methods.iter().map(|method| facts(method)).collect();
+    all.iter().any(|fact| fact.both)
+        || (all.iter().any(|fact| fact.knows) && all.iter().any(|fact| fact.holds))
+}
+
+/// The `amr` of a sign-in by `methods`: each value once, in a fixed order.
+/// Empty when no method has a name in RFC 8176.
+#[must_use]
+pub fn authentication_methods(methods: &[String]) -> Vec<&'static str> {
+    let mut named: Vec<&'static str> = methods
+        .iter()
+        .flat_map(|method| facts(method).amr.iter().copied())
+        .collect();
+    if is_multi_factor(methods) {
+        named.push("mfa");
+    }
+    AMR_ORDER
+        .iter()
+        .copied()
+        .filter(|value| named.contains(value))
+        .collect()
+}
+
+/// The `acr` a sign-in by `methods` reached.
+#[must_use]
+pub fn assurance(methods: &[String]) -> &'static str {
+    if is_multi_factor(methods) {
+        ACR_MULTI_FACTOR
+    } else {
+        ACR_SINGLE_FACTOR
+    }
+}
+
+/// `at_hash`: the base64url of the left half of the SHA-256 of the access
+/// token, for an ID token signed with ES256 (OpenID Connect Core, section
+/// 3.1.3.6).
+#[must_use]
+pub fn access_token_hash(access_token: &str, digest: &dyn Digest) -> String {
+    let hash = digest.sha256(access_token.as_bytes());
+    URL_SAFE_NO_PAD.encode(&hash[..16])
+}
+
+/// Whether `scopes` make an OpenID Connect request.
+#[must_use]
+pub fn asks_for_openid(scopes: &[String]) -> bool {
+    scopes.iter().any(|scope| scope == OPENID_SCOPE)
+}
+
+/// The header of an ID token signed by the key version `key_id`.
+#[must_use]
+pub(crate) fn id_token_header(algorithm: &str, key_id: &str) -> Value {
+    json!({"alg": algorithm, "typ": "JWT", "kid": key_id})
+}
+
+/// The claims of the ID token for a redeemed `code`, issued with
+/// `access_token`.
+#[must_use]
+pub fn id_token_claims(
+    issuer: &str,
+    code: &AuthorizationCode,
+    client_id: ClientId,
+    lifetime: Duration,
+    now: Timestamp,
+    access_token: &str,
+    digest: &dyn Digest,
+) -> Value {
+    let mut claims = Map::new();
+    claims.insert("iss".to_owned(), json!(issuer));
+    claims.insert("sub".to_owned(), json!(code.user_id.to_string()));
+    claims.insert("aud".to_owned(), json!(client_id.to_string()));
+    claims.insert("iat".to_owned(), json!(now.unix_timestamp()));
+    claims.insert("exp".to_owned(), json!((now + lifetime).unix_timestamp()));
+    claims.insert(
+        "auth_time".to_owned(),
+        json!(code.signed_in_at.unix_timestamp()),
+    );
+    if let Some(nonce) = &code.nonce {
+        claims.insert("nonce".to_owned(), json!(nonce));
+    }
+    claims.insert("acr".to_owned(), json!(assurance(&code.methods)));
+    let amr = authentication_methods(&code.methods);
+    if !amr.is_empty() {
+        claims.insert("amr".to_owned(), json!(amr));
+    }
+    claims.insert(
+        "at_hash".to_owned(),
+        json!(access_token_hash(access_token, digest)),
+    );
+    Value::Object(claims)
+}
+
+/// Why an access token is refused at UserInfo (RFC 6750, section 3.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BearerRefusal {
+    /// The request carries no token: answered without an error code.
+    Missing,
+    /// The token cannot be used; the reason is for the logs.
+    InvalidToken(&'static str),
+    /// The token is good but lacks the `openid` scope.
+    InsufficientScope,
+}
+
+/// An access token whose every check passed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckedAccessToken {
+    /// The person it was issued for.
+    pub user_id: UserId,
+    /// Its scopes.
+    pub scopes: Vec<String>,
+}
+
+/// A key the tenant publishes, by the identifier a token's `kid` names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublishedKey {
+    /// The key version's identifier.
+    pub key_id: String,
+    /// The algorithm it signs with.
+    pub algorithm: SignatureAlgorithm,
+    /// Its public key.
+    pub key: PublicKey,
+}
+
+/// Checks an access token presented at UserInfo, in the order the OAuth
+/// context gives. Nothing it says is used before its signature has been
+/// checked.
+///
+/// # Errors
+///
+/// Returns why the token is refused.
+pub fn check_access_token(
+    token: &str,
+    issuer: &str,
+    keys: &[PublishedKey],
+    now: Timestamp,
+    verifier: &dyn SignatureVerifier,
+) -> Result<CheckedAccessToken, BearerRefusal> {
+    use BearerRefusal::InvalidToken;
+    if token.len() > 16 * 1024 {
+        return Err(InvalidToken("the token is too large"));
+    }
+    let parts: Vec<&str> = token.split('.').collect();
+    let [header_part, claims_part, signature_part] = parts.as_slice() else {
+        return Err(InvalidToken("the token is not three parts"));
+    };
+    let header = decode_json(header_part).ok_or(InvalidToken("the header is malformed"))?;
+    if header.get("typ").and_then(Value::as_str) != Some("at+jwt") {
+        return Err(InvalidToken("the token is not an access token"));
+    }
+    if header.get("alg").and_then(Value::as_str) != Some("ES256") {
+        return Err(InvalidToken("the token names another algorithm"));
+    }
+    let kid = header
+        .get("kid")
+        .and_then(Value::as_str)
+        .ok_or(InvalidToken("the token names no key"))?;
+    let key = keys
+        .iter()
+        .find(|key| key.key_id == kid && key.algorithm == SignatureAlgorithm::Es256)
+        .ok_or(InvalidToken(
+            "the token's key is not published by this tenant",
+        ))?;
+    let signature = URL_SAFE_NO_PAD
+        .decode(signature_part)
+        .map_err(|_| InvalidToken("the signature is malformed"))?;
+    let signed = format!("{header_part}.{claims_part}");
+    if !verifier.verify(key.algorithm, &key.key, signed.as_bytes(), &signature) {
+        return Err(InvalidToken("the signature does not verify"));
+    }
+
+    // Only now is anything the token says used.
+    let claims = decode_json(claims_part).ok_or(InvalidToken("the claims are malformed"))?;
+    if claims.get("iss").and_then(Value::as_str) != Some(issuer) {
+        return Err(InvalidToken("the token is from another issuer"));
+    }
+    let for_issuer = match claims.get("aud") {
+        Some(Value::String(one)) => one == issuer,
+        Some(Value::Array(many)) => many.iter().any(|value| value.as_str() == Some(issuer)),
+        _ => false,
+    };
+    if !for_issuer {
+        return Err(InvalidToken("the token is not for this server"));
+    }
+    let expires_at = claims
+        .get("exp")
+        .and_then(Value::as_i64)
+        .and_then(|seconds| Timestamp::from_unix_timestamp(seconds).ok())
+        .ok_or(InvalidToken("the token does not say when it expires"))?;
+    if expires_at <= now {
+        return Err(InvalidToken("the token has expired"));
+    }
+    let user_id = claims
+        .get("sub")
+        .and_then(Value::as_str)
+        .and_then(|text| text.parse::<UserId>().ok())
+        .ok_or(InvalidToken("the token names no person"))?;
+    let scopes: Vec<String> = claims
+        .get("scope")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .split(' ')
+        .filter(|scope| !scope.is_empty())
+        .map(str::to_owned)
+        .collect();
+    if !asks_for_openid(&scopes) {
+        return Err(BearerRefusal::InsufficientScope);
+    }
+    Ok(CheckedAccessToken { user_id, scopes })
+}
+
+/// What Hodor knows of a person, for UserInfo.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PersonClaims {
+    /// The display name.
+    pub name: Option<String>,
+    /// The primary username.
+    pub preferred_username: Option<String>,
+    /// The language tag the person chose.
+    pub locale: Option<String>,
+    /// When the person was last changed.
+    pub updated_at: Option<Timestamp>,
+    /// The primary email address, and whether the person proved it is
+    /// theirs.
+    pub email: Option<(String, bool)>,
+}
+
+/// The answer of UserInfo for `user_id`, with the claims of `scopes`.
+#[must_use]
+pub fn userinfo_claims(user_id: UserId, scopes: &[String], person: &PersonClaims) -> Value {
+    let has = |scope: &str| scopes.iter().any(|given| given == scope);
+    let mut claims = Map::new();
+    claims.insert("sub".to_owned(), json!(user_id.to_string()));
+    if has("profile") {
+        if let Some(name) = &person.name {
+            claims.insert("name".to_owned(), json!(name));
+        }
+        if let Some(username) = &person.preferred_username {
+            claims.insert("preferred_username".to_owned(), json!(username));
+        }
+        if let Some(locale) = &person.locale {
+            claims.insert("locale".to_owned(), json!(locale));
+        }
+        if let Some(updated_at) = person.updated_at {
+            claims.insert("updated_at".to_owned(), json!(updated_at.unix_timestamp()));
+        }
+    }
+    if has("email")
+        && let Some((email, verified)) = &person.email
+    {
+        claims.insert("email".to_owned(), json!(email));
+        claims.insert("email_verified".to_owned(), json!(verified));
+    }
+    Value::Object(claims)
+}
+
+/// The tenant's discovery document (OpenID Connect Discovery 1.0 and RFC
+/// 8414). It names only what is built.
+#[must_use]
+pub fn discovery_document(issuer: &str) -> Value {
+    json!({
+        "issuer": issuer,
+        "authorization_endpoint": format!("{issuer}/oauth2/authorize"),
+        "token_endpoint": format!("{issuer}/oauth2/token"),
+        "userinfo_endpoint": format!("{issuer}/oauth2/userinfo"),
+        "jwks_uri": format!("{issuer}/oauth2/jwks"),
+        "response_types_supported": ["code"],
+        "response_modes_supported": ["query"],
+        "grant_types_supported": crate::domain::token::SUPPORTED_GRANT_TYPES,
+        "code_challenge_methods_supported": ["S256"],
+        "token_endpoint_auth_methods_supported": [
+            "client_secret_basic", "client_secret_post", "private_key_jwt", "none"
+        ],
+        "token_endpoint_auth_signing_alg_values_supported": ["ES256", "RS256", "PS256"],
+        "id_token_signing_alg_values_supported": ["ES256"],
+        "subject_types_supported": ["public"],
+        "scopes_supported": ["openid", "profile", "email"],
+        "claims_supported": [
+            "iss", "sub", "aud", "exp", "iat", "auth_time", "nonce", "acr", "amr", "at_hash",
+            "name", "preferred_username", "locale", "updated_at", "email", "email_verified"
+        ],
+        "acr_values_supported": [ACR_MULTI_FACTOR, ACR_SINGLE_FACTOR],
+        "prompt_values_supported": ["none", "login", "consent", "select_account"],
+        "ui_locales_supported": UI_LOCALES,
+        "authorization_response_iss_parameter_supported": true,
+        "request_parameter_supported": false,
+        "request_uri_parameter_supported": false,
+        "claims_parameter_supported": false,
+    })
+}
+
+#[cfg(test)]
+mod tests;

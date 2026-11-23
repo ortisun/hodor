@@ -85,6 +85,20 @@ grants, assertions, codes, keys, verifier, digest, random, clock })`, with
     so that the header's `kid` is the version that signs;
     `keys.no_active_version` is `server_error`. Records
     `oauth.access_token_issued` with the user as the actor.
+  - The ID token, when the scopes hold `openid`: claims from
+    `id_token_claims`, signed the same way with the client's ID token
+    lifetime, header `typ` `JWT`.
+
+### UserInfo (`userinfo.rs`)
+
+`UserInfoService::new(UserInfoPorts { keys, verifier, identity, clock })`:
+
+- `claims(tenant, issuer, token)`: the outer `Result` is storage; the
+  inner one a `BearerRefusal` (`Missing`, `InvalidToken(reason)`,
+  `InsufficientScope`). Checks the token with `check_access_token` against
+  the tenant's published `ES256` keys, then reads the person through
+  `IdentityService::get`: an unknown person, or one who is not `Active`, is
+  `InvalidToken`. Answers `userinfo_claims` for the token's scopes.
 
 ## Invariants
 
@@ -96,4 +110,5 @@ grants, assertions, codes, keys, verifier, digest, random, clock })`, with
 
 - Run: `cargo test -p hodor-oauth --test service`,
   `cargo test -p hodor-oauth --test authorization` and
-  `cargo test -p hodor-oauth --test token`
+  `cargo test -p hodor-oauth --test token`; `cargo test -p hodor-oauth
+  --lib openid` for the OpenID Provider's domain

@@ -77,6 +77,24 @@ export function continuesAuthorization(search: string): boolean {
 }
 
 /**
+ * The identifier an application suggested with `login_hint`, if any. A
+ * hint fills the field in; the person can change it.
+ */
+export function loginHintOf(search: string): string | null {
+  const hint = new URLSearchParams(search).get("login_hint");
+  return hint !== null && hint.trim() !== "" && hint.length <= 255 ? hint : null;
+}
+
+/**
+ * The languages an application asked for with `ui_locales`, in its order:
+ * language tags separated by spaces.
+ */
+export function uiLocalesOf(search: string): string[] {
+  const locales = new URLSearchParams(search).get("ui_locales");
+  return locales === null ? [] : locales.split(" ").filter((tag) => tag !== "");
+}
+
+/**
  * The token of a link from a message. It comes after `#`, which a browser
  * never sends to a server.
  */

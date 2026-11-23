@@ -17,7 +17,8 @@ address.
   notice?), leave(url), path(page) }`.
 - `shared.ts:asFailure(thrown): Failure` - a thrown `Failure` as is, anything
   else as `new Failure(null, 500)`.
-- `SignInPage.tsx:SignInPage({ ...PageProps, notice })` - on mount calls
+- `SignInPage.tsx:SignInPage({ ...PageProps, notice, signInAgain?,
+  loginHint? })` - the identifier field starts with `loginHint`. On mount calls
   `client.providers()` and `findOut`: `client.session()` (someone signed in
   means `go("account")`), then `client.currentSignIn()`, else
   `client.startSignIn()`. It renders the form for the step the server names:

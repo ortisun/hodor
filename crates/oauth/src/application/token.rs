@@ -6,6 +6,7 @@ use crate::application::ports::{ApplicationStore, ClientAssertionStore, ClientSt
 use crate::domain::authorization::{CodePresentation, GrantStatus};
 use crate::domain::client::{AuthenticationMethod, Client, ClientId, GrantType, TokenPolicy};
 use crate::domain::event::OauthEvent;
+use crate::domain::openid::{asks_for_openid, id_token_claims, id_token_header};
 use crate::domain::token::{
     AssertionAudience, GrantRequest, PresentedClient, TokenError, TokenRequest,
     access_token_claims, access_token_header, assertion_issuer, check_assertion, compact,
@@ -64,7 +65,7 @@ pub struct IssuedTokens {
     pub scope: String,
     /// A refresh token: Issue-57.
     pub refresh_token: Option<Secret<String>>,
-    /// An ID token: Issue-59.
+    /// The ID token, when the scopes hold `openid`.
     pub id_token: Option<Secret<String>>,
 }
 
@@ -324,6 +325,44 @@ impl TokenService {
         };
         let access_token = compact(&message, &signature.bytes);
 
+        let id_token = if asks_for_openid(&redeemed.scopes) {
+            let id_lifetime = settings.token_policy.id_token;
+            if id_lifetime > TokenPolicy::LONGEST_SIGNED_LIFETIME {
+                return Ok(Err(TokenError::server_error(
+                    "the ID token would outlive the rotation overlap",
+                )));
+            }
+            let id_claims = id_token_claims(
+                issuer.issuer,
+                &redeemed,
+                client.id(),
+                id_lifetime,
+                now,
+                &access_token,
+                self.ports.digest.as_ref(),
+            );
+            let signed = self
+                .ports
+                .keys
+                .sign_naming_key(tenant, algorithm, |key_id| {
+                    let header = id_token_header(algorithm.as_str(), &key_id.to_string());
+                    signing_input(&header, &id_claims).into_bytes()
+                })
+                .await;
+            let (message, signature) = match signed {
+                Ok(signed) => signed,
+                Err(error) if error.code() == "keys.no_active_version" => {
+                    return Ok(Err(TokenError::server_error(
+                        "the tenant has no active signing key",
+                    )));
+                }
+                Err(error) => return Err(error),
+            };
+            Some(Secret::from(compact(&message, &signature.bytes)))
+        } else {
+            None
+        };
+
         let caller = Caller {
             actor: Actor::User(redeemed.user_id),
             correlation_id,
@@ -351,7 +390,7 @@ impl TokenService {
             expires_in: lifetime.whole_seconds(),
             scope: redeemed.scopes.join(" "),
             refresh_token: None,
-            id_token: None,
+            id_token,
         }))
     }
 }

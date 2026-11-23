@@ -474,7 +474,11 @@ fn the_access_token_says_who_for_whom_and_until_when() {
     let claims = &token.claims;
     assert_eq!(claims["iss"], ISSUER);
     assert_eq!(claims["sub"], code.user_id.to_string());
-    assert_eq!(claims["aud"], "https://orders.example.com");
+    assert_eq!(
+        claims["aud"],
+        json!(["https://orders.example.com", ISSUER]),
+        "with openid, the issuer is an audience too, for UserInfo"
+    );
     assert_eq!(claims["client_id"], client.to_string());
     assert_eq!(claims["scope"], "openid orders:read");
     assert_eq!(claims["iat"], now().unix_timestamp());
@@ -497,7 +501,21 @@ fn the_access_token_says_who_for_whom_and_until_when() {
     );
     assert_eq!(
         many.claims["aud"],
-        json!(["https://orders.example.com", "urn:example:billing"])
+        json!(["https://orders.example.com", "urn:example:billing", ISSUER])
+    );
+    let mut without_openid = redeemed(&["https://orders.example.com"]);
+    without_openid.scopes = vec!["orders:read".to_owned()];
+    let resource_only = access_token_claims(
+        ISSUER,
+        &without_openid,
+        client,
+        Duration::minutes(5),
+        now(),
+        &DistinctRandom,
+    );
+    assert_eq!(
+        resource_only.claims["aud"], "https://orders.example.com",
+        "without openid, only the resource servers"
     );
     let none = access_token_claims(
         ISSUER,
