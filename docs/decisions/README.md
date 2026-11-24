@@ -36,3 +36,4 @@ All records below are **Proposed** unless marked otherwise: they become Accepted
 | [0031](0031-workloads-are-users.md) | Service accounts and agents are users of the identity context, and a client of the client credentials grant acts as one (Accepted) |
 | [0032](0032-webhooks.md) | Webhooks are a context of their own, signed as Standard Webhooks say, and sent on leases outside any transaction (Accepted) |
 | [0033](0033-api-keys.md) | API keys are credentials of workloads, recognized by their prefix, and never do more than their holder (Accepted) |
+| [0034](0034-token-exchange.md) | An agent acts for a person through token exchange, with a bounded `act` chain, a policy of audiences per client and scopes that only narrow (Accepted) |

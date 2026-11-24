@@ -37,6 +37,8 @@ A browser resolves any name ending in `.localhost` to the machine itself; inside
   - one sends it by `client_secret_post`, for the one test that does.
 - the person `conformance@example.com`, registered through the pages with the link from the message the mail server caught.
 
+**Discovery names more grants than the plans use.** `grant_types_supported` also names `client_credentials` and, since Issue-95, `urn:ietf:params:oauth:grant-type:token-exchange`. The plans check that the grants they need are there, `authorization_code` for both and `refresh_token` where it is tested, and ignore the others, as OpenID Connect Discovery lets a client do.
+
 **Every client is made `--without-pkce`.** The Basic OpenID Provider plan is the code flow of OpenID Connect as written in 2014: only one of its tests sends a code challenge, and a client that requires one would refuse all the others. A confidential client may be registered this way; a public client always uses PKCE.
 
 ## Running it
