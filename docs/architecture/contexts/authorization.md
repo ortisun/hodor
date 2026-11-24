@@ -98,7 +98,7 @@ Who holds which role, for the built-in roles and for the roles a tenant defines.
 
 | Column | Type | Notes |
 |---|---|---|
-| `tenant_id`, `principal_kind`, `principal_id`, `namespace`, `role`, `application` | `uuid`, `text`, `text`, `text`, `text`, `text` | Primary key. `principal_kind` is `user` or `client`. `application` is empty for an assignment to the whole tenant |
+| `tenant_id`, `principal_kind`, `principal_id`, `namespace`, `role`, `application`, `organization` | `uuid`, `text`, `text`, `text`, `text`, `text`, `text` | Primary key. `principal_kind` is `user`, `client` or `group`. `application` and `organization` are both empty for an assignment to the whole tenant; at most one of them is set |
 | `valid_from`, `valid_until` | `timestamptz` | Both optional; when both are given, the end comes after the start |
 | `assigned_at` | `timestamptz` | |
 | `role_namespace` | `text` | Generated: the namespace, or nothing for `hodor:admin`. It carries the reference to `authorization.role`, so that an assignment of a tenant's role names a role that exists and goes when the role goes |
@@ -132,7 +132,7 @@ Applications ask about their own resources: whether a subject may do an action t
 | Asserted attributes | What the caller claims about the subject, such as roles it keeps itself | Kept apart from what Hodor resolves; **not given to the engine** unless the binding trusts them |
 | Resource | A kind (`document`), an optional identifier and attributes | A kind is 1 to 64 characters of lower-case letters, digits, `-`, `_` and `.`, starting with a letter |
 | Action | What is to be done (`read`) | Same characters as a kind |
-| Context | Attributes of the moment, such as the address the request came from, an optional correlation identifier, and the application the request is made for, when there is one | The application is an identifier of 1 to 255 characters without a control character. It is what an assignment scoped to an application is compared with |
+| Context | Attributes of the moment, such as the address the request came from, an optional correlation identifier, the application the request is made for, and the organization it is made in, when there are | The application is an identifier of 1 to 255 characters without a control character. It is what an assignment scoped to an application is compared with. The organization is an organization's identifier, what an assignment scoped to an organization is compared with |
 
 Attributes are names with JSON values. A set holds at most 64 names of at most 64 characters each.
 
@@ -264,7 +264,7 @@ The binaries resolve a subject's attributes through the identity and OAuth conte
 
 | Subject | Attributes |
 |---|---|
-| A user | `status` (`active`, `suspended`, …) and `kind` (`human`, …) |
+| A user | `status` (`active`, `suspended`, …), `kind` (`human`, …), `groups`, the identifiers of every group the user is in, directly or through other groups, and `organizations`, the identifiers of the organizations the user is a member of |
 | A client | `application` (its application's identifier), `client_type` (`confidential` or `public`) and `enabled` |
 
 A subject Hodor does not know, including an identifier that is not one of its own, has no attributes, as for any engine. The attributes are given to the engine and never written back to the caller.
@@ -401,13 +401,13 @@ A condition holds only when it gives `true`. One that gives anything else, names
 
 ### Assignments
 
-An assignment gives a role to a **principal**, a user or a client (an application acting for itself). There are no groups or organizations yet, so roles are given to them only ([Decision 0023](../../decisions/0023-what-0.2.0-holds.md)).
+An assignment gives a role to a **principal**: a user, a client (an application acting for itself), or a [group](identity.md#groups). A role given to a group is held by every user in it, directly or through other groups, for as long as they are.
 
 | Part | Meaning |
 |---|---|
-| Principal | A user, by its identifier, or a client, by its client identifier |
+| Principal | A user, by its identifier; a client, by its client identifier; or a group, by its identifier |
 | Role | The role, by namespace and name. It must exist |
-| Scope | The whole tenant, or one application. An assignment to an application applies only to requests made for that application, those whose context names it |
+| Scope | The whole tenant, one application, or one [organization](identity.md#organizations). An assignment to an application applies only to requests made for that application, those whose context names it. An assignment to an organization applies only to requests made in that organization, those whose context names it, and only while the subject is a member of it |
 | Start and end | Both optional. Before the start and from the end on, the assignment allows nothing. The end must come after the start |
 
 Assigning the same role to the same principal with the same scope again replaces its start and end; with nothing changed, it changes nothing and announces nothing. Built-in roles are not given this way: they are given by [the bootstrap command](../../api/admin-api.md#the-first-administrator), as before.
@@ -416,8 +416,8 @@ Assigning the same role to the same principal with the same scope again replaces
 
 For a request about the resource server `namespace`, with the resource kind `kind` and the action `action`:
 
-1. The principal is the request's subject. Its assignments in the tenant are read.
-2. An assignment counts when it is in force at the moment of the decision and its scope is the whole tenant or the application named by the request's context.
+1. The principals are the request's subject and, for a user, every group in the user's resolved attribute `groups`. The assignments of each in the tenant are read.
+2. An assignment counts when it is in force at the moment of the decision and its scope is the whole tenant, the application named by the request's context, or the organization named by the request's context when the user's resolved attribute `organizations` holds it.
 3. From each assignment that counts, the role and every role it includes are followed. Every permission of `namespace` they hold is collected, each with the condition it is held with, if any.
 4. If `kind:action` is held **without a condition** through any assignment, the answer is **allow** with the reason `matching_role`. It names the assigned roles that led there, written `namespace#role`, and reports the tenant's role revision.
 5. Otherwise the conditions it is held with are run, at most 32. If one holds, the answer is **allow** with `matching_role`, naming the assigned roles whose condition held.
@@ -430,6 +430,8 @@ An allow from one assignment is not undone by a condition that failed on another
 For `hodor:admin` the built-in roles are used, the subject must be a user, and the answer is the one of [the check](#the-check): the reason is the name of the first role that allows, and the revision is `fixed_roles`. Built-in roles have no conditions.
 
 ### Caching and the role revision
+
+Groups and organizations come with the subject, resolved at every decision, so **taking a person out of a group or an organization takes effect on the next decision** too, without the role revision changing.
 
 The native engine keeps, per tenant and principal, what the principal's assignments come to: the permissions, with the role, the scope, the start and the end of each assignment that gives them, and each condition compiled. A stored condition that no longer compiles, after an upgrade of the interpreter, is kept as failing: the decisions it takes part in are indeterminate. Every change to a tenant's permissions, roles or assignments raises **the tenant's role revision** in the same transaction. Before using what it keeps, the engine reads the revision: when it has changed, it reads everything again. So **a change takes effect on the next decision**, whichever instance of Hodor answers it. The start and end of assignments are checked at every decision, so time passing needs no change. `hodor:admin` is not cached.
 

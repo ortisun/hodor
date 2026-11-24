@@ -6,7 +6,9 @@
 //! access control".
 
 use crate::domain::condition::Condition;
-use crate::domain::request::{Action, ApplicationReference, Namespace, Subject, is_name};
+use crate::domain::request::{
+    Action, ApplicationReference, Namespace, OrganizationReference, Subject, is_name,
+};
 use crate::domain::role::{Permission, Role};
 use hodor_kernel::{DomainError, Timestamp};
 use serde::Serialize;
@@ -572,15 +574,33 @@ pub enum AssignmentScope {
     Tenant,
     /// Only requests made for this application.
     Application(ApplicationReference),
+    /// Only requests made in this organization, by a member of it.
+    Organization(OrganizationReference),
 }
 
 impl AssignmentScope {
-    /// Whether it applies to a request made for `application`.
+    /// Whether it applies to a request made for `application` and in
+    /// `organization`. The organization is given only when the subject is a
+    /// member of the one the request names.
     #[must_use]
-    pub fn applies_to(&self, application: Option<&ApplicationReference>) -> bool {
+    pub fn applies_to(
+        &self,
+        application: Option<&ApplicationReference>,
+        organization: Option<&OrganizationReference>,
+    ) -> bool {
         match self {
             Self::Tenant => true,
             Self::Application(scoped) => application == Some(scoped),
+            Self::Organization(scoped) => organization == Some(scoped),
+        }
+    }
+
+    /// The organization, for an assignment scoped to one.
+    #[must_use]
+    pub const fn organization(&self) -> Option<&OrganizationReference> {
+        match self {
+            Self::Organization(organization) => Some(organization),
+            _ => None,
         }
     }
 
@@ -588,7 +608,7 @@ impl AssignmentScope {
     #[must_use]
     pub const fn application(&self) -> Option<&ApplicationReference> {
         match self {
-            Self::Tenant => None,
+            Self::Tenant | Self::Organization(_) => None,
             Self::Application(application) => Some(application),
         }
     }
@@ -734,11 +754,12 @@ pub(crate) fn grant_applies(
     namespace: &Namespace,
     permission: &PermissionName,
     application: Option<&ApplicationReference>,
+    organization: Option<&OrganizationReference>,
     now: Timestamp,
 ) -> bool {
     &grant.namespace == namespace
         && &grant.permission == permission
-        && grant.assignment.scope.applies_to(application)
+        && grant.assignment.scope.applies_to(application, organization)
         && grant.assignment.in_force_at(now)
 }
 
@@ -1102,10 +1123,18 @@ mod tests {
         assert!(!scoped.in_force_at(start - time::Duration::seconds(1)));
         assert!(scoped.in_force_at(start));
         assert!(!scoped.in_force_at(end));
-        assert!(scoped.scope().applies_to(Some(&app)));
-        assert!(!scoped.scope().applies_to(Some(&other)));
-        assert!(!scoped.scope().applies_to(None));
-        assert!(AssignmentScope::Tenant.applies_to(None));
-        assert!(AssignmentScope::Tenant.applies_to(Some(&other)));
+        assert!(scoped.scope().applies_to(Some(&app), None));
+        assert!(!scoped.scope().applies_to(Some(&other), None));
+        assert!(!scoped.scope().applies_to(None, None));
+        assert!(AssignmentScope::Tenant.applies_to(None, None));
+        assert!(AssignmentScope::Tenant.applies_to(Some(&other), None));
+        let acme = OrganizationReference::parse("acme").expect("organization");
+        let organization = AssignmentScope::Organization(acme.clone());
+        assert!(organization.applies_to(None, Some(&acme)));
+        assert!(
+            !organization.applies_to(Some(&app), None),
+            "only in its organization"
+        );
+        assert!(AssignmentScope::Tenant.applies_to(None, Some(&acme)));
     }
 }

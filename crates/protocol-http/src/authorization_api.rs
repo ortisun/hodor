@@ -19,8 +19,8 @@ use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use hodor_authorization::api::{
     Action, ApplicationReference, Attributes, AuthorizationDecision, AuthorizationRequest,
-    EvaluationContext, EvaluationService, Namespace, PolicyReference, PolicyRevision,
-    PolicySelection, Resource, Subject, SubjectKind,
+    EvaluationContext, EvaluationService, Namespace, OrganizationReference, PolicyReference,
+    PolicyRevision, PolicySelection, Resource, Subject, SubjectKind,
 };
 use hodor_authorization::api::{Effect, MAX_BATCH};
 use hodor_kernel::{DomainError, TenantContext};
@@ -101,6 +101,9 @@ struct Question {
     action: String,
     #[serde(default)]
     context: BTreeMap<String, Value>,
+    /// The organization the request is made in, by its identifier.
+    #[serde(default)]
+    organization: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -244,6 +247,11 @@ fn request(question: Question, asker: &Asker) -> Result<AuthorizationRequest, Do
             attributes: Attributes::new(question.context)?,
             correlation_id: current_request_id(),
             application: Some(asker.application.clone()),
+            organization: question
+                .organization
+                .as_deref()
+                .map(OrganizationReference::parse)
+                .transpose()?,
         },
     })
 }

@@ -608,7 +608,7 @@ fn the_document_and_the_routes_list_the_same_operations_and_permissions() {
         })
         .collect();
     assert_eq!(documented, served);
-    assert_eq!(served.len(), 96);
+    assert_eq!(served.len(), 97);
 
     // Every operation says how it refuses.
     let document: serde_json::Value = serde_json::from_str(ADMIN_OPENAPI).expect("valid JSON");
@@ -3248,6 +3248,99 @@ async fn an_administrator_manages_roles_assignments_bindings_and_policy_versions
         held.body["items"][0]["application_id"],
         application.as_str()
     );
+
+    // A role given to a group, and one scoped to an organization.
+    let group = world
+        .as_administrator(
+            Method::POST,
+            "/groups",
+            Some(serde_json::json!({ "name": "writers" })),
+        )
+        .await
+        .body["id"]
+        .as_str()
+        .expect("a group")
+        .to_owned();
+    let to_group = world
+        .as_administrator(
+            Method::POST,
+            "/role-assignments",
+            Some(serde_json::json!({
+                "principal": { "kind": "group", "id": group },
+                "role": { "namespace": namespace, "name": "reader" },
+            })),
+        )
+        .await;
+    assert_eq!(to_group.status, StatusCode::CREATED, "{}", to_group.body);
+    let of_group = world
+        .as_administrator(
+            Method::GET,
+            &format!("/groups/{group}/role-assignments"),
+            None,
+        )
+        .await;
+    assert_eq!(of_group.body["items"][0]["principal"]["kind"], "group");
+    let organization = world
+        .as_administrator(
+            Method::POST,
+            "/organizations",
+            Some(serde_json::json!({ "name": "Acme" })),
+        )
+        .await
+        .body["id"]
+        .as_str()
+        .expect("an organization")
+        .to_owned();
+    let scoped = world
+        .as_administrator(
+            Method::POST,
+            "/role-assignments",
+            Some(serde_json::json!({
+                "principal": { "kind": "group", "id": group },
+                "role": { "namespace": namespace, "name": "editor" },
+                "organization_id": organization,
+            })),
+        )
+        .await;
+    assert_eq!(scoped.status, StatusCode::CREATED, "{}", scoped.body);
+    assert_eq!(scoped.body["organization_id"], organization.as_str());
+    let both = world
+        .as_administrator(
+            Method::POST,
+            "/role-assignments",
+            Some(serde_json::json!({
+                "principal": { "kind": "group", "id": group },
+                "role": { "namespace": namespace, "name": "editor" },
+                "organization_id": organization,
+                "application_id": application,
+            })),
+        )
+        .await;
+    assert_eq!(both.code(), "authorization.scope_invalid");
+    let no_group = world
+        .as_administrator(
+            Method::POST,
+            "/role-assignments",
+            Some(serde_json::json!({
+                "principal": { "kind": "group", "id": UserId::generate().to_string() },
+                "role": { "namespace": namespace, "name": "reader" },
+            })),
+        )
+        .await;
+    assert_eq!(no_group.code(), "identity.group_not_found");
+    let revoked = world
+        .as_administrator(
+            Method::POST,
+            "/role-assignments:revoke",
+            Some(serde_json::json!({
+                "principal": { "kind": "group", "id": group },
+                "role": { "namespace": namespace, "name": "editor" },
+                "organization_id": organization,
+            })),
+        )
+        .await;
+    assert_eq!(revoked.status, StatusCode::NO_CONTENT, "{}", revoked.body);
+
     let nobody = world
         .as_administrator(
             Method::POST,

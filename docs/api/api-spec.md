@@ -224,6 +224,7 @@ Content-Type: application/json
 ```
 
 - `subject.type` is `user` or `client`; `asserted`, `resource.id`, `resource.attributes` and `context` may be left out.
+- `organization`, at the top of the body, names the [organization](../architecture/contexts/identity.md#organizations) the request is made in, by its identifier, as the `org_id` of the person's token says. Roles scoped to that organization then count, if the person is still a member of it. Left out, only roles that are not scoped to an organization count.
 - `decision` is `ALLOW`, `DENY` or `INDETERMINATE`; only `ALLOW` permits, and `INDETERMINATE` means the engine could not decide.
 - With `authz:explain` the answer also holds `matched_policies`, and a simulation holds `trace`.
 - `/batch` takes `{ "requests": [...] }` and answers `{ "results": [...] }` in the same order. A request that cannot be read is answered by a problem object in its place; the others are decided.

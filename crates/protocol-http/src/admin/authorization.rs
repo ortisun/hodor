@@ -56,6 +56,7 @@ pub(super) fn routes() -> Router<Shared> {
             "/clients/{client}/role-assignments",
             get(client_assignments),
         )
+        .route("/groups/{group}/role-assignments", get(group_assignments))
         .route("/role-assignments", post(assign))
         .route("/role-assignments:revoke", post(revoke))
         .route("/bindings", get(list_bindings))
@@ -465,6 +466,8 @@ struct AssignmentBody {
     #[serde(skip_serializing_if = "Option::is_none")]
     application_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    organization_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     valid_from: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     valid_until: Option<String>,
@@ -483,6 +486,10 @@ impl From<&RoleAssignment> for AssignmentBody {
                 .scope()
                 .application()
                 .map(|application| application.as_str().to_owned()),
+            organization_id: assignment
+                .scope()
+                .organization()
+                .map(|organization| organization.as_str().to_owned()),
             valid_from: assignment.valid_from().map(written),
             valid_until: assignment.valid_until().map(written),
             assigned_at: written(assignment.assigned_at()),
@@ -498,6 +505,8 @@ struct AssignBody {
     #[serde(default)]
     application_id: Option<String>,
     #[serde(default)]
+    organization_id: Option<String>,
+    #[serde(default)]
     valid_from: Option<String>,
     #[serde(default)]
     valid_until: Option<String>,
@@ -510,6 +519,8 @@ struct RevokeBody {
     role: RoleReferenceBody,
     #[serde(default)]
     application_id: Option<String>,
+    #[serde(default)]
+    organization_id: Option<String>,
 }
 
 fn moment(value: Option<&str>) -> Result<Option<OffsetDateTime>, Box<Response>> {
@@ -526,14 +537,21 @@ fn moment(value: Option<&str>) -> Result<Option<OffsetDateTime>, Box<Response>> 
         .transpose()
 }
 
-/// The principal, checked to be a user or a client of the tenant.
+/// The principal, checked to be a user, a client or a group of the tenant.
 async fn principal(
     state: &Shared,
     tenant: &TenantContext,
     given: &PrincipalBody,
 ) -> Result<Subject, Box<Response>> {
-    let kind = SubjectKind::parse(&given.kind).map_err(failed)?;
+    let kind = SubjectKind::parse_principal(&given.kind).map_err(failed)?;
     match kind {
+        SubjectKind::Group => {
+            let group: hodor_kernel::GroupId = given
+                .id
+                .parse()
+                .map_err(|_| not_found("identity.group_not_found", "the group does not exist"))?;
+            state.groups.get(tenant, group).await.map_err(failed)?;
+        }
         SubjectKind::User => {
             let user: UserId = given.id.parse().map_err(|_| super::user_not_found())?;
             state.identity.get(tenant, user).await.map_err(failed)?;
@@ -553,12 +571,34 @@ async fn principal(
     Subject::new(kind, &given.id).map_err(failed)
 }
 
-/// The scope: the tenant, or an application of the tenant.
+/// The scope: the tenant, an application or an organization of the
+/// tenant, never both of the last two.
 async fn scope(
     state: &Shared,
     tenant: &TenantContext,
     application: Option<&str>,
+    organization: Option<&str>,
 ) -> Result<AssignmentScope, Box<Response>> {
+    if let Some(organization) = organization {
+        if application.is_some() {
+            return Err(problem(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "authorization.scope_invalid",
+                "an assignment is scoped to an application or to an organization, not both",
+            ));
+        }
+        let id: hodor_kernel::OrganizationId = organization.parse().map_err(|_| {
+            not_found(
+                "identity.organization_not_found",
+                "the organization does not exist",
+            )
+        })?;
+        state.organizations.get(tenant, id).await.map_err(failed)?;
+        return Ok(AssignmentScope::Organization(
+            hodor_authorization::api::OrganizationReference::parse(&id.to_string())
+                .map_err(failed)?,
+        ));
+    }
     let Some(text) = application else {
         return Ok(AssignmentScope::Tenant);
     };
@@ -613,6 +653,27 @@ async fn user_assignments(
     )
 }
 
+async fn group_assignments(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+    parameters: RawPathParams,
+) -> Response {
+    respond(
+        async {
+            let operation = "/groups/{group_id}/role-assignments";
+            authorize(&state, &tenant, &headers, "GET", operation).await?;
+            let given = PrincipalBody {
+                kind: "group".to_owned(),
+                id: path_text(&parameters, "group"),
+            };
+            let subject = principal(&state, &tenant, &given).await?;
+            assignments_of(&state, &tenant, &subject).await
+        }
+        .await,
+    )
+}
+
 async fn client_assignments(
     State(state): State<Shared>,
     Extension(tenant): Extension<TenantContext>,
@@ -646,7 +707,13 @@ async fn assign(
             let asked: AssignBody = body(&bytes)?;
             let subject = principal(&state, &tenant, &asked.principal).await?;
             let role = asked.role.key()?;
-            let scope = scope(&state, &tenant, asked.application_id.as_deref()).await?;
+            let scope = scope(
+                &state,
+                &tenant,
+                asked.application_id.as_deref(),
+                asked.organization_id.as_deref(),
+            )
+            .await?;
             let validity = Validity {
                 from: moment(asked.valid_from.as_deref())?,
                 until: moment(asked.valid_until.as_deref())?,
@@ -675,7 +742,13 @@ async fn revoke(
             let asked: RevokeBody = body(&bytes)?;
             let subject = principal(&state, &tenant, &asked.principal).await?;
             let role = asked.role.key()?;
-            let scope = scope(&state, &tenant, asked.application_id.as_deref()).await?;
+            let scope = scope(
+                &state,
+                &tenant,
+                asked.application_id.as_deref(),
+                asked.organization_id.as_deref(),
+            )
+            .await?;
             if !state
                 .roles
                 .revoke(&tenant, &subject, &role, &scope, caller)

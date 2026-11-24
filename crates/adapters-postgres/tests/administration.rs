@@ -105,31 +105,41 @@ async fn the_postgres_webauthn_store_passes_the_contract() {
 #[tokio::test]
 async fn the_database_refuses_a_built_in_assignment_that_breaks_its_rules() {
     let database = TestDatabase::start().await;
-    let insert =
-        |kind: &'static str, role: &'static str, application: &'static str, until: bool| {
-            let owner = database.owner().clone();
-            async move {
-                sqlx::query(
-                    "INSERT INTO \"authorization\".role_assignment (tenant_id, principal_kind,
-                     principal_id, namespace, role, application, valid_until, assigned_at)
-                 VALUES (gen_random_uuid(), $1, 'someone', 'hodor:admin', $2, $3,
-                     CASE WHEN $4 THEN now() + interval '1 day' END, now())",
-                )
-                .bind(kind)
-                .bind(role)
-                .bind(application)
-                .bind(until)
-                .execute(&owner)
-                .await
-            }
-        };
-    assert!(insert("user", "tenant_auditor", "", false).await.is_ok());
+    let insert = |kind: &'static str,
+                  role: &'static str,
+                  application: &'static str,
+                  organization: &'static str,
+                  until: bool| {
+        let owner = database.owner().clone();
+        async move {
+            sqlx::query(
+                "INSERT INTO \"authorization\".role_assignment (tenant_id, principal_kind,
+                     principal_id, namespace, role, application, organization, valid_until,
+                     assigned_at)
+                 VALUES (gen_random_uuid(), $1, 'someone', 'hodor:admin', $2, $3, $4,
+                     CASE WHEN $5 THEN now() + interval '1 day' END, now())",
+            )
+            .bind(kind)
+            .bind(role)
+            .bind(application)
+            .bind(organization)
+            .bind(until)
+            .execute(&owner)
+            .await
+        }
+    };
+    assert!(
+        insert("user", "tenant_auditor", "", "", false)
+            .await
+            .is_ok()
+    );
     for refused in [
-        insert("user", "owner", "", false).await,
-        insert("client", "tenant_auditor", "", false).await,
-        insert("user", "tenant_auditor", "portal", false).await,
-        insert("user", "tenant_auditor", "", true).await,
-        insert("group", "tenant_auditor", "", false).await,
+        insert("user", "owner", "", "", false).await,
+        insert("client", "tenant_auditor", "", "", false).await,
+        insert("user", "tenant_auditor", "portal", "", false).await,
+        insert("user", "tenant_auditor", "", "", true).await,
+        insert("group", "tenant_auditor", "", "", false).await,
+        insert("user", "tenant_auditor", "", "acme", false).await,
     ] {
         assert!(refused.is_err());
     }

@@ -53,6 +53,7 @@ fn kind_name(kind: SubjectKind) -> &'static str {
     match kind {
         SubjectKind::User => "user",
         SubjectKind::Client => "client",
+        SubjectKind::Group => "group",
     }
 }
 

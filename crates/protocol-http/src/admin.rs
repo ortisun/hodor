@@ -269,6 +269,11 @@ pub const ADMIN_OPERATIONS: &[(&str, &str, Permission)] = &[
         "/clients/{client_id}/role-assignments",
         Permission::RolesRead,
     ),
+    (
+        "GET",
+        "/groups/{group_id}/role-assignments",
+        Permission::RolesRead,
+    ),
     ("POST", "/role-assignments", Permission::RolesWrite),
     ("POST", "/role-assignments:revoke", Permission::RolesWrite),
     ("GET", "/bindings", Permission::BindingsRead),

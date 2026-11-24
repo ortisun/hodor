@@ -5,9 +5,9 @@
 use crate::uow::{connection, database_error};
 use hodor_authorization::api::{
     Action, ApplicationReference, AssignmentScope, BindingSettings, Condition, EngineBinding,
-    EngineBindingStore, EngineId, Namespace, NativeRoleStore, PermissionDefinition, PermissionName,
-    Role, RoleAssignment, RoleAssignmentStore, RoleContents, RoleDefinition, RoleKey, RoleName,
-    Subject, SubjectKind,
+    EngineBindingStore, EngineId, Namespace, NativeRoleStore, OrganizationReference,
+    PermissionDefinition, PermissionName, Role, RoleAssignment, RoleAssignmentStore, RoleContents,
+    RoleDefinition, RoleKey, RoleName, Subject, SubjectKind,
 };
 use hodor_kernel::{DomainError, Timestamp, UnitOfWork, UserId};
 use std::collections::BTreeMap;
@@ -43,9 +43,10 @@ impl RoleAssignmentStore for PgRoleAssignmentStore {
         let tenant = uow.tenant().tenant_id();
         let inserted = sqlx::query(
             "INSERT INTO \"authorization\".role_assignment (tenant_id, principal_kind,
-                 principal_id, namespace, role, application, assigned_at)
-             VALUES ($1, 'user', $2, $3, $4, '', $5)
-             ON CONFLICT (tenant_id, principal_kind, principal_id, namespace, role, application)
+                 principal_id, namespace, role, application, organization, assigned_at)
+             VALUES ($1, 'user', $2, $3, $4, '', '', $5)
+             ON CONFLICT (tenant_id, principal_kind, principal_id, namespace, role, application,
+                          organization)
              DO NOTHING",
         )
         .bind(tenant.as_uuid())
@@ -69,7 +70,7 @@ impl RoleAssignmentStore for PgRoleAssignmentStore {
         let deleted = sqlx::query(
             "DELETE FROM \"authorization\".role_assignment
              WHERE tenant_id = $1 AND principal_kind = 'user' AND principal_id = $2
-               AND namespace = $3 AND role = $4 AND application = ''",
+               AND namespace = $3 AND role = $4 AND application = '' AND organization = ''",
         )
         .bind(tenant.as_uuid())
         .bind(user_id.to_string())
@@ -270,6 +271,7 @@ type AssignmentRow = (
     String,
     String,
     String,
+    String,
     Option<Timestamp>,
     Option<Timestamp>,
     Timestamp,
@@ -283,10 +285,13 @@ fn role_key(namespace: &str, name: &str) -> Result<RoleKey, DomainError> {
 }
 
 fn assignment_from(row: AssignmentRow) -> Result<RoleAssignment, DomainError> {
-    let (kind, principal, namespace, role, application, from, until, assigned_at) = row;
+    let (kind, principal, namespace, role, application, organization, from, until, assigned_at) =
+        row;
     let read = || -> Result<RoleAssignment, DomainError> {
-        let principal = Subject::new(SubjectKind::parse(&kind)?, &principal)?;
-        let scope = if application.is_empty() {
+        let principal = Subject::new(SubjectKind::parse_principal(&kind)?, &principal)?;
+        let scope = if !organization.is_empty() {
+            AssignmentScope::Organization(OrganizationReference::parse(&organization)?)
+        } else if application.is_empty() {
             AssignmentScope::Tenant
         } else {
             AssignmentScope::Application(ApplicationReference::parse(&application)?)
@@ -303,8 +308,15 @@ fn assignment_from(row: AssignmentRow) -> Result<RoleAssignment, DomainError> {
     read().map_err(|error| corrupted("assignment", &error))
 }
 
-fn scope_column(scope: &AssignmentScope) -> &str {
-    scope.application().map_or("", ApplicationReference::as_str)
+/// The application and the organization columns of a scope, empty when
+/// the scope does not name one.
+fn scope_columns(scope: &AssignmentScope) -> (&str, &str) {
+    (
+        scope.application().map_or("", ApplicationReference::as_str),
+        scope
+            .organization()
+            .map_or("", OrganizationReference::as_str),
+    )
 }
 
 #[async_trait::async_trait]
@@ -602,10 +614,11 @@ impl NativeRoleStore for PgNativeRoleStore {
         let tenant = uow.tenant().tenant_id();
         sqlx::query(
             "INSERT INTO \"authorization\".role_assignment (tenant_id, principal_kind,
-                 principal_id, namespace, role, application, valid_from, valid_until,
-                 assigned_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-             ON CONFLICT (tenant_id, principal_kind, principal_id, namespace, role, application)
+                 principal_id, namespace, role, application, organization, valid_from,
+                 valid_until, assigned_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $10, $7, $8, $9)
+             ON CONFLICT (tenant_id, principal_kind, principal_id, namespace, role, application,
+                          organization)
              DO UPDATE SET
                  valid_from = EXCLUDED.valid_from,
                  valid_until = EXCLUDED.valid_until,
@@ -616,10 +629,11 @@ impl NativeRoleStore for PgNativeRoleStore {
         .bind(assignment.principal().id())
         .bind(assignment.role().namespace.as_str())
         .bind(assignment.role().name.as_str())
-        .bind(scope_column(assignment.scope()))
+        .bind(scope_columns(assignment.scope()).0)
         .bind(assignment.valid_from())
         .bind(assignment.valid_until())
         .bind(assignment.assigned_at())
+        .bind(scope_columns(assignment.scope()).1)
         .execute(connection(uow)?)
         .await
         .map_err(|e| database_error(&e))?;
@@ -637,7 +651,7 @@ impl NativeRoleStore for PgNativeRoleStore {
         let deleted = sqlx::query(
             "DELETE FROM \"authorization\".role_assignment
              WHERE tenant_id = $1 AND principal_kind = $2 AND principal_id = $3
-               AND namespace = $4 AND role = $5 AND application = $6
+               AND namespace = $4 AND role = $5 AND application = $6 AND organization = $7
                AND namespace <> 'hodor:admin'",
         )
         .bind(tenant.as_uuid())
@@ -645,7 +659,8 @@ impl NativeRoleStore for PgNativeRoleStore {
         .bind(principal.id())
         .bind(role.namespace.as_str())
         .bind(role.name.as_str())
-        .bind(scope_column(scope))
+        .bind(scope_columns(scope).0)
+        .bind(scope_columns(scope).1)
         .execute(connection(uow)?)
         .await
         .map_err(|e| database_error(&e))?;
@@ -659,12 +674,12 @@ impl NativeRoleStore for PgNativeRoleStore {
     ) -> Result<Vec<RoleAssignment>, DomainError> {
         let tenant = uow.tenant().tenant_id();
         let rows: Vec<AssignmentRow> = sqlx::query_as(
-            "SELECT principal_kind, principal_id, namespace, role, application, valid_from,
-                    valid_until, assigned_at
+            "SELECT principal_kind, principal_id, namespace, role, application, organization,
+                    valid_from, valid_until, assigned_at
              FROM \"authorization\".role_assignment
              WHERE tenant_id = $1 AND principal_kind = $2 AND principal_id = $3
                AND namespace <> 'hodor:admin'
-             ORDER BY namespace, role, application",
+             ORDER BY namespace, role, application, organization",
         )
         .bind(tenant.as_uuid())
         .bind(principal.kind().as_str())

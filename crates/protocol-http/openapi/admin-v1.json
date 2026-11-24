@@ -7620,6 +7620,84 @@
           }
         }
       }
+    },
+    "/groups/{group_id}/role-assignments": {
+      "get": {
+        "operationId": "listGroupRoleAssignments",
+        "summary": "List the roles a group holds",
+        "x-hodor-permission": "roles:read",
+        "parameters": [
+          {
+            "name": "group_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The roles the client holds.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "items"
+                  ],
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/RoleAssignment"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such client in this tenant.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -9445,7 +9523,8 @@
           "kind": {
             "enum": [
               "user",
-              "client"
+              "client",
+              "group"
             ]
           },
           "id": {
@@ -9472,7 +9551,8 @@
               "kind": {
                 "enum": [
                   "user",
-                  "client"
+                  "client",
+                  "group"
                 ]
               },
               "id": {
@@ -9499,6 +9579,11 @@
           "application_id": {
             "type": "string",
             "format": "uuid"
+          },
+          "organization_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The organization the assignment is scoped to. Not given with application_id."
           },
           "valid_from": {
             "type": "string",
@@ -9531,7 +9616,8 @@
               "kind": {
                 "enum": [
                   "user",
-                  "client"
+                  "client",
+                  "group"
                 ]
               },
               "id": {
@@ -9558,6 +9644,11 @@
           "application_id": {
             "type": "string",
             "format": "uuid"
+          },
+          "organization_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The organization the assignment is scoped to. Not given with application_id."
           },
           "valid_from": {
             "type": "string",
@@ -9587,7 +9678,8 @@
               "kind": {
                 "enum": [
                   "user",
-                  "client"
+                  "client",
+                  "group"
                 ]
               },
               "id": {
@@ -9614,6 +9706,11 @@
           "application_id": {
             "type": "string",
             "format": "uuid"
+          },
+          "organization_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The organization the assignment is scoped to. Not given with application_id."
           }
         },
         "additionalProperties": false

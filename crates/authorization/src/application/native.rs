@@ -17,7 +17,7 @@ use crate::domain::decision::{
     EngineAnswer, EngineId, PolicyReference, PolicyRevision, ReasonCode,
 };
 use crate::domain::native::{Grant, PermissionName, RoleGraph, RoleKey, grant_applies, grants_of};
-use crate::domain::request::{Namespace, Subject};
+use crate::domain::request::{Attributes, Namespace, Subject, SubjectKind};
 use crate::domain::role::Effect;
 use hodor_kernel::{Clock, DomainError, TenantContext, TenantId, UnitOfWorkFactory};
 use std::collections::{BTreeMap, BTreeSet};
@@ -183,18 +183,37 @@ impl NativeEngine {
         let request = &input.request;
         let mut uow = self.units_of_work.begin(tenant).await?;
         let revision = store.revision(uow.as_mut()).await?;
-        let key = (tenant.tenant_id(), request.subject.clone());
-        let kept = self
-            .cache()
-            .get(&key)
-            .filter(|cached| cached.revision == revision)
-            .map(|cached| Arc::clone(&cached.grants));
-        let grants = if let Some(grants) = kept {
-            grants
-        } else {
-            let assignments = store.assignments_of(uow.as_mut(), &request.subject).await?;
-            let graph = RoleGraph::new(store.roles(uow.as_mut()).await?);
-            let grants = Arc::new(self.compiled(grants_of(&assignments, &graph)));
+        // The subject, and for a user every group Hodor resolved for them:
+        // each is a principal whose assignments count.
+        let mut principals = vec![request.subject.clone()];
+        if request.subject.kind() == SubjectKind::User {
+            principals.extend(
+                listed(&input.subject_attributes, "groups")
+                    .into_iter()
+                    .filter_map(|group| Subject::new(SubjectKind::Group, &group).ok()),
+            );
+        }
+        let mut grants: Vec<Arc<Vec<CompiledGrant>>> = Vec::with_capacity(principals.len());
+        let mut graph: Option<RoleGraph> = None;
+        for principal in principals {
+            let key = (tenant.tenant_id(), principal.clone());
+            let kept = self
+                .cache()
+                .get(&key)
+                .filter(|cached| cached.revision == revision)
+                .map(|cached| Arc::clone(&cached.grants));
+            if let Some(kept) = kept {
+                grants.push(kept);
+                continue;
+            }
+            let assignments = store.assignments_of(uow.as_mut(), &principal).await?;
+            if graph.is_none() {
+                graph = Some(RoleGraph::new(store.roles(uow.as_mut()).await?));
+            }
+            let roles = graph
+                .as_ref()
+                .map_or_else(Vec::new, |graph| grants_of(&assignments, graph));
+            let compiled = Arc::new(self.compiled(roles));
             let mut cache = self.cache();
             if cache.len() >= CACHE_CAPACITY {
                 cache.clear();
@@ -203,21 +222,33 @@ impl NativeEngine {
                 key,
                 Cached {
                     revision,
-                    grants: Arc::clone(&grants),
+                    grants: Arc::clone(&compiled),
                 },
             );
-            grants
-        };
+            grants.push(compiled);
+        }
+        // The organization of the request counts only for a member of it.
+        let organization = request
+            .context
+            .organization
+            .as_ref()
+            .filter(|organization| {
+                listed(&input.subject_attributes, "organizations")
+                    .iter()
+                    .any(|member_of| member_of == organization.as_str())
+            });
         let now = clock.now();
         let permission = PermissionName::of(request.resource.kind(), &request.action);
         let applying: Vec<&CompiledGrant> = grants
             .iter()
+            .flat_map(|of_principal| of_principal.iter())
             .filter(|compiled| {
                 grant_applies(
                     &compiled.grant,
                     &request.namespace,
                     &permission,
                     request.context.application.as_ref(),
+                    organization,
                     now,
                 )
             })
@@ -424,4 +455,20 @@ fn simulation_trace(input: &EvaluationInput, answer: &EngineAnswer) -> Vec<Strin
         answer.reason.as_str()
     ));
     trace
+}
+
+/// The strings of a list attribute Hodor resolved, such as a user's
+/// `groups`; nothing when it is absent or not a list of strings.
+fn listed(attributes: &Attributes, name: &str) -> Vec<String> {
+    attributes
+        .get(name)
+        .and_then(serde_json::Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
 }

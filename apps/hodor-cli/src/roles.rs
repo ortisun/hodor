@@ -15,8 +15,9 @@ use hodor_adapters_postgres::{
 use hodor_authorization::api::{
     Action, ApplicationReference, AssignmentScope, Attributes, AuthorizationEngine,
     BindingSettings, Condition, EngineAnswer, EngineCapabilities, EngineId, EngineRegistry,
-    EvaluationInput, EvaluationService, Namespace, NativeEngine, PermissionName, RoleContents,
-    RoleKey, RoleName, RoleService, Subject, SubjectAttributeSource, SubjectKind, Validity,
+    EvaluationInput, EvaluationService, Namespace, NativeEngine, OrganizationReference,
+    PermissionName, RoleContents, RoleKey, RoleName, RoleService, Subject, SubjectAttributeSource,
+    SubjectKind, Validity,
 };
 use hodor_authorization_native::CelConditionLanguage;
 use hodor_kernel::{DomainError, SystemClock, TenantContext};
@@ -52,6 +53,9 @@ pub(crate) enum ManageCommand {
         /// Only for requests made for this application.
         #[arg(long)]
         application: Option<String>,
+        /// Only for requests made in this organization, by its members.
+        #[arg(long)]
+        organization: Option<String>,
         /// From when it allows, an RFC 3339 time.
         #[arg(long)]
         from: Option<String>,
@@ -72,6 +76,9 @@ pub(crate) enum ManageCommand {
         /// The application it was given for, if it was.
         #[arg(long)]
         application: Option<String>,
+        /// The organization it was given for, if it was.
+        #[arg(long)]
+        organization: Option<String>,
     },
     /// Bind a resource server to an engine, or change the binding.
     Bind {
@@ -207,16 +214,20 @@ pub(crate) struct PrincipalArgs {
     /// The client's identifier.
     #[arg(long)]
     client: Option<String>,
+    /// The group's identifier: the role is held by everyone in the group.
+    #[arg(long)]
+    group: Option<String>,
 }
 
 impl PrincipalArgs {
     fn subject(&self) -> Result<Subject, DomainError> {
-        match (&self.user, &self.client) {
-            (Some(user), None) => Subject::new(SubjectKind::User, user),
-            (None, Some(client)) => Subject::new(SubjectKind::Client, client),
+        match (&self.user, &self.client, &self.group) {
+            (Some(user), None, None) => Subject::new(SubjectKind::User, user),
+            (None, Some(client), None) => Subject::new(SubjectKind::Client, client),
+            (None, None, Some(group)) => Subject::new(SubjectKind::Group, group),
             _ => Err(DomainError::invalid(
                 "authorization.subject_invalid",
-                "give --user or --client",
+                "give one of --user, --client or --group",
             )),
         }
     }
@@ -319,10 +330,20 @@ fn role_key(reference: &str) -> Result<RoleKey, DomainError> {
     ))
 }
 
-fn scope(application: Option<&str>) -> Result<AssignmentScope, DomainError> {
-    Ok(match application {
-        None => AssignmentScope::Tenant,
-        Some(id) => AssignmentScope::Application(ApplicationReference::parse(id)?),
+fn scope(
+    application: Option<&str>,
+    organization: Option<&str>,
+) -> Result<AssignmentScope, DomainError> {
+    Ok(match (application, organization) {
+        (None, None) => AssignmentScope::Tenant,
+        (Some(id), None) => AssignmentScope::Application(ApplicationReference::parse(id)?),
+        (None, Some(id)) => AssignmentScope::Organization(OrganizationReference::parse(id)?),
+        (Some(_), Some(_)) => {
+            return Err(DomainError::invalid(
+                "authorization.scope_invalid",
+                "an assignment is scoped to an application or to an organization, not both",
+            ));
+        }
     })
 }
 
@@ -477,6 +498,7 @@ pub(crate) async fn run_manage(
             principal,
             role,
             application,
+            organization,
             from,
             until,
         } => {
@@ -487,7 +509,7 @@ pub(crate) async fn run_manage(
                     &s.tenant,
                     principal.subject()?,
                     role_key(&role)?,
-                    scope(application.as_deref())?,
+                    scope(application.as_deref(), organization.as_deref())?,
                     Validity {
                         from: time_of(from.as_deref())?,
                         until: time_of(until.as_deref())?,
@@ -507,6 +529,7 @@ pub(crate) async fn run_manage(
             principal,
             role,
             application,
+            organization,
         } => {
             let s = services(database, &tenant).await?;
             let taken = s
@@ -515,7 +538,7 @@ pub(crate) async fn run_manage(
                     &s.tenant,
                     &principal.subject()?,
                     &role_key(&role)?,
-                    &scope(application.as_deref())?,
+                    &scope(application.as_deref(), organization.as_deref())?,
                     caller(),
                 )
                 .await?;
