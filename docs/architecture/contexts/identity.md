@@ -2,7 +2,7 @@
 
 The `identity` context owns users: who exists inside a tenant, how they are found, and whether they may act. It does not know how a user proves who they are; that belongs to the `credential` and `authentication` contexts.
 
-This page specifies the part built in Milestone 1: users and their login identifiers. Groups, organizations, memberships, invitations and linked external identities belong to this context too and are specified here when their turn comes.
+This page specifies users and their login identifiers, built in Milestone 1, and groups, built in Milestone 7. Organizations, memberships, invitations and linked external identities belong to this context too and are specified here when their turn comes.
 
 ## What a user is
 
@@ -49,6 +49,7 @@ Rules:
 - A user is created Pending unless the creator states that the user is already confirmed, as an administrator does when creating an account by hand.
 - Marking a user Deleted removes their login identifiers and clears the display name and locale. This is the erasure step of a data subject's deletion request.
 - Each successful change produces one event (see [events](#events)).
+- Marking a user Deleted also takes them out of every group.
 
 ## Login identifiers
 
@@ -98,6 +99,51 @@ Normalization is idempotent: normalizing an already normalized value changes not
 
 What a person types in a login form is matched like this: if it contains `@` it is treated as an email address, otherwise as a username. It is normalized by the rules above and looked up within the tenant. A value that is not a well-formed identifier of its kind matches nobody; it is not an error, so that a login form cannot be used to learn the rules of valid identifiers.
 
+## Groups
+
+A **group** gathers users of a tenant under one name, such as `finance` or `on-call`, so that something can be given to all of them at once: a role, a claim in a token, an entry of an access list. Groups belong to the tenant, not to an organization ([Decision 0005](../../decisions/0005-tenant-and-organization.md)).
+
+| Field | Meaning |
+|---|---|
+| Identifier | A `GroupId`, assigned at creation and never changed |
+| Name | 1 to 100 characters, with no control characters and no space at either end. Unique in the tenant without regard to case: `Finance` and `finance` cannot both exist |
+| Description | Optional, up to 500 characters |
+| Members | Users, and other groups |
+
+### Groups inside groups
+
+A group can be a member of another group. Its members are then members of the other group too, through it.
+
+```mermaid
+flowchart LR
+    ana["Ana"] --> payables["payables"]
+    bruno["Bruno"] --> receivables["receivables"]
+    payables --> finance["finance"]
+    receivables --> finance
+    carla["Carla"] --> finance
+```
+
+Here Ana, Bruno and Carla are all in `finance`: Carla directly, Ana through `payables` and Bruno through `receivables`. The groups a user is in, directly or through other groups, are the user's **effective groups**.
+
+Two rules keep this from going wrong:
+
+- **No cycles.** A group can never be inside itself, however many groups lie between. Adding `finance` to `payables` above is refused, because `payables` is already inside `finance`. The refusal is `identity.group_cycle`.
+- **Bounded nesting.** The **depth** of a group is the longest chain of groups inside it, counting itself: a group with no group inside it has depth 1, and `finance` above has depth 2. A tenant's [group policy](tenant.md#group-policy) bounds the depth of every group, 5 by default. Adding a group to another is refused when any group would then be deeper than the bound, with `identity.group_nesting_too_deep`.
+
+Both rules are checked against every group of the tenant at once, under a lock the tenant's changes to nesting take one after the other. Two requests that would make a cycle only together, adding `finance` to `payables` and `payables` to `finance` at the same moment, cannot both succeed.
+
+Effective groups are worked out when they are asked for, from the memberships that are stored. Nothing is kept beside them, so a removed member is out of every group above at once, in the same transaction.
+
+### What changes groups
+
+| Rule | Why |
+|---|---|
+| A user is a direct member of a group once | Adding again changes nothing and records nothing |
+| Only users and groups of the same tenant can be members | Tenants are kept apart |
+| A user of any status can be a member, except a Deleted one | A suspended person is still in the groups they were in, and is back in them when reactivated; what a membership grants is the business of whoever reads it, and a suspended user cannot sign in anyway |
+| Deleting a group takes it out of every group it was in, and takes every member out of it | Nothing refers to a group that does not exist |
+| Renaming a group keeps its identifier | Whatever was given to the group stays given |
+
 ## Events
 
 Events carry identifiers of users and of login identifiers, and the kind of a login identifier, but never its value. An email address is personal data and stays in the identity tables; the audit trail refers to it by identifier.
@@ -116,6 +162,13 @@ Events carry identifiers of users and of login identifiers, and the kind of a lo
 | `identity.identifier_removed` | A login identifier is removed |
 | `identity.primary_identifier_changed` | Another identifier of a kind becomes primary |
 | `identity.profile_changed` | Display name or locale changed |
+| `identity.group_created` | A group is created |
+| `identity.group_changed` | A group's name or description changed |
+| `identity.group_deleted` | A group is deleted; carries how many members it had |
+| `identity.group_member_added` | A user or a group is added to a group; carries the kind of member and its identifier |
+| `identity.group_member_removed` | A user or a group is taken out of a group, by hand, by deleting the group, or by marking the user Deleted; carries the kind of member and its identifier |
+
+A group's name and description are not personal data, but they can say a great deal about people: they stay in the identity tables, and events carry the group's identifier only.
 
 ## Operations
 
@@ -128,6 +181,13 @@ Events carry identifiers of users and of login identifiers, and the kind of a lo
 | Activate, suspend, reactivate, deactivate, restore, mark deleted | Apply the transition |
 | Add, verify, remove a login identifier; choose the primary | Apply the change |
 | Change profile | Replace the display name and locale |
+| Create group | Creates a group with a name and a description |
+| Get group, list groups | A group of the tenant, or a page of them in the order they were created |
+| Change group | Replaces the name and the description |
+| Delete group | Deletes the group and every membership it is part of |
+| Add member, remove member | Adds a user or a group to a group, or takes it out; adding a group checks [the two rules](#groups-inside-groups) |
+| List members | The direct members of a group, a page at a time, users and groups apart |
+| Effective groups of a user | Every group the user is in, directly or through other groups |
 
 Every use case that changes a user loads it, applies the change, stores it and records its events in one unit of work. A change that produces no event, such as verifying an identifier that is already verified, changed nothing and stores nothing.
 
@@ -136,6 +196,8 @@ Every use case that changes a user loads it, applies the change, stores it and r
 | Port | Purpose |
 |---|---|
 | `UserRepository` | Store and load users with their login identifiers, with optimistic locking on the user's version; find a user by a normalized login identifier |
+| `GroupRepository` | Store, load, change and delete groups with optimistic locking on the group's version; add and remove members; list members; take the tenant's lock on nesting; read every link from a group to a group inside it, and the groups a user is directly in |
+| `GroupPolicy` | The tenant's bound on the depth of groups, read in the unit of work of the change |
 
 Every method works inside the tenant of the unit of work it is given.
 
@@ -168,12 +230,36 @@ Every method works inside the tenant of the unit of work it is given.
 
 Both tables are tenant tables under row-level security. Uniqueness of login identifiers is enforced by the database, so two concurrent registrations of the same address cannot both succeed.
 
+### `identity.group`
+
+| Column | Type | Notes |
+|---|---|---|
+| `tenant_id`, `id` | `uuid` | Primary key |
+| `name` | `text` | As written |
+| `name_normalized` | `text` | The name in lower case. Unique per tenant |
+| `description` | `text` | Optional |
+| `created_at`, `updated_at` | `timestamptz` | |
+| `version` | `integer` | Incremented on every update; a stale update is rejected |
+
+### `identity.group_member`
+
+| Column | Type | Notes |
+|---|---|---|
+| `tenant_id`, `group_id` | `uuid` | The group the member is in; removed with it |
+| `user_id` | `uuid` | The member, when it is a user; removed with the user's row |
+| `member_group_id` | `uuid` | The member, when it is a group; removed with that group |
+| `added_at` | `timestamptz` | |
+
+Exactly one of `user_id` and `member_group_id` is set, and a member is in a group once. A group is never its own member, which the database checks too. Both are tenant tables under row-level security, and the lock on nesting is a PostgreSQL advisory lock of the transaction, taken on a key made from the tenant.
+
 ## Not built yet
 
 | Item | Planned in |
 |---|---|
 | Custom attributes and the standard profile claims of OpenID Connect | Later in Phase 1 |
-| Groups, organizations, memberships, invitations | Later in Phase 1 |
+| Organizations, memberships, invitations | Milestone 7 |
+| Managing groups through the administration interface, the command-line tool and the console | Milestone 7, Issue-88 |
+| Roles given to groups, and groups in tokens | Milestone 7, Issue-89 |
 | Phone numbers as login identifiers | Phase 4 |
 | Linked external identities | Phase 3 |
 | Non-ASCII email addresses | Not scheduled |

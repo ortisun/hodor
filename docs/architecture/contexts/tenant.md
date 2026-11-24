@@ -109,6 +109,14 @@ When a second factor is required, no sign-in to the tenant completes with one fa
 
 The policy is set with `hodor-cli tenant second-factor --slug <slug> --policy required` (or `not-required`). Turning it on refuses every sign-in of a person who has no second factor yet, since enrolling one during a sign-in is not built; people add one first from [their security page](../hosted-pages.md#a-persons-own-factors), or an operator enrolls one with `hodor-cli totp`.
 
+### Group policy
+
+| Setting | Default | Allowed |
+|---|---|---|
+| Depth of groups | 5 | 1 to 10 |
+
+The [depth](identity.md#groups-inside-groups) of a group is the longest chain of groups inside it, counting itself. Lowering the bound changes no group that exists: it is checked only when a group is added to another, so a tenant whose groups are deeper than the new bound can take groups out but not put more in. Settings stored before this policy existed read as the default. The policy is set with `hodor-cli tenant group-depth --slug <slug> --depth <depth>`.
+
 ### Assurance levels
 
 An application names how strongly it wants the person to have proved who they are with an `acr` value, and every token says which level the sign-in reached ([OpenID Connect Core, section 2](https://openid.net/specs/openid-connect-core-1_0.html#IDToken)). A tenant chooses the names of its levels. Each level names one **requirement** from a closed set:
@@ -209,6 +217,7 @@ Resolving a request starts from a slug, before any tenant is known, so it cannot
 | `hodor-cli tenant suspend --slug <slug> --reason <text>` | Suspends a tenant | The tenant's new status |
 | `hodor-cli tenant reactivate --slug <slug>` | Reactivates a suspended tenant | The tenant's new status |
 | `hodor-cli tenant second-factor --slug <slug> --policy <required\|not-required>` | Sets the [authentication policy](#authentication-policy) | The policy now in force |
+| `hodor-cli tenant group-depth --slug <slug> --depth <1 to 10>` | Sets the [group policy](#group-policy) | The depth now allowed |
 | `hodor-cli tenant assurance-levels --slug <slug> [--level <name>=<requirement> …]` | Replaces the [assurance levels](#assurance-levels); without `--level`, prints them | One line per level: its name and its requirement |
 
 These commands connect with `HODOR_DATABASE_URL`, as a member of `hodor_app`. They need no cross-tenant role for the same reason the server does not. A command that fails prints the error's code and message and exits with a non-zero status.
