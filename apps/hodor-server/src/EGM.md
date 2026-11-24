@@ -74,7 +74,10 @@ Routers, as assembled in `run`:
   for the `WorkloadService` of `administration`: a disabled or deleted service
   account or agent loses its sessions and grants, if any, and every access
   token issued for it (`WorkloadTokens::revoke_in`), in the identity
-  context's unit of work.
+  context's unit of work; a deleted one also loses its API keys
+  (`ApiKeyService::revoke_all_of_in`, `revoke_credentials`). `api_keys`
+  builds the `ApiKeyService` over `PgApiKeyStore` that the administration
+  interface and the Authorization API (`ApiKeyAccess`) use.
 - `/oauth2/jwks`: `hodor_protocol_http::key_set_routes(KeyService)` is merged
   into the tenant routes when `keys` built a `KeyService` (`PgKeyStore`,
   `LocalKeyProvider` over `HODOR_SECRET_KEYS`); otherwise a warning is logged

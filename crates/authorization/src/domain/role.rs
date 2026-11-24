@@ -161,6 +161,51 @@ impl Permission {
     }
 }
 
+/// The scopes of the Authorization API: `evaluate` and `batch`,
+/// `simulate`, and the explanations of answers.
+pub const AUTHORIZATION_API_SCOPES: [&str; 3] =
+    ["authz:evaluate", "authz:simulate", "authz:explain"];
+
+/// Checks the scopes of an API key against the one rule every interface
+/// that makes keys follows: each is a permission of Hodor's
+/// administration or a scope of the Authorization API, and a scope of the
+/// Authorization API comes with an application, which comes with one.
+///
+/// See `docs/architecture/contexts/authorization.md`, "Who may ask".
+///
+/// # Errors
+///
+/// `Invalid` with code `authorization.scope_unknown`,
+/// `authorization.scope_needs_application` or
+/// `authorization.application_without_scope`.
+pub fn check_key_scopes(scopes: &[String], names_application: bool) -> Result<(), DomainError> {
+    if let Some(unknown) = scopes.iter().find(|scope| {
+        Permission::from_name(scope).is_none()
+            && !AUTHORIZATION_API_SCOPES.contains(&scope.as_str())
+    }) {
+        return Err(DomainError::invalid(
+            "authorization.scope_unknown",
+            "a scope is a permission of the administration interface or a scope of the \
+             Authorization API",
+        )
+        .with_detail(format!("`{unknown}` is neither")));
+    }
+    let asks = scopes
+        .iter()
+        .any(|scope| AUTHORIZATION_API_SCOPES.contains(&scope.as_str()));
+    match (asks, names_application) {
+        (true, false) => Err(DomainError::invalid(
+            "authorization.scope_needs_application",
+            "a scope of the Authorization API needs the application it asks about",
+        )),
+        (false, true) => Err(DomainError::invalid(
+            "authorization.application_without_scope",
+            "an application is named only with a scope of the Authorization API",
+        )),
+        _ => Ok(()),
+    }
+}
+
 /// A named set of permissions. The roles are fixed in this version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Role {
@@ -290,6 +335,39 @@ mod tests {
                 reads,
                 "{}",
                 permission.as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn a_key_holds_permissions_and_scopes_of_the_authorization_api_only() {
+        let scopes = |names: &[&str]| names.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>();
+        assert!(check_key_scopes(&scopes(&["users:read", "audit:read"]), false).is_ok());
+        assert!(check_key_scopes(&scopes(&["users:read", "authz:evaluate"]), true).is_ok());
+        let cases = [
+            (
+                scopes(&["users:delete"]),
+                false,
+                "authorization.scope_unknown",
+            ),
+            (scopes(&["openid"]), false, "authorization.scope_unknown"),
+            (
+                scopes(&["authz:simulate"]),
+                false,
+                "authorization.scope_needs_application",
+            ),
+            (
+                scopes(&["users:read"]),
+                true,
+                "authorization.application_without_scope",
+            ),
+        ];
+        for (asked, application, code) in cases {
+            assert_eq!(
+                check_key_scopes(&asked, application)
+                    .expect_err("refused")
+                    .code(),
+                code
             );
         }
     }

@@ -56,5 +56,7 @@ pub mod api {
         Action, ApplicationReference, Attributes, AuthorizationRequest, EvaluationContext,
         Namespace, OrganizationReference, Resource, Subject, SubjectKind,
     };
-    pub use crate::domain::role::{Decision, Effect, Permission, Role};
+    pub use crate::domain::role::{
+        AUTHORIZATION_API_SCOPES, Decision, Effect, Permission, Role, check_key_scopes,
+    };
 }

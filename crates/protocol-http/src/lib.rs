@@ -35,7 +35,7 @@ pub use admin::{
     console_routes,
 };
 pub use authorization_api::{
-    AUTHORIZATION_API_AUDIENCE, AUTHORIZATION_OPENAPI, AUTHORIZATION_OPERATIONS,
+    AUTHORIZATION_API_AUDIENCE, AUTHORIZATION_OPENAPI, AUTHORIZATION_OPERATIONS, ApiKeyAccess,
     AuthorizationApiState, EVALUATE_SCOPE, EXPLAIN_SCOPE, SIMULATE_SCOPE, authorization_api_routes,
 };
 pub use authorize::{AuthorizationState, authorization_routes};

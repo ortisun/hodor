@@ -35,7 +35,8 @@ const PAYROLL: &str = "urn:example:payroll";
 struct World {
     server: Server,
     /// Kept alive for as long as the server runs.
-    _database: TestDatabase,
+    database: TestDatabase,
+    tenant: TenantContext,
     /// The person who owns the service account.
     ana: UserId,
     /// The tenant administrator's token for the administration interface.
@@ -110,7 +111,8 @@ async fn world() -> World {
     let server = start_server_with(&database, &[("HODOR_SECRET_KEYS", ROOT_KEY)]).await;
     World {
         server,
-        _database: database,
+        database,
+        tenant,
         ana: people[0],
         administrator: secret.expose().to_owned(),
     }
@@ -231,6 +233,12 @@ fn claims(token: &str) -> Value {
 /// client of Payroll and its role. Answers the service account and the
 /// client's identifier and secret.
 async fn payroll_with_a_service_account(world: &World) -> (String, (String, String)) {
+    let (account, client, _) = payroll_and_its_service_account(world).await;
+    (account, client)
+}
+
+/// As [`payroll_with_a_service_account`], with Payroll's identifier.
+async fn payroll_and_its_service_account(world: &World) -> (String, (String, String), String) {
     let api = world
         .admin(
             Method::POST,
@@ -336,6 +344,7 @@ async fn payroll_with_a_service_account(world: &World) -> (String, (String, Stri
                 .expect("a secret")
                 .to_owned(),
         ),
+        payroll["id"].as_str().expect("id").to_owned(),
     )
 }
 
@@ -498,4 +507,127 @@ async fn a_service_account_or_an_agent_cannot_sign_in_through_the_interaction_in
         .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(refused["code"], "oauth.client_grants_invalid");
+}
+
+#[tokio::test]
+async fn a_service_accounts_api_key_asks_the_authorization_api_and_the_administration_interface() {
+    let world = world().await;
+    let (account, _, payroll) = payroll_and_its_service_account(&world).await;
+    let made = world
+        .admin(
+            Method::POST,
+            &format!("/service-accounts/{account}/api-keys"),
+            Some(json!({
+                "name": "Payroll checks", "scopes": ["authz:evaluate", "users:read"],
+                "application_id": payroll
+            })),
+        )
+        .await;
+    let key = made["api_key"].as_str().expect("the key, once").to_owned();
+    // Recognized by its prefix, as a secret scanner would.
+    let pattern = key.strip_prefix("hodor_ak_").expect("the prefix");
+    assert!(
+        pattern.len() == 64
+            && pattern
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+        "{key}"
+    );
+    let listed = world
+        .admin(
+            Method::GET,
+            &format!("/service-accounts/{account}/api-keys"),
+            None,
+        )
+        .await;
+    assert!(!listed.to_string().contains(pattern), "shown once");
+
+    // The Authorization API takes it in place of a token, for Payroll.
+    let (status, decision) = world.evaluate(&key, &account).await;
+    assert_eq!(status, StatusCode::OK, "{decision}");
+    assert_eq!(decision["decision"], "ALLOW");
+
+    // The administration interface takes it once its holder holds a role.
+    let (status, _) = world.admin_with(&key, Method::GET, "/users", None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    AuthorizationService::new(
+        Arc::new(world.database.app().clone()),
+        Arc::new(PgRoleAssignmentStore),
+        Arc::new(SystemClock),
+    )
+    .assign(
+        &world.tenant,
+        account.parse().expect("an identifier"),
+        Role::TenantAuditor,
+        Caller::system(),
+    )
+    .await
+    .expect("a role");
+    let (status, users) = world.admin_with(&key, Method::GET, "/users", None).await;
+    assert_eq!(status, StatusCode::OK, "{users}");
+    let (status, _) = world.admin_with(&key, Method::GET, "/groups", None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "not among its scopes");
+
+    // A value with the prefix that is no key is refused like any other.
+    let forged = format!("hodor_ak_{}", "f".repeat(64));
+    assert_eq!(
+        world.evaluate(&forged, &account).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+
+    // An expired key is refused.
+    let second = world
+        .admin(
+            Method::POST,
+            &format!("/service-accounts/{account}/api-keys"),
+            Some(json!({ "name": "Short lived", "scopes": ["users:read"] })),
+        )
+        .await;
+    let short = second["api_key"].as_str().expect("the key").to_owned();
+    assert_eq!(
+        world
+            .admin_with(&short, Method::GET, "/users", None)
+            .await
+            .0,
+        StatusCode::OK
+    );
+    sqlx::query(
+        "UPDATE credential.api_key SET expires_at = created_at + interval '1 millisecond'
+         WHERE id = $1",
+    )
+    .bind(
+        second["id"]
+            .as_str()
+            .expect("id")
+            .parse::<sqlx::types::Uuid>()
+            .expect("a uuid"),
+    )
+    .execute(world.database.owner())
+    .await
+    .expect("expired");
+    let (status, refused) = world.admin_with(&short, Method::GET, "/users", None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(refused["code"], "admin.not_authenticated");
+
+    // A revoked key is refused at once, by both.
+    let (status, _) = world
+        .admin_with(
+            &world.administrator,
+            Method::DELETE,
+            &format!(
+                "/service-accounts/{account}/api-keys/{}",
+                made["id"].as_str().expect("id")
+            ),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(
+        world.evaluate(&key, &account).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        world.admin_with(&key, Method::GET, "/users", None).await.0,
+        StatusCode::UNAUTHORIZED
+    );
 }

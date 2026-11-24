@@ -105,7 +105,7 @@ async fn a_workload_is_created_changed_and_deleted_in_one_transaction_each() {
         )
         .await
         .expect("deleted");
-    assert_eq!(access.calls().len(), 2);
+    assert_eq!(access.calls().len(), 3);
     let owners: i64 = sqlx::query_scalar("SELECT count(*) FROM identity.workload_owner")
         .fetch_one(database.owner())
         .await

@@ -6,7 +6,8 @@
 //! See `docs/architecture/contexts/provisioning.md`, "Deprovisioning", and
 //! `docs/architecture/contexts/identity.md`, "Service accounts and agents".
 
-use hodor_identity::api::WorkloadAccess;
+use hodor_credential::api::ApiKeyService;
+use hodor_identity::api::{WORKLOAD_DELETED, WorkloadAccess};
 use hodor_kernel::{Caller, DomainError, UnitOfWork, UserId};
 use hodor_oauth::api::{AuthorizationCodeService, WorkloadTokens};
 use hodor_provisioning::api::AccessRevoker;
@@ -22,6 +23,8 @@ pub(crate) struct ServerAccessRevoker {
     pub(crate) grants: AuthorizationCodeService,
     /// The access tokens issued for a workload.
     pub(crate) tokens: WorkloadTokens,
+    /// The API keys a workload holds.
+    pub(crate) keys: ApiKeyService,
 }
 
 impl std::fmt::Debug for ServerAccessRevoker {
@@ -63,6 +66,18 @@ impl WorkloadAccess for ServerAccessRevoker {
         // hold of them ends too, as for a person.
         AccessRevoker::revoke_access(self, uow, workload, reason, caller).await?;
         self.tokens.revoke_in(uow, workload, reason, caller).await?;
+        Ok(())
+    }
+
+    async fn revoke_credentials(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        workload: UserId,
+        caller: Caller,
+    ) -> Result<(), DomainError> {
+        self.keys
+            .revoke_all_of_in(uow, workload, WORKLOAD_DELETED, caller)
+            .await?;
         Ok(())
     }
 }

@@ -318,6 +318,13 @@ fn world() -> World {
         ),
         // Webhooks are tested in `admin.rs`; here they are not configured.
         webhooks: None,
+        api_keys: hodor_credential::api::ApiKeyService::new(
+            units(),
+            Arc::new(hodor_credential::testing::InMemoryApiKeys::default()),
+            Arc::new(FakeDigest),
+            Arc::new(SequentialRandom::default()),
+            clock.clone(),
+        ),
     };
     let router = public_router(
         Arc::new(Tenants {

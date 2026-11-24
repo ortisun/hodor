@@ -322,8 +322,9 @@ impl WorkloadService {
 
     /// Deletes a workload: it is deactivated if it is not already, then
     /// marked Deleted, which erases its name and takes it out of every
-    /// group and organization; its owners are forgotten and every token
-    /// issued for it is revoked, all in one unit of work.
+    /// group and organization; its owners are forgotten, every token
+    /// issued for it is revoked and so are its API keys, all in one unit of
+    /// work.
     ///
     /// # Errors
     ///
@@ -348,6 +349,9 @@ impl WorkloadService {
         self.workloads.forget_owners(uow.as_mut(), id).await?;
         self.access
             .revoke_access(uow.as_mut(), id, WORKLOAD_DELETED, caller)
+            .await?;
+        self.access
+            .revoke_credentials(uow.as_mut(), id, caller)
             .await?;
         uow.commit().await
     }

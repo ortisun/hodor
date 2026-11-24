@@ -454,7 +454,8 @@ async fn an_administrators_token_is_refused_by_every_operation_of_another_tenant
                 .replace("{service_account_id}", &globex.ana.to_string())
                 .replace("{agent_id}", &globex.ana.to_string())
                 .replace("{endpoint_id}", &globex.ana.to_string())
-                .replace("{delivery_id}", &globex.ana.to_string());
+                .replace("{delivery_id}", &globex.ana.to_string())
+                .replace("{api_key_id}", &globex.ana.to_string());
             let method: Method = method.to_uppercase().parse().expect("method");
             let (status, body) = world
                 .admin(
@@ -473,7 +474,7 @@ async fn an_administrators_token_is_refused_by_every_operation_of_another_tenant
             tried += 1;
         }
     }
-    assert_eq!(tried, 122, "every documented operation was tried");
+    assert_eq!(tried, 130, "every documented operation was tried");
 
     // The token is good where it belongs, and nothing happened in Globex:
     // it has its two users, both active.
@@ -2810,4 +2811,97 @@ async fn a_person_deactivated_through_scim_in_one_tenant_stays_signed_in_to_anot
         .sign_in(acme.slug, EMAIL, PASSWORD)
         .await;
     assert_ne!(body["status"], "completed", "{body}");
+}
+
+#[tokio::test]
+async fn a_service_accounts_api_key_of_one_tenant_means_nothing_in_another() {
+    let world = world_with(&[("HODOR_SECRET_KEYS", ROOT_KEY)]).await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    let (account, _) = service_account_with_a_client(&world, acme).await;
+    let (theirs, _) = service_account_with_a_client(&world, globex).await;
+    let (status, made) = world
+        .admin(
+            acme,
+            &acme.administrator_token,
+            Method::POST,
+            &format!("/service-accounts/{account}/api-keys"),
+            Some(serde_json::json!({ "name": "Reports", "scopes": ["users:read"] })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{made}");
+    let key = made["api_key"].as_str().expect("the key").to_owned();
+    let key_id = made["id"].as_str().expect("id").to_owned();
+    AuthorizationService::new(
+        Arc::new(world.database.app().clone()),
+        Arc::new(PgRoleAssignmentStore),
+        Arc::new(SystemClock),
+    )
+    .assign(
+        &acme.context,
+        account.parse().expect("an identifier"),
+        Role::TenantAuditor,
+        Caller::system(),
+    )
+    .await
+    .expect("a role");
+    let (status, _) = world.admin(acme, &key, Method::GET, "/users", None).await;
+    assert_eq!(status, StatusCode::OK, "it works where it belongs");
+
+    // Presented to Globex, at its administration interface and at its
+    // Authorization API, it is not known.
+    let (status, body) = world.admin(globex, &key, Method::GET, "/users", None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["code"], "admin.not_authenticated");
+    let response = Client::new()
+        .post(format!(
+            "{}/t/{}/api/v1/authorization/evaluate",
+            world.server.base, globex.slug
+        ))
+        .bearer_auth(&key)
+        .json(&serde_json::json!({
+            "subject": { "type": "user", "id": account },
+            "resource": { "type": "export", "id": "1" },
+            "action": "read"
+        }))
+        .send()
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    // Globex's administrator cannot list, rotate or revoke it, under
+    // Acme's workload or its own.
+    let globex_token = &globex.administrator_token;
+    for (method, path) in [
+        (Method::GET, format!("/service-accounts/{account}/api-keys")),
+        (
+            Method::POST,
+            format!("/service-accounts/{account}/api-keys/{key_id}:rotate"),
+        ),
+        (
+            Method::DELETE,
+            format!("/service-accounts/{account}/api-keys/{key_id}"),
+        ),
+        (
+            Method::POST,
+            format!("/service-accounts/{theirs}/api-keys/{key_id}:rotate"),
+        ),
+        (
+            Method::DELETE,
+            format!("/service-accounts/{theirs}/api-keys/{key_id}"),
+        ),
+    ] {
+        let (status, body) = world
+            .admin(globex, globex_token, method.clone(), &path, None)
+            .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{method} {path}");
+        assert!(
+            body["code"] == "identity.workload_not_found"
+                || body["code"] == "credential.api_key_not_found",
+            "{method} {path}: {body}"
+        );
+    }
+
+    // And it still works where it belongs.
+    let (status, _) = world.admin(acme, &key, Method::GET, "/users", None).await;
+    assert_eq!(status, StatusCode::OK);
 }

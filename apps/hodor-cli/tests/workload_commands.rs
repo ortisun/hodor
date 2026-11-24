@@ -229,3 +229,170 @@ async fn service_accounts_and_agents_are_managed_from_the_command_line() {
         assert!(events.iter().any(|event| event == expected), "{events:?}");
     }
 }
+
+#[tokio::test]
+async fn a_workloads_api_keys_and_roles_are_managed_from_the_command_line() {
+    let database = TestDatabase::start().await;
+    said(&run(
+        &database,
+        &["tenant", "create", "--slug", "acme", "--name", "Acme"],
+    ));
+    said(&run(
+        &database,
+        &[
+            "admin",
+            "bootstrap",
+            "--tenant",
+            "acme",
+            "--email",
+            "ana@example.com",
+        ],
+    ));
+    let (ana,): (sqlx::types::Uuid,) = sqlx::query_as(
+        "SELECT user_id FROM identity.user_identifier WHERE value_normalized = 'ana@example.com'",
+    )
+    .fetch_one(database.owner())
+    .await
+    .expect("the person");
+    let ana = ana.to_string();
+    let agent = word(
+        &run(
+            &database,
+            &[
+                "agent", "create", "--tenant", "acme", "--name", "Helper", "--owner", &ana,
+            ],
+        ),
+        1,
+    );
+
+    let made = said(&run(
+        &database,
+        &[
+            "agent",
+            "key",
+            "create",
+            "--tenant",
+            "acme",
+            "--id",
+            &agent,
+            "--name",
+            "Reports",
+            "--scope",
+            "users:read",
+        ],
+    ));
+    let lines: Vec<&str> = made.lines().collect();
+    let key_id = lines[0].strip_prefix("key ").expect("the key's identifier");
+    let key = lines[1].strip_prefix("api-key ").expect("the key, once");
+    assert!(key.starts_with("hodor_ak_") && key.len() == 73, "{made}");
+    assert!(lines[2].starts_with("expires "));
+    let listed = said(&run(
+        &database,
+        &["agent", "key", "list", "--tenant", "acme", "--id", &agent],
+    ));
+    assert_eq!(
+        listed,
+        format!("{key_id} active {} Reports", &key[key.len() - 4..])
+    );
+    assert!(!listed.contains(&key[9..]), "never shown again");
+    refused(
+        &run(
+            &database,
+            &[
+                "agent",
+                "key",
+                "create",
+                "--tenant",
+                "acme",
+                "--id",
+                &agent,
+                "--name",
+                "x",
+                "--scope",
+                "users:delete",
+            ],
+        ),
+        "authorization.scope_unknown",
+    );
+
+    let rotated = said(&run(
+        &database,
+        &[
+            "agent",
+            "key",
+            "rotate",
+            "--tenant",
+            "acme",
+            "--id",
+            &agent,
+            "--key",
+            key_id,
+            "--keep-previous-days",
+            "0",
+        ],
+    ));
+    assert!(rotated.contains("api-key hodor_ak_"), "{rotated}");
+    let new_id = rotated
+        .lines()
+        .next()
+        .and_then(|line| line.strip_prefix("key "))
+        .expect("the new key")
+        .to_owned();
+    assert_eq!(
+        said(&run(
+            &database,
+            &[
+                "agent", "key", "revoke", "--tenant", "acme", "--id", &agent, "--key", &new_id,
+            ],
+        )),
+        format!("revoked {new_id}")
+    );
+
+    // A built-in role is given to the agent, and taken away.
+    assert_eq!(
+        said(&run(
+            &database,
+            &[
+                "admin",
+                "grant",
+                "--tenant",
+                "acme",
+                "--user",
+                &agent,
+                "--role",
+                "tenant_auditor",
+            ],
+        )),
+        format!("granted tenant_auditor {agent}")
+    );
+    let (count,): (i64,) = sqlx::query_as(
+        "SELECT count(*) FROM \"authorization\".role_assignment WHERE principal_id = $1",
+    )
+    .bind(&agent)
+    .fetch_one(database.owner())
+    .await
+    .expect("assignments");
+    assert_eq!(count, 1);
+    said(&run(
+        &database,
+        &[
+            "admin",
+            "revoke",
+            "--tenant",
+            "acme",
+            "--user",
+            &agent,
+            "--role",
+            "tenant_auditor",
+        ],
+    ));
+    refused(
+        &run(
+            &database,
+            &[
+                "admin", "grant", "--tenant", "acme", "--user", &agent, "--role", "owner",
+            ],
+        ),
+        "authorization.unknown_role",
+    );
+}

@@ -473,6 +473,24 @@ enum AdminCommand {
         #[arg(long, default_value_t = 60)]
         token_minutes: u32,
     },
+    /// Give a built-in role to a user who exists: a person, a service
+    /// account or an agent. The administration interface gives none.
+    Grant(RoleArgs),
+    /// Take a built-in role away from a user.
+    Revoke(RoleArgs),
+}
+
+#[derive(clap::Args)]
+struct RoleArgs {
+    /// The tenant's slug.
+    #[arg(long)]
+    tenant: String,
+    /// The user's identifier.
+    #[arg(long)]
+    user: hodor_kernel::UserId,
+    /// `tenant_administrator` or `tenant_auditor`.
+    #[arg(long)]
+    role: String,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -1752,6 +1770,41 @@ async fn run_reseal(
     Ok((lines.join("\n"), complete))
 }
 
+/// Gives or takes away a built-in role of a user who exists in the tenant.
+async fn built_in_role(
+    database: &Database,
+    args: &RoleArgs,
+    give: bool,
+) -> Result<String, DomainError> {
+    let units = || Arc::new(database.clone());
+    let clock = Arc::new(SystemClock);
+    let tenants = TenantService::new(
+        units(),
+        Arc::new(PgTenantRepository),
+        Arc::new(PgTenantDirectory::new(database.clone())),
+        clock.clone(),
+    );
+    let tenant = TenantContext::assume(existing(&tenants, &args.tenant).await?.tenant_id);
+    let role = Role::from_name(&args.role)?;
+    let user = IdentityService::new(units(), Arc::new(PgUserRepository), clock.clone())
+        .get(&tenant, args.user)
+        .await?;
+    if user.status() == hodor_identity::api::UserStatus::Deleted {
+        return Err(DomainError::not_found(
+            "identity.user_not_found",
+            "the user does not exist",
+        ));
+    }
+    let service = AuthorizationService::new(units(), Arc::new(PgRoleAssignmentStore), clock);
+    if give {
+        service.assign(&tenant, user.id(), role, caller()).await?;
+        Ok(format!("granted {} {}", role.as_str(), user.id()))
+    } else {
+        service.revoke(&tenant, user.id(), role, caller()).await?;
+        Ok(format!("revoked {} {}", role.as_str(), user.id()))
+    }
+}
+
 async fn bootstrap_administrator(
     database: &Database,
     slug: &str,
@@ -1945,6 +1998,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .await
                 .map_err(|error| format!("{}: {}", error.code(), error.message()))?;
             writeln!(std::io::stdout(), "{output}")?;
+        }
+        Command::Admin {
+            database_url,
+            command: AdminCommand::Grant(args),
+        } => {
+            let database = connect(database_url).await?;
+            print(built_in_role(&database, &args, true).await)?;
+        }
+        Command::Admin {
+            database_url,
+            command: AdminCommand::Revoke(args),
+        } => {
+            let database = connect(database_url).await?;
+            print(built_in_role(&database, &args, false).await)?;
         }
         Command::Audit {
             database_url,

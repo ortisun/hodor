@@ -5,6 +5,7 @@
 //! created by `platform.enable_tenant_rls` apply. Queries still filter by
 //! `tenant_id` explicitly; row-level security is the second line of defence.
 
+mod api_key;
 mod audit;
 mod authentication;
 mod authorization;
@@ -39,6 +40,7 @@ pub mod testing;
 mod uow;
 mod webhooks;
 
+pub use api_key::PgApiKeyStore;
 pub use audit::PgAuditLog;
 pub use authentication::{PgAttemptStore, PgTransactionStore, PgVerificationTokenStore};
 pub use authorization::{PgEngineBindingStore, PgNativeRoleStore, PgRoleAssignmentStore};

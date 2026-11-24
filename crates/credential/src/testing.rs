@@ -1817,3 +1817,350 @@ pub async fn run_recovery_code_contract(ports: RecoveryCodePorts<'_>) {
     assert!(!codes.remove(uow.as_mut(), user).await.expect("again"));
     assert_eq!(codes.unused(uow.as_mut(), other).await.expect("unused"), 2);
 }
+
+/// The API keys of every tenant, by tenant and identifier.
+type ApiKeyRows = BTreeMap<(TenantId, crate::api::ApiKeyId), crate::api::ApiKey>;
+
+/// API keys kept in memory.
+#[derive(Debug, Clone, Default)]
+pub struct InMemoryApiKeys {
+    rows: Arc<Mutex<ApiKeyRows>>,
+}
+
+impl InMemoryApiKeys {
+    fn rows(&self) -> std::sync::MutexGuard<'_, ApiKeyRows> {
+        self.rows.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::api::ApiKeyStore for InMemoryApiKeys {
+    async fn insert(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        key: &crate::api::ApiKey,
+    ) -> Result<(), DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let mut rows = self.rows();
+        if rows.iter().any(|((owner, _), stored)| {
+            *owner == tenant && stored.snapshot().key_hash == key.snapshot().key_hash
+        }) {
+            return Err(DomainError::conflict(
+                "credential.api_key_taken",
+                "another key has the same hash",
+            ));
+        }
+        rows.insert((tenant, key.id()), key.clone());
+        Ok(())
+    }
+
+    async fn get(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: crate::api::ApiKeyId,
+    ) -> Result<Option<crate::api::ApiKey>, DomainError> {
+        Ok(self.rows().get(&(uow.tenant().tenant_id(), id)).cloned())
+    }
+
+    async fn find_by_hash(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        hash: &crate::api::ApiKeyHash,
+    ) -> Result<Option<crate::api::ApiKey>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        Ok(self
+            .rows()
+            .iter()
+            .find(|((owner, _), key)| *owner == tenant && &key.snapshot().key_hash == hash)
+            .map(|(_, key)| key.clone()))
+    }
+
+    async fn list_of(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        holder: UserId,
+    ) -> Result<Vec<crate::api::ApiKey>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let mut keys: Vec<crate::api::ApiKey> = self
+            .rows()
+            .iter()
+            .filter(|((owner, _), key)| *owner == tenant && key.holder_id() == holder)
+            .map(|(_, key)| key.clone())
+            .collect();
+        // Identifiers sort by the time they were made.
+        keys.sort_by_key(|key| std::cmp::Reverse(key.id()));
+        Ok(keys)
+    }
+
+    async fn update(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        key: &crate::api::ApiKey,
+    ) -> Result<(), DomainError> {
+        let index = (uow.tenant().tenant_id(), key.id());
+        let mut rows = self.rows();
+        let Some(stored) = rows.get(&index) else {
+            return Err(DomainError::not_found(
+                "credential.api_key_not_found",
+                "the API key does not exist",
+            ));
+        };
+        // A use recorded meanwhile is not lost.
+        let mut changed = key.snapshot().clone();
+        changed.last_used_at = changed.last_used_at.max(stored.snapshot().last_used_at);
+        rows.insert(index, crate::api::ApiKey::from_snapshot(changed));
+        Ok(())
+    }
+
+    async fn record_use(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: crate::api::ApiKeyId,
+        now: Timestamp,
+        precision: time::Duration,
+    ) -> Result<bool, DomainError> {
+        let index = (uow.tenant().tenant_id(), id);
+        let mut rows = self.rows();
+        let Some(stored) = rows.get(&index) else {
+            return Ok(false);
+        };
+        if stored
+            .snapshot()
+            .last_used_at
+            .is_some_and(|last| now - last < precision)
+        {
+            return Ok(false);
+        }
+        let mut changed = stored.snapshot().clone();
+        changed.last_used_at = Some(now);
+        rows.insert(index, crate::api::ApiKey::from_snapshot(changed));
+        Ok(true)
+    }
+}
+
+/// The ports the contract of API keys runs against.
+#[derive(Clone)]
+pub struct ApiKeyPorts<'a> {
+    /// Starts units of work.
+    pub units_of_work: &'a dyn UnitOfWorkFactory,
+    /// The store under test.
+    pub keys: &'a dyn crate::api::ApiKeyStore,
+}
+
+impl std::fmt::Debug for ApiKeyPorts<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ApiKeyPorts").finish_non_exhaustive()
+    }
+}
+
+/// Runs every rule an API key store must obey. Each run uses tenants of
+/// its own, so runs can share one database.
+///
+/// # Panics
+///
+/// Panics if the implementation breaks a rule.
+pub async fn run_api_key_contract(ports: ApiKeyPorts<'_>) {
+    use crate::api::{
+        ApiKey, ApiKeyHash, ApiKeyId, ApiKeySettings, DEFAULT_API_KEY_LIFETIME,
+        DEFAULT_API_KEY_OVERLAP, LAST_USE_PRECISION, REVOKED_BY_ADMINISTRATOR,
+    };
+    use hodor_kernel::random::testing::FakeDigest;
+    macro_rules! within {
+        ($tenant:expr, |$uow:ident| $body:expr) => {{
+            let mut $uow = ports.units_of_work.begin($tenant).await.expect("begin");
+            let value = $body;
+            $uow.commit().await.expect("commit");
+            value
+        }};
+    }
+    let (home, elsewhere) = (tenant(), tenant());
+    // Whole seconds and microseconds, as PostgreSQL keeps them.
+    let moment = Timestamp::UNIX_EPOCH + time::Duration::days(20_000);
+    let holder = UserId::generate();
+    let make = |name: &str, application: bool| {
+        ApiKey::create(
+            holder,
+            ApiKeySettings {
+                name: name.to_owned(),
+                scopes: vec!["users:read".to_owned(), "authz:evaluate".to_owned()],
+                application: application.then(crate::api::KeyApplicationId::generate),
+            },
+            DEFAULT_API_KEY_LIFETIME,
+            moment,
+            &ContractRandom,
+            &FakeDigest,
+        )
+        .expect("a key")
+        .0
+    };
+    let first = make("first", true);
+    let second = make("second", false);
+    let other_holder = ApiKey::create(
+        UserId::generate(),
+        ApiKeySettings {
+            name: "someone else's".to_owned(),
+            scopes: vec!["users:read".to_owned()],
+            application: None,
+        },
+        DEFAULT_API_KEY_LIFETIME,
+        moment,
+        &ContractRandom,
+        &FakeDigest,
+    )
+    .expect("a key")
+    .0;
+    for key in [&first, &second, &other_holder] {
+        within!(&home, |uow| ports
+            .keys
+            .insert(uow.as_mut(), key)
+            .await
+            .expect("insert"));
+    }
+
+    // A stored key is loaded unchanged, by identifier and by hash, in its
+    // own tenant only.
+    let hash = first.snapshot().key_hash;
+    let loaded = within!(&home, |uow| ports
+        .keys
+        .get(uow.as_mut(), first.id())
+        .await
+        .expect("get"));
+    assert_eq!(loaded.as_ref(), Some(&first));
+    let found = within!(&home, |uow| ports
+        .keys
+        .find_by_hash(uow.as_mut(), &hash)
+        .await
+        .expect("find"));
+    assert_eq!(found.as_ref(), Some(&first));
+    let hidden = within!(&elsewhere, |uow| (
+        ports.keys.get(uow.as_mut(), first.id()).await.expect("get"),
+        ports
+            .keys
+            .find_by_hash(uow.as_mut(), &hash)
+            .await
+            .expect("find"),
+        ports
+            .keys
+            .list_of(uow.as_mut(), holder)
+            .await
+            .expect("list"),
+    ));
+    assert_eq!(
+        hidden,
+        (None, None, Vec::new()),
+        "another tenant sees nothing"
+    );
+    let unknown = within!(&home, |uow| ports
+        .keys
+        .find_by_hash(uow.as_mut(), &ApiKeyHash::from_stored([7; 32]))
+        .await
+        .expect("find"));
+    assert!(unknown.is_none());
+
+    // A holder's keys are listed newest first, and only theirs.
+    let listed = within!(&home, |uow| ports
+        .keys
+        .list_of(uow.as_mut(), holder)
+        .await
+        .expect("list"));
+    assert_eq!(
+        listed.iter().map(ApiKey::id).collect::<Vec<_>>(),
+        vec![second.id(), first.id()]
+    );
+
+    // A use is written at most once within the precision.
+    let used = moment + time::Duration::seconds(5);
+    let wrote = within!(&home, |uow| ports
+        .keys
+        .record_use(uow.as_mut(), first.id(), used, LAST_USE_PRECISION)
+        .await
+        .expect("use"));
+    assert!(wrote);
+    let again = within!(&home, |uow| ports
+        .keys
+        .record_use(
+            uow.as_mut(),
+            first.id(),
+            used + time::Duration::seconds(30),
+            LAST_USE_PRECISION
+        )
+        .await
+        .expect("use"));
+    assert!(!again, "within a minute nothing is written");
+    let later = used + time::Duration::minutes(2);
+    let wrote = within!(&home, |uow| ports
+        .keys
+        .record_use(uow.as_mut(), first.id(), later, LAST_USE_PRECISION)
+        .await
+        .expect("use"));
+    assert!(wrote);
+    let theirs = within!(&elsewhere, |uow| ports
+        .keys
+        .record_use(uow.as_mut(), second.id(), later, LAST_USE_PRECISION)
+        .await
+        .expect("use"));
+    assert!(!theirs, "another tenant's key is not touched");
+
+    // A rotation and a revocation are stored, and keep the use recorded.
+    let mut old = within!(&home, |uow| ports
+        .keys
+        .get(uow.as_mut(), first.id())
+        .await
+        .expect("get"))
+    .expect("stored");
+    assert_eq!(old.snapshot().last_used_at, Some(later));
+    let (next, _, _) = old
+        .rotate(
+            DEFAULT_API_KEY_LIFETIME,
+            DEFAULT_API_KEY_OVERLAP,
+            later,
+            &ContractRandom,
+            &FakeDigest,
+        )
+        .expect("rotated");
+    within!(&home, |uow| {
+        ports
+            .keys
+            .insert(uow.as_mut(), &next)
+            .await
+            .expect("insert");
+        ports.keys.update(uow.as_mut(), &old).await.expect("update");
+    });
+    let stored = within!(&home, |uow| ports
+        .keys
+        .get(uow.as_mut(), first.id())
+        .await
+        .expect("get"))
+    .expect("stored");
+    assert_eq!(stored, old);
+    let mut revoked = stored;
+    revoked.revoke(REVOKED_BY_ADMINISTRATOR, later);
+    within!(&home, |uow| ports
+        .keys
+        .update(uow.as_mut(), &revoked)
+        .await
+        .expect("update"));
+    let stored = within!(&home, |uow| ports
+        .keys
+        .get(uow.as_mut(), first.id())
+        .await
+        .expect("get"))
+    .expect("stored");
+    assert_eq!(stored, revoked);
+
+    // Another tenant cannot change a key, and an unknown one is not found.
+    let mut uow = ports.units_of_work.begin(&elsewhere).await.expect("begin");
+    let refused = ports
+        .keys
+        .update(uow.as_mut(), &second)
+        .await
+        .expect_err("refused");
+    assert_eq!(refused.code(), "credential.api_key_not_found");
+    drop(uow);
+    let missing = within!(&home, |uow| ports
+        .keys
+        .get(uow.as_mut(), ApiKeyId::generate())
+        .await
+        .expect("get"));
+    assert!(missing.is_none());
+}

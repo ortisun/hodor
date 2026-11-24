@@ -29,7 +29,7 @@ use axum::{Extension, Json, Router, middleware};
 use hodor_audit::api::{AuditRecord, AuditService};
 use hodor_authentication::api::FactorService;
 use hodor_authorization::api::{AuthorizationService, DecisionLog, Permission};
-use hodor_credential::api::AccessTokenService;
+use hodor_credential::api::{AccessTokenService, ApiKey, ApiKeyService, looks_like_api_key};
 use hodor_federation::api::{
     ChangeProvider, CreateProvider, DirectorySettings, FederationService, IdentityProvider,
     ProviderId, ProviderKind, ProviderSettings, ProviderStatus, SamlSettings, callback_address,
@@ -482,6 +482,46 @@ pub const ADMIN_OPERATIONS: &[(&str, &str, Permission)] = &[
         "/webhook-deliveries/{delivery_id}:redeliver",
         Permission::WebhooksWrite,
     ),
+    (
+        "GET",
+        "/service-accounts/{service_account_id}/api-keys",
+        Permission::WorkloadsRead,
+    ),
+    (
+        "POST",
+        "/service-accounts/{service_account_id}/api-keys",
+        Permission::WorkloadsWrite,
+    ),
+    (
+        "POST",
+        "/service-accounts/{service_account_id}/api-keys/{api_key_id}:rotate",
+        Permission::WorkloadsWrite,
+    ),
+    (
+        "DELETE",
+        "/service-accounts/{service_account_id}/api-keys/{api_key_id}",
+        Permission::WorkloadsWrite,
+    ),
+    (
+        "GET",
+        "/agents/{agent_id}/api-keys",
+        Permission::WorkloadsRead,
+    ),
+    (
+        "POST",
+        "/agents/{agent_id}/api-keys",
+        Permission::WorkloadsWrite,
+    ),
+    (
+        "POST",
+        "/agents/{agent_id}/api-keys/{api_key_id}:rotate",
+        Permission::WorkloadsWrite,
+    ),
+    (
+        "DELETE",
+        "/agents/{agent_id}/api-keys/{api_key_id}",
+        Permission::WorkloadsWrite,
+    ),
 ];
 
 /// What the administration handlers need.
@@ -535,6 +575,8 @@ pub struct AdminState {
     /// The tenant's webhook endpoints and their deliveries. `None` when
     /// this installation has no keys to seal their secrets with.
     pub webhooks: Option<hodor_webhooks::api::WebhookService>,
+    /// The API keys of service accounts and agents.
+    pub api_keys: ApiKeyService,
 }
 
 /// What the console interface needs on top of the administration
@@ -870,13 +912,13 @@ async fn authorize(
     method: &str,
     path: &str,
 ) -> Result<Caller, Box<Response>> {
-    let user_id = match &state.by_session {
+    let (user_id, key) = match &state.by_session {
         None => by_token(state, tenant, headers).await?,
         Some(by_session) => {
             let person = by_session
                 .recognize(state, tenant, headers, method != "GET")
                 .await?;
-            person.session.user_id()
+            (person.session.user_id(), None)
         }
     };
     let permission = ADMIN_OPERATIONS
@@ -884,6 +926,10 @@ async fn authorize(
         .find(|(m, p, _)| *m == method && *p == path)
         .map(|(_, _, permission)| *permission)
         .ok_or_else(forbidden)?;
+    // A key does no more than its scopes, and no more than its holder.
+    if key.is_some_and(|key| !key.has_scope(permission.as_str())) {
+        return Err(forbidden());
+    }
     let decision = state
         .authorization
         .check(tenant, user_id, permission)
@@ -898,13 +944,29 @@ async fn authorize(
     })
 }
 
-/// Who an access token belongs to, if it is good and its user may sign in.
+/// Who an access token belongs to, if it is good and its user may sign in;
+/// or who holds an API key, with the key, if it is good and its holder is a
+/// workload that may act.
 async fn by_token(
     state: &AdminState,
     tenant: &TenantContext,
     headers: &HeaderMap,
-) -> Result<UserId, Box<Response>> {
+) -> Result<(UserId, Option<ApiKey>), Box<Response>> {
     let token = bearer(headers).ok_or_else(not_authenticated)?;
+    if looks_like_api_key(token) {
+        let key = state
+            .api_keys
+            .authenticate(tenant, token)
+            .await
+            .map_err(failed)?
+            .ok_or_else(not_authenticated)?;
+        return match state.identity.get(tenant, key.holder_id()).await {
+            Ok(holder) if holder.is_workload_that_may_act() => Ok((holder.id(), Some(key))),
+            Ok(_) => Err(not_authenticated()),
+            Err(error) if error.code() == "identity.user_not_found" => Err(not_authenticated()),
+            Err(error) => Err(failed(error)),
+        };
+    }
     let token = state
         .tokens
         .authenticate(tenant, token)
@@ -913,7 +975,7 @@ async fn by_token(
         .ok_or_else(not_authenticated)?;
     let user_id = token.user_id();
     match state.identity.get(tenant, user_id).await {
-        Ok(user) if user.may_sign_in() => Ok(user_id),
+        Ok(user) if user.may_sign_in() => Ok((user_id, None)),
         Ok(_) => Err(not_authenticated()),
         Err(error) if error.code() == "identity.user_not_found" => Err(not_authenticated()),
         Err(error) => Err(failed(error)),
