@@ -452,6 +452,11 @@ const NOT_SEALED_SECRETS: &[(&str, &str, &str)] = &[
         "digest",
         "the SHA-256 of a bundle's archive",
     ),
+    (
+        "identity.organization_invitation",
+        "token_hash",
+        "the SHA-256 of an invitation's secret, never the secret",
+    ),
 ];
 
 #[tokio::test]
