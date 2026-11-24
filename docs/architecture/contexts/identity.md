@@ -2,7 +2,7 @@
 
 The `identity` context owns users: who exists inside a tenant, how they are found, and whether they may act. It does not know how a user proves who they are; that belongs to the `credential` and `authentication` contexts.
 
-This page specifies users and their login identifiers, built in Milestone 1, and groups, built in Milestone 7. Organizations, memberships, invitations and linked external identities belong to this context too and are specified here when their turn comes.
+This page specifies users and their login identifiers, built in Milestone 1, and groups and organizations, built in Milestone 7. Invitations and linked external identities belong to this context too and are specified here when their turn comes.
 
 ## What a user is
 
@@ -144,6 +144,60 @@ Effective groups are worked out when they are asked for, from the memberships th
 | Deleting a group takes it out of every group it was in, and takes every member out of it | Nothing refers to a group that does not exist |
 | Renaming a group keeps its identifier | Whatever was given to the group stays given |
 
+## Organizations
+
+An **organization** is a business customer inside a tenant: a company that uses the tenant's applications, with its own people and its own structure. A software vendor runs one tenant and gives each customer an organization, while an operator hosting unrelated customers gives each a tenant of its own ([Decision 0005](../../decisions/0005-tenant-and-organization.md)).
+
+| Field | Meaning |
+|---|---|
+| Identifier | An `OrganizationId`, assigned at creation and never changed. Tokens name the organization by it |
+| Name | 1 to 100 characters, with no control characters and no space at either end. Unique in the tenant without regard to case |
+| Description | Optional, up to 500 characters |
+| Units | A tree of the organization's parts |
+| Members | Users of the tenant |
+
+A person can be a member of several organizations of their tenant, and of none. Belonging to an organization does not let anyone sign in, and does not by itself let them do anything: roles scoped to an organization and the organization a token carries do that ([Issue-89](../../product/epics.md#slice-w--groups-and-organizations-epic-2)).
+
+### Units
+
+An organization is divided into **units**, which can be divided again: a company into divisions, a division into departments.
+
+| Field | Meaning |
+|---|---|
+| Identifier | A `UnitId`, assigned at creation and never changed |
+| Parent | The unit it is part of, or none for a unit at the top of the organization |
+| Name | As a group's name. Unique among the units that share a parent, without regard to case |
+| Kind | `unit` or `department`. A department is a unit like any other; the kind only says what the organization calls it |
+
+```mermaid
+flowchart TB
+    acme["Acme (organization)"] --> sales["Sales (unit)"]
+    acme --> engineering["Engineering (unit)"]
+    engineering --> platform["Platform (department)"]
+    engineering --> mobile["Mobile (department)"]
+```
+
+Rules of the tree:
+
+- **A unit belongs to one organization**, and its parent is a unit of the same organization.
+- **No unit is part of itself.** Moving a unit under one of the units inside it is refused with `identity.unit_cycle`.
+- **At most ten levels.** A unit at the top is at level 1; a unit whose level would exceed 10, or that would carry units below it past level 10, is refused with `identity.unit_tree_too_deep`.
+- **A unit with units below it cannot be deleted**: they are moved or deleted first, so that nothing is deleted by surprise. The refusal is `identity.unit_not_empty`.
+- **Changes to an organization's tree take one lock per organization**, so that two moves cannot make a cycle together.
+
+### Members of an organization
+
+A **membership** puts a user in an organization, and optionally in some of its units.
+
+| Rule | Why |
+|---|---|
+| A user is a member of an organization once | Adding again changes nothing |
+| The units of a membership belong to the same organization | A person cannot be in a department of a company they are not in |
+| A member can be in several units, or in none | A person who works in two departments is in both |
+| Deleting a unit takes every member out of it, but not out of the organization | The person still works for the company |
+| Deleting an organization deletes its units and its memberships | Nothing refers to an organization that does not exist |
+| A user of any status can be a member, except a Deleted one; marking a user Deleted ends every membership | As for groups |
+
 ## Events
 
 Events carry identifiers of users and of login identifiers, and the kind of a login identifier, but never its value. An email address is personal data and stays in the identity tables; the audit trail refers to it by identifier.
@@ -168,7 +222,17 @@ Events carry identifiers of users and of login identifiers, and the kind of a lo
 | `identity.group_member_added` | A user or a group is added to a group; carries the kind of member and its identifier |
 | `identity.group_member_removed` | A user or a group is taken out of a group, by hand or by marking the user Deleted; carries the kind of member and its identifier. Deleting a group records only `identity.group_deleted` |
 
-A group's name and description are not personal data, but they can say a great deal about people: they stay in the identity tables, and events carry the group's identifier only.
+| `identity.organization_created` | An organization is created |
+| `identity.organization_changed` | Its name or description changed |
+| `identity.organization_deleted` | It is deleted, with its units and memberships; carries how many members it had |
+| `identity.unit_created` | A unit is created; carries its organization, parent and kind |
+| `identity.unit_changed` | Its name, kind or parent changed |
+| `identity.unit_deleted` | It is deleted; carries its organization |
+| `identity.organization_member_added` | A user becomes a member of an organization |
+| `identity.organization_member_changed` | The units of a membership changed; carries the units |
+| `identity.organization_member_removed` | A user stops being a member, by hand or by being marked Deleted |
+
+A group's name and description are not personal data, but they can say a great deal about people: they stay in the identity tables, and events carry the group's identifier only. The same holds for organizations and units.
 
 ## Operations
 
@@ -188,6 +252,12 @@ A group's name and description are not personal data, but they can say a great d
 | Add member, remove member | Adds a user or a group to a group, or takes it out; adding a group checks [the two rules](#groups-inside-groups) |
 | List members | The direct members of a group, a page at a time, users and groups apart |
 | Effective groups of a user | Every group the user is in, directly or through other groups |
+| Create, get, list, change, delete organization | As for groups |
+| Create, change, move, delete unit | Moving checks [the rules of the tree](#units) |
+| List units | Every unit of an organization, each with its parent |
+| Add member, change units, remove member | A user joins an organization, with units or none; the units can be replaced; the user leaves |
+| List members of an organization | A page at a time, each with their units |
+| Organizations of a user | Every organization the user is a member of, with their units |
 
 Every use case that changes a user loads it, applies the change, stores it and records its events in one unit of work. A change that produces no event, such as verifying an identifier that is already verified, changed nothing and stores nothing.
 
@@ -198,6 +268,7 @@ Every use case that changes a user loads it, applies the change, stores it and r
 | `UserRepository` | Store and load users with their login identifiers, with optimistic locking on the user's version; find a user by a normalized login identifier |
 | `GroupRepository` | Store, load, change and delete groups with optimistic locking on the group's version; add and remove members; list members; take the tenant's lock on nesting; read every link from a group to a group inside it, and the groups a user is directly in |
 | `GroupPolicy` | The tenant's bound on the depth of groups, read in the unit of work of the change |
+| `OrganizationRepository` | Store, load, change and delete organizations with optimistic locking; store, change and delete units; take an organization's lock on its tree; add, change and remove memberships; list units, members and a user's organizations |
 
 Every method works inside the tenant of the unit of work it is given.
 
@@ -253,12 +324,32 @@ Both tables are tenant tables under row-level security. Uniqueness of login iden
 
 Exactly one of `user_id` and `member_group_id` is set, and a member is in a group once: a user and a group never share an identifier. A group is never its own member, which the database checks too. Both are tenant tables under row-level security, and the lock on nesting is a PostgreSQL advisory lock of the transaction, taken on a key made from the tenant.
 
+### `identity.organization`
+
+As `identity.group`: `tenant_id`, `id`, `name`, `name_normalized` unique per tenant, `description`, `created_at`, `updated_at`, `version`.
+
+### `identity.organization_unit`
+
+| Column | Type | Notes |
+|---|---|---|
+| `tenant_id`, `id` | `uuid` | Primary key |
+| `organization_id` | `uuid` | The organization; removed with it |
+| `parent_id` | `uuid` | The parent unit of the same organization, or null at the top. A unit with units below cannot be removed |
+| `name`, `name_normalized` | `text` | `name_normalized` unique per organization and parent |
+| `kind` | `text` | `unit` or `department` |
+| `created_at`, `updated_at` | `timestamptz` | |
+
+### `identity.organization_member` and `identity.organization_member_unit`
+
+`identity.organization_member` holds one row per user and organization, with `added_at`, removed with either. `identity.organization_member_unit` holds one row per membership and unit, removed with the membership or the unit; the database checks that the unit is of the membership's organization. All are tenant tables under row-level security, and the lock on a tree is a PostgreSQL advisory lock of the transaction, on a key made from the organization.
+
 ## Not built yet
 
 | Item | Planned in |
 |---|---|
 | Custom attributes and the standard profile claims of OpenID Connect | Later in Phase 1 |
-| Organizations, memberships, invitations | Milestone 7 |
+| Invitations to an organization | Milestone 7, Issue-87 |
+| Managing organizations through the administration interface, the command-line tool and the console | Milestone 7, Issue-88 |
 | Managing groups through the administration interface, the command-line tool and the console | Milestone 7, Issue-88 |
 | Roles given to groups, and groups in tokens | Milestone 7, Issue-89 |
 | Phone numbers as login identifiers | Phase 4 |
