@@ -41,6 +41,13 @@ impl UserKind {
             other => Err(unknown_stored("user kind", other)),
         }
     }
+
+    /// Whether this kind is a workload: a service account or an agent,
+    /// a principal of the tenant that is not a person.
+    #[must_use]
+    pub const fn is_workload(self) -> bool {
+        matches!(self, Self::ServiceAccount | Self::Agent)
+    }
 }
 
 /// Where a user is in their life.
@@ -267,10 +274,25 @@ impl User {
         self.state.status
     }
 
-    /// Whether the user may sign in.
+    /// What sort of principal the user is.
+    #[must_use]
+    pub const fn kind(&self) -> UserKind {
+        self.state.kind
+    }
+
+    /// Whether the user may sign in: only an active person may. A service
+    /// account or an agent never signs in, whatever its status.
     #[must_use]
     pub const fn may_sign_in(&self) -> bool {
-        matches!(self.state.status, UserStatus::Active)
+        matches!(self.state.kind, UserKind::Human)
+            && matches!(self.state.status, UserStatus::Active)
+    }
+
+    /// Whether the user is a service account or an agent that may act:
+    /// one that is active.
+    #[must_use]
+    pub const fn is_workload_that_may_act(&self) -> bool {
+        self.state.kind.is_workload() && matches!(self.state.status, UserStatus::Active)
     }
 
     /// The user's login identifiers, oldest first.
@@ -399,6 +421,12 @@ impl User {
         now: Timestamp,
     ) -> Result<UserEvent, DomainError> {
         self.require_not_deleted()?;
+        if self.state.kind.is_workload() {
+            return Err(DomainError::invalid(
+                "identity.workload_identifier_refused",
+                "a service account or an agent has no login identifier",
+            ));
+        }
         if self.state.identifiers.len() >= Self::MAX_IDENTIFIERS {
             return Err(DomainError::invalid(
                 "identity.too_many_identifiers",
@@ -733,6 +761,47 @@ mod tests {
             NOW,
         );
         assert!(workload.is_ok());
+    }
+
+    #[test]
+    fn a_workload_is_never_given_a_login_identifier() {
+        for kind in [UserKind::ServiceAccount, UserKind::Agent] {
+            let refused =
+                User::create(kind, vec![username("robot")], Profile::default(), true, NOW);
+            assert_eq!(
+                refused.expect_err("refused").code(),
+                "identity.workload_identifier_refused"
+            );
+            let (mut workload, _) =
+                User::create(kind, vec![], Profile::default(), true, NOW).expect("a workload");
+            assert_eq!(
+                workload
+                    .add_identifier(email("robot@example.com"), NOW)
+                    .expect_err("refused")
+                    .code(),
+                "identity.workload_identifier_refused"
+            );
+            assert!(workload.identifiers().is_empty());
+        }
+    }
+
+    #[test]
+    fn only_an_active_person_may_sign_in_and_only_an_active_workload_may_act() {
+        assert!(person(true).may_sign_in());
+        assert!(!person(true).is_workload_that_may_act());
+        for kind in [UserKind::ServiceAccount, UserKind::Agent] {
+            let (mut workload, _) =
+                User::create(kind, vec![], Profile::default(), true, NOW).expect("a workload");
+            assert!(!workload.may_sign_in(), "a workload never signs in");
+            assert!(workload.is_workload_that_may_act());
+            workload.deactivate(NOW).expect("deactivate");
+            assert!(!workload.may_sign_in());
+            assert!(!workload.is_workload_that_may_act());
+            workload.restore(NOW).expect("restore");
+            assert!(workload.is_workload_that_may_act());
+            workload.suspend("review", NOW).expect("suspend");
+            assert!(!workload.is_workload_that_may_act());
+        }
     }
 
     #[test]

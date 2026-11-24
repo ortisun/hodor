@@ -5,8 +5,8 @@ use crate::domain::identifier::NormalizedIdentifier;
 use crate::domain::organization::{
     Invitation, InvitationId, Membership, Organization, Unit, UnitId,
 };
-use crate::domain::user::User;
-use hodor_kernel::{DomainError, GroupId, OrganizationId, Timestamp, UnitOfWork, UserId};
+use crate::domain::user::{User, UserKind};
+use hodor_kernel::{Caller, DomainError, GroupId, OrganizationId, Timestamp, UnitOfWork, UserId};
 
 /// Stores and loads users with their login identifiers. Every method works
 /// inside the tenant the unit of work is bound to.
@@ -459,4 +459,86 @@ pub trait InvitationRepository: Send + Sync {
         uow: &mut dyn UnitOfWork,
         organization: OrganizationId,
     ) -> Result<Vec<Invitation>, DomainError>;
+}
+
+/// Stores what only a service account or an agent has, its owners, and
+/// lists workloads by kind. Every method works inside the tenant the unit
+/// of work is bound to.
+#[async_trait::async_trait]
+pub trait WorkloadRepository: Send + Sync {
+    /// Returns up to `limit` users of `kind` that are not Deleted, in the
+    /// order they were created, starting after the given user.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn list(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        kind: UserKind,
+        after: Option<UserId>,
+        limit: u32,
+    ) -> Result<Vec<User>, DomainError>;
+
+    /// The owners of `workload`, in the order they became owners, and by
+    /// identifier among those that became owners at the same moment.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn owners(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        workload: UserId,
+    ) -> Result<Vec<UserId>, DomainError>;
+
+    /// Makes `owners` the owners of `workload`: those it had keep when
+    /// they became owners, the others become owners at `now`, and anyone
+    /// else stops being one.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails, or refuses a user that is not
+    /// one of the tenant.
+    async fn replace_owners(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        workload: UserId,
+        owners: &[UserId],
+        now: Timestamp,
+    ) -> Result<(), DomainError>;
+
+    /// Forgets every owner of `workload`, when it is deleted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn forget_owners(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        workload: UserId,
+    ) -> Result<(), DomainError>;
+}
+
+/// Ends whatever a service account or an agent holds when it is disabled
+/// or deleted: its access tokens, and anything else issued for it. The
+/// composition root implements it with the OAuth and session contexts,
+/// which this context does not depend on.
+#[async_trait::async_trait]
+pub trait WorkloadAccess: Send + Sync {
+    /// Ends what `workload` holds, with `reason`, in the caller's unit of
+    /// work, so that it ends together with the change of status or not
+    /// at all.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails. After an error the unit of work
+    /// must be abandoned.
+    async fn revoke_access(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        workload: UserId,
+        reason: &'static str,
+        caller: Caller,
+    ) -> Result<(), DomainError>;
 }

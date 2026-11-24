@@ -1784,3 +1784,364 @@ pub async fn run_invitation_contract(ports: InvitationPorts<'_>) {
         .expect("withdraw"));
     assert!(withdrawn);
 }
+
+/// The owners of each workload, by tenant and workload, with when each
+/// became one.
+type OwnerRows = BTreeMap<(TenantId, UserId), Vec<(Timestamp, UserId)>>;
+
+/// What a [`RecordingWorkloadAccess`] was asked to end: the tenant, the
+/// workload and the reason.
+type AccessCall = (TenantId, UserId, &'static str);
+
+/// The owners of service accounts and agents kept in memory, beside the
+/// users they list from.
+#[derive(Debug, Clone, Default)]
+pub struct InMemoryWorkloads {
+    users: InMemoryUsers,
+    owners: Arc<Mutex<OwnerRows>>,
+}
+
+impl InMemoryWorkloads {
+    /// Workloads listed from `users`, which must be the users the use
+    /// cases store.
+    #[must_use]
+    pub fn over(users: InMemoryUsers) -> Self {
+        Self {
+            users,
+            owners: Arc::default(),
+        }
+    }
+
+    fn owner_rows(&self) -> std::sync::MutexGuard<'_, OwnerRows> {
+        self.owners.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::api::WorkloadRepository for InMemoryWorkloads {
+    async fn list(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        kind: UserKind,
+        after: Option<UserId>,
+        limit: u32,
+    ) -> Result<Vec<User>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        Ok(self
+            .users
+            .rows()
+            .iter()
+            .filter(|((owner, id), user)| {
+                *owner == tenant
+                    && after.is_none_or(|after| *id > after)
+                    && user.kind() == kind
+                    && user.status() != crate::api::UserStatus::Deleted
+            })
+            .take(limit as usize)
+            .map(|(_, user)| user.clone())
+            .collect())
+    }
+
+    async fn owners(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        workload: UserId,
+    ) -> Result<Vec<UserId>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let mut owners = self
+            .owner_rows()
+            .get(&(tenant, workload))
+            .cloned()
+            .unwrap_or_default();
+        owners.sort();
+        Ok(owners.into_iter().map(|(_, owner)| owner).collect())
+    }
+
+    async fn replace_owners(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        workload: UserId,
+        owners: &[UserId],
+        now: Timestamp,
+    ) -> Result<(), DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        {
+            let users = self.users.rows();
+            if owners
+                .iter()
+                .chain([&workload])
+                .any(|user| !users.contains_key(&(tenant, *user)))
+            {
+                return Err(DomainError::not_found(
+                    "identity.user_not_found",
+                    "the user does not exist",
+                ));
+            }
+        }
+        let mut rows = self.owner_rows();
+        let before = rows.remove(&(tenant, workload)).unwrap_or_default();
+        let after = owners
+            .iter()
+            .map(|owner| {
+                before
+                    .iter()
+                    .find(|(_, kept)| kept == owner)
+                    .copied()
+                    .unwrap_or((now, *owner))
+            })
+            .collect();
+        rows.insert((tenant, workload), after);
+        Ok(())
+    }
+
+    async fn forget_owners(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        workload: UserId,
+    ) -> Result<(), DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        self.owner_rows().remove(&(tenant, workload));
+        Ok(())
+    }
+}
+
+/// A [`crate::api::WorkloadAccess`] that remembers what it was asked to
+/// end, and records nothing else.
+#[derive(Debug, Clone, Default)]
+pub struct RecordingWorkloadAccess {
+    calls: Arc<Mutex<Vec<AccessCall>>>,
+}
+
+impl RecordingWorkloadAccess {
+    /// What it was asked to end: the tenant, the workload and the reason,
+    /// in order.
+    ///
+    /// # Panics
+    ///
+    /// Never in practice: the lock is only poisoned by a panic elsewhere.
+    #[must_use]
+    pub fn calls(&self) -> Vec<AccessCall> {
+        self.calls.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::api::WorkloadAccess for RecordingWorkloadAccess {
+    async fn revoke_access(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        workload: UserId,
+        reason: &'static str,
+        _caller: hodor_kernel::Caller,
+    ) -> Result<(), DomainError> {
+        self.calls.lock().unwrap_or_else(|e| e.into_inner()).push((
+            uow.tenant().tenant_id(),
+            workload,
+            reason,
+        ));
+        Ok(())
+    }
+}
+
+/// The ports the contract of workloads runs against.
+#[derive(Clone)]
+pub struct WorkloadPorts<'a> {
+    /// Starts units of work.
+    pub units_of_work: &'a dyn UnitOfWorkFactory,
+    /// Where the workloads and their owners are stored as users.
+    pub users: &'a dyn UserRepository,
+    /// The repository under test.
+    pub workloads: &'a dyn crate::api::WorkloadRepository,
+}
+
+impl std::fmt::Debug for WorkloadPorts<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WorkloadPorts").finish_non_exhaustive()
+    }
+}
+
+fn a_workload(kind: UserKind, name: &str) -> User {
+    User::create(
+        kind,
+        vec![],
+        crate::api::workload_profile(name).expect("a name"),
+        true,
+        MOMENT,
+    )
+    .expect("a workload")
+    .0
+}
+
+/// Runs the contract of workloads. Each case uses tenants of its own.
+///
+/// # Panics
+///
+/// Panics when the implementation breaks the contract.
+pub async fn run_workload_contract(ports: WorkloadPorts<'_>) {
+    let ports = &ports;
+    macro_rules! within {
+        ($tenant:expr, |$uow:ident| $body:expr) => {{
+            let mut $uow = ports.units_of_work.begin($tenant).await.expect("begin");
+            let value = $body;
+            $uow.commit().await.expect("commit");
+            value
+        }};
+    }
+    let later = MOMENT + time::Duration::seconds(1);
+    let (home, elsewhere) = (tenant(), tenant());
+    let ana = person(vec![email("ana@example.com")]);
+    let bob = person(vec![email("bob@example.com")]);
+    let carla = person(vec![email("carla@example.com")]);
+    let export = a_workload(UserKind::ServiceAccount, "Nightly export");
+    let helper = a_workload(UserKind::Agent, "Support helper");
+    let sync = a_workload(UserKind::ServiceAccount, "Directory sync");
+    let mut gone = a_workload(UserKind::ServiceAccount, "Gone");
+    for user in [&ana, &bob, &carla, &export, &helper, &sync, &gone] {
+        within!(&home, |uow| ports
+            .users
+            .insert(uow.as_mut(), user)
+            .await
+            .expect("insert"));
+    }
+    gone.deactivate(MOMENT).expect("deactivate");
+    within!(&home, |uow| ports
+        .users
+        .update(uow.as_mut(), &gone)
+        .await
+        .expect("update"));
+    let mut gone = within!(&home, |uow| ports
+        .users
+        .get(uow.as_mut(), gone.id())
+        .await
+        .expect("get"))
+    .expect("stored");
+    gone.mark_deleted(MOMENT).expect("delete");
+    within!(&home, |uow| ports
+        .users
+        .update(uow.as_mut(), &gone)
+        .await
+        .expect("update"));
+    let other = a_workload(UserKind::ServiceAccount, "Another tenant's");
+    within!(&elsewhere, |uow| ports
+        .users
+        .insert(uow.as_mut(), &other)
+        .await
+        .expect("insert"));
+
+    // Workloads are listed by kind, in the order they were created, not
+    // deleted, in their tenant only, a page at a time.
+    let ids = |users: Vec<User>| users.iter().map(User::id).collect::<Vec<_>>();
+    let accounts = within!(&home, |uow| ports
+        .workloads
+        .list(uow.as_mut(), UserKind::ServiceAccount, None, 10)
+        .await
+        .expect("list"));
+    assert_eq!(ids(accounts), vec![export.id(), sync.id()]);
+    let agents = within!(&home, |uow| ports
+        .workloads
+        .list(uow.as_mut(), UserKind::Agent, None, 10)
+        .await
+        .expect("list"));
+    assert_eq!(ids(agents), vec![helper.id()]);
+    let first = within!(&home, |uow| ports
+        .workloads
+        .list(uow.as_mut(), UserKind::ServiceAccount, None, 1)
+        .await
+        .expect("list"));
+    assert_eq!(ids(first), vec![export.id()]);
+    let next = within!(&home, |uow| ports
+        .workloads
+        .list(
+            uow.as_mut(),
+            UserKind::ServiceAccount,
+            Some(export.id()),
+            10
+        )
+        .await
+        .expect("list"));
+    assert_eq!(ids(next), vec![sync.id()]);
+    let people = within!(&home, |uow| ports
+        .workloads
+        .list(uow.as_mut(), UserKind::Human, None, 10)
+        .await
+        .expect("list"));
+    assert_eq!(people.len(), 3, "a kind lists its own users");
+    let theirs = within!(&elsewhere, |uow| ports
+        .workloads
+        .list(uow.as_mut(), UserKind::ServiceAccount, None, 10)
+        .await
+        .expect("list"));
+    assert_eq!(ids(theirs), vec![other.id()]);
+
+    // Owners are kept in the order they became owners; replacing keeps
+    // when the ones that stay became owners.
+    within!(&home, |uow| ports
+        .workloads
+        .replace_owners(uow.as_mut(), export.id(), &[bob.id()], MOMENT)
+        .await
+        .expect("replace"));
+    within!(&home, |uow| ports
+        .workloads
+        .replace_owners(uow.as_mut(), export.id(), &[ana.id(), bob.id()], later)
+        .await
+        .expect("replace"));
+    let owners = within!(&home, |uow| ports
+        .workloads
+        .owners(uow.as_mut(), export.id())
+        .await
+        .expect("owners"));
+    assert_eq!(owners, vec![bob.id(), ana.id()]);
+    within!(&home, |uow| ports
+        .workloads
+        .replace_owners(uow.as_mut(), export.id(), &[carla.id(), ana.id()], later)
+        .await
+        .expect("replace"));
+    let owners = within!(&home, |uow| ports
+        .workloads
+        .owners(uow.as_mut(), export.id())
+        .await
+        .expect("owners"));
+    let mut expected = vec![ana.id(), carla.id()];
+    expected.sort();
+    assert_eq!(owners, expected, "at the same moment, by identifier");
+
+    // Owners of one tenant's workload are seen from no other, and a user of
+    // another tenant cannot be made an owner.
+    let hidden = within!(&elsewhere, |uow| ports
+        .workloads
+        .owners(uow.as_mut(), export.id())
+        .await
+        .expect("owners"));
+    assert!(hidden.is_empty());
+    let mut uow = ports.units_of_work.begin(&elsewhere).await.expect("begin");
+    let refused = ports
+        .workloads
+        .replace_owners(uow.as_mut(), other.id(), &[ana.id()], MOMENT)
+        .await;
+    assert!(refused.is_err(), "an owner of another tenant is refused");
+    drop(uow);
+
+    // Forgetting the owners leaves none, and touches no other workload.
+    within!(&home, |uow| ports
+        .workloads
+        .replace_owners(uow.as_mut(), sync.id(), &[ana.id()], MOMENT)
+        .await
+        .expect("replace"));
+    within!(&home, |uow| ports
+        .workloads
+        .forget_owners(uow.as_mut(), export.id())
+        .await
+        .expect("forget"));
+    let none = within!(&home, |uow| ports
+        .workloads
+        .owners(uow.as_mut(), export.id())
+        .await
+        .expect("owners"));
+    assert!(none.is_empty());
+    let kept = within!(&home, |uow| ports
+        .workloads
+        .owners(uow.as_mut(), sync.id())
+        .await
+        .expect("owners"));
+    assert_eq!(kept, vec![ana.id()]);
+}

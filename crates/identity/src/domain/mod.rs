@@ -5,3 +5,4 @@ pub(crate) mod group;
 pub(crate) mod identifier;
 pub(crate) mod organization;
 pub(crate) mod user;
+pub(crate) mod workload;

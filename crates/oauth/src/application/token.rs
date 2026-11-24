@@ -881,6 +881,7 @@ impl TokenService {
                 methods: family.methods.clone(),
                 organization,
                 groups,
+                principal_kind: None,
             };
             let signed = match self.sign(tenant, issuer, client, &subject).await? {
                 Ok(signed) => signed,
@@ -939,6 +940,24 @@ impl TokenService {
                 "the client may not use client credentials",
             )));
         }
+        // A client that acts as a workload gets tokens only while the
+        // workload may act. The kind is read once more, for the token.
+        let principal = match client.principal() {
+            None => None,
+            Some(principal) => {
+                let Some(kind) = self
+                    .ports
+                    .standing
+                    .workload_that_may_act(tenant, principal)
+                    .await?
+                else {
+                    return Ok(Err(TokenError::invalid_client(
+                        "the client's service account or agent may not act",
+                    )));
+                };
+                Some((principal, kind))
+            }
+        };
         let mut uow = self.ports.units_of_work.begin(tenant).await?;
         let servers = self.ports.resource_servers.list(uow.as_mut()).await?;
         drop(uow);
@@ -1000,7 +1019,10 @@ impl TokenService {
             .map(|server| server.snapshot().audience.as_str().to_owned())
             .collect();
         let subject = TokenSubject {
-            subject: client.id().to_string(),
+            subject: principal.map_or_else(
+                || client.id().to_string(),
+                |(principal, _)| principal.to_string(),
+            ),
             scopes,
             audiences,
             signed_in_at: None,
@@ -1008,6 +1030,7 @@ impl TokenService {
             methods: Vec::new(),
             organization: None,
             groups: None,
+            principal_kind: principal.map(|(_, kind)| kind.to_owned()),
         };
         let signed = match self.sign(tenant, issuer, client, &subject).await? {
             Ok(signed) => signed,
@@ -1028,11 +1051,13 @@ impl TokenService {
                     None,
                     None,
                     signed.expires_at,
-                ),
+                )
+                .for_principal(principal.map(|(principal, _)| principal)),
             )
             .await?;
         let event = OauthEvent::ClientAccessTokenIssued {
             client_id: client.id(),
+            principal_id: principal.map(|(principal, _)| principal),
             token_id: signed.token_id.clone(),
             expires_at: signed.expires_at,
         };

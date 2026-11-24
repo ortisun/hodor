@@ -16,7 +16,8 @@ use axum::http::header::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Extension, Json};
-use hodor_kernel::{DomainError, TenantContext};
+use hodor_identity::api::UserStatus;
+use hodor_kernel::{DomainError, ErrorKind, TenantContext, UserId};
 use hodor_oauth::api::{
     Application, ApplicationId, ApplicationSettings, AuthenticationMethod, Client, ClientId,
     ClientSecret, ClientSecretId, ClientSettings, ClientType, CreateClient, CreateResourceServer,
@@ -404,6 +405,8 @@ struct ClientBody {
     allowed_scopes: Vec<String>,
     require_pkce: bool,
     id_token_signed_response_alg: &'static str,
+    /// The service account or agent it acts as, or `null`.
+    principal: Option<String>,
     token_policy: TokenPolicyBody,
     /// What identifies each secret and when it expires: never the secret
     /// or its hash.
@@ -431,6 +434,7 @@ impl From<&Client> for ClientBody {
             allowed_scopes: settings.allowed_scopes.clone(),
             require_pkce: settings.require_pkce,
             id_token_signed_response_alg: settings.id_token_algorithm.as_str(),
+            principal: settings.principal.map(|principal| principal.to_string()),
             token_policy: TokenPolicyBody {
                 access_token_seconds: policy.access_token.whole_seconds(),
                 id_token_seconds: policy.id_token.whole_seconds(),
@@ -489,6 +493,7 @@ struct NewClientBody {
     id_token_signed_response_alg: Option<String>,
     token_policy: Option<TokenPolicyInput>,
     secret_lifetime_days: Option<u32>,
+    principal: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -503,6 +508,40 @@ struct ClientChangesBody {
     require_pkce: Option<bool>,
     id_token_signed_response_alg: Option<String>,
     token_policy: Option<TokenPolicyInput>,
+    /// Left out: unchanged; `null`: removed; an identifier: replaced.
+    #[serde(default, deserialize_with = "present")]
+    principal: Option<Option<String>>,
+}
+
+/// A field that may be given as `null`, told apart from one left out.
+fn present<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer).map(Some)
+}
+
+/// The workload `given` names, if it is a service account or an agent of
+/// the tenant that is not deleted: the OAuth context does not know what a
+/// principal is, so the interface asks the identity context.
+async fn principal_of(
+    state: &Shared,
+    tenant: &TenantContext,
+    given: &str,
+) -> Result<UserId, Box<Response>> {
+    let refused = || {
+        failed(DomainError::invalid(
+            "oauth.client_principal_invalid",
+            "a client's principal is a service account or an agent of the tenant",
+        ))
+    };
+    let id: UserId = given.parse().map_err(|_| refused())?;
+    match state.identity.get(tenant, id).await {
+        Ok(user) if user.kind().is_workload() && user.status() != UserStatus::Deleted => Ok(id),
+        Ok(_) => Err(refused()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Err(refused()),
+        Err(error) => Err(failed(error)),
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -606,6 +645,9 @@ async fn create_client(
             if let Some(policy) = new.token_policy {
                 settings.token_policy = policy.over(settings.token_policy);
             }
+            if let Some(principal) = &new.principal {
+                settings.principal = Some(principal_of(&state, &tenant, principal).await?);
+            }
             let (client, secret) = state
                 .applications
                 .create_client(
@@ -696,6 +738,11 @@ async fn change_client(
                 token_policy: changes
                     .token_policy
                     .map_or(now.token_policy, |given| given.over(now.token_policy)),
+                principal: match &changes.principal {
+                    None => now.principal,
+                    Some(None) => None,
+                    Some(Some(given)) => Some(principal_of(&state, &tenant, given).await?),
+                },
             };
             let client = state
                 .applications

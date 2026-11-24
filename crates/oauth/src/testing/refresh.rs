@@ -161,11 +161,13 @@ impl RefreshTokenStore for InMemoryRefreshTokens {
 }
 
 /// A stand-in for the session and identity contexts: every person may sign
-/// in and every session is active, except those the test ends.
+/// in and every session is active, except those the test ends; only the
+/// workloads the test names may act, until it bars them.
 #[derive(Debug, Clone, Default)]
 pub struct StandingOf {
     ended_sessions: Arc<Mutex<BTreeSet<SessionId>>>,
     barred_users: Arc<Mutex<BTreeSet<UserId>>>,
+    workloads: Arc<Mutex<std::collections::BTreeMap<UserId, &'static str>>>,
 }
 
 impl StandingOf {
@@ -174,9 +176,15 @@ impl StandingOf {
         lock(&self.ended_sessions).insert(session);
     }
 
-    /// Bars `user` from signing in.
+    /// Bars `user` from signing in, or from acting if it is a workload.
     pub fn bar(&self, user: UserId) {
         lock(&self.barred_users).insert(user);
+    }
+
+    /// Makes `principal` a workload of `kind`, `service_account` or
+    /// `agent`, that may act.
+    pub fn workload(&self, principal: UserId, kind: &'static str) {
+        lock(&self.workloads).insert(principal, kind);
     }
 }
 
@@ -196,7 +204,18 @@ impl PersonStanding for StandingOf {
         _tenant: &TenantContext,
         user: UserId,
     ) -> Result<bool, DomainError> {
-        Ok(!lock(&self.barred_users).contains(&user))
+        Ok(!lock(&self.barred_users).contains(&user) && !lock(&self.workloads).contains_key(&user))
+    }
+
+    async fn workload_that_may_act(
+        &self,
+        _tenant: &TenantContext,
+        principal: UserId,
+    ) -> Result<Option<&'static str>, DomainError> {
+        if lock(&self.barred_users).contains(&principal) {
+            return Ok(None);
+        }
+        Ok(lock(&self.workloads).get(&principal).copied())
     }
 }
 

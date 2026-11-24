@@ -348,6 +348,15 @@ async fn world_with_keys(with_keys: bool) -> World {
         groups: groups_and_organizations.0,
         organizations: groups_and_organizations.1,
         invitations: groups_and_organizations.2,
+        workloads: hodor_identity::api::WorkloadService::new(
+            units(),
+            identity.clone(),
+            Arc::new(hodor_identity::testing::InMemoryWorkloads::over(
+                (*users).clone(),
+            )),
+            Arc::new(hodor_identity::testing::RecordingWorkloadAccess::default()),
+            clock.clone(),
+        ),
     };
     let router = public_router(
         Arc::new(Tenants {
@@ -608,7 +617,7 @@ fn the_document_and_the_routes_list_the_same_operations_and_permissions() {
         })
         .collect();
     assert_eq!(documented, served);
-    assert_eq!(served.len(), 99);
+    assert_eq!(served.len(), 113);
 
     // Every operation says how it refuses.
     let document: serde_json::Value = serde_json::from_str(ADMIN_OPENAPI).expect("valid JSON");
@@ -3820,4 +3829,207 @@ async fn an_administrator_reads_and_sets_the_scim_deprovisioning_policy() {
         assert_eq!(answer.status, StatusCode::UNPROCESSABLE_ENTITY);
         assert_eq!(answer.body["code"], "request.body_invalid");
     }
+}
+
+#[tokio::test]
+async fn an_administrator_manages_service_accounts_and_agents_and_binds_clients_to_them() {
+    let world = world().await;
+    let (ana, _) = world.person(&world.acme, "ana@example.com", &[]).await;
+    let (bob, _) = world.person(&world.acme, "bob@example.com", &[]).await;
+
+    let created = world
+        .as_administrator(
+            Method::POST,
+            "/service-accounts",
+            Some(serde_json::json!({ "name": "Nightly export", "owners": [ana.to_string()] })),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    assert_eq!(created.body["kind"], "service_account");
+    assert_eq!(created.body["status"], "active");
+    assert_eq!(created.body["owners"], serde_json::json!([ana.to_string()]));
+    let id = created.body["id"].as_str().expect("identifier").to_owned();
+
+    // It is a user, without a login identifier, and it is not an agent.
+    let as_user = world
+        .as_administrator(Method::GET, &format!("/users/{id}"), None)
+        .await;
+    assert_eq!(as_user.body["kind"], "service_account");
+    assert_eq!(as_user.body["identifiers"], serde_json::json!([]));
+    let not_an_agent = world
+        .as_administrator(Method::GET, &format!("/agents/{id}"), None)
+        .await;
+    assert_eq!(not_an_agent.status, StatusCode::NOT_FOUND);
+    assert_eq!(not_an_agent.code(), "identity.workload_not_found");
+    let listed = world
+        .as_administrator(Method::GET, "/service-accounts", None)
+        .await;
+    assert_eq!(listed.body["items"][0]["id"], id.as_str());
+    let agents = world.as_administrator(Method::GET, "/agents", None).await;
+    assert_eq!(agents.body["items"], serde_json::json!([]));
+
+    let changed = world
+        .as_administrator(
+            Method::PATCH,
+            &format!("/service-accounts/{id}"),
+            Some(serde_json::json!({ "name": "Export", "owners": [bob.to_string()] })),
+        )
+        .await;
+    assert_eq!(changed.status, StatusCode::OK, "{}", changed.body);
+    assert_eq!(changed.body["name"], "Export");
+    assert_eq!(changed.body["owners"], serde_json::json!([bob.to_string()]));
+    for (owners, status, code) in [
+        (
+            serde_json::json!([]),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "identity.workload_owner_required",
+        ),
+        (
+            serde_json::json!([id]),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "identity.workload_owner_invalid",
+        ),
+        (
+            serde_json::json!(["not an identifier"]),
+            StatusCode::NOT_FOUND,
+            "identity.user_not_found",
+        ),
+    ] {
+        let refused = world
+            .as_administrator(
+                Method::PATCH,
+                &format!("/service-accounts/{id}"),
+                Some(serde_json::json!({ "owners": owners })),
+            )
+            .await;
+        assert_eq!((refused.status, refused.code()), (status, code));
+    }
+
+    // A client of the client credentials grant is bound to it; a person
+    // and another grant are refused.
+    let application = world
+        .as_administrator(
+            Method::POST,
+            "/applications",
+            Some(serde_json::json!({ "name": "Billing", "first_party": true })),
+        )
+        .await;
+    let application = application.body["id"].as_str().expect("id").to_owned();
+    let clients = format!("/applications/{application}/clients");
+    let bound = world
+        .as_administrator(
+            Method::POST,
+            &clients,
+            Some(serde_json::json!({
+                "name": "Export", "type": "confidential",
+                "grant_types": ["client_credentials"], "principal": id
+            })),
+        )
+        .await;
+    assert_eq!(bound.status, StatusCode::CREATED, "{}", bound.body);
+    assert_eq!(bound.body["principal"], id.as_str());
+    let client = bound.body["id"].as_str().expect("id").to_owned();
+    for (body, code) in [
+        (
+            serde_json::json!({
+                "name": "Person", "type": "confidential",
+                "grant_types": ["client_credentials"], "principal": ana.to_string()
+            }),
+            "oauth.client_principal_invalid",
+        ),
+        (
+            serde_json::json!({
+                "name": "Web", "type": "confidential",
+                "grant_types": ["authorization_code"],
+                "redirect_uris": ["https://billing.example.com/callback"],
+                "principal": id
+            }),
+            "oauth.client_grants_invalid",
+        ),
+    ] {
+        let refused = world
+            .as_administrator(Method::POST, &clients, Some(body))
+            .await;
+        assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(refused.code(), code);
+    }
+    let unbound = world
+        .as_administrator(
+            Method::PATCH,
+            &format!("/clients/{client}"),
+            Some(serde_json::json!({ "principal": null })),
+        )
+        .await;
+    assert_eq!(unbound.status, StatusCode::OK, "{}", unbound.body);
+    assert_eq!(unbound.body["principal"], serde_json::Value::Null);
+    let kept = world
+        .as_administrator(
+            Method::PATCH,
+            &format!("/clients/{client}"),
+            Some(serde_json::json!({ "name": "Nightly export" })),
+        )
+        .await;
+    assert_eq!(
+        kept.body["principal"],
+        serde_json::Value::Null,
+        "left out, kept"
+    );
+
+    let disabled = world
+        .as_administrator(
+            Method::POST,
+            &format!("/service-accounts/{id}:disable"),
+            None,
+        )
+        .await;
+    assert_eq!(disabled.status, StatusCode::OK);
+    assert_eq!(disabled.body["status"], "disabled");
+    let enabled = world
+        .as_administrator(
+            Method::POST,
+            &format!("/service-accounts/{id}:enable"),
+            None,
+        )
+        .await;
+    assert_eq!(enabled.body["status"], "active");
+    let unknown = world
+        .as_administrator(
+            Method::POST,
+            &format!("/service-accounts/{id}:rename"),
+            None,
+        )
+        .await;
+    assert_eq!(unknown.code(), "route.not_found");
+
+    let deleted = world
+        .as_administrator(Method::DELETE, &format!("/service-accounts/{id}"), None)
+        .await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT);
+    let gone = world
+        .as_administrator(Method::GET, &format!("/service-accounts/{id}"), None)
+        .await;
+    assert_eq!(gone.code(), "identity.workload_not_found");
+    let rebound = world
+        .as_administrator(
+            Method::PATCH,
+            &format!("/clients/{client}"),
+            Some(serde_json::json!({ "principal": id })),
+        )
+        .await;
+    assert_eq!(
+        rebound.code(),
+        "oauth.client_principal_invalid",
+        "a deleted one"
+    );
+
+    // An agent of the same shape, under its own path.
+    let agent = world
+        .as_administrator(
+            Method::POST,
+            "/agents",
+            Some(serde_json::json!({ "name": "Support helper", "owners": [ana.to_string()] })),
+        )
+        .await;
+    assert_eq!(agent.status, StatusCode::CREATED);
+    assert_eq!(agent.body["kind"], "agent");
 }

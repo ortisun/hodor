@@ -199,6 +199,19 @@ Administration and console handlers, shared by both routers
 
 The application routes live in `admin/applications.rs` and are merged into
 `shared_routes`; they need `ApplicationService` in `AdminState.applications`.
+A client's `principal` is checked there through `AdminState.identity`
+(`principal_of`): a service account or an agent of the tenant that is not
+Deleted, otherwise `422` `oauth.client_principal_invalid`; `PATCH` tells a
+`principal` left out from one given as `null`, which removes it.
+
+Service accounts and agents live in `admin/workloads.rs`, merged into
+`shared_routes`, and need `WorkloadService` in `AdminState.workloads`. One
+set of handlers serves both collections, `/service-accounts` and `/agents`,
+each a `Collection` naming its `UserKind` and the paths its operations are
+written under in `ADMIN_OPERATIONS` (`workloads:read`, `workloads:write`);
+the routes are closures over the collection. `:disable` and `:enable` arrive
+at the item's `POST`; any other action is authorized as `:disable` before it
+is answered `route.not_found`.
 A client's secret is written only by `create_client` (`client_secret` in
 `CreatedClientBody`) and `rotate_secret` (`NewSecretBody`); neither type is
 `Debug`, and `ClientBody` names secrets by identifier and expiry only.

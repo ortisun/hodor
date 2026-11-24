@@ -1,8 +1,9 @@
-//! What the OAuth context needs to know of a person, answered by the
-//! session and identity contexts: the OAuth context depends on neither.
+//! What the OAuth context needs to know of a person or a workload,
+//! answered by the session and identity contexts: the OAuth context
+//! depends on neither.
 //!
-//! See `docs/architecture/contexts/oauth.md`, "Refresh tokens" and "The
-//! organization of a sign-in".
+//! See `docs/architecture/contexts/oauth.md`, "Refresh tokens", "The
+//! organization of a sign-in" and "Clients that act as a workload".
 
 use hodor_adapters_postgres::{
     Database, PgGroupPolicy, PgGroupRepository, PgInvitationRepository, PgOrganizationRepository,
@@ -50,6 +51,20 @@ impl PersonStanding for ServerStanding {
         match self.identity.get(tenant, user).await {
             Ok(person) => Ok(person.may_sign_in()),
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn workload_that_may_act(
+        &self,
+        tenant: &TenantContext,
+        principal: UserId,
+    ) -> Result<Option<&'static str>, DomainError> {
+        match self.identity.get(tenant, principal).await {
+            Ok(user) => Ok(user
+                .is_workload_that_may_act()
+                .then(|| user.kind().as_str())),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
             Err(error) => Err(error),
         }
     }

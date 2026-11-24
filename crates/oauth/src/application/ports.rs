@@ -492,6 +492,21 @@ pub trait AccessTokenRecordStore: Send + Sync {
         reason: &str,
     ) -> Result<bool, DomainError>;
 
+    /// Revokes, at `at` for `reason`, every record of a token issued for
+    /// `principal` that is not revoked yet. Returns the client and the
+    /// `jti` of each record this call revoked.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn revoke_for_principal(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        principal: UserId,
+        at: Timestamp,
+        reason: &str,
+    ) -> Result<Vec<(ClientId, String)>, DomainError>;
+
     /// Removes up to `batch` records of tokens that had expired at `now`.
     /// Returns how many it removed.
     ///
@@ -528,6 +543,20 @@ pub trait PersonStanding: Send + Sync {
     ///
     /// Returns an error if storage fails.
     async fn may_sign_in(&self, tenant: &TenantContext, user: UserId) -> Result<bool, DomainError>;
+
+    /// The kind of `principal`, `service_account` or `agent`, if it is a
+    /// workload of the tenant that may act: one that is active. None for a
+    /// person, a workload that may not act, a user of another tenant and
+    /// an identifier of nobody.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn workload_that_may_act(
+        &self,
+        tenant: &TenantContext,
+        principal: UserId,
+    ) -> Result<Option<&'static str>, DomainError>;
 }
 
 /// What the OAuth context needs to know of the groups and organizations of

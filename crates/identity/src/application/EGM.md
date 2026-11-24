@@ -43,12 +43,26 @@ bound to. Implemented outside this crate by `PgUserRepository` in
 - Login identifiers: `add_identifier(tenant, id, kind, value, caller)`, `verify_identifier(tenant, id, identifier: IdentifierId, caller)`, `choose_primary(…)`, `remove_identifier(…)`.
 - `change_profile(tenant, id, profile, caller)`.
 
+### Service accounts and agents (`workloads.rs`)
+
+- `WorkloadService::new(units_of_work, identity: IdentityService, workloads: Arc<dyn WorkloadRepository>, access: Arc<dyn WorkloadAccess>, clock)`. It changes a workload's user through `identity` (`create_in`, `get_in`, `change_in`, `mark_deleted_in`), so `identity` must be wired `with_groups` and `with_organizations` for a deleted workload to leave them.
+- `create(tenant, CreateWorkload { kind, name, owners }, caller) -> Workload`: refuses a kind that is not a workload's (`identity.workload_kind_invalid`), checks the name and the owners, makes the user Active without identifiers, stores the owners and records `identity.user_created` and one `identity.workload_owner_added` per owner.
+- `get(tenant, kind, id)` and `list(tenant, kind, page)`: a workload of that kind that is not Deleted, with its owners; anything else is `identity.workload_not_found`.
+- `change(tenant, kind, id, ChangeWorkload { name, owners }, caller)`: renames through `change_profile` and replaces the owners, each only if it differs.
+- `disable`: Active or Suspended to Deactivated, then `access.revoke_access(uow, id, WORKLOAD_DISABLED, caller)`; a Deactivated workload is answered unchanged. `enable`: Deactivated is restored; Suspended has its access revoked first and is then reactivated. `delete`: deactivates if needed, marks Deleted, forgets the owners and revokes with `WORKLOAD_DELETED`. All in one unit of work each.
+
+### Ports of workloads (`ports.rs`)
+
+- `WorkloadRepository`: `list(uow, kind, after, limit)` (users of the kind that are not Deleted, in creation order), `owners(uow, workload)` (by when they became owners, then by identifier), `replace_owners(uow, workload, owners, now)` (owners that stay keep when they were added), `forget_owners(uow, workload)`. Implemented by `PgWorkloadRepository` and `InMemoryWorkloads`.
+- `WorkloadAccess`: `revoke_access(uow, workload, reason, caller)`, in the caller's unit of work. Implemented in the composition roots: `ServerAccessRevoker` in `apps/hodor-server`, a command-line one in `apps/hodor-cli`.
+
 ## Invariants
 
 - Tenant scoping: every use case except the `*_in` variants starts its unit of work with `units_of_work.begin(tenant)`; `create_in` uses the caller's unit of work. Event metadata takes the tenant from `uow.tenant().tenant_id()` (`service.rs: IdentityService::record`).
 - One change per unit of work: the private `IdentityService::change` runs `change_in` and commits. A change that produces no event (for example verifying an identifier that is already verified, or choosing the identifier that is already primary) is not stored, and the user is returned unchanged.
 - Business rules (status transitions, identifier limits, verification before an email address becomes primary, the last identifier) are enforced by `User` in the domain layer, not here. Uniqueness of an identifier across the users of a tenant is left to `UserRepository::insert` and `update`, which return `identity.identifier_taken`.
 - Identifier values are parsed (`NormalizedIdentifier::parse`) before the clock is read or storage is touched, in `create_in` and `add_identifier`.
+- An owner of a workload is a person of the tenant who is not Deleted: `WorkloadService` loads each one in the unit of work of the change (`identity.user_not_found`, `identity.workload_owner_invalid`).
 
 ## Side Effects
 

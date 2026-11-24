@@ -4,7 +4,7 @@ The `oauth` context makes Hodor an OAuth 2.x authorization server and an OpenID 
 
 It does not sign anyone in. When a request needs a person, it hands the request to the `authentication` context and takes the session that comes back. The two contexts do not depend on each other: the HTTP layer joins them ([crates.md](../crates.md)).
 
-This page specifies what Issue-53 builds: applications, clients and resource servers, and the rules they keep; what Issue-55 builds: the authorization endpoint, grants and authorization codes; what Issue-56 builds: the token endpoint, client authentication and access tokens; what Issue-59 builds: the OpenID Provider; what Issue-60 builds: logout initiated by the relying party; and what Issue-62 builds: [consent](#consent). The other endpoints and tokens are added by Issue-57 and Issue-58, under the headings at the end of this page.
+This page specifies what Issue-53 builds: applications, clients and resource servers, and the rules they keep; what Issue-55 builds: the authorization endpoint, grants and authorization codes; what Issue-56 builds: the token endpoint, client authentication and access tokens; what Issue-59 builds: the OpenID Provider; what Issue-60 builds: logout initiated by the relying party; what Issue-62 builds: [consent](#consent); and what Issue-93 builds: [clients that act as a workload](#clients-that-act-as-a-workload). The other endpoints and tokens are added by Issue-57 and Issue-58, under the headings at the end of this page.
 
 ## Applications
 
@@ -37,6 +37,7 @@ A client is what talks to Hodor's endpoints. Its identifier is the `client_id` o
 | PKCE | Whether it must send a code challenge. Always for a public client; on by default for a confidential one |
 | ID token algorithm | How its [ID tokens](#the-id-token) are signed, its `id_token_signed_response_alg` of OpenID Connect Registration: `ES256` unless changed, or `RS256` |
 | Token policy | How long its tokens live |
+| Principal | Optional: the [service account or agent](identity.md#service-accounts-and-agents) the client acts as. See [clients that act as a workload](#clients-that-act-as-a-workload) |
 | Secrets | Its secrets, kept only as hashes. Only with `client_secret_basic` or `client_secret_post` |
 | Keys | Its public keys, for `private_key_jwt`. Only with that method |
 | Status | `enabled` or `disabled`. A disabled client gets no tokens |
@@ -54,6 +55,7 @@ Every change to a client is checked against all of these at once; a change that 
 - **A client with `authorization_code` has at least one redirect address, and one without it has none.**
 - **Only a client with `authorization_code` has post-logout redirect addresses**, since only it gets ID tokens and signs people in. It may have none.
 - **A client has at least one grant.**
+- **A client with a principal has the `client_credentials` grant and no other.** It is the workload's credential, and nothing it gets is about a person.
 - **Switching the authentication method drops what the old one used.** A client that moves away from a secret method loses its secrets, and one that moves away from `private_key_jwt` loses its keys.
 
 ### Redirect addresses
@@ -109,6 +111,27 @@ How an assertion is checked against these keys is in [checking a client assertio
 | Refresh token idle time | 1 hour up to the refresh token lifetime; how long a refresh token lasts unused | 7 days |
 | Consent lifetime | 1 to 730 days; how long a person's [consent](#consent) to the client lasts before they are asked again | 365 days |
 
+### Clients that act as a workload
+
+A confidential client of the client credentials grant may be bound to one **principal**: a [service account or an agent](identity.md#service-accounts-and-agents) of the tenant ([Decision 0031](../../decisions/0031-workloads-are-users.md)). The client is then the workload's credential: it proves who it is with its secret or its key, as any client does, and what it gets is about the workload.
+
+- **Its access tokens are the workload's.** `sub` is the principal's identifier, and `principal_kind` says its kind, `service_account` or `agent`. `client_id` is still the client. The roles assigned to the principal are the ones a resource server finds when it asks [the Authorization API](authorization.md#the-authorization-api) about the token's `sub`, as a subject of kind `user`.
+- **It gets tokens only while the workload may act**: while the principal is a service account or an agent of the tenant that is Active. Otherwise the token endpoint answers `invalid_client`, as for a disabled client.
+- **Its tokens stay in force only while the workload may act.** [The register of access tokens](#the-register-of-access-tokens) keeps the principal in each record and asks again whenever the token is checked; disabling or deleting the workload also revokes its tokens ([the identity context](identity.md#its-lifecycle)).
+- **Several clients may be bound to one workload**, for example one per place it runs, so that each has its own secret. Replacing a client keeps the workload's roles, which are the workload's and not the client's.
+- **Changing or removing a client's principal** leaves the tokens already issued as they are: each names the principal it was issued for, and is in force while that one may act.
+- **A client without a principal is answered as before**: its tokens are about itself and carry no `principal_kind`.
+
+How a resource server that reads tokens by itself tells the subjects apart:
+
+| The token | Its subject |
+|---|---|
+| Carries `principal_kind` | A workload of that kind, named by `sub` |
+| `sub` is the same as `client_id` | The client, acting for itself |
+| Otherwise | A person, named by `sub` |
+
+The OAuth context keeps the principal as a user identifier and does not know what it is; whether it may act is asked of the `PersonStanding` port of [the token endpoint](#token-endpoint-and-client-authentication). The administration interface and the command-line tool check, through the identity context, that a principal is a service account or an agent of the tenant that is not deleted, and refuse anything else with `oauth.client_principal_invalid`.
+
 ## Resource servers
 
 A resource server is an interface that accepts Hodor's access tokens. Its identifier is the audience of those tokens and the `resource` a client names in a request ([RFC 8707](https://www.rfc-editor.org/rfc/rfc8707)).
@@ -152,7 +175,7 @@ For an operator who can reach the database, as for tenants and identity provider
 | `hodor-cli application add --tenant acme --name Billing [--first-party]` | Registers an application, enabled; third party unless `--first-party` is given. Prints its identifier |
 | `hodor-cli application list --tenant acme` | One line per application: identifier, status, first or third party, name |
 | `hodor-cli application disable --tenant acme --id …`, `enable` | |
-| `hodor-cli client add --tenant acme --application … --name … --type confidential --grant authorization_code --redirect-uri https://… --scope openid` | Creates a client. `--grant`, `--redirect-uri`, `--post-logout-redirect-uri` and `--scope` are given once per value; `--method` chooses the authentication method, `--secret-days` the lifetime of the first secret, `--without-pkce` lets a confidential client redeem a code without PKCE and `--id-token-algorithm` signs its ID tokens with `RS256` instead of `ES256`. Prints the `client_id` and, for a client with a secret method, the secret, once |
+| `hodor-cli client add --tenant acme --application … --name … --type confidential --grant authorization_code --redirect-uri https://… --scope openid` | Creates a client. `--grant`, `--redirect-uri`, `--post-logout-redirect-uri` and `--scope` are given once per value; `--method` chooses the authentication method, `--secret-days` the lifetime of the first secret, `--without-pkce` lets a confidential client redeem a code without PKCE, `--id-token-algorithm` signs its ID tokens with `RS256` instead of `ES256` and `--principal` binds it to a service account or an agent. Prints the `client_id` and, for a client with a secret method, the secret, once |
 | `hodor-cli client list --tenant acme --application …` | One line per client: `client_id`, status, type, authentication method, name |
 | `hodor-cli client rotate-secret --tenant acme --id … [--lifetime-days 365] [--keep-previous-days 7]` | Gives a client a new secret and prints it, once |
 | `hodor-cli client disable --tenant acme --id …`, `enable` | |
@@ -167,7 +190,7 @@ Changing a client's settings, ending one secret and managing keys are done throu
 |---|---|
 | `oauth.application_created`, `oauth.application_changed` | An application was registered or changed; carry its identifier and name |
 | `oauth.application_enabled`, `oauth.application_disabled` | |
-| `oauth.client_created`, `oauth.client_changed` | Carry the client, its application and its type |
+| `oauth.client_created`, `oauth.client_changed` | Carry the client, its application, its type and its principal, if it has one |
 | `oauth.client_enabled`, `oauth.client_disabled` | |
 | `oauth.client_secret_issued`, `oauth.client_secret_revoked` | Carry the client and the secret's identifier, and when it expires; never the secret or its hash |
 | `oauth.client_key_added`, `oauth.client_key_removed` | Carry the client and the `kid` |
@@ -207,6 +230,7 @@ Every table is a tenant table under row-level security, in the schema `oauth`. R
 | `name`, `client_type`, `authentication_method`, `status` | `text` | A check constraint keeps a public client on `none` |
 | `grant_types`, `redirect_uris`, `post_logout_redirect_uris`, `allowed_scopes` | `text[]` | Redirect addresses of both kinds are compared byte for byte (`COLLATE "C"`) |
 | `require_pkce` | `boolean` | A check constraint keeps it true for a public client |
+| `principal_id` | `uuid` | The workload the client acts as, or null. Not a reference: contexts do not reference each other's tables. A check constraint allows it only with the `client_credentials` grant alone |
 | `id_token_algorithm` | `text` | `ES256` or `RS256`, by a check constraint; `ES256` for a client made before it existed |
 | `access_token_seconds`, `id_token_seconds`, `refresh_token_seconds`, `refresh_idle_seconds`, `consent_seconds` | `integer` | The token policy |
 | `created_at`, `updated_at` | `timestamptz` | |
@@ -488,7 +512,7 @@ The access token is a JSON Web Token per [RFC 9068](https://www.rfc-editor.org/r
 |---|---|
 | Header | `alg` `ES256`, `typ` `at+jwt`, `kid` the identifier of the key version that signed, as the [published key set](keys.md) names it |
 | `iss` | The tenant's issuer |
-| `sub` | The person's user identifier; for [client credentials](#client-credentials), the client's identifier |
+| `sub` | The person's user identifier; for [client credentials](#client-credentials), the client's identifier, or its principal's for a [client that acts as a workload](#clients-that-act-as-a-workload) |
 | `aud` | The audiences of the code: the resource servers of the request. When the scopes hold `openid`, the issuer is one of the audiences too, so that the same token reads [UserInfo](#userinfo); a request that named no resource server gets the issuer alone |
 | `client_id` | The client |
 | `scope` | The scopes of the code, separated by spaces |
@@ -499,6 +523,7 @@ The access token is a JSON Web Token per [RFC 9068](https://www.rfc-editor.org/r
 | `amr` | The methods of the sign-in, named as [methods and assurance](#methods-and-assurance) says. Left out when none of them has a name in RFC 8176, and for client credentials |
 | `org_id` | The [organization of the sign-in](#the-organization-of-a-sign-in), by its identifier. Left out when the request named none, and for client credentials |
 | `groups` | With the scope `groups`, the person's [effective groups](#the-groups-claim) when the token is issued. Left out without it, for a person in more than 100 groups, and for client credentials |
+| `principal_kind` | `service_account` or `agent`, for the token of a [client that acts as a workload](#clients-that-act-as-a-workload). Left out otherwise |
 
 `acr`, `amr` and `auth_time` are the authentication claims of [RFC 9068, section 2.2.1](https://www.rfc-editor.org/rfc/rfc9068#section-2.2.1): a resource server that guards an operation behind a strong sign-in reads them from the token. `sid` is in the [ID token](#the-id-token) only.
 
@@ -571,6 +596,7 @@ With `grant_type=client_credentials`, a confidential client gets an access token
 - **`scope`** holds scopes the client is allowed, none of OpenID Connect's: those are about a person. Without `scope`, the token carries every scope the client is allowed that a resource server defines.
 - **`resource`**, when given, names one resource server of the tenant, and every scope must be one it defines. Without it, the token is for every resource server that defines one of the scopes. A scope no resource server defines is `invalid_scope`, and an unknown resource is `invalid_target`.
 - **The access token** has the client's identifier as `sub` and `client_id`, and no `auth_time`. **No refresh token** is issued: the client can always authenticate again.
+- **A client bound to a principal** gets a token whose `sub` is the principal and which carries `principal_kind`, and only while the principal may act; otherwise the answer is `invalid_client` ([clients that act as a workload](#clients-that-act-as-a-workload)).
 
 ### The answer
 
@@ -594,7 +620,7 @@ With `grant_type=client_credentials`, a confidential client gets an access token
 | Event type | When |
 |---|---|
 | `oauth.access_token_issued` | An access token was issued for a person. It carries the client, the grant, the user, the token's `jti` and when it expires, never the token |
-| `oauth.client_access_token_issued` | An access token was issued to a client for itself. It carries the client, the token's `jti` and when it expires |
+| `oauth.client_access_token_issued` | An access token was issued with client credentials. It carries the client, the principal it acts as when it is bound to one, the token's `jti` and when it expires |
 | `oauth.refresh_token_family_started` | A family started with a code. It carries the family, the grant, the client, the user and whether it is for offline access |
 | `oauth.refresh_token_rotated` | A family moved to the generation it carries |
 | `oauth.refresh_token_family_revoked` | A family was revoked. It carries the family, the grant, the client and the reason: `refresh_token_reused` or `other_client` |
@@ -607,7 +633,7 @@ No event carries a token or its hash.
 |---|---|
 | `ClientAssertionStore` | Remember a client assertion's `jti` until it expires. It answers whether this was the first time, so that of two requests with the same assertion at the same moment exactly one goes on |
 | `RefreshTokenStore` | Start a family with its first token; find a token's family and generation by the token's hash; move a family one generation only from the generation named, with the next token; revoke a family |
-| `PersonStanding` | Whether a session of the person is still active, and whether the person may still sign in. The server implements it over the session and identity contexts |
+| `PersonStanding` | Whether a session of the person is still active, whether the person may still sign in, and whether a principal is a service account or an agent that may act. The server implements it over the session and identity contexts |
 | `SecretBox` | Seals and opens a family's secret, from the kernel |
 | `SignatureVerifier` | Checks a client's assertion, from the kernel |
 | `KeyService` | Signs the access token with the tenant's active key, from the keys context |
@@ -631,17 +657,18 @@ Issue-58 lets a client end a token before it expires, at the revocation endpoint
 
 An access token is a signed JSON Web Token that a resource server can check by itself, so Hodor cannot take one back from a resource server that never asks. What Hodor can do is keep, for every access token it issues, whether it is still **in force**. This is the deny-list of `jti` that [Decision 0004](../../decisions/0004-token-formats.md) names, kept the other way round: an access token is recorded when it is issued, and is in force only while its record says so.
 
-**The record** holds the token's `jti`, the client it was issued to, the grant it was issued under (none for [client credentials](#client-credentials)), the refresh token family it came from (none for a code or client credentials), when it expires, and whether and why it was revoked. The token itself is never stored.
+**The record** holds the token's `jti`, the client it was issued to, the grant it was issued under (none for [client credentials](#client-credentials)), the refresh token family it came from (none for a code or client credentials), the principal it was issued for (only for a [client that acts as a workload](#clients-that-act-as-a-workload)), when it expires, and whether and why it was revoked. The token itself is never stored.
 
 **An access token is in force** when:
 
 - its record exists and is not revoked;
 - the grant it was issued under, if any, is active;
-- the refresh token family it came from, if any, is active.
+- the refresh token family it came from, if any, is active;
+- the principal it was issued for, if any, is a service account or an agent that may act, asked of `PersonStanding` each time.
 
 A token without a record is not in force. That holds for a record removed with its client or grant, and for one removed after the token expired.
 
-**Who asks.** Introspection and UserInfo ask, and refuse a token that is not in force. A resource server that checks tokens by itself keeps accepting a revoked token until it expires, five minutes by default. Decision 0004 accepts that window, and a resource server that wants none introspects.
+**Who asks.** Introspection and UserInfo ask, and refuse a token that is not in force; so do the Authorization API and the SCIM server, through the resource access use case. A resource server that checks tokens by itself keeps accepting a revoked token until it expires, five minutes by default. Decision 0004 accepts that window, and a resource server that wants none introspects.
 
 **Cleanup.** The worker removes records whose token has expired, with [the other cleanup jobs](../../operations/deployment.md#cleanup).
 
@@ -713,6 +740,7 @@ Any other token is answered as not active.
 | `exp` | Its `exp` | The earlier of the end of its family's absolute lifetime and of its idle time |
 | `iat` | Its `iat` | When this token was issued |
 | `token_type` | `Bearer` | `refresh_token` |
+| `principal_kind` | Its `principal_kind`, when it has one | Never |
 
 ### Limits
 
@@ -724,7 +752,7 @@ A limit would not be stopping guesses here. Secrets, codes and refresh tokens ar
 
 | Event type | When |
 |---|---|
-| `oauth.access_token_revoked` | A client revoked an access token. It carries the client, the token's `jti` and the reason, never the token |
+| `oauth.access_token_revoked` | An access token was revoked: by its client, with the reason `revoked_by_client`, or with its workload, `workload_disabled` or `workload_deleted`. It carries the client, the token's `jti` and the reason, never the token |
 
 Revoking a refresh token records `oauth.refresh_token_family_revoked` and `oauth.grant_revoked` with the reason `revoked_by_client`.
 
@@ -732,12 +760,12 @@ Revoking a refresh token records `oauth.refresh_token_family_revoked` and `oauth
 
 | Port | Purpose |
 |---|---|
-| `AccessTokenRecordStore` | Record an access token when it is issued; find a record by `jti`; revoke a record; remove the records of tokens that expired |
+| `AccessTokenRecordStore` | Record an access token when it is issued; find a record by `jti`; revoke a record; revoke every record of a principal that is not revoked yet; remove the records of tokens that expired |
 | `RefreshTokenStore` | Also finds a family by its identifier, to tell whether an access token that came from it is still in force |
 
 ### Storage
 
-`oauth.access_token` holds `tenant_id`, `token_id` (the `jti`), `client_id`, `grant_id`, `family_id`, `expires_at`, `revoked_at` and `revocation_reason`, with the tenant and the `jti` as primary key. It is a tenant table under row-level security. It references its client, its grant and its family with the tenant, so a record goes when they go, and the token with it.
+`oauth.access_token` holds `tenant_id`, `token_id` (the `jti`), `client_id`, `grant_id`, `family_id`, `principal_id`, `expires_at`, `revoked_at` and `revocation_reason`, with the tenant and the `jti` as primary key, and an index on the tenant and the principal for revoking a workload's tokens. It is a tenant table under row-level security. It references its client, its grant and its family with the tenant, so a record goes when they go, and the token with it.
 
 ## OpenID Provider
 
@@ -808,7 +836,7 @@ The token is checked before anything is read:
 | `aud` | It does not hold the issuer |
 | `exp` | It has passed |
 | Scope | `scope` does not hold `openid` |
-| Person | The user does not exist or is not active |
+| Person | The user does not exist, is not a person, or is not active. A workload's token never reads UserInfo: client credentials never carry `openid` |
 
 After these checks the token must still be [in force](#the-register-of-access-tokens): not revoked, and its grant and its refresh token family still active.
 

@@ -12,12 +12,17 @@ use hodor_authentication::testing::{
 };
 use hodor_credential::api::{CredentialService, NewPassword, PasswordRules};
 use hodor_credential::testing::{FakeHasher, InMemoryPasswords};
-use hodor_identity::api::{CreateUser, IdentifierKind, IdentityService, Profile, UserKind};
+use hodor_identity::api::{
+    CreateUser, IdentifierId, IdentifierKind, IdentityService, LoginIdentifier,
+    NormalizedIdentifier, Profile, User, UserKind, UserRepository as _, UserSnapshot, UserStatus,
+};
 use hodor_identity::testing::InMemoryUsers;
 use hodor_kernel::clock::testing::FixedClock;
 use hodor_kernel::random::testing::FakeDigest;
 use hodor_kernel::uow::testing::InMemoryUnitOfWorkFactory;
-use hodor_kernel::{Caller, DomainError, Secret, TenantContext, TenantId, Timestamp, UserId};
+use hodor_kernel::{
+    Caller, DomainError, Secret, TenantContext, TenantId, Timestamp, UnitOfWorkFactory as _, UserId,
+};
 use hodor_session::api::{Assurance, ClientInfo, SessionService};
 use hodor_session::testing::{InMemorySessions, SequentialRandom};
 use hodor_tenant::api::{CreateTenant, SecondFactorPolicy, TenantService};
@@ -59,6 +64,9 @@ impl Authenticator for AlwaysProven {
 
 struct World {
     service: AuthenticationService,
+    /// Where the users are stored, for a test that stores one the use
+    /// cases would refuse to make.
+    users: InMemoryUsers,
     sessions: SessionService,
     identity: IdentityService,
     clock: Arc<FixedClock>,
@@ -95,8 +103,8 @@ async fn world_with_flow(
         Arc::new(tenant_rows),
         clock.clone(),
     );
-    let identity =
-        IdentityService::new(factory(), Arc::new(InMemoryUsers::default()), clock.clone());
+    let users = InMemoryUsers::default();
+    let identity = IdentityService::new(factory(), Arc::new(users.clone()), clock.clone());
     let credentials = CredentialService::new(
         factory(),
         Arc::new(InMemoryPasswords::default()),
@@ -199,6 +207,7 @@ async fn world_with_flow(
 
     World {
         service,
+        users,
         sessions,
         identity,
         clock,
@@ -599,6 +608,61 @@ async fn a_user_who_may_no_longer_sign_in_is_stopped_at_completion() {
         world.password(id, "anything").await.expect("password"),
         SignIn::Failed
     ));
+}
+
+#[tokio::test]
+async fn a_service_account_or_an_agent_never_signs_in_whatever_its_steps_say() {
+    // A workload has no login identifier, so nobody can type one that
+    // finds it. Here one is stored with a username anyway, as no use case
+    // would store it, and the password step is satisfied by anything: the
+    // check at completion still refuses it.
+    let world = world_with(true).await;
+    for (kind, name) in [
+        (UserKind::ServiceAccount, "robot"),
+        (UserKind::Agent, "helper"),
+    ] {
+        let workload = User::from_snapshot(UserSnapshot {
+            id: UserId::generate(),
+            kind,
+            status: UserStatus::Active,
+            status_reason: None,
+            profile: Profile::default(),
+            identifiers: vec![LoginIdentifier {
+                id: IdentifierId::generate(),
+                value: NormalizedIdentifier::parse(IdentifierKind::Username, name)
+                    .expect("a username"),
+                verified_at: None,
+                primary: true,
+                created_at: Timestamp::UNIX_EPOCH,
+            }],
+            created_at: Timestamp::UNIX_EPOCH,
+            updated_at: Timestamp::UNIX_EPOCH,
+            version: 0,
+        });
+        let mut uow = world
+            .units_of_work
+            .begin(&world.tenant)
+            .await
+            .expect("begin");
+        world
+            .users
+            .insert(uow.as_mut(), &workload)
+            .await
+            .expect("stored");
+        uow.commit().await.expect("commit");
+
+        let id = world.start().await;
+        let found = world.identifier(id, name).await;
+        assert!(matches!(found, SignIn::Pending { .. }), "{found:?}");
+        let answer = world.password(id, "anything").await.expect("password");
+        assert!(matches!(answer, SignIn::Failed), "{answer:?}");
+        let sessions = world
+            .sessions
+            .list_for_user(&world.tenant, workload.id())
+            .await
+            .expect("list");
+        assert!(sessions.is_empty(), "no session for a {kind:?}");
+    }
 }
 
 #[tokio::test]

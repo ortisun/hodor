@@ -12,7 +12,7 @@ use hodor_adapters_postgres::{
     Database, PgApplicationStore, PgClientStore, PgResourceServerStore, PgTenantDirectory,
     PgTenantRepository,
 };
-use hodor_kernel::{DomainError, SystemClock, TenantContext};
+use hodor_kernel::{DomainError, SystemClock, TenantContext, UserId};
 use hodor_oauth::api::{
     Application, ApplicationId, ApplicationPorts, ApplicationService, ApplicationSettings,
     AuthenticationMethod, Client, ClientId, ClientSettings, ClientType, CreateClient,
@@ -67,6 +67,10 @@ pub(crate) enum ApplicationCommand {
 }
 
 #[derive(Subcommand)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "a command is read once from the command line; its size does not matter"
+)]
 pub(crate) enum ClientCommand {
     /// Create a client of an application, enabled. A client with a secret
     /// method gets its first secret, printed once.
@@ -112,6 +116,10 @@ pub(crate) enum ClientCommand {
         /// How its ID tokens are signed: `ES256` unless given, or `RS256`.
         #[arg(long)]
         id_token_algorithm: Option<String>,
+        /// The service account or agent it acts as; only with the
+        /// `client_credentials` grant alone.
+        #[arg(long)]
+        principal: Option<UserId>,
     },
     /// List an application's clients.
     List {
@@ -355,6 +363,7 @@ pub(crate) async fn run_client(
             secret_days,
             without_pkce,
             id_token_algorithm,
+            principal,
         } => {
             let (tenant, service) = open(database, &tenant).await?;
             let kind = client_type(&kind)?;
@@ -371,6 +380,10 @@ pub(crate) async fn run_client(
             settings.require_pkce = !without_pkce;
             if let Some(algorithm) = id_token_algorithm {
                 settings.id_token_algorithm = IdTokenAlgorithm::parse(&algorithm)?;
+            }
+            if let Some(principal) = principal {
+                settings.principal =
+                    Some(crate::workloads::principal_of(database, &tenant, principal).await?);
             }
             let (client, secret) = service
                 .create_client(

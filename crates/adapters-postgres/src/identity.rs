@@ -5,7 +5,7 @@
 use crate::uow::{connection, database_error};
 use hodor_identity::api::{
     IdentifierId, IdentifierKind, LoginIdentifier, NormalizedIdentifier, Profile, User, UserKind,
-    UserRepository, UserSnapshot, UserStatus,
+    UserRepository, UserSnapshot, UserStatus, WorkloadRepository,
 };
 use hodor_kernel::{DomainError, TenantId, Timestamp, UnitOfWork, UserId};
 use sqlx::PgConnection;
@@ -308,5 +308,127 @@ impl UserRepository for PgUserRepository {
             .await
             .map_err(|e| database_error(&e))?;
         insert_identifiers(connection, tenant, user).await
+    }
+}
+
+/// [`WorkloadRepository`] on `identity.user` and `identity.workload_owner`.
+///
+/// See `docs/architecture/contexts/identity.md`, "Service accounts and
+/// agents".
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PgWorkloadRepository;
+
+fn owner_error(error: &sqlx::Error) -> DomainError {
+    match error {
+        sqlx::Error::Database(database) if database.is_foreign_key_violation() => {
+            DomainError::not_found("identity.user_not_found", "the user does not exist")
+        }
+        other => database_error(other),
+    }
+}
+
+#[async_trait::async_trait]
+impl WorkloadRepository for PgWorkloadRepository {
+    async fn list(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        kind: UserKind,
+        after: Option<UserId>,
+        limit: u32,
+    ) -> Result<Vec<User>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let connection = connection(uow)?;
+        let ids: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM identity.\"user\"
+             WHERE tenant_id = $1 AND kind = $2 AND status <> 'deleted'
+               AND ($3::uuid IS NULL OR id > $3)
+             ORDER BY id
+             LIMIT $4",
+        )
+        .bind(tenant.as_uuid())
+        .bind(kind.as_str())
+        .bind(after.map(|after| after.as_uuid()))
+        .bind(i64::from(limit))
+        .fetch_all(&mut *connection)
+        .await
+        .map_err(|e| database_error(&e))?;
+        let mut users = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(user) = load_user(connection, tenant, id).await? {
+                users.push(user);
+            }
+        }
+        Ok(users)
+    }
+
+    async fn owners(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        workload: UserId,
+    ) -> Result<Vec<UserId>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let owners: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT owner_id FROM identity.workload_owner
+             WHERE tenant_id = $1 AND workload_id = $2
+             ORDER BY added_at, owner_id",
+        )
+        .bind(tenant.as_uuid())
+        .bind(workload.as_uuid())
+        .fetch_all(connection(uow)?)
+        .await
+        .map_err(|e| database_error(&e))?;
+        Ok(owners.into_iter().map(UserId::from_uuid).collect())
+    }
+
+    async fn replace_owners(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        workload: UserId,
+        owners: &[UserId],
+        now: Timestamp,
+    ) -> Result<(), DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let connection = connection(uow)?;
+        let kept: Vec<Uuid> = owners.iter().map(|owner| owner.as_uuid()).collect();
+        sqlx::query(
+            "DELETE FROM identity.workload_owner
+             WHERE tenant_id = $1 AND workload_id = $2 AND NOT (owner_id = ANY($3))",
+        )
+        .bind(tenant.as_uuid())
+        .bind(workload.as_uuid())
+        .bind(&kept)
+        .execute(&mut *connection)
+        .await
+        .map_err(|e| database_error(&e))?;
+        sqlx::query(
+            "INSERT INTO identity.workload_owner (tenant_id, workload_id, owner_id, added_at)
+             SELECT $1, $2, owner, $4 FROM unnest($3::uuid[]) AS owner
+             ON CONFLICT (tenant_id, workload_id, owner_id) DO NOTHING",
+        )
+        .bind(tenant.as_uuid())
+        .bind(workload.as_uuid())
+        .bind(&kept)
+        .bind(now)
+        .execute(&mut *connection)
+        .await
+        .map_err(|e| owner_error(&e))?;
+        Ok(())
+    }
+
+    async fn forget_owners(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        workload: UserId,
+    ) -> Result<(), DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        sqlx::query(
+            "DELETE FROM identity.workload_owner WHERE tenant_id = $1 AND workload_id = $2",
+        )
+        .bind(tenant.as_uuid())
+        .bind(workload.as_uuid())
+        .execute(connection(uow)?)
+        .await
+        .map_err(|e| database_error(&e))?;
+        Ok(())
     }
 }

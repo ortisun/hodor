@@ -169,7 +169,7 @@ Standard collection and item routes (`GET` list, `POST`, `GET`, `PATCH`, `DELETE
 | Groups | `/admin/groups`, `/groups/{id}/members` | — |
 | Organizations | `/admin/organizations`, `/organizations/{id}/units`, `/members`, `/invitations` | `POST /invitations/{id}:resend` |
 | Applications | `/admin/applications`, `/applications/{id}/clients`, `/clients/{id}/secrets`, `/clients/{id}/claim-mappers`, `/resource-servers`, `/resource-servers/{id}/scopes` | `POST /clients/{id}/secrets` returns the secret once; `POST /secrets/{id}:revoke` |
-| Service accounts and agents | `/admin/service-accounts`, `/admin/agents` | Credential issuance, rotation, disable |
+| Service accounts and agents | `/admin/service-accounts`, `/admin/agents`, `/service-accounts/{id}/api-keys` | `:disable`, `:enable` (built: [the administration interface](admin-api.md#service-accounts-and-agents)); their clients are the applications' clients with a `principal`; API keys with rotation come with Issue-94 |
 | Identity providers | `/admin/identity-providers`, `/admin/routing-rules` | `POST /identity-providers/{id}:test`, `:deactivate` |
 | Authentication | `/admin/auth-flows`, `/auth-flows/{id}/versions` | `POST /versions/{v}:validate`, `:simulate`, `:publish` |
 | Authorization | `/admin/roles`, `/permissions`, `/role-assignments`, `/acl`, `/relation-tuples`, `/policies`, `/policies/{id}/versions`, `/bundles`, `/engine-bindings`, `/decision-logs` | `POST /versions/{v}:validate`, `:test`, `:simulate`, `:publish`; `POST /policies/{id}:rollback` |

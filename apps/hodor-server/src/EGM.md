@@ -66,7 +66,12 @@ Routers, as assembled in `run`:
   `PgDeprovisioningPolicy` and `deprovisioning::ServerAccessRevoker`, which
   ends a deprovisioned person's sessions (`SessionService::revoke_all_for_user_in`)
   and grants (`AuthorizationCodeService::revoke_grants_of_in`) in the
-  provisioning context's unit of work, with the endpoint's own services.
+  provisioning context's unit of work. `access_revoker` builds it.
+- The same `ServerAccessRevoker` implements `hodor_identity::api::WorkloadAccess`
+  for the `WorkloadService` of `administration`: a disabled or deleted service
+  account or agent loses its sessions and grants, if any, and every access
+  token issued for it (`WorkloadTokens::revoke_in`), in the identity
+  context's unit of work.
 - `/oauth2/jwks`: `hodor_protocol_http::key_set_routes(KeyService)` is merged
   into the tenant routes when `keys` built a `KeyService` (`PgKeyStore`,
   `LocalKeyProvider` over `HODOR_SECRET_KEYS`); otherwise a warning is logged
@@ -92,12 +97,16 @@ Adapters implemented here:
 - `ServerSubjects` (`subjects.rs`) implements
   `hodor_authorization::api::SubjectAttributeSource`: a user's `status` and
   `kind` through `IdentityService::get`, a client's `application`,
-  `client_type` and `enabled` through `ApplicationService::client`; an
-  identifier that does not parse or is not found has no attributes.
-- `ServerStanding` (`standing.rs`) implements
+  `client_type` and `enabled` through `ApplicationService::client`, and its
+  `principal` only when it is bound to one; an identifier that does not
+  parse or is not found has no attributes.
+- `ServerStanding` (`standing.rs`), built by `standing`, implements
   `hodor_oauth::api::PersonStanding` over `SessionService::list_for_user`
   (a session is active when it is among the person's active sessions) and
-  `IdentityService::get` (`may_sign_in`; an unknown user may not).
+  `IdentityService::get` (`may_sign_in`, and `workload_that_may_act`, the
+  kind of an active service account or agent; an unknown user may not). The
+  token endpoint and every `AccessTokenRegister` (UserInfo, the Authorization
+  API and SCIM) use it.
 - `ServerMemberships` (`standing.rs`, `ServerMemberships::over(database,
   clock)`) implements `hodor_oauth::api::PersonMemberships` over
   `OrganizationService::organizations_of` (a member when the organization

@@ -213,6 +213,9 @@ pub struct ReadAccessToken {
     pub issued_at: i64,
     /// Its `exp`.
     pub expires_at: Timestamp,
+    /// Its `principal_kind`, for the token of a client that acts as a
+    /// workload.
+    pub principal_kind: Option<String>,
 }
 
 /// Reads an access token of the tenant: checks its shape, header, key,
@@ -300,6 +303,7 @@ pub fn read_access_token(
             .and_then(Value::as_i64)
             .ok_or("the token does not say when it was issued")?,
         expires_at,
+        principal_kind: text("principal_kind"),
     })
 }
 

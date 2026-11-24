@@ -114,11 +114,15 @@ refresh tokens is `DEFAULT_RETRY_WINDOW`, 10 seconds;
     lost to another refresh looks the token up again, at most twice. A retry
     answers the derived token only if `RefreshFamily::is_newest`, otherwise
     it is reuse. Records `oauth.access_token_issued` with the user as actor.
-  - `client_credentials`: `unauthorized_client` without that grant; scopes
+  - `client_credentials`: `unauthorized_client` without that grant; a
+    client with a principal is `invalid_client` unless
+    `PersonStanding::workload_that_may_act` answers its kind; scopes
     from `scope`, or every scope the client is allowed that a resource
     server defines; OpenID Connect's scopes are `invalid_scope`; `resource`
-    names one resource server or is `invalid_target`. Records
-    `oauth.client_access_token_issued`. No refresh token.
+    names one resource server or is `invalid_target`. The token's `sub` is
+    the principal when there is one, with `principal_kind`, and the client
+    otherwise. Records `oauth.client_access_token_issued` with the
+    principal. No refresh token.
   - The access token: claims from `claims_for` with a `TokenSubject`,
     whose `organization` is the grant's (`org_id`) and whose `groups` are
     `PersonMemberships::effective_groups` when the scopes hold `groups`,
@@ -135,15 +139,21 @@ refresh tokens is `DEFAULT_RETRY_WINDOW`, 10 seconds;
   - The register: every access token issued is recorded with
     `AccessTokenRecordStore::record` in the unit of work of its event: the
     code's with its grant, a refresh's with its grant and family, client
-    credentials' with neither.
+    credentials' with neither and with the principal it was issued for.
 
 ### Revocation and introspection (`introspection.rs`)
 
 `AccessTokenRegister::new(units_of_work, access_tokens, grants,
-refresh_tokens)`, also `TokenService::register()`:
+refresh_tokens, standing)`, also `TokenService::register()`:
 `in_force(tenant, token_id, client_id)` is true only when the record
-exists, is not revoked, names that client, and its grant and family, if
-any, are active.
+exists, is not revoked, names that client, its grant and family, if
+any, are active, and its principal, if any, is a workload that may act
+(`PersonStanding::workload_that_may_act`).
+
+`WorkloadTokens::new(access_tokens, clock)`, also
+`TokenService::workload_tokens()`: `revoke_in(uow, principal, reason,
+caller)` revokes every record of the principal that is not revoked yet,
+in the caller's unit of work, with one `oauth.access_token_revoked` each.
 
 - `TokenService::revoke(tenant, issuer, endpoint, query, correlation_id)`:
   authenticates the client as `token` does, with `endpoint` also accepted
@@ -205,8 +215,8 @@ memberships, clock })`:
   `InsufficientScope`). Checks the token with `check_access_token` against
   the tenant's published `ES256` keys, then asks the register: a token not
   in force is `InvalidToken`. Then it reads the person through
-  `IdentityService::get`: an unknown person, or one who is not `Active`, is
-  `InvalidToken`. Answers `userinfo_claims` for the token's scopes.
+  `IdentityService::get`: an unknown user, or one who may not sign in (not
+  `Active`, or a service account or an agent), is `InvalidToken`. Answers `userinfo_claims` for the token's scopes.
 - `published_keys(keys, tenant)` (crate-visible): the tenant's published
   signing keys as `PublishedKey`s, shared with logout.
 

@@ -813,7 +813,7 @@ async fn populate(ports: ContractPorts<'_>, home: &TenantContext) -> Population 
     .expect("a pending user");
     let (robot, _) = User::create(
         UserKind::ServiceAccount,
-        vec![identifier(IdentifierKind::Username, "robot")],
+        vec![],
         Profile::default(),
         true,
         at(5),

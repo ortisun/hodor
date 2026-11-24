@@ -23,7 +23,7 @@ pub mod api {
     pub use crate::application::consent::{
         AskedScope, ConsentPorts, ConsentQuestion, ConsentService, ListedConsent,
     };
-    pub use crate::application::introspection::AccessTokenRegister;
+    pub use crate::application::introspection::{AccessTokenRegister, WorkloadTokens};
     pub use crate::application::logout::{LogoutPorts, LogoutRefusal, LogoutService};
     pub use crate::application::ports::{
         AccessTokenRecordStore, ApplicationStore, AuthorizationCodeStore,

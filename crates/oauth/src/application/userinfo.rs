@@ -6,7 +6,7 @@ use crate::domain::openid::{
     BearerRefusal, PersonClaims, PublishedKey, check_access_token, userinfo_claims,
 };
 use crate::domain::resource_server::GROUPS_SCOPE;
-use hodor_identity::api::{IdentifierKind, IdentityService, UserStatus};
+use hodor_identity::api::{IdentifierKind, IdentityService};
 use hodor_kernel::{
     Clock, DomainError, ErrorKind, SignatureAlgorithm, SignatureVerifier, TenantContext,
 };
@@ -127,8 +127,12 @@ impl UserInfoService {
             }
             Err(error) => return Err(error),
         };
-        if user.status() != UserStatus::Active {
-            return Ok(Err(BearerRefusal::InvalidToken("the person is not active")));
+        // Only an active person: a service account or an agent has no
+        // claims of a person to read.
+        if !user.may_sign_in() {
+            return Ok(Err(BearerRefusal::InvalidToken(
+                "the user is not an active person",
+            )));
         }
         let snapshot = user.snapshot();
         let groups = if checked.scopes.iter().any(|scope| scope == GROUPS_SCOPE) {

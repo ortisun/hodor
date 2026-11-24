@@ -7,6 +7,7 @@ mod decisions;
 mod memberships;
 mod policies;
 mod roles;
+mod workloads;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use hodor_adapters_crypto::{
@@ -211,6 +212,34 @@ enum Command {
         public_url: String,
         #[command(subcommand)]
         command: memberships::OrganizationCommand,
+    },
+
+    /// Manage a tenant's service accounts: programs that act on their own.
+    ServiceAccount {
+        /// Connection URL of the application role.
+        #[arg(
+            long,
+            env = "HODOR_DATABASE_URL",
+            hide_env_values = true,
+            global = true
+        )]
+        database_url: Option<String>,
+        #[command(subcommand)]
+        command: workloads::WorkloadCommand,
+    },
+
+    /// Manage a tenant's agents: artificial intelligence agents.
+    Agent {
+        /// Connection URL of the application role.
+        #[arg(
+            long,
+            env = "HODOR_DATABASE_URL",
+            hide_env_values = true,
+            global = true
+        )]
+        database_url: Option<String>,
+        #[command(subcommand)]
+        command: workloads::WorkloadCommand,
     },
 
     /// Manage a tenant's applications.
@@ -1965,6 +1994,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
         } => {
             let database = connect(database_url).await?;
             print(memberships::run_group(&database, command).await)?;
+        }
+        Command::ServiceAccount {
+            database_url,
+            command,
+        } => {
+            let database = connect(database_url).await?;
+            print(workloads::run(&database, UserKind::ServiceAccount, command).await)?;
+        }
+        Command::Agent {
+            database_url,
+            command,
+        } => {
+            let database = connect(database_url).await?;
+            print(workloads::run(&database, UserKind::Agent, command).await)?;
         }
         Command::Organization {
             database_url,

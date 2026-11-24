@@ -307,6 +307,15 @@ fn world() -> World {
         groups: groups_and_organizations.0,
         organizations: groups_and_organizations.1,
         invitations: groups_and_organizations.2,
+        workloads: hodor_identity::api::WorkloadService::new(
+            units(),
+            identity.clone(),
+            Arc::new(hodor_identity::testing::InMemoryWorkloads::over(
+                (*users).clone(),
+            )),
+            Arc::new(hodor_identity::testing::RecordingWorkloadAccess::default()),
+            clock.clone(),
+        ),
     };
     let router = public_router(
         Arc::new(Tenants {

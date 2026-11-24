@@ -8,7 +8,7 @@ use crate::api::{
 };
 use hodor_kernel::random::testing::FakeDigest;
 use hodor_kernel::{
-    DomainError, TenantContext, TenantId, Timestamp, UnitOfWork, UnitOfWorkFactory,
+    DomainError, TenantContext, TenantId, Timestamp, UnitOfWork, UnitOfWorkFactory, UserId,
 };
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -95,6 +95,28 @@ impl AccessTokenRecordStore for InMemoryAccessTokenRecords {
         record.revoked_at = Some(at);
         record.revocation_reason = Some(reason.to_owned());
         Ok(true)
+    }
+
+    async fn revoke_for_principal(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        principal: UserId,
+        at: Timestamp,
+        reason: &str,
+    ) -> Result<Vec<(ClientId, String)>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let mut revoked = Vec::new();
+        for ((owner, token_id), record) in lock(&self.rows).iter_mut() {
+            if *owner == tenant
+                && record.principal_id == Some(principal)
+                && record.revoked_at.is_none()
+            {
+                record.revoked_at = Some(at);
+                record.revocation_reason = Some(reason.to_owned());
+                revoked.push((record.client_id, token_id.clone()));
+            }
+        }
+        Ok(revoked)
     }
 
     async fn remove_expired(
@@ -198,6 +220,106 @@ pub async fn run_access_token_record_contract(ports: AccessTokenRecordStorePorts
     a_record_is_revoked_once_and_only_by_its_client(ports).await;
     records_of_expired_tokens_are_removed(ports).await;
     records_belong_to_their_own_tenant(ports).await;
+    the_records_of_a_principal_are_revoked_together(ports).await;
+}
+
+async fn the_records_of_a_principal_are_revoked_together(ports: AccessTokenRecordStorePorts<'_>) {
+    let (tenant, elsewhere) = (
+        TenantContext::assume(TenantId::generate()),
+        TenantContext::assume(TenantId::generate()),
+    );
+    let client = a_client(ports, &tenant).await;
+    let theirs = a_client(ports, &elsewhere).await;
+    let (workload, other) = (UserId::generate(), UserId::generate());
+    let later = moment() + Duration::minutes(5);
+    let records = [
+        (
+            &tenant,
+            record_of(client.id(), "jti-one", later).for_principal(Some(workload)),
+        ),
+        (
+            &tenant,
+            record_of(client.id(), "jti-two", later).for_principal(Some(workload)),
+        ),
+        (
+            &tenant,
+            record_of(client.id(), "jti-other", later).for_principal(Some(other)),
+        ),
+        (&tenant, record_of(client.id(), "jti-client", later)),
+        (
+            &elsewhere,
+            record_of(theirs.id(), "jti-theirs", later).for_principal(Some(workload)),
+        ),
+    ];
+    for (owner, record) in &records {
+        let mut uow = ports.units_of_work.begin(owner).await.expect("begin");
+        ports
+            .access_tokens
+            .record(uow.as_mut(), record)
+            .await
+            .expect("record");
+        uow.commit().await.expect("commit");
+    }
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    let found = ports
+        .access_tokens
+        .find(uow.as_mut(), "jti-one")
+        .await
+        .expect("find")
+        .expect("recorded");
+    assert_eq!(found.principal_id, Some(workload), "the principal is kept");
+    let mut revoked = ports
+        .access_tokens
+        .revoke_for_principal(uow.as_mut(), workload, moment(), "workload_disabled")
+        .await
+        .expect("revoke");
+    uow.commit().await.expect("commit");
+    revoked.sort();
+    assert_eq!(
+        revoked,
+        vec![
+            (client.id(), "jti-one".to_owned()),
+            (client.id(), "jti-two".to_owned())
+        ]
+    );
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    let again = ports
+        .access_tokens
+        .revoke_for_principal(uow.as_mut(), workload, moment(), "workload_disabled")
+        .await
+        .expect("revoke");
+    assert!(again.is_empty(), "a revoked record is not revoked again");
+    for (token_id, revoked) in [
+        ("jti-one", true),
+        ("jti-other", false),
+        ("jti-client", false),
+    ] {
+        let record = ports
+            .access_tokens
+            .find(uow.as_mut(), token_id)
+            .await
+            .expect("find")
+            .expect("kept");
+        assert_eq!(record.revoked_at.is_some(), revoked, "{token_id}");
+        if revoked {
+            assert_eq!(
+                record.revocation_reason.as_deref(),
+                Some("workload_disabled")
+            );
+        }
+    }
+    drop(uow);
+    let mut uow = ports.units_of_work.begin(&elsewhere).await.expect("begin");
+    let record = ports
+        .access_tokens
+        .find(uow.as_mut(), "jti-theirs")
+        .await
+        .expect("find")
+        .expect("kept");
+    assert!(
+        record.revoked_at.is_none(),
+        "another tenant's record is untouched"
+    );
 }
 
 async fn a_record_is_kept_whole_and_found_by_its_jti(ports: AccessTokenRecordStorePorts<'_>) {
