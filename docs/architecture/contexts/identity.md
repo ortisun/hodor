@@ -166,7 +166,7 @@ Events carry identifiers of users and of login identifiers, and the kind of a lo
 | `identity.group_changed` | A group's name or description changed |
 | `identity.group_deleted` | A group is deleted; carries how many members it had |
 | `identity.group_member_added` | A user or a group is added to a group; carries the kind of member and its identifier |
-| `identity.group_member_removed` | A user or a group is taken out of a group, by hand, by deleting the group, or by marking the user Deleted; carries the kind of member and its identifier |
+| `identity.group_member_removed` | A user or a group is taken out of a group, by hand or by marking the user Deleted; carries the kind of member and its identifier. Deleting a group records only `identity.group_deleted` |
 
 A group's name and description are not personal data, but they can say a great deal about people: they stay in the identity tables, and events carry the group's identifier only.
 
@@ -248,9 +248,10 @@ Both tables are tenant tables under row-level security. Uniqueness of login iden
 | `tenant_id`, `group_id` | `uuid` | The group the member is in; removed with it |
 | `user_id` | `uuid` | The member, when it is a user; removed with the user's row |
 | `member_group_id` | `uuid` | The member, when it is a group; removed with that group |
+| `member_id` | `uuid` | Whichever of the two is set, made by the database. With the tenant and the group, the primary key |
 | `added_at` | `timestamptz` | |
 
-Exactly one of `user_id` and `member_group_id` is set, and a member is in a group once. A group is never its own member, which the database checks too. Both are tenant tables under row-level security, and the lock on nesting is a PostgreSQL advisory lock of the transaction, taken on a key made from the tenant.
+Exactly one of `user_id` and `member_group_id` is set, and a member is in a group once: a user and a group never share an identifier. A group is never its own member, which the database checks too. Both are tenant tables under row-level security, and the lock on nesting is a PostgreSQL advisory lock of the transaction, taken on a key made from the tenant.
 
 ## Not built yet
 
