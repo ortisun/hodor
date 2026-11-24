@@ -1,12 +1,14 @@
 //! Organizations on PostgreSQL.
 
 use hodor_adapters_postgres::testing::TestDatabase;
-use hodor_adapters_postgres::{PgOrganizationRepository, PgUserRepository};
+use hodor_adapters_postgres::{PgInvitationRepository, PgOrganizationRepository, PgUserRepository};
 use hodor_identity::api::{
     CreateUser, IdentifierKind, IdentityService, OrganizationService, Profile, UnitChange,
     UnitKind, UserKind,
 };
-use hodor_identity::testing::{OrganizationPorts, run_organization_contract};
+use hodor_identity::testing::{
+    InvitationPorts, OrganizationPorts, run_invitation_contract, run_organization_contract,
+};
 use hodor_kernel::clock::testing::FixedClock;
 use hodor_kernel::{Caller, TenantContext, TenantId, Timestamp};
 use std::collections::BTreeSet;
@@ -19,6 +21,7 @@ fn services(database: &TestDatabase) -> (OrganizationService, IdentityService) {
         OrganizationService::new(
             units(),
             Arc::new(PgOrganizationRepository),
+            Arc::new(PgInvitationRepository),
             Arc::new(PgUserRepository),
             clock.clone(),
         ),
@@ -192,4 +195,87 @@ async fn the_database_keeps_units_and_members_inside_their_organization() {
     .await
     .expect("counts");
     assert_eq!((left, removed), (0, 1));
+}
+
+#[tokio::test]
+async fn the_postgres_invitations_pass_the_contract() {
+    let database = TestDatabase::start().await;
+    run_invitation_contract(InvitationPorts {
+        units_of_work: database.app(),
+        organizations: &PgOrganizationRepository,
+        users: &PgUserRepository,
+        invitations: &PgInvitationRepository,
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn an_invitation_is_used_up_once_when_many_accept_at_once() {
+    use hodor_identity::api::InvitationRepository as _;
+    let database = TestDatabase::start().await;
+    let (organizations, identity) = services(&database);
+    let tenant = TenantContext::assume(TenantId::generate());
+    let acme = organizations
+        .create(&tenant, "Acme", None, Caller::system())
+        .await
+        .expect("acme")
+        .id();
+    let ana = identity
+        .create(
+            &tenant,
+            CreateUser {
+                kind: UserKind::Human,
+                identifiers: vec![(IdentifierKind::Email, "ana@example.com".to_owned())],
+                profile: Profile::default(),
+                confirmed: true,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("a person")
+        .id();
+    let mut uow = hodor_kernel::UnitOfWorkFactory::begin(database.app(), &tenant)
+        .await
+        .expect("begin");
+    let (invitation, _) = organizations
+        .invite_in(
+            uow.as_mut(),
+            acme,
+            "ana@example.com",
+            BTreeSet::new(),
+            [7; 32],
+            Caller::system(),
+        )
+        .await
+        .expect("an invitation");
+    uow.commit().await.expect("commit");
+
+    let attempts = (0..6).map(|_| {
+        let database = database.app().clone();
+        let tenant = tenant.clone();
+        let id = invitation.id;
+        async move {
+            let mut uow = hodor_kernel::UnitOfWorkFactory::begin(&database, &tenant)
+                .await
+                .expect("begin");
+            let used = PgInvitationRepository
+                .use_up(uow.as_mut(), id, ana, Timestamp::UNIX_EPOCH)
+                .await
+                .expect("use");
+            uow.commit().await.expect("commit");
+            used
+        }
+    });
+    let mut running = tokio::task::JoinSet::new();
+    for attempt in attempts {
+        running.spawn(attempt);
+    }
+    let mut used = 0;
+    while let Some(result) = running.join_next().await {
+        used += usize::from(result.expect("an attempt"));
+    }
+    assert_eq!(
+        used, 1,
+        "one of six requests at once uses the invitation up"
+    );
 }

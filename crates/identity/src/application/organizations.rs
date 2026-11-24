@@ -1,10 +1,11 @@
 //! The use cases of organizations, their units and their members.
 
 use crate::application::groups::record;
-use crate::application::ports::{OrganizationRepository, UserRepository};
+use crate::application::ports::{InvitationRepository, OrganizationRepository, UserRepository};
+use crate::domain::identifier::{IdentifierKind, NormalizedIdentifier};
 use crate::domain::organization::{
-    Membership, Organization, OrganizationEvent, OrganizationName, Tree, Unit, UnitChange, UnitId,
-    UnitKind, check_placement,
+    INVITATION_LIFETIME, Invitation, InvitationId, InvitationStatus, Membership, Organization,
+    OrganizationEvent, OrganizationName, Tree, Unit, UnitChange, UnitId, UnitKind, check_placement,
 };
 use crate::domain::user::UserStatus;
 use hodor_kernel::{
@@ -19,8 +20,18 @@ use std::sync::Arc;
 pub struct OrganizationService {
     units_of_work: Arc<dyn UnitOfWorkFactory>,
     organizations: Arc<dyn OrganizationRepository>,
+    invitations: Arc<dyn InvitationRepository>,
     users: Arc<dyn UserRepository>,
     clock: Arc<dyn Clock>,
+}
+
+/// What an invitation says, for whoever holds its link.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvitationFound {
+    /// The invitation.
+    pub invitation: Invitation,
+    /// The organization it is to.
+    pub organization: Organization,
 }
 
 impl std::fmt::Debug for OrganizationService {
@@ -41,6 +52,13 @@ fn unit_not_found() -> DomainError {
     DomainError::not_found(
         "identity.unit_not_found",
         "the unit does not exist in this organization",
+    )
+}
+
+fn invitation_invalid() -> DomainError {
+    DomainError::not_found(
+        "identity.invitation_invalid",
+        "the invitation is unknown, accepted, withdrawn or expired",
     )
 }
 
@@ -69,15 +87,183 @@ impl OrganizationService {
     pub fn new(
         units_of_work: Arc<dyn UnitOfWorkFactory>,
         organizations: Arc<dyn OrganizationRepository>,
+        invitations: Arc<dyn InvitationRepository>,
         users: Arc<dyn UserRepository>,
         clock: Arc<dyn Clock>,
     ) -> Self {
         Self {
             units_of_work,
             organizations,
+            invitations,
             users,
             clock,
         }
+    }
+
+    /// Makes an invitation of an organization to an email address, with
+    /// the hash of the secret its link carries, in the caller's unit of
+    /// work. A pending invitation of the organization to the same address
+    /// is withdrawn.
+    ///
+    /// # Errors
+    ///
+    /// `NotFound` for an organization or a unit it does not have, and
+    /// `Invalid` with code `identity.email_invalid` for an address that is
+    /// not one.
+    pub async fn invite_in(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        organization: OrganizationId,
+        email: &str,
+        units: BTreeSet<UnitId>,
+        token_hash: [u8; 32],
+        caller: Caller,
+    ) -> Result<(Invitation, Organization), DomainError> {
+        let email = NormalizedIdentifier::parse(IdentifierKind::Email, email)?;
+        let found = self.load(uow, organization).await?;
+        self.check_units(uow, organization, &units).await?;
+        let now = self.clock.now();
+        let mut events = Vec::new();
+        if let Some(earlier) = self
+            .invitations
+            .withdraw_pending(uow, organization, email.normalized(), now)
+            .await?
+        {
+            events.push(OrganizationEvent::InvitationWithdrawn {
+                organization_id: organization,
+                invitation_id: earlier,
+            });
+        }
+        let invitation = Invitation {
+            id: InvitationId::generate(),
+            organization,
+            email: email.normalized().to_owned(),
+            units,
+            token_hash,
+            status: InvitationStatus::Pending,
+            created_at: now,
+            expires_at: now + INVITATION_LIFETIME,
+            accepted: None,
+            withdrawn_at: None,
+        };
+        self.invitations.insert(uow, &invitation).await?;
+        events.push(OrganizationEvent::InvitationCreated {
+            organization_id: organization,
+            invitation_id: invitation.id,
+        });
+        record(uow, &caller, self.clock.as_ref(), &events)?;
+        Ok((invitation, found))
+    }
+
+    /// The good invitation whose token has the given hash, with its
+    /// organization.
+    ///
+    /// # Errors
+    ///
+    /// `NotFound` with code `identity.invitation_invalid` for an unknown,
+    /// accepted, withdrawn or expired invitation, all alike.
+    pub async fn good_invitation(
+        &self,
+        tenant: &TenantContext,
+        token_hash: &[u8; 32],
+    ) -> Result<InvitationFound, DomainError> {
+        let mut uow = self.units_of_work.begin(tenant).await?;
+        let invitation = self
+            .invitations
+            .find_by_hash(uow.as_mut(), token_hash)
+            .await?
+            .filter(|invitation| invitation.is_good_at(self.clock.now()))
+            .ok_or_else(invitation_invalid)?;
+        let organization = self.load(uow.as_mut(), invitation.organization).await?;
+        Ok(InvitationFound {
+            invitation,
+            organization,
+        })
+    }
+
+    /// Uses an invitation up for `user` and makes the membership with the
+    /// invitation's units that still exist, in the caller's unit of work.
+    ///
+    /// # Errors
+    ///
+    /// `NotFound` with code `identity.invitation_invalid` if another
+    /// request used it up first, or it is no longer good.
+    pub async fn accept_in(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        invitation: &Invitation,
+        user: UserId,
+        caller: Caller,
+    ) -> Result<Membership, DomainError> {
+        let now = self.clock.now();
+        if !self
+            .invitations
+            .use_up(uow, invitation.id, user, now)
+            .await?
+        {
+            return Err(invitation_invalid());
+        }
+        let known: BTreeSet<UnitId> = self
+            .organizations
+            .units(uow, invitation.organization)
+            .await?
+            .into_iter()
+            .map(|unit| unit.id)
+            .collect();
+        let units = invitation.units.intersection(&known).copied().collect();
+        let event = OrganizationEvent::InvitationAccepted {
+            organization_id: invitation.organization,
+            invitation_id: invitation.id,
+            user_id: user,
+        };
+        record(uow, &caller, self.clock.as_ref(), &[event])?;
+        self.add_member_in(uow, invitation.organization, user, units, caller)
+            .await
+    }
+
+    /// Withdraws a pending invitation of an organization.
+    ///
+    /// # Errors
+    ///
+    /// `NotFound` for an organization that does not exist, or an
+    /// invitation of it that is not pending.
+    pub async fn withdraw_invitation(
+        &self,
+        tenant: &TenantContext,
+        organization: OrganizationId,
+        id: InvitationId,
+        caller: Caller,
+    ) -> Result<(), DomainError> {
+        let mut uow = self.units_of_work.begin(tenant).await?;
+        self.load(uow.as_mut(), organization).await?;
+        if !self
+            .invitations
+            .withdraw(uow.as_mut(), organization, id, self.clock.now())
+            .await?
+        {
+            return Err(invitation_invalid());
+        }
+        let event = OrganizationEvent::InvitationWithdrawn {
+            organization_id: organization,
+            invitation_id: id,
+        };
+        record(uow.as_mut(), &caller, self.clock.as_ref(), &[event])?;
+        uow.commit().await
+    }
+
+    /// The pending invitations of an organization, newest first.
+    ///
+    /// # Errors
+    ///
+    /// `NotFound` if the organization does not exist.
+    pub async fn pending_invitations(
+        &self,
+        tenant: &TenantContext,
+        organization: OrganizationId,
+    ) -> Result<Vec<Invitation>, DomainError> {
+        let mut uow = self.units_of_work.begin(tenant).await?;
+        self.load(uow.as_mut(), organization).await?;
+        self.invitations.pending(uow.as_mut(), organization).await
     }
 
     /// Creates an organization.

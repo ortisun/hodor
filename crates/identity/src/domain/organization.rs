@@ -341,6 +341,87 @@ pub struct Membership {
     pub added_at: Timestamp,
 }
 
+hodor_kernel::define_id!(
+    /// Identifies an invitation to an organization.
+    InvitationId
+);
+
+/// How long an invitation is good for.
+pub const INVITATION_LIFETIME: time::Duration = time::Duration::days(7);
+
+/// Where an invitation stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvitationStatus {
+    /// Sent and not answered.
+    Pending,
+    /// Accepted by a user, who became a member.
+    Accepted,
+    /// Withdrawn by hand, or by a newer invitation to the same address.
+    Withdrawn,
+}
+
+impl InvitationStatus {
+    /// The name it is stored under.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Accepted => "accepted",
+            Self::Withdrawn => "withdrawn",
+        }
+    }
+
+    /// Reads a stored status.
+    ///
+    /// # Errors
+    ///
+    /// `Invalid` for a status that does not exist.
+    pub fn from_stored(value: &str) -> Result<Self, DomainError> {
+        match value {
+            "pending" => Ok(Self::Pending),
+            "accepted" => Ok(Self::Accepted),
+            "withdrawn" => Ok(Self::Withdrawn),
+            _ => Err(DomainError::invalid(
+                "identity.invitation_status_unknown",
+                "there is no such status of an invitation",
+            )),
+        }
+    }
+}
+
+/// An invitation to join an organization, sent to an email address.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Invitation {
+    /// The invitation.
+    pub id: InvitationId,
+    /// The organization the person is asked to join.
+    pub organization: OrganizationId,
+    /// The normalized email address it was sent to.
+    pub email: String,
+    /// The units the person will be in.
+    pub units: BTreeSet<UnitId>,
+    /// The SHA-256 of the secret the link carries.
+    pub token_hash: [u8; 32],
+    /// Where it stands.
+    pub status: InvitationStatus,
+    /// When it was made.
+    pub created_at: Timestamp,
+    /// When it stops being good.
+    pub expires_at: Timestamp,
+    /// Who accepted it, and when.
+    pub accepted: Option<(UserId, Timestamp)>,
+    /// When it was withdrawn.
+    pub withdrawn_at: Option<Timestamp>,
+}
+
+impl Invitation {
+    /// Whether the invitation can still be accepted at `now`.
+    #[must_use]
+    pub fn is_good_at(&self, now: Timestamp) -> bool {
+        self.status == InvitationStatus::Pending && now < self.expires_at
+    }
+}
+
 /// An event of organizations.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
@@ -412,6 +493,29 @@ pub enum OrganizationEvent {
         /// The user.
         user_id: UserId,
     },
+    /// An invitation was made. The address is never carried.
+    InvitationCreated {
+        /// The organization.
+        organization_id: OrganizationId,
+        /// The invitation.
+        invitation_id: InvitationId,
+    },
+    /// An invitation was withdrawn.
+    InvitationWithdrawn {
+        /// The organization.
+        organization_id: OrganizationId,
+        /// The invitation.
+        invitation_id: InvitationId,
+    },
+    /// An invitation was accepted.
+    InvitationAccepted {
+        /// The organization.
+        organization_id: OrganizationId,
+        /// The invitation.
+        invitation_id: InvitationId,
+        /// The user who accepted it.
+        user_id: UserId,
+    },
 }
 
 impl DomainEvent for OrganizationEvent {
@@ -426,6 +530,9 @@ impl DomainEvent for OrganizationEvent {
             Self::MemberAdded { .. } => "identity.organization_member_added",
             Self::MemberChanged { .. } => "identity.organization_member_changed",
             Self::MemberRemoved { .. } => "identity.organization_member_removed",
+            Self::InvitationCreated { .. } => "identity.invitation_created",
+            Self::InvitationWithdrawn { .. } => "identity.invitation_withdrawn",
+            Self::InvitationAccepted { .. } => "identity.invitation_accepted",
         }
     }
 }
