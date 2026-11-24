@@ -16,7 +16,7 @@ All paths are relative to the tenant base: `https://{host}/t/{tenant}` or the te
 | Account API | `/api/v1/account` | `account-console`, first-party apps | Session (backend-for-frontend) or access token with `account:*` scopes |
 | Admin API | `/api/v1/admin` | `admin-console`, automation, Terraform | Access token with `admin:*` scopes; role-based access control on every route |
 | Authorization API | `/api/v1/authorization` | Applications (policy enforcement points) | Access token with `authz:*` scopes |
-| SCIM | `/scim/v2` | Provisioning clients | Bearer token bound to a SCIM integration |
+| SCIM | `/scim/v2` | Provisioning clients | Access token with the audience `urn:hodor:scim` and the scope `scim` |
 | SAML | `/saml` | SAML peers | Per protocol |
 | Open Policy Agent service API | `/opa` | Open Policy Agent instances | Per-instance bearer token or mTLS |
 | Platform API | `https://{host}/platform/v1` | Platform operators | Token from the `system` tenant with `platform:*` scopes |
@@ -177,7 +177,7 @@ Standard collection and item routes (`GET` list, `POST`, `GET`, `PATCH`, `DELETE
 | Sessions | `/admin/sessions` | `DELETE`, `POST /sessions:revoke-all` |
 | Audit | `/admin/audit-records` (read-only) | `POST /audit-records:export` |
 | Security posture | `/admin/posture` (read-only summary), `/admin/posture/findings`, `/findings/{id}/acceptances` | `POST /posture:evaluate`; an acceptance carries a reason and an expiry ([control plane](../design/control-plane.md#security-posture)) |
-| Integrations | `/admin/webhooks`, `/admin/scim-integrations`, `/admin/plugins` | `POST /webhooks/{id}:test` |
+| Integrations | `/admin/webhooks`, `/admin/plugins` | `POST /webhooks/{id}:test`. SCIM has no resource of its own here: a tenant opens it by registering a resource server ([who may call](../architecture/contexts/provisioning.md#who-may-call)) |
 
 Custom actions use the `:verb` suffix so that they never collide with resource identifiers.
 
@@ -241,7 +241,19 @@ Differences from the example in the specification: there is no `tenant_id` in th
 
 ## SCIM 2.0
 
-`/scim/v2/Users`, `/Groups`, `/Bulk`, `/ServiceProviderConfig`, `/ResourceTypes`, `/Schemas`, per RFC 7643 and RFC 7644, including `PATCH`, `filter`, `startIndex`/`count` pagination and the Enterprise User extension. Deprovisioning (`active: false` or `DELETE`) suspends or deletes according to the integration's policy.
+Other systems provision a tenant's users and groups, per RFC 7643 and RFC 7644. Specified in [the provisioning context](../architecture/contexts/provisioning.md), with its attributes, filters, lists and errors.
+
+| Method and path, under `/t/{slug}/scim/v2` | Purpose |
+|---|---|
+| `GET /ServiceProviderConfig`, `GET /ResourceTypes[/{name}]`, `GET /Schemas[/{uri}]` | Discovery |
+| `GET /Users`, `POST /Users`, `GET /Users/{id}`, `PUT /Users/{id}` | Users, with the core schema and the enterprise extension; lists filtered, sorted and in pages |
+| `GET /Groups`, `POST /Groups`, `GET /Groups/{id}`, `PUT /Groups/{id}`, `DELETE /Groups/{id}` | Groups and their members |
+
+- The caller sends `Authorization: Bearer` with an access token of the tenant whose audience includes `urn:hodor:scim` and which holds the scope `scim`. Without a good token the answer is `401` with `WWW-Authenticate: Bearer`, another tenant's token included; without the scope it is `403` with `insufficient_scope`.
+- The media type is `application/scim+json`; `application/json` is accepted in requests. Errors use the SCIM error schema, `urn:ietf:params:scim:api:messages:2.0:Error`, not problem documents.
+- Lists take `filter`, `sortBy`, `sortOrder`, `startIndex` (from 1) and `count` (100 by default, at most 200), not the cursors of the JSON APIs.
+- A resource of another tenant is answered as one that does not exist: `404`.
+- `PATCH`, `DELETE` of a user, `/Bulk`, entity tags and the deprovisioning policy are [Issue-91](../product/epics.md#slice-x--scim-epic-26), and answered `501` until then.
 
 ## SAML 2.0
 

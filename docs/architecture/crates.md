@@ -35,7 +35,7 @@ hodor/
 │   ├── federation/
 │   ├── oauth/
 │   ├── saml/                   # Milestone 2: checks SAML responses
-│   ├── provisioning/           # Phase 6: SCIM, LDAP sync
+│   ├── provisioning/           # Milestone 7: the SCIM server; later LDAP sync
 │   ├── authorization/
 │   ├── authorization-native/
 │   ├── authorization-opa/
@@ -82,13 +82,13 @@ flowchart BT
     federation --> authentication & identity & saml
     oauth --> identity & session & keys & tenant
     saml --> kernel
-    provisioning --> identity
+    provisioning --> identity & kernel
 
     authorizationNative["authorization-native"] --> authorization
     authorizationPolicyAgent["authorization-opa"] --> authorization
     plugin["plugin-runtime"] --> authentication & oauth & kernel
 
-    adaptersPostgres["adapters-postgres"] --> tenant & identity & credential & session & keys & authentication & federation & oauth & authorization & audit & notification
+    adaptersPostgres["adapters-postgres"] --> tenant & identity & credential & session & keys & authentication & federation & oauth & provisioning & authorization & audit & notification
     redis["adapters-redis"] --> session & authentication & oauth & authorization
     crypto["adapters-crypto"] --> credential & keys & oauth
     adaptersKeyService["adapters-kms"] --> keys
@@ -96,7 +96,7 @@ flowchart BT
     adaptersSmtp["adapters-smtp"] --> notification
     adaptersPolicyCheck["adapters-policy-check"] --> authorizationPolicyAgent
 
-    protocolHttp["protocol-http"] --> tenant & identity & credential & session & authentication & federation & oauth & authorization & audit & keys
+    protocolHttp["protocol-http"] --> tenant & identity & credential & session & authentication & federation & oauth & provisioning & authorization & audit & keys
 
     server["hodor-server"] --> protocolHttp & adaptersPostgres & redis & crypto & adaptersKeyService & adaptersHttp & authorizationNative & authorizationPolicyAgent & observability
     worker["hodor-worker"] --> adaptersPostgres & adaptersSmtp & adaptersPolicyCheck & redis & crypto & adaptersKeyService & adaptersHttp & authorizationPolicyAgent & observability & notification & audit

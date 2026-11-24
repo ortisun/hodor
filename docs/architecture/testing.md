@@ -37,10 +37,11 @@ Every context ships, behind its `testing` feature, an in-memory implementation o
 | Key rotation | At every instant exactly one active signing key per algorithm; every unexpired token verifies against the published JWKS |
 | Session timeouts | No sequence of touches extends a session past its absolute expiry |
 | Attribute-based access control conditions | Evaluation is deterministic and bounded for any well-typed input |
+| SCIM filters | For any text, the parser answers a tree or a refusal without failing, refuses what passes a bound, and reads back the filter it wrote out |
 
 ## Fuzz targets
 
-JWT and JWS parsing, JWK parsing, authorization request parsing, redirect URI comparison, SCIM filter parser, SAML XML parsing and signature reference resolution, claim-mapping expressions, Common Expression Language conditions, WebAuthn attestation and assertion decoding, flow definition validation, DPoP proofs.
+JWT and JWS parsing, JWK parsing, authorization request parsing, redirect URI comparison, SCIM filter parser (until the repository has fuzz targets, it is covered by property tests over any text), SAML XML parsing and signature reference resolution, claim-mapping expressions, Common Expression Language conditions, WebAuthn attestation and assertion decoding, flow definition validation, DPoP proofs.
 
 ## Scenarios the specification calls out
 

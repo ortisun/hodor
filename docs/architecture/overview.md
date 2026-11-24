@@ -127,6 +127,7 @@ flowchart TB
         authentication
         federation
         oauth
+        provisioning
         keys
         authorization
         audit
@@ -150,6 +151,7 @@ flowchart TB
     accountRoutes --> identity & credential & session & oauth
     authorizationRoutes --> authorization
     policyAgentRoutes --> authorization
+    scimRoutes --> provisioning & oauth
     contexts -. "ports" .-> adapters
 ```
 
