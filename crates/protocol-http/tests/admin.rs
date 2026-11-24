@@ -239,7 +239,8 @@ async fn world_with_keys(with_keys: bool) -> World {
     let digest = Arc::new(FakeDigest);
     let units = || Arc::new(units_of_work.clone());
 
-    let identity = IdentityService::new(units(), Arc::new(InMemoryUsers::default()), clock.clone());
+    let users = Arc::new(InMemoryUsers::default());
+    let identity = IdentityService::new(units(), users.clone(), clock.clone());
     let tokens = AccessTokenService::new(
         units(),
         Arc::new(InMemoryAccessTokens::default()),
@@ -314,6 +315,13 @@ async fn world_with_keys(with_keys: bool) -> World {
     let oauth = applications(&units_of_work, clock.clone());
     let decision_store = hodor_authorization::testing::InMemoryDecisionLog::default();
     let authorization_parts = authorization_services(&units_of_work, clock.clone());
+    let groups_and_organizations = memberships(
+        &units_of_work,
+        clock.clone(),
+        users.clone(),
+        &identity,
+        &tenants,
+    );
     let state = AdminState {
         tokens: tokens.clone(),
         authorization: authorization.clone(),
@@ -337,6 +345,9 @@ async fn world_with_keys(with_keys: bool) -> World {
         evaluation: authorization_parts.1,
         policies: Some(authorization_parts.2),
         public_url: "https://auth.example".to_owned(),
+        groups: groups_and_organizations.0,
+        organizations: groups_and_organizations.1,
+        invitations: groups_and_organizations.2,
     };
     let router = public_router(
         Arc::new(Tenants {
@@ -597,7 +608,7 @@ fn the_document_and_the_routes_list_the_same_operations_and_permissions() {
         })
         .collect();
     assert_eq!(documented, served);
-    assert_eq!(served.len(), 71);
+    assert_eq!(served.len(), 96);
 
     // Every operation says how it refuses.
     let document: serde_json::Value = serde_json::from_str(ADMIN_OPENAPI).expect("valid JSON");
@@ -3353,4 +3364,330 @@ async fn an_administrator_manages_roles_assignments_bindings_and_policy_versions
     ] {
         assert!(said.contains(event), "{event} is not in the audit log");
     }
+}
+
+/// Groups, organizations and invitations over the given users.
+fn memberships(
+    units_of_work: &InMemoryUnitOfWorkFactory,
+    clock: Arc<FixedClock>,
+    users: Arc<InMemoryUsers>,
+    identity: &IdentityService,
+    tenants: &TenantService,
+) -> (
+    hodor_identity::api::GroupService,
+    hodor_identity::api::OrganizationService,
+    hodor_authentication::api::InvitationService,
+) {
+    let units = || Arc::new(units_of_work.clone());
+    let groups = hodor_identity::api::GroupService::new(
+        units(),
+        Arc::new(hodor_identity::testing::InMemoryGroups::default()),
+        users.clone(),
+        Arc::new(hodor_identity::testing::FixedGroupPolicy(5)),
+        clock.clone(),
+    );
+    let organizations = hodor_identity::api::OrganizationService::new(
+        units(),
+        Arc::new(hodor_identity::testing::InMemoryOrganizations::default()),
+        Arc::new(hodor_identity::testing::InMemoryInvitations::default()),
+        users,
+        clock.clone(),
+    );
+    let invitations = hodor_authentication::api::InvitationService::new(
+        units(),
+        hodor_authentication::api::InvitationContexts {
+            organizations: organizations.clone(),
+            identity: identity.clone(),
+            credentials: hodor_credential::api::CredentialService::new(
+                units(),
+                Arc::new(hodor_credential::testing::InMemoryPasswords::default()),
+                Arc::new(hodor_credential::testing::FakeHasher::default()),
+                clock.clone(),
+            ),
+            tenants: tenants.clone(),
+            notifier: hodor_notification::api::Notifier::new(
+                Arc::new(hodor_notification::testing::InMemoryMessages::default()),
+                clock,
+            ),
+        },
+        Arc::new(FakeDigest),
+        Arc::new(SequentialRandom::default()),
+        "https://auth.example",
+    );
+    (groups, organizations, invitations)
+}
+
+#[tokio::test]
+async fn an_administrator_manages_groups_and_their_members() {
+    let world = world().await;
+    let person = world
+        .as_administrator(
+            Method::POST,
+            "/users",
+            Some(serde_json::json!({ "email": "ana@example.com" })),
+        )
+        .await;
+    let ana = person.body["id"].as_str().expect("a user").to_owned();
+
+    let finance = world
+        .as_administrator(
+            Method::POST,
+            "/groups",
+            Some(serde_json::json!({ "name": "finance", "description": "Bills" })),
+        )
+        .await;
+    assert_eq!(finance.status, StatusCode::CREATED);
+    let finance = finance.body["id"].as_str().expect("a group").to_owned();
+    let payables = world
+        .as_administrator(
+            Method::POST,
+            "/groups",
+            Some(serde_json::json!({ "name": "payables" })),
+        )
+        .await
+        .body["id"]
+        .as_str()
+        .expect("a group")
+        .to_owned();
+    let taken = world
+        .as_administrator(
+            Method::POST,
+            "/groups",
+            Some(serde_json::json!({ "name": "FINANCE" })),
+        )
+        .await;
+    assert_eq!(
+        (taken.status, taken.body["code"].as_str()),
+        (StatusCode::CONFLICT, Some("identity.group_name_taken"))
+    );
+
+    let nested = world
+        .as_administrator(
+            Method::POST,
+            &format!("/groups/{finance}/members"),
+            Some(serde_json::json!({ "kind": "group", "id": payables })),
+        )
+        .await;
+    assert_eq!(nested.status, StatusCode::NO_CONTENT);
+    let added = world
+        .as_administrator(
+            Method::POST,
+            &format!("/groups/{payables}/members"),
+            Some(serde_json::json!({ "kind": "user", "id": ana })),
+        )
+        .await;
+    assert_eq!(added.status, StatusCode::NO_CONTENT);
+    let cycle = world
+        .as_administrator(
+            Method::POST,
+            &format!("/groups/{payables}/members"),
+            Some(serde_json::json!({ "kind": "group", "id": finance })),
+        )
+        .await;
+    assert_eq!(
+        (cycle.status, cycle.body["code"].as_str()),
+        (StatusCode::CONFLICT, Some("identity.group_cycle"))
+    );
+
+    let of = world
+        .as_administrator(Method::GET, &format!("/users/{ana}/groups"), None)
+        .await;
+    assert_eq!(of.status, StatusCode::OK);
+    let mut seen: Vec<(String, bool)> = of.body["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .map(|item| {
+            (
+                item["id"].as_str().unwrap_or_default().to_owned(),
+                item["direct"] == true,
+            )
+        })
+        .collect();
+    seen.sort();
+    let mut expected = vec![(finance.clone(), false), (payables.clone(), true)];
+    expected.sort();
+    assert_eq!(seen, expected);
+
+    let members = world
+        .as_administrator(Method::GET, &format!("/groups/{finance}/members"), None)
+        .await;
+    assert_eq!(
+        members.body["items"],
+        serde_json::json!([{ "kind": "group", "id": payables }])
+    );
+    let removed = world
+        .as_administrator(
+            Method::POST,
+            &format!("/groups/{finance}/members:remove"),
+            Some(serde_json::json!({ "kind": "group", "id": payables })),
+        )
+        .await;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT);
+    let renamed = world
+        .as_administrator(
+            Method::PATCH,
+            &format!("/groups/{finance}"),
+            Some(serde_json::json!({ "name": "Finance" })),
+        )
+        .await;
+    assert_eq!(renamed.body["name"], "Finance");
+    assert!(
+        renamed.body.get("description").is_none(),
+        "a missing description removes it"
+    );
+    let deleted = world
+        .as_administrator(Method::DELETE, &format!("/groups/{finance}"), None)
+        .await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT);
+    let gone = world
+        .as_administrator(Method::GET, &format!("/groups/{finance}"), None)
+        .await;
+    assert_eq!(gone.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn an_administrator_manages_organizations_units_members_and_invitations() {
+    let world = world().await;
+    let person = world
+        .as_administrator(
+            Method::POST,
+            "/users",
+            Some(serde_json::json!({ "email": "ana@example.com" })),
+        )
+        .await;
+    let ana = person.body["id"].as_str().expect("a user").to_owned();
+    let acme = world
+        .as_administrator(
+            Method::POST,
+            "/organizations",
+            Some(serde_json::json!({ "name": "Acme" })),
+        )
+        .await;
+    assert_eq!(acme.status, StatusCode::CREATED);
+    let acme = acme.body["id"]
+        .as_str()
+        .expect("an organization")
+        .to_owned();
+
+    let engineering = world
+        .as_administrator(
+            Method::POST,
+            &format!("/organizations/{acme}/units"),
+            Some(serde_json::json!({ "name": "Engineering", "kind": "unit" })),
+        )
+        .await;
+    assert_eq!(engineering.status, StatusCode::CREATED);
+    let engineering = engineering.body["id"].as_str().expect("a unit").to_owned();
+    let platform = world
+        .as_administrator(
+            Method::POST,
+            &format!("/organizations/{acme}/units"),
+            Some(serde_json::json!({ "parent_id": engineering, "name": "Platform", "kind": "department" })),
+        )
+        .await
+        .body["id"]
+        .as_str()
+        .expect("a unit")
+        .to_owned();
+    let cycle = world
+        .as_administrator(
+            Method::PUT,
+            &format!("/organizations/{acme}/units/{engineering}"),
+            Some(
+                serde_json::json!({ "parent_id": platform, "name": "Engineering", "kind": "unit" }),
+            ),
+        )
+        .await;
+    assert_eq!(
+        (cycle.status, cycle.body["code"].as_str()),
+        (StatusCode::CONFLICT, Some("identity.unit_cycle"))
+    );
+    let not_empty = world
+        .as_administrator(
+            Method::DELETE,
+            &format!("/organizations/{acme}/units/{engineering}"),
+            None,
+        )
+        .await;
+    assert_eq!(not_empty.status, StatusCode::CONFLICT);
+    let units = world
+        .as_administrator(Method::GET, &format!("/organizations/{acme}/units"), None)
+        .await;
+    assert_eq!(units.body["items"].as_array().map(Vec::len), Some(2));
+
+    let joined = world
+        .as_administrator(
+            Method::PUT,
+            &format!("/organizations/{acme}/members/{ana}"),
+            Some(serde_json::json!({ "unit_ids": [platform] })),
+        )
+        .await;
+    assert_eq!(joined.status, StatusCode::OK);
+    assert_eq!(joined.body["unit_ids"], serde_json::json!([platform]));
+    let moved = world
+        .as_administrator(
+            Method::PUT,
+            &format!("/organizations/{acme}/members/{ana}"),
+            Some(serde_json::json!({ "unit_ids": [engineering] })),
+        )
+        .await;
+    assert_eq!(moved.body["unit_ids"], serde_json::json!([engineering]));
+    let of = world
+        .as_administrator(Method::GET, &format!("/users/{ana}/organizations"), None)
+        .await;
+    assert_eq!(of.body["items"][0]["organization_id"], acme.as_str());
+
+    let invited = world
+        .as_administrator(
+            Method::POST,
+            &format!("/organizations/{acme}/invitations"),
+            Some(serde_json::json!({ "email": "bruno@example.com", "unit_ids": [platform], "locale": "pt-BR" })),
+        )
+        .await;
+    assert_eq!(invited.status, StatusCode::ACCEPTED);
+    let pending = world
+        .as_administrator(
+            Method::GET,
+            &format!("/organizations/{acme}/invitations"),
+            None,
+        )
+        .await;
+    let pending = pending.body["items"].as_array().expect("items").clone();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0]["email"], "bruno@example.com");
+    assert!(
+        pending[0].get("token").is_none() && pending[0].get("token_hash").is_none(),
+        "no secret is shown"
+    );
+    let invitation = pending[0]["id"].as_str().expect("an invitation").to_owned();
+    let withdrawn = world
+        .as_administrator(
+            Method::DELETE,
+            &format!("/organizations/{acme}/invitations/{invitation}"),
+            None,
+        )
+        .await;
+    assert_eq!(withdrawn.status, StatusCode::NO_CONTENT);
+    let again = world
+        .as_administrator(
+            Method::DELETE,
+            &format!("/organizations/{acme}/invitations/{invitation}"),
+            None,
+        )
+        .await;
+    assert_eq!(again.status, StatusCode::NOT_FOUND);
+
+    let left = world
+        .as_administrator(
+            Method::DELETE,
+            &format!("/organizations/{acme}/members/{ana}"),
+            None,
+        )
+        .await;
+    assert_eq!(left.status, StatusCode::NO_CONTENT);
+    let deleted = world
+        .as_administrator(Method::DELETE, &format!("/organizations/{acme}"), None)
+        .await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT);
 }

@@ -313,6 +313,25 @@ impl GroupService {
         self.effective_groups_in(uow.as_mut(), user).await
     }
 
+    /// The groups a user is directly in, not through another group.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if storage fails.
+    pub async fn direct_groups(
+        &self,
+        tenant: &TenantContext,
+        user: UserId,
+    ) -> Result<BTreeSet<GroupId>, DomainError> {
+        let mut uow = self.units_of_work.begin(tenant).await?;
+        Ok(self
+            .groups
+            .groups_of(uow.as_mut(), user)
+            .await?
+            .into_iter()
+            .collect())
+    }
+
     /// As [`GroupService::effective_groups`], in the caller's unit of work.
     ///
     /// # Errors

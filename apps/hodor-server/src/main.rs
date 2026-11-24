@@ -15,13 +15,14 @@ use hodor_adapters_postgres::{
     Database, PgAccessTokenRecordStore, PgAccessTokenStore, PgApplicationStore, PgAttemptStore,
     PgAuditLog, PgAuthorizationCodeStore, PgAuthorizationRequestStore, PgBundleStore,
     PgClientAssertionStore, PgClientStore, PgConsentStore, PgDecisionLogStore,
-    PgEngineBindingStore, PgGrantStore, PgGroupRepository, PgInstanceStatusStore, PgInstanceStore,
-    PgInvitationRepository, PgKeyStore, PgLinkStore, PgMessageQueue, PgNativeRoleStore,
-    PgOrganizationRepository, PgPasswordStore, PgPendingAuthorizationStore, PgPolicyVersionStore,
-    PgProviderStore, PgPublicationStore, PgRecoveryCodeStore, PgRefreshTokenStore,
-    PgResourceServerStore, PgRoleAssignmentStore, PgSealingStateStore, PgSessionStore,
-    PgSimulationStore, PgTenantDirectory, PgTenantRepository, PgTotpStore, PgTransactionStore,
-    PgUploadedDecisionStore, PgUserRepository, PgVerificationTokenStore, PgWebAuthnStore,
+    PgEngineBindingStore, PgGrantStore, PgGroupPolicy, PgGroupRepository, PgInstanceStatusStore,
+    PgInstanceStore, PgInvitationRepository, PgKeyStore, PgLinkStore, PgMessageQueue,
+    PgNativeRoleStore, PgOrganizationRepository, PgPasswordStore, PgPendingAuthorizationStore,
+    PgPolicyVersionStore, PgProviderStore, PgPublicationStore, PgRecoveryCodeStore,
+    PgRefreshTokenStore, PgResourceServerStore, PgRoleAssignmentStore, PgSealingStateStore,
+    PgSessionStore, PgSimulationStore, PgTenantDirectory, PgTenantRepository, PgTotpStore,
+    PgTransactionStore, PgUploadedDecisionStore, PgUserRepository, PgVerificationTokenStore,
+    PgWebAuthnStore,
 };
 use hodor_audit::api::AuditService;
 use hodor_authentication::api::{
@@ -45,7 +46,7 @@ use hodor_federation::api::{
     EXTERNAL_STEP, ExternalIdentityAuthenticator, ExternalSignIn, FederationService, GitHubClient,
     LockoutPolicy, OpenIdClient, SamlClient,
 };
-use hodor_identity::api::{IdentityService, OrganizationService};
+use hodor_identity::api::{GroupService, IdentityService, OrganizationService};
 use hodor_kernel::{DomainError, Secret, SecretBox, SystemClock, TenantContext};
 use hodor_keys::api::{KeyService, RotationPolicy, TenantSecretBox};
 use hodor_notification::api::Notifier;
@@ -356,7 +357,7 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
                     digest: Arc::new(Sha256Digest),
                 }))
                 .merge(invitation_routes(InvitationState {
-                    invitations,
+                    invitations: invitations.clone(),
                     sessions: authorization.sessions.clone(),
                     digest: Arc::new(Sha256Digest),
                 })),
@@ -364,12 +365,17 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
         .nest("/oauth2", oauth2)
         .nest(
             "/api/v1/admin",
-            admin_routes(administration(&config, &database, &engines)?),
+            admin_routes(administration(
+                &config,
+                &database,
+                &engines,
+                invitations.clone(),
+            )?),
         )
         .nest(
             "/console/api",
             console_routes(ConsoleState {
-                administration: administration(&config, &database, &engines)?,
+                administration: administration(&config, &database, &engines, invitations.clone())?,
                 digest: Arc::new(Sha256Digest),
                 clock: Arc::new(SystemClock),
             }),
@@ -1163,6 +1169,7 @@ fn administration(
     config: &Config,
     database: &Database,
     engines: &EngineRegistry,
+    invitations: InvitationService,
 ) -> Result<AdminState, DomainError> {
     let units = || Arc::new(database.clone());
     let clock = Arc::new(SystemClock);
@@ -1281,6 +1288,21 @@ fn administration(
             Arc::new(SystemClock),
         )),
         public_url: config.public_url.clone(),
+        groups: GroupService::new(
+            units(),
+            Arc::new(PgGroupRepository),
+            Arc::new(PgUserRepository),
+            Arc::new(PgGroupPolicy),
+            clock.clone(),
+        ),
+        organizations: OrganizationService::new(
+            units(),
+            Arc::new(PgOrganizationRepository),
+            Arc::new(PgInvitationRepository),
+            Arc::new(PgUserRepository),
+            clock.clone(),
+        ),
+        invitations,
     })
 }
 
