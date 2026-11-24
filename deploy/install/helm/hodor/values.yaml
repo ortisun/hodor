@@ -1,12 +1,13 @@
 # The settings of a Hodor installation on Kubernetes. How to use them, step by step:
 # docs/operations/install-on-kubernetes.md.
 #
-# Three values have no default and must be given: image.repository, publicUrl and secret.name.
+# Two values have no default and must be given: publicUrl and secret.name.
 # No password or key is ever written here: they are read from the Secret that secret.name names.
 
 image:
-  # Where the Hodor image is, such as registry.example.com/hodor. Required.
-  repository: ""
+  # Where the Hodor image is. Each release from 0.3.0 publishes its image here; an earlier version, or a
+  # build of your own, is pushed to a registry of yours, such as registry.example.com/hodor.
+  repository: ghcr.io/ortisun/hodor
   # The version to run. Empty: the version this chart was made for (appVersion in Chart.yaml).
   tag: ""
   pullPolicy: IfNotPresent
