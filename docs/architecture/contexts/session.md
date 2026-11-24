@@ -84,7 +84,7 @@ Rules:
 | List a user's sessions | Returns the user's active sessions, newest first, for the account pages and for administrators |
 | Revoke session | Ends one session, with a reason |
 | Revoke one of a user's sessions | Ends a session only if it belongs to the given user and is active; otherwise it reports that there is no such session, without saying which was the case. This is what a person uses on their own sessions |
-| Revoke a user's sessions | Ends all of a user's active sessions, optionally keeping one: used when a password changes, where the session that made the change survives |
+| Revoke a user's sessions | Ends all of a user's active sessions, optionally keeping one: used when a password changes, where the session that made the change survives. It can also run in the caller's unit of work, as [deprovisioning](provisioning.md#deprovisioning) does |
 | Replace token | Gives a session a new token |
 | Raise session | Adds the methods of a step-up to a session, raises its assurance and replaces its token, as [raising a session](#raising-a-session) says |
 

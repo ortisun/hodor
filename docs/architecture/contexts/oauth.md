@@ -385,19 +385,23 @@ The token endpoint (Issue-56) redeems a code. The rules are the context's, so th
 
 A refusal of any kind is one answer to the client, `invalid_grant`; the reason is in Hodor's own logs and events only.
 
+### Revoking every grant of a person
+
+When a person is deprovisioned, every active grant of theirs, for every client, is revoked with the reason `deprovisioned`, in the caller's unit of work. Whatever was issued from them goes with them: a refresh of their families is refused, and their access tokens are no longer in force.
+
 ### Events
 
 | Event type | When |
 |---|---|
 | `oauth.authorization_code_issued` | A code was issued; carries the client, the grant and the user, never the code or its hash |
-| `oauth.grant_revoked` | A grant was revoked; carries the grant, the client and the reason, such as `code_reused` |
+| `oauth.grant_revoked` | A grant was revoked; carries the grant, the client and the reason, such as `code_reused`, `consent_withdrawn` or `deprovisioned` |
 
 ### Ports
 
 | Port | Purpose |
 |---|---|
 | `AuthorizationRequestStore` | Store a pending authorization request; load one by its identifier; remove it only if it is still there, so that it is resumed once |
-| `GrantStore` | Store a grant; load one; store its revocation |
+| `GrantStore` | Store a grant; load one; store its revocation; list a person's active grants, for one client or for all |
 | `AuthorizationCodeStore` | Store a code; find one by its hash; mark it redeemed only if it was not |
 | `PersonMemberships` | Whether the person is a member of an organization, and the person's effective groups. The server implements it over the identity context |
 
@@ -557,6 +561,7 @@ What the window allows: someone who stole the token one generation old and prese
 | The client or its application disabled, or the client no longer allowed the `refresh_token` grant | The family's next refresh is refused |
 | The absolute lifetime or the idle time passed | The family's next refresh is refused |
 | The client revoked a refresh token of the family at the [revocation endpoint](#revocation) | The family and its grant are revoked |
+| The person was [deprovisioned through SCIM](provisioning.md#deprovisioning) | Every active grant of the person is revoked at once, so their families and the access tokens issued from them stop being in force |
 
 ### Client credentials
 

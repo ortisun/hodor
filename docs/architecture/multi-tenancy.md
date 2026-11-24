@@ -141,7 +141,7 @@ Every case has the same shape. First something is shown to work in the tenant it
 | Another tenant's administrator naming a resource server, a role, a person's roles, a binding or a policy version | Not found |
 | Another tenant's administrator giving or taking away a role of the first tenant's person | Not found |
 | A SCIM client's access token, on every route of the SCIM surface | Not authenticated |
-| The identifier of a user or a group, read, replaced or deleted by the other tenant's own SCIM client, and named as a member of a group | Not found; refused as a member |
+| The identifier of a user or a group, read, replaced, changed with `PATCH` or deleted by the other tenant's own SCIM client, alone or in a bulk request, and named as a member of a group | Not found; refused as a member |
 
 It also checks what must not be shared: one tenant's list of users and audit log name nothing of the other's; locking a person out by failed attempts in one tenant does not lock out the person with the same address in the other; a person with an authenticator application in one tenant signs in to the other with the password alone; each tenant's discovery document names its own assurance levels only; and one tenant's lists of roles, bindings and policy versions name nothing of the other's.
 

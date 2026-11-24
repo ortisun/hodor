@@ -4,7 +4,7 @@ The `provisioning` context makes Hodor a SCIM 2.0 server ([RFC 7643](https://www
 
 It owns no users and no groups: those are the [identity context's](identity.md). The provisioning context maps SCIM's resources to them and back, reads the filters SCIM clients send, and keeps what SCIM carries that the identity context has no place for, such as a user's `externalId` or department.
 
-This page specifies what Issue-90 builds: Users and Groups with the core and enterprise schemas, the discovery endpoints, filters read by a bounded parser, sorting and pages. What Issue-91 adds, changing through `PATCH`, bulk requests, versions with entity tags, the deprovisioning policy and deleting users, is listed at the [end of the page](#not-built-yet).
+This page specifies what Issue-90 builds: Users and Groups with the core and enterprise schemas, the discovery endpoints, filters read by a bounded parser, sorting and pages; and what Issue-91 adds: [changing with `PATCH`](#changing-with-patch), [versions](#versions), [bulk requests](#bulk-requests) and [the tenant's deprovisioning policy](#deprovisioning). What is left for later is at the [end of the page](#not-built-yet).
 
 ## Where it sits
 
@@ -20,6 +20,7 @@ flowchart LR
 
 - **It depends on the kernel and the identity context, and nothing depends on it**, the way the authentication context depends on identity. It changes users and groups only through the identity context's use cases, so every rule of [users](identity.md#what-a-user-is) and [groups](identity.md#groups) holds for what SCIM writes, and every change produces the identity context's events.
 - **It does not check tokens.** The HTTP layer checks the caller's token with the OAuth context, as it does for [the Authorization API](authorization.md#who-may-ask), and gives the use cases the calling client as the actor.
+- **It does not end sessions or revoke grants itself.** When it deprovisions a person it asks, through a port of its own, `AccessRevoker`, for their sessions and grants to end in the same transaction; the composition root implements the port with the session and OAuth contexts ([deprovisioning](#deprovisioning)).
 - **Its domain is computation on values**: the SCIM schemas and resources, the mapping to and from users and groups, and the filter parser. None of it reads storage, so it can be tested with any input.
 
 ## Who may call
@@ -59,15 +60,19 @@ The routes are under the tenant, at `/t/{slug}/scim/v2`. Requests and answers ar
 | `POST /Users` | Creates a user | `201` with the user and its `Location` |
 | `GET /Users/{id}` | One user | `200` |
 | `PUT /Users/{id}` | Replaces what SCIM says of a user | `200` with the user |
+| `PATCH /Users/{id}` | Changes part of a user ([changing with `PATCH`](#changing-with-patch)) | `200` with the user |
+| `DELETE /Users/{id}` | Deprovisions a user, as the tenant's [policy](#deprovisioning) says | `204` |
 | `GET /Groups` | A page of the tenant's groups | `200` with a `ListResponse` |
 | `POST /Groups` | Creates a group, with its members | `201` with the group and its `Location` |
 | `GET /Groups/{id}` | One group | `200` |
 | `PUT /Groups/{id}` | Replaces a group's name, `externalId` and members | `200` with the group |
+| `PATCH /Groups/{id}` | Changes part of a group, its members one by one included | `200` with the group |
 | `DELETE /Groups/{id}` | Deletes a group | `204` |
+| `POST /Bulk` | Several of the operations above in one request ([bulk requests](#bulk-requests)) | `200` with a `BulkResponse` |
 
-`PATCH` on a user or a group, `DELETE` on a user, `POST /Bulk` and searching with `POST /.search` are answered with `501` until [Issue-91](#not-built-yet) builds them. The discovery documents say so too.
+Searching with `POST /.search` is answered with `501`: it is [not built yet](#not-built-yet).
 
-Every route, the discovery documents included, needs the token. Every answer carries `Cache-Control: no-store`.
+Every route, the discovery documents included, needs the token. Every answer carries `Cache-Control: no-store`. Every answer that holds one resource carries its [version](#versions) in `ETag`.
 
 ### Errors
 
@@ -89,14 +94,20 @@ An error is answered with the error schema of RFC 7644, section 3.12:
 | `400` | `invalidFilter` | The filter cannot be read, passes a [bound](#bounds), names an attribute that cannot be filtered on, or compares it in a way its type does not allow. The detail says which |
 | `400` | `invalidSyntax` | The body is not a JSON object, or its `schemas` do not name the resource's core schema, or name a schema this server does not know |
 | `400` | `invalidValue` | A value breaks a rule: a `userName` that is not a username or an email address, a display name too long, a member that is not a user or a group of the tenant, more than 1000 members, a `count` that is not a number, a `sortBy` that cannot be sorted on |
-| `400` | `mutability` | The body sets a `password`: passwords are not set through SCIM |
+| `400` | `mutability` | The body sets a `password`: passwords are not set through SCIM; or a `PATCH` names a read-only attribute: `id`, `meta`, `groups` of a user |
+| `400` | `invalidPath` | A `PATCH` path that cannot be read |
+| `400` | `noTarget` | A `PATCH` `remove` without a path, or a path with a value filter that matches nothing and from which no value can be made ([how operations apply](#how-operations-apply)) |
+| `400` | `tooMany` | A `PATCH` with more than 100 operations |
 | `401`, `403` | — | [Who may call](#who-may-call) |
+| `304` | — | A `GET` whose `If-None-Match` names the resource's version: nothing changed |
 | `404` | — | No such resource in the tenant. A resource of another tenant is answered exactly so |
 | `409` | `uniqueness` | The `userName`, an email address or a group's `displayName` belongs to another user or group of the tenant |
-| `409` | — | A change the identity context refuses for the state it is in, such as a group that would be inside itself |
-| `413` | — | The body is larger than 64 kibibytes. This answer comes from the limit every surface shares and is a problem document, not a SCIM error |
+| `409` | — | A change the identity context refuses for the state it is in, such as a group that would be inside itself, or a change that met another one made at the same moment |
+| `412` | — | `If-Match` names a version the resource no longer has; the detail says so |
+| `413` | `tooMany` | A bulk request with more than 100 operations or a body of more than one mebibyte: refused whole, with nothing done |
+| `413` | — | Any other body larger than 64 kibibytes. This answer comes from the limit every surface shares and is a problem document, not a SCIM error |
 | `415` | — | A body that is not `application/scim+json` or `application/json` |
-| `501` | — | An operation this server does not support yet |
+| `501` | — | Searching with `POST /.search`, which this server does not support yet |
 
 ## Users
 
@@ -110,11 +121,11 @@ A SCIM User is a **human user** of the tenant. Service accounts and agents are u
 | `userName` | identity | Required. The user's [userName identifier](#username): a username, or an email address. Unique in the tenant without regard to case |
 | `name.formatted`, `name.givenName`, `name.familyName` | provisioning | Optional |
 | `displayName` | identity | The user's display name, at most 200 characters. When the request has no `displayName`, `name.formatted` is the display name; with neither, the user has none |
-| `emails` | identity | The user's email identifiers, each `{ "value": "…", "primary": true }`. Every address SCIM sets is [verified](#addresses-set-through-scim-are-verified) |
+| `emails` | identity, and provisioning for `type` | The user's email identifiers, each `{ "value": "…", "type": "work", "primary": true }`. Every address SCIM sets is [verified](#addresses-set-through-scim-are-verified) |
 | `active` | identity | `true` when the user is Active; see [`active`](#active) |
 | `externalId` | provisioning | Optional. The SCIM client's own identifier for the person. Compared exactly; not required to be unique |
 | `groups` | identity | Read only: the groups the user is directly in, each `{ "value": "<group id>", "display": "<name>", "type": "direct", "$ref": "…" }`. Groups are changed through the Group resource |
-| `meta` | both | Read only: `resourceType` `User`, `created`, `lastModified`, `location` |
+| `meta` | both | Read only: `resourceType` `User`, `created`, `lastModified`, `location`, `version` |
 | `employeeNumber`, `costCenter`, `organization`, `division`, `department` | provisioning | Of the enterprise extension, `urn:ietf:params:scim:schemas:extension:enterprise:2.0:User`. Optional |
 | `manager.value` | provisioning | Of the enterprise extension: the SCIM client's identifier of the person's manager, kept as written |
 
@@ -122,6 +133,7 @@ A SCIM User is a **human user** of the tenant. Service accounts and agents are u
 - **`created`** is when the user was created. **`lastModified`** is the later of when the identity context last changed the user and when the provisioning context last changed what it keeps.
 - **`location`** is `{HODOR_PUBLIC_URL}/t/{slug}/scim/v2/Users/{id}`.
 - **What a request sends that is not an attribute of the schemas is ignored**, and so are the read-only attributes. A `password` is refused with `mutability`.
+- **Booleans may be written as the strings `"true"` and `"false"`**, in any case, as some SCIM clients write `active` and `primary`.
 - **What the user's identity has that SCIM does not name stays as it is**: the locale, credentials, sessions, roles, organizations.
 
 ### `userName`
@@ -139,7 +151,7 @@ Many SCIM clients send a person's work email address as `userName`; the second r
 
 - **A request's `emails` become the user's email addresses**: those it does not name are removed, and those it names that the user does not have are added. When `userName` is an address, it is one of them.
 - **At most one is `primary`.** When `userName` is an address, it is the primary one, whatever the request marks. Otherwise the one marked `primary`, or with none marked the first, is.
-- **`type` and `display` are not kept.** An email is answered with `value` and `primary` only.
+- **`type` is kept by the provisioning context**, as text of 1 to 256 characters such as `work`, `home` or `other`, for each address. `display` is not kept.
 - **A user has at most 10 login identifiers in all**, as always.
 
 #### Addresses set through SCIM are verified
@@ -150,18 +162,20 @@ Every address SCIM sets counts as verified, as if the person had followed a link
 
 | The user is | `active` reads | A request with `active: true` | A request with `active: false` |
 |---|---|---|---|
-| Active | `true` | Nothing changes | Suspends the user, with the reason `suspended through SCIM` |
-| Pending | `false` | Activates the user | Nothing changes |
-| Suspended | `false` | Reactivates the user | Nothing changes |
+| Active | `true` | Nothing changes | [Deprovisions](#deprovisioning) the user |
+| Pending | `false` | Activates the user | Deprovisions the user |
+| Suspended | `false` | Reactivates the user | Deprovisions the user |
 | Deactivated | `false` | Restores the user | Nothing changes |
 
-A request without `active` is read as `active: true`. Creating a user with `active: false` creates it Active and suspends it at once, in the same transaction: a person created by their directory is confirmed. Suspending ends no session by itself, but a suspended user cannot sign in, and their refresh tokens stop working. Deactivating and deleting through SCIM, and the tenant's choice between them, are [Issue-91](#not-built-yet).
+A request without `active` is read as `active: true`. Creating a user with `active: false` creates it and deactivates it at once, in the same transaction, whatever the policy: there is nothing to delete yet, and the account can be restored with `active: true`. Issue-90 suspended a user on `active: false`; since Issue-91 the tenant's policy decides, and a user suspended earlier is reactivated by `active: true` as before.
 
 ### Creating and replacing
 
 `POST /Users` creates the user with its identifiers, display name, status and what the provisioning context keeps, in one transaction: all of it, or nothing.
 
 `PUT /Users/{id}` replaces what SCIM says of the user, in one transaction. What the request leaves out is removed: a `PUT` without `name.givenName` removes the given name. The identity context's rules still hold: a username that breaks the rules, or an email address another user has, refuses the whole request.
+
+`DELETE /Users/{id}` [deprovisions](#deprovisioning) the user and answers `204`. From then on SCIM answers `404` for the user and never lists them, as RFC 7644 asks of a deleted resource, whatever the policy.
 
 ```json
 {
@@ -191,7 +205,8 @@ A request without `active` is read as `active: true`. Creating a user with `acti
     "resourceType": "User",
     "created": "2026-11-24T10:00:00Z",
     "lastModified": "2026-11-24T10:00:00Z",
-    "location": "https://id.example.com/t/acme/scim/v2/Users/0193f1c2-6b1e-7c3a-9f00-6a1d2c3b4e5f"
+    "location": "https://id.example.com/t/acme/scim/v2/Users/0193f1c2-6b1e-7c3a-9f00-6a1d2c3b4e5f",
+    "version": "W/\"3f2a9c0e41b7d562\""
   }
 }
 ```
@@ -206,16 +221,115 @@ A SCIM Group is a [group](identity.md#groups) of the tenant.
 | `displayName` | identity | Required. The group's name, with its rules: 1 to 100 characters, unique in the tenant without regard to case |
 | `externalId` | provisioning | Optional, as for users |
 | `members` | identity | The group's direct members, each `{ "value": "<id>", "type": "User" \| "Group", "display": "…", "$ref": "…" }` |
-| `meta` | both | Read only: `resourceType` `Group`, `created`, `lastModified`, `location` |
+| `meta` | both | Read only: `resourceType` `Group`, `created`, `lastModified`, `location`, `version` |
 
 - **A member is named by its `value`**, the identifier of a user or a group of the tenant. `type` may be left out; when it is given it must be right. `display` and `$ref` are ignored in a request and written in an answer: a user's display name, or else its userName, and a group's name.
 - **A member that is not a user or a group of the tenant is refused with `invalidValue`**, and so is a user SCIM does not show: a service account, an agent or a Deleted user. A member of another tenant is not a member of this one.
-- **A group takes at most 1000 members in one request.** A request with more is refused with `invalidValue`: a group with more members is built by several requests to the administration interface, or by `PATCH` once [Issue-91](#not-built-yet) builds it. A group's members are answered in full, however many it has.
+- **A group takes at most 1000 members in one request.** A `POST` or `PUT` with more is refused with `invalidValue`; a group with more members is built with `PATCH`, whose operations name at most 1000 members in all. A group's members are answered in full, however many it has.
 - **The rules of groups inside groups hold**: no cycle and no group deeper than the tenant allows, refused with `409`.
 - **The group's description is not part of SCIM** and stays as it is.
 - **`lastModified`** is the later of when the identity context last changed the group's name and when a SCIM request last changed its members or `externalId`. A member added through the administration interface does not move it.
 
 `POST /Groups` creates the group, its `externalId` and its members in one transaction. `PUT /Groups/{id}` replaces the name, the `externalId` and the members in one transaction: members it does not name are taken out, and those it names are put in. `DELETE /Groups/{id}` deletes the group as the identity context does, taking every member out of it and it out of every group, and what the provisioning context keeps of it, in one transaction.
+
+## Changing with `PATCH`
+
+`PATCH /Users/{id}` and `PATCH /Groups/{id}` change part of a resource, as RFC 7644, section 3.5.2, says. The body names the `PatchOp` schema and a list of operations:
+
+```json
+{
+  "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+  "Operations": [
+    { "op": "replace", "path": "emails[type eq \"work\"].value", "value": "bjensen@example.com" },
+    { "op": "add", "path": "members", "value": [{ "value": "0193f1c2-…" }] },
+    { "op": "remove", "path": "members[value eq \"0193f1c3-…\"]" },
+    { "op": "replace", "value": { "active": false, "displayName": "Babs" } }
+  ]
+}
+```
+
+- **At most 100 operations**, refused with `tooMany` past it, and at most 1000 members named in all of a group's operations, refused with `invalidValue`.
+- **`op` is `add`, `remove` or `replace`**, read without regard to case. Anything else is `invalidValue`.
+- **The operations apply in order, to the resource as the previous one left it, and then all at once**: the result is checked and stored as a `PUT` of it would be, in one transaction, with the same rules, the same events and the same answer. A `PATCH` whose result breaks a rule changes nothing. A `PATCH` that changes nothing records nothing.
+
+### Paths
+
+A path names what an operation applies to, written as RFC 7644 writes it:
+
+| Path | Names |
+|---|---|
+| `displayName`, `name`, `emails`, `active` | An attribute |
+| `name.givenName` | A sub-attribute of a complex attribute |
+| `emails[type eq "work"]` | The values of a multi-valued attribute that satisfy the value filter |
+| `emails[type eq "work"].value` | A sub-attribute of those values |
+| `members[value eq "…"]` | The members that satisfy the filter |
+| `urn:ietf:params:scim:schemas:extension:enterprise:2.0:User:department` | An attribute of the enterprise extension; the core schema's URI may also be written before an attribute |
+
+- Names are read without regard to case. A path is at most 1000 characters, and a value filter in it keeps the grammar and the [bounds](#bounds) of filters.
+- **A value filter in a path compares the sub-attributes of each value**, any of them, `type`, `primary` and `display` included, without regard to case. It is not limited to the attributes a list may be filtered on: it reads only the one resource.
+- A path that cannot be read is `invalidPath`; a value filter that cannot be read is `invalidFilter`.
+- A path naming an attribute this server does not keep is accepted, and what it sets is ignored, as it is in a `PUT`. A path naming a read-only attribute, `id`, `meta` or a user's `groups`, is `mutability`.
+
+### How operations apply
+
+| Operation | Without a path | On an attribute | On the values a filter selects |
+|---|---|---|---|
+| `add` | `value` is an object; each of its attributes is added as with a path | A single value is set; a complex value's sub-attributes are set and the others kept; a multi-valued attribute gets the values added to those it has | Each selected value gets the value's sub-attributes |
+| `replace` | `value` is an object; each of its attributes is replaced as with a path | A single value is set; a complex value's sub-attributes are set and the others kept; a multi-valued attribute is replaced by the values given | Each selected value gets the value's sub-attributes |
+| `remove` | `noTarget` | The attribute is removed; with a `value` that is a list, only the values of a multi-valued attribute equal to one of them are removed | The selected values are removed |
+
+- **When a value filter selects nothing**, `add` and `replace` make a new value when the filter is made only of `eq` comparisons joined by `and`, such as `emails[type eq "work"]`: the new value holds those sub-attributes and what the operation sets. Otherwise they are `noTarget`. A `remove` that selects nothing changes nothing, so that a SCIM client may repeat it.
+- **A path into a sub-attribute of the selected values**, as `emails[type eq "work"].value`, sets or removes that sub-attribute only.
+- Removing a required attribute, `userName` or a group's `displayName`, leaves a result that breaks a rule: `invalidValue`.
+
+## Versions
+
+Every resource has a **version**, a weak entity tag of RFC 7232 that changes whenever what SCIM answers for the resource changes. It is written `W/"<16 hexadecimal digits>"`: a hash of the resource as SCIM writes it, its `meta` but the version included. It is not secret and says nothing a reader of the resource does not see.
+
+- **It is `meta.version`** of the resource, and the `ETag` header of every answer that holds one resource, `201`, `200` of a `GET`, `PUT` and `PATCH` alike.
+- **`If-Match` on `PUT`, `PATCH` and `DELETE`** names the versions the change is meant for, or `*` for any. When the resource no longer has one of them the answer is `412`, without `scimType`, with the detail `the resource changed since the version given`, and nothing changes. The version is compared with the resource as it is read in the transaction of the change, without regard to `W/`.
+- **`If-None-Match` on `GET` of one resource** names versions, or `*`. When the resource has one of them the answer is `304`, with the `ETag` and no body.
+- A request without these headers is not conditional, as before.
+- **Two changes at the same moment.** A user's change also carries the identity context's own version: of two changes of one user made at the same moment, the second is refused with `409`, and the SCIM client reads the user again. A group's members have no such lock; two changes to them at the same moment can both pass their `If-Match`.
+
+## Bulk requests
+
+`POST /Bulk` holds several operations, as RFC 7644, section 3.7, says:
+
+```json
+{
+  "schemas": ["urn:ietf:params:scim:api:messages:2.0:BulkRequest"],
+  "failOnErrors": 1,
+  "Operations": [
+    { "method": "POST", "path": "/Users", "bulkId": "ana", "data": { "schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"], "userName": "ana" } },
+    { "method": "POST", "path": "/Groups", "bulkId": "finance", "data": { "schemas": ["urn:ietf:params:scim:schemas:core:2.0:Group"], "displayName": "finance", "members": [{ "value": "bulkId:ana" }] } },
+    { "method": "PATCH", "path": "/Users/bulkId:ana", "version": "W/\"…\"", "data": { "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"], "Operations": [{ "op": "replace", "path": "active", "value": false }] } }
+  ]
+}
+```
+
+- **Bounds.** At most 100 operations and a body of at most one mebibyte (1,048,576 bytes). A request past either is refused whole with `413` and `tooMany`, and nothing of it is done.
+- **Each operation is one request of its own**, `POST`, `PUT`, `PATCH` or `DELETE` on `/Users`, `/Users/{id}`, `/Groups` or `/Groups/{id}`, done in its own transaction, in the order given, with the same rules and answers as the request alone. `version` is its `If-Match`. An operation that fails changes nothing; those before it stay done. This is what RFC 7644 describes, a result per operation, and what lets `failOnErrors` mean anything.
+- **`failOnErrors`**, when given, is how many operations may fail before the rest are not done; their results are then left out of the answer. Without it every operation is done.
+- **`bulkId`** names what a `POST` creates, 1 to 64 characters of letters, digits, `-` and `_`, once in a request. A later operation refers to it as `bulkId:<name>`, in its `path` or as any string value of its `data`, such as a member's `value`, and the reference is replaced by the identifier the `POST` gave out. **References are resolved in order**: a reference to a `bulkId` no earlier operation of the request created, because it comes later, failed, or does not exist, fails that operation with `400` and `invalidValue`, and the others go on.
+- The answer is `200` with a `BulkResponse`: for each operation done, its `method`, `bulkId`, `status` as text, and for a success its `location` and `version`, for a failure its error as `response`.
+
+## Deprovisioning
+
+**Deprovisioning** is what a SCIM client does when a person leaves: `DELETE /Users/{id}`, or `active: false` in a `PUT` or `PATCH`. The tenant chooses what it does, with its **deprovisioning policy** ([the tenant context](tenant.md#scim-deprovisioning-policy)):
+
+| Policy | What deprovisioning does |
+|---|---|
+| `deactivate`, the default | The user is [Deactivated](identity.md#lifecycle): they cannot sign in, and an administrator, or `active: true`, can restore them. Their login identifiers stay theirs |
+| `delete` | The user is Deactivated and marked Deleted at once: their identifiers, profile and memberships are erased, and only the identifier remains |
+
+Either way, in the same transaction:
+
+- **every session of the person ends**, with the reason `deprovisioned`;
+- **every active grant of the person is revoked**, with the reason `deprovisioned`, and with them the refresh token families and access tokens issued from them: a refresh token stops working at once, and an access token is no longer in force for introspection and UserInfo ([what ends a family](oauth.md#what-ends-a-family));
+- what the provisioning context keeps of a Deleted user is removed.
+
+A user deprovisioned by `DELETE` under `deactivate` is answered `404` and never listed afterwards, as RFC 7644 asks; the provisioning context records when, and that holds while the user stays Deactivated. An administrator who restores them makes them seen again. A user deprovisioned by `active: false` stays seen, with `active: false`, so that the SCIM client can bring them back.
 
 ## Lists
 
@@ -321,12 +435,12 @@ The in-memory store evaluates the tree of conditions directly. The PostgreSQL st
 
 | Feature | Answer |
 |---|---|
-| `patch` | Not supported |
-| `bulk` | Not supported, with `maxOperations` and `maxPayloadSize` 0 |
+| `patch` | Supported |
+| `bulk` | Supported, with `maxOperations` 100 and `maxPayloadSize` 1048576 |
 | `filter` | Supported, with `maxResults` 200 |
 | `changePassword` | Not supported |
 | `sort` | Supported |
-| `etag` | Not supported |
+| `etag` | Supported |
 | `authenticationSchemes` | One: `oauthbearertoken`, the bearer token of RFC 6750 |
 
 `GET /ResourceTypes` lists `User`, at `/Users` with the core User schema and the enterprise extension, which is not required, and `Group`, at `/Groups` with the Group schema. `GET /Schemas` lists the three schemas with the attributes this page names, each with its type, whether it is multi-valued, required, compared with regard to case, writable and returned, and unique. Each is also answered by its name or its URI, and an unknown one is `404`. These documents are the same for every tenant except for their `location`.
@@ -340,6 +454,8 @@ Changes to users and groups are the identity context's, and are recorded by its 
 | `provisioning.user_attributes_changed` | What the provisioning context keeps of a user was set or changed: its `externalId`, its name or its enterprise attributes. Carries the user's identifier |
 | `provisioning.group_attributes_changed` | A group's `externalId` was set or changed. Carries the group's identifier |
 
+Deprovisioning records the identity context's `identity.user_deactivated` and, under `delete`, `identity.user_deleted`, with `session.revoked` for each session ended and `oauth.grant_revoked` for each grant revoked, all with the client as the actor.
+
 Like the identity context's events, they carry identifiers and never values: a department or an employee number is personal data, and stays in the provisioning tables. A request that changes nothing records nothing. Every event of a request carries the calling client as its actor and the request's identifier as its correlation.
 
 ## Operations
@@ -350,7 +466,9 @@ Like the identity context's events, they carry identifiers and never values: a d
 | Get user | The user, what the provisioning context keeps of it, and the groups it is directly in |
 | Replace user | Changes the identifiers, the display name, the status and what the provisioning context keeps, in one unit of work |
 | List users | A filtered, sorted page of users, and how many match |
-| Create, get, replace, delete group | As for users, with the members |
+| Change user | Applies a `PATCH` to the user as it is, then replaces it with the result |
+| Deprovision user | Deactivates the user, or deletes them, as the tenant's policy says, and ends their sessions and grants, in one unit of work |
+| Create, get, replace, change, delete group | As for users, with the members |
 | List groups | A filtered, sorted page of groups, and how many match |
 
 They use the identity context's use cases in their own unit of work: [the operations](identity.md#operations) whose names end in "in the caller's unit of work".
@@ -361,15 +479,20 @@ They use the identity context's use cases in their own unit of work: [the operat
 |---|---|
 | `ProvisionedUserRepository` | Store and load what the provisioning context keeps of a user; find the users that match a filter, in an order, a page at a time, with how many match |
 | `ProvisionedGroupRepository` | Store, load and remove what the provisioning context keeps of a group; find the groups that match a filter, as for users |
+| `DeprovisioningPolicy` | The tenant's deprovisioning policy, read in the unit of work of the change |
+| `AccessRevoker` | Ends every session of a person and revokes every active grant of theirs, in the caller's unit of work. Implemented in the composition root with the session and OAuth contexts, which this context does not depend on |
 
-Every method works inside the tenant of the unit of work it is given. Finding answers the identifiers of the users or groups on the page; the use case then loads them through the identity context.
+Every method works inside the tenant of the unit of work it is given. Finding answers the identifiers of the users or groups on the page; the use case then loads them through the identity context. A version is checked against the resource as the use case loads it in its own unit of work.
 
 ## Limits
 
 | Limit | Value | Why |
 |---|---|---|
 | Body of a request | 64 kibibytes, as every JSON surface | A request is a resource, not a batch |
-| Members of a group in one request | 1000 | Each is checked and written in one transaction |
+| Members of a group in one request | 1000, in a `POST` or a `PUT`, or named in all of a `PATCH`'s operations | Each is checked and written in one transaction |
+| Operations of a `PATCH` | 100 | Each applies to the result of the one before |
+| Operations of a bulk request | 100 | Each is a request of its own |
+| Body of a bulk request | One mebibyte | It holds up to 100 resources |
 | Resources in one page | 200 | `count` is bounded |
 | A filter | 1000 characters, 10 levels, 20 comparisons | [Bounds](#bounds) |
 | Each text attribute the provisioning context keeps | 256 characters | They are names and identifiers |
@@ -386,6 +509,8 @@ The schema `provisioning` holds two tenant tables under row-level security. Each
 | `external_id` | `text` | |
 | `name_formatted`, `given_name`, `family_name` | `text` | |
 | `employee_number`, `cost_center`, `organization`, `division`, `department`, `manager_id` | `text` | The enterprise attributes |
+| `email_types` | `jsonb` | The `type` of each address, by the address in its normalized form: open-ended labels, read only with the user |
+| `removed_at` | `timestamptz` | When a `DELETE` deprovisioned the user under `deactivate`; null otherwise |
 | `created_at`, `updated_at` | `timestamptz` | |
 
 Every text column holds 1 to 256 characters or nothing, checked by the database.
@@ -408,13 +533,10 @@ The PostgreSQL store finds users and groups with one statement over the identity
 
 | Item | Planned in |
 |---|---|
-| `PATCH` of users and groups | Milestone 7, Issue-91 |
-| Bulk requests, with a bounded number of operations and references between them | Milestone 7, Issue-91 |
-| Versions of resources, entity tags and `If-Match` | Milestone 7, Issue-91 |
-| The tenant's deprovisioning policy; deactivating and deleting users through SCIM, which ends their sessions and grants | Milestone 7, Issue-91 |
 | Choosing the attributes of an answer with `attributes` and `excludedAttributes` | Later; they are ignored |
 | Searching with `POST /.search` | Later |
-| The `type` of an email address, phone numbers, addresses, photos, `locale`, `title`, roles and entitlements of the core schema | Later |
+| Phone numbers, addresses, photos, `locale`, `title`, roles and entitlements of the core schema; filtering on `emails.type` | Later |
+| Changing a group's members with one lock on the group, so that two changes at the same moment cannot both pass their versions | Later |
 | Removing what the provisioning context keeps of a group deleted outside SCIM | Later; the row is never shown |
 | Synchronizing users and groups from LDAP, the other half of this context in the plan | Not scheduled |
 | SCIM as a client that provisions into other systems | Not scheduled |
