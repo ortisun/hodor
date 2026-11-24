@@ -620,7 +620,7 @@ A token without a record is not in force. That holds for a record removed with i
 
 **Who asks.** Introspection and UserInfo ask, and refuse a token that is not in force. A resource server that checks tokens by itself keeps accepting a revoked token until it expires, five minutes by default. Decision 0004 accepts that window, and a resource server that wants none introspects.
 
-**Cleanup.** The worker removes records whose token has expired, with the other cleanup jobs.
+**Cleanup.** The worker removes records whose token has expired, with [the other cleanup jobs](../../operations/deployment.md#cleanup).
 
 ### The requests
 
@@ -1037,15 +1037,11 @@ Both are tenant tables under row-level security, and reference their client with
 | Calling UserInfo from a browser on another origin | With origins in the client settings |
 | The person's claims in the ID token when asked for with the `claims` parameter | Not planned for 0.2.0 |
 | More than one `resource` in a refresh or client credentials request: a parameter may be given once | With resource indicators given more than once at the token endpoint |
-| Removing refresh token families after they expire, with their tokens | A cleanup job, with the other expired rows |
 | Calling the token endpoint from a browser on another origin: clients have no registered origins yet, so no cross-origin headers are sent | With origins in the client settings |
 | Client assertions signed with `ES384` or `EdDSA`, which client keys on P-384 and Ed25519 would need | When the kernel's signature checking covers them |
-| Removing remembered client assertions after they expire | A cleanup job, with the other expired rows |
 | Asking for an `acr` with the `claims` parameter. `acr_values` is the way to ask | Not planned for 0.2.0 |
 | A page where a person sees the history of their consents | The account console, Phase 2 |
-| Removing withdrawn and expired consents | A cleanup job, with the other expired rows |
 | Limits on requests to the authorization endpoint per address | With the other limits per address, before any deployment behind a load balancer |
-| Removing expired pending requests, codes and revoked grants | A cleanup job, with the other expired rows |
 | Request objects (`request`, `request_uri`) and pushed authorization requests | Phase 4, after 0.2.0 |
 | Pairwise subject identifiers, claim mappers per client | Phase 2, after 0.2.0 ([Decision 0023](../../decisions/0023-what-0.2.0-holds.md)) |
 | Opaque access tokens chosen per client | Not planned for 0.2.0 |

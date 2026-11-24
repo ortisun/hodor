@@ -128,7 +128,7 @@ Expiry produces no event, since nothing happens at that moment. Events carry ide
 
 A tenant table under row-level security. A token is looked up by tenant and hash together, so a token presented to another tenant finds nothing.
 
-Rows of expired and revoked sessions stay until a cleanup job removes them; that job does not exist yet.
+Rows of expired and revoked sessions stay for seven days, then [the cleanup job](../../operations/deployment.md#cleanup) of the worker removes them.
 
 ## Not built yet
 

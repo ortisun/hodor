@@ -452,7 +452,6 @@ The design's data model has a general `credential` table with one row per creden
 | A secret key mixed into every hash, kept outside the database | With the keys context, Phase 2 |
 | HOTP, the counter-based codes of RFC 4226, and codes sent by email or text message | Phase 4, outside the plan of 0.2.0 |
 | A relying party of each tenant's own, so that a browser offers only that tenant's passkeys | With custom domains for tenants, Phase 3 |
-| Removing pending WebAuthn registrations that were never finished | With the other cleanup jobs |
 | Checking attestation, EdDSA keys | When someone needs them ([Decision 0024](../../decisions/0024-webauthn-checks.md)) |
 | Keys for programs and certificates | Phases 5 and 6 |
 | Listing and revoking access tokens through an interface, and recording when one was last used | With OAuth in Phase 2, which replaces them |
