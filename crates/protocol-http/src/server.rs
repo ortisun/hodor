@@ -1,5 +1,6 @@
 //! Assembly of the public router and the serving loop.
 
+use crate::client_address::TrustedProxies;
 use crate::problem::Problem;
 use crate::request::request_context;
 use crate::tenant::{TenantResolver, resolve_tenant};
@@ -65,6 +66,24 @@ pub fn public_router(
     site_routes: Router,
     limits: Limits,
 ) -> Router {
+    public_router_behind(
+        resolver,
+        tenant_routes,
+        site_routes,
+        limits,
+        TrustedProxies::none(),
+    )
+}
+
+/// Builds the router for the public listener, as [`public_router`] does,
+/// reading the client address that `proxies` forward.
+pub fn public_router_behind(
+    resolver: Arc<dyn TenantResolver>,
+    tenant_routes: Router,
+    site_routes: Router,
+    limits: Limits,
+    proxies: TrustedProxies,
+) -> Router {
     let tenant_routes = tenant_routes
         .fallback(route_not_found)
         .layer(middleware::from_fn_with_state(resolver, resolve_tenant));
@@ -86,7 +105,10 @@ pub fn public_router(
         ))
         // Outermost, so that every response, including those produced by
         // the layers above, carries the request identifier and security headers.
-        .layer(middleware::from_fn(request_context))
+        .layer(middleware::from_fn_with_state(
+            Arc::new(proxies),
+            request_context,
+        ))
 }
 
 /// Whether a request posts a SAML response to an assertion consumer

@@ -7,8 +7,9 @@ use axum::routing::{get, post};
 use axum::{Extension, Router};
 use hodor_kernel::{DomainError, ErrorKind, TenantContext, TenantId};
 use hodor_protocol_http::{
-    Health, Limits, Problem, ReadinessCheck, ResolvedTenant, TenantResolver, TenantStatus,
-    ops_router, public_router, serve,
+    ClientAddress, ForwardedHeader, Health, Limits, Problem, ReadinessCheck, ResolvedTenant,
+    TenantResolver, TenantStatus, TrustedProxies, ops_router, parse_ranges, public_router,
+    public_router_behind, serve,
 };
 use http_body_util::BodyExt as _;
 use std::sync::Arc;
@@ -416,4 +417,84 @@ async fn shutdown_lets_in_flight_requests_finish() {
 
     // New connections are refused once the server has stopped.
     assert!(tokio::net::TcpStream::connect(address).await.is_err());
+}
+
+/// A router whose one route answers with the client address it was given.
+fn address_echo(proxies: TrustedProxies) -> Router {
+    let site = Router::new().route(
+        "/address",
+        get(
+            |Extension(ClientAddress(address)): Extension<ClientAddress>| async move {
+                address.map_or_else(|| "none".to_owned(), |a| a.to_string())
+            },
+        ),
+    );
+    let tenants = Arc::new(Tenants {
+        acme: TenantId::generate(),
+        lookups: AtomicUsize::new(0),
+    });
+    public_router_behind(tenants, Router::new(), site, Limits::default(), proxies)
+}
+
+async fn address_seen(router: &Router, peer: &str, forwarded: Option<&str>) -> String {
+    let mut request = Request::get("/address");
+    if let Some(forwarded) = forwarded {
+        request = request.header("x-forwarded-for", forwarded);
+    }
+    let mut request = request.body(Body::empty()).expect("request");
+    request.extensions_mut().insert(axum::extract::ConnectInfo(
+        peer.parse::<std::net::SocketAddr>()
+            .expect("a socket address"),
+    ));
+    let reply = send(router, request).await;
+    assert_eq!(reply.status, StatusCode::OK);
+    reply.body
+}
+
+#[tokio::test]
+async fn by_default_the_client_address_is_the_connections() {
+    let router = public_router(
+        Arc::new(Tenants {
+            acme: TenantId::generate(),
+            lookups: AtomicUsize::new(0),
+        }),
+        Router::new(),
+        Router::new().route(
+            "/address",
+            get(
+                |Extension(ClientAddress(address)): Extension<ClientAddress>| async move {
+                    address.map_or_else(|| "none".to_owned(), |a| a.to_string())
+                },
+            ),
+        ),
+        Limits::default(),
+    );
+    assert_eq!(
+        address_seen(&router, "10.0.0.1:5000", Some("203.0.113.7")).await,
+        "10.0.0.1",
+        "no proxy is trusted unless named"
+    );
+}
+
+#[tokio::test]
+async fn behind_a_trusted_proxy_the_forwarded_address_reaches_every_route() {
+    let proxies = TrustedProxies::new(
+        parse_ranges("10.0.0.0/8").expect("ranges"),
+        ForwardedHeader::XForwardedFor,
+    );
+    let router = address_echo(proxies);
+    assert_eq!(
+        address_seen(&router, "10.0.0.1:5000", Some("198.51.100.1, 203.0.113.7")).await,
+        "203.0.113.7"
+    );
+    assert_eq!(
+        address_seen(&router, "203.0.113.9:5000", Some("198.51.100.1")).await,
+        "203.0.113.9",
+        "a client that is not a proxy cannot choose its address"
+    );
+    assert_eq!(
+        address_seen(&router, "[::ffff:10.0.0.1]:5000", Some("unknown")).await,
+        "10.0.0.1",
+        "what cannot be read falls back to the connection"
+    );
 }

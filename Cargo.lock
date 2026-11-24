@@ -1937,6 +1937,7 @@ dependencies = [
  "hodor-tenant",
  "http-body-util",
  "miniz_oxide",
+ "opentelemetry",
  "serde",
  "serde_json",
  "testcontainers",

@@ -125,7 +125,6 @@ These are recorded here so they are not forgotten; each is picked up by the issu
 | Asking to register or recover answers the same whoever the address belongs to, but not in the same time: an address with something to send costs one more write. The difference was not measured | Hardening pass |
 | A registration that fails after the user was created and before the password was set leaves an account without a password; the person gets in by recovering it | Accepted; see [the authentication context](../architecture/contexts/authentication.md#registration) |
 | Used, replaced and expired verification tokens are never removed | A cleanup job, later in Phase 1 |
-| The address used to limit attempts is the connection's, so behind a load balancer everyone shares one limit | Before any deployment behind a load balancer |
 | Records of messages that were sent, failed or expired are never removed | A cleanup job, later in Phase 1 |
 | The worker opens a new connection to the mail server for every message | When the volume of mail calls for it |
 | The mail adapter was tested against a mail server without encryption or a password; the encrypted and authenticated paths rely on the mail library | Before the first production deployment |
@@ -243,14 +242,19 @@ Specified in [the authorization context](../architecture/contexts/authorization.
 
 ## Milestones 6 to 9: what 0.3.0 holds
 
-Planned in [the epics](epics.md#milestone-6-hodor-runs-behind-a-load-balancer-and-cleans-up-after-itself); [Decision 0027](../decisions/0027-what-0.3.0-holds.md) says what each holds and what it leaves to its phase. Nothing is built yet.
-
+Planned in [the epics](epics.md#milestone-6-hodor-runs-behind-a-load-balancer-and-cleans-up-after-itself); [Decision 0027](../decisions/0027-what-0.3.0-holds.md) says what each holds and what it leaves to its phase. 
 | Milestone | Slices | Done | Total |
 |---|---|---|---|
-| 6 — Hodor runs behind a load balancer and cleans up after itself | U and V: behind a load balancer, what is shipped | 0 | 5 |
+| 6 — Hodor runs behind a load balancer and cleans up after itself | U and V: behind a load balancer, what is shipped | 1 | 5 |
 | 7 — Groups, organizations and SCIM | W and X: groups and organizations, SCIM | 0 | 7 |
 | 8 — Workloads, agents and webhooks | Y and Z: workloads and agents, webhooks | 0 | 5 |
 | 9 — What 0.2.0 left out | OpenID Connect; email, access lists and enrollment | 0 | 7 |
+
+### Milestone 6 — Hodor runs behind a load balancer and cleans up after itself
+
+| Issue | Status | What exists |
+|---|---|---|
+| Issue-81 The forwarded client address | Done | `HODOR_TRUSTED_PROXIES` names the load balancers and web servers whose forwarded header is read, as address ranges; `HODOR_FORWARDED_HEADER` says which one, `x-forwarded-for` or `forwarded`, and no other is read. The client address is set once as a request arrives, in `hodor-protocol-http`: the connection's address unless it is a trusted proxy, otherwise the nearest address of the header that is not one, so what a client writes at the start of its own header is never reached. Ports, brackets and IPv4 addresses held in IPv6 are read; anything that does not read, or more than 32 trusted proxies in a row, falls back to the connection's address and is counted by `hodor.http.forwarded_address.unreadable`. The server refuses to start with a range it cannot read or one that holds every address. The Docker installation trusts every private address, since its server's port is published on the machine alone; the chart has `trustedProxies` and `forwardedHeader`. Tested: the rules on ranges and headers by unit tests, the address reaching every route through the router, and two clients behind one proxy limited apart on recovery requests, a forged header included. Not tried with a real load balancer. Specified in [the client address](../api/api-spec.md#the-client-address) |
 
 ## Admin console
 
@@ -314,7 +318,6 @@ Two ways to install Hodor that are not the development stack, outside the milest
 | On Kubernetes | Done | `deploy/install/helm/hodor`: a Helm chart with the server, the worker, the migration job as a hook, the Service, disruption budgets, and an optional Ingress, autoscaler and network policy. Every secret is read from a Secret that exists beforehand. Installed and upgraded on a local cluster with `deploy/install/helm/evaluation.yaml`; the Ingress, the autoscaler and the network policy were rendered, not exercised |
 | Checks | Done | Continuous integration lints and renders the chart and validates the Compose file. It installs neither |
 | A published image and chart | Not started | Both are built and installed from a checkout |
-| A forwarded client address | Not started | Both packages put a web server in front of Hodor, so everyone shares one limit on sign-in attempts. Listed under [known gaps](#known-gaps-in-what-is-done) |
 
 ## Defects found after merging
 

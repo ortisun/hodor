@@ -25,6 +25,7 @@ hodor-oauth.workspace = true
 hodor-session.workspace = true
 hodor-tenant.workspace = true
 http-body-util.workspace = true
+opentelemetry.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
