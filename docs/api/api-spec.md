@@ -43,6 +43,61 @@ All paths are relative to the tenant base: `https://{host}/t/{tenant}` or the te
 
 OAuth endpoints follow their RFCs instead: form-encoded requests and the `error` / `error_description` JSON format.
 
+## Where a request comes from
+
+Every surface records the address a request came from and limits by it. Sign-in attempts are counted per address. Sessions and sign-ins keep it, and the audit log names it. This section says which address that is.
+
+### The client address
+
+The **client address** is the address of the connection, unless that connection comes from a **trusted proxy**. A trusted proxy is a load balancer or web server the operator names by its address range in `HODOR_TRUSTED_PROXIES`, such as `10.0.0.0/8` or `2001:db8::/32`. A bare address names that address alone. The setting is empty by default, so by default the client address is the connection's and every forwarded header is ignored.
+
+When the connection comes from a trusted proxy, Hodor reads the **forwarded header** the operator names in `HODOR_FORWARDED_HEADER`: `x-forwarded-for` (the default) or `forwarded` (RFC 7239). Only that one header is read. A proxy writes one of them, and a client can send the other. If Hodor read both, a client could choose the one its proxy leaves alone.
+
+The header lists the addresses the request passed through, the client first and each proxy after it. Every proxy adds the address it received the request from at the end. Hodor reads the list from the end, nearest first:
+
+1. The connection's address is a trusted proxy, so the address it added at the end is looked at next.
+2. An address that is a trusted proxy is passed over, and the one before it is looked at.
+3. The first address that is not a trusted proxy is the client address.
+4. When every address in the list is a trusted proxy, the client address is the first in the list.
+
+The addresses at the start of the list were written by whoever sent the request, so they are never believed on their own. A client that writes a false address at the start of its header is still known by the address its first trusted proxy saw.
+
+```mermaid
+flowchart LR
+    Client["Client 203.0.113.7"] -->|"X-Forwarded-For: 198.51.100.1 (forged)"| Edge["Load balancer 10.0.0.5"]
+    Edge -->|"X-Forwarded-For: 198.51.100.1, 203.0.113.7"| WebServer["Web server 10.0.1.9"]
+    WebServer -->|"X-Forwarded-For: 198.51.100.1, 203.0.113.7, 10.0.0.5"| Hodor["Hodor"]
+```
+
+With `HODOR_TRUSTED_PROXIES=10.0.0.0/16`, Hodor sees a connection from 10.0.1.9, which is trusted. It reads the list from the end, passes over 10.0.0.5, which is trusted, and takes 203.0.113.7. The forged 198.51.100.1 is never reached.
+
+### What is read and what is refused
+
+| Case | Client address |
+|---|---|
+| The connection is not from a trusted proxy | The connection's address. The forwarded header is ignored, whatever it says |
+| The header is absent | The connection's address |
+| An address is written with a port, such as `203.0.113.7:4711` or `[2001:db8::7]:4711` | The address without the port |
+| An IPv6 address that holds an IPv4 address, such as `::ffff:203.0.113.7` | The IPv4 address, for the connection and the header alike, so that one client is never counted as two |
+| The header is sent more than once | The lists are read as one, in the order they arrived, as HTTP says they must be |
+| An entry that is not an address is reached before the client address: `unknown`, an obfuscated identifier of RFC 7239 such as `_hidden`, or text that does not read | The connection's address, and the counter `hodor.http.forwarded_address.unreadable` counts it with `reason` `unreadable` |
+| More than 32 trusted proxies are passed over before the client address is found | The connection's address, counted with `reason` `too_long`. Only the entries read from the end count, so a long list a client writes at the start of its header is never reached |
+
+Falling back to the connection's address is the safe way to fail. Every client behind that proxy then shares one limit. A client cannot choose an address by sending something Hodor cannot read.
+
+The client address is set once, as the request arrives, before the tenant is resolved. Everything after it uses the same value: the attempt guard, sessions, sign-ins in progress, the audit log and the record of decisions.
+
+### Configuring it
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `HODOR_TRUSTED_PROXIES` | empty | Address ranges of trusted proxies, such as `10.0.0.0/8,fd00::/8`, separated by commas. Empty: forwarded headers are never read |
+| `HODOR_FORWARDED_HEADER` | `x-forwarded-for` | Which header a trusted proxy writes: `x-forwarded-for` or `forwarded` |
+
+The server refuses to start if a range cannot be read. It also refuses a range that holds every address, `0.0.0.0/0` or `::/0`, because that range would let every client choose its own address.
+
+Name only the proxies that add the address they received the request from and that cannot be reached any other way. A range that also holds machines that are not proxies lets those machines choose their address. [Installing with Docker](../operations/install-with-docker.md) and [installing on Kubernetes](../operations/install-on-kubernetes.md) say what to name in each.
+
 ## OAuth 2.x and OpenID Connect
 
 The paths are relative to the tenant, `https://{host}/t/{slug}`, whose issuer is `{HODOR_PUBLIC_URL}/t/{slug}`. The authorization endpoint, the token endpoint and the OpenID Provider are specified in [the OAuth context](../architecture/contexts/oauth.md#authorization-endpoint).

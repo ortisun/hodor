@@ -71,6 +71,12 @@ spec:
             - name: HODOR_DIRECTORY_HOSTS
               value: {{ join "," . | quote }}
             {{- end }}
+            {{- with .Values.trustedProxies }}
+            - name: HODOR_TRUSTED_PROXIES
+              value: {{ join "," . | quote }}
+            {{- end }}
+            - name: HODOR_FORWARDED_HEADER
+              value: {{ .Values.forwardedHeader | quote }}
             {{- with .Values.server.extraEnvironment }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

@@ -143,7 +143,18 @@ The role names are fixed: `hodor_owner`, `hodor_server`, `hodor_worker` and `hod
 
 ### A web server of your own
 
-Remove `https` from `COMPOSE_PROFILES` and point your web server at `127.0.0.1:8080`, or at the port in `HODOR_HTTP_PORT`. It must serve HTTPS for the name in `HODOR_PUBLIC_URL`: the session cookie is marked `Secure`, and browsers do not send it over plain HTTP.
+Remove `https` from `COMPOSE_PROFILES` and point your web server at `127.0.0.1:8080`, or at the port in `HODOR_HTTP_PORT`. It must serve HTTPS for the name in `HODOR_PUBLIC_URL`: the session cookie is marked `Secure`, and browsers do not send it over plain HTTP. It must also add the address it received each request from to `X-Forwarded-For`, as nginx does with `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for`, so that Hodor knows who is signing in. The next section says why.
+
+### The address of each client
+
+Hodor limits sign-in attempts by the [client address](../api/api-spec.md#the-client-address). Here every request reaches Hodor through a web server, so Hodor reads the address the web server forwards in `X-Forwarded-For`.
+
+The installation trusts that header from every private address: `HODOR_TRUSTED_PROXIES` is `10.0.0.0/8,172.16.0.0/12,192.168.0.0/16` unless `.env` sets it. That is safe here, and only here, because the server's port is published on `127.0.0.1` alone. The only things that can connect to it are the containers of this installation and programs on this machine. The web server of the profile `https` replaces any `X-Forwarded-For` a client sends with the client's own address.
+
+Change it when that is not true:
+
+- If you publish the server's port beyond this machine, set `HODOR_TRUSTED_PROXIES` to the addresses of your web servers alone.
+- If a load balancer sits in front of the web server, add its range too. Your web server must then keep the header it receives instead of replacing it.
 
 ## Day to day
 
@@ -181,7 +192,6 @@ Upgrade one release at a time: [deployment](deployment.md#upgrades) explains why
 
 | Limit | What it means |
 |---|---|
-| Everyone shares one limit on sign-in attempts | Hodor limits attempts by the address of the connection it sees, and here that is always the web server in front of it. [The interaction interface](../api/interaction-api.md) lists trusting a forwarded address as not built. Until it is, a burst of failed sign-ins from one place can slow sign-in for everyone |
 | One machine | When the machine is down, Hodor is down. [Installing on Kubernetes](install-on-kubernetes.md) runs several servers |
 | No backups on a schedule | The command above is run by you, or by whatever you schedule it with |
 | No store for metrics and traces | Hodor sends them where you say; nothing here receives them. The development stack shows one way, with VictoriaMetrics and VictoriaTraces |

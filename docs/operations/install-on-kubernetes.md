@@ -163,6 +163,7 @@ kubectl exec --namespace hodor deployment/hodor-server -- /usr/local/bin/hodor-c
 | `telemetry.metricsEndpoint`, `telemetry.tracesEndpoint` | Empty | Where metrics and traces are sent over OTLP/HTTP. [Deployment](deployment.md#observability) says what is sent |
 | `ingress.enabled`, `ingress.className`, `ingress.annotations`, `ingress.tls` | `false` | The Ingress for the name in `publicUrl`. The certificate is read from the Secret `ingress.tls.secretName`, `<release>-tls` when empty, which a certificate manager can fill |
 | `networkPolicy.enabled` | `false` | See [network policy](#network-policy) |
+| `trustedProxies`, `forwardedHeader` | Empty; `x-forwarded-for` | The address ranges of the ingress controller and of any load balancer in front of it, and the header they write. See [the address of each client](#the-address-of-each-client) |
 
 Changing the Secret does not restart anything. After changing it, restart the pods so that they read it again:
 
@@ -178,6 +179,25 @@ With `networkPolicy.enabled`, one policy applies to every pod of the release:
 - **Out**: unrestricted, unless `networkPolicy.egress.enabled` is set. Then the pods reach the cluster's name service and what `networkPolicy.egress.to` lists, and nothing else. List the database, the mail server, the collector of metrics and traces, and the identity providers and directories your tenants use.
 
 A cluster enforces network policies only if its network plugin does.
+
+### The address of each client
+
+Hodor limits sign-in attempts by the [client address](../api/api-spec.md#the-client-address). Behind an Ingress, the connection Hodor sees comes from the ingress controller, so everyone shares one limit until the ingress controller is named in `trustedProxies`:
+
+```yaml
+trustedProxies:
+  - 10.244.0.0/16
+networkPolicy:
+  enabled: true
+  ingressFrom:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingress-nginx
+```
+
+- **Name the range the ingress controller's pods get their addresses from.** That is usually the cluster's pod range, here `10.244.0.0/16`, the default of kind.
+- **Turn on the network policy so that only the ingress controller can connect.** The pod range also holds every other pod of the cluster, and any of them could otherwise write the header.
+- **The ingress controller must see the client's own address.** Behind a cloud load balancer, that takes the load balancer's PROXY protocol or a service with `externalTrafficPolicy: Local`, as your ingress controller's documentation describes. Otherwise it forwards the address of a node.
 
 ## Upgrading
 
@@ -273,7 +293,6 @@ kind delete cluster --name hodor
 
 | Missing | Until then |
 |---|---|
-| Trusting a forwarded client address | Hodor limits sign-in attempts by the address of the connection it sees, which behind an Ingress is the ingress controller's. Everyone shares one limit. [The interaction interface](../api/interaction-api.md) lists this as not built |
 | Autoscaling on request concurrency | The autoscaler follows processor use only |
 | Dashboards and alerts | Metrics and traces are sent where `telemetry` says; what is drawn and alerted from them is yours |
 | The Open Policy Agent sidecar and Redis | Neither is used by Hodor yet: both belong to later phases of the [roadmap](../product/roadmap.md) |

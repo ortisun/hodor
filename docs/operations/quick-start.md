@@ -249,7 +249,7 @@ Milestone 1 is a walking skeleton: it proves that the pieces work together. It i
 |---|---|
 | Your own database roles and passwords | The ones in `deploy/docker/postgres-init.sql` and in the Compose file are public. See [database roles](../development/local-setup.md#database-roles) |
 | TLS in front of the server, and `HODOR_PUBLIC_URL` set to the address people use | The cookies are marked `Secure`, and the links in messages start with that address |
-| Hodor reached directly, not through a load balancer | The address used to limit attempts is the connection's. Behind a load balancer everyone would share one limit |
+| The load balancer or web server in front named in `HODOR_TRUSTED_PROXIES` | Attempts are limited by the [client address](../api/api-spec.md#the-client-address). Behind a proxy that is not named, everyone shares one limit |
 | A real mail server in `HODOR_SMTP_URL`, with encryption, and `HODOR_MAIL_FROM` | The development mail server delivers nothing |
 | The operations listener kept off the internet | It answers health checks without any authentication |
 | Backups of the database | Everything Hodor knows is there, the audit log included |

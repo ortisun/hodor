@@ -30,8 +30,8 @@ use hodor_kernel::{Caller, DomainError, Secret, TenantContext, Timestamp, UserId
 use hodor_notification::api::Notifier;
 use hodor_notification::testing::InMemoryMessages;
 use hodor_protocol_http::{
-    InteractionState, Limits, ResolvedTenant, TenantResolver, TenantStatus, interaction_routes,
-    public_router,
+    ForwardedHeader, InteractionState, Limits, ResolvedTenant, TenantResolver, TenantStatus,
+    TrustedProxies, interaction_routes, parse_ranges, public_router_behind,
 };
 use hodor_session::api::SessionService;
 use hodor_session::testing::{InMemorySessions, SequentialRandom};
@@ -104,6 +104,10 @@ impl World {
 }
 
 async fn world() -> World {
+    world_behind(TrustedProxies::none()).await
+}
+
+async fn world_behind(proxies: TrustedProxies) -> World {
     let units_of_work = InMemoryUnitOfWorkFactory::default();
     let clock = Arc::new(FixedClock::at(Timestamp::UNIX_EPOCH));
     let digest = Arc::new(FakeDigest);
@@ -271,7 +275,7 @@ async fn world() -> World {
         digest,
         clock: clock.clone(),
     };
-    let router = public_router(
+    let router = public_router_behind(
         Arc::new(Tenants {
             acme: acme.clone(),
             globex,
@@ -279,6 +283,7 @@ async fn world() -> World {
         Router::new().nest("/interaction", interaction_routes(state)),
         Router::new(),
         Limits::default(),
+        proxies,
     );
     World {
         router,
@@ -319,6 +324,8 @@ struct Browser {
     cookies: BTreeMap<String, String>,
     csrf_token: Option<String>,
     origin: Option<&'static str>,
+    /// The address of the connection, and the `X-Forwarded-For` it sends.
+    connection: Option<(std::net::SocketAddr, String)>,
 }
 
 impl Browser {
@@ -362,13 +369,21 @@ impl Browser {
         if let Some(origin) = self.origin {
             request = request.header(header::ORIGIN, origin);
         }
-        let request = match body {
+        if let Some((_, forwarded)) = &self.connection {
+            request = request.header("x-forwarded-for", forwarded);
+        }
+        let mut request = match body {
             Some(body) => request
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(body.to_string())),
             None => request.body(Body::empty()),
         }
         .expect("request");
+        if let Some((peer, _)) = self.connection {
+            request
+                .extensions_mut()
+                .insert(axum::extract::ConnectInfo(peer));
+        }
 
         let response = world
             .router
@@ -1029,6 +1044,60 @@ async fn asking_too_often_is_answered_with_how_long_to_wait() {
     assert_eq!(last.code(), "authentication.too_many_attempts");
     assert!(last.headers.contains_key(header::RETRY_AFTER));
     assert_eq!(world.templates().len(), 5);
+}
+
+#[tokio::test]
+async fn behind_a_trusted_proxy_each_client_has_a_limit_of_its_own() {
+    let world = world_behind(TrustedProxies::new(
+        parse_ranges("10.0.0.0/8").expect("ranges"),
+        ForwardedHeader::XForwardedFor,
+    ))
+    .await;
+    let proxy: std::net::SocketAddr = "10.0.0.1:4000".parse().expect("an address");
+    let from = |client: &str| Browser {
+        connection: Some((proxy, client.to_owned())),
+        ..Browser::default()
+    };
+
+    // One client asks about many addresses until it is limited. Each
+    // address is asked about once, so the limit reached is the client's.
+    let mut asked = 0;
+    let limited = loop {
+        asked += 1;
+        assert!(asked <= 200, "the client was never limited");
+        let reply = from("203.0.113.7")
+            .post(
+                &world,
+                "recovery",
+                serde_json::json!({ "email": format!("person{asked}@example.com") }),
+            )
+            .await;
+        if reply.status == StatusCode::TOO_MANY_REQUESTS {
+            break reply;
+        }
+    };
+    assert_eq!(limited.code(), "authentication.too_many_attempts");
+
+    // A client behind the same proxy is not limited.
+    let other = from("203.0.113.8")
+        .post(
+            &world,
+            "recovery",
+            serde_json::json!({ "email": "someone@example.com" }),
+        )
+        .await;
+    assert_ne!(other.status, StatusCode::TOO_MANY_REQUESTS);
+
+    // The limited client stays limited, whatever it writes at the start of
+    // its own header.
+    let forged = from("198.51.100.1, 203.0.113.7")
+        .post(
+            &world,
+            "recovery",
+            serde_json::json!({ "email": "another@example.com" }),
+        )
+        .await;
+    assert_eq!(forged.status, StatusCode::TOO_MANY_REQUESTS);
 }
 
 #[tokio::test]

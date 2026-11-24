@@ -46,6 +46,14 @@ mail:
 # The LDAP directories identity providers may name, each as host:port. Empty: none can be used.
 directoryHosts: []
 
+# The address ranges of the ingress controller, and of any load balancer in front of it, whose forwarded
+# header is believed. Empty: the client address is the connection's, so everyone behind the Ingress shares
+# one limit on sign-in attempts. Name the range the ingress controller's pods get their addresses from, and
+# turn on networkPolicy so that nothing else in that range can connect.
+trustedProxies: []
+# The header they write: x-forwarded-for or forwarded.
+forwardedHeader: x-forwarded-for
+
 log:
   # json or pretty.
   format: json

@@ -57,11 +57,12 @@ use hodor_oauth::api::{
 use hodor_observability::{LogFormat, Telemetry};
 use hodor_protocol_http::{
     AdminState, AuthorizationApiState, AuthorizationState, ConsentState, ConsoleState,
-    DiscoveryState, Health, InteractionState, Limits, LogoutState, Pages, ReadinessCheck,
-    ResolvedTenant, TenantResolver, TenantStatus as HttpTenantStatus, TokenState, UserInfoState,
-    admin_routes, authorization_api_routes, authorization_routes, consent_routes, console_routes,
-    discovery_routes, interaction_routes, key_set_routes, logout_routes, ops_router,
-    policy_agent_routes, public_router, serve, token_routes, userinfo_routes,
+    DiscoveryState, ForwardedHeader, Health, InteractionState, Limits, LogoutState, Pages,
+    ReadinessCheck, ResolvedTenant, TenantResolver, TenantStatus as HttpTenantStatus, TokenState,
+    TrustedProxies, UserInfoState, admin_routes, authorization_api_routes, authorization_routes,
+    consent_routes, console_routes, discovery_routes, interaction_routes, key_set_routes,
+    logout_routes, ops_router, parse_ranges, policy_agent_routes, public_router_behind, serve,
+    token_routes, userinfo_routes,
 };
 use hodor_session::api::SessionService;
 use hodor_tenant::api::{TenantDirectory as _, TenantService, TenantStatus};
@@ -195,6 +196,21 @@ struct Config {
     )]
     open_policy_agent_revision_lag_seconds: u32,
 
+    /// Address ranges of the load balancers and web servers whose
+    /// forwarded header is read, such as `10.0.0.0/8,fd00::/8`. Empty: the
+    /// client address is always the connection's.
+    #[arg(long, env = "HODOR_TRUSTED_PROXIES", default_value = "")]
+    trusted_proxies: String,
+
+    /// The header trusted proxies write the client address into:
+    /// `x-forwarded-for` or `forwarded`.
+    #[arg(
+        long,
+        env = "HODOR_FORWARDED_HEADER",
+        default_value = "x-forwarded-for"
+    )]
+    forwarded_header: String,
+
     /// The LDAP directories identity providers may name, as `host:port`
     /// separated by commas. Empty: no directory can be used.
     #[arg(long, env = "HODOR_DIRECTORY_HOSTS", value_delimiter = ',')]
@@ -295,6 +311,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 }
 
 async fn run(config: Config) -> Result<(), Box<dyn Error>> {
+    // Checked first, so that a wrong range stops the server before anything
+    // else is started.
+    let proxies = trusted_proxies(&config)?;
     let database = Database::connect(
         &Secret::from(config.database_url.clone()),
         config.database_max_connections,
@@ -400,11 +419,12 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
         }
         None => tracing::warn!("HODOR_CONSOLE_DIRECTORY is not set: no console is served"),
     }
-    let public = public_router(
+    let public = public_router_behind(
         Arc::new(DirectoryResolver(PgTenantDirectory::new(database.clone()))),
         tenant_routes,
         site_routes,
         Limits::default(),
+        proxies,
     );
     let ops = ops_router(health.clone());
 
@@ -889,6 +909,28 @@ fn authorization_engines(
 }
 
 /// The directories that may be connected to: empty unless set.
+/// The proxies whose forwarded header is read. A range that cannot be read,
+/// or one that holds every address, stops the server from starting.
+fn trusted_proxies(config: &Config) -> Result<TrustedProxies, Box<dyn Error>> {
+    let ranges = parse_ranges(&config.trusted_proxies)
+        .map_err(|invalid| format!("HODOR_TRUSTED_PROXIES: {invalid}"))?;
+    let header: ForwardedHeader = config
+        .forwarded_header
+        .parse()
+        .map_err(|invalid| format!("HODOR_FORWARDED_HEADER: {invalid}"))?;
+    if ranges.is_empty() {
+        tracing::info!("no proxy is trusted: the client address is the connection's");
+    } else {
+        let named: Vec<String> = ranges.iter().map(ToString::to_string).collect();
+        tracing::info!(
+            ranges = %named.join(","),
+            header = %config.forwarded_header.to_ascii_lowercase(),
+            "the client address is read from the forwarded header of trusted proxies"
+        );
+    }
+    Ok(TrustedProxies::new(ranges, header))
+}
+
 fn directory_hosts(config: &Config) -> Vec<String> {
     config
         .directory_hosts

@@ -89,7 +89,12 @@ services:
       HODOR_PUBLIC_URL: ${HODOR_PUBLIC_URL:?Set HODOR_PUBLIC_URL in .env to the address people use, such as https://login.example.com}
       # Keeps the secrets of identity providers and the signing keys encrypted in the database.
       HODOR_SECRET_KEYS: ${HODOR_SECRET_KEYS:?Set HODOR_SECRET_KEYS in .env, as identifier:key}
+      # Who forwards the address of each client. Every connection to the server comes from a container of
+      # this installation or from this machine, since its port is published on 127.0.0.1 alone, so every
+      # private address may be trusted. Narrow it if the port is ever published beyond this machine.
+      HODOR_TRUSTED_PROXIES: ${HODOR_TRUSTED_PROXIES:-10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}
       # Optional settings: passed on when `.env` sets them, left to Hodor's defaults otherwise.
+      HODOR_FORWARDED_HEADER:
       HODOR_DIRECTORY_HOSTS:
       HODOR_KEY_OVERLAP_HOURS:
       HODOR_REFRESH_RETRY_SECONDS:

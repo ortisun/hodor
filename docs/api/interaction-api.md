@@ -573,13 +573,12 @@ Neither completion signs the person in. The pages send them to sign in.
 
 ## Where requests come from
 
-The address recorded for a sign-in, and used to limit attempts, is the address of the connection the server sees. Behind a load balancer that is the load balancer's address, which would make every person share one attempt limit. Trusting a forwarded address from named proxies is not built yet; until it is, Hodor must be reached directly or the address limit must be understood as shared.
+The address recorded for a sign-in, and used to limit attempts, is the [client address](api-spec.md#the-client-address). It is the address of the connection, or the address a trusted proxy forwarded. Behind a load balancer that is not named as a trusted proxy, every person shares the load balancer's address and so one attempt limit.
 
 ## Not built yet
 
 | Item | Planned in |
 |---|---|
-| Trusting a forwarded client address from named proxies | Before any deployment behind a load balancer |
 | Limiting requests per address on these paths, beyond the attempt limits of the password step | Later in Phase 1 |
 | The `__Host-` cookie variant for a tenant's own host | Phase 3 |
 | The history of a person's consents in the account pages | The account console, Phase 2 |
