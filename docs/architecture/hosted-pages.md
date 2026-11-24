@@ -19,6 +19,7 @@ All paths are relative to the tenant: `https://{host}/t/{slug}`.
 | `/account/sign-out` | Is asked whether to sign out, when an application asked Hodor to sign them out | `GET` and `DELETE /interaction/session` |
 | `/account/security` | Manages their second factors and recovery codes | [The factor routes](../api/interaction-api.md#managing-ones-factors) and the WebAuthn registration routes |
 | `/account/consent` | Is asked whether an application may have the access it asks for | [`GET` and `POST /interaction/consent`](../api/interaction-api.md#consent) |
+| `/account/accept-invitation` | Arrives from the link of an invitation, and joins the organization | [`POST /interaction/invitations/describe` and `/accept`](../api/interaction-api.md#accepting-an-invitation), and `GET /interaction/session` |
 | `/account/providers/{alias}/callback` | Arrives back from an identity provider | The sign-in routes, to [finish](../api/interaction-api.md#signing-in-through-an-identity-provider) |
 
 `/account` and `/account/security` send a person who is not signed in to `/account/sign-in`, and `/account/sign-in` sends a person who is already signed in to `/account`.
@@ -105,7 +106,8 @@ After finishing, the person is sent to sign in, with a message saying the accoun
 
 - the address has no account: a form to choose a password and, optionally, a name, which creates the account and the membership, then sends the person to sign in;
 - the address has an account and the person is signed in as it: one button, "join", which makes the membership and sends them to their account page;
-- the address has an account and nobody, or somebody else, is signed in: a button to sign in, which signs the person in and brings them back here.
+- the address has an account and nobody is signed in: a way to sign in, and the advice to open the link in the message again once signed in; the token is never kept anywhere, so the page cannot come back to it by itself;
+- another account is signed in: what to do, and a way to sign out.
 
 A link that no longer works says so, in the same words whatever the reason.
 

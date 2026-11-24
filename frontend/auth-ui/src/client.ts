@@ -65,6 +65,14 @@ export interface Key {
 }
 
 /** The person's second factors. */
+/** What an invitation's link is for, as the server describes it. */
+export interface InvitationDescription {
+  organizationName: string;
+  email: string;
+  hasAccount: boolean;
+  expiresAt: string;
+}
+
 export interface Factors {
   /** `null` when the installation offers no authenticator application. */
   authenticatorApplication: { inUse: boolean } | null;
@@ -471,6 +479,30 @@ export class Client {
     await this.#send("POST", "/registration/complete", {
       token,
       password,
+      ...(name === "" ? {} : { display_name: name }),
+    });
+  }
+
+  /** What an invitation's link is for. */
+  async describeInvitation(token: string): Promise<InvitationDescription> {
+    const reply = await this.#send("POST", "/invitations/describe", { token });
+    return {
+      organizationName: text(reply.body["organization_name"]) ?? "",
+      email: text(reply.body["email"]) ?? "",
+      hasAccount: reply.body["has_account"] === true,
+      expiresAt: text(reply.body["expires_at"]) ?? "",
+    };
+  }
+
+  /**
+   * Accepts an invitation. With a password, creates the account of an
+   * address that has none; without, joins as the signed-in person.
+   */
+  async acceptInvitation(token: string, password?: string, displayName?: string): Promise<void> {
+    const name = displayName?.trim() ?? "";
+    await this.#send("POST", "/invitations/accept", {
+      token,
+      ...(password === undefined ? {} : { password }),
       ...(name === "" ? {} : { display_name: name }),
     });
   }

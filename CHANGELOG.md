@@ -8,6 +8,7 @@ Every release of Hodor, newest first. The rules for versions and releases are in
 
 - Groups of users in a tenant, with groups inside groups, no cycles and a depth the tenant chooses with `hodor-cli tenant group-depth`. They cannot be managed from the administration interface yet.
 - Organizations inside a tenant, with a tree of units and departments up to ten levels deep, and people as members of several organizations, each in some of its units. They cannot be managed from the administration interface yet.
+- Invitations to an organization by email. The person accepts from the link: with a new account and a password if the address has none, or signed in as the account that has it.
 
 - Hodor can sit behind load balancers and web servers and still count each client apart. Name them in `HODOR_TRUSTED_PROXIES` and Hodor reads the client address they forward in `X-Forwarded-For`, or in `Forwarded` with `HODOR_FORWARDED_HEADER`. The limits on sign-in attempts, sessions and the audit log then use that address. A forwarded header from anyone else is ignored. The Docker installation trusts its own web server, and the chart has `trustedProxies` and `forwardedHeader`.
 - The worker removes what stopped being useful: ended sessions, used and expired links, delivered messages, expired codes, revoked grants and refresh tokens, withdrawn consents, and more. Each kind is kept for a while after it stops being useful, 7 days for sessions and 30 for messages, for example, and `HODOR_CLEANUP_RETENTION_DAYS` changes how long. The audit log is never touched.
