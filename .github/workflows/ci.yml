@@ -183,6 +183,9 @@ jobs:
       - name: Run the demonstration of Milestone 5
         working-directory: .
         run: python3 deploy/demo/authorization.py
+      - name: Run the demonstration of Milestone 7
+        working-directory: .
+        run: python3 deploy/demo/organizations.py
       # Last: its second worker removes the ended sessions and delivered
       # messages of every tenant of the stack.
       - name: Run the demonstration of Milestone 6

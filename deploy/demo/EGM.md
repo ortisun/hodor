@@ -2,12 +2,13 @@
 
 ## Overview
 
-Four demonstration scripts that run against the development stack of [docker](../docker/EGM.md) and check, step by step, what the milestones promise. All use Python 3 and nothing outside the standard library, and all run `hodor-cli` through Docker Compose. Every answer is checked; the first one that is not what it should be stops the demonstration with exit status 1.
+Demonstration scripts that run against the development stack of [docker](../docker/EGM.md) and check, step by step, what the milestones promise. All use Python 3 and nothing outside the standard library, and all run `hodor-cli` through Docker Compose. Every answer is checked; the first one that is not what it should be stops the demonstration with exit status 1.
 
 - `demo.py`: the demonstration of Milestone 1. A person registers, verifies an address and signs in to a tenant, and tenants are kept apart.
 - `external_identities.py`: the demonstration of Milestone 2. Signing in with external identities through the development OpenID Connect provider ([dev-provider](../dev-provider/EGM.md)), the development LDAP directory and the development SAML identity provider ([dev-saml-provider](../dev-saml-provider/EGM.md)).
 - `applications.py`: the demonstration of Milestone 3. A third-party application registered with the command-line tool, the consent page, the ID token and UserInfo, a refresh token that ends when an old one comes back, a token a client gets for itself, revocation and introspection, a rotated key, and tenants kept apart.
 - `authorization.py`: the demonstration of Milestone 5. Permissions and roles given to a person and a client, decisions asked for with a client-credentials token, a condition that changes the answer, a resource server answered by an Open Policy Agent instance the script starts next to the stack, with policies published, simulated and rolled back, a stopped instance whose answer is indeterminate, and the record of decisions.
+- `organizations.py`: the demonstration of Milestone 7. A group inside another group and a cycle refused, an organization with a department and an invitation accepted from the link in the message, a role given to a group and evaluated for a member until the member is taken out, a sign-in for the organization whose tokens carry `org_id`, a user and a group provisioned and changed through SCIM, the user deactivated with their session and refresh token ended, and a group, an organization and a SCIM token of one tenant refused by another.
 - `strong_authentication.py`: the demonstration of Milestone 4. An authenticator application, recovery codes, a tenant that requires a second factor, a passkey that signs in alone, a step-up asked for by an application, and an administrator removing a person's factors.
 
 ## Interface
@@ -69,16 +70,25 @@ Steps of `main()`, in order: `the_stack_answers`, `two_tenants` (`tenant create 
 - Starts `openpolicyagent/opa:1.10.1` with `docker run` on the stack's network under the alias `policy-agent`, the address the stack gives the server in `HODOR_OPEN_POLICY_AGENT_ADDRESS`, with a configuration it writes into a temporary directory: the instance's credential, the tenant's bundle, the public key and `deploy/open-policy-agent/decision-log-mask.rego`. It stops the instance and removes the directory at the end, also when it fails.
 - Steps of `main()`, in order: `two_tenants` (`tenant create`, `keys rotate`, `admin bootstrap`), `roles_and_who_holds_them`, `decisions_by_role`, `a_condition`, `open_policy_agent` (`policy-agent signing-key`, `policy-agent instance add`, `policy-agent bundle-name`, `policy draft --written-by operator`, `policy publish`, `policy rollback`; validation, tests and simulation through the administration interface), `the_record`, `tenants_apart`.
 
+### `organizations.py`
+
+- Imports from `demo`, from `external_identities` (`completed`, `post_form`, `query_of`), from `strong_authentication` (`REDIRECT_URI`, `Application`) and from `authorization` (`API`, `Administrator`, `application`, `decided`, `evaluate`, `service_client`, `token_for`); reads the same environment variables.
+- Constants: `PASSWORD`, `PAYROLL` (`https://payroll.example.com`), `SCIM` (`urn:hodor:scim`) and the SCIM schemas of users, groups, the enterprise extension and `PATCH`.
+- `Portal(Application)`: the tenant's first-party application, registered with `application add --first-party` and `client add` with the `authorization_code` and `refresh_token` grants; `signed_in(browser, **extra)` gets a code at once and redeems it, answering the token response with both tokens' checked claims; `refresh(token)`.
+- `Directory`: the SCIM client, `call(method, path, body, tenant)` under `/t/{tenant}/scim/v2` with its client-credentials token.
+- Steps of `main()`, in order: `two_tenants` (`tenant create`, `keys rotate`, `admin bootstrap` in both), `a_group_inside_another` (`identity.group_cycle`), `an_organization_and_an_invitation` (the link read with `link_from_message`, `/interaction/invitations/describe` and `/interaction/invitations/accept`), `a_role_through_a_group`, `signed_in_for_the_organization` (`organization` at the authorization endpoint), `a_directory`, `provisioned`, `deactivated` (`/interaction/recovery` for the provisioned person's password, then `active: false` through `PATCH`), `tenants_apart`, `the_audit_log` (`audit verify`).
+- Runs before `operations.py`, whose second worker removes the delivered messages it reads.
+
 ## Invariants
 
-- Each run makes its own tenants and addresses from a hexadecimal time suffix (`acme-`, `globex-`, `initech-`, `umbrella-`, `ana-`, `bia-`, `sam-`, `mallory-`, `operator-ana-`), so the scripts can run again against the same stack.
-- `external_identities.py`, `applications.py`, `strong_authentication.py` and `authorization.py` import their siblings as modules, so they must be run as scripts from their file paths (the script's directory is then on the import path).
+- Each run makes its own tenants and addresses from a hexadecimal time suffix (`acme-`, `globex-`, `initech-`, `umbrella-`, `ana-`, `bia-`, `carla-`, `sam-`, `mallory-`, `operator-`, `operator-ana-`, `operator-globex-`), so the scripts can run again against the same stack.
+- `external_identities.py`, `applications.py`, `strong_authentication.py`, `authorization.py` and `organizations.py` import their siblings as modules, so they must be run as scripts from their file paths (the script's directory is then on the import path).
 - `cli` runs `hodor-cli` with the placeholder `hodor_server` connection string (`CLI_DATABASE_URL`), the way the server connects.
 - Checks the scripts rely on, with the problem codes they expect: a verification link of one tenant is refused by the other (`404`, `authentication.verification_token_invalid`) and works only once; a session cookie of one tenant is refused by the other (`401`, `session.not_authenticated`); after five wrong passwords the right one is refused (`429`, `authentication.too_many_attempts`) in that tenant only; an administrator token of one tenant is refused by the other (`401`, `admin.not_authenticated`); the audit log of the first tenant holds `identity.user_created`, `authentication.registration_completed`, `session.started` and `authentication.succeeded` but not the other tenant's `authentication.locked_out`; a provider of one tenant does not exist in another (`404`, `federation.provider_not_found`); an external identity with a vouched email address that already has a password account is refused; a SAML response whose `NameID` was changed after signing is refused and recorded as `federation.sign_in_refused` with reason `digest`. In `strong_authentication.py`: a password session's tokens say `amr` `pwd` and the single-factor level; a step-up to the multi-factor level asks only for `totp` and the tokens then say `pwd`, `otp` and `mfa`; with `tenant second-factor --policy required` a password alone leaves the sign-in at `totp`; a recovery code completes it once and is rejected the second time, leaving nine; a passkey completes a sign-in from the identifier step, and its tokens say `pop`, `user` and `mfa` and the phishing-resistant level; the passkey is rejected by the other tenant; the administrator's token is refused by the other tenant (`401`, `admin.not_authenticated`); after the administrator removes the passkey and the application nothing is left, the password alone ends the sign-in as `failed`, and the log of the tenant holds `credential.webauthn_removed` and `credential.totp_removed` with the administrator as the actor.
 
 ## Side Effects
 
-- Creates tenants, users, external identity providers, administrator tokens, signing keys, applications and clients, authenticator applications, recovery codes and passkeys in the running stack's database, through HTTP and `hodor-cli`; nothing is cleaned up.
+- Creates tenants, users, external identity providers, administrator tokens, signing keys, applications and clients, authenticator applications, recovery codes, passkeys, groups, organizations and invitations in the running stack's database, through HTTP and `hodor-cli`; nothing is cleaned up.
 - Runs `docker compose ... run --rm` containers of the `server` service.
 - Reads the mail server, VictoriaMetrics (`/api/v1/series`) and VictoriaTraces (`/select/jaeger/api/traces`); waits up to 60 seconds for messages and audit records and up to 120 seconds for metrics and traces.
 - `external_identities.py` reads `deploy/dev-saml-provider/certificate.pem`.
@@ -94,4 +104,7 @@ python3 deploy/demo/demo.py
 python3 deploy/demo/external_identities.py
 python3 deploy/demo/applications.py
 python3 deploy/demo/strong_authentication.py
+python3 deploy/demo/authorization.py
+python3 deploy/demo/organizations.py
+python3 deploy/demo/operations.py
 ```
