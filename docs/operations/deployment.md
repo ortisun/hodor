@@ -105,6 +105,45 @@ Policy checks run only when `HODOR_OPEN_POLICY_AGENT_BINARY` is set; the image s
 
 A growing count of `retrying` messages means the mail server is refusing or unreachable; the reason for each message is in the `last_error` column of `notification.message`.
 
+### Cleanup
+
+Many rows are only useful for a while: a session that ended, a link that was used, a code that expired. The worker removes them, so that the database does not grow forever and holds no more personal data than it needs. Every kind of row below has a **retention**: how long it is kept after it stopped being useful. Then it is removed.
+
+| Kind | Stops being useful when | Retention | What removing it also removes |
+|---|---|---|---|
+| `sessions` | It was ended, or it expired, idle or absolute | 7 days | — |
+| `sign_ins` | The sign-in in progress expired | 1 day | — |
+| `verification_tokens` | The registration or recovery link was used, replaced or expired | 7 days | — |
+| `messages` | It was sent, failed or expired. Its contents were already erased | 30 days | — |
+| `webauthn_registrations` | A security key or passkey registration was never finished and expired | 0 | — |
+| `authorization_requests` | The request kept while the person signs in expired | 0 | — |
+| `authorization_codes` | The code expired | 1 day | — |
+| `revoked_grants` | The grant was revoked | 30 days | Its codes, refresh token families and records of access tokens |
+| `refresh_token_families` | The family expired or was revoked | 30 days | Its refresh tokens and records of access tokens |
+| `client_assertions` | The remembered `jti` of a client assertion expired | 0 | — |
+| `consents` | It was withdrawn or expired. The history of consents is kept | 30 days | — |
+| `administration_access_tokens` | The access token of the administration interface expired or was revoked | 30 days | — |
+| `pending_authorizations` | A sign-in that left for an identity provider never came back | 0, fixed | — |
+| `access_tokens` | The access token recorded in the register expired | 0, fixed | — |
+
+Removing a row never changes an answer Hodor gives:
+
+- **Nothing that can still be used is removed.** A row is removed only after it stopped being useful, so a retention of 0 removes it at the next pass and no sooner.
+- **A row that is gone answers like one that was refused.** A code, a refresh token, a link or a session that is no longer stored is refused as unknown. An access token whose record is gone is [not in force](../architecture/contexts/oauth.md#the-register-of-access-tokens).
+- **What is longer means more is remembered.** While a revoked refresh token family is kept, presenting one of its tokens again is recognized as reuse. After that it is simply unknown, and refused all the same.
+- **The audit log, the history of consents and the record of decisions are never removed by this job.** The record of decisions has [its own retention](../architecture/contexts/authorization.md#the-record-of-decisions).
+
+A retention is changed with `HODOR_CLEANUP_RETENTION_DAYS`, as `kind=days` pairs separated by commas, such as `sessions=30,messages=90`. A kind it does not name keeps its default. The worker refuses to start with a kind it does not know, a kind given twice, a number that is not a whole number of days from 0 to 3650, or a retention for `pending_authorizations` or `access_tokens`.
+
+Each kind is a job of its own, run like the others: it finds the tenants that have something to remove through the platform connection, then removes at most `HODOR_CLEANUP_BATCH_SIZE` rows in each tenant as the application role. A pass that removed a full batch is followed by another at once. Workers need no leader: the rows a pass removes are locked with `FOR UPDATE SKIP LOCKED`, so two workers never remove the same row and each skips what the other holds.
+
+| Metric | Kind | Labels |
+|---|---|---|
+| `hodor.cleanup.removed` | Counter | `job`: the kind |
+| `hodor.cleanup.passes` | Counter | `job`: the kind; `outcome`: `ok`, `error` |
+
+Rows that are never removed today: the counters of failed attempts, which keep the escalation of lockouts, and an authenticator application enrollment that was never confirmed, of which a person has at most one.
+
 ## Configuration and secrets
 
 | Kind | Source |
@@ -159,6 +198,6 @@ The server checks the schema version at startup and refuses to run against a sch
 ## Scaling notes
 
 - The server is stateless; any node serves any request. In-memory caches are bounded and invalidated by events (through Redis pub/sub when present, by short time to live otherwise).
-- Workers coordinate through `FOR UPDATE SKIP LOCKED`; there is no leader election. Scheduled jobs (key rotation, cleanup) use a database advisory lock.
+- Workers coordinate through `FOR UPDATE SKIP LOCKED`; there is no leader election. Cleanup jobs lock the rows they remove the same way. Key rotation and policy checks need one worker at a time and take a database advisory lock.
 - The first bottleneck is password hashing CPU, then database connections. Scale servers for the former, the pooler for the latter.
 - Open Policy Agent sidecars scale with the server. Bundle downloads are conditional requests, so thousands of instances are cheap.

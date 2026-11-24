@@ -4,9 +4,11 @@
 
 The background process, in one file, `main.rs`. It runs six loops side by
 side: the outbox dispatch loop, which turns every outbox event into an audit
-record, the mail delivery loop, which sends queued messages over SMTP, two
-cleanup loops, one removing pending authorizations that expired and one
-removing the records of access tokens that expired, the rotation loop,
+record, the mail delivery loop, which sends queued messages over SMTP, four
+cleanup loops, one removing pending authorizations that expired, one
+removing the records of access tokens that expired, one maintaining the
+record of decisions, and one removing every other kind of row that stopped
+being useful once its retention passed, the rotation loop,
 which rotates the tenants' signing keys, and the policy check loop, which
 checks, tests and simulates policy versions with `opa`. It
 holds two PostgreSQL pools: one as the application role, to handle each piece
@@ -31,6 +33,7 @@ Configuration (`Config`, clap, command name `hodor-worker`):
 | `--mail-poll-interval-ms` | `HODOR_MAIL_POLL_INTERVAL_MS` | 1000 |
 | `--cleanup-interval-ms` | `HODOR_CLEANUP_INTERVAL_MS` | 60000 |
 | `--cleanup-batch-size` | `HODOR_CLEANUP_BATCH_SIZE` (rows per tenant per pass) | 500 |
+| `--cleanup-retention-days` | `HODOR_CLEANUP_RETENTION_DAYS` (`kind=days` pairs, read by `cleanup_retentions`) | empty: every kind keeps its default |
 | `--secret-keys` | `HODOR_SECRET_KEYS` | unset: keys do not rotate |
 | `--key-rotation-days` | `HODOR_KEY_ROTATION_DAYS` | 90 |
 | `--key-publication-hours` | `HODOR_KEY_PUBLICATION_HOURS` | 24 |
@@ -53,20 +56,24 @@ Symbols:
   `AuditService` (with `PgAuditLog`, `Sha256Digest`), and
   `PendingAuthorizationCleanup::new(platform, database)`,
   `AccessTokenCleanup::new(platform, database)`,
-  `DecisionLogMaintenance::new(platform, database)` and
+  `DecisionLogMaintenance::new(platform, database)`, one
+  `ExpiredRowCleanup::new(kind, retention_days, platform, database)` for
+  each of `ExpiredKind::ALL`, and
   `OutboxDispatcher::new(platform, database, [AuditHandler])`, and, with
   `HODOR_SECRET_KEYS`, `KeyRotationJob::new(platform, KeyService, policy)`
   over `PgKeyStore` and `LocalKeyProvider`, and, with
   `HODOR_OPEN_POLICY_AGENT_BINARY`, `OpaProcessChecker::verified` (the worker
   does not start with a binary it refuses) and
   `PolicyCheckJob::new(platform, policy_service(database), checker)`; then
-  serves `ops_router(health)` and joins the seven loops.
+  serves `ops_router(health)` and joins the eight loops.
 - `dispatch_loop` calls `OutboxDispatcher::dispatch_batch(batch_size)`.
 - `delivery_loop` calls `DeliveryService::deliver_pending(batch_size)`.
-- `cleanup_loop` calls `CleanupJob::run(now, batch_size)`: `CleanupJob` is
-  `PendingAuthorizations(PendingAuthorizationCleanup)` or
-  `AccessTokens(AccessTokenCleanup)` or `DecisionLog(DecisionLogMaintenance)`,
-  and `name` is its `job` attribute.
+- `cleanup_loop` takes a slice of jobs and calls `CleanupJob::run(now,
+  batch_size)` on each in turn: `CleanupJob` is
+  `PendingAuthorizations(PendingAuthorizationCleanup)`,
+  `AccessTokens(AccessTokenCleanup)`, `DecisionLog(DecisionLogMaintenance)`
+  or `Expired(ExpiredRowCleanup)`, and `name` is its `job` attribute, the
+  kind's name for `Expired`.
 - `rotation_loop` calls `KeyRotationJob::run(now)`.
 - `policy_check_loop` calls `PolicyCheckJob::run()`; `policy_service` builds
   `PolicyService` over the PostgreSQL stores.
@@ -102,8 +109,9 @@ Symbols:
   (`dispatch_loop`). The mail loop sleeps whenever nothing was sent or
   expired, because "a pass that only failed would otherwise spin"
   (`delivery_loop`). The cleanup loop runs at start, then after every pause;
-  a pass that removed a full batch in every tenant it looked at is followed
-  by another at once, since more may be waiting (`cleanup_loop`).
+  a pass in which any job removed a full batch in every tenant it looked at
+  is followed by another at once, since more may be waiting, unless a job
+  failed (`cleanup_loop`).
 - On the stop signal the worker finishes the current batch: readiness starts
   failing (`health.begin_draining()`), the loops stop before their next
   pass, then the operations server stops (`run`, `wait_for`).
@@ -123,7 +131,9 @@ Symbols:
   `AccessTokenCleanup` (`cleanup_loop`); and prepares the partitions of the
   record of decisions, drops those past 400 days and removes each tenant's
   records past its retention, through `DecisionLogMaintenance`
-  (`cleanup_loop`, job `decision_log`).
+  (`cleanup_loop`, job `decision_log`); and deletes the rows of each
+  `ExpiredKind` past their retention, inside each tenant, through
+  `ExpiredRowCleanup` (`cleanup_loop`, job named after the kind).
 - Makes, activates and retires signing key versions inside each tenant
   through `KeyRotationJob` (`rotation_loop`), and logs what changed and
   each tenant whose step failed.
@@ -133,7 +143,8 @@ Symbols:
   `activated`, `retired`), `hodor.outbox.events`, `hodor.outbox.passes`,
   `hodor.notification.messages`, `hodor.notification.passes`,
   `hodor.cleanup.removed` and `hodor.cleanup.passes` (attribute `job` =
-  `pending_authorizations` or `access_tokens`), `hodor.policy.check.passes`
+  `pending_authorizations`, `access_tokens`, `decision_log` or the name of
+  an `ExpiredKind`), `hodor.policy.check.passes`
   (attribute `outcome`) and `hodor.policy.check.done` (attribute `kind`:
   `version`, `simulation`).
 - Runs the `opa` binary as a child process for each check, test and

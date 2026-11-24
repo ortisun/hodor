@@ -166,7 +166,8 @@ The worker connects to the database twice, with different roles: as a member of 
 | `HODOR_MAIL_FROM` | — (required with `HODOR_SMTP_URL`) | The address messages are sent from, for example `Hodor <no-reply@example.com>` |
 | `HODOR_MAIL_BATCH_SIZE` | `50` | Most messages handled per pass |
 | `HODOR_MAIL_POLL_INTERVAL_MS` | `1000` | Pause between passes when there is no message to deliver |
-| `HODOR_CLEANUP_INTERVAL_MS` | `60000` | Pause between passes of the cleanup jobs: removing [pending authorizations](../architecture/contexts/federation.md#the-pending-authorization) that expired |
+| `HODOR_CLEANUP_INTERVAL_MS` | `60000` | Pause between passes of [the cleanup jobs](../operations/deployment.md#cleanup), which remove rows that stopped being useful |
+| `HODOR_CLEANUP_RETENTION_DAYS` | empty | Retentions that differ from the defaults, as `kind=days` pairs separated by commas, such as `sessions=30,messages=90`. See [cleanup](../operations/deployment.md#cleanup) |
 | `HODOR_CLEANUP_BATCH_SIZE` | `500` | Most rows a cleanup job removes in one tenant per pass |
 | `HODOR_SECRET_KEYS` | unset | The same keys as the server's. Unset: [keys do not rotate](../architecture/contexts/keys.md#two-workers-one-rotation), and no tenant gets a signing key |
 | `HODOR_KEY_ROTATION_DAYS`, `HODOR_KEY_PUBLICATION_HOURS`, `HODOR_KEY_OVERLAP_HOURS` | `90`, `24`, `24` | [The rotation policy](../architecture/contexts/keys.md#the-rotation-policy): how long a signing key signs, how long its successor is published before it signs, how long it stays published after |
