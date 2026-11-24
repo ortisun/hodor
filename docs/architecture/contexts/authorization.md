@@ -35,6 +35,10 @@ A permission names something that can be done: a kind of resource and an action 
 | `bindings:write` | Binding a resource server to an engine and removing the binding |
 | `policies:read` | Seeing the tenant's policy versions, their reports and simulations, and what is published |
 | `policies:write` | Drafting policy versions, asking for their checks and tests, and asking for simulations |
+| `groups:read` | Seeing the tenant's groups, their members and the groups a user is in |
+| `groups:write` | Creating, changing and deleting groups, and adding and taking out members |
+| `organizations:read` | Seeing organizations, their units, their members and pending invitations, and the organizations a user is in |
+| `organizations:write` | Creating, changing and deleting organizations and units, adding, changing and taking out members, and inviting and withdrawing invitations |
 
 ## Roles
 
@@ -43,7 +47,7 @@ A role is a named set of permissions. The roles of Hodor's administration are fi
 | Role | Permissions | Meant for |
 |---|---|---|
 | `tenant_administrator` | All of the above | The people who run a tenant |
-| `tenant_auditor` | `users:read`, `sessions:read`, `audit:read`, `identity-providers:read`, `keys:read`, `applications:read`, `assurance-levels:read`, `credentials:read` | People who must be able to see everything and change nothing |
+| `tenant_auditor` | `users:read`, `sessions:read`, `audit:read`, `identity-providers:read`, `keys:read`, `applications:read`, `assurance-levels:read`, `credentials:read`, `groups:read`, `organizations:read` | People who must be able to see everything and change nothing |
 
 A user holds a role in one tenant. Holding a role in one tenant means nothing in another: an assignment is a row of its tenant, like everything else.
 

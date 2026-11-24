@@ -57,11 +57,19 @@ pub enum Permission {
     /// Drafting policy versions and asking for checks, tests and
     /// simulations.
     PoliciesWrite,
+    /// Seeing groups, their members and the groups of a user.
+    GroupsRead,
+    /// Creating, changing and deleting groups, and changing their members.
+    GroupsWrite,
+    /// Seeing organizations, their units, members and pending invitations.
+    OrganizationsRead,
+    /// Changing organizations, their units and members, and inviting.
+    OrganizationsWrite,
 }
 
 impl Permission {
     /// Every permission.
-    pub const ALL: [Self; 23] = [
+    pub const ALL: [Self; 27] = [
         Self::UsersRead,
         Self::UsersWrite,
         Self::SessionsRead,
@@ -85,6 +93,10 @@ impl Permission {
         Self::BindingsWrite,
         Self::PoliciesRead,
         Self::PoliciesWrite,
+        Self::GroupsRead,
+        Self::GroupsWrite,
+        Self::OrganizationsRead,
+        Self::OrganizationsWrite,
     ];
 
     /// The permission written as `resource:action`.
@@ -114,6 +126,10 @@ impl Permission {
             Self::BindingsWrite => "bindings:write",
             Self::PoliciesRead => "policies:read",
             Self::PoliciesWrite => "policies:write",
+            Self::GroupsRead => "groups:read",
+            Self::GroupsWrite => "groups:write",
+            Self::OrganizationsRead => "organizations:read",
+            Self::OrganizationsWrite => "organizations:write",
         }
     }
 
@@ -180,6 +196,8 @@ impl Role {
                 Permission::RolesRead,
                 Permission::BindingsRead,
                 Permission::PoliciesRead,
+                Permission::GroupsRead,
+                Permission::OrganizationsRead,
             ],
         }
     }

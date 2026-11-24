@@ -217,7 +217,8 @@ fn world() -> World {
     let digest = Arc::new(FakeDigest);
     let units = || Arc::new(units_of_work.clone());
 
-    let identity = IdentityService::new(units(), Arc::new(InMemoryUsers::default()), clock.clone());
+    let users = Arc::new(InMemoryUsers::default());
+    let identity = IdentityService::new(units(), users.clone(), clock.clone());
     let tokens = AccessTokenService::new(
         units(),
         Arc::new(InMemoryAccessTokens::default()),
@@ -248,6 +249,19 @@ fn world() -> World {
     let globex = TenantContext::assume(TenantId::generate());
     let oauth = applications(&units_of_work, clock.clone());
     let authorization_parts = authorization_services(&units_of_work, clock.clone());
+    let tenants = TenantService::new(
+        Arc::new(units_of_work.clone()),
+        Arc::new(InMemoryTenants::default()),
+        Arc::new(InMemoryTenants::default()),
+        clock.clone(),
+    );
+    let groups_and_organizations = memberships(
+        &units_of_work,
+        clock.clone(),
+        users.clone(),
+        &identity,
+        &tenants,
+    );
     let administration = AdminState {
         tokens: tokens.clone(),
         authorization: authorization.clone(),
@@ -290,6 +304,9 @@ fn world() -> World {
         evaluation: authorization_parts.1,
         policies: Some(authorization_parts.2),
         public_url: "https://auth.example".to_owned(),
+        groups: groups_and_organizations.0,
+        organizations: groups_and_organizations.1,
+        invitations: groups_and_organizations.2,
     };
     let router = public_router(
         Arc::new(Tenants {
@@ -848,4 +865,55 @@ async fn each_interface_knows_people_in_its_own_way_only() {
             .await;
         assert_eq!(reply.status, StatusCode::NOT_FOUND, "{path}");
     }
+}
+
+/// Groups, organizations and invitations over the given users.
+fn memberships(
+    units_of_work: &InMemoryUnitOfWorkFactory,
+    clock: Arc<FixedClock>,
+    users: Arc<InMemoryUsers>,
+    identity: &IdentityService,
+    tenants: &TenantService,
+) -> (
+    hodor_identity::api::GroupService,
+    hodor_identity::api::OrganizationService,
+    hodor_authentication::api::InvitationService,
+) {
+    let units = || Arc::new(units_of_work.clone());
+    let groups = hodor_identity::api::GroupService::new(
+        units(),
+        Arc::new(hodor_identity::testing::InMemoryGroups::default()),
+        users.clone(),
+        Arc::new(hodor_identity::testing::FixedGroupPolicy(5)),
+        clock.clone(),
+    );
+    let organizations = hodor_identity::api::OrganizationService::new(
+        units(),
+        Arc::new(hodor_identity::testing::InMemoryOrganizations::default()),
+        Arc::new(hodor_identity::testing::InMemoryInvitations::default()),
+        users,
+        clock.clone(),
+    );
+    let invitations = hodor_authentication::api::InvitationService::new(
+        units(),
+        hodor_authentication::api::InvitationContexts {
+            organizations: organizations.clone(),
+            identity: identity.clone(),
+            credentials: hodor_credential::api::CredentialService::new(
+                units(),
+                Arc::new(hodor_credential::testing::InMemoryPasswords::default()),
+                Arc::new(hodor_credential::testing::FakeHasher::default()),
+                clock.clone(),
+            ),
+            tenants: tenants.clone(),
+            notifier: hodor_notification::api::Notifier::new(
+                Arc::new(hodor_notification::testing::InMemoryMessages::default()),
+                clock,
+            ),
+        },
+        Arc::new(FakeDigest),
+        Arc::new(SequentialRandom::default()),
+        "https://auth.example",
+    );
+    (groups, organizations, invitations)
 }

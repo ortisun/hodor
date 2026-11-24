@@ -53,6 +53,8 @@ mod applications;
 mod authorization;
 mod decisions;
 mod factors;
+mod groups;
+mod organizations;
 
 /// The OpenAPI document of the interface, as served at `/openapi.json`.
 pub const ADMIN_OPENAPI: &str = include_str!("../openapi/admin-v1.json");
@@ -309,6 +311,95 @@ pub const ADMIN_OPERATIONS: &[(&str, &str, Permission)] = &[
         Permission::PoliciesRead,
     ),
     ("GET", "/policy-status", Permission::PoliciesRead),
+    ("GET", "/groups", Permission::GroupsRead),
+    ("POST", "/groups", Permission::GroupsWrite),
+    ("GET", "/groups/{group_id}", Permission::GroupsRead),
+    ("PATCH", "/groups/{group_id}", Permission::GroupsWrite),
+    ("DELETE", "/groups/{group_id}", Permission::GroupsWrite),
+    ("GET", "/groups/{group_id}/members", Permission::GroupsRead),
+    (
+        "POST",
+        "/groups/{group_id}/members",
+        Permission::GroupsWrite,
+    ),
+    (
+        "POST",
+        "/groups/{group_id}/members:remove",
+        Permission::GroupsWrite,
+    ),
+    ("GET", "/users/{user_id}/groups", Permission::GroupsRead),
+    ("GET", "/organizations", Permission::OrganizationsRead),
+    ("POST", "/organizations", Permission::OrganizationsWrite),
+    (
+        "GET",
+        "/organizations/{organization_id}",
+        Permission::OrganizationsRead,
+    ),
+    (
+        "PATCH",
+        "/organizations/{organization_id}",
+        Permission::OrganizationsWrite,
+    ),
+    (
+        "DELETE",
+        "/organizations/{organization_id}",
+        Permission::OrganizationsWrite,
+    ),
+    (
+        "GET",
+        "/organizations/{organization_id}/units",
+        Permission::OrganizationsRead,
+    ),
+    (
+        "POST",
+        "/organizations/{organization_id}/units",
+        Permission::OrganizationsWrite,
+    ),
+    (
+        "PUT",
+        "/organizations/{organization_id}/units/{unit_id}",
+        Permission::OrganizationsWrite,
+    ),
+    (
+        "DELETE",
+        "/organizations/{organization_id}/units/{unit_id}",
+        Permission::OrganizationsWrite,
+    ),
+    (
+        "GET",
+        "/organizations/{organization_id}/members",
+        Permission::OrganizationsRead,
+    ),
+    (
+        "PUT",
+        "/organizations/{organization_id}/members/{user_id}",
+        Permission::OrganizationsWrite,
+    ),
+    (
+        "DELETE",
+        "/organizations/{organization_id}/members/{user_id}",
+        Permission::OrganizationsWrite,
+    ),
+    (
+        "GET",
+        "/organizations/{organization_id}/invitations",
+        Permission::OrganizationsRead,
+    ),
+    (
+        "POST",
+        "/organizations/{organization_id}/invitations",
+        Permission::OrganizationsWrite,
+    ),
+    (
+        "DELETE",
+        "/organizations/{organization_id}/invitations/{invitation_id}",
+        Permission::OrganizationsWrite,
+    ),
+    (
+        "GET",
+        "/users/{user_id}/organizations",
+        Permission::OrganizationsRead,
+    ),
 ];
 
 /// What the administration handlers need.
@@ -351,6 +442,12 @@ pub struct AdminState {
     pub policies: Option<hodor_authorization_opa::api::PolicyService>,
     /// The address people reach this installation at, without a path.
     pub public_url: String,
+    /// The tenant's groups.
+    pub groups: hodor_identity::api::GroupService,
+    /// The tenant's organizations, their units, members and invitations.
+    pub organizations: hodor_identity::api::OrganizationService,
+    /// Sending invitations to organizations.
+    pub invitations: hodor_authentication::api::InvitationService,
 }
 
 /// What the console interface needs on top of the administration
@@ -451,6 +548,8 @@ fn shared_routes() -> Router<Shared> {
         .merge(factors::routes())
         .merge(decisions::routes())
         .merge(authorization::routes())
+        .merge(groups::routes())
+        .merge(organizations::routes())
 }
 
 /// One assurance level, as the interface writes it.

@@ -4,6 +4,7 @@
 
 mod applications;
 mod decisions;
+mod memberships;
 mod policies;
 mod roles;
 
@@ -172,6 +173,44 @@ enum Command {
         database_url: Option<String>,
         #[command(subcommand)]
         command: decisions::AuthorizationCommand,
+    },
+
+    /// Manage a tenant's groups and their members.
+    Group {
+        /// Connection URL of the application role.
+        #[arg(
+            long,
+            env = "HODOR_DATABASE_URL",
+            hide_env_values = true,
+            global = true
+        )]
+        database_url: Option<String>,
+        #[command(subcommand)]
+        command: memberships::GroupCommand,
+    },
+
+    /// Manage a tenant's organizations, their units and members, and invite
+    /// people to them.
+    Organization {
+        /// Connection URL of the application role.
+        #[arg(
+            long,
+            env = "HODOR_DATABASE_URL",
+            hide_env_values = true,
+            global = true
+        )]
+        database_url: Option<String>,
+        /// The address people reach this installation at, without a path:
+        /// links in invitations start with it.
+        #[arg(
+            long,
+            env = "HODOR_PUBLIC_URL",
+            default_value = "http://localhost:8080",
+            global = true
+        )]
+        public_url: String,
+        #[command(subcommand)]
+        command: memberships::OrganizationCommand,
     },
 
     /// Manage a tenant's applications.
@@ -1881,6 +1920,21 @@ async fn main() -> Result<(), Box<dyn Error>> {
         } => {
             let database = connect(database_url).await?;
             print(decisions::run_authorization(&database, command).await)?;
+        }
+        Command::Group {
+            database_url,
+            command,
+        } => {
+            let database = connect(database_url).await?;
+            print(memberships::run_group(&database, command).await)?;
+        }
+        Command::Organization {
+            database_url,
+            public_url,
+            command,
+        } => {
+            let database = connect(database_url).await?;
+            print(memberships::run_organization(&database, &public_url, command).await)?;
         }
         Command::Application {
             database_url,
