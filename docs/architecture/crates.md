@@ -136,6 +136,8 @@ Explicit prohibitions:
 | Licenses and advisories | `cargo deny check` |
 | Unused dependencies | `cargo machete` |
 
+The checks of npm packages and GitHub Actions are in [the supply chain](../security/supply-chain.md).
+
 ## Candidate external dependencies
 
 Each one is evaluated (maintenance, audits, open advisories, license) before it enters; the cryptography choice is in [Decision 0008](../decisions/0008-cryptography.md). Versions and advisory status must be re-checked at adoption time.

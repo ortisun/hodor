@@ -1,0 +1,18 @@
+# Keeps the GitHub Actions of the workflows current. Every action is named by
+# a commit, with its release in a comment; Dependabot moves both together.
+# See docs/security/supply-chain.md.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: develop
+    schedule:
+      interval: weekly
+    # One pull request for every action at once.
+    groups:
+      actions:
+        patterns: ["*"]
+    # Conventional Commits, as the git policy asks: "ci(deps): bump ...".
+    commit-message:
+      prefix: ci
+      include: scope

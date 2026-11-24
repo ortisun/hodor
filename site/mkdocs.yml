@@ -181,6 +181,7 @@ nav:
       - security/outbound-http.md
       - security/secrets-at-rest.md
       - security/saml-attack-corpus.md
+      - security/supply-chain.md
   - Product:
       - Documentation map: README.md
       - product/product-requirements.md
