@@ -380,9 +380,9 @@ The JWT bearer grant, rich authorization requests, workload identity federation 
 
 ## Milestone 9: What 0.2.0 left out
 
-**Goal**: the parts of Phases 2, 4 and 5 that [Decision 0023](../decisions/0023-what-0.2.0-holds.md) set aside are built. Applications of different sectors cannot tell they share a person. A client gets the claims it is configured for. Applications are told when a person signs out. A person signs in with a code or a link sent by email. An application grants access to one resource at a time. The last part of 0.3.0 ([Decision 0027](../decisions/0027-what-0.3.0-holds.md)).
+**Goal**: the parts of Phases 2, 4 and 5 that [Decision 0023](../decisions/0023-what-0.2.0-holds.md) set aside are built. Applications of different sectors cannot tell they share a person. A client gets the claims it is configured for. Applications are told when a person signs out. A person signs in with a code or a link sent by email. A person who has no second factor yet sets one up while signing in. An application grants access to one resource at a time. The last part of 0.3.0 ([Decision 0027](../decisions/0027-what-0.3.0-holds.md)).
 
-**Demo script**: sign in to two example applications of different sectors and compare their `sub`. Add a claim mapper that puts a group into the ID token and read it. Sign out at Hodor and see both applications receive a logout token. Sign in with a code sent by email, then with a link, and see each refused the second time. Share one document with a group through an access control list and evaluate for a member and for someone else.
+**Demo script**: sign in to two example applications of different sectors and compare their `sub`. Add a claim mapper that puts a group into the ID token and read it. Sign out at Hodor and see both applications receive a logout token. Sign in with a code sent by email, then with a link, and see each refused the second time. Turn on the second factor policy and sign in as a person who has none: set up an authenticator application from its QR code during the sign-in and finish. Share one document with a group through an access control list and evaluate for a member and for someone else.
 
 From here on, slices are named rather than lettered.
 
@@ -394,13 +394,14 @@ From here on, slices are named rather than lettered.
 | Issue-99 | Claim mappers per client: claims from attributes, memberships, organizations and constants, checked when saved; names Hodor sets cannot be mapped; a bound on the size of a token | A mapper that names `sub`, `iss` or `acr` is refused; a token past the bound is refused when the mapper is saved, not when it is issued | Issue-89 |
 | Issue-100 | Back-channel logout: `sid` in ID tokens, logout tokens signed with the tenant's key and delivered by the worker to the addresses clients register, with retries | Every client with a session receives a logout token when the person signs out; the back-channel logout profile of the OpenID conformance suite passes | — |
 
-### Slice Email and access lists (Epics 16 and 20)
+### Slice Email, access lists and enrollment (Epics 16, 17 and 20)
 
 | Identifier | Issue | Acceptance | Depends on |
 |---|---|---|---|
 | Issue-101 | One-time passwords and magic links by email: authenticators of the flow, the code and the link kept as hashes, good for one use and expiring, tied to the browser that asked, counted with the lockout | A code or a link is accepted once even when presented many times at once; a link opened in another browser does not sign that browser in; asking does not tell whether an address belongs to someone | — |
 | Issue-102 | Per-resource access control lists in the native engine: entries naming a user, a group, a client or a service account, a permission and one resource of a resource server, evaluated with roles; managed through the administration interface and the command-line tool | An entry allows only on its resource; removing a person from a group named by an entry stops allowing on the next decision; an entry of another tenant is never read | Issue-89 |
-| Issue-103 | Acceptance: the conformance profiles extended, the cross-tenant suite extended to sectors, mappers, codes and entries, the demonstration of the milestone | They pass in continuous integration against the image | all |
+| Issue-103 | Enrolling a second factor during a sign-in: under a tenant that requires one, a person who has none sets up an authenticator application, a security key or a passkey after the first factor, gets recovery codes, and the sign-in completes at multi-factor assurance | Under the policy, a person without a factor completes a sign-in only by enrolling one; enrolling is offered only after the first factor was proved; the sign-in cannot be completed by abandoning the enrollment | — |
+| Issue-104 | Acceptance: the conformance profiles extended, the cross-tenant suite extended to sectors, mappers, codes, entries and enrollment, the demonstration of the milestone | They pass in continuous integration against the image | all |
 
 ### Explicitly not in Milestone 9
 

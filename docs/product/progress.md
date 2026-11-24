@@ -250,7 +250,7 @@ Planned in [the epics](epics.md#milestone-6-hodor-runs-behind-a-load-balancer-an
 | 6 — Hodor runs behind a load balancer and cleans up after itself | U and V: behind a load balancer, what is shipped | 0 | 5 |
 | 7 — Groups, organizations and SCIM | W and X: groups and organizations, SCIM | 0 | 7 |
 | 8 — Workloads, agents and webhooks | Y and Z: workloads and agents, webhooks | 0 | 5 |
-| 9 — What 0.2.0 left out | OpenID Connect, email and access lists | 0 | 6 |
+| 9 — What 0.2.0 left out | OpenID Connect; email, access lists and enrollment | 0 | 7 |
 
 ## Admin console
 
