@@ -17,14 +17,19 @@ const MAX_AUDIENCE_LENGTH: usize = 255;
 pub(crate) const MAX_RESOURCE_SCOPES: usize = 100;
 /// The longest description of a scope.
 const MAX_DESCRIPTION_LENGTH: usize = 200;
-/// The scopes OpenID Connect defines, which no resource server may.
-pub const OPENID_SCOPES: [&str; 6] = [
+/// The scope that asks for the person's effective groups.
+pub(crate) const GROUPS_SCOPE: &str = "groups";
+
+/// The scopes OpenID Connect defines, and `groups`, which Hodor answers
+/// itself: no resource server may define them.
+pub const OPENID_SCOPES: [&str; 7] = [
     "openid",
     "profile",
     "email",
     "address",
     "phone",
     "offline_access",
+    "groups",
 ];
 
 /// The audience of a resource server: an absolute address, `https://…` or

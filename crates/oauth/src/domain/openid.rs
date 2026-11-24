@@ -6,10 +6,14 @@
 
 use crate::domain::authorization::AuthorizationCode;
 use crate::domain::client::{ClientId, IdTokenAlgorithm};
+use crate::domain::resource_server::GROUPS_SCOPE;
 use crate::domain::token::decode_json;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use hodor_kernel::{Digest, PublicKey, SignatureAlgorithm, SignatureVerifier, Timestamp, UserId};
+use hodor_kernel::{
+    Digest, GroupId, OrganizationId, PublicKey, SignatureAlgorithm, SignatureVerifier, Timestamp,
+    UserId,
+};
 use serde_json::{Map, Value, json};
 use time::Duration;
 
@@ -118,11 +122,13 @@ pub(crate) fn id_token_header(algorithm: &str, key_id: &str) -> Value {
 }
 
 /// The claims of the ID token for a redeemed `code`, issued with
-/// `access_token`.
+/// `access_token`, in the `organization` of its grant.
 #[must_use]
+#[allow(clippy::too_many_arguments)]
 pub fn id_token_claims(
     issuer: &str,
     code: &AuthorizationCode,
+    organization: Option<OrganizationId>,
     client_id: ClientId,
     lifetime: Duration,
     now: Timestamp,
@@ -148,6 +154,9 @@ pub fn id_token_claims(
     let amr = authentication_methods(&code.methods);
     if !amr.is_empty() {
         claims.insert("amr".to_owned(), json!(amr));
+    }
+    if let Some(organization) = organization {
+        claims.insert("org_id".to_owned(), json!(organization.to_string()));
     }
     claims.insert(
         "at_hash".to_owned(),
@@ -353,6 +362,9 @@ pub struct PersonClaims {
     /// The primary email address, and whether the person proved it is
     /// theirs.
     pub email: Option<(String, bool)>,
+    /// The person's effective groups, read only when the scopes hold
+    /// `groups`.
+    pub groups: Vec<GroupId>,
 }
 
 /// The answer of UserInfo for `user_id`, with the claims of `scopes`.
@@ -380,6 +392,12 @@ pub fn userinfo_claims(user_id: UserId, scopes: &[String], person: &PersonClaims
     {
         claims.insert("email".to_owned(), json!(email));
         claims.insert("email_verified".to_owned(), json!(verified));
+    }
+    // Every group, however many: a token holds at most a hundred, and a
+    // client reads the rest here.
+    if has(GROUPS_SCOPE) {
+        let groups: Vec<String> = person.groups.iter().map(ToString::to_string).collect();
+        claims.insert("groups".to_owned(), json!(groups));
     }
     Value::Object(claims)
 }
@@ -415,10 +433,11 @@ pub fn discovery_document(issuer: &str, acr_values: &[&str]) -> Value {
         "introspection_endpoint_auth_signing_alg_values_supported": ["ES256", "RS256", "PS256"],
         "id_token_signing_alg_values_supported": IdTokenAlgorithm::ALL.map(IdTokenAlgorithm::as_str),
         "subject_types_supported": ["public"],
-        "scopes_supported": ["openid", "profile", "email"],
+        "scopes_supported": ["openid", "profile", "email", "groups"],
         "claims_supported": [
             "iss", "sub", "aud", "exp", "iat", "auth_time", "nonce", "acr", "amr", "at_hash", "sid",
-            "name", "preferred_username", "locale", "updated_at", "email", "email_verified"
+            "org_id", "name", "preferred_username", "locale", "updated_at", "email",
+            "email_verified", "groups"
         ],
         "acr_values_supported": acr_values,
         "prompt_values_supported": ["none", "login", "consent", "select_account"],

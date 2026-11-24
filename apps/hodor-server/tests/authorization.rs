@@ -7,20 +7,23 @@ use hodor_adapters_crypto::{
 use hodor_adapters_postgres::testing::TestDatabase;
 use hodor_adapters_postgres::{
     PgApplicationStore, PgAuthorizationCodeStore, PgAuthorizationRequestStore, PgClientStore,
-    PgGrantStore, PgPasswordStore, PgResourceServerStore, PgTenantDirectory, PgTenantRepository,
-    PgUserRepository,
+    PgGrantStore, PgInvitationRepository, PgOrganizationRepository, PgPasswordStore,
+    PgResourceServerStore, PgTenantDirectory, PgTenantRepository, PgUserRepository,
 };
 use hodor_credential::api::{CredentialService, NewPassword, PasswordRules};
-use hodor_identity::api::{CreateUser, IdentifierKind, IdentityService, Profile, UserKind};
+use hodor_identity::api::{
+    CreateUser, IdentifierKind, IdentityService, OrganizationService, Profile, UserKind,
+};
 use hodor_kernel::{Caller, Secret, SystemClock, TenantContext};
 use hodor_oauth::api::{
     ApplicationPorts, ApplicationService, ApplicationSettings, AuthorizationCodePorts,
     AuthorizationCodeService, ClientId, ClientSettings, ClientType, CodePresentation, CreateClient,
     CreateResourceServer, GrantType, ResourceServerSettings, ScopeDefinition, s256_challenge,
 };
+use hodor_oauth::testing::MembershipsOf;
 use hodor_tenant::api::{CreateTenant, TenantService};
 use reqwest::{Method, StatusCode};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 mod support;
@@ -214,6 +217,7 @@ fn code_service(database: &TestDatabase) -> AuthorizationCodeService {
         requests: Arc::new(PgAuthorizationRequestStore),
         grants: Arc::new(PgGrantStore),
         codes: Arc::new(PgAuthorizationCodeStore),
+        memberships: Arc::new(MembershipsOf::default()),
         digest: Arc::new(Sha256Digest),
         random: Arc::new(OsRandom),
         clock: Arc::new(SystemClock),
@@ -316,6 +320,113 @@ async fn an_application_gets_a_code_after_the_person_signs_in() {
     .await
     .expect("dump");
     assert!(!everything.contains(&code));
+}
+
+#[tokio::test]
+async fn a_person_signs_in_for_an_organization_only_as_a_member() {
+    let database = TestDatabase::start().await;
+    let (tenant, client_id) = tenant_with_an_application(&database, "acme").await;
+    let clock = Arc::new(SystemClock);
+    let organizations = OrganizationService::new(
+        Arc::new(database.app().clone()),
+        Arc::new(PgOrganizationRepository),
+        Arc::new(PgInvitationRepository),
+        Arc::new(PgUserRepository),
+        clock.clone(),
+    );
+    let member_of = organizations
+        .create(&tenant, "Initech", None, Caller::system())
+        .await
+        .expect("organization")
+        .id();
+    let elsewhere = organizations
+        .create(&tenant, "Umbrella", None, Caller::system())
+        .await
+        .expect("organization")
+        .id();
+    let ana = IdentityService::new(
+        Arc::new(database.app().clone()),
+        Arc::new(PgUserRepository),
+        clock,
+    )
+    .find_by_login(&tenant, "ana@example.com")
+    .await
+    .expect("lookup")
+    .expect("ana")
+    .id();
+    organizations
+        .add_member(&tenant, member_of, ana, BTreeSet::new(), Caller::system())
+        .await
+        .expect("member");
+    let server = start_server(&database).await;
+    let mut browser = Browser::not_following(&server);
+    browser.sign_in("acme", "ana@example.com", PASSWORD).await;
+
+    // Not an identifier: refused before anything else.
+    let (status, location, _) = browser
+        .navigate(
+            Method::GET,
+            &format!(
+                "/t/acme/oauth2/authorize?{}",
+                query(client_id, &[("organization", "initech")])
+            ),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::FOUND);
+    assert_eq!(
+        sent_back(&location.expect("a redirect"))["error"],
+        "invalid_request"
+    );
+
+    // An organization she is not in, and one the tenant does not have, are
+    // answered alike, and no code is made.
+    for organization in [elsewhere.to_string(), uuid_like()] {
+        let (status, location, _) = browser
+            .navigate(
+                Method::GET,
+                &format!(
+                    "/t/acme/oauth2/authorize?{}",
+                    query(client_id, &[("organization", &organization)])
+                ),
+                None,
+            )
+            .await;
+        assert_eq!(status, StatusCode::FOUND);
+        let answer = sent_back(&location.expect("a redirect"));
+        assert_eq!(answer["error"], "access_denied", "{organization}");
+        assert_eq!(
+            answer["error_description"],
+            "the person is not a member of the organization"
+        );
+        assert_eq!(answer["state"], "the state");
+        assert!(!answer.contains_key("code"));
+    }
+
+    // Her own organization gives a code, and the grant keeps it.
+    let (status, location, _) = browser
+        .navigate(
+            Method::GET,
+            &format!(
+                "/t/acme/oauth2/authorize?{}",
+                query(client_id, &[("organization", &member_of.to_string())])
+            ),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::FOUND);
+    assert!(sent_back(&location.expect("a redirect")).contains_key("code"));
+    let kept: Option<sqlx::types::Uuid> =
+        sqlx::query_scalar("SELECT organization FROM oauth.authorization_grant")
+            .fetch_one(database.owner())
+            .await
+            .expect("the grant");
+    assert_eq!(kept.map(|id| id.to_string()), Some(member_of.to_string()));
+}
+
+/// An identifier no organization has.
+fn uuid_like() -> String {
+    "0193f1c2-0000-7000-8000-00000000abcd".to_owned()
 }
 
 #[tokio::test]

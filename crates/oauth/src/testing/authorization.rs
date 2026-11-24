@@ -10,7 +10,8 @@ use crate::api::{
 };
 use hodor_kernel::random::testing::FakeDigest;
 use hodor_kernel::{
-    DomainError, TenantContext, TenantId, Timestamp, UnitOfWork, UnitOfWorkFactory, UserId,
+    DomainError, OrganizationId, TenantContext, TenantId, Timestamp, UnitOfWork, UnitOfWorkFactory,
+    UserId,
 };
 use hodor_session::api::SessionId;
 use std::collections::BTreeMap;
@@ -335,6 +336,7 @@ fn request_for(client_id: ClientId) -> AuthorizationRequest {
         ui_locales: Some("pt-BR en".to_owned()),
         acr_values: Some("urn:hodor:mfa".to_owned()),
         first_party: true,
+        organization: None,
     }
 }
 
@@ -541,7 +543,8 @@ async fn the_active_grants_of_a_person_for_a_client_are_listed(ports: Authorizat
     let someone = person();
     let request = request_for(client.id());
     let first = Grant::make(&request, &someone, moment());
-    let second = Grant::make(&request, &someone, moment());
+    let mut second = Grant::make(&request, &someone, moment());
+    second.organization = Some(OrganizationId::generate());
     let mut revoked = Grant::make(&request, &someone, moment());
     revoked.revoke("code_reused", moment());
     let another_person = Grant::make(&request, &person(), moment());
@@ -557,6 +560,16 @@ async fn the_active_grants_of_a_person_for_a_client_are_listed(ports: Authorizat
     uow.commit().await.expect("commit");
 
     let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    assert_eq!(
+        ports
+            .grants
+            .get(uow.as_mut(), second.id)
+            .await
+            .expect("get")
+            .as_ref(),
+        Some(&second),
+        "a grant reads back as it was stored, its organization included"
+    );
     let mut listed: Vec<GrantId> = ports
         .grants
         .list_active_for(uow.as_mut(), someone.user_id, client.id())

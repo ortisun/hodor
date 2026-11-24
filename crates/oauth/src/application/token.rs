@@ -5,7 +5,7 @@
 use crate::application::authorization::AuthorizationCodeService;
 use crate::application::ports::{
     AccessTokenRecordStore, ApplicationStore, ClientAssertionStore, ClientStore, GrantStore,
-    PersonStanding, RefreshTokenStore, ResourceServerStore,
+    PersonMemberships, PersonStanding, RefreshTokenStore, ResourceServerStore,
 };
 use crate::domain::authorization::{CodePresentation, GrantStatus};
 use crate::domain::client::{AuthenticationMethod, Client, ClientId, GrantType, TokenPolicy};
@@ -16,15 +16,15 @@ use crate::domain::refresh::{
     DEFAULT_RETRY_WINDOW, FAMILY_SECRET_PURPOSE, FamilySecret, LONGEST_RETRY_WINDOW,
     RefreshDecision, RefreshFamily, RefreshRefusal, RefreshTokenHash,
 };
-use crate::domain::resource_server::OPENID_SCOPES;
+use crate::domain::resource_server::{GROUPS_SCOPE, OPENID_SCOPES};
 use crate::domain::token::{
     AssertionAudience, GrantRequest, PresentedClient, TokenError, TokenRequest, TokenSubject,
     access_token_header, assertion_issuer, check_assertion, claims_for, compact, signing_input,
 };
 use hodor_kernel::{
     Actor, Caller, Clock, CorrelationId, Digest, DomainError, EventEnvelope, EventMetadata,
-    RandomSource, Secret, SecretBox, SignatureVerifier, TenantContext, UnitOfWork,
-    UnitOfWorkFactory,
+    GroupId, OrganizationId, RandomSource, Secret, SecretBox, SignatureVerifier, TenantContext,
+    UnitOfWork, UnitOfWorkFactory, UserId,
 };
 use hodor_keys::api::{KeyAlgorithm, KeyService, KeyVersionId, Signature};
 use std::fmt;
@@ -52,6 +52,8 @@ pub struct TokenPorts {
     pub access_tokens: Arc<dyn AccessTokenRecordStore>,
     /// Whether a person's session and account still stand.
     pub standing: Arc<dyn PersonStanding>,
+    /// The person's organizations and groups, for `org_id` and `groups`.
+    pub memberships: Arc<dyn PersonMemberships>,
     /// Seals the secrets of refresh token families.
     pub secrets: Arc<dyn SecretBox>,
     /// Redeems codes.
@@ -389,6 +391,7 @@ impl TokenService {
         issuer: Issuer<'_>,
         client: &Client,
         code: &crate::domain::authorization::AuthorizationCode,
+        organization: Option<OrganizationId>,
         access_token: &str,
     ) -> Result<Result<Secret<String>, TokenError>, DomainError> {
         let lifetime = client.snapshot().settings.token_policy.id_token;
@@ -400,6 +403,7 @@ impl TokenService {
         let claims = id_token_claims(
             issuer.issuer,
             code,
+            organization,
             client.id(),
             lifetime,
             self.ports.clock.now(),
@@ -522,22 +526,31 @@ impl TokenService {
             .grants
             .get(uow.as_mut(), redeemed.grant_id)
             .await?;
-        if !grant.is_some_and(|grant| grant.status == GrantStatus::Active) {
+        let Some(grant) = grant.filter(|grant| grant.status == GrantStatus::Active) else {
             return Ok(Err(TokenError::invalid_grant("the grant was revoked")));
-        }
+        };
         drop(uow);
 
-        let signed = match self
-            .sign(tenant, issuer, client, &TokenSubject::of_code(&redeemed))
-            .await?
-        {
+        let mut subject = TokenSubject::of_code(&redeemed);
+        subject.organization = grant.organization;
+        subject.groups = self
+            .groups_for(tenant, redeemed.user_id, &redeemed.scopes)
+            .await?;
+        let signed = match self.sign(tenant, issuer, client, &subject).await? {
             Ok(signed) => signed,
             Err(refusal) => return Ok(Err(refusal)),
         };
 
         let id_token = if asks_for_openid(&redeemed.scopes) {
             match self
-                .sign_id_token(tenant, issuer, client, &redeemed, &signed.token)
+                .sign_id_token(
+                    tenant,
+                    issuer,
+                    client,
+                    &redeemed,
+                    grant.organization,
+                    &signed.token,
+                )
                 .await?
             {
                 Ok(id_token) => Some(id_token),
@@ -680,27 +693,39 @@ impl TokenService {
         }
     }
 
-    /// Whether the grant, the person and, without offline access, the
-    /// session of `family` still stand.
+    /// Whether the grant, the person, their membership of the grant's
+    /// organization and, without offline access, the session of `family`
+    /// still stand. Answers the grant's organization when they do.
     async fn still_stands(
         &self,
         tenant: &TenantContext,
         family: &RefreshFamily,
-    ) -> Result<Option<TokenError>, DomainError> {
+    ) -> Result<Result<Option<OrganizationId>, TokenError>, DomainError> {
         let mut uow = self.ports.units_of_work.begin(tenant).await?;
         let grant = self.ports.grants.get(uow.as_mut(), family.grant_id).await?;
         drop(uow);
-        if !grant.is_some_and(|grant| grant.status == GrantStatus::Active) {
-            return Ok(Some(TokenError::invalid_grant("the grant was revoked")));
-        }
+        let Some(grant) = grant.filter(|grant| grant.status == GrantStatus::Active) else {
+            return Ok(Err(TokenError::invalid_grant("the grant was revoked")));
+        };
         if !self
             .ports
             .standing
             .may_sign_in(tenant, family.user_id)
             .await?
         {
-            return Ok(Some(TokenError::invalid_grant(
+            return Ok(Err(TokenError::invalid_grant(
                 "the person may no longer sign in",
+            )));
+        }
+        if let Some(organization) = grant.organization
+            && !self
+                .ports
+                .memberships
+                .is_member(tenant, family.user_id, organization)
+                .await?
+        {
+            return Ok(Err(TokenError::invalid_grant(
+                "the person is no longer a member of the organization",
             )));
         }
         if !family.offline
@@ -710,11 +735,31 @@ impl TokenService {
                 .session_is_active(tenant, family.user_id, family.session_id)
                 .await?
         {
-            return Ok(Some(TokenError::invalid_grant(
+            return Ok(Err(TokenError::invalid_grant(
                 "the session the refresh token belongs to has ended",
             )));
         }
-        Ok(None)
+        Ok(Ok(grant.organization))
+    }
+
+    /// The effective groups of `user` when `scopes` hold `groups`, read
+    /// now, so that a person taken out of a group loses it from the next
+    /// token.
+    async fn groups_for(
+        &self,
+        tenant: &TenantContext,
+        user: UserId,
+        scopes: &[String],
+    ) -> Result<Option<Vec<GroupId>>, DomainError> {
+        if !scopes.iter().any(|scope| scope == GROUPS_SCOPE) {
+            return Ok(None);
+        }
+        Ok(Some(
+            self.ports
+                .memberships
+                .effective_groups(tenant, user)
+                .await?,
+        ))
     }
 
     #[allow(
@@ -759,9 +804,10 @@ impl TokenService {
                 Ok(decided) => decided,
                 Err(refusal) => return Ok(Err(refusal)),
             };
-            if let Some(refusal) = self.still_stands(tenant, &family).await? {
-                return Ok(Err(refusal));
-            }
+            let organization = match self.still_stands(tenant, &family).await? {
+                Ok(organization) => organization,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
             let secret = FamilySecret::from_opened(
                 self.ports
                     .secrets
@@ -818,19 +864,23 @@ impl TokenService {
                     asked
                 }
             };
+            let scopes = if asked.scopes.is_empty() {
+                family.scopes.clone()
+            } else {
+                asked.scopes
+            };
+            let groups = self.groups_for(tenant, family.user_id, &scopes).await?;
             let subject = TokenSubject {
                 subject: family.user_id.to_string(),
-                scopes: if asked.scopes.is_empty() {
-                    family.scopes.clone()
-                } else {
-                    asked.scopes
-                },
+                scopes,
                 audiences: asked
                     .resource
                     .map_or_else(|| family.audiences.clone(), |resource| vec![resource]),
                 signed_in_at: Some(family.signed_in_at),
                 acr: family.acr.clone(),
                 methods: family.methods.clone(),
+                organization,
+                groups,
             };
             let signed = match self.sign(tenant, issuer, client, &subject).await? {
                 Ok(signed) => signed,
@@ -956,6 +1006,8 @@ impl TokenService {
             signed_in_at: None,
             acr: None,
             methods: Vec::new(),
+            organization: None,
+            groups: None,
         };
         let signed = match self.sign(tenant, issuer, client, &subject).await? {
             Ok(signed) => signed,

@@ -12,7 +12,9 @@ use crate::domain::refresh::{
     RefreshAsk, RefreshFamily, RefreshFamilyId, RefreshTokenHash, RefreshTokenRecord,
 };
 use crate::domain::resource_server::{Audience, ResourceServer, ResourceServerId};
-use hodor_kernel::{DomainError, TenantContext, Timestamp, UnitOfWork, UserId};
+use hodor_kernel::{
+    DomainError, GroupId, OrganizationId, TenantContext, Timestamp, UnitOfWork, UserId,
+};
 use hodor_session::api::SessionId;
 
 /// Stores applications.
@@ -515,4 +517,34 @@ pub trait PersonStanding: Send + Sync {
     ///
     /// Returns an error if storage fails.
     async fn may_sign_in(&self, tenant: &TenantContext, user: UserId) -> Result<bool, DomainError>;
+}
+
+/// What the OAuth context needs to know of the groups and organizations of
+/// a person, from the identity context.
+#[async_trait::async_trait]
+pub trait PersonMemberships: Send + Sync {
+    /// Whether `user` is a member of `organization`. An organization the
+    /// tenant does not have has no members.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn is_member(
+        &self,
+        tenant: &TenantContext,
+        user: UserId,
+        organization: OrganizationId,
+    ) -> Result<bool, DomainError>;
+
+    /// The effective groups of `user`: those they are in directly and those
+    /// that hold one of them, sorted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn effective_groups(
+        &self,
+        tenant: &TenantContext,
+        user: UserId,
+    ) -> Result<Vec<GroupId>, DomainError>;
 }

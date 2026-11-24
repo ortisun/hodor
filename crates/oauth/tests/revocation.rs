@@ -22,7 +22,7 @@ use hodor_oauth::api::{
 use hodor_oauth::testing::{
     AccessTokenRecordStorePorts, DistinctRandom, FakeVerifier, InMemoryAccessTokenRecords,
     InMemoryAuthorizationCodes, InMemoryAuthorizationRequests, InMemoryClientAssertions,
-    InMemoryGrants, InMemoryRefreshTokens, InMemoryStores, StandingOf,
+    InMemoryGrants, InMemoryRefreshTokens, InMemoryStores, MembershipsOf, StandingOf,
     run_access_token_record_contract,
 };
 use hodor_session::api::SessionId;
@@ -91,6 +91,7 @@ fn world() -> World {
         requests: Arc::new(requests),
         grants: Arc::new(grants.clone()),
         codes: Arc::new(code_store),
+        memberships: Arc::new(MembershipsOf::default()),
         digest: Arc::new(FakeDigest),
         random: Arc::new(DistinctRandom),
         clock: clock.clone(),
@@ -111,6 +112,7 @@ fn world() -> World {
         refresh_tokens: Arc::new(families.clone()),
         access_tokens: Arc::new(records.clone()),
         standing: Arc::new(StandingOf::default()),
+        memberships: Arc::new(MembershipsOf::default()),
         secrets: Arc::new(FakeSecretBox),
         codes: codes.clone(),
         keys: keys.clone(),

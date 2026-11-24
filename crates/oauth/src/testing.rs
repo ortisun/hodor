@@ -25,7 +25,7 @@ pub use authorization::{
 };
 pub use consent::{ConsentStorePorts, InMemoryConsents, consent_service, run_consent_contract};
 pub use refresh::{
-    InMemoryRefreshTokens, RefreshStorePorts, StandingOf, run_refresh_token_contract,
+    InMemoryRefreshTokens, MembershipsOf, RefreshStorePorts, StandingOf, run_refresh_token_contract,
 };
 pub use register::{
     AccessTokenRecordStorePorts, InMemoryAccessTokenRecords, run_access_token_record_contract,
