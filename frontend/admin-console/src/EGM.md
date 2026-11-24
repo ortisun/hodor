@@ -22,15 +22,19 @@ person sees from who they are (`Client.me`).
   permission, command palette on mod+k, and the current screen).
 - `App.tsx:needsOf` - the permission a screen needs: `audit` needs
   `audit:read`; `providers` and `provider` need `identity-providers:read`;
-  `applications`, `application` and `client` need `applications:read`; the
-  others need `users:read`.
+  `applications`, `application` and `client` need `applications:read`;
+  `groups` and `group` need `groups:read`; `organizations` and `organization`
+  need `organizations:read`; the others need `users:read`.
 - `address.ts` - `Screen` (`home`, `users`, `user`, `audit`, `providers`,
-  `provider`, `applications`, `application`, `client`), `Place`, `placeOf(pathname)`, `pathOf(tenant, screen)`,
+  `provider`, `applications`, `application`, `client`, `authorization`,
+  `groups`, `group`, `organizations`, `organization`), `Place`, `placeOf(pathname)`, `pathOf(tenant, screen)`,
   `isIdentifier(text)`, `signInPath(tenant)` (`/t/{tenant}/account/sign-in`)
   and `accountPath(tenant)` (`/t/{tenant}/account`). Console addresses are
   `/t/{tenant}/console`, `.../users`, `.../users/{id}`, `.../audit`,
   `.../identity-providers`, `.../identity-providers/{id}`, `.../applications`,
-  `.../applications/{id}` and `.../clients/{id}`.
+  `.../applications/{id}`, `.../clients/{id}`, `.../authorization`,
+  `.../groups`, `.../groups/{id}`, `.../organizations` and
+  `.../organizations/{id}`.
 - `actions.ts:ACTIONS`, `ActionName`, `Level`, `Action`, `may(permissions,
   action)` - `createUser` (level 0, `users:write`); `endSession` (1,
   `sessions:revoke`); `suspendUser` (2, `users:write`); `addProvider`,
@@ -40,7 +44,12 @@ person sees from who they are (`Client.me`).
   `enableApplication`, `addClient`, `changeClient`, `changeResourceServer`,
   `addKey`, `removeKey`, `enableClient` (1, `applications:write`);
   `disableApplication`, `rotateSecret`, `revokeSecret`, `disableClient` (2,
-  `applications:write`).
+  `applications:write`); `createGroup` (0), `changeGroup`, `addGroupMember`,
+  `removeGroupMember` (1), `deleteGroup` (2), all `groups:write`;
+  `createOrganization`, `createUnit` (0), `changeOrganization`, `changeUnit`,
+  `putOrganizationMember`, `removeOrganizationMember`, `invite`,
+  `withdrawInvitation` (1), `deleteOrganization`, `deleteUnit` (2), all
+  `organizations:write`.
 - `client.ts:Client` - every request goes to `/t/{tenant}/console/api{path}`,
   except sign-out, which uses `/t/{tenant}/interaction{path}`:
 
@@ -79,13 +88,28 @@ person sees from who they are (`Client.me`).
   | `addResourceServer(applicationId, audience, name, scopes)` | `POST /resource-servers` |
   | `changeResourceServer(id, name, scopes)` | `PATCH /resource-servers/{id}` |
   | `listAuditRecords(cursor)` | `GET /audit-records?limit=50[&cursor=]` |
+  | `listGroups(cursor)` | `GET /groups?limit=50[&cursor=]` |
+  | `getGroup(id)`, `createGroup(settings)`, `changeGroup(id, settings)`, `deleteGroup(id)` | `GET /groups/{id}`, `POST /groups`, `PATCH /groups/{id}`, `DELETE /groups/{id}`; an empty description is not sent |
+  | `listGroupMembers(id, cursor)` | `GET /groups/{id}/members?limit=50[&cursor=]` |
+  | `addGroupMember(id, member)`, `removeGroupMember(id, member)` | `POST /groups/{id}/members`, `POST /groups/{id}/members:remove` with `{ kind, id }` |
+  | `groupsOfUser(userId)` | `GET /users/{id}/groups` |
+  | `listOrganizations(cursor)` | `GET /organizations?limit=50[&cursor=]` |
+  | `getOrganization(id)`, `createOrganization(settings)`, `changeOrganization(id, settings)`, `deleteOrganization(id)` | `GET /organizations/{id}`, `POST /organizations`, `PATCH /organizations/{id}`, `DELETE /organizations/{id}` |
+  | `listUnits(id)`, `createUnit(id, settings)`, `changeUnit(id, unitId, settings)`, `deleteUnit(id, unitId)` | `GET` and `POST /organizations/{id}/units`, `PUT` and `DELETE /organizations/{id}/units/{unitId}` |
+  | `listOrganizationMembers(id, cursor)` | `GET /organizations/{id}/members?limit=50[&cursor=]` |
+  | `putOrganizationMember(id, userId, unitIds)`, `removeOrganizationMember(id, userId)` | `PUT` and `DELETE /organizations/{id}/members/{userId}` |
+  | `listInvitations(id)`, `invite(id, email, unitIds, locale)`, `withdrawInvitation(id, invitationId)` | `GET` and `POST /organizations/{id}/invitations`, `DELETE /organizations/{id}/invitations/{invitationId}`; the answer to `POST` holds nothing |
+  | `organizationsOfUser(userId)` | `GET /users/{id}/organizations` |
 
 - `client.ts` types - `Failure` (`code`, `status`, `requestId`, `signedOut`),
   `Permission`, `Identifier`, `User`, `Me`, `Session`, `AuditRecord`,
   `Provider`, `NewProvider`, `ProviderChange`, `Application`,
   `ApplicationSettings`, `TokenPolicy`, `ApplicationClient` (an OAuth client:
   the name `Client` is this class), `ClientSettings`, `CreatedClient`,
-  `NewSecret`, `Scope`, `ResourceServer`, `Page<T>`.
+  `NewSecret`, `Scope`, `ResourceServer`, `Page<T>`, `Named` (with `Group`
+  and `Organization`), `NamedSettings`, `GroupMember`, `GroupOfUser`, `Unit`,
+  `UnitKind`, `UnitSettings`, `OrganizationMember`, `OrganizationOfUser`,
+  `Invitation` (never a link or a secret).
 - `hodor-theme.d.ts` - declares the modules `@hodor-theme/hodor.js`
   (`hodorTheme: DefinedTheme`) and `@hodor-theme/hodor.css`; the alias is
   resolved by `../vite.config.ts`.
@@ -98,8 +122,9 @@ person sees from who they are (`Client.me`).
 - Subdirectories: [messages](./messages/EGM.md) (copy in English and Brazilian
   Portuguese, failure text), [parts](./parts/EGM.md) (confirmation dialog,
   identifier, loading state, a secret shown once), [screens](./screens/EGM.md)
-  (users, one user, identity providers, one provider, applications, one
-  application, one client, audit).
+  (users, one user, groups, one group, organizations, one organization,
+  identity providers, one provider, applications, one application, one
+  client, authorization, audit).
 
 ## Invariants
 
@@ -116,7 +141,8 @@ person sees from who they are (`Client.me`).
 - `App.tsx:Frame` renders a screen only when `me.permissions` holds
   `needsOf(screen)`; a forbidden screen shows the same not-found page as an
   unknown address. `home` goes to the first allowed entry in the order users,
-  identity providers, audit. A person with no allowed entry sees only the
+  groups, organizations, identity providers, applications, authorization,
+  audit. A person with no allowed entry sees only the
   no-access notice.
 - `App.tsx:Frame` signs out by calling `client.signOut()` and always leaves for
   the sign-in page afterwards, even when sign-out fails.

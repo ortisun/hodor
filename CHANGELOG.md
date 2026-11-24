@@ -8,7 +8,7 @@ Every release of Hodor, newest first. The rules for versions and releases are in
 
 - Groups of users in a tenant, with groups inside groups, no cycles and a depth the tenant chooses with `hodor-cli tenant group-depth`.
 - Organizations inside a tenant, with a tree of units and departments up to ten levels deep, and people as members of several organizations, each in some of its units.
-- The administration interface manages groups, organizations, their units and members, and invitations, under four new permissions: `groups:read`, `groups:write`, `organizations:read` and `organizations:write`. `hodor-cli group` and `hodor-cli organization` do the same from the command line.
+- The administration interface manages groups, organizations, their units and members, and invitations, under four new permissions: `groups:read`, `groups:write`, `organizations:read` and `organizations:write`. `hodor-cli group` and `hodor-cli organization` do the same from the command line, and the admin console from its new screens of groups and organizations. A user's screen in the console shows their groups and organizations.
 - Roles given to a group, held by every member of the group and of the groups inside it, and roles given in an organization, which count only for its members and only when the question names it. `GET /groups/{group_id}/role-assignments` lists a group's roles, and `hodor-cli role assign` takes `--group` and `--organization`.
 - Invitations to an organization by email. The person accepts from the link: with a new account and a password if the address has none, or signed in as the account that has it.
 

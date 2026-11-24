@@ -21,6 +21,8 @@ describe("placeOf", () => {
     expect(placeOf("/t/acme/console/keys")).toEqual({ tenant: "acme", screen: null });
     expect(placeOf("/t/acme/console/users/not-an-identifier")).toEqual({ tenant: "acme", screen: null });
     expect(placeOf(`/t/acme/console/users/${ID}/more`)).toEqual({ tenant: "acme", screen: null });
+    expect(placeOf("/t/acme/console/groups/finance")).toEqual({ tenant: "acme", screen: null });
+    expect(placeOf(`/t/acme/console/organizations/${ID}/units`)).toEqual({ tenant: "acme", screen: null });
   });
 
   it("is not the console's when the address is elsewhere", () => {
@@ -39,6 +41,10 @@ describe("pathOf", () => {
       { name: "audit" },
       { name: "providers" },
       { name: "provider", id: ID },
+      { name: "groups" },
+      { name: "group", id: ID },
+      { name: "organizations" },
+      { name: "organization", id: ID },
     ] as const;
     for (const screen of screens) {
       expect(placeOf(pathOf("acme", screen))).toEqual({ tenant: "acme", screen });

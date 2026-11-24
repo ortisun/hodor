@@ -40,7 +40,11 @@ export type Permission =
   | "bindings:read"
   | "bindings:write"
   | "policies:read"
-  | "policies:write";
+  | "policies:write"
+  | "groups:read"
+  | "groups:write"
+  | "organizations:read"
+  | "organizations:write";
 
 /** A permission a role holds, with its condition when it has one. */
 export interface HeldPermission {
@@ -299,6 +303,83 @@ export interface Page<T> {
   nextCursor: string | null;
 }
 
+/** A group of users, or an organization: both have a name and an optional description. */
+export interface Named {
+  id: string;
+  name: string;
+  description: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type Group = Named;
+export type Organization = Named;
+
+/** What an administrator gives to create or change a group or an organization. */
+export interface NamedSettings {
+  name: string;
+  /** Empty for none. */
+  description: string;
+}
+
+/** A direct member of a group: a user, or another group. */
+export interface GroupMember {
+  kind: "user" | "group";
+  id: string;
+}
+
+/** A group a user is in, and whether they are in it directly rather than only through another group. */
+export interface GroupOfUser {
+  id: string;
+  direct: boolean;
+}
+
+export type UnitKind = "unit" | "department";
+
+/** A part of an organization. */
+export interface Unit {
+  id: string;
+  /** The unit it is part of; `null` at the top of the organization. */
+  parentId: string | null;
+  name: string;
+  kind: UnitKind;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** What an administrator decides about a unit: all three replace what it had. */
+export interface UnitSettings {
+  parentId: string | null;
+  name: string;
+  kind: UnitKind;
+}
+
+/** A user's membership of an organization, with the units they are in. */
+export interface OrganizationMember {
+  userId: string;
+  unitIds: string[];
+  addedAt: string;
+}
+
+/** An organization a user is a member of, with the units they are in. */
+export interface OrganizationOfUser {
+  organizationId: string;
+  unitIds: string[];
+  addedAt: string;
+}
+
+/**
+ * A pending invitation to an organization. Its link and its secret are
+ * never here: the server sends the link in the message only.
+ */
+export interface Invitation {
+  id: string;
+  email: string;
+  unitIds: string[];
+  createdAt: string;
+  expiresAt: string;
+}
+
 type Fetch = typeof globalThis.fetch;
 type Fields = Record<string, unknown>;
 
@@ -482,6 +563,59 @@ function resourceServer(body: Fields): ResourceServer {
     })),
     createdAt: required(body["created_at"]),
     updatedAt: required(body["updated_at"]),
+  };
+}
+
+function named(body: Fields): Named {
+  return {
+    id: required(body["id"]),
+    name: required(body["name"]),
+    description: text(body["description"]),
+    createdAt: required(body["created_at"]),
+    updatedAt: required(body["updated_at"]),
+  };
+}
+
+function namedBody(settings: NamedSettings): Fields {
+  const description = settings.description.trim();
+  // A missing description removes it.
+  return { name: settings.name.trim(), ...(description === "" ? {} : { description }) };
+}
+
+function groupMember(body: Fields): GroupMember {
+  return { kind: body["kind"] === "group" ? "group" : "user", id: required(body["id"]) };
+}
+
+function unit(body: Fields): Unit {
+  return {
+    id: required(body["id"]),
+    parentId: text(body["parent_id"]),
+    name: required(body["name"]),
+    kind: body["kind"] === "department" ? "department" : "unit",
+    createdAt: required(body["created_at"]),
+    updatedAt: required(body["updated_at"]),
+  };
+}
+
+function unitBody(settings: UnitSettings): Fields {
+  return { parent_id: settings.parentId, name: settings.name.trim(), kind: settings.kind };
+}
+
+function organizationMember(body: Fields): OrganizationMember {
+  return {
+    userId: required(body["user_id"]),
+    unitIds: strings(body["unit_ids"]),
+    addedAt: required(body["added_at"]),
+  };
+}
+
+function invitation(body: Fields): Invitation {
+  return {
+    id: required(body["id"]),
+    email: required(body["email"]),
+    unitIds: strings(body["unit_ids"]),
+    createdAt: required(body["created_at"]),
+    expiresAt: required(body["expires_at"]),
   };
 }
 
@@ -883,6 +1017,157 @@ export class Client {
   async changeResourceServer(id: string, name: string, scopes: Scope[]): Promise<ResourceServer> {
     return resourceServer(
       await this.#send("PATCH", `/resource-servers/${encodeURIComponent(id)}`, { name: name.trim(), scopes }),
+    );
+  }
+
+  async listGroups(cursor: string | null = null): Promise<Page<Group>> {
+    return page(await this.#send("GET", `/groups${query(cursor)}`), named);
+  }
+
+  async getGroup(id: string): Promise<Group> {
+    return named(await this.#send("GET", `/groups/${encodeURIComponent(id)}`));
+  }
+
+  async createGroup(settings: NamedSettings): Promise<Group> {
+    return named(await this.#send("POST", "/groups", namedBody(settings)));
+  }
+
+  /** Replaces the name and the description; an empty description removes it. */
+  async changeGroup(id: string, settings: NamedSettings): Promise<Group> {
+    return named(await this.#send("PATCH", `/groups/${encodeURIComponent(id)}`, namedBody(settings)));
+  }
+
+  async deleteGroup(id: string): Promise<void> {
+    await this.#send("DELETE", `/groups/${encodeURIComponent(id)}`);
+  }
+
+  /** The direct members of a group, users first. */
+  async listGroupMembers(id: string, cursor: string | null = null): Promise<Page<GroupMember>> {
+    return page(await this.#send("GET", `/groups/${encodeURIComponent(id)}/members${query(cursor)}`), groupMember);
+  }
+
+  async addGroupMember(id: string, member: GroupMember): Promise<void> {
+    await this.#send("POST", `/groups/${encodeURIComponent(id)}/members`, { kind: member.kind, id: member.id.trim() });
+  }
+
+  async removeGroupMember(id: string, member: GroupMember): Promise<void> {
+    await this.#send("POST", `/groups/${encodeURIComponent(id)}/members:remove`, { kind: member.kind, id: member.id });
+  }
+
+  /** The groups a user is in, directly or through other groups. */
+  async groupsOfUser(userId: string): Promise<GroupOfUser[]> {
+    return list((await this.#send("GET", `/users/${encodeURIComponent(userId)}/groups`))["items"]).map((found) => ({
+      id: required(found["id"]),
+      direct: found["direct"] === true,
+    }));
+  }
+
+  async listOrganizations(cursor: string | null = null): Promise<Page<Organization>> {
+    return page(await this.#send("GET", `/organizations${query(cursor)}`), named);
+  }
+
+  async getOrganization(id: string): Promise<Organization> {
+    return named(await this.#send("GET", `/organizations/${encodeURIComponent(id)}`));
+  }
+
+  async createOrganization(settings: NamedSettings): Promise<Organization> {
+    return named(await this.#send("POST", "/organizations", namedBody(settings)));
+  }
+
+  /** Replaces the name and the description; an empty description removes it. */
+  async changeOrganization(id: string, settings: NamedSettings): Promise<Organization> {
+    return named(await this.#send("PATCH", `/organizations/${encodeURIComponent(id)}`, namedBody(settings)));
+  }
+
+  async deleteOrganization(id: string): Promise<void> {
+    await this.#send("DELETE", `/organizations/${encodeURIComponent(id)}`);
+  }
+
+  async listUnits(organizationId: string): Promise<Unit[]> {
+    return list((await this.#send("GET", `/organizations/${encodeURIComponent(organizationId)}/units`))["items"]).map(
+      unit,
+    );
+  }
+
+  async createUnit(organizationId: string, settings: UnitSettings): Promise<Unit> {
+    return unit(
+      await this.#send("POST", `/organizations/${encodeURIComponent(organizationId)}/units`, unitBody(settings)),
+    );
+  }
+
+  /** Renames a unit, changes its kind, or moves it with what is below it. */
+  async changeUnit(organizationId: string, unitId: string, settings: UnitSettings): Promise<Unit> {
+    return unit(
+      await this.#send(
+        "PUT",
+        `/organizations/${encodeURIComponent(organizationId)}/units/${encodeURIComponent(unitId)}`,
+        unitBody(settings),
+      ),
+    );
+  }
+
+  async deleteUnit(organizationId: string, unitId: string): Promise<void> {
+    await this.#send(
+      "DELETE",
+      `/organizations/${encodeURIComponent(organizationId)}/units/${encodeURIComponent(unitId)}`,
+    );
+  }
+
+  async listOrganizationMembers(organizationId: string, cursor: string | null = null): Promise<Page<OrganizationMember>> {
+    return page(
+      await this.#send("GET", `/organizations/${encodeURIComponent(organizationId)}/members${query(cursor)}`),
+      organizationMember,
+    );
+  }
+
+  /** Makes a user a member with these units, or replaces the units of a member. */
+  async putOrganizationMember(organizationId: string, userId: string, unitIds: string[]): Promise<OrganizationMember> {
+    return organizationMember(
+      await this.#send(
+        "PUT",
+        `/organizations/${encodeURIComponent(organizationId)}/members/${encodeURIComponent(userId.trim())}`,
+        { unit_ids: unitIds },
+      ),
+    );
+  }
+
+  async removeOrganizationMember(organizationId: string, userId: string): Promise<void> {
+    await this.#send(
+      "DELETE",
+      `/organizations/${encodeURIComponent(organizationId)}/members/${encodeURIComponent(userId)}`,
+    );
+  }
+
+  async listInvitations(organizationId: string): Promise<Invitation[]> {
+    return list(
+      (await this.#send("GET", `/organizations/${encodeURIComponent(organizationId)}/invitations`))["items"],
+    ).map(invitation);
+  }
+
+  /** Sends an invitation. The answer holds nothing: the link is in the message only. */
+  async invite(organizationId: string, email: string, unitIds: string[], locale: string): Promise<void> {
+    await this.#send("POST", `/organizations/${encodeURIComponent(organizationId)}/invitations`, {
+      email: email.trim(),
+      unit_ids: unitIds,
+      locale,
+    });
+  }
+
+  async withdrawInvitation(organizationId: string, invitationId: string): Promise<void> {
+    await this.#send(
+      "DELETE",
+      `/organizations/${encodeURIComponent(organizationId)}/invitations/${encodeURIComponent(invitationId)}`,
+    );
+  }
+
+  /** The organizations a user is a member of, with their units. */
+  async organizationsOfUser(userId: string): Promise<OrganizationOfUser[]> {
+    return list((await this.#send("GET", `/users/${encodeURIComponent(userId)}/organizations`))["items"]).map(
+      (found) => ({
+        organizationId: required(found["organization_id"]),
+        unitIds: strings(found["unit_ids"]),
+        addedAt: required(found["added_at"]),
+      }),
     );
   }
 

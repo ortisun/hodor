@@ -6,17 +6,27 @@ import { placeOf, type Screen } from "./address";
 import { App } from "./App";
 import { en } from "./messages/en";
 import {
+  ACME,
   ANA,
   applicationBody,
   BIA,
   BILLING,
   clientBody,
+  empty,
+  ENGINEERING,
+  FINANCE,
   GOOGLE,
   json,
   meBody,
+  MEMBERSHIPS,
+  namedBody,
+  PAYABLES,
+  PLATFORM,
   problem,
   providerBody,
+  SALES,
   scripted,
+  unitBody,
   userBody,
   WEB,
 } from "./testing";
@@ -678,5 +688,474 @@ describe("authorization", () => {
       permissions: [{ name: "invoice:approve", condition: "resource.attributes.amount <= 5000" }],
       includes: [{ namespace: PAYROLL, name: "clerk" }],
     });
+  });
+});
+
+describe("groups", () => {
+  const finance = () => json(200, namedBody(FINANCE, "finance", { description: "Who pays the bills" }));
+  const page = (script: Parameters<typeof scripted>[0], permissions = MEMBERSHIPS) => ({
+    "GET /console/api/me": [json(200, meBody(permissions))],
+    [`GET /console/api/groups/${FINANCE}`]: [finance()],
+    [`GET /console/api/groups/${FINANCE}/members?limit=50`]: [
+      json(200, { items: [{ kind: "user", id: BIA }, { kind: "group", id: PAYABLES }] }),
+    ],
+    [`GET /console/api/users/${BIA}`]: [json(200, userBody(BIA, "bia@example.com", { display_name: "Bia Souza" }))],
+    [`GET /console/api/groups/${PAYABLES}`]: [json(200, namedBody(PAYABLES, "payables"))],
+    ...script,
+  });
+
+  it("are in the navigation of whoever may read them, and the console starts there without users", async () => {
+    const { go } = show("/t/acme/console", {
+      "GET /console/api/me": [json(200, meBody(["groups:read", "organizations:read"], ["tenant_auditor"]))],
+    });
+    await waitFor(() => expect(go).toHaveBeenCalledWith({ name: "groups" }));
+    expect(screen.getByRole("link", { name: en.groups }).getAttribute("href")).toBe("/t/acme/console/groups");
+    expect(screen.getByRole("link", { name: en.organizations }).getAttribute("href")).toBe(
+      "/t/acme/console/organizations",
+    );
+    expect(screen.queryByRole("link", { name: en.users })).toBeNull();
+  });
+
+  it("are listed a page at a time, each a link to its page, and an auditor may not create one", async () => {
+    const { go, user } = show("/t/acme/console/groups", {
+      "GET /console/api/me": [json(200, meBody(["groups:read"], ["tenant_auditor"]))],
+      "GET /console/api/groups?limit=50": [json(200, { items: [namedBody(FINANCE, "finance")], next_cursor: "1" })],
+      "GET /console/api/groups?limit=50&cursor=1": [json(200, { items: [namedBody(PAYABLES, "payables")] })],
+    });
+    const link = await screen.findByRole("link", { name: "finance" });
+    expect(link.getAttribute("href")).toBe(`/t/acme/console/groups/${FINANCE}`);
+    expect(screen.getByText(en.noDescription)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: en.createGroup })).toBeNull();
+    await user.click(screen.getByRole("button", { name: en.loadMore }));
+    expect(await screen.findByRole("link", { name: "payables" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: en.loadMore })).toBeNull();
+    await user.click(link);
+    expect(go).toHaveBeenCalledWith({ name: "group", id: FINANCE });
+  });
+
+  it("are created with a name and an optional description, and a name taken is said in words", async () => {
+    const { sent, go, user } = show("/t/acme/console/groups", {
+      "GET /console/api/me": [json(200, meBody(MEMBERSHIPS))],
+      "GET /console/api/groups?limit=50": [json(200, { items: [] })],
+      "POST /console/api/groups": [problem(409, "identity.group_name_taken"), json(201, namedBody(FINANCE, "finance"))],
+    });
+    expect(await screen.findByText(en.noGroups)).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: en.createGroup }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(en.level(0), { exact: false })).toBeTruthy();
+    await user.type(within(dialog).getByLabelText(en.nameLabel), "finance");
+    await user.click(within(dialog).getByRole("button", { name: en.createGroup }));
+    expect(await within(dialog).findByText(en.groupNameTaken)).toBeTruthy();
+    await user.click(within(dialog).getByRole("button", { name: en.createGroup }));
+    await waitFor(() => expect(go).toHaveBeenCalledWith({ name: "group", id: FINANCE }));
+    expect(sent.at(-1)?.body).toEqual({ name: "finance" });
+  });
+
+  it("show their direct members, users first, by name", async () => {
+    show(`/t/acme/console/groups/${FINANCE}`, page({}));
+    expect(await screen.findByRole("heading", { name: "finance" })).toBeTruthy();
+    const bia = await screen.findByRole("link", { name: "Bia Souza" });
+    expect(bia.getAttribute("href")).toBe(`/t/acme/console/users/${BIA}`);
+    const payables = await screen.findByRole("link", { name: "payables" });
+    expect(payables.getAttribute("href")).toBe(`/t/acme/console/groups/${PAYABLES}`);
+    expect(bia.compareDocumentPosition(payables) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("add a member by identifier, and say in words a group that would be inside itself or too deep", async () => {
+    const { sent, user } = show(
+      `/t/acme/console/groups/${FINANCE}`,
+      page({
+        [`POST /console/api/groups/${FINANCE}/members`]: [
+          problem(409, "identity.group_cycle"),
+          problem(409, "identity.group_nesting_too_deep"),
+          empty(204),
+        ],
+        [`GET /console/api/groups/${FINANCE}/members?limit=50`]: [
+          json(200, { items: [] }),
+          json(200, { items: [{ kind: "group", id: PAYABLES }] }),
+        ],
+      }),
+    );
+    await user.click(await screen.findByRole("button", { name: en.addMember }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(en.addUserConsequence("finance"))).toBeTruthy();
+    await user.click(within(dialog).getByRole("radio", { name: en.memberKinds["group"] ?? "" }));
+    expect(within(dialog).getByText(en.addGroupConsequence("finance"))).toBeTruthy();
+    const identifier = within(dialog).getByLabelText(en.groupIdentifierLabel);
+    await user.type(identifier, "payables");
+    const add = within(dialog).getByRole("button", { name: en.addMember });
+    await user.click(add);
+    // Not an identifier: said before the server is asked.
+    expect(await within(dialog).findByText(en.notAnIdentifier)).toBeTruthy();
+    expect(sent.some((request) => request.method === "POST")).toBe(false);
+
+    await user.clear(identifier);
+    await user.type(identifier, PAYABLES);
+    await user.click(add);
+    expect(await within(dialog).findByText(en.groupCycle)).toBeTruthy();
+    await user.click(add);
+    expect(await within(dialog).findByText(en.groupNestingTooDeep)).toBeTruthy();
+    await user.click(add);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(sent.filter((request) => request.method === "POST").at(-1)?.body).toEqual({ kind: "group", id: PAYABLES });
+  });
+
+  it("take a member out after a dialog that says what follows", async () => {
+    const { sent, user } = show(
+      `/t/acme/console/groups/${FINANCE}`,
+      page({
+        [`POST /console/api/groups/${FINANCE}/members:remove`]: [empty(204)],
+        [`GET /console/api/groups/${FINANCE}/members?limit=50`]: [
+          json(200, { items: [{ kind: "user", id: BIA }] }),
+          json(200, { items: [] }),
+        ],
+      }),
+    );
+    await screen.findByRole("link", { name: "Bia Souza" });
+    await user.click(screen.getByRole("button", { name: en.takeOut }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(en.removeUserLead("finance"))).toBeTruthy();
+    expect(within(dialog).getByText(en.level(1), { exact: false })).toBeTruthy();
+    await user.click(within(dialog).getByRole("button", { name: en.takeOut }));
+    expect(await screen.findByText(en.noGroupMembers)).toBeTruthy();
+    expect(sent.find((request) => request.path.endsWith("members:remove"))?.body).toEqual({ kind: "user", id: BIA });
+  });
+
+  it("are changed with a form, and deleted only with the name typed in full", async () => {
+    const { sent, go, user } = show(
+      `/t/acme/console/groups/${FINANCE}`,
+      page({
+        [`PATCH /console/api/groups/${FINANCE}`]: [json(200, namedBody(FINANCE, "finance"))],
+        [`DELETE /console/api/groups/${FINANCE}`]: [empty(204)],
+      }),
+    );
+    await user.click(await screen.findByRole("button", { name: en.changeSettings }));
+    let dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(en.identifierKept("finance"))).toBeTruthy();
+    await user.clear(within(dialog).getByLabelText(`${en.descriptionLabel} (${en.optional})`));
+    await user.click(within(dialog).getByRole("button", { name: en.saveGroup }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    // A missing description removes it.
+    expect(sent.find((request) => request.method === "PATCH")?.body).toEqual({ name: "finance" });
+
+    await user.click(screen.getByRole("button", { name: en.deleteGroup }));
+    dialog = await screen.findByRole("dialog");
+    const confirm = within(dialog).getByRole("button", { name: en.deleteGroup });
+    expect(confirm.getAttribute("aria-disabled")).toBe("true");
+    expect(within(dialog).getByText(en.deleteGroupAboveValue)).toBeTruthy();
+    await user.type(within(dialog).getByLabelText(en.typeToConfirm("finance")), "finance");
+    await user.click(confirm);
+    await waitFor(() => expect(go).toHaveBeenCalledWith({ name: "groups" }));
+    expect(sent.some((request) => request.method === "DELETE")).toBe(true);
+  });
+
+  it("offer an auditor nothing to change, and show members by identifier to whoever may not read users", async () => {
+    const { sent } = show(`/t/acme/console/groups/${FINANCE}`, page({}, ["groups:read"]));
+    expect(await screen.findByRole("link", { name: "payables" })).toBeTruthy();
+    expect(screen.getByTitle(BIA)).toBeTruthy();
+    expect(sent.some((request) => request.path === `/console/api/users/${BIA}`)).toBe(false);
+    for (const label of [en.changeSettings, en.deleteGroup, en.addMember, en.takeOut]) {
+      expect(screen.queryByRole("button", { name: label })).toBeNull();
+    }
+  });
+});
+
+describe("organizations", () => {
+  const INVITATION = "0193f2c0-0000-7000-8000-0000000000a1";
+  const units = (more: ReturnType<typeof unitBody>[] = []) =>
+    json(200, {
+      items: [
+        unitBody(SALES, "Sales", null),
+        unitBody(PLATFORM, "Platform", ENGINEERING, "department"),
+        unitBody(ENGINEERING, "Engineering", null),
+        ...more,
+      ],
+    });
+  const page = (script: Parameters<typeof scripted>[0], permissions = MEMBERSHIPS) => ({
+    "GET /console/api/me": [json(200, meBody(permissions))],
+    [`GET /console/api/organizations/${ACME}`]: [json(200, namedBody(ACME, "Acme"))],
+    [`GET /console/api/organizations/${ACME}/units`]: [units()],
+    [`GET /console/api/organizations/${ACME}/members?limit=50`]: [
+      json(200, { items: [{ user_id: BIA, unit_ids: [PLATFORM], added_at: "2026-11-23T14:03:11Z" }] }),
+    ],
+    [`GET /console/api/organizations/${ACME}/invitations`]: [
+      json(200, {
+        items: [
+          {
+            id: INVITATION,
+            email: "caio@example.com",
+            unit_ids: [SALES],
+            created_at: "2026-11-23T14:03:11Z",
+            expires_at: "2026-11-30T14:03:11Z",
+            token: "hodor_invitation_secret",
+          },
+        ],
+      }),
+    ],
+    [`GET /console/api/users/${BIA}`]: [json(200, userBody(BIA, "bia@example.com", { display_name: "Bia Souza" }))],
+    ...script,
+  });
+
+  it("are listed, each a link to its page, and created with a form", async () => {
+    const { sent, go, user } = show("/t/acme/console/organizations", {
+      "GET /console/api/me": [json(200, meBody(MEMBERSHIPS))],
+      "GET /console/api/organizations?limit=50": [
+        json(200, { items: [namedBody(ACME, "Acme", { description: "A customer" })] }),
+      ],
+      "POST /console/api/organizations": [json(201, namedBody(ENGINEERING, "Globex"))],
+    });
+    const acme = await screen.findByRole("link", { name: "Acme" });
+    expect(acme.getAttribute("href")).toBe(`/t/acme/console/organizations/${ACME}`);
+    expect(screen.getByText("A customer")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: en.createOrganization }));
+    const dialog = await screen.findByRole("dialog");
+    await user.type(within(dialog).getByLabelText(en.nameLabel), "Globex");
+    await user.type(within(dialog).getByLabelText(`${en.descriptionLabel} (${en.optional})`), "Another customer");
+    await user.click(within(dialog).getByRole("button", { name: en.createOrganization }));
+    await waitFor(() => expect(go).toHaveBeenCalledWith({ name: "organization", id: ENGINEERING }));
+    expect(sent.at(-1)?.body).toEqual({ name: "Globex", description: "Another customer" });
+  });
+
+  it("show the units as a tree, the members with their units, and invitations without any token", async () => {
+    show(`/t/acme/console/organizations/${ACME}`, page({}));
+    expect(await screen.findByRole("heading", { name: "Acme" })).toBeTruthy();
+    await screen.findByText("Platform");
+    const tree = [...document.querySelectorAll(".console-unit")].map((unit) => [
+      unit.textContent,
+      unit.getAttribute("data-depth"),
+    ]);
+    expect(tree).toEqual([
+      ["Engineering", "1"],
+      ["Platform", "2"],
+      ["Sales", "1"],
+    ]);
+    expect(screen.getByText(en.unitKinds["department"] ?? "")).toBeTruthy();
+    expect(await screen.findByRole("link", { name: "Bia Souza" })).toBeTruthy();
+    expect(screen.getByText("Engineering / Platform")).toBeTruthy();
+    expect(screen.getByText("caio@example.com")).toBeTruthy();
+    expect(document.body.textContent).not.toContain("hodor_invitation_secret");
+  });
+
+  it("create a unit under a parent, and say in words that a unit with units below is not deleted", async () => {
+    const PAYMENTS = "0193f2b1-0000-7000-8000-0000000000f5";
+    const { sent, user } = show(
+      `/t/acme/console/organizations/${ACME}`,
+      page({
+        [`GET /console/api/organizations/${ACME}/units`]: [
+          units(),
+          units([unitBody(PAYMENTS, "Payments", ENGINEERING, "department")]),
+        ],
+        [`POST /console/api/organizations/${ACME}/units`]: [json(201, unitBody(PAYMENTS, "Payments", ENGINEERING))],
+        [`DELETE /console/api/organizations/${ACME}/units/${ENGINEERING}`]: [problem(409, "identity.unit_not_empty")],
+      }),
+    );
+    await user.click(await screen.findByRole("button", { name: en.createUnit }));
+    let dialog = await screen.findByRole("dialog");
+    await user.type(within(dialog).getByLabelText(en.nameLabel), "Payments");
+    await user.click(within(dialog).getByRole("radio", { name: en.unitKinds["department"] ?? "" }));
+    await user.click(within(dialog).getByRole("radio", { name: "Engineering" }));
+    await user.click(within(dialog).getByRole("button", { name: en.createUnit }));
+    expect(await screen.findByText("Payments")).toBeTruthy();
+    expect(sent.find((request) => request.method === "POST")?.body).toEqual({
+      parent_id: ENGINEERING,
+      name: "Payments",
+      kind: "department",
+    });
+
+    // The first unit of the tree is Engineering.
+    const [ofEngineering] = screen.getAllByRole("button", { name: en.deleteUnit });
+    await user.click(ofEngineering as HTMLElement);
+    dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(en.deleteUnitMembersValue)).toBeTruthy();
+    const confirm = within(dialog).getByRole("button", { name: en.deleteUnit });
+    expect(confirm.getAttribute("aria-disabled")).toBe("true");
+    await user.type(within(dialog).getByLabelText(en.typeToConfirm("Engineering")), "Engineering");
+    await user.click(confirm);
+    expect(await within(dialog).findByText(en.unitNotEmpty)).toBeTruthy();
+  });
+
+  it("move a unit, never under itself nor a unit below it", async () => {
+    const { sent, user } = show(
+      `/t/acme/console/organizations/${ACME}`,
+      page({
+        [`GET /console/api/organizations/${ACME}/units`]: [units(), units()],
+        [`PUT /console/api/organizations/${ACME}/units/${ENGINEERING}`]: [
+          json(200, unitBody(ENGINEERING, "Engineering", SALES)),
+        ],
+      }),
+    );
+    await screen.findByText("Platform");
+    const [ofEngineering] = screen.getAllByRole("button", { name: en.changeUnit });
+    await user.click(ofEngineering as HTMLElement);
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(en.moveCarries)).toBeTruthy();
+    expect(within(dialog).queryByRole("radio", { name: "Engineering" })).toBeNull();
+    expect(within(dialog).queryByRole("radio", { name: "Engineering / Platform" })).toBeNull();
+    await user.click(within(dialog).getByRole("radio", { name: "Sales" }));
+    await user.click(within(dialog).getByRole("button", { name: en.saveUnit }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(sent.find((request) => request.method === "PUT")?.body).toEqual({
+      parent_id: SALES,
+      name: "Engineering",
+      kind: "unit",
+    });
+  });
+
+  it("put a member with units, take one out, invite in the language chosen and withdraw an invitation", async () => {
+    const CAIO = "0193f1c2-0000-7000-8000-000000000003";
+    const { sent, user } = show(
+      `/t/acme/console/organizations/${ACME}`,
+      page({
+        [`PUT /console/api/organizations/${ACME}/members/${CAIO}`]: [
+          problem(404, "identity.user_not_found"),
+          json(200, { user_id: CAIO, unit_ids: [SALES], added_at: "2026-11-23T14:03:11Z" }),
+        ],
+        [`GET /console/api/organizations/${ACME}/members?limit=50`]: [
+          json(200, { items: [{ user_id: BIA, unit_ids: [PLATFORM], added_at: "2026-11-23T14:03:11Z" }] }),
+          json(200, { items: [{ user_id: BIA, unit_ids: [PLATFORM], added_at: "2026-11-23T14:03:11Z" }] }),
+          json(200, { items: [] }),
+        ],
+        [`DELETE /console/api/organizations/${ACME}/members/${BIA}`]: [empty(204)],
+        [`POST /console/api/organizations/${ACME}/invitations`]: [problem(422, "identity.email_invalid"), empty(202)],
+        [`GET /console/api/organizations/${ACME}/invitations`]: [
+          json(200, { items: [] }),
+          json(200, {
+            items: [
+              {
+                id: INVITATION,
+                email: "dora@example.com",
+                unit_ids: [],
+                created_at: "2026-11-23T14:03:11Z",
+                expires_at: "2026-11-30T14:03:11Z",
+              },
+            ],
+          }),
+          json(200, { items: [] }),
+        ],
+        [`DELETE /console/api/organizations/${ACME}/invitations/${INVITATION}`]: [empty(204)],
+      }),
+    );
+    await user.click(await screen.findByRole("button", { name: en.putMember }));
+    let dialog = await screen.findByRole("dialog");
+    await user.type(within(dialog).getByLabelText(en.userIdentifierLabel), CAIO);
+    await user.click(within(dialog).getByRole("checkbox", { name: "Sales" }));
+    await user.click(within(dialog).getByRole("button", { name: en.saveMember }));
+    expect(await within(dialog).findByText(en.userNotFound)).toBeTruthy();
+    await user.click(within(dialog).getByRole("button", { name: en.saveMember }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(sent.filter((request) => request.method === "PUT").at(-1)?.body).toEqual({ unit_ids: [SALES] });
+
+    await user.click(await screen.findByRole("button", { name: en.takeOut }));
+    dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(en.removeOrganizationMemberLead("Acme"))).toBeTruthy();
+    await user.click(within(dialog).getByRole("button", { name: en.takeOut }));
+    expect(await screen.findByText(en.noOrganizationMembers)).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: en.invite }));
+    dialog = await screen.findByRole("dialog");
+    await user.type(within(dialog).getByLabelText(en.emailLabel), "dora@example.com");
+    expect(within(dialog).getByText(en.inviteConsequence("dora@example.com"))).toBeTruthy();
+    await user.click(within(dialog).getByRole("radio", { name: en.messageLanguages["pt-BR"] ?? "" }));
+    await user.click(within(dialog).getByRole("button", { name: en.sendInvitation }));
+    expect(await within(dialog).findByText(en.emailInvalid)).toBeTruthy();
+    await user.click(within(dialog).getByRole("button", { name: en.sendInvitation }));
+    expect(await screen.findByText("dora@example.com")).toBeTruthy();
+    expect(sent.filter((request) => request.path.endsWith("/invitations") && request.method === "POST").at(-1)?.body).toEqual({
+      email: "dora@example.com",
+      unit_ids: [],
+      locale: "pt-BR",
+    });
+
+    await user.click(screen.getByRole("button", { name: en.withdraw }));
+    dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByRole("heading", { name: en.withdrawTitle("dora@example.com") })).toBeTruthy();
+    await user.click(within(dialog).getByRole("button", { name: en.withdraw }));
+    expect(await screen.findByText(en.noInvitations)).toBeTruthy();
+  });
+
+  it("are deleted only with the name typed in full", async () => {
+    const { go, user } = show(
+      `/t/acme/console/organizations/${ACME}`,
+      page({ [`DELETE /console/api/organizations/${ACME}`]: [empty(204)] }),
+    );
+    await screen.findByText("caio@example.com");
+    await user.click(screen.getByRole("button", { name: en.deleteOrganization }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(en.deleteOrganizationUnits)).toBeTruthy();
+    expect(within(dialog).getByText(en.level(2), { exact: false })).toBeTruthy();
+    const confirm = within(dialog).getByRole("button", { name: en.deleteOrganization });
+    await user.type(within(dialog).getByLabelText(en.typeToConfirm("Acme")), "acme");
+    expect(confirm.getAttribute("aria-disabled")).toBe("true");
+    await user.clear(within(dialog).getByLabelText(en.typeToConfirm("Acme")));
+    await user.type(within(dialog).getByLabelText(en.typeToConfirm("Acme")), "Acme");
+    await user.click(confirm);
+    await waitFor(() => expect(go).toHaveBeenCalledWith({ name: "organizations" }));
+  });
+
+  it("offer an auditor nothing to change", async () => {
+    show(`/t/acme/console/organizations/${ACME}`, page({}, ["users:read", "organizations:read"]));
+    await screen.findByText("caio@example.com");
+    for (const label of [
+      en.changeSettings,
+      en.deleteOrganization,
+      en.createUnit,
+      en.changeUnit,
+      en.deleteUnit,
+      en.putMember,
+      en.changeMemberUnits,
+      en.takeOut,
+      en.invite,
+      en.withdraw,
+    ]) {
+      expect(screen.queryByRole("button", { name: label })).toBeNull();
+    }
+  });
+});
+
+describe("the groups and organizations of a user", () => {
+  const ORGANIZATION = ACME;
+  const script = (permissions: string[]) => ({
+    "GET /console/api/me": [json(200, meBody(permissions))],
+    [`GET /console/api/users/${BIA}`]: [json(200, userBody(BIA, "bia@example.com", { display_name: "Bia Souza" }))],
+    [`GET /console/api/users/${BIA}/groups`]: [
+      json(200, {
+        items: [
+          { id: FINANCE, direct: false },
+          { id: PAYABLES, direct: true },
+        ],
+      }),
+    ],
+    [`GET /console/api/groups/${FINANCE}`]: [json(200, namedBody(FINANCE, "finance"))],
+    [`GET /console/api/groups/${PAYABLES}`]: [json(200, namedBody(PAYABLES, "payables"))],
+    [`GET /console/api/users/${BIA}/organizations`]: [
+      json(200, { items: [{ organization_id: ORGANIZATION, unit_ids: [PLATFORM], added_at: "2026-11-23T14:03:11Z" }] }),
+    ],
+    [`GET /console/api/organizations/${ORGANIZATION}`]: [json(200, namedBody(ORGANIZATION, "Acme"))],
+    [`GET /console/api/organizations/${ORGANIZATION}/units`]: [
+      json(200, {
+        items: [unitBody(ENGINEERING, "Engineering", null), unitBody(PLATFORM, "Platform", ENGINEERING, "department")],
+      }),
+    ],
+  });
+
+  it("are shown to whoever may read them, each group direct or through another", async () => {
+    show(`/t/acme/console/users/${BIA}`, script(["users:read", "groups:read", "organizations:read"]));
+    expect(await screen.findByRole("heading", { name: en.userGroups })).toBeTruthy();
+    const finance = await screen.findByRole("link", { name: "finance" });
+    expect(finance.getAttribute("href")).toBe(`/t/acme/console/groups/${FINANCE}`);
+    expect(screen.getByText(en.throughAnother)).toBeTruthy();
+    expect(screen.getByText(en.direct)).toBeTruthy();
+    expect(await screen.findByRole("link", { name: "Acme" })).toBeTruthy();
+    expect(await screen.findByText("Engineering / Platform")).toBeTruthy();
+  });
+
+  it("are not asked for without the permission to read them", async () => {
+    const { sent } = show(`/t/acme/console/users/${BIA}`, script(["users:read"]));
+    expect(await screen.findByRole("heading", { name: en.profile })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: en.userGroups })).toBeNull();
+    expect(screen.queryByRole("heading", { name: en.userOrganizations })).toBeNull();
+    expect(sent.some((request) => request.path.includes("/groups") || request.path.includes("/organizations"))).toBe(
+      false,
+    );
   });
 });
