@@ -113,7 +113,7 @@ How an assertion is checked against these keys is in [checking a client assertio
 
 ### Clients that act as a workload
 
-A confidential client of the client credentials grant may be bound to one **principal**: a [service account or an agent](identity.md#service-accounts-and-agents) of the tenant ([Decision 0028](../../decisions/0028-workloads-are-users.md)). The client is then the workload's credential: it proves who it is with its secret or its key, as any client does, and what it gets is about the workload.
+A confidential client of the client credentials grant may be bound to one **principal**: a [service account or an agent](identity.md#service-accounts-and-agents) of the tenant ([Decision 0031](../../decisions/0031-workloads-are-users.md)). The client is then the workload's credential: it proves who it is with its secret or its key, as any client does, and what it gets is about the workload.
 
 - **Its access tokens are the workload's.** `sub` is the principal's identifier, and `principal_kind` says its kind, `service_account` or `agent`. `client_id` is still the client. The roles assigned to the principal are the ones a resource server finds when it asks [the Authorization API](authorization.md#the-authorization-api) about the token's `sub`, as a subject of kind `user`.
 - **It gets tokens only while the workload may act**: while the principal is a service account or an agent of the tenant that is Active. Otherwise the token endpoint answers `invalid_client`, as for a disabled client.

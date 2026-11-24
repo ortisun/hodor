@@ -1,4 +1,4 @@
-# Decision 0028: Service accounts and agents are users, and a client acts as one
+# Decision 0031: Service accounts and agents are users, and a client acts as one
 
 Status: Accepted
 

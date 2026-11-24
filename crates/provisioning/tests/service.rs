@@ -311,7 +311,7 @@ async fn users_scim_does_not_show_are_not_found() {
             &world.tenant,
             CreateUser {
                 kind: UserKind::ServiceAccount,
-                identifiers: vec![(IdentifierKind::Username, "robot".to_owned())],
+                identifiers: vec![],
                 profile: Profile::default(),
                 confirmed: true,
             },

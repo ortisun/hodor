@@ -90,11 +90,17 @@ impl SubjectAttributeSource for ServerSubjects {
                 match self.applications.client(tenant, id).await {
                     Ok(client) => {
                         let snapshot = client.snapshot();
-                        attributes(&[
+                        let mut known = vec![
                             ("application", json!(snapshot.application_id.to_string())),
                             ("client_type", json!(snapshot.client_type.as_str())),
                             ("enabled", json!(client.is_enabled())),
-                        ])
+                        ];
+                        // Only for a client bound to a workload, so that the
+                        // others are described as before.
+                        if let Some(principal) = client.principal() {
+                            known.push(("principal", json!(principal.to_string())));
+                        }
+                        attributes(&known)
                     }
                     Err(error) if error.kind() == ErrorKind::NotFound => Ok(Attributes::none()),
                     Err(error) => Err(error),

@@ -46,6 +46,8 @@ pub enum OauthEvent {
         application_id: ApplicationId,
         /// `confidential` or `public`.
         client_type: &'static str,
+        /// The service account or agent it acts as, if any.
+        principal_id: Option<UserId>,
     },
     /// A client's settings changed.
     ClientChanged {
@@ -55,6 +57,8 @@ pub enum OauthEvent {
         application_id: ApplicationId,
         /// `confidential` or `public`.
         client_type: &'static str,
+        /// The service account or agent it acts as, if any.
+        principal_id: Option<UserId>,
     },
     /// A client was enabled.
     ClientEnabled {
@@ -174,6 +178,9 @@ pub enum OauthEvent {
     ClientAccessTokenIssued {
         /// The client.
         client_id: ClientId,
+        /// The service account or agent the client acts as, if it is bound
+        /// to one: the token's `sub`.
+        principal_id: Option<UserId>,
         /// The token's `jti`.
         token_id: String,
         /// When it expires.
@@ -221,7 +228,8 @@ pub enum OauthEvent {
         client_id: ClientId,
         /// The token's `jti`.
         token_id: String,
-        /// Why: `revoked_by_client`.
+        /// Why: `revoked_by_client`, or `workload_disabled` or
+        /// `workload_deleted` when its workload was.
         reason: &'static str,
     },
 }

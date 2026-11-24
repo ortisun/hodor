@@ -3,7 +3,7 @@
 //! See `docs/architecture/contexts/oauth.md`, "Storage".
 
 use crate::uow::{connection, database_error};
-use hodor_kernel::{DomainError, Timestamp, UnitOfWork};
+use hodor_kernel::{DomainError, Timestamp, UnitOfWork, UserId};
 use hodor_oauth::api::{
     Application, ApplicationId, ApplicationSettings, ApplicationSnapshot, ApplicationStore,
     Audience, AuthenticationMethod, Client, ClientId, ClientKey, ClientSecret, ClientSecretHash,
@@ -180,7 +180,7 @@ pub struct PgClientStore;
 const CLIENT_COLUMNS: &str = "id, application_id, name, client_type, authentication_method, \
      grant_types, redirect_uris, post_logout_redirect_uris, allowed_scopes, require_pkce, \
      id_token_algorithm, access_token_seconds, id_token_seconds, refresh_token_seconds, \
-     refresh_idle_seconds, consent_seconds, status, created_at, updated_at, version";
+     refresh_idle_seconds, consent_seconds, status, created_at, updated_at, version, principal_id";
 
 async fn load_client(
     connection: &mut PgConnection,
@@ -265,6 +265,10 @@ async fn load_client(
                 refresh_idle: duration("refresh_idle_seconds")?,
                 consent: duration("consent_seconds")?,
             },
+            principal: row
+                .try_get::<Option<Uuid>, _>("principal_id")
+                .map_err(get)?
+                .map(UserId::from_uuid),
         },
         secrets,
         keys,
@@ -341,10 +345,10 @@ impl ClientStore for PgClientStore {
                   grant_types, redirect_uris, post_logout_redirect_uris, allowed_scopes,
                   require_pkce, access_token_seconds, id_token_seconds, refresh_token_seconds,
                   refresh_idle_seconds, consent_seconds, status, created_at, updated_at,
-                  id_token_algorithm,
+                  id_token_algorithm, principal_id,
                   version)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-                     $17, $18, $19, $20, 0)",
+                     $17, $18, $19, $20, $21, 0)",
         )
         .bind(tenant)
         .bind(state.id.as_uuid())
@@ -366,6 +370,7 @@ impl ClientStore for PgClientStore {
         .bind(state.created_at)
         .bind(state.updated_at)
         .bind(settings.id_token_algorithm.as_str())
+        .bind(settings.principal.map(|principal| principal.as_uuid()))
         .execute(&mut *connection)
         .await;
         match inserted {
@@ -395,7 +400,7 @@ impl ClientStore for PgClientStore {
                  access_token_seconds = $10, id_token_seconds = $11,
                  refresh_token_seconds = $12, refresh_idle_seconds = $13,
                  consent_seconds = $14, status = $15, updated_at = $16,
-                 id_token_algorithm = $18, version = version + 1
+                 id_token_algorithm = $18, principal_id = $19, version = version + 1
              WHERE tenant_id = $1 AND id = $2 AND version = $17",
         )
         .bind(tenant)
@@ -416,6 +421,7 @@ impl ClientStore for PgClientStore {
         .bind(state.updated_at)
         .bind(version_of(state.version)?)
         .bind(settings.id_token_algorithm.as_str())
+        .bind(settings.principal.map(|principal| principal.as_uuid()))
         .execute(&mut *connection)
         .await
         .map_err(get)?;

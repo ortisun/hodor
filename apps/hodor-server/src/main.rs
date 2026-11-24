@@ -23,7 +23,7 @@ use hodor_adapters_postgres::{
     PgRecoveryCodeStore, PgRefreshTokenStore, PgResourceServerStore, PgRoleAssignmentStore,
     PgSealingStateStore, PgSessionStore, PgSimulationStore, PgTenantDirectory, PgTenantRepository,
     PgTotpStore, PgTransactionStore, PgUploadedDecisionStore, PgUserRepository,
-    PgVerificationTokenStore, PgWebAuthnStore,
+    PgVerificationTokenStore, PgWebAuthnStore, PgWorkloadRepository,
 };
 use hodor_audit::api::AuditService;
 use hodor_authentication::api::{
@@ -47,7 +47,7 @@ use hodor_federation::api::{
     EXTERNAL_STEP, ExternalIdentityAuthenticator, ExternalSignIn, FederationService, GitHubClient,
     LockoutPolicy, OpenIdClient, SamlClient,
 };
-use hodor_identity::api::{GroupService, IdentityService, OrganizationService};
+use hodor_identity::api::{GroupService, IdentityService, OrganizationService, WorkloadService};
 use hodor_kernel::{DomainError, Secret, SecretBox, SystemClock, TenantContext};
 use hodor_keys::api::{KeyService, RotationPolicy, TenantSecretBox};
 use hodor_notification::api::Notifier;
@@ -55,7 +55,7 @@ use hodor_oauth::api::{
     AccessTokenRegister, ApplicationPorts, ApplicationService, AuthorizationCodePorts,
     AuthorizationCodeService, ConsentPorts, ConsentService, LogoutPorts, LogoutService,
     ResourceAccessPorts, ResourceAccessService, TokenPorts, TokenService, UserInfoPorts,
-    UserInfoService,
+    UserInfoService, WorkloadTokens,
 };
 use hodor_observability::{LogFormat, Telemetry};
 use hodor_protocol_http::{
@@ -334,10 +334,7 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
     let (interaction, invitations) = interaction(&config, &database)?;
     let authorization = authorization(&config, &database, interaction.authentication.clone());
     // SCIM ends a deprovisioned person's sessions and grants with these.
-    let revoker = deprovisioning::ServerAccessRevoker {
-        sessions: authorization.sessions.clone(),
-        grants: authorization.authorization.clone(),
-    };
+    let revoker = access_revoker(&database);
     let mut oauth2 = authorization_routes(authorization.clone());
     if let (Some(keys), Some(setting)) = (&keys, &config.secret_keys) {
         oauth2 = oauth2.merge(token_routes(token(
@@ -750,18 +747,7 @@ fn token(
     let clock = Arc::new(SystemClock);
     let digest = Arc::new(Sha256Digest);
     let random = Arc::new(OsRandom);
-    let standing = ServerStanding {
-        sessions: SessionService::new(
-            units.clone(),
-            Arc::new(PgSessionStore),
-            digest.clone(),
-            random.clone(),
-            clock.clone(),
-        ),
-        identity: IdentityService::new(units.clone(), Arc::new(PgUserRepository), clock.clone())
-            .with_groups(Arc::new(PgGroupRepository))
-            .with_organizations(Arc::new(PgOrganizationRepository)),
-    };
+    let standing = standing(database);
     let tokens = TokenService::new(TokenPorts {
         units_of_work: units,
         applications: Arc::new(PgApplicationStore),
@@ -808,6 +794,7 @@ fn userinfo(config: &Config, database: &Database, keys: KeyService) -> UserInfoS
                 Arc::new(PgAccessTokenRecordStore),
                 Arc::new(PgGrantStore),
                 Arc::new(PgRefreshTokenStore),
+                Arc::new(standing(database)),
             ),
             memberships: Arc::new(ServerMemberships::over(database, clock.clone())),
             clock,
@@ -887,6 +874,7 @@ fn resource_access(
             Arc::new(PgAccessTokenRecordStore),
             Arc::new(PgGrantStore),
             Arc::new(PgRefreshTokenStore),
+            Arc::new(standing(database)),
         ),
         applications,
         clock: Arc::new(SystemClock),
@@ -1248,6 +1236,55 @@ fn factor_service(
     })
 }
 
+/// What the OAuth context asks of a person or a workload, over the session
+/// and identity contexts.
+fn standing(database: &Database) -> ServerStanding {
+    let units = || Arc::new(database.clone());
+    let clock = Arc::new(SystemClock);
+    ServerStanding {
+        sessions: SessionService::new(
+            units(),
+            Arc::new(PgSessionStore),
+            Arc::new(Sha256Digest),
+            Arc::new(OsRandom),
+            clock.clone(),
+        ),
+        identity: IdentityService::new(units(), Arc::new(PgUserRepository), clock)
+            .with_groups(Arc::new(PgGroupRepository))
+            .with_organizations(Arc::new(PgOrganizationRepository)),
+    }
+}
+
+/// Ends a deprovisioned person's access, and a disabled or deleted
+/// workload's, in the asking context's unit of work.
+fn access_revoker(database: &Database) -> deprovisioning::ServerAccessRevoker {
+    let units = || Arc::new(database.clone());
+    let clock = Arc::new(SystemClock);
+    deprovisioning::ServerAccessRevoker {
+        sessions: SessionService::new(
+            units(),
+            Arc::new(PgSessionStore),
+            Arc::new(Sha256Digest),
+            Arc::new(OsRandom),
+            clock.clone(),
+        ),
+        grants: AuthorizationCodeService::new(AuthorizationCodePorts {
+            units_of_work: units(),
+            applications: Arc::new(PgApplicationStore),
+            clients: Arc::new(PgClientStore),
+            resource_servers: Arc::new(PgResourceServerStore),
+            requests: Arc::new(PgAuthorizationRequestStore),
+            grants: Arc::new(PgGrantStore),
+            codes: Arc::new(PgAuthorizationCodeStore),
+            memberships: Arc::new(ServerMemberships::over(database, clock.clone())),
+            digest: Arc::new(Sha256Digest),
+            random: Arc::new(OsRandom),
+            clock: clock.clone(),
+        }),
+        tokens: WorkloadTokens::new(Arc::new(PgAccessTokenRecordStore), clock),
+    }
+}
+
 /// Builds everything the administration interface needs.
 fn administration(
     config: &Config,
@@ -1301,6 +1338,15 @@ fn administration(
         identity: IdentityService::new(units(), Arc::new(PgUserRepository), clock.clone())
             .with_groups(Arc::new(PgGroupRepository))
             .with_organizations(Arc::new(PgOrganizationRepository)),
+        workloads: WorkloadService::new(
+            units(),
+            IdentityService::new(units(), Arc::new(PgUserRepository), clock.clone())
+                .with_groups(Arc::new(PgGroupRepository))
+                .with_organizations(Arc::new(PgOrganizationRepository)),
+            Arc::new(PgWorkloadRepository),
+            Arc::new(access_revoker(database)),
+            clock.clone(),
+        ),
         sessions: SessionService::new(
             units(),
             Arc::new(PgSessionStore),

@@ -61,7 +61,8 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   `description` and a `reason` for logs only; `check_assertion`, the checks
   of RFC 7523 in the specification's order; `assertion_issuer`, the `iss`
   read before the signature only to find the client;
-  `claims_for` over a `TokenSubject` and `access_token_claims` for a code
+  `claims_for` over a `TokenSubject` (whose `principal_kind` is written as
+  the claim of that name) and `access_token_claims` for a code
   (RFC 9068; the issuer is the audience when there is none, and one of the
   audiences when the scopes hold `openid`; no `auth_time` without a
   person); `TokenError` also has `invalid_scope` and `invalid_target`;
@@ -84,7 +85,8 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   (`token` required, a parameter twice or more than one way of proving who
   the client is `invalid_request`, no client named `invalid_client`),
   `TokenTypeHint` (an unknown hint is ignored), `AccessTokenRecord` (with
-  `issued`), the answers `inactive`, `active_access_token` and
+  `issued` and `for_principal`), the answers `inactive`, `active_access_token`
+  (with `principal_kind` when the token has it) and
   `active_refresh_token` (`ActiveRefreshToken`), and `REVOKED_BY_CLIENT`.
   Its cases are at the bottom of the file.
 - `refresh.rs`: refresh tokens. `RefreshFamily` (`start` from a redeemed
@@ -131,7 +133,8 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   goes through: a public client uses `none`, has no secret or key and uses
   PKCE; a confidential client never uses `none`; `client_credentials` is
   for confidential clients; `refresh_token` comes with
-  `authorization_code`, which comes with at least one redirect address.
+  `authorization_code`, which comes with at least one redirect address; a
+  client with a `principal` has `client_credentials` and no other grant.
 - A rotation keeps only the newest previous working secret, until the
   overlap ends; every other secret is dropped, so at most two work.
 - Leaving a secret method drops the secrets, and leaving `private_key_jwt`

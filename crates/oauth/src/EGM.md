@@ -17,8 +17,8 @@ follows is `docs/architecture/contexts/oauth.md`.
     `RotateSecret`, `CreateResourceServer`; `AuthorizationCodeService`,
     `AuthorizationCodePorts`, `ResumedRequest`, `RedeemedCode`;
     `TokenService`, `TokenPorts`, `Issuer`, `IssuedTokens`, with
-    `TokenService::revoke`, `introspect` and `register`;
-    `AccessTokenRegister`; `UserInfoService`, `UserInfoPorts`;
+    `TokenService::revoke`, `introspect`, `register` and `workload_tokens`;
+    `AccessTokenRegister`; `WorkloadTokens`; `UserInfoService`, `UserInfoPorts`;
     `LogoutService`, `LogoutPorts`, `LogoutRefusal`; `ConsentService`,
     `ConsentPorts`, `ConsentQuestion`, `AskedScope`, `ListedConsent`.
   - The end-session endpoint's domain: `LogoutParameters`,
@@ -89,7 +89,8 @@ follows is `docs/architecture/contexts/oauth.md`.
   - `testing/refresh.rs`: `InMemoryRefreshTokens::new(&grants)`, which
     refuses a family whose grant the tenant does not have, with `all(tenant)`;
     `StandingOf`, a stand-in `PersonStanding` whose `end_session` and `bar`
-    end a session or bar a person; `MembershipsOf`, a stand-in
+    end a session or bar a person or a workload, and whose `workload(id,
+    kind)` makes a workload that may act; `MembershipsOf`, a stand-in
     `PersonMemberships` whose `join`, `leave` and `set_groups` say what a
     person is a member of; `RefreshStorePorts` and
     `run_refresh_token_contract(ports)`: a family stored whole and found by
@@ -99,7 +100,8 @@ follows is `docs/architecture/contexts/oauth.md`.
   - `testing/register.rs`: `InMemoryAccessTokenRecords::new(&clients)`,
     which refuses a record whose client the tenant does not have, with
     `all(tenant)`; `AccessTokenRecordStorePorts` and
-    `run_access_token_record_contract(ports)`.
+    `run_access_token_record_contract(ports)`, which also checks that the
+    records of a principal are revoked together, once, in their tenant only.
   - `testing/consent.rs`: `InMemoryConsents::new(&clients)`, which refuses
     a consent or a history entry whose client the tenant does not have,
     with `history(tenant)`; `consent_service(units, &stores, clock)`, a

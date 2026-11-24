@@ -65,11 +65,16 @@ pub enum Permission {
     OrganizationsRead,
     /// Changing organizations, their units and members, and inviting.
     OrganizationsWrite,
+    /// Seeing service accounts and agents, with their owners.
+    WorkloadsRead,
+    /// Creating, changing, disabling, enabling and deleting service
+    /// accounts and agents.
+    WorkloadsWrite,
 }
 
 impl Permission {
     /// Every permission.
-    pub const ALL: [Self; 27] = [
+    pub const ALL: [Self; 29] = [
         Self::UsersRead,
         Self::UsersWrite,
         Self::SessionsRead,
@@ -97,6 +102,8 @@ impl Permission {
         Self::GroupsWrite,
         Self::OrganizationsRead,
         Self::OrganizationsWrite,
+        Self::WorkloadsRead,
+        Self::WorkloadsWrite,
     ];
 
     /// The permission written as `resource:action`.
@@ -130,6 +137,8 @@ impl Permission {
             Self::GroupsWrite => "groups:write",
             Self::OrganizationsRead => "organizations:read",
             Self::OrganizationsWrite => "organizations:write",
+            Self::WorkloadsRead => "workloads:read",
+            Self::WorkloadsWrite => "workloads:write",
         }
     }
 
@@ -198,6 +207,7 @@ impl Role {
                 Permission::PoliciesRead,
                 Permission::GroupsRead,
                 Permission::OrganizationsRead,
+                Permission::WorkloadsRead,
             ],
         }
     }

@@ -4,7 +4,9 @@
 //! Specified in `docs/architecture/contexts/oauth.md`, "Revocation,
 //! introspection and metadata".
 
-use crate::application::ports::{AccessTokenRecordStore, GrantStore, RefreshTokenStore};
+use crate::application::ports::{
+    AccessTokenRecordStore, GrantStore, PersonStanding, RefreshTokenStore,
+};
 use crate::application::token::{Issuer, TokenService};
 use crate::application::userinfo::published_keys;
 use crate::domain::authorization::GrantStatus;
@@ -17,19 +19,23 @@ use crate::domain::introspection::{
 use crate::domain::openid::read_access_token;
 use crate::domain::refresh::{FamilyStatus, RefreshTokenHash};
 use crate::domain::token::TokenError;
-use hodor_kernel::{Actor, Caller, CorrelationId, DomainError, TenantContext, UnitOfWorkFactory};
+use hodor_kernel::{
+    Actor, Caller, Clock, CorrelationId, DomainError, EventEnvelope, EventMetadata, TenantContext,
+    UnitOfWork, UnitOfWorkFactory, UserId,
+};
 use serde_json::Value;
 use std::fmt;
 use std::sync::Arc;
 
-/// Whether access tokens are still in force: the register, and the grants
-/// and refresh token families its records name.
+/// Whether access tokens are still in force: the register, and the grants,
+/// refresh token families and workloads its records name.
 #[derive(Clone)]
 pub struct AccessTokenRegister {
     units_of_work: Arc<dyn UnitOfWorkFactory>,
     access_tokens: Arc<dyn AccessTokenRecordStore>,
     grants: Arc<dyn GrantStore>,
     refresh_tokens: Arc<dyn RefreshTokenStore>,
+    standing: Arc<dyn PersonStanding>,
 }
 
 impl fmt::Debug for AccessTokenRegister {
@@ -47,18 +53,21 @@ impl AccessTokenRegister {
         access_tokens: Arc<dyn AccessTokenRecordStore>,
         grants: Arc<dyn GrantStore>,
         refresh_tokens: Arc<dyn RefreshTokenStore>,
+        standing: Arc<dyn PersonStanding>,
     ) -> Self {
         Self {
             units_of_work,
             access_tokens,
             grants,
             refresh_tokens,
+            standing,
         }
     }
 
     /// Whether the access token `token_id`, which says it was issued to
-    /// `client_id`, is still in force: recorded, not revoked, and its grant
-    /// and family still active.
+    /// `client_id`, is still in force: recorded, not revoked, its grant
+    /// and family still active, and the workload it was issued for, if
+    /// any, still one that may act.
     ///
     /// # Errors
     ///
@@ -88,7 +97,78 @@ impl AccessTokenRegister {
                 return Ok(false);
             }
         }
+        drop(uow);
+        if let Some(principal) = record.principal_id {
+            return Ok(self
+                .standing
+                .workload_that_may_act(tenant, principal)
+                .await?
+                .is_some());
+        }
         Ok(true)
+    }
+}
+
+/// Revokes the access tokens issued for a service account or an agent, when
+/// it is disabled or deleted.
+#[derive(Clone)]
+pub struct WorkloadTokens {
+    access_tokens: Arc<dyn AccessTokenRecordStore>,
+    clock: Arc<dyn Clock>,
+}
+
+impl fmt::Debug for WorkloadTokens {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WorkloadTokens").finish_non_exhaustive()
+    }
+}
+
+impl WorkloadTokens {
+    /// The use case on the register's store.
+    #[must_use]
+    pub fn new(access_tokens: Arc<dyn AccessTokenRecordStore>, clock: Arc<dyn Clock>) -> Self {
+        Self {
+            access_tokens,
+            clock,
+        }
+    }
+
+    /// Revokes every access token issued for `principal` that is not
+    /// revoked yet, with `reason`, in the caller's unit of work, and
+    /// records `oauth.access_token_revoked` for each. Answers how many.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails. After an error the unit of work
+    /// must be abandoned.
+    pub async fn revoke_in(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        principal: UserId,
+        reason: &'static str,
+        caller: Caller,
+    ) -> Result<usize, DomainError> {
+        let now = self.clock.now();
+        let revoked = self
+            .access_tokens
+            .revoke_for_principal(uow, principal, now, reason)
+            .await?;
+        let tenant = uow.tenant().tenant_id();
+        for (client_id, token_id) in &revoked {
+            let metadata = EventMetadata::new(
+                tenant,
+                caller.actor,
+                caller.correlation_id,
+                self.clock.as_ref(),
+            );
+            let event = OauthEvent::AccessTokenRevoked {
+                client_id: *client_id,
+                token_id: token_id.clone(),
+                reason,
+            };
+            uow.record_event(EventEnvelope::new(metadata, &event)?);
+        }
+        Ok(revoked.len())
     }
 }
 
@@ -101,7 +181,14 @@ impl TokenService {
             self.ports.access_tokens.clone(),
             self.ports.grants.clone(),
             self.ports.refresh_tokens.clone(),
+            self.ports.standing.clone(),
         )
+    }
+
+    /// Revoking the tokens of workloads, on the service's own store.
+    #[must_use]
+    pub fn workload_tokens(&self) -> WorkloadTokens {
+        WorkloadTokens::new(self.ports.access_tokens.clone(), self.ports.clock.clone())
     }
 
     /// Answers a request to the revocation endpoint at `endpoint`. Whatever

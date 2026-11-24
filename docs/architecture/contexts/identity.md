@@ -227,7 +227,7 @@ Making the secret, sending the message and the two ways of accepting are the aut
 
 ## Service accounts and agents
 
-A **service account** is a program of the tenant that acts on its own: a nightly export, a service that calls another. An **agent** is an artificial intelligence agent. Both are **workloads**: principals of the tenant that are not people. Each is a user of its kind, `service_account` or `agent`, so that whatever is given to a user can be given to it: [roles](authorization.md#assignments), membership of [groups](#groups), and its own lines in the audit log ([Decision 0028](../../decisions/0028-workloads-are-users.md)).
+A **service account** is a program of the tenant that acts on its own: a nightly export, a service that calls another. An **agent** is an artificial intelligence agent. Both are **workloads**: principals of the tenant that are not people. Each is a user of its kind, `service_account` or `agent`, so that whatever is given to a user can be given to it: [roles](authorization.md#assignments), membership of [groups](#groups), and its own lines in the audit log ([Decision 0031](../../decisions/0031-workloads-are-users.md)).
 
 | Field | Meaning |
 |---|---|
@@ -262,7 +262,7 @@ stateDiagram-v2
 | `deleted` | Deleted | As when disabled, and the workload is no longer read or listed: only its identifier remains, in the audit log and wherever it is referred to |
 
 - **A workload is created Active.** Nothing about it needs confirming.
-- **Disabling** deactivates it. **Enabling** restores a deactivated workload, or reactivates a suspended one. Disabling a disabled workload or enabling an active one changes nothing and records nothing.
+- **Disabling** deactivates it, a suspended one included. **Enabling** restores a deactivated workload, or reactivates a suspended one after revoking its tokens, since suspending it as a user revoked nothing. Disabling a deactivated workload or enabling an active one changes nothing and records nothing.
 - **Deleting** deactivates it if it is not already, then marks it Deleted, in one unit of work: its name is erased, it leaves every group and organization, and its owners are forgotten.
 - **Disabling and deleting end its access at once, in the same unit of work**: through the [`WorkloadAccess`](#port) port, every access token issued for it is revoked, with the reason `workload_disabled` or `workload_deleted`. Enabling it again does not bring a revoked token back; its clients ask for new ones. Even without the revocation, a token of a workload that is not active is not [in force](oauth.md#the-register-of-access-tokens), so a workload suspended as a user stops too.
 

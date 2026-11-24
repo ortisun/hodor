@@ -62,6 +62,8 @@ impl SignatureVerifier for BothFakes {
 }
 
 struct World {
+    units: InMemoryUnitOfWorkFactory,
+    standing: StandingOf,
     clock: Arc<FixedClock>,
     grants: InMemoryGrants,
     families: InMemoryRefreshTokens,
@@ -80,6 +82,7 @@ fn world() -> World {
     let code_store = InMemoryAuthorizationCodes::new(&grants);
     let families = InMemoryRefreshTokens::new(&grants);
     let records = InMemoryAccessTokenRecords::new(&stores.clients);
+    let standing = StandingOf::default();
     let clock = Arc::new(FixedClock::at(
         Timestamp::UNIX_EPOCH + Duration::days(20_000),
     ));
@@ -111,7 +114,7 @@ fn world() -> World {
         assertions: Arc::new(InMemoryClientAssertions::new(&stores.clients)),
         refresh_tokens: Arc::new(families.clone()),
         access_tokens: Arc::new(records.clone()),
-        standing: Arc::new(StandingOf::default()),
+        standing: Arc::new(standing.clone()),
         memberships: Arc::new(MembershipsOf::default()),
         secrets: Arc::new(FakeSecretBox),
         codes: codes.clone(),
@@ -122,7 +125,7 @@ fn world() -> World {
         clock: clock.clone(),
     });
     let applications = ApplicationService::new(ApplicationPorts {
-        units_of_work: Arc::new(units),
+        units_of_work: Arc::new(units.clone()),
         applications: Arc::new(stores.applications),
         clients: Arc::new(stores.clients),
         resource_servers: Arc::new(stores.resource_servers),
@@ -131,6 +134,8 @@ fn world() -> World {
         clock: clock.clone(),
     });
     World {
+        units,
+        standing,
         clock,
         grants,
         families,
@@ -802,4 +807,159 @@ async fn the_register_says_a_token_is_in_force_only_with_its_grant_and_family() 
             .expect("asked"),
         "its grant was revoked"
     );
+}
+
+/// A client of the application that owns the resource server, allowed
+/// client credentials, acting as `principal`.
+async fn workload_client(world: &World, tenant: &Tenant, principal: UserId) -> Credentials {
+    let mut settings = ClientSettings::new(
+        "Nightly export",
+        ClientType::Confidential,
+        vec![GrantType::ClientCredentials],
+        Vec::new(),
+    );
+    settings.authentication_method = AuthenticationMethod::ClientSecretBasic;
+    settings.allowed_scopes = vec!["read".to_owned()];
+    settings.principal = Some(principal);
+    let (client, secret) = world
+        .applications
+        .create_client(
+            &tenant.context,
+            CreateClient {
+                application_id: tenant.resource_owner,
+                client_type: ClientType::Confidential,
+                settings,
+                secret_lifetime: None,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("client");
+    Credentials {
+        id: client.id(),
+        secret: secret.map(|secret| secret.expose().to_owned()),
+    }
+}
+
+fn client_credentials() -> Vec<(String, String)> {
+    vec![("grant_type".to_owned(), "client_credentials".to_owned())]
+}
+
+#[tokio::test]
+async fn a_client_that_acts_as_a_workload_gets_tokens_about_it_while_it_may_act() {
+    let world = world();
+    let tenant = tenant(&world).await;
+    let workload = UserId::generate();
+    world.standing.workload(workload, "service_account");
+    let machine = workload_client(&world, &tenant, workload).await;
+    let tokens = ask(&world, &tenant.context, &machine, client_credentials())
+        .await
+        .expect("client credentials");
+    let answer = introspect(&world, &tenant.context, &machine, &access(&tokens))
+        .await
+        .expect("answered");
+    assert_eq!(answer["active"], true);
+    assert_eq!(
+        answer["sub"],
+        workload.to_string(),
+        "the workload is the subject"
+    );
+    assert_eq!(answer["client_id"], machine.id.to_string());
+    assert_eq!(answer["principal_kind"], "service_account");
+    let record = world
+        .records
+        .all(tenant.context.tenant_id())
+        .into_iter()
+        .find(|record| record.client_id == machine.id)
+        .expect("recorded");
+    assert_eq!(record.principal_id, Some(workload));
+
+    // A client without a principal is answered as before.
+    let plain = resource_server_client(&world, &tenant).await;
+    let own = ask(&world, &tenant.context, &plain, client_credentials())
+        .await
+        .expect("client credentials");
+    let answer = introspect(&world, &tenant.context, &plain, &access(&own))
+        .await
+        .expect("answered");
+    assert_eq!(answer["sub"], plain.id.to_string());
+    assert!(answer.get("principal_kind").is_none(), "{answer}");
+
+    // A workload that may no longer act stops its tokens at once, and its
+    // clients get no new ones.
+    world.standing.bar(workload);
+    assert!(!active(&world, &tenant.context, &machine, &access(&tokens)).await);
+    let refused = ask(&world, &tenant.context, &machine, client_credentials())
+        .await
+        .expect_err("refused");
+    assert_eq!(refused.error, "invalid_client");
+    assert!(active(&world, &tenant.context, &plain, &access(&own)).await);
+
+    // A principal that is not a workload, such as a person, is refused too.
+    let person = workload_client(&world, &tenant, UserId::generate()).await;
+    let refused = ask(&world, &tenant.context, &person, client_credentials())
+        .await
+        .expect_err("refused");
+    assert_eq!(refused.error, "invalid_client");
+}
+
+#[tokio::test]
+async fn the_tokens_of_a_workload_are_revoked_with_it_and_stay_revoked() {
+    let world = world();
+    let tenant = tenant(&world).await;
+    let (workload, other) = (UserId::generate(), UserId::generate());
+    world.standing.workload(workload, "agent");
+    world.standing.workload(other, "service_account");
+    let machine = workload_client(&world, &tenant, workload).await;
+    let neighbour = workload_client(&world, &tenant, other).await;
+    let first = ask(&world, &tenant.context, &machine, client_credentials())
+        .await
+        .expect("client credentials");
+    let second = ask(&world, &tenant.context, &machine, client_credentials())
+        .await
+        .expect("client credentials");
+    let theirs = ask(&world, &tenant.context, &neighbour, client_credentials())
+        .await
+        .expect("client credentials");
+    let answer = introspect(&world, &tenant.context, &machine, &access(&first))
+        .await
+        .expect("answered");
+    assert_eq!(answer["principal_kind"], "agent");
+
+    let mut uow = hodor_kernel::UnitOfWorkFactory::begin(&world.units, &tenant.context)
+        .await
+        .expect("begin");
+    let revoked = world
+        .tokens
+        .workload_tokens()
+        .revoke_in(
+            uow.as_mut(),
+            workload,
+            "workload_disabled",
+            Caller::system(),
+        )
+        .await
+        .expect("revoked");
+    uow.commit().await.expect("commit");
+    assert_eq!(revoked, 2);
+    for token in [&first, &second] {
+        assert!(
+            !active(&world, &tenant.context, &machine, &access(token)).await,
+            "revoked, though the workload may still act"
+        );
+    }
+    assert!(active(&world, &tenant.context, &neighbour, &access(&theirs)).await);
+    let events = world.units.committed_event_types();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| *event == "oauth.access_token_revoked")
+            .count(),
+        2
+    );
+    // New tokens are issued while the workload may act.
+    let third = ask(&world, &tenant.context, &machine, client_credentials())
+        .await
+        .expect("client credentials");
+    assert!(active(&world, &tenant.context, &machine, &access(&third)).await);
 }

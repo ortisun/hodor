@@ -57,6 +57,7 @@ mod decisions;
 mod factors;
 mod groups;
 mod organizations;
+mod workloads;
 
 /// The OpenAPI document of the interface, as served at `/openapi.json`.
 pub const ADMIN_OPENAPI: &str = include_str!("../openapi/admin-v1.json");
@@ -409,6 +410,48 @@ pub const ADMIN_OPERATIONS: &[(&str, &str, Permission)] = &[
         "/users/{user_id}/organizations",
         Permission::OrganizationsRead,
     ),
+    ("GET", "/service-accounts", Permission::WorkloadsRead),
+    ("POST", "/service-accounts", Permission::WorkloadsWrite),
+    (
+        "GET",
+        "/service-accounts/{service_account_id}",
+        Permission::WorkloadsRead,
+    ),
+    (
+        "PATCH",
+        "/service-accounts/{service_account_id}",
+        Permission::WorkloadsWrite,
+    ),
+    (
+        "POST",
+        "/service-accounts/{service_account_id}:disable",
+        Permission::WorkloadsWrite,
+    ),
+    (
+        "POST",
+        "/service-accounts/{service_account_id}:enable",
+        Permission::WorkloadsWrite,
+    ),
+    (
+        "DELETE",
+        "/service-accounts/{service_account_id}",
+        Permission::WorkloadsWrite,
+    ),
+    ("GET", "/agents", Permission::WorkloadsRead),
+    ("POST", "/agents", Permission::WorkloadsWrite),
+    ("GET", "/agents/{agent_id}", Permission::WorkloadsRead),
+    ("PATCH", "/agents/{agent_id}", Permission::WorkloadsWrite),
+    (
+        "POST",
+        "/agents/{agent_id}:disable",
+        Permission::WorkloadsWrite,
+    ),
+    (
+        "POST",
+        "/agents/{agent_id}:enable",
+        Permission::WorkloadsWrite,
+    ),
+    ("DELETE", "/agents/{agent_id}", Permission::WorkloadsWrite),
 ];
 
 /// What the administration handlers need.
@@ -457,6 +500,8 @@ pub struct AdminState {
     pub organizations: hodor_identity::api::OrganizationService,
     /// Sending invitations to organizations.
     pub invitations: hodor_authentication::api::InvitationService,
+    /// The tenant's service accounts and agents.
+    pub workloads: hodor_identity::api::WorkloadService,
 }
 
 /// What the console interface needs on top of the administration
@@ -563,6 +608,7 @@ fn shared_routes() -> Router<Shared> {
         .merge(authorization::routes())
         .merge(groups::routes())
         .merge(organizations::routes())
+        .merge(workloads::routes())
 }
 
 /// One assurance level, as the interface writes it.

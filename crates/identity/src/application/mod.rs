@@ -4,3 +4,4 @@ pub(crate) mod groups;
 pub(crate) mod organizations;
 pub(crate) mod ports;
 pub(crate) mod service;
+pub(crate) mod workloads;

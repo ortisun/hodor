@@ -450,7 +450,9 @@ async fn an_administrators_token_is_refused_by_every_operation_of_another_tenant
                 .replace("{permission}", "document:read")
                 .replace("{role}", "editor")
                 .replace("{number}", "1")
-                .replace("{simulation_id}", &globex.ana.to_string());
+                .replace("{simulation_id}", &globex.ana.to_string())
+                .replace("{service_account_id}", &globex.ana.to_string())
+                .replace("{agent_id}", &globex.ana.to_string());
             let method: Method = method.to_uppercase().parse().expect("method");
             let (status, body) = world
                 .admin(
@@ -469,7 +471,7 @@ async fn an_administrators_token_is_refused_by_every_operation_of_another_tenant
             tried += 1;
         }
     }
-    assert_eq!(tried, 99, "every documented operation was tried");
+    assert_eq!(tried, 113, "every documented operation was tried");
 
     // The token is good where it belongs, and nothing happened in Globex:
     // it has its two users, both active.
@@ -1985,4 +1987,191 @@ async fn a_scim_clients_token_and_identifiers_mean_nothing_in_another_tenant() {
     assert_eq!(kept["members"][0]["value"], ana);
     let (_, _, groups) = scim(&world, globex, &globex_token, Method::GET, "/Groups", None).await;
     assert_eq!(groups["totalResults"], 0);
+}
+
+/// A service account of a tenant, owned by its person, with a client of an
+/// application whose resource server defines `read`, bound to it. Answers
+/// the service account and the client's identifier and secret, made
+/// through the tenant's own administration interface.
+async fn service_account_with_a_client(
+    world: &World,
+    tenant: &Tenant,
+) -> (String, (String, String)) {
+    let token = &tenant.administrator_token;
+    let (status, account) = world
+        .admin(
+            tenant,
+            token,
+            Method::POST,
+            "/service-accounts",
+            Some(serde_json::json!({
+                "name": "Nightly export", "owners": [tenant.ana.to_string()]
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{account}");
+    let account = account["id"].as_str().expect("id").to_owned();
+    let (_, application) = world
+        .admin(
+            tenant,
+            token,
+            Method::POST,
+            "/applications",
+            Some(serde_json::json!({ "name": "Exports", "first_party": true })),
+        )
+        .await;
+    let application = application["id"].as_str().expect("id").to_owned();
+    let (status, _) = world
+        .admin(
+            tenant,
+            token,
+            Method::POST,
+            "/resource-servers",
+            Some(serde_json::json!({
+                "application_id": application, "audience": "urn:example:exports",
+                "name": "Exports", "scopes": [{ "name": "read", "description": "Read" }]
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, client) = world
+        .admin(
+            tenant,
+            token,
+            Method::POST,
+            &format!("/applications/{application}/clients"),
+            Some(serde_json::json!({
+                "name": "Nightly export", "type": "confidential",
+                "grant_types": ["client_credentials"], "allowed_scopes": ["read"],
+                "principal": account
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{client}");
+    (
+        account,
+        (
+            client["id"].as_str().expect("id").to_owned(),
+            client["client_secret"].as_str().expect("secret").to_owned(),
+        ),
+    )
+}
+
+#[tokio::test]
+async fn a_service_account_of_one_tenant_and_its_tokens_mean_nothing_in_another() {
+    let world = world_with(&[("HODOR_SECRET_KEYS", ROOT_KEY)]).await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    let (account, client) = service_account_with_a_client(&world, acme).await;
+    let (_, theirs) = service_account_with_a_client(&world, globex).await;
+    let (status, issued) = oauth_form(
+        &world,
+        acme,
+        "token",
+        (&client.0, &client.1),
+        &[("grant_type", "client_credentials"), ("scope", "read")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{issued}");
+    let token = issued["access_token"].as_str().expect("a token").to_owned();
+    assert!(active(&world, acme, (&client.0, &client.1), &token).await);
+
+    // Globex's administrator names Acme's service account on every
+    // operation of an item, under both kinds' paths.
+    let globex_token = &globex.administrator_token;
+    for (method, path) in [
+        (Method::GET, format!("/service-accounts/{account}")),
+        (Method::PATCH, format!("/service-accounts/{account}")),
+        (Method::POST, format!("/service-accounts/{account}:disable")),
+        (Method::POST, format!("/service-accounts/{account}:enable")),
+        (Method::DELETE, format!("/service-accounts/{account}")),
+        (Method::GET, format!("/agents/{account}")),
+    ] {
+        let (status, body) = world
+            .admin(
+                globex,
+                globex_token,
+                method.clone(),
+                &path,
+                Some(serde_json::json!({ "name": "Taken over" })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{method} {path}");
+        assert_eq!(
+            body["code"], "identity.workload_not_found",
+            "{method} {path}"
+        );
+    }
+    // Nor can it make Acme's person an owner, or bind a client to Acme's
+    // service account.
+    let (status, body) = world
+        .admin(
+            globex,
+            globex_token,
+            Method::POST,
+            "/service-accounts",
+            Some(serde_json::json!({ "name": "Spy", "owners": [acme.ana.to_string()] })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["code"], "identity.user_not_found");
+    let (_, application) = world
+        .admin(
+            globex,
+            globex_token,
+            Method::POST,
+            "/applications",
+            Some(serde_json::json!({ "name": "Spy", "first_party": true })),
+        )
+        .await;
+    let (status, body) = world
+        .admin(
+            globex,
+            globex_token,
+            Method::POST,
+            &format!(
+                "/applications/{}/clients",
+                application["id"].as_str().expect("id")
+            ),
+            Some(serde_json::json!({
+                "name": "Spy", "type": "confidential",
+                "grant_types": ["client_credentials"], "principal": account
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(body["code"], "oauth.client_principal_invalid");
+
+    // Acme's token is nothing to Globex: not active at introspection by
+    // Globex's own client, not authenticated at its Authorization API.
+    assert!(!active(&world, globex, (&theirs.0, &theirs.1), &token).await);
+    let response = Client::new()
+        .post(format!(
+            "{}/t/{}/api/v1/authorization/evaluate",
+            world.server.base, globex.slug
+        ))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({
+            "subject": { "type": "user", "id": account },
+            "resource": { "type": "export", "id": "1" },
+            "action": "read"
+        }))
+        .send()
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    // Everything still works where it belongs.
+    let (status, read) = world
+        .admin(
+            acme,
+            &acme.administrator_token,
+            Method::GET,
+            &format!("/service-accounts/{account}"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(read["status"], "active");
+    assert_eq!(read["name"], "Nightly export");
+    assert!(active(&world, acme, (&client.0, &client.1), &token).await);
 }

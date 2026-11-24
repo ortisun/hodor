@@ -17,7 +17,11 @@ pub mod api {
     pub use crate::application::organizations::{InvitationFound, OrganizationService};
     pub use crate::application::ports::{GroupPolicy, GroupRepository, UserRepository};
     pub use crate::application::ports::{InvitationRepository, OrganizationRepository};
+    pub use crate::application::ports::{WorkloadAccess, WorkloadRepository};
     pub use crate::application::service::{CreateUser, IdentityService};
+    pub use crate::application::workloads::{
+        ChangeWorkload, CreateWorkload, WORKLOAD_DELETED, WORKLOAD_DISABLED, WorkloadService,
+    };
     pub use crate::domain::event::UserEvent;
     pub use crate::domain::group::{
         Group, GroupEvent, GroupMember, GroupName, GroupSnapshot, MAX_DESCRIPTION_CHARACTERS,
@@ -32,4 +36,8 @@ pub mod api {
         Unit, UnitChange, UnitId, UnitKind, check_placement,
     };
     pub use crate::domain::user::{Profile, User, UserKind, UserSnapshot, UserStatus};
+    pub use crate::domain::workload::{
+        MAX_WORKLOAD_OWNERS, Workload, WorkloadEvent, WorkloadStatus, checked_owners,
+        workload_profile,
+    };
 }

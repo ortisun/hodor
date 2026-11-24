@@ -308,6 +308,7 @@ async fn world() -> World {
             Arc::new(records),
             Arc::new(grants),
             Arc::new(families),
+            Arc::new(hodor_oauth::testing::StandingOf::default()),
         ),
         applications: applications.clone(),
         clock: clock.clone(),

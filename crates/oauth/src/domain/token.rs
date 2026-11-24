@@ -603,6 +603,10 @@ pub struct TokenSubject {
     /// The person's effective groups when the scopes hold `groups`; none
     /// otherwise.
     pub groups: Option<Vec<GroupId>>,
+    /// For the token of a client that acts as a workload, the workload's
+    /// kind, `service_account` or `agent`, written as `principal_kind`;
+    /// none otherwise.
+    pub principal_kind: Option<String>,
 }
 
 /// The most groups an access token names. A person in more gets a token
@@ -622,6 +626,7 @@ impl TokenSubject {
             methods: code.methods.clone(),
             organization: None,
             groups: None,
+            principal_kind: None,
         }
     }
 }
@@ -703,6 +708,10 @@ pub fn claims_for(
     {
         let names: Vec<String> = groups.iter().map(ToString::to_string).collect();
         claims["groups"] = json!(names);
+    }
+    // Who the subject is when it is not a person nor the client itself.
+    if let Some(kind) = &subject.principal_kind {
+        claims["principal_kind"] = json!(kind);
     }
     AccessTokenClaims {
         token_id,

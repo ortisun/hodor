@@ -8,7 +8,7 @@ use crate::domain::event::OauthEvent;
 use crate::domain::key::{ClientKey, MAX_KEYS};
 use crate::domain::secret::{ClientSecret, ClientSecretHash, ClientSecretId, ClientSecretValue};
 use crate::domain::text;
-use hodor_kernel::{Digest, DomainError, RandomSource, Timestamp};
+use hodor_kernel::{Digest, DomainError, RandomSource, Timestamp, UserId};
 use hodor_keys::api::{KeyAlgorithm, RotationPolicy};
 use time::Duration;
 
@@ -293,6 +293,10 @@ pub struct ClientSettings {
     pub id_token_algorithm: IdTokenAlgorithm,
     /// How long its tokens live.
     pub token_policy: TokenPolicy,
+    /// The service account or agent it acts as, if any: its tokens are
+    /// then about that workload. Whether the identifier names one is
+    /// checked by whoever binds it, through the identity context.
+    pub principal: Option<UserId>,
 }
 
 fn redirect_invalid(reason: &'static str) -> DomainError {
@@ -434,6 +438,7 @@ impl ClientSettings {
             require_pkce: true,
             id_token_algorithm: IdTokenAlgorithm::default(),
             token_policy: TokenPolicy::default(),
+            principal: None,
         }
     }
 
@@ -470,6 +475,11 @@ impl ClientSettings {
         if grant_types.contains(&GrantType::ClientCredentials) && client_type == ClientType::Public
         {
             return Err(grants_invalid("`client_credentials` for a public client"));
+        }
+        if self.principal.is_some() && grant_types != [GrantType::ClientCredentials] {
+            return Err(grants_invalid(
+                "a client with a principal has `client_credentials` and no other grant",
+            ));
         }
         let redirect_uris = without_repeats(self.redirect_uris);
         if redirect_uris.len() > MAX_REDIRECT_URIS {
@@ -527,6 +537,7 @@ impl ClientSettings {
             require_pkce: self.require_pkce,
             id_token_algorithm: self.id_token_algorithm,
             token_policy: self.token_policy.checked()?,
+            principal: self.principal,
         })
     }
 }
@@ -642,6 +653,12 @@ impl Client {
         self.state.client_type
     }
 
+    /// The service account or agent it acts as, if any.
+    #[must_use]
+    pub const fn principal(&self) -> Option<UserId> {
+        self.state.settings.principal
+    }
+
     /// Whether it gets tokens. The application must be enabled as well.
     #[must_use]
     pub fn is_enabled(&self) -> bool {
@@ -694,6 +711,7 @@ impl Client {
             client_id: self.state.id,
             application_id: self.state.application_id,
             client_type: self.state.client_type.as_str(),
+            principal_id: self.state.settings.principal,
         }
     }
 
@@ -705,6 +723,7 @@ impl Client {
             client_id: self.state.id,
             application_id: self.state.application_id,
             client_type: self.state.client_type.as_str(),
+            principal_id: self.state.settings.principal,
         }];
         events.extend(
             self.state
@@ -967,6 +986,50 @@ mod tests {
 
     fn redirect(value: &str, client_type: ClientType) -> Result<(), DomainError> {
         check_redirect_uri(value, client_type)
+    }
+
+    #[test]
+    fn a_client_with_a_principal_has_client_credentials_and_no_other_grant() {
+        let workload = UserId::generate();
+        let mut service = ClientSettings::new(
+            "Nightly export",
+            ClientType::Confidential,
+            vec![GrantType::ClientCredentials],
+            Vec::new(),
+        );
+        service.principal = Some(workload);
+        let (mut client, _) = create(ClientType::Confidential, service.clone()).expect("valid");
+        assert_eq!(client.principal(), Some(workload));
+        let events = client.created_events();
+        assert!(
+            matches!(&events[0], OauthEvent::ClientCreated { principal_id, .. } if *principal_id == Some(workload)),
+            "{events:?}"
+        );
+
+        let mut bound_web = web();
+        bound_web.principal = Some(workload);
+        assert_eq!(
+            create(ClientType::Confidential, bound_web)
+                .expect_err("refused")
+                .code(),
+            "oauth.client_grants_invalid"
+        );
+
+        // Removing the principal is a change like any other.
+        let mut unbound = service;
+        unbound.principal = None;
+        let events = client.change(unbound, NOW).expect("changed");
+        assert!(
+            matches!(
+                &events[0],
+                OauthEvent::ClientChanged {
+                    principal_id: None,
+                    ..
+                }
+            ),
+            "{events:?}"
+        );
+        assert_eq!(client.principal(), None);
     }
 
     #[test]

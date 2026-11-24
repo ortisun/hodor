@@ -53,7 +53,7 @@ pub use decision_log::{
 };
 pub use federation::{PgLinkStore, PgPendingAuthorizationStore, PgProviderStore};
 pub use group::{PgGroupPolicy, PgGroupRepository};
-pub use identity::PgUserRepository;
+pub use identity::{PgUserRepository, PgWorkloadRepository};
 pub use invitation::PgInvitationRepository;
 pub use key_rotation::{KeyRotationJob, RotationPass};
 pub use keys::{PgKeyStore, PgSealingStateStore};

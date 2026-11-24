@@ -32,8 +32,23 @@ reach other crates through `hodor_authorization::api`.
   | `AssuranceLevelsWrite` | `assurance-levels:write` |
   | `CredentialsRead` | `credentials:read` |
   | `CredentialsWrite` | `credentials:write` |
+  | `DecisionsRead` | `decisions:read` |
+  | `DecisionLogWrite` | `decision-log:write` |
+  | `RolesRead` | `roles:read` |
+  | `RolesWrite` | `roles:write` |
+  | `BindingsRead` | `bindings:read` |
+  | `BindingsWrite` | `bindings:write` |
+  | `PoliciesRead` | `policies:read` |
+  | `PoliciesWrite` | `policies:write` |
+  | `GroupsRead` | `groups:read` |
+  | `GroupsWrite` | `groups:write` |
+  | `OrganizationsRead` | `organizations:read` |
+  | `OrganizationsWrite` | `organizations:write` |
+  | `WorkloadsRead` | `workloads:read` |
+  | `WorkloadsWrite` | `workloads:write` |
 
-  `Permission::ALL` lists all fifteen; `from_name(name) -> Option<Permission>`.
+  `Permission::ALL` lists all twenty-nine; `from_name(name) -> Option<Permission>`.
+  The auditor holds every permission that ends in `:read`, and nothing else.
 - `Role` (`role.rs:Role`): `TenantAdministrator` (`tenant_administrator`) and
   `TenantAuditor` (`tenant_auditor`); `Role::ALL`, `as_str`,
   `from_name(name) -> Result<Role, DomainError>`, `permissions()`,

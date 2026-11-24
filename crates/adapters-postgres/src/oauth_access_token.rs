@@ -5,7 +5,7 @@
 //! tokens".
 
 use crate::uow::{connection, database_error};
-use hodor_kernel::{DomainError, Timestamp, UnitOfWork};
+use hodor_kernel::{DomainError, Timestamp, UnitOfWork, UserId};
 use hodor_oauth::api::{
     AccessTokenRecord, AccessTokenRecordStore, ClientId, GrantId, RefreshFamilyId,
 };
@@ -35,8 +35,8 @@ impl AccessTokenRecordStore for PgAccessTokenRecordStore {
         sqlx::query(
             "INSERT INTO oauth.access_token
                  (tenant_id, token_id, client_id, grant_id, family_id, expires_at,
-                  revoked_at, revocation_reason)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+                  revoked_at, revocation_reason, principal_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
         )
         .bind(tenant.as_uuid())
         .bind(&record.token_id)
@@ -46,6 +46,7 @@ impl AccessTokenRecordStore for PgAccessTokenRecordStore {
         .bind(record.expires_at)
         .bind(record.revoked_at)
         .bind(record.revocation_reason.as_deref())
+        .bind(record.principal_id.map(|principal| principal.as_uuid()))
         .execute(connection(uow)?)
         .await
         .map_err(|error| match &error {
@@ -74,7 +75,8 @@ impl AccessTokenRecordStore for PgAccessTokenRecordStore {
     ) -> Result<Option<AccessTokenRecord>, DomainError> {
         let tenant = uow.tenant().tenant_id();
         let row = sqlx::query(
-            "SELECT client_id, grant_id, family_id, expires_at, revoked_at, revocation_reason
+            "SELECT client_id, grant_id, family_id, principal_id, expires_at, revoked_at,
+                    revocation_reason
              FROM oauth.access_token
              WHERE tenant_id = $1 AND token_id = $2",
         )
@@ -88,11 +90,13 @@ impl AccessTokenRecordStore for PgAccessTokenRecordStore {
         };
         let grant: Option<Uuid> = row.try_get("grant_id").map_err(get)?;
         let family: Option<Uuid> = row.try_get("family_id").map_err(get)?;
+        let principal: Option<Uuid> = row.try_get("principal_id").map_err(get)?;
         Ok(Some(AccessTokenRecord {
             token_id: token_id.to_owned(),
             client_id: ClientId::from_uuid(row.try_get("client_id").map_err(get)?),
             grant_id: grant.map(GrantId::from_uuid),
             family_id: family.map(RefreshFamilyId::from_uuid),
+            principal_id: principal.map(UserId::from_uuid),
             expires_at: row.try_get("expires_at").map_err(get)?,
             revoked_at: row.try_get("revoked_at").map_err(get)?,
             revocation_reason: row.try_get("revocation_reason").map_err(get)?,
@@ -124,6 +128,33 @@ impl AccessTokenRecordStore for PgAccessTokenRecordStore {
         .await
         .map_err(get)?;
         Ok(changed.rows_affected() == 1)
+    }
+
+    async fn revoke_for_principal(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        principal: UserId,
+        at: Timestamp,
+        reason: &str,
+    ) -> Result<Vec<(ClientId, String)>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let rows: Vec<(Uuid, String)> = sqlx::query_as(
+            "UPDATE oauth.access_token
+             SET revoked_at = $3, revocation_reason = $4
+             WHERE tenant_id = $1 AND principal_id = $2 AND revoked_at IS NULL
+             RETURNING client_id, token_id",
+        )
+        .bind(tenant.as_uuid())
+        .bind(principal.as_uuid())
+        .bind(at)
+        .bind(reason)
+        .fetch_all(connection(uow)?)
+        .await
+        .map_err(get)?;
+        Ok(rows
+            .into_iter()
+            .map(|(client, token_id)| (ClientId::from_uuid(client), token_id))
+            .collect())
     }
 
     async fn remove_expired(

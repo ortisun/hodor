@@ -619,6 +619,7 @@ fn a_token_about_a_client_has_no_auth_time() {
         methods: Vec::new(),
         organization: None,
         groups: None,
+        principal_kind: None,
     };
     let claims = super::claims_for(
         ISSUER,
@@ -646,6 +647,7 @@ fn person_subject(
         methods: vec!["password".to_owned()],
         organization,
         groups,
+        principal_kind: None,
     }
 }
 
