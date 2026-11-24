@@ -1,6 +1,23 @@
 import { describe, expect, it } from "vitest";
 import { Failure } from "./client";
-import { ANA, empty, GOOGLE, json, meBody, problem, providerBody, scripted, userBody } from "./testing";
+import {
+  ACME,
+  ANA,
+  empty,
+  ENGINEERING,
+  FINANCE,
+  GOOGLE,
+  json,
+  meBody,
+  namedBody,
+  PAYABLES,
+  PLATFORM,
+  problem,
+  providerBody,
+  scripted,
+  unitBody,
+  userBody,
+} from "./testing";
 
 describe("the client of the console interface", () => {
   it("says nobody is there when the server knows no session", async () => {
@@ -115,5 +132,90 @@ describe("the client of the console interface", () => {
     expect(sent[2]?.body).toEqual({ creates_users: false });
     expect(sent[3]?.body).toEqual({ client_secret: "another secret" });
     expect(sent.slice(1).every((request) => request.csrfToken === "token-of-the-session")).toBe(true);
+  });
+
+  it("names groups and their members, and sends a description only when there is one", async () => {
+    const { client, sent } = scripted({
+      "GET /console/api/me": [json(200, meBody())],
+      "POST /console/api/groups": [json(201, namedBody(FINANCE, "finance"))],
+      [`PATCH /console/api/groups/${FINANCE}`]: [
+        json(200, namedBody(FINANCE, "finance", { description: "Who pays the bills" })),
+      ],
+      [`GET /console/api/groups/${FINANCE}/members?limit=50`]: [
+        json(200, { items: [{ kind: "user", id: ANA }, { kind: "group", id: PAYABLES }], next_cursor: "2" }),
+      ],
+      [`POST /console/api/groups/${FINANCE}/members`]: [empty(204)],
+      [`POST /console/api/groups/${FINANCE}/members:remove`]: [empty(204)],
+      [`GET /console/api/users/${ANA}/groups`]: [json(200, { items: [{ id: FINANCE, direct: false }] })],
+    });
+    await client.me();
+    expect((await client.createGroup({ name: " finance ", description: "  " })).description).toBeNull();
+    expect((await client.changeGroup(FINANCE, { name: "finance", description: " Who pays the bills " })).description).toBe(
+      "Who pays the bills",
+    );
+    const members = await client.listGroupMembers(FINANCE);
+    expect(members.items).toEqual([
+      { kind: "user", id: ANA },
+      { kind: "group", id: PAYABLES },
+    ]);
+    expect(members.nextCursor).toBe("2");
+    await client.addGroupMember(FINANCE, { kind: "group", id: ` ${PAYABLES} ` });
+    await client.removeGroupMember(FINANCE, { kind: "user", id: ANA });
+    expect(await client.groupsOfUser(ANA)).toEqual([{ id: FINANCE, direct: false }]);
+
+    expect(sent[1]?.body).toEqual({ name: "finance" });
+    expect(sent[2]?.body).toEqual({ name: "finance", description: "Who pays the bills" });
+    expect(sent[4]?.body).toEqual({ kind: "group", id: PAYABLES });
+    expect(sent[5]?.body).toEqual({ kind: "user", id: ANA });
+  });
+
+  it("reads the units, members and invitations of an organization, and never a link", async () => {
+    const { client, sent } = scripted({
+      "GET /console/api/me": [json(200, meBody())],
+      [`GET /console/api/organizations/${ACME}/units`]: [
+        json(200, { items: [unitBody(ENGINEERING, "Engineering", null), unitBody(PLATFORM, "Platform", ENGINEERING, "department")] }),
+      ],
+      [`PUT /console/api/organizations/${ACME}/units/${PLATFORM}`]: [json(200, unitBody(PLATFORM, "Platform", null))],
+      [`PUT /console/api/organizations/${ACME}/members/${ANA}`]: [
+        json(200, { user_id: ANA, unit_ids: [PLATFORM], added_at: "2026-11-23T14:03:11Z" }),
+      ],
+      [`GET /console/api/organizations/${ACME}/invitations`]: [
+        json(200, {
+          items: [
+            {
+              id: "invitation-1",
+              email: "caio@example.com",
+              unit_ids: [],
+              created_at: "2026-11-23T14:03:11Z",
+              expires_at: "2026-11-30T14:03:11Z",
+              link: "https://auth.example/t/acme/account/accept-invitation#secret",
+            },
+          ],
+        }),
+      ],
+      [`POST /console/api/organizations/${ACME}/invitations`]: [empty(202)],
+    });
+    await client.me();
+    const units = await client.listUnits(ACME);
+    expect(units.map((unit) => [unit.name, unit.parentId, unit.kind])).toEqual([
+      ["Engineering", null, "unit"],
+      ["Platform", ENGINEERING, "department"],
+    ]);
+    await client.changeUnit(ACME, PLATFORM, { parentId: null, name: " Platform ", kind: "unit" });
+    expect((await client.putOrganizationMember(ACME, ANA, [PLATFORM])).unitIds).toEqual([PLATFORM]);
+    const [invitation] = await client.listInvitations(ACME);
+    // Only what the client knows is kept: anything else the answer holds is dropped.
+    expect(invitation).toEqual({
+      id: "invitation-1",
+      email: "caio@example.com",
+      unitIds: [],
+      createdAt: "2026-11-23T14:03:11Z",
+      expiresAt: "2026-11-30T14:03:11Z",
+    });
+    await client.invite(ACME, " caio@example.com ", [PLATFORM], "pt-BR");
+
+    expect(sent[2]?.body).toEqual({ parent_id: null, name: "Platform", kind: "unit" });
+    expect(sent[3]?.body).toEqual({ unit_ids: [PLATFORM] });
+    expect(sent[5]?.body).toEqual({ email: "caio@example.com", unit_ids: [PLATFORM], locale: "pt-BR" });
   });
 });

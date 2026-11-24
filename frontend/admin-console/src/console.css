@@ -114,3 +114,45 @@ body {
 .console-fact + .console-fact {
   border-top: 1px solid var(--color-border);
 }
+
+/* ---------- The units of an organization, each indented under its parent ---------- */
+
+.console-unit {
+  display: inline-block;
+}
+
+.console-unit[data-depth="2"] {
+  padding-inline-start: var(--spacing-4);
+}
+
+.console-unit[data-depth="3"] {
+  padding-inline-start: calc(var(--spacing-4) * 2);
+}
+
+.console-unit[data-depth="4"] {
+  padding-inline-start: calc(var(--spacing-4) * 3);
+}
+
+.console-unit[data-depth="5"] {
+  padding-inline-start: calc(var(--spacing-4) * 4);
+}
+
+.console-unit[data-depth="6"] {
+  padding-inline-start: calc(var(--spacing-4) * 5);
+}
+
+.console-unit[data-depth="7"] {
+  padding-inline-start: calc(var(--spacing-4) * 6);
+}
+
+.console-unit[data-depth="8"] {
+  padding-inline-start: calc(var(--spacing-4) * 7);
+}
+
+.console-unit[data-depth="9"] {
+  padding-inline-start: calc(var(--spacing-4) * 8);
+}
+
+.console-unit[data-depth="10"] {
+  padding-inline-start: calc(var(--spacing-4) * 9);
+}

@@ -2,7 +2,7 @@ import { Heading } from "@astryxdesign/core/Heading";
 import { HStack } from "@astryxdesign/core/HStack";
 import { Text } from "@astryxdesign/core/Text";
 import { VStack } from "@astryxdesign/core/VStack";
-import type { ReactNode } from "react";
+import type { MouseEvent, ReactNode } from "react";
 import type { Screen } from "../address";
 import type { Client, Me } from "../client";
 import type { Messages } from "../messages";
@@ -50,4 +50,16 @@ export function Page({ title, lead, above, actions, children }: PageProps) {
       </VStack>
     </div>
   );
+}
+
+/**
+ * Opens a screen of the console from a link. A plain click stays in the
+ * console; a click that asks for a new tab gets one.
+ */
+export function follow(event: MouseEvent, go: (screen: Screen) => void, screen: Screen) {
+  if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) {
+    return;
+  }
+  event.preventDefault();
+  go(screen);
 }

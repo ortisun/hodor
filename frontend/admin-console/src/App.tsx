@@ -19,6 +19,7 @@ import { VStack } from "@astryxdesign/core/VStack";
 import { useHotkeys } from "@astryxdesign/core/hooks";
 import {
   AppWindow,
+  Building2,
   Clock,
   DoorOpen,
   FileText,
@@ -30,6 +31,7 @@ import {
   ShieldCheck,
   Sun,
   Users,
+  UsersRound,
 } from "lucide-react";
 import { type MouseEvent, type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import { accountPath, isIdentifier, pathOf, type Place, type Screen, signInPath } from "./address";
@@ -41,6 +43,10 @@ import { ApplicationsScreen } from "./screens/ApplicationsScreen";
 import { AuditScreen } from "./screens/AuditScreen";
 import { AuthorizationScreen } from "./screens/AuthorizationScreen";
 import { ClientScreen } from "./screens/ClientScreen";
+import { GroupScreen } from "./screens/GroupScreen";
+import { GroupsScreen } from "./screens/GroupsScreen";
+import { OrganizationScreen } from "./screens/OrganizationScreen";
+import { OrganizationsScreen } from "./screens/OrganizationsScreen";
 import { ProviderScreen } from "./screens/ProviderScreen";
 import { ProvidersScreen } from "./screens/ProvidersScreen";
 import { nameOf } from "./screens/UsersScreen";
@@ -72,7 +78,16 @@ interface Entry {
 const SECTIONS: { title: (text: Messages) => string; entries: Entry[] }[] = [
   {
     title: (text) => text.directory,
-    entries: [{ screen: { name: "users" }, label: (text) => text.users, icon: Users, needs: "users:read" }],
+    entries: [
+      { screen: { name: "users" }, label: (text) => text.users, icon: Users, needs: "users:read" },
+      { screen: { name: "groups" }, label: (text) => text.groups, icon: UsersRound, needs: "groups:read" },
+      {
+        screen: { name: "organizations" },
+        label: (text) => text.organizations,
+        icon: Building2,
+        needs: "organizations:read",
+      },
+    ],
   },
   {
     title: (text) => text.access,
@@ -336,6 +351,8 @@ function Frame({ place, client, text, mode, changeMode, go, leave, me }: AppProp
                         screen?.name === entry.screen.name ||
                         (screen?.name === "user" && entry.screen.name === "users") ||
                         (screen?.name === "provider" && entry.screen.name === "providers") ||
+                        (screen?.name === "group" && entry.screen.name === "groups") ||
+                        (screen?.name === "organization" && entry.screen.name === "organizations") ||
                         ((screen?.name === "application" || screen?.name === "client") &&
                           entry.screen.name === "applications")
                       }
@@ -363,6 +380,14 @@ function Frame({ place, client, text, mode, changeMode, go, leave, me }: AppProp
           <ClientScreen key={screen.id} id={screen.id} {...props} />
         ) : null}
         {screen?.name === "authorization" && allowed("roles:read") ? <AuthorizationScreen {...props} /> : null}
+        {screen?.name === "groups" && allowed("groups:read") ? <GroupsScreen {...props} /> : null}
+        {screen?.name === "group" && allowed("groups:read") ? (
+          <GroupScreen key={screen.id} id={screen.id} {...props} />
+        ) : null}
+        {screen?.name === "organizations" && allowed("organizations:read") ? <OrganizationsScreen {...props} /> : null}
+        {screen?.name === "organization" && allowed("organizations:read") ? (
+          <OrganizationScreen key={screen.id} id={screen.id} {...props} />
+        ) : null}
         {screen === null || (screen.name !== "home" && !allowed(needsOf(screen))) ? (
           <div className="console-page">
             <VStack gap={3} hAlign="start">
@@ -403,6 +428,12 @@ function needsOf(screen: Screen): Permission {
       return "applications:read";
     case "authorization":
       return "roles:read";
+    case "groups":
+    case "group":
+      return "groups:read";
+    case "organizations":
+    case "organization":
+      return "organizations:read";
     default:
       return "users:read";
   }

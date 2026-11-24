@@ -2,8 +2,9 @@
 
 ## Overview
 
-The screens of the administration console: users and one user, identity
-providers and one provider, applications, one application with its clients and
+The screens of the administration console: users and one user, groups and
+one group, organizations and one organization, identity providers and one
+provider, applications, one application with its clients and
 resource server, one client, and the audit log. Each screen loads what it shows
 through a method of `../client.ts:Client`, gates every button that changes
 something with `../actions.ts:may`, and sends dangerous actions through
@@ -21,6 +22,47 @@ console interface.
   `client.listUsers()`; "load more" calls `client.listUsers(nextCursor)`.
   "Create user" (gated by `may(..., "createUser")`) opens `CreateUser`, which
   calls `client.createUser(email, name)`.
+- `shared.tsx:follow(event, go, screen)` - a plain primary click calls `go`;
+  one with meta, control or shift, or another button, is left to the browser.
+- `names.tsx:NameOf` - a user, group or organization named by identifier: a
+  link to its screen showing its name once `client.getUser`, `getGroup` or
+  `getOrganization` answers, or the shortened identifier until then or on
+  failure. Without `users:read`, `groups:read` or `organizations:read` it
+  shows `../parts/Identifier.tsx:Identifier` and asks for nothing.
+- `NamedList.tsx:NamedList` - the table of groups or organizations, a page at
+  a time, with "load more", and the creating `NamedForm`, then `go` to the new
+  one. `GroupsScreen.tsx:GroupsScreen` (`client.listGroups`,
+  `client.createGroup`, `createGroup`) and
+  `OrganizationsScreen.tsx:OrganizationsScreen` (`client.listOrganizations`,
+  `client.createOrganization`, `createOrganization`) configure it.
+- `NamedForm.tsx:NamedForm` - name and optional description; when changing,
+  disabled until something differs, and says `identifierKept`. A name taken or
+  invalid shows on the name field.
+- `GroupScreen.tsx:GroupScreen` - one group (`client.getGroup`) and its direct
+  members a page at a time (`client.listGroupMembers`). Change (`NamedForm`,
+  `changeGroup`), delete (`Confirm` `deleteGroup`, the name typed, then `go`
+  to `groups`), add a member (`AddMember`, `addGroupMember`: kind and
+  identifier, refused without asking the server when not an identifier), take
+  one out (`Confirm` `removeGroupMember`).
+- `OrganizationForms.tsx:treeOf` - units in tree order, siblings by name, with
+  their depth and path (`Engineering / Platform`); a unit whose parent is
+  unknown is at the top. `UnitForm` (name, kind, parent; changing excludes the
+  unit and every unit below it from the parents), `MemberForm` (user
+  identifier when putting, and units), `InviteForm` (address, units, language
+  of the message).
+- `OrganizationScreen.tsx:OrganizationScreen` - one organization
+  (`client.getOrganization`), its units (`client.listUnits`, indented by
+  `data-depth` on `.console-unit`), members a page at a time
+  (`client.listOrganizationMembers`) and pending invitations
+  (`client.listInvitations`), each loaded on its own. Change, delete (the name
+  typed), create, change or delete a unit (the unit's name typed), put a member
+  or change their units (`client.putOrganizationMember`), take one out,
+  invite (`client.invite`) and withdraw (`client.withdrawInvitation`).
+- `UserMemberships.tsx:UserGroups`, `UserOrganizations` - on `UserScreen`, with
+  `groups:read` the user's groups (`client.groupsOfUser`), direct or through
+  another; with `organizations:read` their organizations
+  (`client.organizationsOfUser`) and units, named from `client.listUnits` of
+  each organization with units.
 - `UsersScreen.tsx:nameOf`, `UsersScreen.tsx:StatusBadge` - a user's list name
   (display name, then primary identifier, then `text.unnamed`) and status badge.
 - `AuthorizationScreen.tsx:AuthorizationScreen` - the tenant's authorization at `/authorization`: roles (`client.listRoles`, with the resource servers to find a role's by audience), each changed in `RoleEditor` with its permissions written one a line as `name` or `name if condition` (`permissionLines`, `readPermissionLines`) and saved with `client.defineRole`; bindings (`client.listBindings`, removed with `client.unbind` behind `Confirm` `unbind`); the policy status (`client.policyStatus`; publishing is the command line's); the latest decisions (`client.listDecisions`, filtered by effect). Each part only with its read permission.
@@ -108,7 +150,10 @@ console interface.
 - `UsersScreen.tsx:CreateUser` is a level 0 form, its own confirmation; the
   codes `identity.identifier_taken` and `identity.email_invalid` show on the
   email field.
-- Lists with "load more" (users, audit) do nothing while busy or when
+- An invitation shows its address, units and expiry only; no link or secret
+  is ever read from an answer.
+- Lists with "load more" (users, audit, groups, organizations, the members of
+  a group or an organization) do nothing while busy or when
   `nextCursor` is `null`; the provider and session lists are not paged.
 - A plain primary click on a link calls `go`; a click with meta, control or
   shift, or another button, keeps the browser's own navigation to `path()`.

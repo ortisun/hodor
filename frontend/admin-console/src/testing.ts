@@ -163,3 +163,30 @@ export function clientBody(more: Record<string, unknown> = {}) {
     ...more,
   };
 }
+
+export const FINANCE = "0193f2a0-0000-7000-8000-0000000000e1";
+export const PAYABLES = "0193f2a0-0000-7000-8000-0000000000e2";
+export const ACME = "0193f2b0-0000-7000-8000-0000000000f1";
+export const ENGINEERING = "0193f2b1-0000-7000-8000-0000000000f2";
+export const PLATFORM = "0193f2b1-0000-7000-8000-0000000000f3";
+export const SALES = "0193f2b1-0000-7000-8000-0000000000f4";
+
+/** A group, or an organization, as the console interface writes one. */
+export function namedBody(id: string, name: string, more: Record<string, unknown> = {}) {
+  return { id, name, created_at: "2026-11-23T14:03:11Z", updated_at: "2026-11-23T14:03:11Z", ...more };
+}
+
+/** A unit of an organization, as the console interface writes one. */
+export function unitBody(id: string, name: string, parentId: string | null, kind = "unit") {
+  return {
+    id,
+    parent_id: parentId,
+    name,
+    kind,
+    created_at: "2026-11-23T14:03:11Z",
+    updated_at: "2026-11-23T14:03:11Z",
+  };
+}
+
+/** What an administrator of groups and organizations holds, besides reading users. */
+export const MEMBERSHIPS = ["users:read", "groups:read", "groups:write", "organizations:read", "organizations:write"];

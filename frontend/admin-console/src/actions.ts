@@ -67,6 +67,36 @@ export const ACTIONS = {
   revokeRole: { level: 2, permission: "roles:write" },
   /** Every decision about the resource server is denied until it is bound again. */
   unbind: { level: 2, permission: "bindings:write" },
+  /** A form is its own confirmation. */
+  createGroup: { level: 0, permission: "groups:write" },
+  /** Its name and description change; whatever was given to it stays given. */
+  changeGroup: { level: 1, permission: "groups:write" },
+  /** Every member is taken out of it, and it is taken out of every group it was in. */
+  deleteGroup: { level: 2, permission: "groups:write" },
+  /** The member is in the group, and so are the members of a group added. */
+  addGroupMember: { level: 1, permission: "groups:write" },
+  /** The member, and whoever is in the group through it, are no longer in it. */
+  removeGroupMember: { level: 1, permission: "groups:write" },
+  /** A form is its own confirmation. */
+  createOrganization: { level: 0, permission: "organizations:write" },
+  /** Its name and description change; whatever was given to it stays given. */
+  changeOrganization: { level: 1, permission: "organizations:write" },
+  /** Its units, members and pending invitations are deleted with it. */
+  deleteOrganization: { level: 2, permission: "organizations:write" },
+  /** A form is its own confirmation. */
+  createUnit: { level: 0, permission: "organizations:write" },
+  /** Renames it, changes its kind, or moves it with every unit below it. */
+  changeUnit: { level: 1, permission: "organizations:write" },
+  /** Its members are taken out of it, and stay in the organization. */
+  deleteUnit: { level: 2, permission: "organizations:write" },
+  /** A user becomes a member with these units, or a member's units are replaced. */
+  putOrganizationMember: { level: 1, permission: "organizations:write" },
+  /** The person is no longer a member, nor in any of its units. */
+  removeOrganizationMember: { level: 1, permission: "organizations:write" },
+  /** A message with a link goes to the address; an earlier invitation to it stops working. */
+  invite: { level: 1, permission: "organizations:write" },
+  /** The link in the message stops working. */
+  withdrawInvitation: { level: 1, permission: "organizations:write" },
 } as const satisfies Record<string, Action>;
 
 export type ActionName = keyof typeof ACTIONS;

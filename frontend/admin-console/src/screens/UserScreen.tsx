@@ -20,6 +20,7 @@ import { RoleAssignments } from "./RoleAssignments";
 import { Identifier } from "../parts/Identifier";
 import { Failed, useLoaded, Waiting } from "../parts/Loaded";
 import { Page, type ScreenProps } from "./shared";
+import { UserGroups, UserOrganizations } from "./UserMemberships";
 import { nameOf, StatusBadge } from "./UsersScreen";
 
 type Row = { id: string; session: Session };
@@ -259,6 +260,18 @@ export function UserScreen({ id, client, me, text, go, path, say }: ScreenProps 
       {me.permissions.includes("roles:read") ? (
         <Card padding={5}>
           <RoleAssignments kind="user" id={id} client={client} me={me} text={text} say={say} />
+        </Card>
+      ) : null}
+
+      {me.permissions.includes("groups:read") ? (
+        <Card>
+          <UserGroups id={id} client={client} me={me} text={text} go={go} path={path} />
+        </Card>
+      ) : null}
+
+      {me.permissions.includes("organizations:read") ? (
+        <Card>
+          <UserOrganizations id={id} client={client} me={me} text={text} go={go} path={path} />
         </Card>
       ) : null}
 

@@ -70,6 +70,35 @@ export function describe(failure: Failure, text: Messages): string {
       return text.keyTaken;
     case "oauth.client_too_many_keys":
       return text.tooManyKeys;
+    case "identity.group_not_found":
+      return text.groupNotFound;
+    case "identity.group_name_taken":
+      return text.groupNameTaken;
+    case "identity.group_cycle":
+      return text.groupCycle;
+    case "identity.group_nesting_too_deep":
+      return text.groupNestingTooDeep;
+    case "identity.group_modified_concurrently":
+    case "identity.organization_modified_concurrently":
+      return text.changedConcurrently;
+    case "identity.organization_not_found":
+      return text.organizationNotFound;
+    case "identity.unit_not_found":
+      return text.unitNotFound;
+    case "identity.membership_not_found":
+      return text.membershipNotFound;
+    case "identity.invitation_invalid":
+      return text.invitationInvalid;
+    case "identity.organization_name_taken":
+      return text.organizationNameTaken;
+    case "identity.unit_name_taken":
+      return text.unitNameTaken;
+    case "identity.unit_cycle":
+      return text.unitCycle;
+    case "identity.unit_tree_too_deep":
+      return text.unitTreeTooDeep;
+    case "identity.unit_not_empty":
+      return text.unitNotEmpty;
     default:
       if (failure.code !== null && text.valueInvalid[failure.code] !== undefined) {
         return text.valueInvalid[failure.code] ?? text.somethingWrong;
