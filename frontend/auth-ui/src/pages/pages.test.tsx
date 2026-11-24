@@ -62,6 +62,44 @@ describe("the sign-in page", () => {
     expect(sent.at(-1)?.body).toEqual({ password: "correct horse" });
   });
 
+  it("sends the identifier once more when the sign-in changed at the same moment", async () => {
+    const { props, sent, user } = page({
+      "GET /session": [nobody],
+      "GET /sign-in": [noSignIn],
+      "POST /sign-in": [pending("identifier")],
+      "POST /sign-in/steps/identifier": [
+        problem(409, "authentication.transaction_modified_concurrently"),
+        pending("password"),
+      ],
+    });
+    render(<SignInPage {...props} notice={null} />);
+    await user.type(await screen.findByLabelText(en.identifierLabel), "ana@example.com{Enter}");
+
+    expect(await screen.findByLabelText(en.passwordLabel)).toBeTruthy();
+    const identifiers = sent.filter((request) => request.path === "/sign-in/steps/identifier");
+    expect(identifiers).toHaveLength(2);
+    expect(identifiers[1]?.body).toEqual({ identifier: "ana@example.com" });
+  });
+
+  it("sends the identifier no more than twice", async () => {
+    const changed = () => problem(409, "authentication.transaction_modified_concurrently");
+    const { props, sent, user } = page({
+      "GET /session": [nobody, nobody],
+      "GET /sign-in": [noSignIn, pending("identifier")],
+      "POST /sign-in": [pending("identifier")],
+      "POST /sign-in/steps/identifier": [changed(), changed()],
+    });
+    render(<SignInPage {...props} notice={null} />);
+    await user.type(await screen.findByLabelText(en.identifierLabel), "ana@example.com{Enter}");
+
+    // Then the page asks where the sign-in stands, as for any answer out of step.
+    await waitFor(() =>
+      expect(sent.filter((request) => request.method === "GET" && request.path === "/sign-in")).toHaveLength(2),
+    );
+    expect(sent.filter((request) => request.path === "/sign-in/steps/identifier")).toHaveLength(2);
+    expect(await screen.findByLabelText(en.identifierLabel)).toBeTruthy();
+  });
+
   it("asks a person with an authenticator application for its code after the password", async () => {
     const { props, sent, go, user } = page({
       "GET /session": [nobody],
