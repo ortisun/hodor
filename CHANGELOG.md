@@ -16,6 +16,10 @@ Every release of Hodor, newest first. The rules for versions and releases are in
 - The worker removes what stopped being useful: ended sessions, used and expired links, delivered messages, expired codes, revoked grants and refresh tokens, withdrawn consents, and more. Each kind is kept for a while after it stops being useful, 7 days for sessions and 30 for messages, for example, and `HODOR_CLEANUP_RETENTION_DAYS` changes how long. The audit log is never touched.
 - Each release publishes its image, `ghcr.io/ortisun/hodor:<version>`, for `linux/amd64` and `linux/arm64`, and its Helm chart, `oci://ghcr.io/ortisun/charts/hodor`. Both are signed with `cosign`, and the image carries its software bill of materials. The installation pages say how to check the signatures. The chart now uses the published image unless `image.repository` says otherwise.
 
+### Fixed
+
+- A link to the console's screens of applications, clients and authorization, or a reload of one, answered with not found; the server now answers every screen the console has with its page.
+
 ## [0.2.0] - 2026-11-23
 
 A pre-release that lets applications ask Hodor who someone is, and whether they may do something. It holds the three parts [Decision 0023](docs/decisions/0023-what-0.2.0-holds.md) set for it: the OAuth 2.x authorization server and OpenID Provider ([Milestone 3](docs/product/epics.md#milestone-3-applications-ask-hodor-who-someone-is)), multi-factor authentication with passkeys and step-up ([Milestone 4](docs/product/epics.md#milestone-4-strong-authentication)), and the authorization engine with Open Policy Agent ([Milestone 5](docs/product/epics.md#milestone-5-the-authorization-engine)). Each part is cut to what makes it whole; what each leaves to its phase is in that decision.
