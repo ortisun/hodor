@@ -343,33 +343,42 @@ impl IdentityService {
         id: UserId,
         caller: Caller,
     ) -> Result<User, DomainError> {
-        let now = self.clock.now();
         let mut uow = self.units_of_work.begin(tenant).await?;
-        let mut user = self.load(uow.as_mut(), id).await?;
+        let user = self.mark_deleted_in(uow.as_mut(), id, caller).await?;
+        uow.commit().await?;
+        Ok(user)
+    }
+
+    /// As [`IdentityService::mark_deleted`], in the caller's unit of work.
+    ///
+    /// # Errors
+    ///
+    /// As [`IdentityService::mark_deleted`]. After an error the unit of
+    /// work must be abandoned.
+    pub async fn mark_deleted_in(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: UserId,
+        caller: Caller,
+    ) -> Result<User, DomainError> {
+        let now = self.clock.now();
+        let mut user = self.load(uow, id).await?;
         let event = user.mark_deleted(now)?;
-        self.users.update(uow.as_mut(), &user).await?;
-        self.record(uow.as_mut(), caller, &[event])?;
+        self.users.update(uow, &user).await?;
+        self.record(uow, caller, &[event])?;
         if let Some(groups) = &self.groups {
-            leave_every_group(
-                groups.as_ref(),
-                uow.as_mut(),
-                id,
-                &caller,
-                self.clock.as_ref(),
-            )
-            .await?;
+            leave_every_group(groups.as_ref(), uow, id, &caller, self.clock.as_ref()).await?;
         }
         if let Some(organizations) = &self.organizations {
             leave_every_organization(
                 organizations.as_ref(),
-                uow.as_mut(),
+                uow,
                 id,
                 &caller,
                 self.clock.as_ref(),
             )
             .await?;
         }
-        uow.commit().await?;
         Ok(user)
     }
 

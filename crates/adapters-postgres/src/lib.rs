@@ -75,7 +75,9 @@ pub use policy_bundles::{
 pub use policy_lifecycle::{
     PgPolicyVersionStore, PgPublicationStore, PgSimulationStore, PolicyCheckJob, PolicyCheckPass,
 };
-pub use provisioning::{PgProvisionedGroupRepository, PgProvisionedUserRepository};
+pub use provisioning::{
+    PgDeprovisioningPolicy, PgProvisionedGroupRepository, PgProvisionedUserRepository,
+};
 pub use resealing::{ResealReport, SEALED_COLUMNS, SealedColumn, reseal_tenant};
 pub use session::PgSessionStore;
 pub use sqlx::migrate::MigrateError;

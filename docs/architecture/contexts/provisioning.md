@@ -308,10 +308,10 @@ Every resource has a **version**, a weak entity tag of RFC 7232 that changes whe
 }
 ```
 
-- **Bounds.** At most 100 operations and a body of at most one mebibyte (1,048,576 bytes). A request past either is refused whole with `413` and `tooMany`, and nothing of it is done.
+- **Bounds.** At most 100 operations and a body of at most one mebibyte (1,048,576 bytes). A request past either is refused whole with `413` and `tooMany`, and nothing of it is done. A body past two mebibytes does not reach the SCIM server: the limit every surface shares refuses it with `413` and a problem document.
 - **Each operation is one request of its own**, `POST`, `PUT`, `PATCH` or `DELETE` on `/Users`, `/Users/{id}`, `/Groups` or `/Groups/{id}`, done in its own transaction, in the order given, with the same rules and answers as the request alone. `version` is its `If-Match`. An operation that fails changes nothing; those before it stay done. This is what RFC 7644 describes, a result per operation, and what lets `failOnErrors` mean anything.
 - **`failOnErrors`**, when given, is how many operations may fail before the rest are not done; their results are then left out of the answer. Without it every operation is done.
-- **`bulkId`** names what a `POST` creates, 1 to 64 characters of letters, digits, `-` and `_`, once in a request. A later operation refers to it as `bulkId:<name>`, in its `path` or as any string value of its `data`, such as a member's `value`, and the reference is replaced by the identifier the `POST` gave out. **References are resolved in order**: a reference to a `bulkId` no earlier operation of the request created, because it comes later, failed, or does not exist, fails that operation with `400` and `invalidValue`, and the others go on.
+- **`bulkId`** names what a `POST` creates, 1 to 64 characters of letters, digits, `-` and `_`, once in a request; every `POST` has one, as RFC 7644 asks, and an operation without one, or with one used before, fails with `400` and `invalidValue`. A later operation refers to it as `bulkId:<name>`, in its `path` or as any string value of its `data`, such as a member's `value`, and the reference is replaced by the identifier the `POST` gave out. **References are resolved in order**: a reference to a `bulkId` no earlier operation of the request created, because it comes later, failed, or does not exist, fails that operation with `400` and `invalidValue`, and the others go on.
 - The answer is `200` with a `BulkResponse`: for each operation done, its `method`, `bulkId`, `status` as text, and for a success its `location` and `version`, for a failure its error as `response`.
 
 ## Deprovisioning
@@ -329,7 +329,7 @@ Either way, in the same transaction:
 - **every active grant of the person is revoked**, with the reason `deprovisioned`, and with them the refresh token families and access tokens issued from them: a refresh token stops working at once, and an access token is no longer in force for introspection and UserInfo ([what ends a family](oauth.md#what-ends-a-family));
 - what the provisioning context keeps of a Deleted user is removed.
 
-A user deprovisioned by `DELETE` under `deactivate` is answered `404` and never listed afterwards, as RFC 7644 asks; the provisioning context records when, and that holds while the user stays Deactivated. An administrator who restores them makes them seen again. A user deprovisioned by `active: false` stays seen, with `active: false`, so that the SCIM client can bring them back.
+A user deprovisioned by `DELETE` under `deactivate` is answered `404` and never listed afterwards, as RFC 7644 asks; the provisioning context records when, and that holds while the user stays Deactivated. An administrator who restores them makes them seen again. A user deprovisioned by `active: false` stays seen, with `active: false`, so that the SCIM client can bring them back. Under `delete`, a `PUT` or `PATCH` that deprovisions the user answers `204`: nothing is left to answer with.
 
 ## Lists
 

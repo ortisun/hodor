@@ -15,7 +15,8 @@ use hodor_provisioning::api::{
     read_group, read_user,
 };
 use hodor_provisioning::testing::{
-    ContractPorts, InMemoryProvisionedGroups, InMemoryProvisionedUsers, run_contract,
+    ContractPorts, FixedDeprovisioning, InMemoryProvisionedGroups, InMemoryProvisionedUsers,
+    RecordingAccessRevoker, run_contract,
 };
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -30,6 +31,8 @@ struct World {
     service: ProvisioningService,
     tenant: TenantContext,
     client: Caller,
+    policy: FixedDeprovisioning,
+    access: RecordingAccessRevoker,
 }
 
 fn world() -> World {
@@ -52,12 +55,16 @@ fn world() -> World {
         Arc::new(FixedGroupPolicy(5)),
         clock.clone(),
     );
+    let policy = FixedDeprovisioning::default();
+    let access = RecordingAccessRevoker::default();
     let service = ProvisioningService::new(ProvisioningPorts {
         units_of_work: Arc::new(units.clone()),
         identity: identity.clone(),
         groups: group_service,
         users: Arc::new(InMemoryProvisionedUsers::new(Arc::new(users))),
         provisioned_groups: Arc::new(InMemoryProvisionedGroups::new(Arc::new(groups))),
+        deprovisioning: Arc::new(policy.clone()),
+        access: Arc::new(access.clone()),
         clock: clock.clone(),
     });
     World {
@@ -70,6 +77,8 @@ fn world() -> World {
             actor: Actor::Client(ClientActorId::generate()),
             correlation_id: CorrelationId::generate(),
         },
+        policy,
+        access,
     }
 }
 
@@ -206,7 +215,7 @@ async fn a_user_name_that_is_taken_is_refused_as_not_unique() {
 }
 
 #[tokio::test]
-async fn active_false_suspends_and_active_true_reactivates() {
+async fn active_false_creates_a_user_deactivated_and_active_true_restores_it() {
     let world = world();
     let created = world
         .service
@@ -217,7 +226,7 @@ async fn active_false_suspends_and_active_true_reactivates() {
         )
         .await
         .expect("created");
-    assert_eq!(created.user.status(), UserStatus::Suspended);
+    assert_eq!(created.user.status(), UserStatus::Deactivated);
     assert_eq!(created.document(BASE)["active"], false);
     assert_eq!(created.document(BASE)["userName"], "ana@example.com");
     let id = created.user.id();
@@ -227,10 +236,12 @@ async fn active_false_suspends_and_active_true_reactivates() {
             &world.tenant,
             id,
             &user(&json!({ "schemas": [USER_SCHEMA], "userName": "ana@example.com" })),
+            None,
             world.client,
         )
         .await
-        .expect("replaced");
+        .expect("replaced")
+        .expect("still there");
     assert_eq!(replaced.user.status(), UserStatus::Active);
 }
 
@@ -252,9 +263,10 @@ async fn replacing_removes_what_the_request_leaves_out_and_the_same_request_chan
     }));
     let replaced = world
         .service
-        .replace_user(&world.tenant, id, &request, world.client)
+        .replace_user(&world.tenant, id, &request, None, world.client)
         .await
-        .expect("replaced");
+        .expect("replaced")
+        .expect("still there");
     let document = replaced.document(BASE);
     assert_eq!(document["userName"], "barbara.jensen");
     assert_eq!(document["displayName"], "Babs");
@@ -278,9 +290,10 @@ async fn replacing_removes_what_the_request_leaves_out_and_the_same_request_chan
     world.clock.advance(Duration::hours(1));
     let again = world
         .service
-        .replace_user(&world.tenant, id, &request, world.client)
+        .replace_user(&world.tenant, id, &request, None, world.client)
         .await
-        .expect("again");
+        .expect("again")
+        .expect("still there");
     assert_eq!(
         world.units.committed_events().len(),
         before,
@@ -429,6 +442,7 @@ async fn a_group_is_created_replaced_and_deleted_with_its_members() {
                 &world.tenant,
                 id,
                 &group(&json!({ "schemas": [GROUP_SCHEMA], "displayName": "finance", "members": members })),
+                None,
                 world.client,
             )
             .await
@@ -447,6 +461,7 @@ async fn a_group_is_created_replaced_and_deleted_with_its_members() {
                 "displayName": "Finance team",
                 "members": [{ "value": bob.to_string() }]
             })),
+            None,
             world.client,
         )
         .await
@@ -477,7 +492,7 @@ async fn a_group_is_created_replaced_and_deleted_with_its_members() {
 
     world
         .service
-        .delete_group(&world.tenant, id, world.client)
+        .delete_group(&world.tenant, id, None, world.client)
         .await
         .expect("deleted");
     let error = world
@@ -488,7 +503,7 @@ async fn a_group_is_created_replaced_and_deleted_with_its_members() {
     assert_eq!(error.code(), "provisioning.group_not_found");
     let error = world
         .service
-        .delete_group(&world.tenant, id, world.client)
+        .delete_group(&world.tenant, id, None, world.client)
         .await
         .expect_err("gone");
     assert_eq!(error.kind(), ErrorKind::NotFound);
@@ -499,4 +514,287 @@ async fn a_group_is_created_replaced_and_deleted_with_its_members() {
             .iter()
             .any(|kind| kind == "provisioning.group_attributes_changed")
     );
+}
+
+fn patch(operations: Value) -> hodor_provisioning::api::PatchRequest {
+    hodor_provisioning::api::read_patch(
+        &json!({ "schemas": [hodor_provisioning::api::PATCH_SCHEMA], "Operations": operations }),
+        &hodor_provisioning::api::USER_SHAPE,
+    )
+    .expect("a patch")
+}
+
+fn group_patch(operations: Value) -> hodor_provisioning::api::PatchRequest {
+    hodor_provisioning::api::read_patch(
+        &json!({ "schemas": [hodor_provisioning::api::PATCH_SCHEMA], "Operations": operations }),
+        &hodor_provisioning::api::GROUP_SHAPE,
+    )
+    .expect("a patch")
+}
+
+#[tokio::test]
+async fn a_patch_changes_part_of_a_user_and_a_stale_version_is_refused() {
+    let world = world();
+    let created = world
+        .service
+        .create_user(&world.tenant, &user(&bjensen()), world.client)
+        .await
+        .expect("created");
+    let id = created.user.id();
+    let first = created.version();
+    let patched = world
+        .service
+        .patch_user(
+            &world.tenant,
+            id,
+            &patch(json!([
+                { "op": "add", "path": "emails[type eq \"work\"].value", "value": "babs@example.org" },
+                { "op": "replace", "path": "name.givenName", "value": "Babs" },
+                { "op": "remove", "path": "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User:manager" }
+            ])),
+            Some(&hodor_provisioning::api::Precondition::read(&first)),
+            world.client,
+        )
+        .await
+        .expect("patched")
+        .expect("still there");
+    let document = patched.document(BASE);
+    assert_eq!(document["name"]["givenName"], "Babs");
+    assert!(
+        document["emails"]
+            .as_array()
+            .expect("emails")
+            .iter()
+            .any(|email| email["value"] == "babs@example.org" && email["type"] == "work")
+    );
+    assert!(
+        document["urn:ietf:params:scim:schemas:extension:enterprise:2.0:User"]
+            .get("manager")
+            .is_none()
+    );
+    assert_ne!(patched.version(), first, "a change makes a new version");
+    assert_eq!(document["meta"]["version"], patched.version());
+
+    let stale = world
+        .service
+        .patch_user(
+            &world.tenant,
+            id,
+            &patch(json!([{ "op": "replace", "path": "displayName", "value": "Late" }])),
+            Some(&hodor_provisioning::api::Precondition::read(&first)),
+            world.client,
+        )
+        .await
+        .expect_err("a stale version");
+    assert_eq!(stale.code(), "provisioning.version_mismatch");
+    let unchanged = world
+        .service
+        .get_user(&world.tenant, id)
+        .await
+        .expect("read");
+    assert_eq!(unchanged.version(), patched.version(), "nothing changed");
+
+    let refused = world
+        .service
+        .patch_user(
+            &world.tenant,
+            id,
+            &patch(json!([{ "op": "remove", "path": "userName" }])),
+            None,
+            world.client,
+        )
+        .await
+        .expect_err("userName is required");
+    assert_eq!(refused.code(), "provisioning.invalid_value");
+}
+
+#[tokio::test]
+async fn deprovisioning_follows_the_policy_and_ends_access() {
+    let world = world();
+    let ana = world
+        .service
+        .create_user(
+            &world.tenant,
+            &user(&json!({ "schemas": [USER_SCHEMA], "userName": "ana", "externalId": "A-1" })),
+            world.client,
+        )
+        .await
+        .expect("ana")
+        .user
+        .id();
+    let bob = world
+        .service
+        .create_user(
+            &world.tenant,
+            &user(&json!({ "schemas": [USER_SCHEMA], "userName": "bob" })),
+            world.client,
+        )
+        .await
+        .expect("bob")
+        .user
+        .id();
+
+    // active: false deactivates and keeps the user seen.
+    let patched = world
+        .service
+        .patch_user(
+            &world.tenant,
+            ana,
+            &patch(json!([{ "op": "replace", "value": { "active": "False" } }])),
+            None,
+            world.client,
+        )
+        .await
+        .expect("patched")
+        .expect("still seen");
+    assert_eq!(patched.user.status(), UserStatus::Deactivated);
+    assert_eq!(
+        world.access.revoked(),
+        [(world.tenant.tenant_id(), ana, "deprovisioned")]
+    );
+
+    // DELETE deactivates and hides; the identity stays restorable.
+    world
+        .service
+        .delete_user(&world.tenant, ana, None, world.client)
+        .await
+        .expect("deleted");
+    assert_eq!(
+        world
+            .service
+            .get_user(&world.tenant, ana)
+            .await
+            .expect_err("hidden")
+            .code(),
+        "provisioning.user_not_found"
+    );
+    let still = world
+        .identity
+        .get(&world.tenant, ana)
+        .await
+        .expect("still there");
+    assert_eq!(still.status(), UserStatus::Deactivated);
+    let listed = world
+        .service
+        .list_users(&world.tenant, &ListQuery::default())
+        .await
+        .expect("listed");
+    assert_eq!(listed.total, 1, "a deleted user is never listed");
+
+    // Under delete, the user is erased.
+    world
+        .policy
+        .set(hodor_provisioning::api::Deprovisioning::Delete);
+    let gone = world
+        .service
+        .replace_user(
+            &world.tenant,
+            bob,
+            &user(&json!({ "schemas": [USER_SCHEMA], "userName": "bob", "active": false })),
+            None,
+            world.client,
+        )
+        .await
+        .expect("deprovisioned");
+    assert!(gone.is_none(), "nothing is left to answer");
+    let erased = world
+        .identity
+        .get(&world.tenant, bob)
+        .await
+        .expect("the identifier stays");
+    assert_eq!(erased.status(), UserStatus::Deleted);
+    assert!(erased.identifiers().is_empty());
+    assert_eq!(world.access.revoked().len(), 3);
+    let types = world.units.committed_event_types();
+    for kind in ["identity.user_deactivated", "identity.user_deleted"] {
+        assert!(types.iter().any(|event| event == kind), "{kind}");
+    }
+}
+
+#[tokio::test]
+async fn a_patch_adds_and_removes_members_one_by_one() {
+    let world = world();
+    let mut people = Vec::new();
+    for name in ["ana", "bob", "carla"] {
+        people.push(
+            world
+                .service
+                .create_user(
+                    &world.tenant,
+                    &user(&json!({ "schemas": [USER_SCHEMA], "userName": name })),
+                    world.client,
+                )
+                .await
+                .expect("a person")
+                .user
+                .id(),
+        );
+    }
+    let group = world
+        .service
+        .create_group(
+            &world.tenant,
+            &read_group(&json!({
+                "schemas": [GROUP_SCHEMA],
+                "displayName": "finance",
+                "members": [{ "value": people[0].to_string() }],
+            }))
+            .expect("a request"),
+            world.client,
+        )
+        .await
+        .expect("a group");
+    let id = group.group.id();
+    let patched = world
+        .service
+        .patch_group(
+            &world.tenant,
+            id,
+            &group_patch(json!([
+                { "op": "add", "path": "members", "value": [{ "value": people[1].to_string() }, { "value": people[2].to_string() }] },
+                { "op": "remove", "path": format!("members[value eq \"{}\"]", people[0]) },
+                { "op": "replace", "path": "displayName", "value": "Finance" }
+            ])),
+            Some(&hodor_provisioning::api::Precondition::read(&group.version())),
+            world.client,
+        )
+        .await
+        .expect("patched");
+    let members: Vec<String> = patched
+        .members
+        .iter()
+        .map(|view| view.member.id_text())
+        .collect();
+    assert_eq!(members.len(), 2);
+    assert!(!members.contains(&people[0].to_string()));
+    assert_eq!(patched.group.name().as_str(), "Finance");
+
+    let too_many: Vec<Value> = (0..1001)
+        .map(|_| json!({ "value": UserId::generate().to_string() }))
+        .collect();
+    let refused = world
+        .service
+        .patch_group(
+            &world.tenant,
+            id,
+            &group_patch(json!([{ "op": "add", "path": "members", "value": too_many }])),
+            None,
+            world.client,
+        )
+        .await
+        .expect_err("too many members");
+    assert_eq!(refused.code(), "provisioning.invalid_value");
+    let stale = world
+        .service
+        .delete_group(
+            &world.tenant,
+            id,
+            Some(&hodor_provisioning::api::Precondition::read(
+                &group.version(),
+            )),
+            world.client,
+        )
+        .await
+        .expect_err("stale");
+    assert_eq!(stale.code(), "provisioning.version_mismatch");
 }

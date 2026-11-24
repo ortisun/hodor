@@ -2,8 +2,8 @@
 
 use hodor_adapters_postgres::testing::TestDatabase;
 use hodor_adapters_postgres::{
-    PgGroupPolicy, PgGroupRepository, PgProvisionedGroupRepository, PgProvisionedUserRepository,
-    PgUserRepository,
+    PgDeprovisioningPolicy, PgGroupPolicy, PgGroupRepository, PgProvisionedGroupRepository,
+    PgProvisionedUserRepository, PgTenantDirectory, PgTenantRepository, PgUserRepository,
 };
 use hodor_identity::api::{GroupService, IdentityService};
 use hodor_kernel::clock::testing::FixedClock;
@@ -13,7 +13,7 @@ use hodor_kernel::{
 use hodor_provisioning::api::{
     GROUP_SCHEMA, ProvisioningPorts, ProvisioningService, USER_SCHEMA, read_group, read_user,
 };
-use hodor_provisioning::testing::{ContractPorts, run_contract};
+use hodor_provisioning::testing::{ContractPorts, RecordingAccessRevoker, run_contract};
 use serde_json::json;
 use std::sync::Arc;
 
@@ -46,6 +46,8 @@ fn service(database: &TestDatabase) -> ProvisioningService {
         ),
         users: Arc::new(PgProvisionedUserRepository),
         provisioned_groups: Arc::new(PgProvisionedGroupRepository),
+        deprovisioning: Arc::new(PgDeprovisioningPolicy),
+        access: Arc::new(RecordingAccessRevoker::default()),
         clock,
     })
 }
@@ -172,7 +174,7 @@ async fn deleting_a_group_through_scim_takes_what_is_kept_of_it_and_events_name_
         .await
         .expect("a group");
     service
-        .delete_group(&tenant, group.group.id(), caller)
+        .delete_group(&tenant, group.group.id(), None, caller)
         .await
         .expect("deleted");
     assert_eq!(
@@ -208,4 +210,100 @@ async fn deleting_a_group_through_scim_takes_what_is_kept_of_it_and_events_name_
             json!({ "kind": "client", "id": client_id.to_string() })
         );
     }
+}
+
+#[tokio::test]
+async fn deprovisioning_reads_the_tenants_policy_in_the_same_transaction() {
+    use hodor_tenant::api::{CreateTenant, Deprovisioning, TenantService};
+    let database = TestDatabase::start().await;
+    let tenants = TenantService::new(
+        Arc::new(database.app().clone()),
+        Arc::new(PgTenantRepository),
+        Arc::new(PgTenantDirectory::new(database.app().clone())),
+        Arc::new(FixedClock::at(Timestamp::UNIX_EPOCH)),
+    );
+    let created = tenants
+        .create(
+            CreateTenant {
+                slug: "acme".to_owned(),
+                display_name: "Acme".to_owned(),
+                open_registration: false,
+                system: false,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("a tenant");
+    let tenant = TenantContext::assume(created.id());
+    let service = service(&database);
+    let person = |name: &str| {
+        read_user(&json!({ "schemas": [USER_SCHEMA], "userName": name, "externalId": name }))
+            .expect("a request")
+    };
+    let ana = service
+        .create_user(&tenant, &person("ana"), client())
+        .await
+        .expect("ana")
+        .user
+        .id();
+    service
+        .delete_user(&tenant, ana, None, client())
+        .await
+        .expect("deprovisioned");
+    let (status, removed): (String, bool) = sqlx::query_as(
+        "SELECT u.status, p.removed_at IS NOT NULL FROM identity.\"user\" AS u
+         JOIN provisioning.user_attribute AS p ON p.tenant_id = u.tenant_id AND p.user_id = u.id",
+    )
+    .fetch_one(database.owner())
+    .await
+    .expect("ana's rows");
+    assert_eq!(
+        (status.as_str(), removed),
+        ("deactivated", true),
+        "deactivate by default"
+    );
+    assert_eq!(
+        service
+            .get_user(&tenant, ana)
+            .await
+            .expect_err("hidden")
+            .code(),
+        "provisioning.user_not_found"
+    );
+
+    let mut settings = tenants
+        .get(&tenant)
+        .await
+        .expect("tenant")
+        .snapshot()
+        .settings
+        .clone();
+    settings.provisioning.deprovisioning = Deprovisioning::Delete;
+    tenants
+        .change_settings(&tenant, settings, Caller::system())
+        .await
+        .expect("settings");
+    let bob = service
+        .create_user(&tenant, &person("bob"), client())
+        .await
+        .expect("bob")
+        .user
+        .id();
+    service
+        .delete_user(&tenant, bob, None, client())
+        .await
+        .expect("deprovisioned");
+    let (status, kept): (String, i64) = sqlx::query_as(
+        "SELECT status, (SELECT count(*) FROM provisioning.user_attribute WHERE user_id = $1)
+         FROM identity.\"user\" WHERE id = $1",
+    )
+    .bind(bob.as_uuid())
+    .fetch_one(database.owner())
+    .await
+    .expect("bob's rows");
+    assert_eq!(
+        (status.as_str(), kept),
+        ("deleted", 0),
+        "deleted, with nothing kept"
+    );
 }

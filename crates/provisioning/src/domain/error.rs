@@ -15,6 +15,43 @@ pub const INVALID_VALUE: &str = "provisioning.invalid_value";
 /// The code of an attribute that cannot be written: `mutability`.
 pub const MUTABILITY: &str = "provisioning.mutability";
 
+/// The code of a `PATCH` path that cannot be read: `invalidPath`.
+pub const INVALID_PATH: &str = "provisioning.invalid_path";
+/// The code of a `PATCH` operation with nothing to apply to: `noTarget`.
+pub const NO_TARGET: &str = "provisioning.no_target";
+/// The code of a request past a bound of how many operations it holds:
+/// `tooMany`.
+pub const TOO_MANY: &str = "provisioning.too_many";
+/// The code of a change for a version the resource no longer has.
+pub const VERSION_MISMATCH: &str = "provisioning.version_mismatch";
+
+/// A `PATCH` path that cannot be read.
+#[must_use]
+pub(crate) fn invalid_path(detail: impl Into<String>) -> DomainError {
+    DomainError::invalid(INVALID_PATH, detail.into())
+}
+
+/// A `PATCH` operation that has nothing to apply to.
+#[must_use]
+pub(crate) fn no_target(detail: impl Into<String>) -> DomainError {
+    DomainError::invalid(NO_TARGET, detail.into())
+}
+
+/// A request that holds more operations than allowed.
+#[must_use]
+pub(crate) fn too_many(detail: impl Into<String>) -> DomainError {
+    DomainError::invalid(TOO_MANY, detail.into())
+}
+
+/// A change for a version the resource no longer has.
+#[must_use]
+pub(crate) fn version_mismatch() -> DomainError {
+    DomainError::conflict(
+        VERSION_MISMATCH,
+        "the resource changed since the version given",
+    )
+}
+
 /// A filter refused for `refusal`.
 #[must_use]
 pub(crate) fn invalid_filter(refusal: &FilterRefusal) -> DomainError {

@@ -108,6 +108,8 @@ Every route of the [administration interface](admin-api.md#routes) exists here a
 | `POST /organizations/{organization_id}/invitations` | `organizations:write` |
 | `DELETE /organizations/{organization_id}/invitations/{invitation_id}` | `organizations:write` |
 | `GET /users/{user_id}/organizations` | `organizations:read` |
+| `GET /scim-deprovisioning` | `users:read` |
+| `PUT /scim-deprovisioning` | `users:write` |
 | `GET /assurance-levels` | `assurance-levels:read` |
 | `PUT /assurance-levels` | `assurance-levels:write` |
 

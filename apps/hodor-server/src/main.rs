@@ -15,14 +15,15 @@ use hodor_adapters_postgres::{
     Database, PgAccessTokenRecordStore, PgAccessTokenStore, PgApplicationStore, PgAttemptStore,
     PgAuditLog, PgAuthorizationCodeStore, PgAuthorizationRequestStore, PgBundleStore,
     PgClientAssertionStore, PgClientStore, PgConsentStore, PgDecisionLogStore,
-    PgEngineBindingStore, PgGrantStore, PgGroupPolicy, PgGroupRepository, PgInstanceStatusStore,
-    PgInstanceStore, PgInvitationRepository, PgKeyStore, PgLinkStore, PgMessageQueue,
-    PgNativeRoleStore, PgOrganizationRepository, PgPasswordStore, PgPendingAuthorizationStore,
-    PgPolicyVersionStore, PgProviderStore, PgProvisionedGroupRepository,
-    PgProvisionedUserRepository, PgPublicationStore, PgRecoveryCodeStore, PgRefreshTokenStore,
-    PgResourceServerStore, PgRoleAssignmentStore, PgSealingStateStore, PgSessionStore,
-    PgSimulationStore, PgTenantDirectory, PgTenantRepository, PgTotpStore, PgTransactionStore,
-    PgUploadedDecisionStore, PgUserRepository, PgVerificationTokenStore, PgWebAuthnStore,
+    PgDeprovisioningPolicy, PgEngineBindingStore, PgGrantStore, PgGroupPolicy, PgGroupRepository,
+    PgInstanceStatusStore, PgInstanceStore, PgInvitationRepository, PgKeyStore, PgLinkStore,
+    PgMessageQueue, PgNativeRoleStore, PgOrganizationRepository, PgPasswordStore,
+    PgPendingAuthorizationStore, PgPolicyVersionStore, PgProviderStore,
+    PgProvisionedGroupRepository, PgProvisionedUserRepository, PgPublicationStore,
+    PgRecoveryCodeStore, PgRefreshTokenStore, PgResourceServerStore, PgRoleAssignmentStore,
+    PgSealingStateStore, PgSessionStore, PgSimulationStore, PgTenantDirectory, PgTenantRepository,
+    PgTotpStore, PgTransactionStore, PgUploadedDecisionStore, PgUserRepository,
+    PgVerificationTokenStore, PgWebAuthnStore,
 };
 use hodor_audit::api::AuditService;
 use hodor_authentication::api::{
@@ -79,6 +80,7 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 
+mod deprovisioning;
 mod standing;
 mod subjects;
 
@@ -331,6 +333,11 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
     let keys = keys(&config, &database)?;
     let (interaction, invitations) = interaction(&config, &database)?;
     let authorization = authorization(&config, &database, interaction.authentication.clone());
+    // SCIM ends a deprovisioned person's sessions and grants with these.
+    let revoker = deprovisioning::ServerAccessRevoker {
+        sessions: authorization.sessions.clone(),
+        grants: authorization.authorization.clone(),
+    };
     let mut oauth2 = authorization_routes(authorization.clone());
     if let (Some(keys), Some(setting)) = (&keys, &config.secret_keys) {
         oauth2 = oauth2.merge(token_routes(token(
@@ -395,7 +402,7 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
                 )
                 .nest(
                     "/scim/v2",
-                    scim_routes(scim(&config, &database, keys.clone())),
+                    scim_routes(scim(&config, &database, keys.clone(), revoker)),
                 )
                 .merge(key_set_routes(keys))
                 .merge(discovery_routes(DiscoveryState {
@@ -888,7 +895,12 @@ fn resource_access(
 
 /// Builds everything the SCIM server needs. Like the Authorization API, it
 /// checks access tokens against the tenants' keys.
-fn scim(config: &Config, database: &Database, keys: KeyService) -> ScimState {
+fn scim(
+    config: &Config,
+    database: &Database,
+    keys: KeyService,
+    revoker: deprovisioning::ServerAccessRevoker,
+) -> ScimState {
     let clock = Arc::new(SystemClock);
     let units = || -> Arc<dyn hodor_kernel::UnitOfWorkFactory> { Arc::new(database.clone()) };
     let applications = ApplicationService::new(ApplicationPorts {
@@ -916,6 +928,8 @@ fn scim(config: &Config, database: &Database, keys: KeyService) -> ScimState {
             ),
             users: Arc::new(PgProvisionedUserRepository),
             provisioned_groups: Arc::new(PgProvisionedGroupRepository),
+            deprovisioning: Arc::new(PgDeprovisioningPolicy),
+            access: Arc::new(revoker),
             clock,
         }),
         public_url: config.public_url.clone(),

@@ -34,6 +34,7 @@ Commands, as typed, from the clap enums in `main.rs`:
 | `hodor-cli tenant suspend` | `--slug`, `--reason` | `TenantService::suspend` (`TenantCommand::Suspend`) |
 | `hodor-cli tenant reactivate` | `--slug` | `TenantService::reactivate` (`TenantCommand::Reactivate`) |
 | `hodor-cli tenant second-factor` | `--slug`, `--policy` (`required`, `not-required`) | `TenantService::change_settings` with `authentication.second_factor` (`TenantCommand::SecondFactor`) |
+| `hodor-cli tenant scim-deprovisioning` | `--slug`, `--policy` (`deactivate`, `delete`) | `TenantService::change_settings` with `provisioning.deprovisioning`; prints `<slug> scim-deprovisioning <policy>` (`TenantCommand::ScimDeprovisioning`) |
 | `hodor-cli tenant assurance-levels` | `--slug`, `--level <acr>=<requirement>` repeated; none to only print | `AssuranceLevels::new` then `TenantService::change_settings` with `authentication.assurance_levels`; prints `<slug> <acr> <requirement>` per level, weakest first (`TenantCommand::AssuranceLevels`) |
 | `hodor-cli admin bootstrap` | `--tenant`, `--email`, `--token-minutes` (default 60) | `bootstrap_administrator` (`AdminCommand::Bootstrap`) |
 | `hodor-cli audit verify` | `--tenant` | `verify_audit`, which calls `hodor_audit::api::AuditService::verify` (`AuditCommand::Verify`) |

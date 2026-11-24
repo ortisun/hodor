@@ -17,7 +17,7 @@ tenant and records its events in it.
 | `ClientStore` | `insert` (`oauth.application_not_found` for an application the tenant does not have), `update` (version checked; replaces secrets and keys), `get`, `list_for_application` (oldest first) |
 | `ResourceServerStore` | `insert` (`oauth.audience_taken`, `oauth.application_has_resource_server`, `oauth.application_not_found`), `update` (version checked; replaces the scopes), `get`, `find_by_audience` (exact), `list` (oldest first) |
 | `AuthorizationRequestStore` | `insert` (`oauth.client_not_found`), `get`, `remove` (answers whether this call removed it), `answer` (records the answer of a request that waits for consent and has none; answers whether this call recorded it) |
-| `GrantStore` | `insert` (`oauth.client_not_found`), `get`, `update` (status and revocation; `oauth.grant_not_found`), `list_active_for(user, client)` |
+| `GrantStore` | `insert` (`oauth.client_not_found`), `get`, `update` (status and revocation; `oauth.grant_not_found`), `list_active_for(user, client)`, `list_active_of(user)` (every client, oldest first) |
 | `ConsentStore` | `get(user, client)` (withdrawn and expired included), `save` (replaces; `oauth.client_not_found`), `list_standing(user, now)` (newest first), `record` (a history entry; `oauth.client_not_found`) |
 | `AuthorizationCodeStore` | `insert` (`oauth.grant_not_found`), `find` (by hash), `redeem` (only if not redeemed; answers whether this call redeemed it) |
 | `ClientAssertionStore` | `remember(client, jti, expires_at)` (`oauth.client_not_found`; answers whether this call was the first) |
@@ -67,6 +67,10 @@ memberships, digest, random, clock })`:
   `already_redeemed`, `expired`, `other_client`, ...). A second redemption,
   found as redeemed or lost in the conditional `redeem`, revokes the grant
   (`oauth.grant_revoked`, reason `code_reused`) and commits that.
+- `revoke_grants_of_in(uow, user, reason, caller)`: revokes every active
+  grant of a person, for every client, in the caller's unit of work, with
+  `oauth.grant_revoked` for each; answers how many. Their families and
+  access tokens stop being in force with them. SCIM deprovisioning uses it.
 
 ### Token endpoint (`token.rs`)
 

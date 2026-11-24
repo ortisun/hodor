@@ -36,6 +36,7 @@ struct Credentials {
 }
 
 struct Opened {
+    context: TenantContext,
     /// Allowed the scope `scim`.
     directory: Credentials,
     /// Allowed only another scope of SCIM's resource server.
@@ -163,6 +164,7 @@ async fn open(database: &TestDatabase, slug: &str) -> Opened {
             &["scim:audit"],
         )
         .await,
+        context,
     }
 }
 
@@ -266,7 +268,7 @@ async fn a_directory_provisions_people_and_groups_and_is_recorded_as_the_actor()
         config.content_type.as_deref(),
         Some("application/scim+json")
     );
-    assert_eq!(config.body["patch"]["supported"], false);
+    assert_eq!(config.body["patch"]["supported"], true);
 
     // The directory creates a person, with their work address as userName.
     let created = scim(
@@ -319,7 +321,7 @@ async fn a_directory_provisions_people_and_groups_and_is_recorded_as_the_actor()
         assert_eq!(found.body["Resources"][0]["id"], id.as_str());
     }
 
-    // It suspends them, and the person cannot sign in.
+    // It sets them inactive: the policy deactivates them, by default.
     let suspended = scim(
         &server,
         "acme",
@@ -340,7 +342,7 @@ async fn a_directory_provisions_people_and_groups_and_is_recorded_as_the_actor()
         .fetch_one(database.owner())
         .await
         .expect("a status");
-    assert_eq!(status, "suspended");
+    assert_eq!(status, "deactivated");
 
     // It makes a group with the person in it, and deletes it.
     let group = scim(
@@ -403,7 +405,7 @@ async fn a_directory_provisions_people_and_groups_and_is_recorded_as_the_actor()
     assert!(
         changes
             .iter()
-            .any(|(kind, _, _)| kind == "identity.user_suspended")
+            .any(|(kind, _, _)| kind == "identity.user_deactivated")
     );
     assert!(
         changes
@@ -454,4 +456,133 @@ async fn a_directory_provisions_people_and_groups_and_is_recorded_as_the_actor()
             .challenge
             .is_some_and(|challenge| challenge.starts_with("Bearer"))
     );
+}
+
+#[tokio::test]
+async fn stale_versions_bulk_bounds_and_the_deprovisioning_policy_hold_in_the_real_binary() {
+    let database = TestDatabase::start().await;
+    let acme = open(&database, "acme").await;
+    let server = start_server_with(&database, &[("HODOR_SECRET_KEYS", ROOT_KEY)]).await;
+    let access = token(&server, "acme", &acme.directory, "scim").await;
+    let send = |method: Method, path: &str, body: Option<Value>, if_match: Option<&str>| {
+        let mut request = reqwest::Client::new()
+            .request(method, format!("{}/t/acme/scim/v2{path}", server.base))
+            .bearer_auth(&access);
+        if let Some(body) = body {
+            request = request
+                .header("content-type", "application/scim+json")
+                .body(body.to_string());
+        }
+        if let Some(version) = if_match {
+            request = request.header("if-match", version);
+        }
+        request.send()
+    };
+
+    // A PATCH on a stale version is refused.
+    let created = send(
+        Method::POST,
+        "/Users",
+        Some(json!({ "schemas": [USER], "userName": "ana" })),
+        None,
+    )
+    .await
+    .expect("response");
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let first = created
+        .headers()
+        .get("etag")
+        .and_then(|value| value.to_str().ok())
+        .expect("an ETag")
+        .to_owned();
+    let created: Value = created.json().await.expect("the user");
+    let ana = created["id"].as_str().expect("an id").to_owned();
+    let patch = |value: &str| {
+        json!({
+            "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+            "Operations": [{ "op": "replace", "path": "displayName", "value": value }]
+        })
+    };
+    let changed = send(
+        Method::PATCH,
+        &format!("/Users/{ana}"),
+        Some(patch("Ana")),
+        Some(&first),
+    )
+    .await
+    .expect("response");
+    assert_eq!(changed.status(), StatusCode::OK);
+    let stale = send(
+        Method::PATCH,
+        &format!("/Users/{ana}"),
+        Some(patch("Late")),
+        Some(&first),
+    )
+    .await
+    .expect("response");
+    assert_eq!(stale.status(), StatusCode::PRECONDITION_FAILED);
+    let stale: Value = stale.json().await.expect("an error");
+    assert_eq!(stale["status"], "412");
+    assert!(stale.get("scimType").is_none());
+
+    // A bulk request past the bound is refused whole.
+    let operations: Vec<Value> = (0..101)
+        .map(|index| {
+            json!({
+                "method": "POST", "path": "/Users", "bulkId": format!("u{index}"),
+                "data": { "schemas": [USER], "userName": format!("user{index}") }
+            })
+        })
+        .collect();
+    let refused = send(
+        Method::POST,
+        "/Bulk",
+        Some(json!({ "schemas": ["urn:ietf:params:scim:api:messages:2.0:BulkRequest"], "Operations": operations })),
+        None,
+    )
+    .await
+    .expect("response");
+    assert_eq!(refused.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    let refused: Value = refused.json().await.expect("an error");
+    assert_eq!(refused["scimType"], "tooMany");
+    let people: i64 = sqlx::query_scalar("SELECT count(*) FROM identity.\"user\"")
+        .fetch_one(database.owner())
+        .await
+        .expect("a count");
+    assert_eq!(people, 1, "nothing of the refused request was done");
+
+    // Under the policy that deletes, a DELETE erases the person.
+    let tenants = TenantService::new(
+        Arc::new(database.app().clone()),
+        Arc::new(PgTenantRepository),
+        Arc::new(PgTenantDirectory::new(database.app().clone())),
+        Arc::new(SystemClock),
+    );
+    let mut settings = tenants
+        .get(&acme.context)
+        .await
+        .expect("the tenant")
+        .snapshot()
+        .settings
+        .clone();
+    settings.provisioning.deprovisioning = hodor_tenant::api::Deprovisioning::Delete;
+    tenants
+        .change_settings(&acme.context, settings, Caller::system())
+        .await
+        .expect("settings");
+    let deleted = send(Method::DELETE, &format!("/Users/{ana}"), None, None)
+        .await
+        .expect("response");
+    assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
+    let (status, identifiers): (String, i64) = sqlx::query_as(
+        "SELECT status, (SELECT count(*) FROM identity.user_identifier) FROM identity.\"user\"",
+    )
+    .fetch_one(database.owner())
+    .await
+    .expect("Ana's row");
+    assert_eq!((status.as_str(), identifiers), ("deleted", 0));
+    let gone = send(Method::GET, &format!("/Users/{ana}"), None, None)
+        .await
+        .expect("response");
+    assert_eq!(gone.status(), StatusCode::NOT_FOUND);
 }

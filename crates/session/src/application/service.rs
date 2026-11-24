@@ -222,25 +222,44 @@ impl SessionService {
         reason: &str,
         caller: Caller,
     ) -> Result<usize, DomainError> {
-        let now = self.clock.now();
         let mut uow = self.units_of_work.begin(tenant).await?;
-        let sessions = self
-            .sessions
-            .list_for_user(uow.as_mut(), user_id, now)
+        let ended = self
+            .revoke_all_for_user_in(uow.as_mut(), user_id, keep, reason, caller)
             .await?;
+        if ended > 0 {
+            uow.commit().await?;
+        }
+        Ok(ended)
+    }
+
+    /// As [`SessionService::revoke_all_for_user`], in the caller's unit of
+    /// work, so that the sessions end together with whatever else the
+    /// caller is doing, or not at all.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails. After an error the unit of work
+    /// must be abandoned.
+    pub async fn revoke_all_for_user_in(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        user_id: UserId,
+        keep: Option<SessionId>,
+        reason: &str,
+        caller: Caller,
+    ) -> Result<usize, DomainError> {
+        let now = self.clock.now();
+        let sessions = self.sessions.list_for_user(uow, user_id, now).await?;
         let mut ended = 0;
         for mut session in sessions {
             if Some(session.id()) == keep {
                 continue;
             }
             if let Some(event) = session.revoke(reason, now) {
-                self.sessions.update(uow.as_mut(), &session).await?;
-                self.record(uow.as_mut(), caller, &event)?;
+                self.sessions.update(uow, &session).await?;
+                self.record(uow, caller, &event)?;
                 ended += 1;
             }
-        }
-        if ended > 0 {
-            uow.commit().await?;
         }
         Ok(ended)
     }

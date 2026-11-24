@@ -303,6 +303,29 @@ impl GrantStore for PgGrantStore {
         .map(grant_from)
         .collect()
     }
+
+    async fn list_active_of(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        user: UserId,
+    ) -> Result<Vec<Grant>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        sqlx::query(
+            "SELECT id, client_id, user_id, session_id, scopes, audiences, organization, status,
+                    created_at, revoked_at, revocation_reason
+             FROM oauth.authorization_grant
+             WHERE tenant_id = $1 AND user_id = $2 AND status = 'active'
+             ORDER BY created_at, id",
+        )
+        .bind(tenant.as_uuid())
+        .bind(user.as_uuid())
+        .fetch_all(connection(uow)?)
+        .await
+        .map_err(get)?
+        .iter()
+        .map(grant_from)
+        .collect()
+    }
 }
 
 /// [`AuthorizationCodeStore`] on `oauth.authorization_code`.

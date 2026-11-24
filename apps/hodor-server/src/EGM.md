@@ -62,7 +62,11 @@ Routers, as assembled in `run`:
   built by `scim`, only when `keys` built a `KeyService`: the same
   `ResourceAccessService` as the Authorization API (`resource_access`), and a
   `ProvisioningService` over `IdentityService`, `GroupService`,
-  `PgProvisionedUserRepository` and `PgProvisionedGroupRepository`.
+  `PgProvisionedUserRepository`, `PgProvisionedGroupRepository`,
+  `PgDeprovisioningPolicy` and `deprovisioning::ServerAccessRevoker`, which
+  ends a deprovisioned person's sessions (`SessionService::revoke_all_for_user_in`)
+  and grants (`AuthorizationCodeService::revoke_grants_of_in`) in the
+  provisioning context's unit of work, with the endpoint's own services.
 - `/oauth2/jwks`: `hodor_protocol_http::key_set_routes(KeyService)` is merged
   into the tenant routes when `keys` built a `KeyService` (`PgKeyStore`,
   `LocalKeyProvider` over `HODOR_SECRET_KEYS`); otherwise a warning is logged

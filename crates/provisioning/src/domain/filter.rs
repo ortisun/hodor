@@ -507,6 +507,129 @@ impl Parser {
     }
 }
 
+/// A value filter of a `PATCH` path, such as the `type eq "work"` of
+/// `emails[type eq "work"].value`: a condition on the sub-attributes of one
+/// value of a multi-valued attribute, any of them. It keeps the grammar and
+/// the bounds of filters, and compares text without regard to case.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ElementFilter(Raw);
+
+/// Reads the value filter of a `PATCH` path, the text between its
+/// brackets.
+///
+/// # Errors
+///
+/// The refusal, when the filter passes a bound or is not the grammar of
+/// RFC 7644. A value path inside it is refused too.
+pub fn parse_element_filter(text: &str) -> Result<ElementFilter, FilterRefusal> {
+    if text.chars().count() > MAX_FILTER_CHARACTERS {
+        return Err(FilterRefusal::TooLong);
+    }
+    let mut parser = Parser {
+        tokens: tokens(text)?,
+        at: 0,
+        comparisons: 0,
+    };
+    if parser.tokens.is_empty() {
+        return Err(FilterRefusal::Unreadable("the filter is empty"));
+    }
+    let raw = parser.or(0, true)?;
+    if parser.at < parser.tokens.len() {
+        return Err(FilterRefusal::Unreadable(
+            "there is more after the end of the filter",
+        ));
+    }
+    Ok(ElementFilter(raw))
+}
+
+fn element_field<'a>(
+    element: &'a serde_json::Map<String, serde_json::Value>,
+    name: &str,
+) -> Option<&'a serde_json::Value> {
+    element
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case(name))
+        .map(|(_, value)| value)
+        .filter(|value| !value.is_null())
+}
+
+fn raw_matches(raw: &Raw, element: &serde_json::Map<String, serde_json::Value>) -> bool {
+    use serde_json::Value as Json;
+    match raw {
+        Raw::And(left, right) => raw_matches(left, element) && raw_matches(right, element),
+        Raw::Or(left, right) => raw_matches(left, element) || raw_matches(right, element),
+        Raw::Not(inner) => !raw_matches(inner, element),
+        Raw::Present(path) => element_field(element, path).is_some(),
+        Raw::ValuePath(..) => false,
+        Raw::Compare(path, operator, literal) => {
+            let found = element_field(element, path);
+            match (found, literal) {
+                (None, Literal::Null) => *operator == Operator::Equal,
+                (Some(_), Literal::Null) => *operator == Operator::NotEqual,
+                (Some(Json::String(found)), Literal::Text(text)) => {
+                    let (found, text) = (fold_case(found), fold_case(text));
+                    match operator {
+                        Operator::Contains => found.contains(&text),
+                        Operator::StartsWith => found.starts_with(&text),
+                        Operator::EndsWith => found.ends_with(&text),
+                        Operator::Equal => found == text,
+                        Operator::NotEqual => found != text,
+                        Operator::Greater => found > text,
+                        Operator::GreaterOrEqual => found >= text,
+                        Operator::Less => found < text,
+                        Operator::LessOrEqual => found <= text,
+                    }
+                }
+                (Some(Json::Bool(found)), Literal::True | Literal::False) => {
+                    let wanted = *literal == Literal::True;
+                    match operator {
+                        Operator::Equal => *found == wanted,
+                        Operator::NotEqual => *found != wanted,
+                        _ => false,
+                    }
+                }
+                _ => false,
+            }
+        }
+    }
+}
+
+fn raw_equalities(raw: &Raw, found: &mut Vec<(String, serde_json::Value)>) -> bool {
+    match raw {
+        Raw::And(left, right) => raw_equalities(left, found) && raw_equalities(right, found),
+        Raw::Compare(path, Operator::Equal, Literal::Text(text)) => {
+            found.push((path.clone(), serde_json::Value::String(text.clone())));
+            true
+        }
+        Raw::Compare(path, Operator::Equal, Literal::True) => {
+            found.push((path.clone(), serde_json::Value::Bool(true)));
+            true
+        }
+        Raw::Compare(path, Operator::Equal, Literal::False) => {
+            found.push((path.clone(), serde_json::Value::Bool(false)));
+            true
+        }
+        _ => false,
+    }
+}
+
+impl ElementFilter {
+    /// Whether one value of a multi-valued attribute satisfies the filter.
+    #[must_use]
+    pub fn matches(&self, element: &serde_json::Map<String, serde_json::Value>) -> bool {
+        raw_matches(&self.0, element)
+    }
+
+    /// The sub-attributes a new value must have to satisfy the filter,
+    /// when it is made only of `eq` comparisons joined by `and`; `None`
+    /// otherwise.
+    #[must_use]
+    pub fn equalities(&self) -> Option<Vec<(String, serde_json::Value)>> {
+        let mut found = Vec::new();
+        raw_equalities(&self.0, &mut found).then_some(found)
+    }
+}
+
 /// The attribute a path names, as written in a filter.
 fn attribute<A: Attribute>(path: &str) -> Result<A, FilterRefusal> {
     let lowered = path.to_ascii_lowercase();
@@ -836,6 +959,41 @@ mod tests {
         assert_eq!(user(&many), Err(FilterRefusal::TooManyComparisons));
         let enough = vec!["userName pr"; MAX_FILTER_COMPARISONS].join(" or ");
         assert!(user(&enough).is_ok());
+    }
+
+    #[test]
+    fn an_element_filter_compares_any_sub_attribute_without_regard_to_case() {
+        let element = |value: serde_json::Value| value.as_object().cloned().expect("an object");
+        let work = element(
+            serde_json::json!({ "value": "Ana@Example.com", "type": "Work", "primary": true }),
+        );
+        let home = element(serde_json::json!({ "value": "ana@home.org", "type": "home" }));
+        let filter = parse_element_filter(r#"type eq "work" and primary eq true"#).expect("read");
+        assert!(filter.matches(&work));
+        assert!(!filter.matches(&home));
+        assert!(
+            parse_element_filter(r#"value ew ".ORG""#)
+                .expect("read")
+                .matches(&home)
+        );
+        assert!(
+            parse_element_filter("display eq null")
+                .expect("read")
+                .matches(&home)
+        );
+        assert_eq!(
+            parse_element_filter(r#"type eq "work""#)
+                .expect("read")
+                .equalities(),
+            Some(vec![("type".to_owned(), serde_json::json!("work"))])
+        );
+        assert_eq!(
+            parse_element_filter(r#"type eq "work" or type eq "home""#)
+                .expect("read")
+                .equalities(),
+            None
+        );
+        assert!(parse_element_filter(r#"value[type eq "x"]"#).is_err());
     }
 
     #[test]

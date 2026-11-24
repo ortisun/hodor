@@ -5,7 +5,7 @@
 use crate::domain::attribute::{GroupAttribute, UserAttribute};
 use crate::domain::query::{Found, ListQuery};
 use crate::domain::resource::{StoredGroupSupplement, StoredUserSupplement};
-use hodor_kernel::{DomainError, GroupId, UnitOfWork, UserId};
+use hodor_kernel::{Caller, DomainError, GroupId, UnitOfWork, UserId};
 
 /// Stores what this context keeps of users, and finds users with a
 /// filter. Every method works inside the tenant the unit of work is bound
@@ -34,9 +34,17 @@ pub trait ProvisionedUserRepository: Send + Sync {
         stored: &StoredUserSupplement,
     ) -> Result<(), DomainError>;
 
-    /// The users SCIM shows, people not marked Deleted, that match the
-    /// query's filter, in its order: how many there are, and the
-    /// identifiers of those on its page.
+    /// Removes what is kept of a user; nothing when nothing was.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn remove(&self, uow: &mut dyn UnitOfWork, user: UserId) -> Result<(), DomainError>;
+
+    /// The users SCIM shows, people not marked Deleted and not removed by
+    /// a `DELETE` while Deactivated, that match the query's filter, in its
+    /// order: how many there are, and the identifiers of those on its
+    /// page.
     ///
     /// # Errors
     ///
@@ -93,4 +101,48 @@ pub trait ProvisionedGroupRepository: Send + Sync {
         uow: &mut dyn UnitOfWork,
         query: &ListQuery<GroupAttribute>,
     ) -> Result<Found<GroupId>, DomainError>;
+}
+
+/// What deprovisioning a person does, as the tenant chose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Deprovisioning {
+    /// Deactivate them: they can be restored.
+    #[default]
+    Deactivate,
+    /// Deactivate them and mark them Deleted: they are erased.
+    Delete,
+}
+
+/// The tenant's deprovisioning policy.
+#[async_trait::async_trait]
+pub trait DeprovisioningPolicy: Send + Sync {
+    /// The policy of the unit of work's tenant, read in it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn deprovisioning(&self, uow: &mut dyn UnitOfWork)
+    -> Result<Deprovisioning, DomainError>;
+}
+
+/// Ends a person's access: every session of theirs, and every active grant
+/// with what was issued from it. This context depends on neither the
+/// session nor the OAuth context; the composition root implements this
+/// with both.
+#[async_trait::async_trait]
+pub trait AccessRevoker: Send + Sync {
+    /// Ends the sessions and revokes the grants of `user`, with `reason`,
+    /// in the caller's unit of work.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails. After an error the unit of work
+    /// must be abandoned.
+    async fn revoke_access(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        user: UserId,
+        reason: &'static str,
+        caller: Caller,
+    ) -> Result<(), DomainError>;
 }

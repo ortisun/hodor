@@ -4,13 +4,24 @@
 //! Specified in `docs/architecture/contexts/provisioning.md`, "`userName`",
 //! "`emails`" and "`active`".
 
-use crate::domain::resource::{SUSPENDED_THROUGH_SCIM, UserRequest};
+use crate::domain::resource::UserRequest;
 use hodor_identity::api::{IdentifierId, IdentifierKind, Profile, User, UserEvent, UserStatus};
 use hodor_kernel::{DomainError, Timestamp};
 
+/// What replacing a user did, and what is left to the use case.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Replaced {
+    /// The events of every change made; none when nothing changed.
+    pub events: Vec<UserEvent>,
+    /// Whether the request deprovisions the user: `active: false` for a
+    /// user who is not Deactivated yet. What that does is the tenant's
+    /// policy, which the use case reads.
+    pub deprovision: bool,
+}
+
 /// Changes `user` to what `request` says: its login identifiers, the
-/// primary one of each kind, its display name and its status. Answers the
-/// events of every change; none when nothing changed.
+/// primary one of each kind, its display name, and its status when
+/// `active` is `true`.
 ///
 /// The `userName` is added first, so that the user never loses its last
 /// identifier, and what the request does not name is removed before the
@@ -25,7 +36,7 @@ pub fn replace_user(
     user: &mut User,
     request: &UserRequest,
     now: Timestamp,
-) -> Result<Vec<UserEvent>, DomainError> {
+) -> Result<Replaced, DomainError> {
     let mut events = Vec::new();
     let desired = request.identifiers();
     let mut desired_iter = desired.iter();
@@ -72,14 +83,20 @@ pub fn replace_user(
             now,
         )?);
     }
+    let mut deprovision = false;
     match (user.status(), request.active) {
-        (UserStatus::Active, false) => events.push(user.suspend(SUSPENDED_THROUGH_SCIM, now)?),
         (UserStatus::Pending, true) => events.push(user.activate(now)?),
         (UserStatus::Suspended, true) => events.push(user.reactivate(now)?),
         (UserStatus::Deactivated, true) => events.push(user.restore(now)?),
+        (UserStatus::Active | UserStatus::Pending | UserStatus::Suspended, false) => {
+            deprovision = true;
+        }
         _ => {}
     }
-    Ok(events)
+    Ok(Replaced {
+        events,
+        deprovision,
+    })
 }
 
 #[cfg(test)]
@@ -131,8 +148,9 @@ mod tests {
             "emails": [{ "value": "ana@example.com" }, { "value": "ana@home.org", "primary": true }],
         }))
         .expect("read");
-        let events = replace_user(&mut user, &request, Timestamp::UNIX_EPOCH).expect("replaced");
-        assert!(!events.is_empty());
+        let replaced = replace_user(&mut user, &request, Timestamp::UNIX_EPOCH).expect("replaced");
+        assert!(!replaced.events.is_empty());
+        assert!(!replaced.deprovision);
         assert_eq!(
             values(&user),
             [
@@ -147,22 +165,32 @@ mod tests {
         );
         let again = replace_user(&mut user, &request, Timestamp::UNIX_EPOCH).expect("again");
         assert!(
-            again.is_empty(),
+            again.events.is_empty(),
             "the same request changes nothing: {again:?}"
         );
     }
 
     #[test]
-    fn active_maps_to_the_status() {
+    fn active_maps_to_the_status_and_false_asks_for_deprovisioning() {
         let mut user = person(&[(IdentifierKind::Username, "ana")]);
         let mut request =
-            read_user(&json!({ "schemas": [USER_SCHEMA], "userName": "ana", "active": false }))
+            read_user(&json!({ "schemas": [USER_SCHEMA], "userName": "ana", "active": "False" }))
                 .expect("read");
-        replace_user(&mut user, &request, Timestamp::UNIX_EPOCH).expect("suspended");
-        assert_eq!(user.status(), UserStatus::Suspended);
-        replace_user(&mut user, &request, Timestamp::UNIX_EPOCH).expect("still suspended");
+        let replaced = replace_user(&mut user, &request, Timestamp::UNIX_EPOCH).expect("read");
+        assert!(replaced.deprovision);
+        assert_eq!(
+            user.status(),
+            UserStatus::Active,
+            "the policy is the use case's"
+        );
+        user.deactivate(Timestamp::UNIX_EPOCH).expect("deactivated");
+        let replaced = replace_user(&mut user, &request, Timestamp::UNIX_EPOCH).expect("again");
+        assert!(
+            !replaced.deprovision,
+            "a Deactivated user is not deprovisioned again"
+        );
         request.active = true;
-        replace_user(&mut user, &request, Timestamp::UNIX_EPOCH).expect("reactivated");
+        replace_user(&mut user, &request, Timestamp::UNIX_EPOCH).expect("restored");
         assert_eq!(user.status(), UserStatus::Active);
     }
 }
