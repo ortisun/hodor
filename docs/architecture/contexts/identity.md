@@ -198,6 +198,31 @@ A **membership** puts a user in an organization, and optionally in some of its u
 | Deleting an organization deletes its units and its memberships | Nothing refers to an organization that does not exist |
 | A user of any status can be a member, except a Deleted one; marking a user Deleted ends every membership | As for groups |
 
+### Invitations
+
+An **invitation** asks a person, by their email address, to join an organization. It is how an organization gains members who choose to come, rather than being put there by an administrator.
+
+| Field | Meaning |
+|---|---|
+| Identifier | Assigned at creation |
+| Organization | The organization the person is asked to join |
+| Address | The normalized email address the invitation was sent to |
+| Units | The units of the organization the person will be in |
+| Token | The SHA-256 of the secret the link carries, never the secret |
+| Status | `pending`, then `accepted` or `withdrawn` |
+| Expires | Seven days after it was made |
+| Accepted by | The user who accepted it, once accepted |
+
+Rules:
+
+- **One pending invitation per organization and address.** Inviting the same address again withdraws the earlier invitation, so only the newest link works. Invitations of different organizations to one address do not touch each other.
+- **An invitation is accepted once.** Of any number of requests that present its token at the same moment, one succeeds.
+- **Accepting makes the membership in the same transaction**, with the units the invitation names. A unit deleted since the invitation was made is left out.
+- **An invitation is good while it is pending and unexpired.** A withdrawn, accepted or expired one is refused in one way, whichever it is.
+- **Deleting the organization deletes its invitations.**
+
+Making the secret, sending the message and the two ways of accepting are the authentication context's: [invitations to an organization](authentication.md#invitations-to-an-organization).
+
 ## Events
 
 Events carry identifiers of users and of login identifiers, and the kind of a login identifier, but never its value. An email address is personal data and stays in the identity tables; the audit trail refers to it by identifier.
@@ -231,6 +256,9 @@ Events carry identifiers of users and of login identifiers, and the kind of a lo
 | `identity.organization_member_added` | A user becomes a member of an organization |
 | `identity.organization_member_changed` | The units of a membership changed; carries the units |
 | `identity.organization_member_removed` | A user stops being a member, by hand or by being marked Deleted |
+| `identity.invitation_created` | An invitation is made; carries the organization. Never the address |
+| `identity.invitation_withdrawn` | An invitation is withdrawn, by hand or by a newer one to the same address |
+| `identity.invitation_accepted` | An invitation is accepted; carries the organization and the user |
 
 A group's name and description are not personal data, but they can say a great deal about people: they stay in the identity tables, and events carry the group's identifier only. The same holds for organizations and units.
 
@@ -258,6 +286,8 @@ A group's name and description are not personal data, but they can say a great d
 | Add member, change units, remove member | A user joins an organization, with units or none; the units can be replaced; the user leaves |
 | List members of an organization | A page at a time, each with their units |
 | Organizations of a user | Every organization the user is a member of, with their units |
+| Invite, withdraw an invitation, list pending invitations | Used by the authentication context, which sends the link |
+| Find an invitation by the hash of its token; accept it | Accepting uses it up and makes the membership in the caller's unit of work |
 
 Every use case that changes a user loads it, applies the change, stores it and records its events in one unit of work. A change that produces no event, such as verifying an identifier that is already verified, changed nothing and stores nothing.
 
@@ -268,6 +298,7 @@ Every use case that changes a user loads it, applies the change, stores it and r
 | `UserRepository` | Store and load users with their login identifiers, with optimistic locking on the user's version; find a user by a normalized login identifier |
 | `GroupRepository` | Store, load, change and delete groups with optimistic locking on the group's version; add and remove members; list members; take the tenant's lock on nesting; read every link from a group to a group inside it, and the groups a user is directly in |
 | `GroupPolicy` | The tenant's bound on the depth of groups, read in the unit of work of the change |
+| `InvitationRepository` | Store invitations, withdraw the pending one of an organization and address, find one by the hash of its token, use one up at most once, list an organization's pending invitations |
 | `OrganizationRepository` | Store, load, change and delete organizations with optimistic locking; store, change and delete units; take an organization's lock on its tree; add, change and remove memberships; list units, members and a user's organizations |
 
 Every method works inside the tenant of the unit of work it is given.
@@ -343,12 +374,24 @@ As `identity.group`: `tenant_id`, `id`, `name`, `name_normalized` unique per ten
 
 `identity.organization_member` holds one row per user and organization, with `added_at`, removed with either. `identity.organization_member_unit` holds one row per membership and unit, removed with the membership or the unit; the database checks that the unit is of the membership's organization. All are tenant tables under row-level security, and the lock on a tree is a PostgreSQL advisory lock of the transaction, on a key made from the organization.
 
+### `identity.organization_invitation`
+
+| Column | Type | Notes |
+|---|---|---|
+| `tenant_id`, `id` | `uuid` | Primary key |
+| `organization_id` | `uuid` | Removed with the organization |
+| `email` | `text` | The normalized address |
+| `unit_ids` | `uuid[]` | The units the person will be in |
+| `token_hash` | `bytea` | SHA-256 of the secret; unique within the tenant |
+| `status` | `text` | `pending`, `accepted` or `withdrawn`; at most one `pending` per organization and address |
+| `created_at`, `expires_at` | `timestamptz` | |
+| `accepted_by`, `accepted_at`, `withdrawn_at` | | Set when it happens |
+
 ## Not built yet
 
 | Item | Planned in |
 |---|---|
 | Custom attributes and the standard profile claims of OpenID Connect | Later in Phase 1 |
-| Invitations to an organization | Milestone 7, Issue-87 |
 | Managing organizations through the administration interface, the command-line tool and the console | Milestone 7, Issue-88 |
 | Managing groups through the administration interface, the command-line tool and the console | Milestone 7, Issue-88 |
 | Roles given to groups, and groups in tokens | Milestone 7, Issue-89 |

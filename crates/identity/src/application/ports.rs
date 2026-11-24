@@ -2,7 +2,9 @@
 
 use crate::domain::group::{Group, GroupMember};
 use crate::domain::identifier::NormalizedIdentifier;
-use crate::domain::organization::{Membership, Organization, Unit, UnitId};
+use crate::domain::organization::{
+    Invitation, InvitationId, Membership, Organization, Unit, UnitId,
+};
 use crate::domain::user::User;
 use hodor_kernel::{DomainError, GroupId, OrganizationId, Timestamp, UnitOfWork, UserId};
 
@@ -376,4 +378,85 @@ pub trait OrganizationRepository: Send + Sync {
         uow: &mut dyn UnitOfWork,
         user: UserId,
     ) -> Result<Vec<Membership>, DomainError>;
+}
+
+/// Stores invitations to organizations. Every method works inside the
+/// tenant the unit of work is bound to.
+#[async_trait::async_trait]
+pub trait InvitationRepository: Send + Sync {
+    /// Stores a new invitation. The organization has no pending one for
+    /// the same address: the caller withdrew it first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn insert(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        invitation: &Invitation,
+    ) -> Result<(), DomainError>;
+
+    /// Withdraws the pending invitation of an organization to an address,
+    /// if there is one, and says which it was.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn withdraw_pending(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        organization: OrganizationId,
+        email: &str,
+        now: Timestamp,
+    ) -> Result<Option<InvitationId>, DomainError>;
+
+    /// Withdraws one pending invitation of an organization, and says
+    /// whether it was pending.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn withdraw(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        organization: OrganizationId,
+        id: InvitationId,
+        now: Timestamp,
+    ) -> Result<bool, DomainError>;
+
+    /// The invitation whose token has the given hash, whatever its status.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn find_by_hash(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        token_hash: &[u8; 32],
+    ) -> Result<Option<Invitation>, DomainError>;
+
+    /// Marks an invitation accepted by `user` if it is good at `now`. Of
+    /// any number of calls at the same moment, exactly one gets `true`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn use_up(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: InvitationId,
+        user: UserId,
+        now: Timestamp,
+    ) -> Result<bool, DomainError>;
+
+    /// The pending invitations of an organization, newest first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn pending(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        organization: OrganizationId,
+    ) -> Result<Vec<Invitation>, DomainError>;
 }

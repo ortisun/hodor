@@ -4,9 +4,10 @@
 //! which is what makes the fake a faithful stand-in in use case tests.
 
 use crate::api::{
-    Group, GroupMember, GroupName, GroupPolicy, GroupRepository, IdentifierKind, Membership,
-    NormalizedIdentifier, Organization, OrganizationName, OrganizationRepository, Profile, Unit,
-    UnitId, UnitKind, User, UserKind, UserRepository,
+    Group, GroupMember, GroupName, GroupPolicy, GroupRepository, IdentifierKind, Invitation,
+    InvitationId, InvitationRepository, InvitationStatus, Membership, NormalizedIdentifier,
+    Organization, OrganizationName, OrganizationRepository, Profile, Unit, UnitId, UnitKind, User,
+    UserKind, UserRepository,
 };
 use hodor_kernel::{
     DomainError, GroupId, OrganizationId, TenantContext, TenantId, Timestamp, UnitOfWork,
@@ -1478,4 +1479,308 @@ pub async fn run_organization_contract(ports: OrganizationPorts<'_>) {
         .await
         .expect("of"));
     assert!(of.is_empty());
+}
+
+/// Invitations kept in memory.
+#[derive(Debug, Clone, Default)]
+pub struct InMemoryInvitations {
+    rows: Arc<Mutex<BTreeMap<(TenantId, InvitationId), Invitation>>>,
+}
+
+impl InMemoryInvitations {
+    fn rows(&self) -> std::sync::MutexGuard<'_, BTreeMap<(TenantId, InvitationId), Invitation>> {
+        self.rows.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+#[async_trait::async_trait]
+impl InvitationRepository for InMemoryInvitations {
+    async fn insert(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        invitation: &Invitation,
+    ) -> Result<(), DomainError> {
+        self.rows().insert(
+            (uow.tenant().tenant_id(), invitation.id),
+            invitation.clone(),
+        );
+        Ok(())
+    }
+
+    async fn withdraw_pending(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        organization: OrganizationId,
+        email: &str,
+        now: Timestamp,
+    ) -> Result<Option<InvitationId>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let mut rows = self.rows();
+        let found = rows.iter_mut().find(|((owner, _), invitation)| {
+            *owner == tenant
+                && invitation.organization == organization
+                && invitation.email == email
+                && invitation.status == InvitationStatus::Pending
+        });
+        Ok(found.map(|(_, invitation)| {
+            invitation.status = InvitationStatus::Withdrawn;
+            invitation.withdrawn_at = Some(now);
+            invitation.id
+        }))
+    }
+
+    async fn withdraw(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        organization: OrganizationId,
+        id: InvitationId,
+        now: Timestamp,
+    ) -> Result<bool, DomainError> {
+        let mut rows = self.rows();
+        let Some(invitation) = rows.get_mut(&(uow.tenant().tenant_id(), id)) else {
+            return Ok(false);
+        };
+        if invitation.organization != organization || invitation.status != InvitationStatus::Pending
+        {
+            return Ok(false);
+        }
+        invitation.status = InvitationStatus::Withdrawn;
+        invitation.withdrawn_at = Some(now);
+        Ok(true)
+    }
+
+    async fn find_by_hash(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        token_hash: &[u8; 32],
+    ) -> Result<Option<Invitation>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        Ok(self
+            .rows()
+            .iter()
+            .find(|((owner, _), invitation)| {
+                *owner == tenant && invitation.token_hash == *token_hash
+            })
+            .map(|(_, invitation)| invitation.clone()))
+    }
+
+    async fn use_up(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: InvitationId,
+        user: UserId,
+        now: Timestamp,
+    ) -> Result<bool, DomainError> {
+        let mut rows = self.rows();
+        let Some(invitation) = rows.get_mut(&(uow.tenant().tenant_id(), id)) else {
+            return Ok(false);
+        };
+        if !invitation.is_good_at(now) {
+            return Ok(false);
+        }
+        invitation.status = InvitationStatus::Accepted;
+        invitation.accepted = Some((user, now));
+        Ok(true)
+    }
+
+    async fn pending(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        organization: OrganizationId,
+    ) -> Result<Vec<Invitation>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let mut found: Vec<Invitation> = self
+            .rows()
+            .iter()
+            .filter(|((owner, _), invitation)| {
+                *owner == tenant
+                    && invitation.organization == organization
+                    && invitation.status == InvitationStatus::Pending
+            })
+            .map(|(_, invitation)| invitation.clone())
+            .collect();
+        found.reverse();
+        Ok(found)
+    }
+}
+
+/// The ports the contract of invitations runs against.
+#[derive(Clone)]
+pub struct InvitationPorts<'a> {
+    /// Starts units of work.
+    pub units_of_work: &'a dyn UnitOfWorkFactory,
+    /// Where the organizations invitations are to are stored.
+    pub organizations: &'a dyn OrganizationRepository,
+    /// Where the users who accept are stored.
+    pub users: &'a dyn UserRepository,
+    /// The repository under test.
+    pub invitations: &'a dyn InvitationRepository,
+}
+
+impl std::fmt::Debug for InvitationPorts<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InvitationPorts").finish_non_exhaustive()
+    }
+}
+
+fn an_invitation(organization: OrganizationId, email: &str, seed: u8) -> Invitation {
+    Invitation {
+        id: InvitationId::generate(),
+        organization,
+        email: email.to_owned(),
+        units: std::collections::BTreeSet::new(),
+        token_hash: [seed; 32],
+        status: InvitationStatus::Pending,
+        created_at: MOMENT,
+        expires_at: MOMENT + time::Duration::days(7),
+        accepted: None,
+        withdrawn_at: None,
+    }
+}
+
+/// Runs the contract of invitations. Each case uses tenants of its own.
+///
+/// # Panics
+///
+/// Panics when the implementation breaks the contract.
+pub async fn run_invitation_contract(ports: InvitationPorts<'_>) {
+    let ports = &ports;
+    macro_rules! within {
+        ($tenant:expr, |$uow:ident| $body:expr) => {{
+            let mut $uow = ports.units_of_work.begin($tenant).await.expect("begin");
+            let value = $body;
+            $uow.commit().await.expect("commit");
+            value
+        }};
+    }
+    let repository = ports.invitations;
+    let (home, elsewhere) = (tenant(), tenant());
+    let acme = an_organization("Acme");
+    let globex = an_organization("Globex");
+    for organization in [&acme, &globex] {
+        within!(&home, |uow| ports
+            .organizations
+            .insert(uow.as_mut(), organization)
+            .await
+            .expect("insert"));
+    }
+
+    // Stored and found by its hash, in its tenant only.
+    let first = an_invitation(acme.id(), "ana@example.com", 1);
+    within!(&home, |uow| repository
+        .insert(uow.as_mut(), &first)
+        .await
+        .expect("insert"));
+    let found = within!(&home, |uow| repository
+        .find_by_hash(uow.as_mut(), &[1; 32])
+        .await
+        .expect("find"));
+    assert_eq!(found.as_ref(), Some(&first));
+    let hidden = within!(&elsewhere, |uow| repository
+        .find_by_hash(uow.as_mut(), &[1; 32])
+        .await
+        .expect("find"));
+    assert_eq!(hidden, None);
+
+    // A newer invitation to the same address withdraws the earlier one, of
+    // the same organization only.
+    let other_organization = an_invitation(globex.id(), "ana@example.com", 2);
+    within!(&home, |uow| repository
+        .insert(uow.as_mut(), &other_organization)
+        .await
+        .expect("insert"));
+    let withdrawn = within!(&home, |uow| repository
+        .withdraw_pending(uow.as_mut(), acme.id(), "ana@example.com", MOMENT)
+        .await
+        .expect("withdraw"));
+    assert_eq!(withdrawn, Some(first.id));
+    let second = an_invitation(acme.id(), "ana@example.com", 3);
+    within!(&home, |uow| repository
+        .insert(uow.as_mut(), &second)
+        .await
+        .expect("insert"));
+    let earlier = within!(&home, |uow| repository
+        .find_by_hash(uow.as_mut(), &[1; 32])
+        .await
+        .expect("find"))
+    .expect("kept");
+    assert_eq!(earlier.status, InvitationStatus::Withdrawn);
+    let still = within!(&home, |uow| repository
+        .find_by_hash(uow.as_mut(), &[2; 32])
+        .await
+        .expect("find"))
+    .expect("kept");
+    assert_eq!(
+        still.status,
+        InvitationStatus::Pending,
+        "another organization's invitation stays"
+    );
+    let pending = within!(&home, |uow| repository
+        .pending(uow.as_mut(), acme.id())
+        .await
+        .expect("pending"));
+    assert_eq!(
+        pending
+            .iter()
+            .map(|invitation| invitation.id)
+            .collect::<Vec<_>>(),
+        [second.id]
+    );
+
+    // Used up once, by one user.
+    let user = person(vec![email("ana@example.com")]);
+    store(
+        &Ports {
+            units_of_work: ports.units_of_work,
+            users: ports.users,
+        },
+        &home,
+        &user,
+    )
+    .await
+    .expect("a user");
+    let used = within!(&home, |uow| repository
+        .use_up(uow.as_mut(), second.id, user.id(), MOMENT)
+        .await
+        .expect("use"));
+    assert!(used);
+    let again = within!(&home, |uow| repository
+        .use_up(uow.as_mut(), second.id, user.id(), MOMENT)
+        .await
+        .expect("use"));
+    assert!(!again, "an invitation is accepted once");
+    let accepted = within!(&home, |uow| repository
+        .find_by_hash(uow.as_mut(), &[3; 32])
+        .await
+        .expect("find"))
+    .expect("kept");
+    assert_eq!(accepted.status, InvitationStatus::Accepted);
+    assert_eq!(accepted.accepted.map(|(by, _)| by), Some(user.id()));
+
+    // An expired invitation is not used up, and a withdrawn one cannot be
+    // withdrawn again.
+    let late = MOMENT + time::Duration::days(8);
+    let expired = within!(&home, |uow| repository
+        .use_up(uow.as_mut(), still.id, user.id(), late)
+        .await
+        .expect("use"));
+    assert!(!expired);
+    let twice = within!(&home, |uow| repository
+        .withdraw(uow.as_mut(), acme.id(), first.id, MOMENT)
+        .await
+        .expect("withdraw"));
+    assert!(!twice);
+    let mismatched = within!(&home, |uow| repository
+        .withdraw(uow.as_mut(), acme.id(), still.id, MOMENT)
+        .await
+        .expect("withdraw"));
+    assert!(
+        !mismatched,
+        "an invitation of another organization is not withdrawn through this one"
+    );
+    let withdrawn = within!(&home, |uow| repository
+        .withdraw(uow.as_mut(), globex.id(), still.id, MOMENT)
+        .await
+        .expect("withdraw"));
+    assert!(withdrawn);
 }

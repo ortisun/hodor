@@ -571,6 +571,34 @@ These requests carry no cookie and no CSRF token: there is nothing of the person
 
 Neither completion signs the person in. The pages send them to sign in.
 
+## Accepting an invitation
+
+These requests are made by whoever holds the link of an [invitation to an organization](../architecture/contexts/authentication.md#invitations-to-an-organization). The token is the one the link carries after `#`.
+
+| Method and path | Body | Answer |
+|---|---|---|
+| `POST /interaction/invitations/describe` | `{ "token": "…" }` | `200` with what the invitation is for |
+| `POST /interaction/invitations/accept` | `{ "token": "…", "password": "…", "display_name": "Ana" }` | `204` |
+
+Describing answers:
+
+```json
+{ "organization_name": "Acme", "email": "ana@example.com", "has_account": true, "expires_at": "2026-12-01T12:00:00Z" }
+```
+
+Accepting has two forms. Without a session cookie, it creates an account for an address that has none, and `password` is required; `display_name` is optional. With the session cookie of the user who has the invited address, it carries the session's CSRF token and no password, and makes that user a member.
+
+| Situation | Status | Code |
+|---|---|---|
+| The token is unknown, accepted, withdrawn or expired | `404` | `identity.invitation_invalid` |
+| No session, and the address has an account | `409` | `authentication.invitation_needs_sign_in` |
+| A session, but its user does not have the invited address | `403` | `authentication.invitation_for_someone_else` |
+| No session, and no password given | `422` | `request.invalid_body` |
+| The password is not acceptable. The invitation stays good | `422` | the credential context's code |
+| The server is too busy to hash a password | `503` | `credential.hashing_overloaded` |
+
+Neither form signs the person in.
+
 ## Where requests come from
 
 The address recorded for a sign-in, and used to limit attempts, is the [client address](api-spec.md#the-client-address). It is the address of the connection, or the address a trusted proxy forwarded. Behind a load balancer that is not named as a trusted proxy, every person shares the load balancer's address and so one attempt limit.

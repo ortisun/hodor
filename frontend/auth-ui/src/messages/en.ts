@@ -57,6 +57,15 @@ export const en = {
   createAccount: "Create the account",
   linkInvalidTitle: "This link cannot be used",
   linkInvalid: "The link was already used or has expired.",
+  acceptInvitationTitle: (organization: string) => `Join ${organization}`,
+  invitationFor: (email: string) => `This invitation was sent to ${email}.`,
+  invitationNewAccount: "Choose a password to create your account and join.",
+  createAccountAndJoin: "Create the account and join",
+  join: "Join",
+  invitationSignIn: (email: string) => `Sign in as ${email}, then open the link in the message again.`,
+  invitationOtherAccount: (email: string) =>
+    `You are signed in with another account. Sign out, sign in as ${email}, then open the link in the message again.`,
+  invitationHasAccount: "Sign in to join: this address already has an account.",
   askForNewRegistrationLink: "Ask for a new link to register",
   askForNewRecoveryLink: "Ask for a new link",
 

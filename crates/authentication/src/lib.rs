@@ -24,6 +24,9 @@ pub mod api {
         recent_sign_in_until, signed_in_recently,
     };
     pub use crate::application::guard::AttemptGuard;
+    pub use crate::application::invitations::{
+        InvitationContexts, InvitationDescription, InvitationService,
+    };
     pub use crate::application::ports::{AttemptStore, TransactionStore, VerificationTokenStore};
     pub use crate::application::service::{
         AuthenticationService, SignIn, StartedSignIn, StepUp, StepUpRequest,

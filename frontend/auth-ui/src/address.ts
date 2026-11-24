@@ -11,6 +11,7 @@ export const PAGES = [
   "account",
   "sign-out",
   "security",
+  "accept-invitation",
 ] as const;
 
 export type PageName = (typeof PAGES)[number];

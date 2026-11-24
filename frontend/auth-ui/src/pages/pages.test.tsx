@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { pathOf, type PageName } from "../address";
 import { en } from "../messages/en";
 import { empty, json, problem, scripted } from "../testing";
+import { AcceptInvitationPage } from "./AcceptInvitationPage";
 import { AccountPage } from "./AccountPage";
 import { AskPage } from "./AskPage";
 import { ComingBackPage } from "./ComingBackPage";
@@ -1265,5 +1266,76 @@ describe("the security page", () => {
     expect(asked.publicKey.authenticatorSelection?.residentKey).toBe("required");
     expect(asked.publicKey.authenticatorSelection?.userVerification).toBe("required");
     vi.unstubAllGlobals();
+  });
+});
+
+describe("the page of an invitation", () => {
+  const token = "cd34".repeat(16);
+  const described = (hasAccount: boolean) =>
+    json(200, {
+      organization_name: "Initech",
+      email: "ana@example.com",
+      has_account: hasAccount,
+      expires_at: "2026-12-01T12:00:00Z",
+    });
+  const someone = () =>
+    json(200, {
+      user_id: "u",
+      session_id: "s",
+      signed_in_at: "2026-11-20T14:03:11Z",
+      expires_at: "2999-01-01T00:00:00Z",
+      methods: ["password"],
+      assurance: "single_factor",
+      csrf_token: "session-token",
+    });
+
+  it("creates the account of an address that has none and sends the person to sign in", async () => {
+    const { props, sent, go, user } = page({
+      "POST /invitations/describe": [described(false)],
+      "POST /invitations/accept": [empty(204)],
+    });
+    render(<AcceptInvitationPage {...props} token={token} />);
+    expect(await screen.findByText(en.invitationFor("ana@example.com"))).toBeTruthy();
+    expect(screen.getByRole("heading", { name: en.acceptInvitationTitle("Initech") })).toBeTruthy();
+    await user.type(screen.getByLabelText(en.newPasswordLabel), "correct horse battery{Enter}");
+    await waitFor(() => expect(go).toHaveBeenCalledWith("sign-in", "registered"));
+    expect(sent.at(-1)?.body).toEqual({ token, password: "correct horse battery" });
+  });
+
+  it("joins as the person signed in with the invited address", async () => {
+    const { props, sent, go, user } = page({
+      "POST /invitations/describe": [described(true)],
+      "GET /session": [someone()],
+      "POST /invitations/accept": [empty(204)],
+    });
+    render(<AcceptInvitationPage {...props} token={token} />);
+    await user.click(await screen.findByRole("button", { name: en.join }));
+    await waitFor(() => expect(go).toHaveBeenCalledWith("account"));
+    expect(sent.at(-1)?.body).toEqual({ token });
+  });
+
+  it("asks to sign in first, and says when another account is signed in", async () => {
+    const first = page({ "POST /invitations/describe": [described(true)], "GET /session": [nobody()] });
+    render(<AcceptInvitationPage {...first.props} token={token} />);
+    expect(await screen.findByText(en.invitationSignIn("ana@example.com"))).toBeTruthy();
+    cleanup();
+
+    const second = page({
+      "POST /invitations/describe": [described(true)],
+      "GET /session": [someone()],
+      "POST /invitations/accept": [problem(403, "authentication.invitation_for_someone_else")],
+    });
+    render(<AcceptInvitationPage {...second.props} token={token} />);
+    await second.user.click(await screen.findByRole("button", { name: en.join }));
+    expect(await screen.findByText(en.invitationOtherAccount("ana@example.com"))).toBeTruthy();
+  });
+
+  it("says a link that no longer works cannot be used, whatever the reason", async () => {
+    const { props } = page({ "POST /invitations/describe": [problem(404, "identity.invitation_invalid")] });
+    render(<AcceptInvitationPage {...props} token={token} />);
+    expect(await screen.findByText(en.linkInvalid)).toBeTruthy();
+    cleanup();
+    render(<AcceptInvitationPage {...props} token={null} />);
+    expect(screen.getByText(en.linkInvalid)).toBeTruthy();
   });
 });

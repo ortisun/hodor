@@ -16,18 +16,19 @@ use hodor_adapters_postgres::{
     PgAuditLog, PgAuthorizationCodeStore, PgAuthorizationRequestStore, PgBundleStore,
     PgClientAssertionStore, PgClientStore, PgConsentStore, PgDecisionLogStore,
     PgEngineBindingStore, PgGrantStore, PgGroupRepository, PgInstanceStatusStore, PgInstanceStore,
-    PgKeyStore, PgLinkStore, PgMessageQueue, PgNativeRoleStore, PgOrganizationRepository,
-    PgPasswordStore, PgPendingAuthorizationStore, PgPolicyVersionStore, PgProviderStore,
-    PgPublicationStore, PgRecoveryCodeStore, PgRefreshTokenStore, PgResourceServerStore,
-    PgRoleAssignmentStore, PgSealingStateStore, PgSessionStore, PgSimulationStore,
-    PgTenantDirectory, PgTenantRepository, PgTotpStore, PgTransactionStore,
+    PgInvitationRepository, PgKeyStore, PgLinkStore, PgMessageQueue, PgNativeRoleStore,
+    PgOrganizationRepository, PgPasswordStore, PgPendingAuthorizationStore, PgPolicyVersionStore,
+    PgProviderStore, PgPublicationStore, PgRecoveryCodeStore, PgRefreshTokenStore,
+    PgResourceServerStore, PgRoleAssignmentStore, PgSealingStateStore, PgSessionStore,
+    PgSimulationStore, PgTenantDirectory, PgTenantRepository, PgTotpStore, PgTransactionStore,
     PgUploadedDecisionStore, PgUserRepository, PgVerificationTokenStore, PgWebAuthnStore,
 };
 use hodor_audit::api::AuditService;
 use hodor_authentication::api::{
     AccountService, AttemptGuard, AuthFlow, AuthenticationService, Condition, FactorService,
-    FlowEngine, IdentifierAuthenticator, LockoutRules, PasskeyAuthenticator, PasswordAuthenticator,
-    RecoveryCodeAuthenticator, Requirement, TotpAuthenticator, WebAuthnAuthenticator,
+    FlowEngine, IdentifierAuthenticator, InvitationContexts, InvitationService, LockoutRules,
+    PasskeyAuthenticator, PasswordAuthenticator, RecoveryCodeAuthenticator, Requirement,
+    TotpAuthenticator, WebAuthnAuthenticator,
 };
 use hodor_authorization::api::{
     AuthorizationService, DecisionLog, EngineRegistry, EvaluationService, NativeEngine, RoleService,
@@ -44,7 +45,7 @@ use hodor_federation::api::{
     EXTERNAL_STEP, ExternalIdentityAuthenticator, ExternalSignIn, FederationService, GitHubClient,
     LockoutPolicy, OpenIdClient, SamlClient,
 };
-use hodor_identity::api::IdentityService;
+use hodor_identity::api::{IdentityService, OrganizationService};
 use hodor_kernel::{DomainError, Secret, SecretBox, SystemClock, TenantContext};
 use hodor_keys::api::{KeyService, RotationPolicy, TenantSecretBox};
 use hodor_notification::api::Notifier;
@@ -57,12 +58,13 @@ use hodor_oauth::api::{
 use hodor_observability::{LogFormat, Telemetry};
 use hodor_protocol_http::{
     AdminState, AuthorizationApiState, AuthorizationState, ConsentState, ConsoleState,
-    DiscoveryState, ForwardedHeader, Health, InteractionState, Limits, LogoutState, Pages,
-    ReadinessCheck, ResolvedTenant, TenantResolver, TenantStatus as HttpTenantStatus, TokenState,
-    TrustedProxies, UserInfoState, admin_routes, authorization_api_routes, authorization_routes,
-    consent_routes, console_routes, discovery_routes, interaction_routes, key_set_routes,
-    logout_routes, ops_router, parse_ranges, policy_agent_routes, public_router_behind, serve,
-    token_routes, userinfo_routes,
+    DiscoveryState, ForwardedHeader, Health, InteractionState, InvitationState, Limits,
+    LogoutState, Pages, ReadinessCheck, ResolvedTenant, TenantResolver,
+    TenantStatus as HttpTenantStatus, TokenState, TrustedProxies, UserInfoState, admin_routes,
+    authorization_api_routes, authorization_routes, consent_routes, console_routes,
+    discovery_routes, interaction_routes, invitation_routes, key_set_routes, logout_routes,
+    ops_router, parse_ranges, policy_agent_routes, public_router_behind, serve, token_routes,
+    userinfo_routes,
 };
 use hodor_session::api::SessionService;
 use hodor_tenant::api::{TenantDirectory as _, TenantService, TenantStatus};
@@ -325,7 +327,7 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
     let engines = authorization_engines(&config, &database)?;
 
     let keys = keys(&config, &database)?;
-    let interaction = interaction(&config, &database)?;
+    let (interaction, invitations) = interaction(&config, &database)?;
     let authorization = authorization(&config, &database, interaction.authentication.clone());
     let mut oauth2 = authorization_routes(authorization.clone());
     if let (Some(keys), Some(setting)) = (&keys, &config.secret_keys) {
@@ -347,11 +349,17 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
     let mut tenant_routes = axum::Router::new()
         .nest(
             "/interaction",
-            interaction_routes(interaction).merge(consent_routes(ConsentState {
-                consents: authorization.consents.clone(),
-                sessions: authorization.sessions.clone(),
-                digest: Arc::new(Sha256Digest),
-            })),
+            interaction_routes(interaction)
+                .merge(consent_routes(ConsentState {
+                    consents: authorization.consents.clone(),
+                    sessions: authorization.sessions.clone(),
+                    digest: Arc::new(Sha256Digest),
+                }))
+                .merge(invitation_routes(InvitationState {
+                    invitations,
+                    sessions: authorization.sessions.clone(),
+                    digest: Arc::new(Sha256Digest),
+                })),
         )
         .nest("/oauth2", oauth2)
         .nest(
@@ -461,7 +469,12 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
 
 /// Builds everything the interaction interface needs. This is the composition root: the
 /// one place that knows which adapter stands behind each port.
-fn interaction(config: &Config, database: &Database) -> Result<InteractionState, DomainError> {
+/// The interaction use cases, and the invitations, which share their
+/// password hasher.
+fn interaction(
+    config: &Config,
+    database: &Database,
+) -> Result<(InteractionState, InvitationService), DomainError> {
     let units = || Arc::new(database.clone());
     let clock = Arc::new(SystemClock);
     let digest = Arc::new(Sha256Digest);
@@ -587,6 +600,25 @@ fn interaction(config: &Config, database: &Database) -> Result<InteractionState,
         flow = flow.with_alternative(EXTERNAL_STEP, EXTERNAL_STEP);
     }
     // The server only queues messages; the worker delivers them.
+    let invitations = InvitationService::new(
+        units(),
+        InvitationContexts {
+            organizations: OrganizationService::new(
+                units(),
+                Arc::new(PgOrganizationRepository),
+                Arc::new(PgInvitationRepository),
+                Arc::new(PgUserRepository),
+                clock.clone(),
+            ),
+            identity: identity.clone(),
+            credentials: credentials.clone(),
+            tenants: tenants.clone(),
+            notifier: Notifier::new(Arc::new(PgMessageQueue), clock.clone()),
+        },
+        digest.clone(),
+        random.clone(),
+        &config.public_url,
+    );
     let accounts = AccountService::new(
         units(),
         Arc::new(PgVerificationTokenStore),
@@ -614,15 +646,18 @@ fn interaction(config: &Config, database: &Database) -> Result<InteractionState,
         random,
         clock.clone(),
     )?;
-    Ok(InteractionState {
-        authentication,
-        accounts,
-        sessions,
-        factors,
-        external,
-        digest,
-        clock,
-    })
+    Ok((
+        InteractionState {
+            authentication,
+            accounts,
+            sessions,
+            factors,
+            external,
+            digest,
+            clock,
+        },
+        invitations,
+    ))
 }
 
 /// The tenant use cases, for the settings other routes read.

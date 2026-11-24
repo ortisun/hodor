@@ -91,6 +91,7 @@ A template is a subject and a body, in plain text, with named placeholders. Temp
 | `already_registered` | Someone tried to register with an address that already has an account | `tenant_name` |
 | `password_recovery` | A person asked to choose a new password | `link`, `tenant_name`, `expires_at` |
 | `password_changed` | A password was changed | `tenant_name` |
+| `organization_invitation` | A person is invited to join an organization | `link`, `tenant_name`, `organization_name`, `expires_at` |
 
 Rules:
 

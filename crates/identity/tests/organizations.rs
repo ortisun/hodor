@@ -5,7 +5,8 @@ use hodor_identity::api::{
     UnitKind, UserKind,
 };
 use hodor_identity::testing::{
-    InMemoryOrganizations, InMemoryUsers, OrganizationPorts, run_organization_contract,
+    InMemoryInvitations, InMemoryOrganizations, InMemoryUsers, InvitationPorts, OrganizationPorts,
+    run_invitation_contract, run_organization_contract,
 };
 use hodor_kernel::clock::testing::FixedClock;
 use hodor_kernel::uow::testing::InMemoryUnitOfWorkFactory;
@@ -31,6 +32,7 @@ fn world() -> World {
         organizations: OrganizationService::new(
             Arc::new(units_of_work.clone()),
             store.clone(),
+            Arc::new(InMemoryInvitations::default()),
             users.clone(),
             clock.clone(),
         ),
@@ -367,5 +369,120 @@ async fn changes_record_events_that_name_nothing_but_identifiers() {
     assert!(
         !published.contains("Acme") && !published.contains("Engineering"),
         "{published}"
+    );
+}
+
+#[tokio::test]
+async fn the_in_memory_invitations_pass_the_contract() {
+    let units_of_work = InMemoryUnitOfWorkFactory::default();
+    run_invitation_contract(InvitationPorts {
+        units_of_work: &units_of_work,
+        organizations: &InMemoryOrganizations::default(),
+        users: &InMemoryUsers::default(),
+        invitations: &InMemoryInvitations::default(),
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn an_invitation_is_accepted_once_and_makes_the_membership() {
+    let world = world();
+    let acme = world.organization("Acme").await;
+    let (engineering, sales) = (
+        world.unit(acme, None, "Engineering").await,
+        world.unit(acme, None, "Sales").await,
+    );
+    let mut uow = hodor_kernel::UnitOfWorkFactory::begin(&world.units_of_work, &world.tenant)
+        .await
+        .expect("begin");
+    let (first, _) = world
+        .organizations
+        .invite_in(
+            uow.as_mut(),
+            acme,
+            "Ana@Example.com",
+            BTreeSet::from([engineering]),
+            [1; 32],
+            Caller::system(),
+        )
+        .await
+        .expect("an invitation");
+    assert_eq!(first.email, "ana@example.com");
+    let (second, _) = world
+        .organizations
+        .invite_in(
+            uow.as_mut(),
+            acme,
+            "ana@example.com",
+            BTreeSet::from([engineering, sales]),
+            [2; 32],
+            Caller::system(),
+        )
+        .await
+        .expect("again");
+    uow.commit().await.expect("commit");
+
+    let refused = world
+        .organizations
+        .good_invitation(&world.tenant, &[1; 32])
+        .await
+        .expect_err("withdrawn");
+    assert_eq!(refused.code(), "identity.invitation_invalid");
+    let found = world
+        .organizations
+        .good_invitation(&world.tenant, &[2; 32])
+        .await
+        .expect("good");
+    assert_eq!(found.invitation.id, second.id);
+    assert_eq!(found.organization.name().as_str(), "Acme");
+
+    // A unit deleted since the invitation was made is left out.
+    world
+        .organizations
+        .delete_unit(&world.tenant, acme, sales, Caller::system())
+        .await
+        .expect("delete");
+    let ana = world.person("ana@example.com").await;
+    let mut uow = hodor_kernel::UnitOfWorkFactory::begin(&world.units_of_work, &world.tenant)
+        .await
+        .expect("begin");
+    let membership = world
+        .organizations
+        .accept_in(uow.as_mut(), &found.invitation, ana, Caller::system())
+        .await
+        .expect("accepted");
+    uow.commit().await.expect("commit");
+    assert_eq!(membership.units, BTreeSet::from([engineering]));
+
+    let mut uow = hodor_kernel::UnitOfWorkFactory::begin(&world.units_of_work, &world.tenant)
+        .await
+        .expect("begin");
+    let again = world
+        .organizations
+        .accept_in(uow.as_mut(), &found.invitation, ana, Caller::system())
+        .await
+        .expect_err("once");
+    assert_eq!(again.code(), "identity.invitation_invalid");
+
+    let types: Vec<String> = world
+        .units_of_work
+        .committed_events()
+        .into_iter()
+        .map(|event| event.event_type)
+        .filter(|event| event.starts_with("identity.invitation"))
+        .collect();
+    assert_eq!(
+        types,
+        [
+            "identity.invitation_created",
+            "identity.invitation_withdrawn",
+            "identity.invitation_created",
+            "identity.invitation_accepted",
+        ]
+    );
+    let published = format!("{:?}", world.units_of_work.committed_events());
+    assert!(
+        !published.contains("ana@example.com"),
+        "the address stays out of events"
     );
 }

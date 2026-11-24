@@ -17,6 +17,7 @@ mod client_address;
 mod consent;
 mod health;
 mod interaction;
+mod invitations;
 mod key_set;
 mod logout;
 mod openid;
@@ -43,6 +44,7 @@ pub use client_address::{
 pub use consent::{ConsentState, consent_routes};
 pub use health::{Health, ReadinessCheck, ops_router};
 pub use interaction::{InteractionState, interaction_routes};
+pub use invitations::{InvitationState, invitation_routes};
 pub use key_set::key_set_routes;
 pub use logout::{LogoutState, logout_routes};
 pub use openid::{DiscoveryState, UserInfoState, discovery_routes, userinfo_routes};

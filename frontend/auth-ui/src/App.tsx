@@ -4,6 +4,7 @@ import type { Messages } from "./messages";
 import { AccountPage } from "./pages/AccountPage";
 import { AskPage } from "./pages/AskPage";
 import { ComingBackPage } from "./pages/ComingBackPage";
+import { AcceptInvitationPage } from "./pages/AcceptInvitationPage";
 import { ConsentPage } from "./pages/ConsentPage";
 import { FinishPage } from "./pages/FinishPage";
 import { SecurityPage } from "./pages/SecurityPage";
@@ -80,6 +81,8 @@ export function App({
       return <SecurityPage {...page} reauthenticate={reauthenticate} />;
     case "consent":
       return <ConsentPage {...page} />;
+    case "accept-invitation":
+      return <AcceptInvitationPage {...page} token={token} />;
     case "provider-callback":
       return <ComingBackPage {...page} provider={place.provider ?? ""} answer={providerAnswer} />;
     default:

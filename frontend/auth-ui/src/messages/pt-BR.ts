@@ -59,6 +59,15 @@ export const ptBR: Messages = {
   createAccount: "Criar a conta",
   linkInvalidTitle: "Este link não pode ser usado",
   linkInvalid: "O link já foi usado ou expirou.",
+  acceptInvitationTitle: (organization: string) => `Entrar em ${organization}`,
+  invitationFor: (email: string) => `Este convite foi enviado para ${email}.`,
+  invitationNewAccount: "Escolha uma senha para criar sua conta e entrar.",
+  createAccountAndJoin: "Criar a conta e entrar",
+  join: "Entrar",
+  invitationSignIn: (email: string) => `Entre como ${email} e depois abra de novo o link da mensagem.`,
+  invitationOtherAccount: (email: string) =>
+    `Você entrou com outra conta. Saia, entre como ${email} e depois abra de novo o link da mensagem.`,
+  invitationHasAccount: "Entre para aceitar: este endereço já tem uma conta.",
   askForNewRegistrationLink: "Pedir um novo link para criar a conta",
   askForNewRecoveryLink: "Pedir um novo link",
 

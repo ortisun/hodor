@@ -84,7 +84,7 @@ fn lockout_rules(tenant: &TenantSnapshot) -> LockoutRules {
     }
 }
 
-fn password_rules(tenant: &TenantSnapshot) -> PasswordRules {
+pub(crate) fn password_rules(tenant: &TenantSnapshot) -> PasswordRules {
     let policy = &tenant.settings.password;
     PasswordRules {
         min_length: policy.min_length,
@@ -95,7 +95,7 @@ fn password_rules(tenant: &TenantSnapshot) -> PasswordRules {
 
 /// A moment written the same in every language, such as
 /// `2026-11-21 14:00 UTC`.
-fn written(moment: Timestamp) -> String {
+pub(crate) fn written(moment: Timestamp) -> String {
     let moment = moment.to_offset(time::UtcOffset::UTC);
     format!(
         "{:04}-{:02}-{:02} {:02}:{:02} UTC",
@@ -109,7 +109,7 @@ fn written(moment: Timestamp) -> String {
 
 /// The language to write to a person in: the first of the given tags that
 /// is a language tag, otherwise English.
-fn locale_of(preferences: &[Option<&str>]) -> Locale {
+pub(crate) fn locale_of(preferences: &[Option<&str>]) -> Locale {
     preferences
         .iter()
         .flatten()
