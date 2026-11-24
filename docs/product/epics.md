@@ -305,7 +305,7 @@ Per-resource access control lists, relationship-based access control, assigning 
 
 **Goal**: Hodor is deployed behind a load balancer and every client still has a limit of its own. Expired rows of every kind are removed without anyone asking. The image and the chart of a release are published, built by actions pinned to a commit. The first part of 0.3.0 ([Decision 0027](../decisions/0027-what-0.3.0-holds.md)).
 
-**Demo script**: start the stack behind the web server of the Docker package, with that web server trusted as a proxy. From two client addresses, fail passwords until one is locked out and see the other still sign in. Send a forwarded address from a client that is not a trusted proxy and see it ignored. Let sessions, tokens and messages expire, run the cleanup job and count the rows before and after, with the audit chain still intact. Pull the published image of the release and install the published chart on a kind cluster.
+**Demo script**: put a web server in front of the development stack, trusted as a proxy, and send requests through it as two clients behind a load balancer would. Ask for registrations from one until it is limited, and see the other still answered. Write a false address at the start of the limited client's header and see it still limited. Start a second worker that keeps nothing, sign out, and see the ended session and the delivered messages removed, with the audit chain still intact. At the tag of 0.3.0, pull the published image, check its signature, and install the published chart on a kind cluster.
 
 ### Slice U — Behind a load balancer
 
@@ -320,7 +320,7 @@ Per-resource access control lists, relationship-based access control, assigning 
 |---|---|---|---|
 | Issue-83 | Continuous integration actions pinned by commit, kept current by Dependabot; the licenses of the pages' dependencies checked against an allowed list, as `cargo deny` checks those of the crates (Threat-General-15) | Continuous integration fails on an action named by tag and on a page dependency under a license that is not allowed | — |
 | Issue-84 | The image and the chart published with each release: the image to the GitHub container registry with its software bill of materials and a signature, the chart as an OCI artifact; the installation pages install from them | A release tag publishes both; installing from them on a kind cluster passes the demonstration; the signatures check against the identity of the release workflow | Issue-83 |
-| Issue-85 | Acceptance: the demonstration of the milestone behind the web server of the Docker package | It passes in continuous integration against the image | all |
+| Issue-85 | Acceptance: the demonstration of the milestone, through a web server in front of the development stack; the published image and chart tried by hand at the tag of 0.3.0 | The demonstration passes in continuous integration against the image; the published image's signature checks and the chart installs on kind | all |
 
 ### Explicitly not in Milestone 6
 

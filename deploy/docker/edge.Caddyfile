@@ -1,0 +1,16 @@
+# The web server in front of the development stack, as a load balancer
+# would be. It trusts this machine and the stack's containers as proxies, so
+# it keeps the X-Forwarded-For a request brings and adds the address it saw,
+# and passes everything on to the server. Plain HTTP: this is for one machine.
+# See docs/development/local-setup.md.
+{
+	admin off
+	auto_https off
+	servers {
+		trusted_proxies static private_ranges
+	}
+}
+
+:8081 {
+	reverse_proxy server:8080
+}

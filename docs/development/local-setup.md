@@ -76,7 +76,8 @@ docker compose -f deploy/docker/compose.yaml up --build --wait
 | `postgres` | PostgreSQL 17, with the database roles created on first start | internal only |
 | `migrate` | Runs `hodor-cli migrate` once and exits | — |
 | `system-tenant` | Runs `hodor-cli tenant create-system` once and exits. It creates the system tenant unless it exists | — |
-| `server` | `hodor-server`, with the hosted pages | <http://localhost:8080>, health on <http://localhost:9090/readyz> |
+| `server` | `hodor-server`, with the hosted pages. It trusts every private address as a [proxy](../api/api-spec.md#the-client-address), as the Docker installation does, so a forwarded header from this machine or another container is believed. Never do that where the port is reachable from elsewhere | <http://localhost:8080>, health on <http://localhost:9090/readyz> |
+| `edge` | A web server in front of the server, as a load balancer would be: it keeps the `X-Forwarded-For` it receives from this machine and adds the address it saw. [The demonstration of Milestone 6](../operations/quick-start.md#the-demonstration-of-milestone-6) goes through it | <http://localhost:8081> |
 | `worker` | `hodor-worker`, writing the audit log and delivering email | internal only |
 | `mail` | A mail server for development. It accepts every message and delivers none: what Hodor sends can be read in its web page | <http://localhost:8025> |
 | `provider` | [The development identity provider](#the-development-identity-provider), which lets anyone sign in as anyone | <http://localhost:9400> |
@@ -88,7 +89,7 @@ docker compose -f deploy/docker/compose.yaml up --build --wait
 If one of those ports is taken on your machine, choose others:
 
 ```bash
-HODOR_HTTP_PORT=18080 HODOR_OPS_PORT=19090 HODOR_VM_PORT=18428 HODOR_TRACES_PORT=20428 HODOR_MAIL_PORT=18025 HODOR_PROVIDER_PORT=19400 HODOR_SAML_PROVIDER_PORT=19500 docker compose -f deploy/docker/compose.yaml up --build --wait
+HODOR_HTTP_PORT=18080 HODOR_EDGE_PORT=18081 HODOR_OPS_PORT=19090 HODOR_VM_PORT=18428 HODOR_TRACES_PORT=20428 HODOR_MAIL_PORT=18025 HODOR_PROVIDER_PORT=19400 HODOR_SAML_PROVIDER_PORT=19500 docker compose -f deploy/docker/compose.yaml up --build --wait
 ```
 
 Set the same variables for every later `docker compose` command on that stack. The commands on this page pass `--no-deps` to `run`, so that running the command-line tool never restarts a service of the stack.

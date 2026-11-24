@@ -233,6 +233,26 @@ The instance is shared, so it is served only what the operator wrote ([Decision 
 
 It ends with `The demonstration of Milestone 5 passed.` It can be run again and again, starts and removes its own instance, and runs in continuous integration after the other four. The variables of [the first demonstration](#the-demonstration) tell it where the stack is.
 
+## The demonstration of Milestone 6
+
+[Milestone 6](../product/epics.md#milestone-6-hodor-runs-behind-a-load-balancer-and-cleans-up-after-itself) lets Hodor run behind load balancers and clean up after itself. Its demonstration goes through `edge`, the web server in front of the stack, as clients behind a load balancer would:
+
+```bash
+python3 deploy/demo/operations.py
+```
+
+| Step | What it shows |
+|---|---|
+| A tenant behind a web server | A tenant that accepts registrations, reached through `edge` |
+| Each client has a limit of its own | One client, named by the `X-Forwarded-For` the script sends as a load balancer would, asks to register a new address again and again until it is answered `429`. Another client behind the same web server is still answered, and so is the script itself, straight to the server |
+| A forged address does not help | The limited client writes another address at the start of its header, and is still limited: Hodor reads the header from the end and stops at the first address that is not a trusted proxy |
+| Ended sessions are removed | A person registers, signs in and signs out. A second worker starts with a retention of 0 days for sessions and messages, and removes the ended session and the delivered messages of the tenant |
+| The audit log is untouched | The audit chain of the tenant is intact after the cleanup, and the cleanup's metric arrived in VictoriaMetrics |
+
+The second worker keeps nothing for any tenant of the stack: it removes every ended session and every delivered message, of the other demonstrations too, and it is stopped at the end. The published image and chart are not part of this script; they are tried by hand at the tag of 0.3.0, as the [release steps](../development/conventions.md#releases) say.
+
+It ends with `The demonstration of Milestone 6 passed.` It can be run again and again, and runs in continuous integration after the other five. The variables of [the first demonstration](#the-demonstration) tell it where the stack is, and `HODOR_EDGE_URL` where the web server in front is, `http://localhost:8081` unless set.
+
 ## Stop
 
 Stop the stack and delete its data:
