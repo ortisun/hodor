@@ -11,8 +11,9 @@ modules are private; other crates use the `api` module.
 ## Interface
 
 - `lib.rs: pub mod api` re-exports:
-  - Port: `UserRepository`.
-  - Use cases: `CreateUser`, `IdentityService`.
+  - Ports: `UserRepository`, `GroupRepository`, `GroupPolicy`.
+  - Use cases: `CreateUser`, `IdentityService` (with `with_groups`, which takes a user marked Deleted out of every group), `GroupService`.
+  - Groups: `Group`, `GroupEvent`, `GroupMember`, `GroupName`, `GroupSnapshot`, `MAX_NAME_CHARACTERS`, `MAX_DESCRIPTION_CHARACTERS`, and the pure rules `check_nesting`, `depth`, `effective_groups`.
   - Events: `UserEvent`.
   - Identifiers: `IdentifierId`, `IdentifierKind`, `LoginIdentifier`, `NormalizedIdentifier`.
   - Users: `Profile`, `User`, `UserKind`, `UserSnapshot`, `UserStatus`.
@@ -20,6 +21,7 @@ modules are private; other crates use the `api` module.
   - `InMemoryUsers`: an in-memory `UserRepository`.
   - `Ports<'a> { units_of_work, users }`: the ports under test.
   - `run_contract(ports)`: the contract suite every `UserRepository` must pass. The module documentation says the in-memory fake and the PostgreSQL adapter both run it.
+  - `InMemoryGroups`, `FixedGroupPolicy(depth)`, `GroupPorts<'a> { units_of_work, users, groups }` and `run_group_contract(ports)`: the same for groups.
 - Subdirectories:
   - [application](./application/EGM.md): `IdentityService` use cases and the `UserRepository` port.
   - [domain](./domain/EGM.md): the `User` aggregate, login identifiers and `UserEvent`.

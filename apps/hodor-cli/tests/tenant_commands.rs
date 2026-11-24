@@ -119,3 +119,31 @@ async fn failures_exit_non_zero_with_the_error_code() {
     }
     assert_eq!(stdout(&cli(&database, &["list"])).lines().count(), 1);
 }
+
+#[tokio::test]
+async fn the_depth_of_groups_is_set_within_its_bounds() {
+    let database = TestDatabase::start().await;
+    let created = cli(&database, &["create", "--slug", "acme", "--name", "Acme"]);
+    assert!(created.status.success(), "{}", stderr(&created));
+
+    let set = cli(
+        &database,
+        &["group-depth", "--slug", "acme", "--depth", "3"],
+    );
+    assert!(set.status.success(), "{}", stderr(&set));
+    assert_eq!(stdout(&set), "acme group-depth 3");
+    let (depth,): (Option<i32>,) =
+        sqlx::query_as("SELECT (settings -> 'groups' ->> 'max_depth')::integer FROM tenant.tenant")
+            .fetch_one(database.owner())
+            .await
+            .expect("the setting");
+    assert_eq!(depth, Some(3));
+
+    for refused in ["0", "11"] {
+        let out = cli(
+            &database,
+            &["group-depth", "--slug", "acme", "--depth", refused],
+        );
+        assert!(!out.status.success(), "{refused} was accepted");
+    }
+}

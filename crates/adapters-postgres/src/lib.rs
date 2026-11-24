@@ -13,6 +13,7 @@ mod credential;
 mod database;
 mod decision_log;
 mod federation;
+mod group;
 mod identity;
 mod key_rotation;
 mod keys;
@@ -48,6 +49,7 @@ pub use decision_log::{
     DAYS_PREPARED_AHEAD, DecisionLogMaintenance, DecisionLogMaintenanceReport, PgDecisionLogStore,
 };
 pub use federation::{PgLinkStore, PgPendingAuthorizationStore, PgProviderStore};
+pub use group::{PgGroupPolicy, PgGroupRepository};
 pub use identity::PgUserRepository;
 pub use key_rotation::{KeyRotationJob, RotationPass};
 pub use keys::{PgKeyStore, PgSealingStateStore};
