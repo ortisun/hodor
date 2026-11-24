@@ -57,6 +57,7 @@ mod decisions;
 mod factors;
 mod groups;
 mod organizations;
+mod webhooks;
 mod workloads;
 
 /// The OpenAPI document of the interface, as served at `/openapi.json`.
@@ -452,6 +453,35 @@ pub const ADMIN_OPERATIONS: &[(&str, &str, Permission)] = &[
         Permission::WorkloadsWrite,
     ),
     ("DELETE", "/agents/{agent_id}", Permission::WorkloadsWrite),
+    ("GET", "/webhook-event-types", Permission::WebhooksRead),
+    ("GET", "/webhook-endpoints", Permission::WebhooksRead),
+    ("POST", "/webhook-endpoints", Permission::WebhooksWrite),
+    (
+        "GET",
+        "/webhook-endpoints/{endpoint_id}",
+        Permission::WebhooksRead,
+    ),
+    (
+        "DELETE",
+        "/webhook-endpoints/{endpoint_id}",
+        Permission::WebhooksWrite,
+    ),
+    (
+        "PUT",
+        "/webhook-endpoints/{endpoint_id}/subscriptions",
+        Permission::WebhooksWrite,
+    ),
+    (
+        "POST",
+        "/webhook-endpoints/{endpoint_id}:rotate-secret",
+        Permission::WebhooksWrite,
+    ),
+    ("GET", "/webhook-deliveries", Permission::WebhooksRead),
+    (
+        "POST",
+        "/webhook-deliveries/{delivery_id}:redeliver",
+        Permission::WebhooksWrite,
+    ),
 ];
 
 /// What the administration handlers need.
@@ -502,6 +532,9 @@ pub struct AdminState {
     pub invitations: hodor_authentication::api::InvitationService,
     /// The tenant's service accounts and agents.
     pub workloads: hodor_identity::api::WorkloadService,
+    /// The tenant's webhook endpoints and their deliveries. `None` when
+    /// this installation has no keys to seal their secrets with.
+    pub webhooks: Option<hodor_webhooks::api::WebhookService>,
 }
 
 /// What the console interface needs on top of the administration
@@ -609,6 +642,7 @@ fn shared_routes() -> Router<Shared> {
         .merge(groups::routes())
         .merge(organizations::routes())
         .merge(workloads::routes())
+        .merge(webhooks::routes())
 }
 
 /// One assurance level, as the interface writes it.

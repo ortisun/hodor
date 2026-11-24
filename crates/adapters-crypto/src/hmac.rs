@@ -1,7 +1,9 @@
-//! HMAC-SHA-1, for the codes of authenticator applications.
+//! HMAC-SHA-1, for the codes of authenticator applications, and
+//! HMAC-SHA256, for the signatures of webhooks.
 
 use aws_lc_rs::hmac;
 use hodor_credential::api::HmacSha1;
+use hodor_webhooks::api::HmacSha256;
 
 /// [`HmacSha1`] on `aws-lc-rs`.
 ///
@@ -22,6 +24,21 @@ impl HmacSha1 for AwsLcHmacSha1 {
     }
 }
 
+/// [`HmacSha256`] on `aws-lc-rs`, for the signatures of webhooks. See
+/// `docs/architecture/contexts/webhooks.md`, "How it is signed".
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AwsLcHmacSha256;
+
+impl HmacSha256 for AwsLcHmacSha256 {
+    fn mac(&self, key: &[u8], message: &[u8]) -> [u8; 32] {
+        let key = hmac::Key::new(hmac::HMAC_SHA256, key);
+        let tag = hmac::sign(&key, message);
+        let mut out = [0_u8; 32];
+        out.copy_from_slice(tag.as_ref());
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -34,6 +51,17 @@ mod tests {
         let mac = AwsLcHmacSha1.mac(b"Jefe", b"what do ya want for nothing?");
         let hex: String = mac.iter().map(|b| format!("{b:02x}")).collect();
         assert_eq!(hex, "effcdf6ae5eb2fa2d27416d5f184df9c259a7c79");
+    }
+
+    /// RFC 4231, test case 2.
+    #[test]
+    fn it_matches_the_published_hmac_sha256_vector() {
+        let mac = AwsLcHmacSha256.mac(b"Jefe", b"what do ya want for nothing?");
+        let hex: String = mac.iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(
+            hex,
+            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+        );
     }
 
     /// RFC 6238, appendix B, the SHA-1 cases: the last six of the eight

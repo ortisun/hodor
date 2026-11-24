@@ -41,6 +41,8 @@ A permission names something that can be done: a kind of resource and an action 
 | `organizations:write` | Creating, changing and deleting organizations and units, adding, changing and taking out members, and inviting and withdrawing invitations |
 | `workloads:read` | Seeing the tenant's service accounts and agents, with their owners |
 | `workloads:write` | Creating service accounts and agents, renaming them, replacing their owners, and disabling, enabling and deleting them |
+| `webhooks:read` | Seeing the tenant's webhook endpoints, without their secrets, the event types they can receive, and their deliveries, without their bodies |
+| `webhooks:write` | Registering and removing webhook endpoints, replacing their subscriptions, rotating their secrets, and delivering again what was set aside |
 
 ## Roles
 
@@ -49,7 +51,7 @@ A role is a named set of permissions. The roles of Hodor's administration are fi
 | Role | Permissions | Meant for |
 |---|---|---|
 | `tenant_administrator` | All of the above | The people who run a tenant |
-| `tenant_auditor` | `users:read`, `sessions:read`, `audit:read`, `identity-providers:read`, `keys:read`, `applications:read`, `assurance-levels:read`, `credentials:read`, `groups:read`, `organizations:read`, `workloads:read` | People who must be able to see everything and change nothing |
+| `tenant_auditor` | `users:read`, `sessions:read`, `audit:read`, `identity-providers:read`, `keys:read`, `applications:read`, `assurance-levels:read`, `credentials:read`, `decisions:read`, `roles:read`, `bindings:read`, `policies:read`, `groups:read`, `organizations:read`, `workloads:read`, `webhooks:read` | People who must be able to see everything and change nothing |
 
 A user holds a role in one tenant. Holding a role in one tenant means nothing in another: an assignment is a row of its tenant, like everything else.
 

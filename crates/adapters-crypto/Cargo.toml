@@ -22,6 +22,7 @@ hodor-authorization-opa.workspace = true
 hodor-credential.workspace = true
 hodor-kernel.workspace = true
 hodor-keys.workspace = true
+hodor-webhooks.workspace = true
 serde_json = { workspace = true, optional = true }
 sha2.workspace = true
 tokio.workspace = true
@@ -33,7 +34,9 @@ hodor-credential = { workspace = true, features = ["testing"] }
 hodor-federation.workspace = true
 form_urlencoded.workspace = true
 hodor-kernel = { workspace = true, features = ["testing"] }
+http.workspace = true
 serde_json.workspace = true
+standardwebhooks.workspace = true
 time.workspace = true
 
 [lints]

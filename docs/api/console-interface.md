@@ -110,6 +110,15 @@ Every route of the [administration interface](admin-api.md#routes) exists here a
 | `GET /users/{user_id}/organizations` | `organizations:read` |
 | `GET /scim-deprovisioning` | `users:read` |
 | `PUT /scim-deprovisioning` | `users:write` |
+| `GET /webhook-event-types` | `webhooks:read` |
+| `GET /webhook-endpoints` | `webhooks:read` |
+| `POST /webhook-endpoints` | `webhooks:write` |
+| `GET /webhook-endpoints/{endpoint_id}` | `webhooks:read` |
+| `DELETE /webhook-endpoints/{endpoint_id}` | `webhooks:write` |
+| `PUT /webhook-endpoints/{endpoint_id}/subscriptions` | `webhooks:write` |
+| `POST /webhook-endpoints/{endpoint_id}:rotate-secret` | `webhooks:write` |
+| `GET /webhook-deliveries` | `webhooks:read` |
+| `POST /webhook-deliveries/{delivery_id}:redeliver` | `webhooks:write` |
 | `GET /assurance-levels` | `assurance-levels:read` |
 | `PUT /assurance-levels` | `assurance-levels:write` |
 

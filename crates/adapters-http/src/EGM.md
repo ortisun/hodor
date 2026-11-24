@@ -12,6 +12,7 @@ See the `lib.rs` crate documentation, which points to `docs/security/outbound-ht
 ## Interface
 
 - `impl HttpClient for GuardedHttpClient` (`client.rs`, under `#[async_trait::async_trait]`) implements the kernel port `hodor_kernel::HttpClient` (see [the kernel source contract](../../kernel/src/EGM.md)). Its one method is `send(&self, request: HttpRequest) -> Result<HttpResponse, DomainError>` (`client.rs:GuardedHttpClient::send`).
+- `impl DestinationCheck for GuardedHttpClient` (`client.rs`) implements the kernel port `hodor_kernel::DestinationCheck`: `check(&self, url)` applies `client_for`, accepts a development host and a public literal address as they are, and otherwise resolves the name with `tokio::net::lookup_host`, refusing it with `http.destination_forbidden` unless every address is public and with `http.unreachable` when it resolves to nothing. It connects to nothing; webhook endpoints are checked with it when they are registered.
 - `GuardedHttpClient::new(policy: OutboundPolicy) -> Result<Self, DomainError>` builds two `reqwest` clients (`client.rs:GuardedHttpClient::new`):
   - a guarded client that allows HTTPS only and resolves names through a resolver that accepts only public addresses;
   - a development client, used only for the hosts listed in `development_hosts`.

@@ -173,6 +173,15 @@ It needs `HODOR_DATABASE_URL`, like the tenant commands.
 | `POST /agents/{agent_id}:disable` | `workloads:write` | Disable it: its clients get no tokens and its tokens stop at once |
 | `POST /agents/{agent_id}:enable` | `workloads:write` | Enable it again |
 | `DELETE /agents/{agent_id}` | `workloads:write` | Delete it |
+| `GET /webhook-event-types` | `webhooks:read` | List the event types an endpoint can be subscribed to |
+| `GET /webhook-endpoints` | `webhooks:read` | List the tenant's webhook endpoints |
+| `POST /webhook-endpoints` | `webhooks:write` | Register an endpoint, and see its secret once |
+| `GET /webhook-endpoints/{endpoint_id}` | `webhooks:read` | Read one endpoint |
+| `DELETE /webhook-endpoints/{endpoint_id}` | `webhooks:write` | Remove it, with its secrets and deliveries |
+| `PUT /webhook-endpoints/{endpoint_id}/subscriptions` | `webhooks:write` | Replace the event types it receives |
+| `POST /webhook-endpoints/{endpoint_id}:rotate-secret` | `webhooks:write` | Give it a new secret, seen once; the previous one keeps signing for an overlap |
+| `GET /webhook-deliveries` | `webhooks:read` | List deliveries, newest first, of one endpoint or all, of one status or all |
+| `POST /webhook-deliveries/{delivery_id}:redeliver` | `webhooks:write` | Deliver a set-aside delivery again |
 
 ### A user
 
@@ -755,6 +764,55 @@ A workload holds roles and is in groups as a user is: `GET /users/{user_id}/role
 | Someone else changed it at the same moment | `409` | `identity.user_modified_concurrently` |
 
 What an administrator does here is in the audit log, through [the events of the identity context](../architecture/contexts/identity.md#events), and the tokens that disabling or deleting revoked through `oauth.access_token_revoked`.
+### Webhooks
+
+Specified in [the webhooks context](../architecture/contexts/webhooks.md). An endpoint is answered as:
+
+```json
+{
+  "id": "0193f2c4-…",
+  "url": "https://hooks.example.com/hodor",
+  "description": "Our directory",
+  "event_types": ["identity.user_created", "session.revoked"],
+  "secrets": [{ "created_at": "…", "expires_at": null }, { "created_at": "…", "expires_at": "…" }],
+  "created_at": "…",
+  "updated_at": "…"
+}
+```
+
+`secrets` says which secrets sign now, newest first, and until when; never the secrets themselves. `POST /webhook-endpoints` takes `{ "url": "…", "description": "…", "event_types": ["…"] }` and answers `201` with `{ "endpoint": { … }, "secret": "whsec_…" }`. `POST /webhook-endpoints/{endpoint_id}:rotate-secret` takes `{ "overlap_hours": 24 }`, or no body for the default of 24, and answers the same shape with the new secret. These two answers are the only places a secret is ever shown, and they carry `Cache-Control: no-store`. `PUT /webhook-endpoints/{endpoint_id}/subscriptions` takes `{ "event_types": ["…"] }` and answers the endpoint. `GET /webhook-event-types` answers `{ "items": ["identity.user_created", …] }`, the catalog.
+
+`GET /webhook-deliveries` takes `endpoint_id` and `status` (`pending`, `delivered` or `set_aside`) in its query, besides `limit` and `cursor`. A delivery is answered without its body:
+
+```json
+{
+  "id": "0193f2d0-…",
+  "endpoint_id": "0193f2c4-…",
+  "event_id": "0193f2cf-…",
+  "event_type": "session.started",
+  "status": "set_aside",
+  "attempts": 8,
+  "next_attempt_at": null,
+  "last_response_status": 503,
+  "last_error": "the endpoint answered 503",
+  "created_at": "…",
+  "finished_at": "…"
+}
+```
+
+`next_attempt_at` is set only while a delivery is pending. `POST /webhook-deliveries/{delivery_id}:redeliver` puts a set-aside delivery back to pending, due at once, and answers it.
+
+| Situation | Status | Code |
+|---|---|---|
+| No endpoint or delivery of that identifier | `404` | `webhooks.endpoint_not_found`, `webhooks.delivery_not_found` |
+| A twenty-first endpoint | `409` | `webhooks.too_many_endpoints` |
+| Delivering again a delivery that is not set aside | `409` | `webhooks.delivery_not_set_aside` |
+| The endpoint changed while it was being changed | `409` | `webhooks.endpoint_changed` |
+| An address that is not HTTPS, cannot be read, or is too long | `422` | `webhooks.endpoint_address_invalid` |
+| An address that leads somewhere that may not be called, or resolves to nothing | `422` | `webhooks.endpoint_address_forbidden`, `webhooks.endpoint_address_unresolvable` |
+| An event type that is not in the catalog, or a description or an overlap that breaks its rule | `422` | `webhooks.event_type_unknown`, `webhooks.description_invalid`, `webhooks.overlap_invalid` |
+| A status in the query that is not one of the three, or an endpoint that is not an identifier | `422` | `request.query_invalid` |
+| The installation has no keys to seal secrets with | `503` | `webhooks.not_configured` |
 
 ## Not built yet
 

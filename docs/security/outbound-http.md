@@ -1,6 +1,6 @@
 # Outbound HTTP
 
-Hodor calls addresses that administrators of tenants type in: where an identity provider publishes its configuration and its keys, later where a webhook is delivered. An address chosen by someone else is a way to make the server call something it should never call: the cloud's metadata service, a database's administration port, another tenant's internal system. This is server-side request forgery, Threat-General-13 and Threat-Federation-08 in [the threat model](threat-model.md).
+Hodor calls addresses that administrators of tenants type in: where an identity provider publishes its configuration and its keys, and where a webhook is delivered. An address chosen by someone else is a way to make the server call something it should never call: the cloud's metadata service, a database's administration port, another tenant's internal system. This is server-side request forgery, Threat-General-13 and Threat-Federation-08 in [the threat model](threat-model.md).
 
 There is therefore one way out. Every outbound HTTP request of every context goes through the `HttpClient` port of the kernel, and `hodor-adapters-http` is its only implementation. A context cannot make a request any other way: [the architecture test](../architecture/crates.md#automated-checks) keeps HTTP libraries out of context crates.
 
@@ -49,6 +49,18 @@ A stack on one machine has an identity provider at a private address, over plain
 - It must be empty anywhere real. It is the one setting that turns the protection off for a destination.
 - The same list is what lets an identity provider have a plain HTTP issuer and plain HTTP endpoints: only when their host and port are on it. Everywhere else an issuer that is not HTTPS is refused when the provider is added, whatever the list says about other hosts.
 
+## Checking an address without calling it
+
+The guarded client also answers whether an address could be called now, without calling it: the `DestinationCheck` port of the kernel. It applies the rules above to the address as written, then resolves the name and refuses it unless every address it resolves to is public. A development host is accepted as it is, without resolving it.
+
+It is for telling an administrator at once that an address will be refused, when the address is saved. It is never a reason to skip the check when the address is called: a name can resolve to something else between the two, so the client checks again on the resolution it connects with. [Webhook endpoints](../architecture/contexts/webhooks.md#endpoints) are checked both ways.
+
+| Code | When |
+|---|---|
+| `http.url_invalid` | The address cannot be read, is not HTTPS, or carries a name and password |
+| `http.destination_forbidden` | The address, or one the name resolves to, is not public |
+| `http.unreachable` | The name resolves to nothing |
+
 ## A time limit per request
 
 A caller may give one request a shorter time limit than the client's, such as the 200 milliseconds an authorization decision may take. The shorter of the two applies. A request that runs out of time fails with `http.timed_out`, so that a caller can tell a slow answer from no connection.
@@ -77,5 +89,5 @@ None of them repeats the address in its message: the message may reach a person 
 | Item | Planned in |
 |---|---|
 | A test of the TLS path against a server with a real certificate. The tests use the development exception | Hardening pass |
-| An allow-list of destinations per tenant | With webhooks, Phase 5 |
-| Limits on how many requests a tenant may cause | With webhooks, Phase 5 |
+| An allow-list of destinations per tenant | Not scheduled |
+| Limits on how many requests a tenant may cause, beyond those of [webhooks](../architecture/contexts/webhooks.md#bounds) | Not scheduled |

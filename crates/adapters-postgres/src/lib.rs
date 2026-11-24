@@ -37,6 +37,7 @@ mod tenant;
 #[cfg(feature = "testing")]
 pub mod testing;
 mod uow;
+mod webhooks;
 
 pub use audit::PgAuditLog;
 pub use authentication::{PgAttemptStore, PgTransactionStore, PgVerificationTokenStore};
@@ -84,3 +85,4 @@ pub use sqlx::migrate::MigrateError;
 pub use sqlx::{Error, PgPool};
 pub use tenant::{PgTenantDirectory, PgTenantRepository};
 pub use uow::{PgUnitOfWork, connection};
+pub use webhooks::{PgDeliveryStore, PgDueDeliveries, PgEndpointStore};

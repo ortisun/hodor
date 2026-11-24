@@ -69,6 +69,10 @@ audience), `policies: Option<PolicyService>` (`hodor_authorization_opa`; policy
 versions drafted, checked, tested and simulated, and the publication status;
 `None` answers `404` `authorization.policies_unavailable`; publishing is not a
 route, since only the command line holds the key that signs bundles),
+`webhooks: Option<WebhookService>` (`hodor_webhooks`; endpoints,
+subscriptions, secrets shown once with `Cache-Control: no-store`,
+deliveries and delivering again, `admin/webhooks.rs`; `None` answers `503`
+`webhooks.not_configured`, except `GET /webhook-event-types`),
 `federation: Option<FederationService>` (`None` when the installation has no
 keys to keep provider secrets with), `keys: Option<KeyService>`
 (`hodor_keys`; `None` makes the key routes answer `503`

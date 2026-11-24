@@ -5,7 +5,7 @@
 The library crates of the Hodor Cargo workspace (`members = ["crates/*", "apps/*", "tests/*"]` in the root `Cargo.toml`). They are arranged in layers that `tests/architecture/src/lib.rs` (`RULES`) enforces:
 
 - Layer 0, the shared kernel: `hodor-kernel`.
-- Layer 1, the base bounded contexts: `hodor-tenant`, `hodor-identity`, `hodor-credential`, `hodor-session`, `hodor-keys`, `hodor-audit`, `hodor-notification`, `hodor-authorization`. Each may depend only on `hodor-kernel`.
+- Layer 1, the base bounded contexts: `hodor-tenant`, `hodor-identity`, `hodor-credential`, `hodor-session`, `hodor-keys`, `hodor-audit`, `hodor-notification`, `hodor-authorization`, `hodor-webhooks`. Each may depend only on `hodor-kernel`.
 - Layer 2, the orchestrating contexts: `hodor-authentication` (depends on kernel, identity, credential, session, tenant and notification), `hodor-oauth` (allowed kernel, identity, session, keys and tenant; today it depends on the kernel, keys and session) `hodor-saml` (kernel only in the rules; its `Cargo.toml` lists no workspace crate) and `hodor-provisioning` (kernel and identity).
 - Layer 3, the context extensions: `hodor-federation` (kernel, authentication, identity, saml), `hodor-authorization-native` (kernel, authorization) and `hodor-authorization-opa` (kernel, authorization).
 - Layer 4, the adapters: `hodor-adapters-postgres`, `hodor-adapters-crypto`, `hodor-adapters-http`, `hodor-adapters-ldap`, `hodor-adapters-policy-check`, `hodor-adapters-smtp`, `hodor-observability` and `hodor-protocol-http`.
@@ -16,7 +16,7 @@ Each bounded context crate keeps `application` and `domain` private and exposes 
 
 Shared foundation:
 
-- kernel: [./kernel/EGM.md](./kernel/EGM.md) - Typed identifiers (UUID version 7), `TenantContext`, `DomainError` and `ErrorKind`, events (`EventEnvelope`, `EventHandler`, `DomainEvent`), paging, `Secret` and `SealedSecret`, and the port traits `Clock`, `RandomSource`, `Digest`, `SecretBox`, `SignatureVerifier`, `HttpClient`, `UnitOfWork` and `UnitOfWorkFactory`. Depends on no other Hodor crate.
+- kernel: [./kernel/EGM.md](./kernel/EGM.md) - Typed identifiers (UUID version 7), `TenantContext`, `DomainError` and `ErrorKind`, events (`EventEnvelope`, `EventHandler`, `DomainEvent`), paging, `Secret` and `SealedSecret`, and the port traits `Clock`, `RandomSource`, `Digest`, `SecretBox`, `SignatureVerifier`, `HttpClient`, `DestinationCheck`, `UnitOfWork` and `UnitOfWorkFactory`. Depends on no other Hodor crate.
 - observability: [./observability/EGM.md](./observability/EGM.md) - `Telemetry::init`, `flush` and `shutdown`: installs the global tracing subscriber that writes structured logs to standard output, and optional OpenTelemetry trace and metric exporters over HTTP.
 
 Bounded contexts:
@@ -29,6 +29,7 @@ Bounded contexts:
 - authorization: [./authorization/EGM.md](./authorization/EGM.md) - `AuthorizationService`: the built-in roles of the administration (`TenantAdministrator`, `TenantAuditor`), fixed permissions, deny by default. `EvaluationService`: the engine contract and bindings. `RoleService` and `NativeEngine`: native role-based access control, with permissions per resource server, roles with hierarchy and composites, and assignments to users and clients. Ports `RoleAssignmentStore`, `EngineBindingStore`, `NativeRoleStore`, `SubjectAttributeSource`.
 - audit: [./audit/EGM.md](./audit/EGM.md) - `AuditService` and `AuditHandler`: one hash-chained audit record per event, per tenant, and chain verification. Port `AuditLog`.
 - notification: [./notification/EGM.md](./notification/EGM.md) - `Notifier` queues a message in the caller's unit of work; `DeliveryService` delivers due messages with retries (at most 8 attempts). Ports `MessageQueue`, `PendingMessages`, `EmailSender`.
+- webhooks: [./webhooks/EGM.md](./webhooks/EGM.md) - `WebhookService` (endpoints, subscriptions from a catalog of event types, secrets shown once and rotated with an overlap, deliveries listed and delivered again), `WebhookFanOut` (the outbox handler that makes one delivery per subscribed endpoint) and `WebhookSender` (leases due deliveries, signs them as Standard Webhooks say and records each attempt, with growing waits and a bound). Ports `EndpointStore`, `DeliveryStore`, `DueDeliveries`, `HmacSha256`.
 - authentication: [./authentication/EGM.md](./authentication/EGM.md) - `AuthenticationService` runs a sign-in through `FlowEngine` up to the start of a session; `AttemptGuard` counts attempts and locks out; `AccountService` handles registration and password recovery by email link. Ports `AttemptStore`, `TransactionStore`, `VerificationTokenStore`.
 - saml: [./saml/EGM.md](./saml/EGM.md) - Pure computation for Hodor as a SAML service provider: `check_response`, `AuthenticationRequest`, `metadata`, `IdentityProviderKey`. The only crate allowed an XML library (`xml-sec`).
 - provisioning: [./provisioning/EGM.md](./provisioning/EGM.md) - `ProvisioningService`, the SCIM 2.0 server's use cases: Users with the core and enterprise schemas and Groups, mapped to the identity context's users and groups in one unit of work; the bounded filter parser and its evaluation; lists sorted and in pages; the discovery documents. Ports `ProvisionedUserRepository`, `ProvisionedGroupRepository`.
@@ -40,8 +41,8 @@ Bounded contexts:
 Adapters:
 
 - adapters-postgres: [./adapters-postgres/EGM.md](./adapters-postgres/EGM.md) - PostgreSQL implementations of every bounded context's storage ports, `PgUnitOfWork` (tenant-bound transaction that writes recorded events to `platform.outbox`), `OutboxDispatcher`, and `migrate`, which embeds `migrations/`.
-- adapters-crypto: [./adapters-crypto/EGM.md](./adapters-crypto/EGM.md) - `Sha256Digest`, `OsRandom`, `SecretKeys` (the root keys of `HODOR_SECRET_KEYS`: they wrap key versions and open secrets of the first format), `LocalKeyProvider` (implements the keys `KeyProvider`), `BundleSigningKey` (implements the `BundleSigner` of Open Policy Agent bundles), `AwsLcVerifier`, `AwsLcHmacSha1` (implements the credential `HmacSha1`), and `Argon2idHasher` (implements the credential `PasswordHasher`).
-- adapters-http: [./adapters-http/EGM.md](./adapters-http/EGM.md) - The kernel `HttpClient`, twice. `GuardedHttpClient`: public addresses only, HTTPS except listed development hosts. `ServiceHttpClient`: only the origins the operator configured, such as Open Policy Agent. Both: no redirects, size and time limits, a time limit per request.
+- adapters-crypto: [./adapters-crypto/EGM.md](./adapters-crypto/EGM.md) - `Sha256Digest`, `OsRandom`, `SecretKeys` (the root keys of `HODOR_SECRET_KEYS`: they wrap key versions and open secrets of the first format), `LocalKeyProvider` (implements the keys `KeyProvider`), `BundleSigningKey` (implements the `BundleSigner` of Open Policy Agent bundles), `AwsLcVerifier`, `AwsLcHmacSha1` (implements the credential `HmacSha1`), `AwsLcHmacSha256` (implements the webhooks `HmacSha256`), and `Argon2idHasher` (implements the credential `PasswordHasher`).
+- adapters-http: [./adapters-http/EGM.md](./adapters-http/EGM.md) - The kernel `HttpClient`, twice. `GuardedHttpClient`: public addresses only, HTTPS except listed development hosts. `ServiceHttpClient`: only the origins the operator configured, such as Open Policy Agent. Both: no redirects, size and time limits, a time limit per request. `GuardedHttpClient` also implements the kernel `DestinationCheck`: it resolves a name and refuses it unless every address is public, without calling it.
 - adapters-ldap: [./adapters-ldap/EGM.md](./adapters-ldap/EGM.md) - `LdapDirectoryClient`, the federation `DirectoryClient`, limited to allowed hosts.
 - adapters-policy-check: [./adapters-policy-check/EGM.md](./adapters-policy-check/EGM.md) - `OpaProcessChecker`, the `PolicyChecker` of `hodor-authorization-opa`: runs the pinned `opa` 1.10.1 binary as a child process with an empty environment, a directory of its own, a time limit and a limit on output, against Hodor's capabilities file (Decision 0026).
 - adapters-smtp: [./adapters-smtp/EGM.md](./adapters-smtp/EGM.md) - `SmtpSender`, the notification `EmailSender`.
@@ -53,7 +54,7 @@ Adapters:
 - Domain and application crates (layers 0 to 3) must not depend on `axum`, `hyper`, `redis`, `reqwest`, `sqlx`, `tokio` or `tower` (`INFRASTRUCTURE`).
 - An adapter never depends on another adapter (`RULES` comment on layer 4; test `an_adapter_cannot_depend_on_another_adapter`).
 - Only `hodor-saml` may depend on an XML library (`XML`, `XML_CRATE`; test `only_the_saml_crate_reads_xml`).
-- No bounded context depends on `hodor-audit` (test `no_context_depends_on_audit`); audit records are made from outbox events by `AuditHandler`, which `apps/hodor-worker` runs.
+- No bounded context depends on `hodor-audit` (test `no_context_depends_on_audit`); audit records are made from outbox events by `AuditHandler`, which `apps/hodor-worker` runs. Webhook deliveries are made the same way, by `WebhookFanOut`.
 - `RULES` also lists crates that do not exist yet (for example `hodor-adapters-redis`); they are not part of this directory today.
 
 ## Verification

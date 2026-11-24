@@ -69,9 +69,9 @@ flowchart TB
 
 ## The worker
 
-`hodor-worker` runs background work: delivering outbox events to their handlers ([Decision 0003](../decisions/0003-context-communication.md)), delivering queued messages to the mail server ([the notification context](../architecture/contexts/notification.md)), the cleanup jobs, rotating the tenants' signing keys ([the keys context](../architecture/contexts/keys.md#rotation)), and checking, testing and simulating policy versions for Open Policy Agent ([the policy lifecycle](../architecture/contexts/authorization.md#the-policy-lifecycle)).
+`hodor-worker` runs background work: delivering outbox events to their handlers ([Decision 0003](../decisions/0003-context-communication.md)), delivering queued messages to the mail server ([the notification context](../architecture/contexts/notification.md)), the cleanup jobs, rotating the tenants' signing keys ([the keys context](../architecture/contexts/keys.md#rotation)), sending webhooks ([the webhooks context](../architecture/contexts/webhooks.md)), and checking, testing and simulating policy versions for Open Policy Agent ([the policy lifecycle](../architecture/contexts/authorization.md#the-policy-lifecycle)).
 
-The one handler today is the [audit log](../architecture/contexts/audit.md): every event becomes an audit record. An installation without a running worker loses nothing, but its audit log falls behind until a worker runs.
+Two handlers hear every event. The [audit log](../architecture/contexts/audit.md) makes every event an audit record; the [webhooks context](../architecture/contexts/webhooks.md#how-an-event-reaches-an-endpoint) makes one delivery for each endpoint subscribed to the event's type. Both write in the transaction that marks the event dispatched. An installation without a running worker loses nothing, but its audit log and its webhooks fall behind until a worker runs.
 
 Delivering events and messages works the same way:
 
@@ -105,6 +105,15 @@ Policy checks run only when `HODOR_OPEN_POLICY_AGENT_BINARY` is set; the image s
 
 A growing count of `retrying` messages means the mail server is refusing or unreachable; the reason for each message is in the `last_error` column of `notification.message`.
 
+Webhooks are sent only when `HODOR_SECRET_KEYS` is set, with the same keys as the server, since only they open the secrets deliveries are signed with. Without it the worker says so once, and deliveries wait. Unlike the other loops, the webhook loop sends many deliveries at once (`HODOR_WEBHOOK_CONCURRENCY`) and holds no transaction while an endpoint answers: each delivery is leased for the time limit of an attempt plus one minute, so a worker that stops in the middle of a request leaves it to another after that minute. Any number of workers can run; an endpoint never has more than `HODOR_WEBHOOK_IN_FLIGHT_PER_ENDPOINT` deliveries in flight across all of them. Endpoints are on the internet, chosen by tenants: give the worker a route out to public addresses for them, through the [guarded client's](../security/outbound-http.md) rules, and nothing more. The settings and [bounds](../architecture/contexts/webhooks.md#bounds) are on the context's page.
+
+| Metric | Kind | Labels |
+|---|---|---|
+| `hodor.webhooks.attempts` | Counter | `outcome`: `delivered`, `retrying`, `set_aside`, `skipped` |
+| `hodor.webhooks.passes` | Counter | `outcome`: `ok`, `error` |
+
+A growing count of `set_aside` means an endpoint keeps failing; the deliveries say why (`GET /webhook-deliveries?status=set_aside`).
+
 ### Cleanup
 
 Many rows are only useful for a while: a session that ended, a link that was used, a code that expired. The worker removes them, so that the database does not grow forever and holds no more personal data than it needs. Every kind of row below has a **retention**: how long it is kept after it stopped being useful. Then it is removed.
@@ -123,6 +132,7 @@ Many rows are only useful for a while: a session that ended, a link that was use
 | `client_assertions` | The remembered `jti` of a client assertion expired | 0 | — |
 | `consents` | It was withdrawn or expired. The history of consents is kept | 30 days | — |
 | `administration_access_tokens` | The access token of the administration interface expired or was revoked | 30 days | — |
+| `webhook_deliveries` | The webhook delivery was delivered or set aside | 30 days | — |
 | `pending_authorizations` | A sign-in that left for an identity provider never came back | 0, fixed | — |
 | `access_tokens` | The access token recorded in the register expired | 0, fixed | — |
 

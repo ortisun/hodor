@@ -30,7 +30,7 @@ From `[dependencies]` in `Cargo.toml`:
   `hodor-credential`,
   `hodor-federation`, `hodor-identity`, `hodor-keys`,
   `hodor-notification`, `hodor-oauth`, `hodor-provisioning`, `hodor-session`,
-  `hodor-tenant`.
+  `hodor-tenant`, `hodor-webhooks`.
 - `hodor-kernel` (the `UnitOfWork`, `UnitOfWorkFactory`, `EventHandler`,
   `TenantContext` and `DomainError` types).
 - Third party: `async-trait`, `serde_json`, `sqlx`, `time`, and, behind

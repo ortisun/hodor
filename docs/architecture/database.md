@@ -173,6 +173,11 @@ Slug lookup goes through `platform.tenant_directory`, a routing table outside ro
 |---|---|---|
 | `user_attribute` | `user_id`, `external_id`, the name's parts, the enterprise attributes | What SCIM carries of a user that the identity context has no place for. Specified in [the provisioning context](contexts/provisioning.md#storage) |
 | `group_attribute` | `group_id`, `external_id` | The same, of a group |
+### `webhooks`
+
+| Table | Key columns | Notes |
+|---|---|---|
+| `webhooks.endpoint`, `webhooks.subscription`, `webhooks.signing_secret`, `webhooks.delivery` | See [the webhooks context](contexts/webhooks.md#storage) | The secret is sealed; deliveries are found across tenants and leased in their tenant |
 
 ### `audit` and `platform`
 
@@ -181,7 +186,6 @@ Slug lookup goes through `platform.tenant_directory`, a routing table outside ro
 | `audit.record`, `audit.chain_head` | See [the audit context](contexts/audit.md#storage) | `hodor_app` has `INSERT` and `SELECT` only on `audit.record`; a trigger refuses every update and delete |
 | `platform.outbox` | `id`, `tenant_id`, `event_type`, `payload jsonb`, `occurred_at`, `dispatched_at`, `attempts` | Polled with `FOR UPDATE SKIP LOCKED` |
 | `platform.job` | `id`, `tenant_id`, `kind`, `payload`, `run_at`, `locked_by`, `attempts`, `last_error` | Same locking pattern |
-| `platform.webhook_endpoint`, `platform.webhook_delivery` | Endpoint URL, secret, event filter; delivery attempts | Tenant-scoped despite the schema |
 | `platform.idempotency_key` | `tenant_id`, `key`, `request_hash`, `response`, `expires_at` | — |
 
 ## Data volume and retention

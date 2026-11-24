@@ -218,6 +218,18 @@ A SCIM client writes a tenant's people and groups: the [provisioning context](..
 | Threat-Authorization-08 | Self-escalation by an administrator | A principal cannot grant permissions it does not hold; segregation-of-duty rules on role assignment |
 | Threat-Authorization-09 | Simulation used to probe production data | Separate scope; simulation is audited; no real decision record |
 
+## Webhooks
+
+| Identifier | Threat | Control |
+|---|---|---|
+| Threat-Webhooks-01 | An endpoint registered at a private address, or a name that resolves to one later, makes the worker call inside the network | The address is checked when it is registered and again by the guarded client at every attempt, on the resolution it connects with; HTTPS only; redirects not followed ([outbound HTTP](outbound-http.md)) |
+| Threat-Webhooks-02 | A tenant receives another tenant's events | Deliveries are made in the event's tenant from that tenant's endpoints, under row-level security; the body names the tenant |
+| Threat-Webhooks-03 | A forged or replayed request is taken for one of Hodor's | Standard Webhooks signature over the identifier, the timestamp and the body, with a secret per endpoint; receivers refuse an old timestamp |
+| Threat-Webhooks-04 | The signing secret leaks from the database or from the interface | Sealed with the tenant's data key; shown once, never read back; rotated with an overlap |
+| Threat-Webhooks-05 | An event carries personal data or a secret to a third party | Only the types of a reviewed catalog are published, and events carry identifiers by the rule of every context |
+| Threat-Webhooks-06 | A slow or dead endpoint exhausts the worker or holds up other tenants | No transaction is held during a request; a time limit per attempt; at most a few deliveries in flight per endpoint; deliveries set aside after a bound |
+| Threat-Webhooks-07 | A tenant makes Hodor send a flood of requests | At most 20 endpoints; one delivery per endpoint and event; a bound on attempts and growing waits |
+
 ## Residual risks
 
 | Risk | Status |

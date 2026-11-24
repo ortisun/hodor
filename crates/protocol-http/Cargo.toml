@@ -25,6 +25,7 @@ hodor-oauth.workspace = true
 hodor-provisioning.workspace = true
 hodor-session.workspace = true
 hodor-tenant.workspace = true
+hodor-webhooks.workspace = true
 http-body-util.workspace = true
 opentelemetry.workspace = true
 serde.workspace = true
@@ -53,6 +54,7 @@ hodor-oauth = { workspace = true, features = ["testing"] }
 hodor-provisioning = { workspace = true, features = ["testing"] }
 hodor-session = { workspace = true, features = ["testing"] }
 hodor-tenant = { workspace = true, features = ["testing"] }
+hodor-webhooks = { workspace = true, features = ["testing"] }
 tokio = { workspace = true, features = ["io-util", "test-util"] }
 hodor-saml = { workspace = true, features = ["testing"] }
 miniz_oxide.workspace = true

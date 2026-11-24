@@ -17,6 +17,7 @@ The cryptography adapter. Hodor implements no cryptography of its own: this crat
 | `impl KeyProvider for LocalKeyProvider` (`keys.rs`) | `hodor_keys::api::KeyProvider` (keys context port) | `LocalKeyProvider` |
 | `impl PasswordHasher for Argon2idHasher` (`password.rs:228`) | `hodor_credential::api::PasswordHasher` (credential context port) | `Argon2idHasher` |
 | `impl HmacSha1 for AwsLcHmacSha1` (`hmac.rs`) | `hodor_credential::api::HmacSha1` (credential context port) | `AwsLcHmacSha1` |
+| `impl HmacSha256 for AwsLcHmacSha256` (`hmac.rs`) | `hodor_webhooks::api::HmacSha256` (webhooks context port) | `AwsLcHmacSha256` |
 | `impl HttpClient for TestProvider` (`testing.rs:241`, test support only) | `hodor_kernel::HttpClient` | `testing::TestProvider` |
 
 ### Public items
@@ -34,6 +35,7 @@ The cryptography adapter. Hodor implements no cryptography of its own: this crat
 - `LocalKeyProvider::new(root: Arc<SecretKeys>)`: the local key provider, named `local` (`keys.rs:LocalKeyProvider`). It makes P-256 keys for ES256, RSA keys of 2048 bits for RS256 and PS256, and 32-byte data keys for AES-256-GCM, and keeps each as a PKCS#8 document or raw key sealed with `root` for the tenant and the purpose `keys.<algorithm in lowercase>.<version without hyphens>`.
 - `BundleSigningKey` (`bundle_signing.rs`): the installation key that signs bundles for Open Policy Agent. `from_pem(text, key_id)` reads an ECDSA P-256 private key in PKCS #8 PEM, anything else being `authorization.bundle_signing_key_invalid`; `generate()` returns a new private key and its public key, both in PEM; `public_key_pem()`; `sign` gives the 64-byte ES256 signature.
 - `AwsLcHmacSha1`: HMAC-SHA-1 with `aws-lc-rs` (`HMAC_SHA1_FOR_LEGACY_USE_ONLY`), for the codes of authenticator applications. Tested against RFC 2202 and the SHA-1 cases of RFC 6238 (`hmac.rs`).
+- `AwsLcHmacSha256`: HMAC-SHA256 with `aws-lc-rs` (`HMAC_SHA256`), for the signatures of webhooks. Tested against RFC 4231 (`hmac.rs`) and, through `tests/webhook_signature.rs`, against the `standardwebhooks` crate.
 - `testing` (public test-support module): compiled only under `#[cfg(any(test, feature = "testing"))]` (`lib.rs:12`). The Cargo feature `testing` pulls in the optional `form_urlencoded` and `serde_json`. It provides:
   - the constants `CLIENT_ID` and `CLIENT_SECRET`;
   - `SigningKey`, with `rsa()`, `p256()`, `published(id)` (a JSON Web Key), `sign(algorithm, message)` and `token(header, claims)`;

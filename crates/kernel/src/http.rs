@@ -114,3 +114,23 @@ pub trait HttpClient: Send + Sync {
     /// No message repeats the address.
     async fn send(&self, request: HttpRequest) -> Result<HttpResponse, DomainError>;
 }
+
+/// Says whether an address could be called now, without calling it.
+///
+/// For telling a person at once that an address they are saving will be
+/// refused. It never replaces the check made when the address is called:
+/// a name can resolve to something else in between. See
+/// `docs/security/outbound-http.md`, "Checking an address without calling
+/// it".
+#[async_trait::async_trait]
+pub trait DestinationCheck: Send + Sync {
+    /// Applies the rules of the client to `url`, resolving its name.
+    ///
+    /// # Errors
+    ///
+    /// Returns `http.url_invalid` if the address cannot be read or is not
+    /// one the client calls, `http.destination_forbidden` if it, or an
+    /// address its name resolves to, is not public, and `http.unreachable`
+    /// if the name resolves to nothing. No message repeats the address.
+    async fn check(&self, url: &str) -> Result<(), DomainError>;
+}

@@ -52,6 +52,12 @@ pub const SEALED_COLUMNS: &[SealedColumn] = &[
         column: "sealed_secret",
         purpose: hodor_oauth::api::FAMILY_SECRET_PURPOSE,
     },
+    SealedColumn {
+        table: "webhooks.signing_secret",
+        key: "id",
+        column: "sealed_secret",
+        purpose: hodor_webhooks::api::SIGNING_SECRET_PURPOSE,
+    },
 ];
 
 /// What sealing a tenant's secrets again did.

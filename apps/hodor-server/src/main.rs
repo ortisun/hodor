@@ -14,10 +14,10 @@ use hodor_adapters_ldap::LdapDirectoryClient;
 use hodor_adapters_postgres::{
     Database, PgAccessTokenRecordStore, PgAccessTokenStore, PgApplicationStore, PgAttemptStore,
     PgAuditLog, PgAuthorizationCodeStore, PgAuthorizationRequestStore, PgBundleStore,
-    PgClientAssertionStore, PgClientStore, PgConsentStore, PgDecisionLogStore,
-    PgDeprovisioningPolicy, PgEngineBindingStore, PgGrantStore, PgGroupPolicy, PgGroupRepository,
-    PgInstanceStatusStore, PgInstanceStore, PgInvitationRepository, PgKeyStore, PgLinkStore,
-    PgMessageQueue, PgNativeRoleStore, PgOrganizationRepository, PgPasswordStore,
+    PgClientAssertionStore, PgClientStore, PgConsentStore, PgDecisionLogStore, PgDeliveryStore,
+    PgDeprovisioningPolicy, PgEndpointStore, PgEngineBindingStore, PgGrantStore, PgGroupPolicy,
+    PgGroupRepository, PgInstanceStatusStore, PgInstanceStore, PgInvitationRepository, PgKeyStore,
+    PgLinkStore, PgMessageQueue, PgNativeRoleStore, PgOrganizationRepository, PgPasswordStore,
     PgPendingAuthorizationStore, PgPolicyVersionStore, PgProviderStore,
     PgProvisionedGroupRepository, PgProvisionedUserRepository, PgPublicationStore,
     PgRecoveryCodeStore, PgRefreshTokenStore, PgResourceServerStore, PgRoleAssignmentStore,
@@ -71,6 +71,7 @@ use hodor_protocol_http::{
 use hodor_provisioning::api::{ProvisioningPorts, ProvisioningService};
 use hodor_session::api::SessionService;
 use hodor_tenant::api::{TenantDirectory as _, TenantService, TenantStatus};
+use hodor_webhooks::api::WebhookService;
 use standing::{ServerMemberships, ServerStanding};
 use std::error::Error;
 use std::net::SocketAddr;
@@ -1447,7 +1448,30 @@ fn administration(
             clock.clone(),
         ),
         invitations,
+        webhooks: webhooks(config, database)?,
     })
+}
+
+/// The webhooks an administrator manages, when there are keys to seal
+/// their secrets with. Addresses are checked by the guarded outbound
+/// client, with the development exception of this installation.
+fn webhooks(config: &Config, database: &Database) -> Result<Option<WebhookService>, DomainError> {
+    let Some(setting) = &config.secret_keys else {
+        return Ok(None);
+    };
+    let destinations = GuardedHttpClient::new(OutboundPolicy {
+        development_hosts: development_hosts(config),
+        ..OutboundPolicy::default()
+    })?;
+    Ok(Some(WebhookService::new(
+        Arc::new(database.clone()),
+        Arc::new(PgEndpointStore),
+        Arc::new(PgDeliveryStore),
+        secret_box(setting, database)?,
+        Arc::new(destinations),
+        Arc::new(OsRandom),
+        Arc::new(SystemClock),
+    )))
 }
 
 async fn wait_for(mut stopped: watch::Receiver<bool>) {

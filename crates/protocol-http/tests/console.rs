@@ -316,6 +316,8 @@ fn world() -> World {
             Arc::new(hodor_identity::testing::RecordingWorkloadAccess::default()),
             clock.clone(),
         ),
+        // Webhooks are tested in `admin.rs`; here they are not configured.
+        webhooks: None,
     };
     let router = public_router(
         Arc::new(Tenants {

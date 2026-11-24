@@ -175,6 +175,8 @@ pub enum ExpiredKind {
     /// Access tokens of the administration interface that expired or were
     /// revoked.
     AdministrationAccessTokens,
+    /// Webhook deliveries that were delivered or set aside.
+    WebhookDeliveries,
 }
 
 /// The query that finds tenants with rows to remove (`$1` the moment
@@ -207,7 +209,7 @@ macro_rules! expired_rows {
 
 impl ExpiredKind {
     /// Every kind, in the order the worker starts their jobs.
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::Sessions,
         Self::SignIns,
         Self::VerificationTokens,
@@ -220,6 +222,7 @@ impl ExpiredKind {
         Self::ClientAssertions,
         Self::Consents,
         Self::AdministrationAccessTokens,
+        Self::WebhookDeliveries,
     ];
 
     /// The kind's name, in settings, metrics and logs.
@@ -238,6 +241,7 @@ impl ExpiredKind {
             Self::ClientAssertions => "client_assertions",
             Self::Consents => "consents",
             Self::AdministrationAccessTokens => "administration_access_tokens",
+            Self::WebhookDeliveries => "webhook_deliveries",
         }
     }
 
@@ -253,7 +257,8 @@ impl ExpiredKind {
             | Self::RevokedGrants
             | Self::RefreshTokenFamilies
             | Self::Consents
-            | Self::AdministrationAccessTokens => 30,
+            | Self::AdministrationAccessTokens
+            | Self::WebhookDeliveries => 30,
         }
     }
 
@@ -297,6 +302,10 @@ impl ExpiredKind {
             Self::AdministrationAccessTokens => expired_rows!(
                 "credential.access_token",
                 "(expires_at <= $1 OR revoked_at <= $1)"
+            ),
+            Self::WebhookDeliveries => expired_rows!(
+                "webhooks.delivery",
+                "status <> 'pending' AND finished_at <= $1"
             ),
         }
     }
