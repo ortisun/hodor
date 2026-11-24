@@ -843,6 +843,20 @@ fn authorization_api(
                     .with_groups(Arc::new(PgGroupRepository))
                     .with_organizations(Arc::new(PgOrganizationRepository)),
                 applications,
+                groups: GroupService::new(
+                    units(),
+                    Arc::new(PgGroupRepository),
+                    Arc::new(PgUserRepository),
+                    Arc::new(PgGroupPolicy),
+                    clock.clone(),
+                ),
+                organizations: OrganizationService::new(
+                    units(),
+                    Arc::new(PgOrganizationRepository),
+                    Arc::new(PgInvitationRepository),
+                    Arc::new(PgUserRepository),
+                    clock.clone(),
+                ),
             }),
             engines,
             clock,
@@ -1265,6 +1279,20 @@ fn administration(
                     .with_groups(Arc::new(PgGroupRepository))
                     .with_organizations(Arc::new(PgOrganizationRepository)),
                 applications: applications_for_subjects,
+                groups: GroupService::new(
+                    units(),
+                    Arc::new(PgGroupRepository),
+                    Arc::new(PgUserRepository),
+                    Arc::new(PgGroupPolicy),
+                    clock.clone(),
+                ),
+                organizations: OrganizationService::new(
+                    units(),
+                    Arc::new(PgOrganizationRepository),
+                    Arc::new(PgInvitationRepository),
+                    Arc::new(PgUserRepository),
+                    clock.clone(),
+                ),
             }),
             engines.clone(),
             clock.clone(),

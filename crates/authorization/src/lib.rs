@@ -54,7 +54,7 @@ pub mod api {
     };
     pub use crate::domain::request::{
         Action, ApplicationReference, Attributes, AuthorizationRequest, EvaluationContext,
-        Namespace, Resource, Subject, SubjectKind,
+        Namespace, OrganizationReference, Resource, Subject, SubjectKind,
     };
     pub use crate::domain::role::{Decision, Effect, Permission, Role};
 }
