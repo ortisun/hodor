@@ -169,6 +169,7 @@ nav:
           - architecture/contexts/federation.md
           - architecture/contexts/oauth.md
           - architecture/contexts/provisioning.md
+          - architecture/contexts/webhooks.md
   - Interfaces and protocols:
       - api/api-spec.md
       - api/interaction-api.md
@@ -224,6 +225,7 @@ nav:
       - decisions/0026-policy-checks-in-a-sandbox.md
       - decisions/0027-what-0.3.0-holds.md
       - decisions/0031-workloads-are-users.md
+      - decisions/0032-webhooks.md
   - Contributing:
       - development/conventions.md
       - development/documentation-site.md

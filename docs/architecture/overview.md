@@ -68,7 +68,7 @@ flowchart TB
 
     subgraph hodor["Hodor"]
         server["hodor-server<br/>Axum: protocols, APIs, console backend-for-frontend"]
-        worker["hodor-worker<br/>outbox, cleanup, key rotation,<br/>LDAP sync, Open Policy Agent bundles"]
+        worker["hodor-worker<br/>outbox, webhooks, cleanup, key rotation,<br/>LDAP sync, Open Policy Agent bundles"]
         commandLineTool["hodor-cli<br/>migrations, bootstrap, operations"]
     end
 
@@ -132,6 +132,7 @@ flowchart TB
         authorization
         audit
         notification
+        webhooks
     end
 
     subgraph adapters["Adapters"]
@@ -147,7 +148,7 @@ flowchart TB
     middleware --> oauthRoutes & interactionRoutes & adminRoutes & accountRoutes & authorizationRoutes & policyAgentRoutes & scimRoutes & samlRoutes
     oauthRoutes --> oauth
     interactionRoutes --> authentication & federation & oauth
-    adminRoutes --> tenant & identity & oauth & federation & authorization & audit & keys
+    adminRoutes --> tenant & identity & oauth & federation & authorization & audit & keys & webhooks
     accountRoutes --> identity & credential & session & oauth
     authorizationRoutes --> authorization
     policyAgentRoutes --> authorization
