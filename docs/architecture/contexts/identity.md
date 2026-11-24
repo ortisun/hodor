@@ -303,6 +303,25 @@ Every use case that changes a user loads it, applies the change, stores it and r
 
 Every method works inside the tenant of the unit of work it is given.
 
+## Command-line tool
+
+What an administrator does through [the administration interface](../../api/admin-api.md#groups), an operator can do with `hodor-cli`, against the database, naming the tenant by its slug. Each command prints one line per thing it made or found.
+
+| Command | Does |
+|---|---|
+| `hodor-cli group create --tenant <slug> --name <name> [--description <text>]` | Creates a group, and prints `created <id> <name>` |
+| `hodor-cli group list --tenant <slug>` | Prints `<id> <name>` for every group |
+| `hodor-cli group add --tenant <slug> --group <id> (--user <id> \| --member-group <id>)` | Adds a member |
+| `hodor-cli group remove --tenant <slug> --group <id> (--user <id> \| --member-group <id>)` | Takes a member out |
+| `hodor-cli group delete --tenant <slug> --group <id>` | Deletes a group |
+| `hodor-cli organization create --tenant <slug> --name <name> [--description <text>]` | Creates an organization, and prints `created <id> <name>` |
+| `hodor-cli organization list --tenant <slug>` | Prints `<id> <name>` for every organization |
+| `hodor-cli organization unit --tenant <slug> --organization <id> --name <name> [--kind unit\|department] [--parent <id>]` | Creates a unit, and prints `created <id> <name>` |
+| `hodor-cli organization member --tenant <slug> --organization <id> --user <id> [--unit <id> ...]` | Makes a user a member with those units, or replaces a member's units |
+| `hodor-cli organization invite --tenant <slug> --organization <id> --email <address> [--unit <id> ...] [--locale <tag>]` | Invites an address. The message goes out when a worker delivers it; the link starts with `HODOR_PUBLIC_URL` |
+
+A refusal is the same as through the administration interface, with the same code, and the command exits with a status that is not zero.
+
 ## Storage
 
 ### `identity.user`
