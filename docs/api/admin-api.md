@@ -131,6 +131,31 @@ It needs `HODOR_DATABASE_URL`, like the tenant commands.
 | `POST /policy-versions/{number}/simulations` | `policies:write` | Ask for a version to be simulated on given inputs |
 | `GET /policy-simulations/{simulation_id}` | `policies:read` | Read a simulation and its answers |
 | `GET /policy-status` | `policies:read` | Read what is published and what each instance runs |
+| `GET /groups` | `groups:read` | List the tenant's groups |
+| `POST /groups` | `groups:write` | Create a group |
+| `GET /groups/{group_id}` | `groups:read` | Read one group |
+| `PATCH /groups/{group_id}` | `groups:write` | Change its name or description |
+| `DELETE /groups/{group_id}` | `groups:write` | Delete it, with every membership it is part of |
+| `GET /groups/{group_id}/members` | `groups:read` | List its direct members, users first |
+| `POST /groups/{group_id}/members` | `groups:write` | Add a user or a group |
+| `POST /groups/{group_id}/members:remove` | `groups:write` | Take a user or a group out |
+| `GET /users/{user_id}/groups` | `groups:read` | List the groups a user is in, directly or through others |
+| `GET /organizations` | `organizations:read` | List the tenant's organizations |
+| `POST /organizations` | `organizations:write` | Create an organization |
+| `GET /organizations/{organization_id}` | `organizations:read` | Read one organization |
+| `PATCH /organizations/{organization_id}` | `organizations:write` | Change its name or description |
+| `DELETE /organizations/{organization_id}` | `organizations:write` | Delete it, with its units, members and invitations |
+| `GET /organizations/{organization_id}/units` | `organizations:read` | List its units, each with its parent |
+| `POST /organizations/{organization_id}/units` | `organizations:write` | Create a unit |
+| `PUT /organizations/{organization_id}/units/{unit_id}` | `organizations:write` | Rename a unit, change its kind, or move it |
+| `DELETE /organizations/{organization_id}/units/{unit_id}` | `organizations:write` | Delete a unit with no unit below it |
+| `GET /organizations/{organization_id}/members` | `organizations:read` | List its members with their units |
+| `PUT /organizations/{organization_id}/members/{user_id}` | `organizations:write` | Make a user a member, or replace the units of a member |
+| `DELETE /organizations/{organization_id}/members/{user_id}` | `organizations:write` | Take a user out |
+| `GET /organizations/{organization_id}/invitations` | `organizations:read` | List its pending invitations |
+| `POST /organizations/{organization_id}/invitations` | `organizations:write` | Invite an email address |
+| `DELETE /organizations/{organization_id}/invitations/{invitation_id}` | `organizations:write` | Withdraw a pending invitation |
+| `GET /users/{user_id}/organizations` | `organizations:read` | List the organizations a user is in, with their units |
 
 ### A user
 
@@ -627,6 +652,48 @@ Specified in [the policy lifecycle](../architecture/contexts/authorization.md#th
 **Publishing and rolling back are not routes.** A published bundle is signed with the installation's bundle signing key, which only `hodor-cli policy publish` and `hodor-cli policy rollback` hold: the server never holds it ([Decision 0026](../decisions/0026-policy-checks-in-a-sandbox.md)). `GET /policy-status` shows what was published and, per instance that should run it, whether it does.
 
 Registering and disabling Open Policy Agent instances is likewise the operator's, with `hodor-cli policy-agent instance`: an instance may serve every tenant.
+
+### Groups
+
+Specified in [groups](../architecture/contexts/identity.md#groups). A group is answered as:
+
+```json
+{ "id": "0193f2a0-…", "name": "finance", "description": "Who pays the bills", "created_at": "…", "updated_at": "…" }
+```
+
+`POST /groups` and `PATCH /groups/{group_id}` take `{ "name": "…", "description": "…" }`; `PATCH` replaces both, and a missing description removes it. A member is named as `{ "kind": "user", "id": "…" }` or `{ "kind": "group", "id": "…" }`, in the body of `POST /groups/{group_id}/members` and `POST /groups/{group_id}/members:remove`, and in the list of members. `GET /users/{user_id}/groups` answers `{ "items": [{ "id": "…", "direct": true }] }`, where `direct` says the user is a member of that group and not only through another.
+
+| Situation | Status | Code |
+|---|---|---|
+| No group of that identifier | `404` | `identity.group_not_found` |
+| A member that is not a user or a group of the tenant, or a Deleted user | `404` | `identity.user_not_found`, `identity.group_not_found` |
+| A name another group has | `409` | `identity.group_name_taken` |
+| A group that would be inside itself, or deeper than the tenant allows | `409` | `identity.group_cycle`, `identity.group_nesting_too_deep` |
+| A name or a description that breaks a rule | `422` | `identity.group_name_invalid`, `identity.group_description_invalid` |
+
+### Organizations
+
+Specified in [organizations](../architecture/contexts/identity.md#organizations). An organization is answered as a group is. A unit:
+
+```json
+{ "id": "0193f2b1-…", "parent_id": null, "name": "Engineering", "kind": "department", "created_at": "…", "updated_at": "…" }
+```
+
+`POST /organizations/{organization_id}/units` takes `{ "parent_id": null, "name": "…", "kind": "unit" }`, and `PUT /organizations/{organization_id}/units/{unit_id}` the same, replacing all three: a new `parent_id` moves the unit and what is below it.
+
+`PUT /organizations/{organization_id}/members/{user_id}` takes `{ "unit_ids": ["…"] }`. It makes the user a member with those units, or replaces the units of a member, and answers the membership: `{ "user_id": "…", "unit_ids": ["…"], "added_at": "…" }`.
+
+`POST /organizations/{organization_id}/invitations` takes `{ "email": "ana@example.com", "unit_ids": [], "locale": "pt-BR" }`, sends the message, and answers `202` with nothing in it: the link is in the message only. `GET` on the same path lists pending invitations as `{ "id": "…", "email": "…", "unit_ids": [], "created_at": "…", "expires_at": "…" }`. The address is shown to an administrator, who typed it.
+
+| Situation | Status | Code |
+|---|---|---|
+| No organization, unit or member of that identifier | `404` | `identity.organization_not_found`, `identity.unit_not_found`, `identity.membership_not_found` |
+| No pending invitation of that identifier | `404` | `identity.invitation_invalid` |
+| A user that is not one of the tenant, or a Deleted user | `404` | `identity.user_not_found` |
+| A name another organization, or a unit with the same parent, has | `409` | `identity.organization_name_taken`, `identity.unit_name_taken` |
+| A unit put under itself, or past ten levels | `409` | `identity.unit_cycle`, `identity.unit_tree_too_deep` |
+| A unit with units below it | `409` | `identity.unit_not_empty` |
+| A name, a description, a kind or an address that breaks a rule | `422` | `identity.organization_name_invalid`, `identity.group_description_invalid`, `identity.unit_kind_invalid`, `identity.email_invalid` |
 
 ## Not built yet
 
