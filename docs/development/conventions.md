@@ -125,6 +125,7 @@ Branching follows Gitflow.
 | `feature/<name>` | One piece of work | `develop` | `develop` |
 | `release/<version>` | Stabilizing a release | `develop` | `main` and `develop` |
 | `hotfix/<name>` | An urgent fix to a release | `main` | `main` and `develop` |
+| `dependabot/<…>` | An update of the GitHub Actions, proposed by Dependabot ([the supply chain](../security/supply-chain.md#github-actions)) | `develop` | `develop` |
 
 ### Pull requests
 
@@ -158,7 +159,7 @@ A change is done when:
 
 1. The documentation describes it, and was updated before the code.
 2. The business rules have tests, and the tests pass.
-3. `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test`, `cargo deny check` and `cargo machete` pass.
+3. `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test`, `cargo deny check` and `cargo machete` pass, and so do the checks of [the supply chain](../security/supply-chain.md) when a workflow or a `package-lock.json` changed.
 4. The dependency rules in [crates.md](../architecture/crates.md) hold (checked by the architecture test).
 5. Tenant isolation holds for any new table or port (checked by the schema rules and the contract tests).
 6. Nothing sensitive can reach a log, a trace or an error message.

@@ -74,7 +74,7 @@ Boundaries: internet → edge; edge → application; application → data; appli
 | Threat-General-12 | Elevation of privilege | Clickjacking on login and consent | `frame-ancestors 'none'` |
 | Threat-General-13 | Tampering | SSRF through configured URLs (JWKS, discovery, webhooks, `request_uri`, logout URIs) | One outbound client: HTTPS only, DNS resolution pinned and checked against private, loopback, link-local and metadata ranges, no redirects by default, size and time limits |
 | Threat-General-14 | Spoofing | Session fixation and hijacking | Session identifier rotated at login and step-up; cookie flags; server-side revocation; device binding signal |
-| Threat-General-15 | Tampering | Dependency compromise | `cargo deny`, `cargo audit`, lockfile, vendored sources policy, pinned continuous integration actions, signed releases, software bill of materials |
+| Threat-General-15 | Tampering | Dependency compromise | [The supply chain](supply-chain.md): `cargo deny`, `cargo audit`, lockfile, vendored sources policy, `npm audit` and licenses of npm packages, continuous integration actions pinned by commit, signed releases, software bill of materials |
 | Threat-General-16 | Elevation of privilege | Open redirect | Redirect targets are registered values or server-stored references, never request input |
 | Threat-General-17 | Spoofing | A client writes a forwarded header to escape the limits on its address, or to put another address in the audit log | Forwarded headers read only from connections of proxies the operator names, one header only, read from the nearest end, the first address that is not a trusted proxy taken; anything unreadable falls back to the connection's address ([the client address](../api/api-spec.md#the-client-address)) |
 
