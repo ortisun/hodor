@@ -183,10 +183,15 @@ jobs:
       - name: Run the demonstration of Milestone 5
         working-directory: .
         run: python3 deploy/demo/authorization.py
+      # Last: its second worker removes the ended sessions and delivered
+      # messages of every tenant of the stack.
+      - name: Run the demonstration of Milestone 6
+        working-directory: .
+        run: python3 deploy/demo/operations.py
       - name: Show what the stack logged
         if: failure()
         working-directory: .
-        run: docker compose -f deploy/docker/compose.yaml logs --no-color --tail 200 server worker system-tenant provider directory saml-provider
+        run: docker compose -f deploy/docker/compose.yaml logs --no-color --tail 200 server worker system-tenant provider directory saml-provider edge
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: failure()
         with:
