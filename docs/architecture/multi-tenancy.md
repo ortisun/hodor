@@ -140,13 +140,20 @@ Every case has the same shape. First something is shown to work in the tenant it
 | The client of a consent the person gave, withdrawn by the other tenant's person or administrator | No such consent; the consent still stands where it belongs |
 | Another tenant's administrator naming a resource server, a role, a person's roles, a binding or a policy version | Not found |
 | Another tenant's administrator giving or taking away a role of the first tenant's person | Not found |
+| Another tenant's administrator naming a group: reading, changing or deleting it, listing its members or the roles it holds, adding a member to it or taking one out; and naming a person to list the groups they are in | No such group; no such user. The group, its members and its role stay as they were |
+| A person or a group of one tenant added as a member of the other tenant's own group | No such user; no such group |
+| A group of one tenant given a role, or having one taken away, by the other tenant's administrator | No such group |
+| Another tenant's administrator naming an organization: reading, changing or deleting it, its units, its members and its invitations, inviting to it; and naming a person to list the organizations they are in | No such organization; no such user |
+| A person of one tenant made a member of the other tenant's own organization, a unit of one tenant given to a member of the other's, and a role scoped by the other tenant's administrator to an organization of the first | No such user; no such unit; no such organization |
+| An invitation's link, described and accepted at the other tenant: without a session, and with the session of the person who has the invited address there | The link does not work; it still works where it belongs, once |
+| An organization of one tenant, asked for at the other tenant's authorization endpoint | Access denied at the client's redirect address, as for an organization the person is not a member of. Where it belongs, the tokens carry it in `org_id` |
 | A SCIM client's access token, on every route of the SCIM surface | Not authenticated |
 | The identifier of a user or a group, read, replaced, changed with `PATCH` or deleted by the other tenant's own SCIM client, alone or in a bulk request, and named as a member of a group | Not found; refused as a member |
 | The identifier of a service account or an agent, read, changed, disabled, enabled or deleted by the other tenant's own administrator, and named as the principal of the other tenant's client | Not found; refused as a principal. It still works where it belongs |
 | A person of one tenant named as an owner of the other tenant's service account | No such user |
 | The access token of a client that acts as a service account, at the other tenant's Authorization API and at introspection by the other tenant's client | Not authenticated; not active |
 
-It also checks what must not be shared: one tenant's list of users and audit log name nothing of the other's; locking a person out by failed attempts in one tenant does not lock out the person with the same address in the other; a person with an authenticator application in one tenant signs in to the other with the password alone; each tenant's discovery document names its own assurance levels only; and one tenant's lists of roles, bindings and policy versions name nothing of the other's.
+It also checks what must not be shared: one tenant's list of users and audit log name nothing of the other's; locking a person out by failed attempts in one tenant does not lock out the person with the same address in the other; a person with an authenticator application in one tenant signs in to the other with the password alone; each tenant's discovery document names its own assurance levels only; one tenant's lists of roles, bindings and policy versions name nothing of the other's; one tenant's lists of groups and organizations name nothing of the other's; and a person deactivated through SCIM in one tenant loses their session there, while the person with the same address stays signed in to the other.
 
 In a browser, a cookie of one tenant is not even sent to another: cookies are limited to the tenant's path. The suite sends them anyway, because the server must not rely on the browser.
 

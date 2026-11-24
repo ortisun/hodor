@@ -251,7 +251,31 @@ python3 deploy/demo/operations.py
 
 The second worker keeps nothing for any tenant of the stack: it removes every ended session and every delivered message, of the other demonstrations too, and it is stopped at the end. The published image and chart are not part of this script; they are tried by hand at the tag of 0.3.0, as the [release steps](../development/conventions.md#releases) say.
 
-It ends with `The demonstration of Milestone 6 passed.` It can be run again and again, and runs in continuous integration after the other five. The variables of [the first demonstration](#the-demonstration) tell it where the stack is, and `HODOR_EDGE_URL` where the web server in front is, `http://localhost:8081` unless set.
+It ends with `The demonstration of Milestone 6 passed.` It can be run again and again, and runs in continuous integration after the other six. The variables of [the first demonstration](#the-demonstration) tell it where the stack is, and `HODOR_EDGE_URL` where the web server in front is, `http://localhost:8081` unless set.
+
+## The demonstration of Milestone 7
+
+[Milestone 7](../product/epics.md#milestone-7-groups-organizations-and-scim) gathers the people of a tenant in groups and organizations, gives roles to groups, carries the organization of a sign-in in the tokens, and lets a directory provision people through SCIM. Its demonstration plays an administrator, a person invited by email, an application and a SCIM client of one tenant:
+
+```bash
+python3 deploy/demo/organizations.py
+```
+
+| Step | What it shows |
+|---|---|
+| Two tenants, and their administrators | Two tenants, each with a signing key and a first administrator made with the command-line tool |
+| A group inside another group | Through the administration interface, `finance` is put inside `staff`. Putting `staff` inside `finance` is refused as a cycle, `identity.group_cycle` |
+| An organization, a department and an invitation | An organization with a unit of kind department, and a new address invited to it with that department. The link, read from the mail server, describes the invitation; accepting it with a password makes the account and the membership with the department, and the same link is refused the second time |
+| A role through a group | A Payroll resource server whose `reader` role is given to `staff`. The invited person is put in `finance`, and the Authorization API allows them, through both groups; taken out of `finance`, the next decision denies |
+| Signed in for the organization | The person signs in from an application of the tenant, which names the organization with `organization`: the ID token and the access token carry it in `org_id`, both checked against the tenant's key set. Asking for an organization the person is not a member of is answered `access_denied` at the application's address |
+| A directory provisions through SCIM | The tenant opens SCIM with a resource server of audience `urn:hodor:scim` and a client of the client credentials grant allowed the scope `scim`. The SCIM client creates a user and a group with the user in it, and changes both with `PATCH` |
+| Deactivated through SCIM | The provisioned person sets a password with a recovery link, signs in from the application, and gets a refresh token that works. The SCIM client sets `active` to false: the person's session ends at once, the refresh token is refused, and the password no longer signs in |
+| Tenants apart | The second tenant's administrator finds neither the group nor the organization, and the first tenant's SCIM token is refused by the second tenant's SCIM server |
+| The audit log | The log of the first tenant holds the nesting, the accepted invitation and the deactivation, done by the SCIM client |
+
+The application is played by the script, as in [the demonstration of Milestone 4](#the-demonstration-of-milestone-4): it registers a redirect address nobody listens on, and reads where the browser is sent.
+
+It ends with `The demonstration of Milestone 7 passed.` It can be run again and again, and runs in continuous integration after the demonstration of Milestone 5 and before that of Milestone 6, whose second worker removes the delivered messages this one reads. The variables of [the first demonstration](#the-demonstration) tell it where the stack is.
 
 ## Stop
 
