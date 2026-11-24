@@ -35,3 +35,4 @@ All records below are **Proposed** unless marked otherwise: they become Accepted
 | [0027](0027-what-0.3.0-holds.md) | 0.3.0 holds operations, groups and organizations with SCIM, workloads with webhooks, and what 0.2.0 left out (Accepted) |
 | [0031](0031-workloads-are-users.md) | Service accounts and agents are users of the identity context, and a client of the client credentials grant acts as one (Accepted) |
 | [0032](0032-webhooks.md) | Webhooks are a context of their own, signed as Standard Webhooks say, and sent on leases outside any transaction (Accepted) |
+| [0033](0033-api-keys.md) | API keys are credentials of workloads, recognized by their prefix, and never do more than their holder (Accepted) |

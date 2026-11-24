@@ -8,22 +8,25 @@ The same interface is described for programs in an OpenAPI document, served at `
 
 ## Who may call it
 
-Every request carries an [access token](../architecture/contexts/credential.md#access-tokens) in the `Authorization` header:
+Every request carries, in the `Authorization` header, a person's [access token](../architecture/contexts/credential.md#access-tokens) or a workload's [API key](../architecture/contexts/credential.md#api-keys):
 
 ```
 Authorization: Bearer hodor_at_3f9c…
+Authorization: Bearer hodor_ak_7d02…
 ```
 
 A request is answered only if all of these hold, checked in this order:
 
-1. **The token is good in this tenant**: well formed, known here, not expired, not revoked. A token of another tenant is not known here.
-2. **Its user may sign in.** A suspended user's tokens stop working. Only a person may sign in, so a token of a [service account or an agent](#service-accounts-and-agents) is never good here, whatever its status: workloads reach this interface with the API keys of Issue-94.
-3. **The user holds a role with the permission the route needs**, in this tenant ([authorization](../architecture/contexts/authorization.md)).
+1. **The token or the key is good in this tenant**: well formed, known here, not expired, not revoked. One of another tenant is not known here.
+2. **Its holder may act.** A token's user may sign in: a suspended user's tokens stop working, and only a person may sign in, so a token of a [service account or an agent](#service-accounts-and-agents) is never good here. A key's holder is a service account or an agent that is active: disabling it stops its keys.
+3. **It may do what the route needs**, in this tenant ([authorization](../architecture/contexts/authorization.md)). A token's user holds a role with the route's permission. A key holds the permission among its scopes **and** its holder holds a role with it.
 
 | Failing | Status | Code | Says |
 |---|---|---|---|
-| 1 or 2 | `401`, with `WWW-Authenticate: Bearer` | `admin.not_authenticated` | The same thing in every case: no token, a malformed one, an unknown, expired or revoked one, another tenant's, or one whose user may not sign in |
-| 3 | `403` | `admin.forbidden` | That the token is good and its user may not do this |
+| 1 or 2 | `401`, with `WWW-Authenticate: Bearer` | `admin.not_authenticated` | The same thing in every case: nothing presented, a malformed token or key, an unknown, expired or revoked one, another tenant's, or one whose holder may not act |
+| 3 | `403` | `admin.forbidden` | That the token or key is good and may not do this |
+
+What a key does is in the audit log with its holder as the actor.
 
 The check comes before anything else. A request that is refused learns nothing about what it asked for: not whether a user exists, not whether a body was valid.
 
@@ -182,6 +185,14 @@ It needs `HODOR_DATABASE_URL`, like the tenant commands.
 | `POST /webhook-endpoints/{endpoint_id}:rotate-secret` | `webhooks:write` | Give it a new secret, seen once; the previous one keeps signing for an overlap |
 | `GET /webhook-deliveries` | `webhooks:read` | List deliveries, newest first, of one endpoint or all, of one status or all |
 | `POST /webhook-deliveries/{delivery_id}:redeliver` | `webhooks:write` | Deliver a set-aside delivery again |
+| `GET /service-accounts/{service_account_id}/api-keys` | `workloads:read` | List the service account's API keys, never the keys themselves |
+| `POST /service-accounts/{service_account_id}/api-keys` | `workloads:write` | Make an API key for it, shown once |
+| `POST /service-accounts/{service_account_id}/api-keys/{api_key_id}:rotate` | `workloads:write` | Replace a key with a new one, shown once; the old one keeps working for an overlap |
+| `DELETE /service-accounts/{service_account_id}/api-keys/{api_key_id}` | `workloads:write` | Revoke a key at once |
+| `GET /agents/{agent_id}/api-keys` | `workloads:read` | List the agent's API keys, never the keys themselves |
+| `POST /agents/{agent_id}/api-keys` | `workloads:write` | Make an API key for it, shown once |
+| `POST /agents/{agent_id}/api-keys/{api_key_id}:rotate` | `workloads:write` | Replace a key with a new one, shown once; the old one keeps working for an overlap |
+| `DELETE /agents/{agent_id}/api-keys/{api_key_id}` | `workloads:write` | Revoke a key at once |
 
 ### A user
 
@@ -813,6 +824,42 @@ Specified in [the webhooks context](../architecture/contexts/webhooks.md). An en
 | An event type that is not in the catalog, or a description or an overlap that breaks its rule | `422` | `webhooks.event_type_unknown`, `webhooks.description_invalid`, `webhooks.overlap_invalid` |
 | A status in the query that is not one of the three, or an endpoint that is not an identifier | `422` | `request.query_invalid` |
 | The installation has no keys to seal secrets with | `503` | `webhooks.not_configured` |
+
+#### API keys
+
+Specified in [API keys](../architecture/contexts/credential.md#api-keys). A key, as every answer writes it:
+
+```json
+{
+  "id": "0193f2d0-…",
+  "name": "Nightly export on the build server",
+  "hint": "…7c1e",
+  "scopes": ["users:read", "authz:evaluate"],
+  "application_id": "0193f1c2-…",
+  "status": "active",
+  "created_at": "2026-11-24T14:03:11Z",
+  "expires_at": "2027-02-22T14:03:11Z",
+  "last_used_at": null,
+  "revoked_at": null,
+  "replaced_by": null
+}
+```
+
+`status` is `active`, `expired` or `revoked`. `hint` is the last four characters of the key, so that a person can tell which key a program holds.
+
+`POST …/api-keys` takes `{ "name": "…", "scopes": ["…"], "application_id": "…", "lifetime_days": 90 }`; `application_id` is needed with a scope of the Authorization API and refused without one, and `lifetime_days`, 1 to 365, is 90 unless given. The answer is `201` with the key and, **once**, `api_key`: the key itself, which no other answer holds and which Hodor cannot show again.
+
+`POST …/api-keys/{api_key_id}:rotate` takes `{ "lifetime_days": 90, "keep_previous_days": 7 }`, both optional, `keep_previous_days` from 0 to 30. The answer is `201` with the new key and its `api_key`, once. `DELETE …/api-keys/{api_key_id}` revokes the key and answers `204`. `GET …/api-keys` answers `{ "items": [ … ] }`, newest first.
+
+| Situation | Status | Code |
+|---|---|---|
+| No workload of that kind and identifier, or no key of it with that identifier | `404` | `identity.workload_not_found`, `credential.api_key_not_found` |
+| A scope that is not a permission of this interface or a scope of the Authorization API | `422` | `authorization.scope_unknown` |
+| A scope of the Authorization API without an application, or an application without one | `422` | `authorization.scope_needs_application`, `authorization.application_without_scope` |
+| An application that is not one of the tenant | `422` | `credential.api_key_application_invalid` |
+| A name, a lifetime or an overlap that breaks its rule | `422` | `credential.api_key_name_invalid`, `credential.api_key_lifetime_invalid`, `credential.api_key_overlap_invalid` |
+| The workload already holds 10 keys that work | `409` | `credential.too_many_api_keys` |
+| Rotating a key that was replaced, revoked or expired | `409` | `credential.api_key_not_rotatable` |
 
 ## Not built yet
 

@@ -133,6 +133,7 @@ Many rows are only useful for a while: a session that ended, a link that was use
 | `consents` | It was withdrawn or expired. The history of consents is kept | 30 days | — |
 | `administration_access_tokens` | The access token of the administration interface expired or was revoked | 30 days | — |
 | `webhook_deliveries` | The webhook delivery was delivered or set aside | 30 days | — |
+| `api_keys` | The API key of a service account or an agent expired or was revoked | 30 days | — |
 | `pending_authorizations` | A sign-in that left for an identity provider never came back | 0, fixed | — |
 | `access_tokens` | The access token recorded in the register expired | 0, fixed | — |
 
