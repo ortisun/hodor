@@ -17,7 +17,7 @@ Authorization: Bearer hodor_at_3f9c…
 A request is answered only if all of these hold, checked in this order:
 
 1. **The token is good in this tenant**: well formed, known here, not expired, not revoked. A token of another tenant is not known here.
-2. **Its user may sign in.** A suspended user's tokens stop working.
+2. **Its user may sign in.** A suspended user's tokens stop working. Only a person may sign in, so a token of a [service account or an agent](#service-accounts-and-agents) is never good here, whatever its status: workloads reach this interface with the API keys of Issue-94.
 3. **The user holds a role with the permission the route needs**, in this tenant ([authorization](../architecture/contexts/authorization.md)).
 
 | Failing | Status | Code | Says |
@@ -159,6 +159,20 @@ It needs `HODOR_DATABASE_URL`, like the tenant commands.
 | `POST /organizations/{organization_id}/invitations` | `organizations:write` | Invite an email address |
 | `DELETE /organizations/{organization_id}/invitations/{invitation_id}` | `organizations:write` | Withdraw a pending invitation |
 | `GET /users/{user_id}/organizations` | `organizations:read` | List the organizations a user is in, with their units |
+| `GET /service-accounts` | `workloads:read` | List the tenant's service accounts |
+| `POST /service-accounts` | `workloads:write` | Create a service account |
+| `GET /service-accounts/{service_account_id}` | `workloads:read` | Read one service account |
+| `PATCH /service-accounts/{service_account_id}` | `workloads:write` | Rename it, or replace its owners |
+| `POST /service-accounts/{service_account_id}:disable` | `workloads:write` | Disable it: its clients get no tokens and its tokens stop at once |
+| `POST /service-accounts/{service_account_id}:enable` | `workloads:write` | Enable it again |
+| `DELETE /service-accounts/{service_account_id}` | `workloads:write` | Delete it |
+| `GET /agents` | `workloads:read` | List the tenant's agents |
+| `POST /agents` | `workloads:write` | Create an agent |
+| `GET /agents/{agent_id}` | `workloads:read` | Read one agent |
+| `PATCH /agents/{agent_id}` | `workloads:write` | Rename it, or replace its owners |
+| `POST /agents/{agent_id}:disable` | `workloads:write` | Disable it: its clients get no tokens and its tokens stop at once |
+| `POST /agents/{agent_id}:enable` | `workloads:write` | Enable it again |
+| `DELETE /agents/{agent_id}` | `workloads:write` | Delete it |
 
 ### A user
 
@@ -441,6 +455,7 @@ A client:
   "allowed_scopes": ["openid", "email", "invoices:read"],
   "require_pkce": true,
   "id_token_signed_response_alg": "ES256",
+  "principal": null,
   "token_policy": {
     "access_token_seconds": 300,
     "id_token_seconds": 300,
@@ -471,9 +486,9 @@ A client:
 }
 ```
 
-`name`, `type` and `grant_types` are required. `authentication_method` is `client_secret_basic` for a confidential client and `none` for a public one unless given; `redirect_uris`, `post_logout_redirect_uris` and `allowed_scopes` are empty, `require_pkce` is `true`, `id_token_signed_response_alg` is `ES256` (or `RS256`; how its ID tokens are signed) and `token_policy` is the default of the OAuth context unless given, and `token_policy` may give any of its four fields. `secret_lifetime_days`, from 1 to 730, is how long the first secret lives; 365 unless given. The answer is `201` with the client. **A client with a secret method also has `client_secret` in this answer, once**: the secret itself, which no other answer holds and which Hodor cannot show again.
+`name`, `type` and `grant_types` are required. `authentication_method` is `client_secret_basic` for a confidential client and `none` for a public one unless given; `redirect_uris`, `post_logout_redirect_uris` and `allowed_scopes` are empty, `require_pkce` is `true`, `id_token_signed_response_alg` is `ES256` (or `RS256`; how its ID tokens are signed) and `token_policy` is the default of the OAuth context unless given, and `token_policy` may give any of its four fields. `principal`, the identifier of a service account or an agent, binds the client to it ([clients that act as a workload](../architecture/contexts/oauth.md#clients-that-act-as-a-workload)); it is `null` unless given, and a client with one has `grant_types` `["client_credentials"]` only. `secret_lifetime_days`, from 1 to 730, is how long the first secret lives; 365 unless given. The answer is `201` with the client. **A client with a secret method also has `client_secret` in this answer, once**: the secret itself, which no other answer holds and which Hodor cannot show again.
 
-`PATCH /clients/{client_id}` takes any of `name`, `authentication_method`, `grant_types`, `redirect_uris`, `post_logout_redirect_uris`, `allowed_scopes`, `require_pkce`, `id_token_signed_response_alg` and `token_policy` (with any of its fields); what is left out stays as it is, and the result is checked against every rule at once. The type and the application never change. Moving away from a secret method drops the client's secrets, and moving away from `private_key_jwt` drops its keys. The answer is `200` with the client.
+`PATCH /clients/{client_id}` takes any of `name`, `authentication_method`, `grant_types`, `redirect_uris`, `post_logout_redirect_uris`, `allowed_scopes`, `require_pkce`, `id_token_signed_response_alg`, `token_policy` (with any of its fields) and `principal`, which `null` removes; what is left out stays as it is, and the result is checked against every rule at once. The type and the application never change. Moving away from a secret method drops the client's secrets, and moving away from `private_key_jwt` drops its keys. The answer is `200` with the client.
 
 `POST /clients/{client_id}/secrets` with `{ "lifetime_days": 365, "keep_previous_days": 7 }` makes a new secret. Both fields are optional: the new secret lives 365 days and the newest previous one keeps working 7 more days unless given; `keep_previous_days` is 0 to 30, and 0 ends it at once. Every older secret ends at once. The answer is `201` with `{ "id": "…", "client_secret": "hodor_cs_…", "created_at": "…", "expires_at": "…" }`, once. A client without a secret method is refused with `422` and `oauth.client_secret_not_allowed`.
 
@@ -503,7 +518,7 @@ A resource server:
 
 | Situation | Status | Code |
 |---|---|---|
-| A value breaks its rule | `422` | The OAuth context's code, such as `oauth.client_redirect_uri_invalid` or `oauth.client_authentication_method_invalid`; a key for a client that does not use `private_key_jwt` is `oauth.client_key_not_allowed` |
+| A value breaks its rule | `422` | The OAuth context's code, such as `oauth.client_redirect_uri_invalid` or `oauth.client_authentication_method_invalid`; a key for a client that does not use `private_key_jwt` is `oauth.client_key_not_allowed`; a principal that is not a service account or an agent of the tenant, or a deleted one, is `oauth.client_principal_invalid`, and one given with another grant than `client_credentials` is `oauth.client_grants_invalid` |
 | The tenant already has 100 applications, or the application 20 clients | `409` | `oauth.too_many_applications`, `oauth.too_many_clients` |
 | The audience is taken, or the application already has a resource server | `409` | `oauth.audience_taken`, `oauth.application_has_resource_server` |
 | A `kid` the client already has, or a sixth key | `409` | `oauth.client_key_taken`, `oauth.client_too_many_keys` |
@@ -707,6 +722,39 @@ Specified in [organizations](../architecture/contexts/identity.md#organizations)
 | A unit put under itself, or past ten levels | `409` | `identity.unit_cycle`, `identity.unit_tree_too_deep` |
 | A unit with units below it | `409` | `identity.unit_not_empty` |
 | A name, a description, a kind or an address that breaks a rule | `422` | `identity.organization_name_invalid`, `identity.group_description_invalid`, `identity.unit_kind_invalid`, `identity.email_invalid` |
+
+### Service accounts and agents
+
+Specified in [service accounts and agents](../architecture/contexts/identity.md#service-accounts-and-agents). Both are answered alike, each under its own path; an identifier of the other kind, of a person or of a deleted workload is `404` there. A service account:
+
+```json
+{
+  "id": "0193f2c0-…",
+  "kind": "service_account",
+  "name": "Nightly billing export",
+  "status": "active",
+  "owners": ["0193f1c2-…"],
+  "created_at": "2026-11-24T14:03:11Z",
+  "updated_at": "2026-11-24T14:03:11Z"
+}
+```
+
+`status` is `active` or `disabled`. `owners` are the identifiers of the people responsible for it, in the order they became owners.
+
+`POST /service-accounts` and `POST /agents` take `{ "name": "Nightly billing export", "owners": ["0193f1c2-…"] }`, both required, and answer `201` with it, active. `PATCH` takes `name`, `owners` or both; `owners` replaces the whole list. `:disable` and `:enable` take no body and answer `200` with it. `DELETE` answers `204`. `GET /service-accounts` and `GET /agents` answer `{ "items": [ … ], "next_cursor": … }`, oldest first, a page at a time as users are.
+
+A workload holds roles and is in groups as a user is: `GET /users/{user_id}/role-assignments`, `POST /role-assignments` with `{ "principal": { "kind": "user", "id": "…" } }`, and `POST /groups/{group_id}/members` name it by its identifier. Its credentials are clients of an application, created with `principal` ([applications, clients and resource servers](#applications-clients-and-resource-servers)).
+
+| Situation | Status | Code |
+|---|---|---|
+| No workload of that kind and identifier, or a deleted one | `404` | `identity.workload_not_found` |
+| An owner that is not a user of the tenant, or a Deleted one | `404` | `identity.user_not_found` |
+| An owner that is not a person | `422` | `identity.workload_owner_invalid` |
+| No owner, or more than 10 | `422` | `identity.workload_owner_required`, `identity.too_many_workload_owners` |
+| A name that is empty or longer than 200 characters | `422` | `identity.display_name_invalid` |
+| Someone else changed it at the same moment | `409` | `identity.user_modified_concurrently` |
+
+What an administrator does here is in the audit log, through [the events of the identity context](../architecture/contexts/identity.md#events), and the tokens that disabling or deleting revoked through `oauth.access_token_revoked`.
 
 ## Not built yet
 

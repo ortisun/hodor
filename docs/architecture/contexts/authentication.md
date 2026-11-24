@@ -266,7 +266,7 @@ A lockout can be used to keep a real user out by failing on purpose. That is the
 
 When the last step is satisfied:
 
-1. The candidate is loaded again and must be allowed to sign in. This is the last check, made at the moment of completion.
+1. The candidate is loaded again and must be allowed to sign in. This is the last check, made at the moment of completion. Only an Active person is: a [service account or an agent](identity.md#service-accounts-and-agents) is refused here even if a step was somehow satisfied for it, as it is by the password step, the passkey alternative, an external identity, a step-up and password recovery, which all ask the same rule.
 2. The satisfied methods must reach [what the sign-in must reach](#what-a-sign-in-must-reach), with the tenant's policy as it is now. If they do not, the sign-in fails as in step 1: `authentication.failed` is recorded and no session starts.
 3. The transaction is marked completed. Only one request can do this.
 4. A session is started for the user, with the methods that were satisfied, the assurance they amount to, the tenant's session timeouts and the client details. A [step-up](#step-up) raises its session instead.

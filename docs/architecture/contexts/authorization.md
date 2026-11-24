@@ -39,6 +39,8 @@ A permission names something that can be done: a kind of resource and an action 
 | `groups:write` | Creating, changing and deleting groups, and adding and taking out members |
 | `organizations:read` | Seeing organizations, their units, their members and pending invitations, and the organizations a user is in |
 | `organizations:write` | Creating, changing and deleting organizations and units, adding, changing and taking out members, and inviting and withdrawing invitations |
+| `workloads:read` | Seeing the tenant's service accounts and agents, with their owners |
+| `workloads:write` | Creating service accounts and agents, renaming them, replacing their owners, and disabling, enabling and deleting them |
 
 ## Roles
 
@@ -47,7 +49,7 @@ A role is a named set of permissions. The roles of Hodor's administration are fi
 | Role | Permissions | Meant for |
 |---|---|---|
 | `tenant_administrator` | All of the above | The people who run a tenant |
-| `tenant_auditor` | `users:read`, `sessions:read`, `audit:read`, `identity-providers:read`, `keys:read`, `applications:read`, `assurance-levels:read`, `credentials:read`, `groups:read`, `organizations:read` | People who must be able to see everything and change nothing |
+| `tenant_auditor` | `users:read`, `sessions:read`, `audit:read`, `identity-providers:read`, `keys:read`, `applications:read`, `assurance-levels:read`, `credentials:read`, `groups:read`, `organizations:read`, `workloads:read` | People who must be able to see everything and change nothing |
 
 A user holds a role in one tenant. Holding a role in one tenant means nothing in another: an assignment is a row of its tenant, like everything else.
 
@@ -264,8 +266,10 @@ The binaries resolve a subject's attributes through the identity and OAuth conte
 
 | Subject | Attributes |
 |---|---|
-| A user | `status` (`active`, `suspended`, …), `kind` (`human`, …), `groups`, the identifiers of every group the user is in, directly or through other groups, and `organizations`, the identifiers of the organizations the user is a member of |
-| A client | `application` (its application's identifier), `client_type` (`confidential` or `public`) and `enabled` |
+| A user | `status` (`active`, `suspended`, …), `kind` (`human`, `service_account` or `agent`), `groups`, the identifiers of every group the user is in, directly or through other groups, and `organizations`, the identifiers of the organizations the user is a member of |
+| A client | `application` (its application's identifier), `client_type` (`confidential` or `public`) and `enabled`; and `principal`, the identifier of the service account or agent it acts as, only when it is [bound to one](oauth.md#clients-that-act-as-a-workload) |
+
+A [service account or an agent](identity.md#service-accounts-and-agents) is a user. The token of a client that acts as one names it in `sub`, so an application that asks about the token's subject asks about the workload, with the subject kind `user`, and the roles assigned to the workload decide.
 
 A subject Hodor does not know, including an identifier that is not one of its own, has no attributes, as for any engine. The attributes are given to the engine and never written back to the caller.
 
@@ -405,7 +409,7 @@ An assignment gives a role to a **principal**: a user, a client (an application 
 
 | Part | Meaning |
 |---|---|
-| Principal | A user, by its identifier; a client, by its client identifier; or a group, by its identifier |
+| Principal | A user, by its identifier; a client, by its client identifier; or a group, by its identifier. A service account and an agent are users, and are given roles as users are |
 | Role | The role, by namespace and name. It must exist |
 | Scope | The whole tenant, one application, or one [organization](identity.md#organizations). An assignment to an application applies only to requests made for that application, those whose context names it. An assignment to an organization applies only to requests made in that organization, those whose context names it, and only while the subject is a member of it |
 | Start and end | Both optional. Before the start and from the end on, the assignment allows nothing. The end must come after the start |

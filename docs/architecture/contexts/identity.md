@@ -2,14 +2,14 @@
 
 The `identity` context owns users: who exists inside a tenant, how they are found, and whether they may act. It does not know how a user proves who they are; that belongs to the `credential` and `authentication` contexts.
 
-This page specifies users and their login identifiers, built in Milestone 1, and groups and organizations, built in Milestone 7. Invitations and linked external identities belong to this context too and are specified here when their turn comes.
+This page specifies users and their login identifiers, built in Milestone 1, groups and organizations, built in Milestone 7, and service accounts and agents, built in Milestone 8 (Issue-93). Invitations and linked external identities belong to this context too and are specified here when their turn comes.
 
 ## What a user is
 
 | Field | Meaning |
 |---|---|
 | Identifier | A `UserId`, assigned at creation and never changed. It does not depend on the username, the email address or anything else that can change |
-| Kind | `human`, `service_account` or `agent`. Workloads and artificial intelligence agents are users in their own right and never share a person's credentials |
+| Kind | `human`, `service_account` or `agent`. Programs and artificial intelligence agents are users in their own right and never share a person's credentials; see [service accounts and agents](#service-accounts-and-agents) |
 | Status | Where the user is in their life; see [lifecycle](#lifecycle) |
 | Display name | Optional, up to 200 characters |
 | Locale | Optional language tag such as `en` or `pt-BR`, used for messages sent to the user |
@@ -37,7 +37,7 @@ stateDiagram-v2
 | Status | May sign in | Meaning |
 |---|---|---|
 | Pending | No | Created, but not confirmed yet: for example, registered and waiting for email verification |
-| Active | Yes | Normal |
+| Active | Yes, if a person | Normal. A service account or an agent never signs in, whatever its status |
 | Suspended | No | Blocked by an administrator or a security rule; carries a reason |
 | Deactivated | No | Closed, by the user or an administrator; can be restored |
 | Deleted | No | Personal data has been erased; only the identifier remains so that references stay valid |
@@ -50,10 +50,11 @@ Rules:
 - Marking a user Deleted removes their login identifiers and clears the display name and locale. This is the erasure step of a data subject's deletion request.
 - Each successful change produces one event (see [events](#events)).
 - Marking a user Deleted also takes them out of every group.
+- **Only a person may sign in**: a user may sign in when they are of kind `human` and Active. Every part of a sign-in asks this one rule, the completion included, so a service account or an agent can never be given a session.
 
 ## Login identifiers
 
-A login identifier is a name a user can be found by when signing in. A user can have several. Each has a kind, a value, and a record of whether the user proved control of it.
+A login identifier is a name a user can be found by when signing in. A user can have several. Each has a kind, a value, and a record of whether the user proved control of it. A service account or an agent has none: it is never found by a name typed at a sign-in.
 
 | Kind | Example | Needs verification |
 |---|---|---|
@@ -90,6 +91,7 @@ Normalization is idempotent: normalizing an already normalized value changes not
 
 - A normalized identifier of a given kind is unique within the tenant. Two tenants can each have a user with the same email address.
 - A user has at most 10 identifiers.
+- A service account or an agent cannot be given one. The refusal is `identity.workload_identifier_refused`.
 - A user has at most one primary identifier of each kind. The first identifier of a kind becomes primary; another can be chosen later, and for an email address it must be verified first.
 - A verified identifier stays verified. Verifying it again changes nothing and produces no event.
 - An identifier can be removed, except the last one of a user who is not Deactivated or Deleted: such a user would have no way to sign in.
@@ -223,6 +225,61 @@ Rules:
 
 Making the secret, sending the message and the two ways of accepting are the authentication context's: [invitations to an organization](authentication.md#invitations-to-an-organization).
 
+## Service accounts and agents
+
+A **service account** is a program of the tenant that acts on its own: a nightly export, a service that calls another. An **agent** is an artificial intelligence agent. Both are **workloads**: principals of the tenant that are not people. Each is a user of its kind, `service_account` or `agent`, so that whatever is given to a user can be given to it: [roles](authorization.md#assignments), membership of [groups](#groups), and its own lines in the audit log ([Decision 0028](../../decisions/0028-workloads-are-users.md)).
+
+| Field | Meaning |
+|---|---|
+| Identifier | Its `UserId`. Its access tokens name it in `sub` |
+| Kind | `service_account` or `agent` |
+| Name | 1 to 200 characters, kept as the user's display name. Required: it is how administrators tell workloads apart |
+| Status | `active`, `disabled` or `deleted`; see below |
+| Owners | The people responsible for it: 1 to 10 human users of the tenant |
+
+A workload proves who it is as a [client of the client credentials grant](oauth.md#clients-that-act-as-a-workload) bound to it; API keys follow in Issue-94. It has no login identifier, no password and no second factor, and [only a person may sign in](#lifecycle), so no part of a sign-in can make a session for it.
+
+**An agent differs from a service account only in its kind**, for now. [Token exchange](../../product/epics.md#slice-y--workloads-and-agents-epic-22) (Issue-95) lets an agent, and only an agent, act on a person's behalf. A service account always acts as itself.
+
+### Its lifecycle
+
+A workload uses three of a user's statuses:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Active: create
+    Active --> Disabled: disable
+    Disabled --> Active: enable
+    Active --> Deleted: delete
+    Disabled --> Deleted: delete
+    Deleted --> [*]
+```
+
+| Status | As a user | Its tokens |
+|---|---|---|
+| `active` | Active | Issued and in force |
+| `disabled` | Deactivated, or Suspended if an administrator suspended it as a user | Refused at the token endpoint; those already issued are no longer in force |
+| `deleted` | Deleted | As when disabled, and the workload is no longer read or listed: only its identifier remains, in the audit log and wherever it is referred to |
+
+- **A workload is created Active.** Nothing about it needs confirming.
+- **Disabling** deactivates it. **Enabling** restores a deactivated workload, or reactivates a suspended one. Disabling a disabled workload or enabling an active one changes nothing and records nothing.
+- **Deleting** deactivates it if it is not already, then marks it Deleted, in one unit of work: its name is erased, it leaves every group and organization, and its owners are forgotten.
+- **Disabling and deleting end its access at once, in the same unit of work**: through the [`WorkloadAccess`](#port) port, every access token issued for it is revoked, with the reason `workload_disabled` or `workload_deleted`. Enabling it again does not bring a revoked token back; its clients ask for new ones. Even without the revocation, a token of a workload that is not active is not [in force](oauth.md#the-register-of-access-tokens), so a workload suspended as a user stops too.
+
+### Owners
+
+Every workload has at least one owner: a person who answers for what it does, whom a review of the tenant's workloads asks.
+
+| Rule | Why |
+|---|---|
+| An owner is a human user of the tenant that is not Deleted | A workload cannot answer for another, and a person who left cannot answer for anything |
+| A workload has 1 to 10 owners, each once | A workload nobody owns is the one nobody reviews |
+| The owners are set when the workload is created, and replaced as a whole | Replacing the list is one change, checked at once: a change that would leave none is refused with `identity.workload_owner_required` |
+| An owner who is later marked Deleted stays listed, by identifier | So that a review sees that the workload's owner left, and an administrator names another |
+| Owning a workload grants nothing | Owners are who to ask; what an owner may do is given by roles, as for anyone |
+
+The refusals: an owner that is not a user of the tenant, or a Deleted one, is `identity.user_not_found`; a user that is not a person is `identity.workload_owner_invalid`; more than 10 is `identity.too_many_workload_owners`.
+
 ## Events
 
 Events carry identifiers of users and of login identifiers, and the kind of a login identifier, but never its value. An email address is personal data and stays in the identity tables; the audit trail refers to it by identifier.
@@ -259,6 +316,10 @@ Events carry identifiers of users and of login identifiers, and the kind of a lo
 | `identity.invitation_created` | An invitation is made; carries the organization. Never the address |
 | `identity.invitation_withdrawn` | An invitation is withdrawn, by hand or by a newer one to the same address |
 | `identity.invitation_accepted` | An invitation is accepted; carries the organization and the user |
+| `identity.workload_owner_added` | A person became an owner of a workload; carries the workload, its kind and the owner |
+| `identity.workload_owner_removed` | A person stopped being an owner of a workload; carries the workload, its kind and the owner. Deleting a workload records `identity.user_deleted` only |
+
+Creating a workload records `identity.user_created`, which carries the kind, and one `identity.workload_owner_added` per owner. Disabling records `identity.user_deactivated`, enabling `identity.user_restored` or `identity.user_reactivated`, and deleting `identity.user_deleted`, with the OAuth context's `oauth.access_token_revoked` for each token revoked.
 
 A group's name and description are not personal data, but they can say a great deal about people: they stay in the identity tables, and events carry the group's identifier only. The same holds for organizations and units.
 
@@ -290,6 +351,10 @@ A group's name and description are not personal data, but they can say a great d
 | Find an invitation by the hash of its token; accept it | Accepting uses it up and makes the membership in the caller's unit of work |
 | Create user, get user, change user, mark deleted, in the caller's unit of work | For a context that does more in the same transaction, as [provisioning](provisioning.md) does: a change applies any of the transitions and changes above to a loaded user, stores it once and records every event |
 | Create, get, change, delete group; add and remove a member; list every member; the groups a user is directly in; in the caller's unit of work | As above, for groups, with the same rules |
+| Create workload | Creates a service account or an agent, Active, with its name and owners |
+| Get workload, list workloads | A workload of one kind that is not Deleted, with its owners; or a page of them, in the order they were created |
+| Change workload | Replaces its name, its owners, or both |
+| Disable, enable, delete workload | Apply [its lifecycle](#its-lifecycle); disabling and deleting revoke its tokens in the same unit of work |
 
 Every use case that changes a user loads it, applies the change, stores it and records its events in one unit of work. A change that produces no event, such as verifying an identifier that is already verified, changed nothing and stores nothing.
 
@@ -302,6 +367,8 @@ Every use case that changes a user loads it, applies the change, stores it and r
 | `GroupPolicy` | The tenant's bound on the depth of groups, read in the unit of work of the change |
 | `InvitationRepository` | Store invitations, withdraw the pending one of an organization and address, find one by the hash of its token, use one up at most once, list an organization's pending invitations |
 | `OrganizationRepository` | Store, load, change and delete organizations with optimistic locking; store, change and delete units; take an organization's lock on its tree; add, change and remove memberships; list units, members and a user's organizations |
+| `WorkloadRepository` | List the workloads of one kind that are not Deleted, a page at a time; read, replace and forget a workload's owners |
+| `WorkloadAccess` | Ends whatever a workload holds, its access tokens first, in the caller's unit of work. Implemented in the composition root with the OAuth and session contexts, which this context does not depend on, by the same object that ends a deprovisioned person's access ([provisioning](provisioning.md#deprovisioning)) |
 
 Every method works inside the tenant of the unit of work it is given.
 
@@ -321,6 +388,10 @@ What an administrator does through [the administration interface](../../api/admi
 | `hodor-cli organization unit --tenant <slug> --organization <id> --name <name> [--kind unit\|department] [--parent <id>]` | Creates a unit, and prints `created <id> <name>` |
 | `hodor-cli organization member --tenant <slug> --organization <id> --user <id> [--unit <id> ...]` | Makes a user a member with those units, or replaces a member's units |
 | `hodor-cli organization invite --tenant <slug> --organization <id> --email <address> [--unit <id> ...] [--locale <tag>]` | Invites an address. The message goes out when a worker delivers it; the link starts with `HODOR_PUBLIC_URL` |
+| `hodor-cli service-account create --tenant <slug> --name <name> --owner <id> [--owner <id> ...]` | Creates a service account, and prints `created <id> <name>` |
+| `hodor-cli service-account list --tenant <slug>` | Prints `<id> <status> <name>` for every service account that is not deleted |
+| `hodor-cli service-account disable\|enable\|delete --tenant <slug> --id <id>` | Applies [its lifecycle](#its-lifecycle), and prints `<status> <id>` |
+| `hodor-cli agent create\|list\|disable\|enable\|delete …` | The same, for agents |
 
 A refusal is the same as through the administration interface, with the same code, and the command exits with a status that is not zero.
 
@@ -408,6 +479,15 @@ As `identity.group`: `tenant_id`, `id`, `name`, `name_normalized` unique per ten
 | `created_at`, `expires_at` | `timestamptz` | |
 | `accepted_by`, `accepted_at`, `withdrawn_at` | | Set when it happens |
 
+### `identity.workload_owner`
+
+| Column | Type | Notes |
+|---|---|---|
+| `tenant_id`, `workload_id`, `owner_id` | `uuid` | Primary key. Both reference `identity.user` with the tenant; an owner is never its own workload |
+| `added_at` | `timestamptz` | |
+
+A tenant table under row-level security. That the workload is a service account or an agent, and the owner a person, is checked by the use cases, which load both in the same unit of work.
+
 ## Not built yet
 
 | Item | Planned in |
@@ -420,3 +500,7 @@ As `identity.group`: `tenant_id`, `id`, `name`, `name_normalized` unique per ten
 | Linked external identities | Phase 3 |
 | Non-ASCII email addresses | Not scheduled |
 | Purging the remaining row of a Deleted user | With the tenant purge job |
+| API keys of a workload | Milestone 8, Issue-94 |
+| An agent acting on a person's behalf through token exchange | Milestone 8, Issue-95 |
+| Console pages for service accounts and agents | Milestone 8, Issue-97 |
+| Listing the clients bound to a workload, and the workloads a person owns | When the console pages need them, Issue-97 |
