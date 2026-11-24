@@ -41,6 +41,15 @@ At the project owner's request, signing in with external identities is built bef
 
 0.2.0 holds three parts the project owner asked for: the OAuth server and OpenID Provider, strong authentication with step-up, and the authorization engine with Open Policy Agent. They are Milestones 3, 4 and 5 in [the epics](epics.md#milestone-3-applications-ask-hodor-who-someone-is): all of Phase 2 save three requirements marked Expected, and the parts of Phases 4 and 5 that make each feature whole. [Decision 0023](../decisions/0023-what-0.2.0-holds.md) says what each milestone leaves to its phase.
 
+0.3.0 holds four parts the project owner asked for after 0.2.0. They are Milestones 6 to 9 in [the epics](epics.md#milestone-6-hodor-runs-behind-a-load-balancer-and-cleans-up-after-itself), built in this order:
+
+1. What a deployment behind a load balancer needs.
+2. Groups, organizations and SCIM.
+3. Service accounts, agents, token exchange and webhooks.
+4. The parts of Phases 2, 4 and 5 that 0.2.0 left out.
+
+[Decision 0027](../decisions/0027-what-0.3.0-holds.md) says why and what stays in each phase.
+
 ## Console delivery
 
 The consoles trail their APIs by one phase so that the API is settled first.
