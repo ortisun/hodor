@@ -4,11 +4,13 @@
 //! which is what makes the fake a faithful stand-in in use case tests.
 
 use crate::api::{
-    Group, GroupMember, GroupName, GroupPolicy, GroupRepository, IdentifierKind,
-    NormalizedIdentifier, Profile, User, UserKind, UserRepository,
+    Group, GroupMember, GroupName, GroupPolicy, GroupRepository, IdentifierKind, Membership,
+    NormalizedIdentifier, Organization, OrganizationName, OrganizationRepository, Profile, Unit,
+    UnitId, UnitKind, User, UserKind, UserRepository,
 };
 use hodor_kernel::{
-    DomainError, GroupId, TenantContext, TenantId, Timestamp, UnitOfWork, UnitOfWorkFactory, UserId,
+    DomainError, GroupId, OrganizationId, TenantContext, TenantId, Timestamp, UnitOfWork,
+    UnitOfWorkFactory, UserId,
 };
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -940,4 +942,540 @@ pub async fn run_group_contract(ports: GroupPorts<'_>) {
         .await
         .expect("list"));
     assert_eq!(after.len(), 1);
+}
+
+/// Organizations, their units and their members kept in memory.
+#[derive(Debug, Clone, Default)]
+pub struct InMemoryOrganizations {
+    state: Arc<Mutex<OrganizationRows>>,
+}
+
+#[derive(Debug, Default)]
+struct OrganizationRows {
+    organizations: BTreeMap<(TenantId, OrganizationId), Organization>,
+    units: BTreeMap<(TenantId, UnitId), Unit>,
+    memberships: BTreeMap<(TenantId, OrganizationId, UserId), Membership>,
+}
+
+impl InMemoryOrganizations {
+    fn state(&self) -> std::sync::MutexGuard<'_, OrganizationRows> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+fn organization_name_used(
+    rows: &OrganizationRows,
+    tenant: TenantId,
+    organization: &Organization,
+) -> bool {
+    rows.organizations.iter().any(|((owner, id), other)| {
+        *owner == tenant
+            && *id != organization.id()
+            && other.name().normalized() == organization.name().normalized()
+    })
+}
+
+fn organization_name_taken() -> DomainError {
+    DomainError::conflict(
+        "identity.organization_name_taken",
+        "another organization of the tenant has this name",
+    )
+}
+
+#[async_trait::async_trait]
+impl OrganizationRepository for InMemoryOrganizations {
+    async fn insert(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        organization: &Organization,
+    ) -> Result<(), DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let mut rows = self.state();
+        if organization_name_used(&rows, tenant, organization) {
+            return Err(organization_name_taken());
+        }
+        rows.organizations
+            .insert((tenant, organization.id()), organization.clone());
+        Ok(())
+    }
+
+    async fn get(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: OrganizationId,
+    ) -> Result<Option<Organization>, DomainError> {
+        Ok(self
+            .state()
+            .organizations
+            .get(&(uow.tenant().tenant_id(), id))
+            .cloned())
+    }
+
+    async fn list(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        after: Option<OrganizationId>,
+        limit: u32,
+    ) -> Result<Vec<Organization>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        Ok(self
+            .state()
+            .organizations
+            .iter()
+            .filter(|((owner, id), _)| *owner == tenant && after.is_none_or(|after| *id > after))
+            .take(limit as usize)
+            .map(|(_, organization)| organization.clone())
+            .collect())
+    }
+
+    async fn update(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        organization: &Organization,
+    ) -> Result<(), DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let mut rows = self.state();
+        let stored = rows
+            .organizations
+            .get(&(tenant, organization.id()))
+            .ok_or_else(|| {
+                DomainError::not_found(
+                    "identity.organization_not_found",
+                    "the organization does not exist",
+                )
+            })?;
+        if stored.snapshot().version != organization.snapshot().version {
+            return Err(DomainError::conflict(
+                "identity.organization_modified_concurrently",
+                "the organization was changed by someone else; reload and try again",
+            ));
+        }
+        if organization_name_used(&rows, tenant, organization) {
+            return Err(organization_name_taken());
+        }
+        let mut state = organization.snapshot().clone();
+        state.version += 1;
+        rows.organizations.insert(
+            (tenant, organization.id()),
+            Organization::from_snapshot(state),
+        );
+        Ok(())
+    }
+
+    async fn delete(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: OrganizationId,
+    ) -> Result<Option<u64>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let mut rows = self.state();
+        if rows.organizations.remove(&(tenant, id)).is_none() {
+            return Ok(None);
+        }
+        rows.units
+            .retain(|(owner, _), unit| !(*owner == tenant && unit.organization == id));
+        let before = rows.memberships.len();
+        rows.memberships
+            .retain(|(owner, organization, _), _| !(*owner == tenant && *organization == id));
+        Ok(Some((before - rows.memberships.len()) as u64))
+    }
+
+    async fn lock_tree(
+        &self,
+        _uow: &mut dyn UnitOfWork,
+        _organization: OrganizationId,
+    ) -> Result<(), DomainError> {
+        Ok(())
+    }
+
+    async fn units(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        organization: OrganizationId,
+    ) -> Result<Vec<Unit>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        Ok(self
+            .state()
+            .units
+            .iter()
+            .filter(|((owner, _), unit)| *owner == tenant && unit.organization == organization)
+            .map(|(_, unit)| unit.clone())
+            .collect())
+    }
+
+    async fn save_unit(&self, uow: &mut dyn UnitOfWork, unit: &Unit) -> Result<(), DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let mut rows = self.state();
+        let taken = rows.units.iter().any(|((owner, id), other)| {
+            *owner == tenant
+                && *id != unit.id
+                && other.organization == unit.organization
+                && other.parent == unit.parent
+                && other.name.normalized() == unit.name.normalized()
+        });
+        if taken {
+            return Err(DomainError::conflict(
+                "identity.unit_name_taken",
+                "another unit with the same parent has this name",
+            ));
+        }
+        rows.units.insert((tenant, unit.id), unit.clone());
+        Ok(())
+    }
+
+    async fn delete_unit(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        organization: OrganizationId,
+        unit: UnitId,
+    ) -> Result<bool, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let mut rows = self.state();
+        let exists = rows
+            .units
+            .get(&(tenant, unit))
+            .is_some_and(|stored| stored.organization == organization);
+        if !exists {
+            return Ok(false);
+        }
+        if rows
+            .units
+            .iter()
+            .any(|((owner, _), other)| *owner == tenant && other.parent == Some(unit))
+        {
+            return Err(DomainError::conflict(
+                "identity.unit_not_empty",
+                "a unit with units below it cannot be deleted",
+            ));
+        }
+        rows.units.remove(&(tenant, unit));
+        for ((owner, _, _), membership) in &mut rows.memberships {
+            if *owner == tenant {
+                membership.units.remove(&unit);
+            }
+        }
+        Ok(true)
+    }
+
+    async fn membership(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        organization: OrganizationId,
+        user: UserId,
+    ) -> Result<Option<Membership>, DomainError> {
+        Ok(self
+            .state()
+            .memberships
+            .get(&(uow.tenant().tenant_id(), organization, user))
+            .cloned())
+    }
+
+    async fn save_membership(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        membership: &Membership,
+    ) -> Result<(), DomainError> {
+        let key = (
+            uow.tenant().tenant_id(),
+            membership.organization,
+            membership.user,
+        );
+        self.state().memberships.insert(key, membership.clone());
+        Ok(())
+    }
+
+    async fn remove_membership(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        organization: OrganizationId,
+        user: UserId,
+    ) -> Result<bool, DomainError> {
+        Ok(self
+            .state()
+            .memberships
+            .remove(&(uow.tenant().tenant_id(), organization, user))
+            .is_some())
+    }
+
+    async fn members(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        organization: OrganizationId,
+        after: Option<UserId>,
+        limit: u32,
+    ) -> Result<Vec<Membership>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        Ok(self
+            .state()
+            .memberships
+            .iter()
+            .filter(|((owner, of, user), _)| {
+                *owner == tenant && *of == organization && after.is_none_or(|after| *user > after)
+            })
+            .take(limit as usize)
+            .map(|(_, membership)| membership.clone())
+            .collect())
+    }
+
+    async fn memberships_of(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        user: UserId,
+    ) -> Result<Vec<Membership>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        Ok(self
+            .state()
+            .memberships
+            .iter()
+            .filter(|((owner, _, of), _)| *owner == tenant && *of == user)
+            .map(|(_, membership)| membership.clone())
+            .collect())
+    }
+}
+
+/// The ports the contract of organizations runs against.
+#[derive(Clone)]
+pub struct OrganizationPorts<'a> {
+    /// Starts units of work.
+    pub units_of_work: &'a dyn UnitOfWorkFactory,
+    /// Where the users that become members are stored.
+    pub users: &'a dyn UserRepository,
+    /// The repository under test.
+    pub organizations: &'a dyn OrganizationRepository,
+}
+
+impl std::fmt::Debug for OrganizationPorts<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OrganizationPorts").finish_non_exhaustive()
+    }
+}
+
+fn an_organization(name: &str) -> Organization {
+    let name = OrganizationName::parse(name).expect("a name");
+    Organization::create(name, None, MOMENT)
+        .expect("an organization")
+        .0
+}
+
+fn a_unit(organization: OrganizationId, parent: Option<UnitId>, name: &str) -> Unit {
+    Unit {
+        id: UnitId::generate(),
+        organization,
+        parent,
+        name: OrganizationName::parse(name).expect("a name"),
+        kind: UnitKind::Department,
+        created_at: MOMENT,
+        updated_at: MOMENT,
+    }
+}
+
+/// Runs the contract of organizations. Each case uses tenants of its own.
+///
+/// # Panics
+///
+/// Panics when the implementation breaks the contract.
+pub async fn run_organization_contract(ports: OrganizationPorts<'_>) {
+    let ports = &ports;
+    macro_rules! within {
+        ($tenant:expr, |$uow:ident| $body:expr) => {{
+            let mut $uow = ports.units_of_work.begin($tenant).await.expect("begin");
+            let value = $body;
+            $uow.commit().await.expect("commit");
+            value
+        }};
+    }
+    let repository = ports.organizations;
+    let (home, elsewhere) = (tenant(), tenant());
+
+    // Stored, loaded unchanged, invisible elsewhere, names unique in a tenant.
+    let acme = an_organization("Acme");
+    within!(&home, |uow| repository
+        .insert(uow.as_mut(), &acme)
+        .await
+        .expect("insert"));
+    let loaded = within!(&home, |uow| repository
+        .get(uow.as_mut(), acme.id())
+        .await
+        .expect("get"));
+    assert_eq!(loaded.as_ref(), Some(&acme));
+    let hidden = within!(&elsewhere, |uow| repository
+        .get(uow.as_mut(), acme.id())
+        .await
+        .expect("get"));
+    assert_eq!(hidden, None);
+    let taken = within!(&home, |uow| repository
+        .insert(uow.as_mut(), &an_organization("ACME"))
+        .await);
+    assert_eq!(
+        taken.expect_err("taken").code(),
+        "identity.organization_name_taken"
+    );
+    within!(&elsewhere, |uow| repository
+        .insert(uow.as_mut(), &an_organization("Acme"))
+        .await
+        .expect("another tenant"));
+
+    // A change, a stale change.
+    let mut renamed = acme.clone();
+    renamed
+        .change(
+            OrganizationName::parse("Acme Inc").expect("a name"),
+            Some("Rockets".to_owned()),
+            MOMENT,
+        )
+        .expect("a change");
+    within!(&home, |uow| repository
+        .update(uow.as_mut(), &renamed)
+        .await
+        .expect("update"));
+    let stale = within!(&home, |uow| repository.update(uow.as_mut(), &renamed).await);
+    assert_eq!(
+        stale.expect_err("stale").code(),
+        "identity.organization_modified_concurrently"
+    );
+
+    // Units: names unique among siblings only.
+    let engineering = a_unit(acme.id(), None, "Engineering");
+    let platform = a_unit(acme.id(), Some(engineering.id), "Platform");
+    let sales = a_unit(acme.id(), None, "Sales");
+    let sales_platform = a_unit(acme.id(), Some(sales.id), "Platform");
+    for unit in [&engineering, &platform, &sales, &sales_platform] {
+        within!(&home, |uow| repository
+            .save_unit(uow.as_mut(), unit)
+            .await
+            .expect("a unit"));
+    }
+    let twin = a_unit(acme.id(), Some(engineering.id), "platform");
+    let twin = within!(&home, |uow| repository.save_unit(uow.as_mut(), &twin).await);
+    assert_eq!(
+        twin.expect_err("a sibling's name").code(),
+        "identity.unit_name_taken"
+    );
+    let units = within!(&home, |uow| repository
+        .units(uow.as_mut(), acme.id())
+        .await
+        .expect("units"));
+    assert_eq!(units.len(), 4);
+    let mut moved = platform.clone();
+    moved.parent = None;
+    moved.name = OrganizationName::parse("Platform team").expect("a name");
+    within!(&home, |uow| repository
+        .save_unit(uow.as_mut(), &moved)
+        .await
+        .expect("a change"));
+    let units = within!(&home, |uow| repository
+        .units(uow.as_mut(), acme.id())
+        .await
+        .expect("units"));
+    assert!(units.contains(&moved));
+    let refused = within!(&home, |uow| repository
+        .delete_unit(uow.as_mut(), acme.id(), sales.id)
+        .await);
+    assert_eq!(
+        refused.expect_err("not empty").code(),
+        "identity.unit_not_empty"
+    );
+
+    // Memberships.
+    let mut people = Vec::new();
+    for index in 0..3 {
+        let user = person(vec![email(&format!("staff{index}@example.com"))]);
+        store(
+            &Ports {
+                units_of_work: ports.units_of_work,
+                users: ports.users,
+            },
+            &home,
+            &user,
+        )
+        .await
+        .expect("a user");
+        people.push(user.id());
+    }
+    people.sort();
+    for user in &people {
+        let membership = Membership {
+            organization: acme.id(),
+            user: *user,
+            units: std::collections::BTreeSet::from([sales_platform.id, engineering.id]),
+            added_at: MOMENT,
+        };
+        within!(&home, |uow| repository
+            .save_membership(uow.as_mut(), &membership)
+            .await
+            .expect("a member"));
+    }
+    let first = within!(&home, |uow| repository
+        .membership(uow.as_mut(), acme.id(), people[0])
+        .await
+        .expect("one"))
+    .expect("a membership");
+    assert_eq!(first.units.len(), 2);
+    let mut fewer = first.clone();
+    fewer.units = std::collections::BTreeSet::from([engineering.id]);
+    within!(&home, |uow| repository
+        .save_membership(uow.as_mut(), &fewer)
+        .await
+        .expect("replace"));
+    let again = within!(&home, |uow| repository
+        .membership(uow.as_mut(), acme.id(), people[0])
+        .await
+        .expect("one"));
+    assert_eq!(again, Some(fewer));
+    let page = within!(&home, |uow| repository
+        .members(uow.as_mut(), acme.id(), Some(people[0]), 1)
+        .await
+        .expect("members"));
+    assert_eq!(page.len(), 1);
+    assert_eq!(page[0].user, people[1]);
+    let of = within!(&home, |uow| repository
+        .memberships_of(uow.as_mut(), people[2])
+        .await
+        .expect("of"));
+    assert_eq!(of.len(), 1);
+    assert_eq!(of[0].organization, acme.id());
+
+    // Deleting a unit takes members out of it, not out of the organization.
+    within!(&home, |uow| assert!(
+        repository
+            .delete_unit(uow.as_mut(), acme.id(), sales_platform.id)
+            .await
+            .expect("delete")
+    ));
+    let left = within!(&home, |uow| repository
+        .membership(uow.as_mut(), acme.id(), people[1])
+        .await
+        .expect("one"))
+    .expect("still a member");
+    assert_eq!(
+        left.units,
+        std::collections::BTreeSet::from([engineering.id])
+    );
+    let removed = within!(&home, |uow| repository
+        .remove_membership(uow.as_mut(), acme.id(), people[2])
+        .await
+        .expect("remove"));
+    assert!(removed);
+    let removed = within!(&home, |uow| repository
+        .remove_membership(uow.as_mut(), acme.id(), people[2])
+        .await
+        .expect("remove"));
+    assert!(!removed);
+
+    // Deleting the organization deletes its units and memberships.
+    let deleted = within!(&home, |uow| repository
+        .delete(uow.as_mut(), acme.id())
+        .await
+        .expect("delete"));
+    assert_eq!(deleted, Some(2));
+    let units = within!(&home, |uow| repository
+        .units(uow.as_mut(), acme.id())
+        .await
+        .expect("units"));
+    assert!(units.is_empty());
+    let of = within!(&home, |uow| repository
+        .memberships_of(uow.as_mut(), people[0])
+        .await
+        .expect("of"));
+    assert!(of.is_empty());
 }

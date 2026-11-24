@@ -16,12 +16,12 @@ use hodor_adapters_postgres::{
     PgAuditLog, PgAuthorizationCodeStore, PgAuthorizationRequestStore, PgBundleStore,
     PgClientAssertionStore, PgClientStore, PgConsentStore, PgDecisionLogStore,
     PgEngineBindingStore, PgGrantStore, PgGroupRepository, PgInstanceStatusStore, PgInstanceStore,
-    PgKeyStore, PgLinkStore, PgMessageQueue, PgNativeRoleStore, PgPasswordStore,
-    PgPendingAuthorizationStore, PgPolicyVersionStore, PgProviderStore, PgPublicationStore,
-    PgRecoveryCodeStore, PgRefreshTokenStore, PgResourceServerStore, PgRoleAssignmentStore,
-    PgSealingStateStore, PgSessionStore, PgSimulationStore, PgTenantDirectory, PgTenantRepository,
-    PgTotpStore, PgTransactionStore, PgUploadedDecisionStore, PgUserRepository,
-    PgVerificationTokenStore, PgWebAuthnStore,
+    PgKeyStore, PgLinkStore, PgMessageQueue, PgNativeRoleStore, PgOrganizationRepository,
+    PgPasswordStore, PgPendingAuthorizationStore, PgPolicyVersionStore, PgProviderStore,
+    PgPublicationStore, PgRecoveryCodeStore, PgRefreshTokenStore, PgResourceServerStore,
+    PgRoleAssignmentStore, PgSealingStateStore, PgSessionStore, PgSimulationStore,
+    PgTenantDirectory, PgTenantRepository, PgTotpStore, PgTransactionStore,
+    PgUploadedDecisionStore, PgUserRepository, PgVerificationTokenStore, PgWebAuthnStore,
 };
 use hodor_audit::api::AuditService;
 use hodor_authentication::api::{
@@ -491,7 +491,8 @@ fn interaction(config: &Config, database: &Database) -> Result<InteractionState,
         clock.clone(),
     );
     let identity = IdentityService::new(units(), Arc::new(PgUserRepository), clock.clone())
-        .with_groups(Arc::new(PgGroupRepository));
+        .with_groups(Arc::new(PgGroupRepository))
+        .with_organizations(Arc::new(PgOrganizationRepository));
     let credentials =
         CredentialService::new(units(), Arc::new(PgPasswordStore), hasher, clock.clone());
     let sessions = SessionService::new(
@@ -704,7 +705,8 @@ fn token(
             clock.clone(),
         ),
         identity: IdentityService::new(units.clone(), Arc::new(PgUserRepository), clock.clone())
-            .with_groups(Arc::new(PgGroupRepository)),
+            .with_groups(Arc::new(PgGroupRepository))
+            .with_organizations(Arc::new(PgOrganizationRepository)),
     };
     let tokens = TokenService::new(TokenPorts {
         units_of_work: units,
@@ -744,7 +746,8 @@ fn userinfo(config: &Config, database: &Database, keys: KeyService) -> UserInfoS
                 Arc::new(PgUserRepository),
                 clock.clone(),
             )
-            .with_groups(Arc::new(PgGroupRepository)),
+            .with_groups(Arc::new(PgGroupRepository))
+            .with_organizations(Arc::new(PgOrganizationRepository)),
             register: AccessTokenRegister::new(
                 Arc::new(database.clone()),
                 Arc::new(PgAccessTokenRecordStore),
@@ -796,7 +799,8 @@ fn authorization_api(
             Arc::new(PgEngineBindingStore),
             Arc::new(subjects::ServerSubjects {
                 identity: IdentityService::new(units(), Arc::new(PgUserRepository), clock.clone())
-                    .with_groups(Arc::new(PgGroupRepository)),
+                    .with_groups(Arc::new(PgGroupRepository))
+                    .with_organizations(Arc::new(PgOrganizationRepository)),
                 applications,
             }),
             engines,
@@ -1169,7 +1173,8 @@ fn administration(
             clock.clone(),
         ),
         identity: IdentityService::new(units(), Arc::new(PgUserRepository), clock.clone())
-            .with_groups(Arc::new(PgGroupRepository)),
+            .with_groups(Arc::new(PgGroupRepository))
+            .with_organizations(Arc::new(PgOrganizationRepository)),
         sessions: SessionService::new(
             units(),
             Arc::new(PgSessionStore),
@@ -1186,7 +1191,8 @@ fn administration(
         tenants: tenant_service(database),
         factors: {
             let identity = IdentityService::new(units(), Arc::new(PgUserRepository), clock.clone())
-                .with_groups(Arc::new(PgGroupRepository));
+                .with_groups(Arc::new(PgGroupRepository))
+                .with_organizations(Arc::new(PgOrganizationRepository));
             let tenants = TenantService::new(
                 units(),
                 Arc::new(PgTenantRepository),
@@ -1214,7 +1220,8 @@ fn administration(
             Arc::new(PgEngineBindingStore),
             Arc::new(subjects::ServerSubjects {
                 identity: IdentityService::new(units(), Arc::new(PgUserRepository), clock.clone())
-                    .with_groups(Arc::new(PgGroupRepository)),
+                    .with_groups(Arc::new(PgGroupRepository))
+                    .with_organizations(Arc::new(PgOrganizationRepository)),
                 applications: applications_for_subjects,
             }),
             engines.clone(),

@@ -1,7 +1,8 @@
 //! The use cases of the identity context.
 
 use crate::application::groups::leave_every_group;
-use crate::application::ports::{GroupRepository, UserRepository};
+use crate::application::organizations::leave_every_organization;
+use crate::application::ports::{GroupRepository, OrganizationRepository, UserRepository};
 use crate::domain::event::UserEvent;
 use crate::domain::identifier::{IdentifierId, IdentifierKind, NormalizedIdentifier};
 use crate::domain::user::{Profile, User, UserKind};
@@ -31,6 +32,7 @@ pub struct IdentityService {
     users: Arc<dyn UserRepository>,
     clock: Arc<dyn Clock>,
     groups: Option<Arc<dyn GroupRepository>>,
+    organizations: Option<Arc<dyn OrganizationRepository>>,
 }
 
 impl std::fmt::Debug for IdentityService {
@@ -52,7 +54,16 @@ impl IdentityService {
             users,
             clock,
             groups: None,
+            organizations: None,
         }
+    }
+
+    /// Ends every membership of a user of organizations when the user is
+    /// marked Deleted.
+    #[must_use]
+    pub fn with_organizations(mut self, organizations: Arc<dyn OrganizationRepository>) -> Self {
+        self.organizations = Some(organizations);
+        self
     }
 
     /// Takes a user out of every group when the user is marked Deleted.
@@ -289,24 +300,31 @@ impl IdentityService {
         caller: Caller,
     ) -> Result<User, DomainError> {
         let now = self.clock.now();
-        let Some(groups) = self.groups.clone() else {
-            return self
-                .change(tenant, id, caller, |user| Ok(vec![user.mark_deleted(now)?]))
-                .await;
-        };
         let mut uow = self.units_of_work.begin(tenant).await?;
         let mut user = self.load(uow.as_mut(), id).await?;
         let event = user.mark_deleted(now)?;
         self.users.update(uow.as_mut(), &user).await?;
         self.record(uow.as_mut(), caller, &[event])?;
-        leave_every_group(
-            groups.as_ref(),
-            uow.as_mut(),
-            id,
-            &caller,
-            self.clock.as_ref(),
-        )
-        .await?;
+        if let Some(groups) = &self.groups {
+            leave_every_group(
+                groups.as_ref(),
+                uow.as_mut(),
+                id,
+                &caller,
+                self.clock.as_ref(),
+            )
+            .await?;
+        }
+        if let Some(organizations) = &self.organizations {
+            leave_every_organization(
+                organizations.as_ref(),
+                uow.as_mut(),
+                id,
+                &caller,
+                self.clock.as_ref(),
+            )
+            .await?;
+        }
         uow.commit().await?;
         Ok(user)
     }

@@ -377,7 +377,7 @@ fn parse_member(cursor: &str) -> Result<GroupMember, DomainError> {
     }
 }
 
-fn record<E: DomainEvent + Serialize>(
+pub(crate) fn record<E: DomainEvent + Serialize>(
     uow: &mut dyn UnitOfWork,
     caller: &Caller,
     clock: &dyn Clock,

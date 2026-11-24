@@ -14,6 +14,8 @@ pub mod testing;
 /// What other crates may use from this context.
 pub mod api {
     pub use crate::application::groups::GroupService;
+    pub use crate::application::organizations::OrganizationService;
+    pub use crate::application::ports::OrganizationRepository;
     pub use crate::application::ports::{GroupPolicy, GroupRepository, UserRepository};
     pub use crate::application::service::{CreateUser, IdentityService};
     pub use crate::domain::event::UserEvent;
@@ -23,6 +25,10 @@ pub mod api {
     };
     pub use crate::domain::identifier::{
         IdentifierId, IdentifierKind, LoginIdentifier, NormalizedIdentifier,
+    };
+    pub use crate::domain::organization::{
+        MAX_UNIT_LEVELS, Membership, Organization, OrganizationEvent, OrganizationName,
+        OrganizationSnapshot, Tree, Unit, UnitChange, UnitId, UnitKind, check_placement,
     };
     pub use crate::domain::user::{Profile, User, UserKind, UserSnapshot, UserStatus};
 }

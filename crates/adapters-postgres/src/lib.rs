@@ -25,6 +25,7 @@ mod oauth_authorization;
 mod oauth_consent;
 mod oauth_refresh;
 mod oauth_token;
+mod organization;
 mod outbox;
 mod policy_bundles;
 mod policy_lifecycle;
@@ -63,6 +64,7 @@ pub use oauth_authorization::{
 pub use oauth_consent::PgConsentStore;
 pub use oauth_refresh::PgRefreshTokenStore;
 pub use oauth_token::PgClientAssertionStore;
+pub use organization::PgOrganizationRepository;
 pub use outbox::{DispatchReport, OutboxDispatcher};
 pub use policy_bundles::{
     PgBundleStore, PgInstanceStatusStore, PgInstanceStore, PgUploadedDecisionStore,
