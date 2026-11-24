@@ -31,9 +31,13 @@ about. The domain is pure; time is passed in. All modules are `pub(crate)` in
 
 ### `settings.rs`
 
-- `TenantSettings { password, session, lockout, registration, authentication }` with
-  `validate()`; `Default`, `Serialize`, `Deserialize`. `authentication` is
-  `#[serde(default)]`, so settings stored before it existed still read.
+- `TenantSettings { password, session, lockout, registration, authentication, groups, provisioning }` with
+  `validate()`; `Default`, `Serialize`, `Deserialize`. `authentication`,
+  `groups` and `provisioning` are `#[serde(default)]`, so settings stored
+  before they existed still read.
+- `ProvisioningPolicy { deprovisioning: Deprovisioning }`, where
+  `Deprovisioning` is `Deactivate` (the default) or `Delete`, stored as
+  `deactivate` and `delete`: what SCIM deprovisioning does.
 - `PasswordPolicy { min_length, max_length, history_depth, reject_breached }`.
 - `SessionPolicy { idle_timeout_seconds, absolute_timeout_seconds }` with
   `idle_timeout()` and `absolute_timeout()` as `time::Duration`.

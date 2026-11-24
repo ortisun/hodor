@@ -39,7 +39,7 @@ bound to. Implemented outside this crate by `PgUserRepository` in
 - `GroupService` (`groups.rs`) has the same pairs for groups: `create_in`, `get_in`, `change_in` (answers whether anything changed), `delete_in`, `add_member_in` and `remove_member_in` (answer whether the membership changed), `all_members_in` (every direct member, a thousand at a time) and `direct_groups_in`. Each public use case runs its `_in` variant in a unit of work of its own and commits.
 - `list(tenant, page: &PageRequest) -> Page<User>`: creation order, one page at a time. The cursor is a user identifier; a cursor that does not parse as `UserId` gives `Invalid` with code `request.cursor_invalid`. Asks the repository for `limit + 1` users to decide whether `next_cursor` is set.
 - `find_by_login(tenant, typed: &str) -> Option<User>`: interprets the typed text with `NormalizedIdentifier::from_login`; a malformed value returns `Ok(None)` without touching storage.
-- Lifecycle: `activate`, `suspend(…, reason, …)`, `reactivate`, `deactivate`, `restore`, `mark_deleted`. Each takes `(tenant, id, caller)` and returns the changed `User`.
+- Lifecycle: `activate`, `suspend(…, reason, …)`, `reactivate`, `deactivate`, `restore`, `mark_deleted`. Each takes `(tenant, id, caller)` and returns the changed `User`. `mark_deleted_in(uow, id, caller)` does what `mark_deleted` does in the caller's unit of work.
 - Login identifiers: `add_identifier(tenant, id, kind, value, caller)`, `verify_identifier(tenant, id, identifier: IdentifierId, caller)`, `choose_primary(…)`, `remove_identifier(…)`.
 - `change_profile(tenant, id, profile, caller)`.
 

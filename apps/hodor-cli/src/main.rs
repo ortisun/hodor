@@ -38,8 +38,8 @@ use hodor_keys::api::{
     TenantSecretBox,
 };
 use hodor_tenant::api::{
-    AssuranceLevel, AssuranceLevels, AssuranceRequirement, Caller, CreateTenant, DirectoryEntry,
-    SecondFactorPolicy, TenantDirectory as _, TenantService,
+    AssuranceLevel, AssuranceLevels, AssuranceRequirement, Caller, CreateTenant, Deprovisioning,
+    DirectoryEntry, SecondFactorPolicy, TenantDirectory as _, TenantService,
 };
 use std::error::Error;
 use std::io::{Read as _, Write as _};
@@ -724,6 +724,14 @@ enum SecondFactorArg {
     NotRequired,
 }
 
+#[derive(Clone, Copy, ValueEnum)]
+enum DeprovisioningArg {
+    /// Deactivate the person: they can be restored.
+    Deactivate,
+    /// Deactivate the person and mark them Deleted: they are erased.
+    Delete,
+}
+
 #[derive(Subcommand)]
 enum TenantCommand {
     /// Create and activate a tenant.
@@ -778,6 +786,16 @@ enum TenantCommand {
         /// The deepest a group may be.
         #[arg(long)]
         depth: u8,
+    },
+    /// Set what deprovisioning a person through SCIM does: `DELETE` of a
+    /// user or `active: false`. Either way their sessions and grants end.
+    ScimDeprovisioning {
+        /// The tenant's slug.
+        #[arg(long)]
+        slug: String,
+        /// Deactivate or delete.
+        #[arg(long, value_enum)]
+        policy: DeprovisioningArg,
     },
     /// Replace the assurance levels applications ask for in `acr_values`
     /// and tokens name in `acr`; without `--level`, print them.
@@ -908,6 +926,26 @@ async fn run_tenant(
             settings.groups.max_depth = depth;
             service.change_settings(&tenant, settings, caller()).await?;
             Ok(format!("{} group-depth {depth}", entry.slug))
+        }
+        TenantCommand::ScimDeprovisioning { slug, policy } => {
+            let entry = existing(service, &slug).await?;
+            let tenant = TenantContext::assume(entry.tenant_id);
+            let mut settings = service.get(&tenant).await?.snapshot().settings.clone();
+            settings.provisioning.deprovisioning = match policy {
+                DeprovisioningArg::Deactivate => Deprovisioning::Deactivate,
+                DeprovisioningArg::Delete => Deprovisioning::Delete,
+            };
+            let changed = service.change_settings(&tenant, settings, caller()).await?;
+            Ok(format!(
+                "{} scim-deprovisioning {}",
+                entry.slug,
+                changed
+                    .snapshot()
+                    .settings
+                    .provisioning
+                    .deprovisioning
+                    .as_str()
+            ))
         }
         TenantCommand::AssuranceLevels { slug, levels } => {
             let entry = existing(service, &slug).await?;

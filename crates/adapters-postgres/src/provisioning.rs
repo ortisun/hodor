@@ -11,17 +11,48 @@
 use crate::uow::{connection, database_error};
 use hodor_kernel::{DomainError, GroupId, Timestamp, UnitOfWork, UserId};
 use hodor_provisioning::api::{
-    Attribute, AttributeType, Filter, Found, GroupAttribute, GroupSupplement, ListQuery, Operator,
-    ProvisionedGroupRepository, ProvisionedUserRepository, SortOrder, StoredGroupSupplement,
-    StoredUserSupplement, UserAttribute, UserSupplement, Value, ValueFilter,
+    Attribute, AttributeType, Deprovisioning, DeprovisioningPolicy, Filter, Found, GroupAttribute,
+    GroupSupplement, ListQuery, Operator, ProvisionedGroupRepository, ProvisionedUserRepository,
+    SortOrder, StoredGroupSupplement, StoredUserSupplement, UserAttribute, UserSupplement, Value,
+    ValueFilter,
 };
-use sqlx::types::Uuid;
+use sqlx::types::{Json, Uuid};
 use sqlx::{Postgres, QueryBuilder, Row};
+use std::collections::BTreeMap;
 
 /// [`ProvisionedUserRepository`] on `provisioning.user_attribute`, finding
 /// users in `identity."user"` and `identity.user_identifier`.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PgProvisionedUserRepository;
+
+/// [`DeprovisioningPolicy`] read from the tenant's settings, in the same
+/// transaction as the change it decides.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PgDeprovisioningPolicy;
+
+#[async_trait::async_trait]
+impl DeprovisioningPolicy for PgDeprovisioningPolicy {
+    async fn deprovisioning(
+        &self,
+        uow: &mut dyn UnitOfWork,
+    ) -> Result<Deprovisioning, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        // Settings stored before the policy existed read as the default,
+        // as the tenant context reads them.
+        let stored: Option<(Option<String>,)> = sqlx::query_as(
+            "SELECT settings -> 'provisioning' ->> 'deprovisioning'
+             FROM tenant.tenant WHERE tenant_id = $1",
+        )
+        .bind(tenant.as_uuid())
+        .fetch_optional(connection(uow)?)
+        .await
+        .map_err(|error| database_error(&error))?;
+        Ok(match stored.and_then(|(policy,)| policy).as_deref() {
+            Some("delete") => Deprovisioning::Delete,
+            _ => Deprovisioning::Deactivate,
+        })
+    }
+}
 
 /// [`ProvisionedGroupRepository`] on `provisioning.group_attribute`,
 /// finding groups in `identity."group"` and `identity.group_member`.
@@ -317,7 +348,8 @@ async fn find<A: Column>(
 
 const USERS: &str = "FROM identity.\"user\" AS u \
      LEFT JOIN provisioning.user_attribute AS p ON p.tenant_id = u.tenant_id AND p.user_id = u.id \
-     WHERE u.kind = 'human' AND u.status <> 'deleted' AND u.tenant_id = ";
+     WHERE u.kind = 'human' AND u.status <> 'deleted' \
+       AND NOT (u.status = 'deactivated' AND p.removed_at IS NOT NULL) AND u.tenant_id = ";
 
 const GROUPS: &str = "FROM identity.\"group\" AS g \
      LEFT JOIN provisioning.group_attribute AS p ON p.tenant_id = g.tenant_id AND p.group_id = g.id \
@@ -334,7 +366,7 @@ impl ProvisionedUserRepository for PgProvisionedUserRepository {
         let row = sqlx::query(
             "SELECT external_id, name_formatted, given_name, family_name, employee_number,
                     cost_center, organization, division, department, manager_id,
-                    created_at, updated_at
+                    email_types, created_at, updated_at, removed_at
              FROM provisioning.user_attribute WHERE tenant_id = $1 AND user_id = $2",
         )
         .bind(tenant.as_uuid())
@@ -357,9 +389,13 @@ impl ProvisionedUserRepository for PgProvisionedUserRepository {
                     division: text("division")?,
                     department: text("department")?,
                     manager: text("manager_id")?,
+                    email_types: row
+                        .try_get::<Json<BTreeMap<String, String>>, _>("email_types")?
+                        .0,
                 },
                 created_at: row.try_get::<Timestamp, _>("created_at")?,
                 updated_at: row.try_get::<Timestamp, _>("updated_at")?,
+                removed_at: row.try_get::<Option<Timestamp>, _>("removed_at")?,
             })
         })
         .transpose()
@@ -377,8 +413,8 @@ impl ProvisionedUserRepository for PgProvisionedUserRepository {
             "INSERT INTO provisioning.user_attribute
                  (tenant_id, user_id, external_id, name_formatted, given_name, family_name,
                   employee_number, cost_center, organization, division, department, manager_id,
-                  created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                  created_at, updated_at, email_types, removed_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
              ON CONFLICT (tenant_id, user_id) DO UPDATE SET
                  external_id = EXCLUDED.external_id,
                  name_formatted = EXCLUDED.name_formatted,
@@ -391,7 +427,9 @@ impl ProvisionedUserRepository for PgProvisionedUserRepository {
                  department = EXCLUDED.department,
                  manager_id = EXCLUDED.manager_id,
                  created_at = EXCLUDED.created_at,
-                 updated_at = EXCLUDED.updated_at",
+                 updated_at = EXCLUDED.updated_at,
+                 email_types = EXCLUDED.email_types,
+                 removed_at = EXCLUDED.removed_at",
         )
         .bind(tenant.as_uuid())
         .bind(stored.user_id.as_uuid())
@@ -407,6 +445,21 @@ impl ProvisionedUserRepository for PgProvisionedUserRepository {
         .bind(supplement.manager.as_deref())
         .bind(stored.created_at)
         .bind(stored.updated_at)
+        .bind(Json(&supplement.email_types))
+        .bind(stored.removed_at)
+        .execute(connection(uow)?)
+        .await
+        .map_err(|error| database_error(&error))?;
+        Ok(())
+    }
+
+    async fn remove(&self, uow: &mut dyn UnitOfWork, user: UserId) -> Result<(), DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        sqlx::query(
+            "DELETE FROM provisioning.user_attribute WHERE tenant_id = $1 AND user_id = $2",
+        )
+        .bind(tenant.as_uuid())
+        .bind(user.as_uuid())
         .execute(connection(uow)?)
         .await
         .map_err(|error| database_error(&error))?;

@@ -43,7 +43,9 @@ use hodor_kernel::{
 use hodor_keys::api::{KeyAlgorithm, KeyService, KeyUse, KeyVersion, KeyVersionId, RotationPolicy};
 use hodor_oauth::api::{ApplicationService, ClientId, ConsentActor, ConsentService};
 use hodor_session::api::{Session, SessionId, SessionService};
-use hodor_tenant::api::{AssuranceLevel, AssuranceLevels, AssuranceRequirement, TenantService};
+use hodor_tenant::api::{
+    AssuranceLevel, AssuranceLevels, AssuranceRequirement, Deprovisioning, TenantService,
+};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -223,6 +225,8 @@ pub const ADMIN_OPERATIONS: &[(&str, &str, Permission)] = &[
         "/resource-servers/{resource_server_id}",
         Permission::ApplicationsWrite,
     ),
+    ("GET", "/scim-deprovisioning", Permission::UsersRead),
+    ("PUT", "/scim-deprovisioning", Permission::UsersWrite),
     ("GET", "/assurance-levels", Permission::AssuranceLevelsRead),
     ("PUT", "/assurance-levels", Permission::AssuranceLevelsWrite),
     ("GET", "/decision-log", Permission::DecisionsRead),
@@ -549,6 +553,10 @@ fn shared_routes() -> Router<Shared> {
             "/assurance-levels",
             get(read_assurance_levels).put(replace_assurance_levels),
         )
+        .route(
+            "/scim-deprovisioning",
+            get(read_scim_deprovisioning).put(set_scim_deprovisioning),
+        )
         .merge(applications::routes())
         .merge(factors::routes())
         .merge(decisions::routes())
@@ -634,6 +642,59 @@ async fn replace_assurance_levels(
                 .map_err(failed)?;
             let levels = &changed.snapshot().settings.authentication.assurance_levels;
             Ok(Json(AssuranceLevelsBody::from(levels)).into_response())
+        }
+        .await,
+    )
+}
+
+/// The tenant's SCIM deprovisioning policy, as the interface writes it.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ScimDeprovisioningBody {
+    deprovisioning: Deprovisioning,
+}
+
+async fn read_scim_deprovisioning(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+) -> Response {
+    respond(
+        async {
+            authorize(&state, &tenant, &headers, "GET", "/scim-deprovisioning").await?;
+            let found = state.tenants.get(&tenant).await.map_err(failed)?;
+            Ok(Json(ScimDeprovisioningBody {
+                deprovisioning: found.snapshot().settings.provisioning.deprovisioning,
+            })
+            .into_response())
+        }
+        .await,
+    )
+}
+
+async fn set_scim_deprovisioning(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+    bytes: Bytes,
+) -> Response {
+    respond(
+        async {
+            let caller =
+                authorize(&state, &tenant, &headers, "PUT", "/scim-deprovisioning").await?;
+            let asked: ScimDeprovisioningBody = body(&bytes)?;
+            let found = state.tenants.get(&tenant).await.map_err(failed)?;
+            let mut settings = found.snapshot().settings.clone();
+            settings.provisioning.deprovisioning = asked.deprovisioning;
+            let changed = state
+                .tenants
+                .change_settings(&tenant, settings, caller)
+                .await
+                .map_err(failed)?;
+            Ok(Json(ScimDeprovisioningBody {
+                deprovisioning: changed.snapshot().settings.provisioning.deprovisioning,
+            })
+            .into_response())
         }
         .await,
     )

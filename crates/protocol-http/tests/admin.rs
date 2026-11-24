@@ -608,7 +608,7 @@ fn the_document_and_the_routes_list_the_same_operations_and_permissions() {
         })
         .collect();
     assert_eq!(documented, served);
-    assert_eq!(served.len(), 97);
+    assert_eq!(served.len(), 99);
 
     // Every operation says how it refuses.
     let document: serde_json::Value = serde_json::from_str(ADMIN_OPENAPI).expect("valid JSON");
@@ -3784,4 +3784,40 @@ async fn an_administrator_manages_organizations_units_members_and_invitations() 
         .as_administrator(Method::DELETE, &format!("/organizations/{acme}"), None)
         .await;
     assert_eq!(deleted.status, StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn an_administrator_reads_and_sets_the_scim_deprovisioning_policy() {
+    let world = world().await;
+    let read = world
+        .as_administrator(Method::GET, "/scim-deprovisioning", None)
+        .await;
+    assert_eq!(read.status, StatusCode::OK, "{:?}", read.body);
+    assert_eq!(
+        read.body,
+        serde_json::json!({ "deprovisioning": "deactivate" })
+    );
+    let set = world
+        .as_administrator(
+            Method::PUT,
+            "/scim-deprovisioning",
+            Some(serde_json::json!({ "deprovisioning": "delete" })),
+        )
+        .await;
+    assert_eq!(set.status, StatusCode::OK, "{:?}", set.body);
+    assert_eq!(set.body, serde_json::json!({ "deprovisioning": "delete" }));
+    let read = world
+        .as_administrator(Method::GET, "/scim-deprovisioning", None)
+        .await;
+    assert_eq!(read.body["deprovisioning"], "delete");
+    for refused in [
+        serde_json::json!({ "deprovisioning": "suspend" }),
+        serde_json::json!({ "deprovisioning": "delete", "other": 1 }),
+    ] {
+        let answer = world
+            .as_administrator(Method::PUT, "/scim-deprovisioning", Some(refused))
+            .await;
+        assert_eq!(answer.status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(answer.body["code"], "request.body_invalid");
+    }
 }

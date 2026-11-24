@@ -34,7 +34,10 @@ use hodor_protocol_http::{
     public_router, scim_routes,
 };
 use hodor_provisioning::api::{ProvisioningPorts, ProvisioningService};
-use hodor_provisioning::testing::{InMemoryProvisionedGroups, InMemoryProvisionedUsers};
+use hodor_provisioning::testing::{
+    FixedDeprovisioning, InMemoryProvisionedGroups, InMemoryProvisionedUsers,
+    RecordingAccessRevoker,
+};
 use http_body_util::BodyExt as _;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -44,6 +47,8 @@ use tower::ServiceExt as _;
 const PUBLIC_URL: &str = "https://auth.example";
 const USER: &str = "urn:ietf:params:scim:schemas:core:2.0:User";
 const GROUP: &str = "urn:ietf:params:scim:schemas:core:2.0:Group";
+const PATCH: &str = "urn:ietf:params:scim:api:messages:2.0:PatchOp";
+const BULK: &str = "urn:ietf:params:scim:api:messages:2.0:BulkRequest";
 
 /// Checks the stand-in signatures of the fake key provider, which signs
 /// the tenants' access tokens here.
@@ -114,6 +119,7 @@ struct Tenant {
 struct World {
     router: Router,
     tokens: TokenService,
+    revoked: RecordingAccessRevoker,
     acme: Tenant,
     globex: Tenant,
 }
@@ -308,6 +314,7 @@ async fn world() -> World {
     });
     let users = InMemoryUsers::default();
     let groups = InMemoryGroups::default();
+    let revoked = RecordingAccessRevoker::default();
     let provisioning = ProvisioningService::new(ProvisioningPorts {
         units_of_work: Arc::new(units.clone()),
         identity: IdentityService::new(
@@ -325,6 +332,8 @@ async fn world() -> World {
         ),
         users: Arc::new(InMemoryProvisionedUsers::new(Arc::new(users))),
         provisioned_groups: Arc::new(InMemoryProvisionedGroups::new(Arc::new(groups))),
+        deprovisioning: Arc::new(FixedDeprovisioning::default()),
+        access: Arc::new(revoked.clone()),
         clock,
     });
     let acme = open_tenant("acme", &keys, &applications).await;
@@ -348,6 +357,7 @@ async fn world() -> World {
     World {
         router,
         tokens,
+        revoked,
         acme,
         globex,
     }
@@ -497,6 +507,7 @@ fn routes() -> Vec<(Method, String, Option<Value>)> {
     let id = UserId::generate();
     let user = json!({ "schemas": [USER], "userName": "nobody" });
     let group = json!({ "schemas": [GROUP], "displayName": "nobody" });
+    let patch = json!({ "schemas": [PATCH], "Operations": [{ "op": "replace", "path": "active", "value": true }] });
     vec![
         (Method::GET, "/ServiceProviderConfig".to_owned(), None),
         (Method::GET, "/ResourceTypes".to_owned(), None),
@@ -507,15 +518,19 @@ fn routes() -> Vec<(Method, String, Option<Value>)> {
         (Method::POST, "/Users".to_owned(), Some(user.clone())),
         (Method::GET, format!("/Users/{id}"), None),
         (Method::PUT, format!("/Users/{id}"), Some(user)),
-        (Method::PATCH, format!("/Users/{id}"), None),
+        (Method::PATCH, format!("/Users/{id}"), Some(patch.clone())),
         (Method::DELETE, format!("/Users/{id}"), None),
         (Method::GET, "/Groups".to_owned(), None),
         (Method::POST, "/Groups".to_owned(), Some(group.clone())),
         (Method::GET, format!("/Groups/{id}"), None),
         (Method::PUT, format!("/Groups/{id}"), Some(group)),
-        (Method::PATCH, format!("/Groups/{id}"), None),
+        (Method::PATCH, format!("/Groups/{id}"), Some(patch)),
         (Method::DELETE, format!("/Groups/{id}"), None),
-        (Method::POST, "/Bulk".to_owned(), None),
+        (
+            Method::POST,
+            "/Bulk".to_owned(),
+            Some(json!({ "schemas": [BULK], "Operations": [] })),
+        ),
         (Method::POST, "/.search".to_owned(), None),
     ]
 }
@@ -605,9 +620,9 @@ async fn the_discovery_documents_say_what_is_supported() {
         Some("no-store")
     );
     for (feature, supported) in [
-        ("patch", false),
-        ("bulk", false),
-        ("etag", false),
+        ("patch", true),
+        ("bulk", true),
+        ("etag", true),
         ("filter", true),
         ("sort", true),
     ] {
@@ -862,19 +877,23 @@ async fn refusals_are_scim_errors_of_their_own_type() {
         let missing = world.scim(Method::GET, &path, &token, None).await;
         assert_scim_error(&missing, StatusCode::NOT_FOUND, None);
     }
-    for (method, path) in [
-        (
-            Method::PATCH,
-            format!("{base}/Users/{}", UserId::generate()),
-        ),
-        (
-            Method::DELETE,
-            format!("{base}/Users/{}", UserId::generate()),
-        ),
-        (Method::POST, format!("{base}/Bulk")),
-    ] {
-        let unsupported = world.scim(method, &path, &token, None).await;
-        assert_scim_error(&unsupported, StatusCode::NOT_IMPLEMENTED, None);
+    let unsupported = world
+        .scim(Method::POST, &format!("{base}/Users/.search"), &token, None)
+        .await;
+    assert_scim_error(&unsupported, StatusCode::NOT_IMPLEMENTED, None);
+    for method in [Method::PATCH, Method::DELETE] {
+        let body = (method == Method::PATCH).then(
+            || json!({ "schemas": [PATCH], "Operations": [{ "op": "remove", "path": "title" }] }),
+        );
+        let missing = world
+            .scim(
+                method,
+                &format!("{base}/Users/{}", UserId::generate()),
+                &token,
+                body,
+            )
+            .await;
+        assert_scim_error(&missing, StatusCode::NOT_FOUND, None);
     }
 }
 
@@ -1048,5 +1067,339 @@ async fn another_tenants_resources_are_answered_as_ones_that_do_not_exist() {
         still.status,
         StatusCode::OK,
         "the group is still where it belongs"
+    );
+}
+
+fn header_text(reply: &Reply, name: header::HeaderName) -> Option<String> {
+    reply
+        .headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned)
+}
+
+impl World {
+    async fn conditional(
+        &self,
+        method: Method,
+        path: &str,
+        token: &str,
+        condition: (header::HeaderName, &str),
+        body: Option<Value>,
+    ) -> Reply {
+        let mut request = Request::builder()
+            .method(method)
+            .uri(path)
+            .header(header::HOST, "auth.example")
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .header(condition.0, condition.1);
+        let request = match body {
+            Some(body) => request
+                .header(header::CONTENT_TYPE, SCIM_MEDIA_TYPE)
+                .body(Body::from(body.to_string())),
+            None => {
+                request = request.header(header::CONTENT_LENGTH, "0");
+                request.body(Body::empty())
+            }
+        }
+        .expect("request");
+        let response = self
+            .router
+            .clone()
+            .oneshot(request)
+            .await
+            .expect("response");
+        let (parts, body) = response.into_parts();
+        let bytes = body.collect().await.expect("body").to_bytes();
+        Reply {
+            status: parts.status,
+            headers: parts.headers,
+            body: serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        }
+    }
+}
+
+fn operations(operations: Value) -> Value {
+    json!({ "schemas": [PATCH], "Operations": operations })
+}
+
+#[tokio::test]
+async fn versions_guard_changes_and_answer_reads_that_changed_nothing() {
+    let world = world().await;
+    let token = world.scim_token(&world.acme).await;
+    let base = "/t/acme/scim/v2";
+    let created = world
+        .scim(
+            Method::POST,
+            &format!("{base}/Users"),
+            &token,
+            Some(json!({ "schemas": [USER], "userName": "ana", "emails": [{ "value": "ana@example.com", "type": "work" }] })),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED);
+    let first = header_text(&created, header::ETAG).expect("an ETag");
+    assert_eq!(created.body["meta"]["version"], first.as_str());
+    assert!(first.starts_with("W/\""), "{first}");
+    let path = format!(
+        "{base}/Users/{}",
+        created.body["id"].as_str().expect("an id")
+    );
+
+    let unchanged = world
+        .conditional(
+            Method::GET,
+            &path,
+            &token,
+            (header::IF_NONE_MATCH, &first),
+            None,
+        )
+        .await;
+    assert_eq!(unchanged.status, StatusCode::NOT_MODIFIED);
+    assert_eq!(
+        header_text(&unchanged, header::ETAG).as_deref(),
+        Some(first.as_str())
+    );
+
+    let patched = world
+        .conditional(
+            Method::PATCH,
+            &path,
+            &token,
+            (header::IF_MATCH, &first),
+            Some(operations(json!([
+                { "op": "replace", "path": "emails[type eq \"work\"].value", "value": "ana.silva@example.com" },
+                { "op": "add", "value": { "displayName": "Ana Silva" } }
+            ]))),
+        )
+        .await;
+    assert_eq!(patched.status, StatusCode::OK, "{}", patched.body);
+    assert_eq!(patched.body["emails"][0]["value"], "ana.silva@example.com");
+    assert_eq!(patched.body["emails"][0]["type"], "work");
+    assert_eq!(patched.body["displayName"], "Ana Silva");
+    let second = header_text(&patched, header::ETAG).expect("an ETag");
+    assert_ne!(second, first);
+
+    // The acceptance: a change for a stale version is refused.
+    for (method, body) in [
+        (
+            Method::PATCH,
+            Some(operations(
+                json!([{ "op": "replace", "path": "displayName", "value": "Late" }]),
+            )),
+        ),
+        (
+            Method::PUT,
+            Some(json!({ "schemas": [USER], "userName": "ana" })),
+        ),
+        (Method::DELETE, None),
+    ] {
+        let stale = world
+            .conditional(
+                method.clone(),
+                &path,
+                &token,
+                (header::IF_MATCH, &first),
+                body,
+            )
+            .await;
+        assert_scim_error(&stale, StatusCode::PRECONDITION_FAILED, None);
+        assert_eq!(
+            stale.body["detail"], "the resource changed since the version given",
+            "{method}"
+        );
+    }
+    let read = world.scim(Method::GET, &path, &token, None).await;
+    assert_eq!(
+        header_text(&read, header::ETAG).as_deref(),
+        Some(second.as_str()),
+        "nothing changed"
+    );
+    let any = world
+        .conditional(
+            Method::PATCH,
+            &path,
+            &token,
+            (header::IF_MATCH, "*"),
+            Some(operations(
+                json!([{ "op": "replace", "path": "displayName", "value": "Ana" }]),
+            )),
+        )
+        .await;
+    assert_eq!(any.status, StatusCode::OK);
+
+    let many: Vec<Value> = (0..101)
+        .map(|_| json!({ "op": "replace", "path": "active", "value": true }))
+        .collect();
+    for (body, scim_type) in [
+        (operations(Value::Array(many)), "tooMany"),
+        (
+            operations(json!([{ "op": "replace", "path": "id", "value": "x" }])),
+            "mutability",
+        ),
+        (
+            operations(json!([{ "op": "add", "path": "emails[", "value": 1 }])),
+            "invalidPath",
+        ),
+        (operations(json!([{ "op": "remove" }])), "noTarget"),
+        (
+            operations(
+                json!([{ "op": "replace", "path": "emails[value co \"nowhere\"].type", "value": "home" }]),
+            ),
+            "noTarget",
+        ),
+        (json!({ "Operations": [] }), "invalidSyntax"),
+    ] {
+        let refused = world.scim(Method::PATCH, &path, &token, Some(body)).await;
+        assert_scim_error(&refused, StatusCode::BAD_REQUEST, Some(scim_type));
+    }
+}
+
+#[tokio::test]
+async fn deleting_a_user_deprovisions_them_and_they_are_gone_from_scim() {
+    let world = world().await;
+    let token = world.scim_token(&world.acme).await;
+    let base = "/t/acme/scim/v2";
+    let created = world
+        .scim(
+            Method::POST,
+            &format!("{base}/Users"),
+            &token,
+            Some(json!({ "schemas": [USER], "userName": "ana" })),
+        )
+        .await;
+    let id = created.body["id"].as_str().expect("an id").to_owned();
+    let path = format!("{base}/Users/{id}");
+    let deleted = world.scim(Method::DELETE, &path, &token, None).await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT);
+    let gone = world.scim(Method::GET, &path, &token, None).await;
+    assert_scim_error(&gone, StatusCode::NOT_FOUND, None);
+    let listed = world
+        .scim(Method::GET, &format!("{base}/Users"), &token, None)
+        .await;
+    assert_eq!(listed.body["totalResults"], 0);
+    let again = world.scim(Method::DELETE, &path, &token, None).await;
+    assert_scim_error(&again, StatusCode::NOT_FOUND, None);
+    assert_eq!(
+        world.revoked.revoked().len(),
+        1,
+        "the person's access ended"
+    );
+    assert_eq!(world.revoked.revoked()[0].1.to_string(), id);
+}
+
+#[tokio::test]
+async fn a_bulk_request_resolves_references_in_order_and_is_bounded() {
+    let world = world().await;
+    let token = world.scim_token(&world.acme).await;
+    let base = "/t/acme/scim/v2";
+    let bulk = |operations: Value, fail_on_errors: Option<u64>| {
+        let mut body = json!({ "schemas": [BULK], "Operations": operations });
+        if let Some(limit) = fail_on_errors {
+            body["failOnErrors"] = json!(limit);
+        }
+        body
+    };
+    let answered = world
+        .scim(
+            Method::POST,
+            &format!("{base}/Bulk"),
+            &token,
+            Some(bulk(
+                json!([
+                    { "method": "POST", "path": "/Users", "bulkId": "ana", "data": { "schemas": [USER], "userName": "ana" } },
+                    { "method": "POST", "path": "/Groups", "bulkId": "finance", "data": { "schemas": [GROUP], "displayName": "finance", "members": [{ "value": "bulkId:ana" }, { "value": "bulkId:bob" }] } },
+                    { "method": "POST", "path": "/Users", "bulkId": "bob", "data": { "schemas": [USER], "userName": "bob" } },
+                    { "method": "POST", "path": "/Groups", "bulkId": "payables", "data": { "schemas": [GROUP], "displayName": "payables", "members": [{ "value": "bulkId:ana" }, { "value": "bulkId:bob" }] } },
+                    { "method": "PATCH", "path": "/Users/bulkId:ana", "data": { "schemas": [PATCH], "Operations": [{ "op": "replace", "path": "displayName", "value": "Ana" }] } },
+                    { "method": "POST", "path": "/Users", "bulkId": "ana", "data": { "schemas": [USER], "userName": "ana2" } },
+                    { "method": "GET", "path": "/Users" },
+                    { "method": "DELETE", "path": "/Groups/bulkId:payables" }
+                ]),
+                None,
+            )),
+        )
+        .await;
+    assert_eq!(answered.status, StatusCode::OK, "{}", answered.body);
+    assert_eq!(
+        answered.body["schemas"],
+        json!(["urn:ietf:params:scim:api:messages:2.0:BulkResponse"])
+    );
+    let results = answered.body["Operations"].as_array().expect("results");
+    let statuses: Vec<&str> = results
+        .iter()
+        .map(|result| result["status"].as_str().expect("a status"))
+        .collect();
+    assert_eq!(
+        statuses,
+        ["201", "400", "201", "201", "200", "400", "400", "204"]
+    );
+    assert_eq!(
+        results[1]["response"]["scimType"], "invalidValue",
+        "bob comes later"
+    );
+    assert!(
+        results[0]["location"]
+            .as_str()
+            .is_some_and(|location| location.contains("/Users/"))
+    );
+    assert!(
+        results[0]["version"]
+            .as_str()
+            .is_some_and(|version| version.starts_with("W/"))
+    );
+    assert_eq!(results[0]["bulkId"], "ana");
+    let groups = world
+        .scim(Method::GET, &format!("{base}/Groups"), &token, None)
+        .await;
+    assert_eq!(
+        groups.body["totalResults"], 0,
+        "finance failed, payables was deleted"
+    );
+
+    // failOnErrors: the rest is not done.
+    let stopped = world
+        .scim(
+            Method::POST,
+            &format!("{base}/Bulk"),
+            &token,
+            Some(bulk(
+                json!([
+                    { "method": "PUT", "path": format!("/Users/{}", UserId::generate()), "data": { "schemas": [USER], "userName": "xavier" } },
+                    { "method": "POST", "path": "/Users", "bulkId": "carla", "data": { "schemas": [USER], "userName": "carla" } }
+                ]),
+                Some(1),
+            )),
+        )
+        .await;
+    assert_eq!(stopped.body["Operations"].as_array().map(Vec::len), Some(1));
+    assert_eq!(stopped.body["Operations"][0]["status"], "404");
+
+    // The acceptance: a bulk request past the bound is refused whole.
+    let too_many: Vec<Value> = (0..101)
+        .map(|index| json!({ "method": "POST", "path": "/Users", "bulkId": format!("u{index}"), "data": { "schemas": [USER], "userName": format!("u{index}") } }))
+        .collect();
+    let refused = world
+        .scim(
+            Method::POST,
+            &format!("{base}/Bulk"),
+            &token,
+            Some(bulk(Value::Array(too_many), None)),
+        )
+        .await;
+    assert_scim_error(&refused, StatusCode::PAYLOAD_TOO_LARGE, Some("tooMany"));
+    let large = bulk(
+        json!([{ "method": "POST", "path": "/Users", "bulkId": "big", "data": { "schemas": [USER], "userName": "big", "title": "x".repeat(1_100_000) } }]),
+        None,
+    );
+    let refused = world
+        .scim(Method::POST, &format!("{base}/Bulk"), &token, Some(large))
+        .await;
+    assert_scim_error(&refused, StatusCode::PAYLOAD_TOO_LARGE, Some("tooMany"));
+    let users = world
+        .scim(Method::GET, &format!("{base}/Users"), &token, None)
+        .await;
+    assert_eq!(
+        users.body["totalResults"], 2,
+        "only ana and bob: nothing of the refused requests"
     );
 }

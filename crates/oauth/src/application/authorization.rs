@@ -284,6 +284,34 @@ impl AuthorizationCodeService {
         Ok(value)
     }
 
+    /// Revokes every active grant of a person, for every client, with
+    /// `reason`, in the caller's unit of work: what deprovisioning a person
+    /// does. Their refresh token families and access tokens stop being in
+    /// force with the grants. Answers how many were revoked.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails. After an error the unit of work
+    /// must be abandoned.
+    pub async fn revoke_grants_of_in(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        user: UserId,
+        reason: &'static str,
+        caller: Caller,
+    ) -> Result<usize, DomainError> {
+        let now = self.ports.clock.now();
+        let mut revoked = 0;
+        for mut grant in self.ports.grants.list_active_of(uow, user).await? {
+            if let Some(event) = grant.revoke(reason, now) {
+                self.ports.grants.update(uow, &grant).await?;
+                self.record(uow, caller, &[event])?;
+                revoked += 1;
+            }
+        }
+        Ok(revoked)
+    }
+
     async fn revoke_grant(
         &self,
         uow: &mut dyn UnitOfWork,

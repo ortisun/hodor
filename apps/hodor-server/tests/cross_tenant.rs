@@ -469,7 +469,7 @@ async fn an_administrators_token_is_refused_by_every_operation_of_another_tenant
             tried += 1;
         }
     }
-    assert_eq!(tried, 97, "every documented operation was tried");
+    assert_eq!(tried, 99, "every documented operation was tried");
 
     // The token is good where it belongs, and nothing happened in Globex:
     // it has its two users, both active.
@@ -1827,7 +1827,25 @@ async fn a_scim_clients_token_and_identifiers_mean_nothing_in_another_tenant() {
 
     // Acme's token is not authenticated by Globex, on any route.
     let ana = acme.ana.to_string();
+    let patch = serde_json::json!({
+        "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+        "Operations": [{ "op": "replace", "path": "displayName", "value": "intruder" }]
+    });
     let routes = [
+        (Method::PATCH, format!("/Users/{ana}"), Some(patch.clone())),
+        (Method::DELETE, format!("/Users/{ana}"), None),
+        (
+            Method::PATCH,
+            format!("/Groups/{acme_group}"),
+            Some(patch.clone()),
+        ),
+        (
+            Method::POST,
+            "/Bulk".to_owned(),
+            Some(
+                serde_json::json!({ "schemas": ["urn:ietf:params:scim:api:messages:2.0:BulkRequest"], "Operations": [] }),
+            ),
+        ),
         (Method::GET, "/ServiceProviderConfig".to_owned(), None),
         (Method::GET, "/ResourceTypes".to_owned(), None),
         (Method::GET, "/Schemas".to_owned(), None),
@@ -1876,6 +1894,13 @@ async fn a_scim_clients_token_and_identifiers_mean_nothing_in_another_tenant() {
     // naming them, and cannot make Acme's person a member.
     for (method, path, body) in [
         (Method::GET, format!("/Users/{ana}"), None),
+        (Method::PATCH, format!("/Users/{ana}"), Some(patch.clone())),
+        (Method::DELETE, format!("/Users/{ana}"), None),
+        (
+            Method::PATCH,
+            format!("/Groups/{acme_group}"),
+            Some(patch.clone()),
+        ),
         (
             Method::PUT,
             format!("/Users/{ana}"),
@@ -1904,6 +1929,32 @@ async fn a_scim_clients_token_and_identifiers_mean_nothing_in_another_tenant() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{answer}");
     assert_eq!(answer["scimType"], "invalidValue");
+
+    // Nor in a bulk request.
+    let (status, _, answer) = scim(
+        &world,
+        globex,
+        &globex_token,
+        Method::POST,
+        "/Bulk",
+        Some(serde_json::json!({
+            "schemas": ["urn:ietf:params:scim:api:messages:2.0:BulkRequest"],
+            "Operations": [
+                { "method": "PATCH", "path": format!("/Users/{ana}"), "data": patch },
+                { "method": "DELETE", "path": format!("/Groups/{acme_group}") },
+                { "method": "POST", "path": "/Groups", "bulkId": "g", "data": group("finance", serde_json::json!([{ "value": ana }])) }
+            ]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    let statuses: Vec<&str> = answer["Operations"]
+        .as_array()
+        .expect("results")
+        .iter()
+        .map(|result| result["status"].as_str().expect("a status"))
+        .collect();
+    assert_eq!(statuses, ["404", "404", "400"]);
 
     // Globex finds its own person by the shared address, never Acme's.
     let (status, _, found) = scim(

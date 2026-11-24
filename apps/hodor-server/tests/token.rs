@@ -1082,3 +1082,188 @@ async fn a_client_revokes_and_introspects_its_own_tokens_and_no_one_else_s() {
     }
     assert!(everything.contains("oauth.access_token_revoked"));
 }
+
+/// A token for the SCIM server of the tenant, from a directory's client
+/// of its own: the resource server `urn:hodor:scim` and its scope.
+async fn scim_token(server: &Server, tenant: &Tenant, slug: &str) -> String {
+    let scim = tenant
+        .applications
+        .create_application(
+            &tenant.context,
+            ApplicationSettings {
+                name: "SCIM".to_owned(),
+                first_party: true,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("application");
+    tenant
+        .applications
+        .create_resource_server(
+            &tenant.context,
+            CreateResourceServer {
+                application_id: scim.id(),
+                audience: "urn:hodor:scim".to_owned(),
+                settings: ResourceServerSettings {
+                    name: "SCIM".to_owned(),
+                    scopes: vec![ScopeDefinition {
+                        name: "scim".to_owned(),
+                        description: "provisions people".to_owned(),
+                    }],
+                },
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("resource server");
+    let mut settings = ClientSettings::new(
+        "Directory",
+        ClientType::Confidential,
+        vec![GrantType::ClientCredentials],
+        Vec::new(),
+    );
+    settings.authentication_method = AuthenticationMethod::ClientSecretBasic;
+    settings.allowed_scopes = vec!["scim".to_owned()];
+    let (client, secret) = tenant
+        .applications
+        .create_client(
+            &tenant.context,
+            CreateClient {
+                application_id: scim.id(),
+                client_type: ClientType::Confidential,
+                settings,
+                secret_lifetime: None,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("client");
+    let id = client.id().to_string();
+    let secret = secret.expect("a secret").expose().to_owned();
+    let answer = token(
+        server,
+        slug,
+        Some((&id, &secret)),
+        &[
+            ("grant_type", "client_credentials"),
+            ("resource", "urn:hodor:scim"),
+            ("scope", "scim"),
+        ],
+    )
+    .await;
+    assert_eq!(answer.status, StatusCode::OK, "{}", answer.body);
+    answer.body["access_token"]
+        .as_str()
+        .expect("a token")
+        .to_owned()
+}
+
+#[tokio::test]
+async fn a_person_deprovisioned_through_scim_loses_sessions_and_tokens_at_once() {
+    let database = TestDatabase::start().await;
+    let acme = tenant(&database, "acme").await;
+    let (client_id, _) = client_with(
+        &acme,
+        ClientType::Public,
+        AuthenticationMethod::None,
+        vec![GrantType::AuthorizationCode, GrantType::RefreshToken],
+    )
+    .await;
+    let server = server(&database).await;
+    let mut browser = Browser::not_following(&server);
+    browser.sign_in("acme", "ana@example.com", PASSWORD).await;
+    let id = client_id.to_string();
+    let code = code(&mut browser, "acme", client_id).await;
+    let issued = token(&server, "acme", None, &redeem(&code, &[("client_id", &id)])).await;
+    assert_eq!(issued.status, StatusCode::OK, "{}", issued.body);
+    let access = issued.body["access_token"]
+        .as_str()
+        .expect("access")
+        .to_owned();
+    let refresh = issued.body["refresh_token"]
+        .as_str()
+        .expect("refresh")
+        .to_owned();
+    assert_eq!(
+        userinfo_status(&server, "acme", &access).await,
+        StatusCode::OK
+    );
+
+    // The directory finds Ana and sets her inactive.
+    let directory = scim_token(&server, &acme, "acme").await;
+    let found: Value = reqwest::Client::new()
+        .get(format!(
+            "{}/t/acme/scim/v2/Users?filter=userName%20eq%20%22ana%40example.com%22",
+            server.base
+        ))
+        .bearer_auth(&directory)
+        .send()
+        .await
+        .expect("response")
+        .json()
+        .await
+        .expect("a list");
+    let ana = found["Resources"][0]["id"]
+        .as_str()
+        .expect("Ana")
+        .to_owned();
+    let patched = reqwest::Client::new()
+        .patch(format!("{}/t/acme/scim/v2/Users/{ana}", server.base))
+        .bearer_auth(&directory)
+        .header("content-type", "application/scim+json")
+        .body(
+            json!({
+                "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+                "Operations": [{ "op": "replace", "value": { "active": false } }]
+            })
+            .to_string(),
+        )
+        .send()
+        .await
+        .expect("response");
+    assert_eq!(patched.status(), StatusCode::OK);
+
+    // The acceptance: her refresh token stops working at once, and so do
+    // her access token and her session.
+    let after = token(
+        &server,
+        "acme",
+        None,
+        &[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", &refresh),
+            ("client_id", &id),
+        ],
+    )
+    .await;
+    assert_eq!(after.status, StatusCode::BAD_REQUEST);
+    assert_eq!(after.body["error"], "invalid_grant");
+    assert_eq!(
+        userinfo_status(&server, "acme", &access).await,
+        StatusCode::UNAUTHORIZED
+    );
+    let (sessions, grants): (Vec<String>, Vec<String>) = (
+        sqlx::query_scalar("SELECT revocation_reason FROM session.session")
+            .fetch_all(database.owner())
+            .await
+            .expect("sessions")
+            .into_iter()
+            .map(|reason: Option<String>| reason.unwrap_or_default())
+            .collect(),
+        sqlx::query_scalar("SELECT revocation_reason FROM oauth.authorization_grant")
+            .fetch_all(database.owner())
+            .await
+            .expect("grants")
+            .into_iter()
+            .map(|reason: Option<String>| reason.unwrap_or_default())
+            .collect(),
+    );
+    assert_eq!(sessions, ["deprovisioned"], "the session ended");
+    assert_eq!(grants, ["deprovisioned"], "the grant was revoked");
+    let status: String = sqlx::query_scalar("SELECT status FROM identity.\"user\"")
+        .fetch_one(database.owner())
+        .await
+        .expect("Ana");
+    assert_eq!(status, "deactivated");
+}

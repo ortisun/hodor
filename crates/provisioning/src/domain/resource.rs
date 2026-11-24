@@ -11,20 +11,47 @@ use crate::domain::attribute::{
 };
 use crate::domain::error::{MUTABILITY, invalid_syntax, invalid_value};
 use crate::domain::evaluate::{Fact, Facts};
+use crate::domain::patch::Shape;
+use crate::domain::version::version_of;
 use hodor_identity::api::{
     Group, GroupMember, IdentifierKind, LoginIdentifier, NormalizedIdentifier, User, UserKind,
     UserStatus,
 };
 use hodor_kernel::{DomainError, GroupId, Timestamp, UserId};
 use serde_json::{Map, Value, json};
+use std::collections::BTreeMap;
 use time::format_description::well_known::Rfc3339;
 
 /// The most characters of each text attribute this context keeps.
 pub const MAX_KEPT_CHARACTERS: usize = 256;
 /// The most members a group takes in one request.
 pub const MAX_MEMBERS_PER_REQUEST: usize = 1000;
-/// Why a user suspended through SCIM is suspended.
-pub const SUSPENDED_THROUGH_SCIM: &str = "suspended through SCIM";
+/// Why the sessions and grants of a deprovisioned person ended.
+pub const DEPROVISIONED: &str = "deprovisioned";
+
+/// What a `PATCH` of a user needs to know of its attributes.
+pub const USER_SHAPE: Shape = Shape {
+    core: USER_SCHEMA,
+    extensions: &[ENTERPRISE_USER_SCHEMA],
+    read_only: &["id", "meta", "groups"],
+    multi_valued: &[
+        "emails",
+        "phoneNumbers",
+        "ims",
+        "photos",
+        "addresses",
+        "entitlements",
+        "roles",
+        "x509Certificates",
+    ],
+};
+/// What a `PATCH` of a group needs to know of its attributes.
+pub const GROUP_SHAPE: Shape = Shape {
+    core: GROUP_SCHEMA,
+    extensions: &[],
+    read_only: &["id", "meta"],
+    multi_valued: &["members"],
+};
 
 /// What SCIM carries of a user that the identity context has no place
 /// for. Each value is text of 1 to 256 characters.
@@ -50,6 +77,9 @@ pub struct UserSupplement {
     pub department: Option<String>,
     /// `manager.value`, of the enterprise extension.
     pub manager: Option<String>,
+    /// The `type` of each email address, by the address in its normalized
+    /// form.
+    pub email_types: BTreeMap<String, String>,
 }
 
 impl UserSupplement {
@@ -80,6 +110,10 @@ pub struct StoredUserSupplement {
     pub created_at: Timestamp,
     /// When it last changed.
     pub updated_at: Timestamp,
+    /// When a `DELETE` deprovisioned the user while the policy was to
+    /// deactivate; from then on SCIM does not show them while they stay
+    /// Deactivated.
+    pub removed_at: Option<Timestamp>,
 }
 
 /// What SCIM carries of a group that the identity context has no place
@@ -209,6 +243,17 @@ fn kept(
     Ok(Some(text.to_owned()))
 }
 
+/// A boolean, written as JSON's or, as some SCIM clients write it, as the
+/// string `"true"` or `"false"` in any case.
+fn boolean(value: &Value, called: &str) -> Result<bool, DomainError> {
+    match value {
+        Value::Bool(value) => Ok(*value),
+        Value::String(text) if text.eq_ignore_ascii_case("true") => Ok(true),
+        Value::String(text) if text.eq_ignore_ascii_case("false") => Ok(false),
+        _ => Err(invalid_value(format!("{called} is true or false"))),
+    }
+}
+
 fn body_object(body: &Value) -> Result<&Map<String, Value>, DomainError> {
     body.as_object()
         .ok_or_else(|| invalid_syntax("the body is not a JSON object"))
@@ -305,6 +350,7 @@ pub fn read_user(body: &Value) -> Result<UserRequest, DomainError> {
         division: kept(enterprise, "division", "division")?,
         department: kept(enterprise, "department", "department")?,
         manager: kept(manager, "value", "manager.value")?,
+        email_types: BTreeMap::new(),
     };
 
     let display_name = field(object, "displayName")
@@ -316,16 +362,13 @@ pub fn read_user(body: &Value) -> Result<UserRequest, DomainError> {
         .or_else(|| supplement.formatted_name.clone());
 
     let active = field(object, "active")
-        .map(|value| {
-            value
-                .as_bool()
-                .ok_or_else(|| invalid_value("active is true or false"))
-        })
+        .map(|value| boolean(value, "active"))
         .transpose()?
         .unwrap_or(true);
 
     let mut marked: Option<NormalizedIdentifier> = None;
     let mut addresses: Vec<NormalizedIdentifier> = Vec::new();
+    let mut email_types: BTreeMap<String, String> = BTreeMap::new();
     if let Some(emails) = field(object, "emails") {
         let emails = emails
             .as_array()
@@ -338,13 +381,12 @@ pub fn read_user(body: &Value) -> Result<UserRequest, DomainError> {
                 .ok_or_else(|| invalid_value("an email has a value"))?;
             let address = identifier(IdentifierKind::Email, value)?;
             let primary = field(email, "primary")
-                .map(|value| {
-                    value
-                        .as_bool()
-                        .ok_or_else(|| invalid_value("an email's primary is true or false"))
-                })
+                .map(|value| boolean(value, "an email's primary"))
                 .transpose()?
                 .unwrap_or(false);
+            if let Some(kind) = kept(email, "type", "an email's type")? {
+                email_types.insert(address.normalized().to_owned(), kind);
+            }
             if primary {
                 if marked
                     .as_ref()
@@ -367,6 +409,8 @@ pub fn read_user(body: &Value) -> Result<UserRequest, DomainError> {
             emails.push(address);
         }
     }
+    let mut supplement = supplement;
+    supplement.email_types = email_types;
     Ok(UserRequest {
         username,
         emails,
@@ -384,6 +428,17 @@ pub fn read_user(body: &Value) -> Result<UserRequest, DomainError> {
 /// [`MAX_MEMBERS_PER_REQUEST`] members or a member that cannot be a user
 /// or a group.
 pub fn read_group(body: &Value) -> Result<GroupRequest, DomainError> {
+    read_group_bounded(body, Some(MAX_MEMBERS_PER_REQUEST))
+}
+
+/// As [`read_group`], with `bound` on the members the body lists, or none:
+/// the result of a `PATCH` holds every member of the group, and the bound
+/// is on what its operations name.
+///
+/// # Errors
+///
+/// As [`read_group`].
+pub fn read_group_bounded(body: &Value, bound: Option<usize>) -> Result<GroupRequest, DomainError> {
     let object = body_object(body)?;
     check_schemas(object, GROUP_SCHEMA, &[])?;
     let display_name = field(object, "displayName")
@@ -400,7 +455,7 @@ pub fn read_group(body: &Value) -> Result<GroupRequest, DomainError> {
         let listed = listed
             .as_array()
             .ok_or_else(|| invalid_value("members is a list"))?;
-        if listed.len() > MAX_MEMBERS_PER_REQUEST {
+        if bound.is_some_and(|bound| listed.len() > bound) {
             return Err(invalid_value(format!(
                 "a group takes at most {MAX_MEMBERS_PER_REQUEST} members in one request"
             )));
@@ -438,10 +493,13 @@ pub fn read_group(body: &Value) -> Result<GroupRequest, DomainError> {
     })
 }
 
-/// Whether SCIM shows a user: a person, not yet marked Deleted.
+/// Whether SCIM shows a user: a person, not marked Deleted, and not
+/// deprovisioned by a `DELETE` while they stay Deactivated.
 #[must_use]
-pub fn shown(user: &User) -> bool {
-    user.snapshot().kind == UserKind::Human && user.status() != UserStatus::Deleted
+pub fn shown(user: &User, stored: Option<&StoredUserSupplement>) -> bool {
+    let removed = user.status() == UserStatus::Deactivated
+        && stored.is_some_and(|stored| stored.removed_at.is_some());
+    user.snapshot().kind == UserKind::Human && user.status() != UserStatus::Deleted && !removed
 }
 
 /// The user's userName identifier: its primary username, or else its
@@ -495,10 +553,32 @@ impl UserResource {
             .unwrap_or_default()
     }
 
-    /// The resource as JSON. `base` is the address of the tenant's SCIM
-    /// surface, such as `https://id.example.com/t/acme/scim/v2`.
+    /// The resource as JSON, with its version in `meta.version`. `base`
+    /// is the address of the tenant's SCIM surface, such as
+    /// `https://id.example.com/t/acme/scim/v2`.
     #[must_use]
     pub fn document(&self, base: &str) -> Value {
+        let mut document = self.written(base);
+        document["meta"]["version"] = json!(self.version());
+        document
+    }
+
+    /// The resource's version: the same at every address of the surface.
+    #[must_use]
+    pub fn version(&self) -> String {
+        version_of(&self.written(""))
+    }
+
+    /// The resource as a `PATCH` changes it, without its version.
+    #[must_use]
+    pub fn patchable(&self) -> Map<String, Value> {
+        match self.written("") {
+            Value::Object(document) => document,
+            _ => Map::new(),
+        }
+    }
+
+    fn written(&self, base: &str) -> Value {
         let state = self.user.snapshot();
         let empty = UserSupplement::default();
         let supplement = self
@@ -540,7 +620,12 @@ impl UserResource {
             .iter()
             .filter(|identifier| identifier.value.kind() == IdentifierKind::Email)
             .map(|identifier| {
-                json!({ "value": identifier.value.display(), "primary": identifier.primary })
+                let mut email =
+                    json!({ "value": identifier.value.display(), "primary": identifier.primary });
+                if let Some(kind) = supplement.email_types.get(identifier.value.normalized()) {
+                    email["type"] = json!(kind);
+                }
+                email
             })
             .collect();
         if !emails.is_empty() {
@@ -614,9 +699,31 @@ pub struct GroupResource {
 }
 
 impl GroupResource {
-    /// The resource as JSON; `base` as for [`UserResource::document`].
+    /// The resource as JSON, with its version; `base` as for
+    /// [`UserResource::document`].
     #[must_use]
     pub fn document(&self, base: &str) -> Value {
+        let mut document = self.written(base);
+        document["meta"]["version"] = json!(self.version());
+        document
+    }
+
+    /// The resource's version.
+    #[must_use]
+    pub fn version(&self) -> String {
+        version_of(&self.written(""))
+    }
+
+    /// The resource as a `PATCH` changes it, without its version.
+    #[must_use]
+    pub fn patchable(&self) -> Map<String, Value> {
+        match self.written("") {
+            Value::Object(document) => document,
+            _ => Map::new(),
+        }
+    }
+
+    fn written(&self, base: &str) -> Value {
         let state = self.group.snapshot();
         let mut document = Map::new();
         document.insert("schemas".into(), json!([GROUP_SCHEMA]));

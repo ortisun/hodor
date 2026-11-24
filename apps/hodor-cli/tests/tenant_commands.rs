@@ -147,3 +147,39 @@ async fn the_depth_of_groups_is_set_within_its_bounds() {
         assert!(!out.status.success(), "{refused} was accepted");
     }
 }
+
+#[tokio::test]
+async fn the_scim_deprovisioning_policy_is_set_by_name() {
+    let database = TestDatabase::start().await;
+    let created = cli(&database, &["create", "--slug", "acme", "--name", "Acme"]);
+    assert!(created.status.success(), "{}", stderr(&created));
+    let read = || async {
+        let (policy,): (Option<String>,) = sqlx::query_as(
+            "SELECT settings -> 'provisioning' ->> 'deprovisioning' FROM tenant.tenant",
+        )
+        .fetch_one(database.owner())
+        .await
+        .expect("the setting");
+        policy
+    };
+    for (policy, stored) in [("delete", "delete"), ("deactivate", "deactivate")] {
+        let set = cli(
+            &database,
+            &["scim-deprovisioning", "--slug", "acme", "--policy", policy],
+        );
+        assert!(set.status.success(), "{}", stderr(&set));
+        assert_eq!(stdout(&set), format!("acme scim-deprovisioning {stored}"));
+        assert_eq!(read().await.as_deref(), Some(stored));
+    }
+    let refused = cli(
+        &database,
+        &[
+            "scim-deprovisioning",
+            "--slug",
+            "acme",
+            "--policy",
+            "suspend",
+        ],
+    );
+    assert!(!refused.status.success(), "an unknown policy was accepted");
+}

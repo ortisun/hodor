@@ -257,6 +257,17 @@ pub trait GrantStore: Send + Sync {
         user: UserId,
         client: ClientId,
     ) -> Result<Vec<Grant>, DomainError>;
+
+    /// The active grants of a person, for every client, oldest first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn list_active_of(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        user: UserId,
+    ) -> Result<Vec<Grant>, DomainError>;
 }
 
 /// Stores consents and their history.

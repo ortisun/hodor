@@ -288,7 +288,7 @@ A group's name and description are not personal data, but they can say a great d
 | Organizations of a user | Every organization the user is a member of, with their units |
 | Invite, withdraw an invitation, list pending invitations | Used by the authentication context, which sends the link |
 | Find an invitation by the hash of its token; accept it | Accepting uses it up and makes the membership in the caller's unit of work |
-| Create user, get user, change user, in the caller's unit of work | For a context that does more in the same transaction, as [provisioning](provisioning.md) does: a change applies any of the transitions and changes above to a loaded user, stores it once and records every event |
+| Create user, get user, change user, mark deleted, in the caller's unit of work | For a context that does more in the same transaction, as [provisioning](provisioning.md) does: a change applies any of the transitions and changes above to a loaded user, stores it once and records every event |
 | Create, get, change, delete group; add and remove a member; list every member; the groups a user is directly in; in the caller's unit of work | As above, for groups, with the same rules |
 
 Every use case that changes a user loads it, applies the change, stores it and records its events in one unit of work. A change that produces no event, such as verifying an identifier that is already verified, changed nothing and stores nothing.

@@ -246,14 +246,17 @@ Other systems provision a tenant's users and groups, per RFC 7643 and RFC 7644. 
 | Method and path, under `/t/{slug}/scim/v2` | Purpose |
 |---|---|
 | `GET /ServiceProviderConfig`, `GET /ResourceTypes[/{name}]`, `GET /Schemas[/{uri}]` | Discovery |
-| `GET /Users`, `POST /Users`, `GET /Users/{id}`, `PUT /Users/{id}` | Users, with the core schema and the enterprise extension; lists filtered, sorted and in pages |
-| `GET /Groups`, `POST /Groups`, `GET /Groups/{id}`, `PUT /Groups/{id}`, `DELETE /Groups/{id}` | Groups and their members |
+| `GET /Users`, `POST /Users`, `GET /Users/{id}`, `PUT /Users/{id}`, `PATCH /Users/{id}`, `DELETE /Users/{id}` | Users, with the core schema and the enterprise extension; lists filtered, sorted and in pages; `DELETE` follows the tenant's deprovisioning policy |
+| `GET /Groups`, `POST /Groups`, `GET /Groups/{id}`, `PUT /Groups/{id}`, `PATCH /Groups/{id}`, `DELETE /Groups/{id}` | Groups and their members |
+| `POST /Bulk` | Up to 100 of those operations, each on its own, with references between them by `bulkId` |
 
 - The caller sends `Authorization: Bearer` with an access token of the tenant whose audience includes `urn:hodor:scim` and which holds the scope `scim`. Without a good token the answer is `401` with `WWW-Authenticate: Bearer`, another tenant's token included; without the scope it is `403` with `insufficient_scope`.
 - The media type is `application/scim+json`; `application/json` is accepted in requests. Errors use the SCIM error schema, `urn:ietf:params:scim:api:messages:2.0:Error`, not problem documents.
 - Lists take `filter`, `sortBy`, `sortOrder`, `startIndex` (from 1) and `count` (100 by default, at most 200), not the cursors of the JSON APIs.
 - A resource of another tenant is answered as one that does not exist: `404`.
-- `PATCH`, `DELETE` of a user, `/Bulk`, entity tags and the deprovisioning policy are [Issue-91](../product/epics.md#slice-x--scim-epic-26), and answered `501` until then.
+- Every resource has a version, `meta.version` and the `ETag` header. `If-Match` on `PUT`, `PATCH` and `DELETE` is answered `412` when the version is stale; `If-None-Match` on a `GET` gives `304`.
+- Deprovisioning, `DELETE` of a user or `active: false`, deactivates or deletes the person as the tenant's policy says, and ends their sessions and grants at once.
+- Searching with `POST /.search` is answered `501`.
 
 ## SAML 2.0
 

@@ -5,6 +5,7 @@
 //! They are the same for every tenant except for their `location`.
 
 use crate::domain::attribute::{ENTERPRISE_USER_SCHEMA, GROUP_SCHEMA, USER_SCHEMA};
+use crate::domain::bulk::{MAX_BULK_BYTES, MAX_BULK_OPERATIONS};
 use crate::domain::query::MAX_COUNT;
 use serde_json::{Value, json};
 
@@ -26,12 +27,16 @@ pub const ERROR_SCHEMA: &str = "urn:ietf:params:scim:api:messages:2.0:Error";
 pub fn service_provider_config(base: &str) -> Value {
     json!({
         "schemas": [SERVICE_PROVIDER_CONFIG_SCHEMA],
-        "patch": { "supported": false },
-        "bulk": { "supported": false, "maxOperations": 0, "maxPayloadSize": 0 },
+        "patch": { "supported": true },
+        "bulk": {
+            "supported": true,
+            "maxOperations": MAX_BULK_OPERATIONS,
+            "maxPayloadSize": MAX_BULK_BYTES
+        },
         "filter": { "supported": true, "maxResults": MAX_COUNT },
         "changePassword": { "supported": false },
         "sort": { "supported": true },
-        "etag": { "supported": false },
+        "etag": { "supported": true },
         "authenticationSchemes": [{
             "type": "oauthbearertoken",
             "name": "OAuth Bearer Token",
@@ -173,6 +178,7 @@ fn user_schema(base: &str) -> Value {
             multi_valued: true,
             sub_attributes: vec![
                 Described::text("value", "An email address, taken as verified").value(),
+                Described::text("type", "What the address is for, such as work or home").value(),
                 Described {
                     kind: "boolean",
                     ..Described::text("primary", "Whether it is the primary address")
@@ -351,7 +357,9 @@ mod tests {
             assert_eq!(found["meta"]["location"], format!("{base}/Schemas/{uri}"));
         }
         let config = service_provider_config(base);
-        assert_eq!(config["patch"]["supported"], false);
+        assert_eq!(config["patch"]["supported"], true);
+        assert_eq!(config["etag"]["supported"], true);
+        assert_eq!(config["bulk"]["maxOperations"], 100);
         assert_eq!(config["filter"]["maxResults"], 200);
     }
 }

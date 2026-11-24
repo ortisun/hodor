@@ -103,6 +103,8 @@ It needs `HODOR_DATABASE_URL`, like the tenant commands.
 | `POST /resource-servers` | `applications:write` | Register the resource server of an application |
 | `GET /resource-servers/{resource_server_id}` | `applications:read` | Read one resource server |
 | `PATCH /resource-servers/{resource_server_id}` | `applications:write` | Change its name or its scopes |
+| `GET /scim-deprovisioning` | `users:read` | Read the tenant's SCIM deprovisioning policy |
+| `PUT /scim-deprovisioning` | `users:write` | Set it |
 | `GET /assurance-levels` | `assurance-levels:read` | Read the tenant's assurance levels |
 | `PUT /assurance-levels` | `assurance-levels:write` | Replace the tenant's assurance levels |
 | `GET /decision-log` | `decisions:read` | Read the settings of the record of decisions |
@@ -530,6 +532,16 @@ The levels an application names in `acr_values`, and which every token names in 
 |---|---|---|
 | No level, more than three, a name that is empty, longer than 255 characters or holds a space or a character outside printable ASCII, or two levels with the same name or the same requirement | `422` | `tenant.settings_invalid` |
 | A requirement other than `single_factor`, `multi_factor` and `phishing_resistant`, or a body that is not that document | `422` | `request.body_invalid` |
+
+### SCIM deprovisioning
+
+The tenant's [SCIM deprovisioning policy](../architecture/contexts/tenant.md#scim-deprovisioning-policy): what a SCIM client's `DELETE` or `active: false` does to a person.
+
+```json
+{ "deprovisioning": "deactivate" }
+```
+
+`GET /scim-deprovisioning` answers the policy in force, `deactivate` when none was set. `PUT /scim-deprovisioning` takes the same document and answers it as it is now; a change applies to requests that arrive after it, and is recorded as `tenant.settings_changed`. Any value other than `deactivate` and `delete`, or another body, is `422` with `request.body_invalid`.
 
 ### The record of decisions
 

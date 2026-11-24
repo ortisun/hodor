@@ -173,6 +173,9 @@ A SCIM client writes a tenant's people and groups: the [provisioning context](..
 | Threat-Provisioning-05 | SQL injection through a filter | A filter is compiled into SQL whose every value is a bound parameter and whose every attribute is one of a fixed set of expressions; nothing of the filter's text reaches the statement |
 | Threat-Provisioning-06 | A large request as denial of service | Bodies are limited to 64 kibibytes; a group takes at most 1000 members in one request; each text attribute at most 256 characters |
 | Threat-Provisioning-07 | What SCIM keeps of a person leaks through events or the audit log | Events carry identifiers only, never a department, a name or an address |
+| Threat-Provisioning-08 | A bulk request or a `PATCH` as denial of service | A bulk request holds at most 100 operations in at most one mebibyte, refused whole past either; a `PATCH` at most 100 operations; each value filter of a path keeps the bounds of filters |
+| Threat-Provisioning-09 | A person who left keeps access after their directory deprovisioned them | Deprovisioning ends every session and revokes every grant of the person in the same transaction; refresh tokens and sessions also check, at use, that the person may still sign in |
+| Threat-Provisioning-10 | A SCIM client overwrites a change it never saw | Versions with `If-Match`: a change for a stale version is refused with `412`; a user's own optimistic lock refuses the second of two changes made at the same moment |
 
 ## Multi-tenancy
 

@@ -8,10 +8,10 @@
 //! its repositories.
 
 use crate::api::{
-    Attribute, Fact, Facts, FilterRefusal, Found, GroupAttribute, GroupFacts, GroupSupplement,
-    ListParameters, ListQuery, ProvisionedGroupRepository, ProvisionedUserRepository, SortOrder,
-    StoredGroupSupplement, StoredUserSupplement, UserAttribute, UserFacts, UserSupplement, matches,
-    shown, sort_order,
+    AccessRevoker, Attribute, Deprovisioning, DeprovisioningPolicy, Fact, Facts, FilterRefusal,
+    Found, GroupAttribute, GroupFacts, GroupSupplement, ListParameters, ListQuery,
+    ProvisionedGroupRepository, ProvisionedUserRepository, SortOrder, StoredGroupSupplement,
+    StoredUserSupplement, UserAttribute, UserFacts, UserSupplement, matches, shown, sort_order,
 };
 use hodor_identity::api::{
     Group, GroupMember, GroupName, GroupRepository, IdentifierKind, NormalizedIdentifier, Profile,
@@ -123,6 +123,11 @@ impl ProvisionedUserRepository for InMemoryProvisionedUsers {
         Ok(())
     }
 
+    async fn remove(&self, uow: &mut dyn UnitOfWork, user: UserId) -> Result<(), DomainError> {
+        self.rows().remove(&(uow.tenant().tenant_id(), user));
+        Ok(())
+    }
+
     async fn find(
         &self,
         uow: &mut dyn UnitOfWork,
@@ -133,7 +138,7 @@ impl ProvisionedUserRepository for InMemoryProvisionedUsers {
         let rows = self.rows();
         let found = users
             .iter()
-            .filter(|user| shown(user))
+            .filter(|user| shown(user, rows.get(&(tenant, user.id()))))
             .filter_map(|user| {
                 let facts = UserFacts {
                     user,
@@ -254,6 +259,63 @@ impl ProvisionedGroupRepository for InMemoryProvisionedGroups {
             }
         }
         Ok(page_of(found, query))
+    }
+}
+
+/// A deprovisioning policy, the same for every tenant, that a test may
+/// change.
+#[derive(Debug, Clone, Default)]
+pub struct FixedDeprovisioning(Arc<Mutex<Deprovisioning>>);
+
+impl FixedDeprovisioning {
+    /// Makes `policy` the policy of every tenant.
+    pub fn set(&self, policy: Deprovisioning) {
+        *self.0.lock().unwrap_or_else(|error| error.into_inner()) = policy;
+    }
+}
+
+#[async_trait::async_trait]
+impl DeprovisioningPolicy for FixedDeprovisioning {
+    async fn deprovisioning(
+        &self,
+        _uow: &mut dyn UnitOfWork,
+    ) -> Result<Deprovisioning, DomainError> {
+        Ok(*self.0.lock().unwrap_or_else(|error| error.into_inner()))
+    }
+}
+
+/// An [`AccessRevoker`] that remembers whose access it ended, and why.
+#[derive(Debug, Clone, Default)]
+pub struct RecordingAccessRevoker(Arc<Mutex<Vec<Revoked>>>);
+
+/// Whose access was ended, in which tenant, and why.
+pub type Revoked = (TenantId, UserId, &'static str);
+
+impl RecordingAccessRevoker {
+    /// Every person whose access was ended, in order, with the reason.
+    #[must_use]
+    pub fn revoked(&self) -> Vec<Revoked> {
+        self.0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl AccessRevoker for RecordingAccessRevoker {
+    async fn revoke_access(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        user: UserId,
+        reason: &'static str,
+        _caller: hodor_kernel::Caller,
+    ) -> Result<(), DomainError> {
+        self.0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push((uow.tenant().tenant_id(), user, reason));
+        Ok(())
     }
 }
 
@@ -760,8 +822,11 @@ async fn populate(ports: ContractPorts<'_>, home: &TenantContext) -> Population 
     let mut gone = person(Some("gone"), &["gone@example.com"], None, at(6));
     gone.deactivate(at(6)).expect("deactivated");
     gone.mark_deleted(at(6)).expect("deleted");
+    // Deprovisioned by a DELETE while the policy deactivates: never found.
+    let mut left = person(Some("left"), &["left@example.com"], Some("Left"), at(6));
+    left.deactivate(at(6)).expect("deactivated");
 
-    for user in [&bjensen, &jsmith, &ana, &omalley, &robot, &gone] {
+    for user in [&bjensen, &jsmith, &ana, &omalley, &robot, &gone, &left] {
         within!(ports, home, |uow| ports
             .users
             .insert(uow.as_mut(), user)
@@ -777,6 +842,10 @@ async fn populate(ports: ContractPorts<'_>, home: &TenantContext) -> Population 
                 given_name: kept("Barbara"),
                 family_name: kept("Jensen"),
                 department: kept("Tour Operations"),
+                email_types: BTreeMap::from([(
+                    "bjensen@example.com".to_owned(),
+                    "work".to_owned(),
+                )]),
                 ..UserSupplement::default()
             },
             at(1),
@@ -826,11 +895,30 @@ async fn populate(ports: ContractPorts<'_>, home: &TenantContext) -> Population 
                     supplement,
                     created_at: updated_at.min(at(4)),
                     updated_at,
+                    removed_at: None,
                 },
             )
             .await
             .expect("put"));
     }
+
+    within!(ports, home, |uow| ports
+        .provisioned_users
+        .put(
+            uow.as_mut(),
+            &StoredUserSupplement {
+                user_id: left.id(),
+                supplement: UserSupplement {
+                    external_id: kept("701984"),
+                    ..UserSupplement::default()
+                },
+                created_at: at(6),
+                updated_at: at(6),
+                removed_at: Some(at(6)),
+            },
+        )
+        .await
+        .expect("put"));
 
     let group = |name: &str, hours: i64| {
         Group::create(GroupName::parse(name).expect("a name"), None, at(hours))
@@ -929,6 +1017,7 @@ async fn populate_elsewhere(ports: ContractPorts<'_>, elsewhere: &TenantContext)
                 },
                 created_at: at(1),
                 updated_at: at(1),
+                removed_at: None,
             },
         )
         .await
@@ -1000,6 +1089,15 @@ pub async fn run_contract(ports: ContractPorts<'_>) {
         Some("Tour Operations")
     );
     assert_eq!((stored.created_at, stored.updated_at), (at(1), at(1)));
+    assert_eq!(stored.removed_at, None);
+    assert_eq!(
+        stored
+            .supplement
+            .email_types
+            .get("bjensen@example.com")
+            .map(String::as_str),
+        Some("work")
+    );
     let hidden = within!(ports, &elsewhere, |uow| ports
         .provisioned_users
         .get(uow.as_mut(), bjensen)
@@ -1160,6 +1258,35 @@ pub async fn run_contract(ports: ContractPorts<'_>) {
     assert_eq!(
         found.total, 0,
         "a member of one tenant is in no group of another"
+    );
+
+    // What is kept of a user is removed, in its tenant only.
+    within!(ports, &elsewhere, |uow| ports
+        .provisioned_users
+        .remove(uow.as_mut(), bjensen)
+        .await
+        .expect("remove nothing"));
+    assert!(
+        within!(ports, &home, |uow| ports
+            .provisioned_users
+            .get(uow.as_mut(), bjensen)
+            .await
+            .expect("get"))
+        .is_some(),
+        "another tenant removes nothing of this one"
+    );
+    within!(ports, &home, |uow| ports
+        .provisioned_users
+        .remove(uow.as_mut(), bjensen)
+        .await
+        .expect("remove"));
+    assert_eq!(
+        within!(ports, &home, |uow| ports
+            .provisioned_users
+            .get(uow.as_mut(), bjensen)
+            .await
+            .expect("get")),
+        None
     );
 
     // What is kept of a group is replaced and removed, in its tenant only.

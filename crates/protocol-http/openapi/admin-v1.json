@@ -3470,6 +3470,116 @@
         }
       }
     },
+    "/scim-deprovisioning": {
+      "get": {
+        "operationId": "readScimDeprovisioning",
+        "summary": "Read the tenant's SCIM deprovisioning policy",
+        "x-hodor-permission": "users:read",
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The policy in force, `deactivate` when none was set.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScimDeprovisioning"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "setScimDeprovisioning",
+        "summary": "Set the tenant's SCIM deprovisioning policy",
+        "x-hodor-permission": "users:write",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScimDeprovisioning"
+              }
+            }
+          }
+        },
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The policy now in force.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScimDeprovisioning"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A body that is not this document, or a policy other than `deactivate` and `delete` (`request.body_invalid`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/assurance-levels": {
       "get": {
         "operationId": "readAssuranceLevels",
@@ -10373,6 +10483,23 @@
           "locale": {
             "type": "string",
             "description": "The language of the message, such as pt-BR."
+          }
+        }
+      },
+      "ScimDeprovisioning": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "deprovisioning"
+        ],
+        "properties": {
+          "deprovisioning": {
+            "type": "string",
+            "enum": [
+              "deactivate",
+              "delete"
+            ],
+            "description": "What a SCIM client's `DELETE` of a user or `active: false` does: deactivate the person, or delete them. Either way their sessions and grants end."
           }
         }
       }

@@ -369,6 +369,37 @@ impl GroupPolicy {
     }
 }
 
+/// What deprovisioning a person through SCIM does to them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Deprovisioning {
+    /// Deactivate them: they can be restored.
+    #[default]
+    Deactivate,
+    /// Deactivate them and mark them Deleted: they are erased.
+    Delete,
+}
+
+impl Deprovisioning {
+    /// The name the policy is stored and written under.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Deactivate => "deactivate",
+            Self::Delete => "delete",
+        }
+    }
+}
+
+/// What the tenant's SCIM server does. Specified in
+/// `docs/architecture/contexts/tenant.md`, "SCIM deprovisioning policy".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ProvisioningPolicy {
+    /// What deprovisioning a person does.
+    #[serde(default)]
+    pub deprovisioning: Deprovisioning,
+}
+
 /// All the policies of one tenant.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct TenantSettings {
@@ -388,6 +419,10 @@ pub struct TenantSettings {
     /// existed read as the default.
     #[serde(default)]
     pub groups: GroupPolicy,
+    /// What the SCIM server does. Settings stored before this policy
+    /// existed read as the default.
+    #[serde(default)]
+    pub provisioning: ProvisioningPolicy,
 }
 
 impl TenantSettings {
@@ -458,6 +493,25 @@ mod tests {
         }
         settings.groups.max_depth = 10;
         settings.validate().expect("valid");
+    }
+
+    #[test]
+    fn deprovisioning_deactivates_by_default_and_is_stored_by_name() {
+        let mut settings = TenantSettings::default();
+        assert_eq!(
+            settings.provisioning.deprovisioning,
+            Deprovisioning::Deactivate
+        );
+        let mut stored = serde_json::to_value(&settings).expect("serializes");
+        stored
+            .as_object_mut()
+            .expect("an object")
+            .remove("provisioning");
+        let read: TenantSettings = serde_json::from_value(stored).expect("older settings read");
+        assert_eq!(read.provisioning.deprovisioning, Deprovisioning::Deactivate);
+        settings.provisioning.deprovisioning = Deprovisioning::Delete;
+        let stored = serde_json::to_value(&settings).expect("serializes");
+        assert_eq!(stored["provisioning"]["deprovisioning"], "delete");
     }
 
     #[test]
