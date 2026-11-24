@@ -28,6 +28,24 @@ const OUT_OF_STEP = [
   "request.csrf_token_invalid",
 ];
 
+/**
+ * Sends an identifier, and sends it once more if the sign-in was changed by
+ * another request at the same moment. That request is the page's own: while
+ * the identifier step is shown, it asks for the passkey challenge, which
+ * changes the sign-in. The first identifier was not taken, and sending an
+ * identifier counts no attempt, so sending it again is safe.
+ */
+async function sendIdentifier(client: Client, identifier: string): Promise<SignInAnswer> {
+  try {
+    return await client.submitIdentifier(identifier);
+  } catch (thrown) {
+    if (asFailure(thrown).code === "authentication.transaction_modified_concurrently") {
+      return client.submitIdentifier(identifier);
+    }
+    throw thrown;
+  }
+}
+
 type Found =
   | { kind: "signed-in" }
   | { kind: "answer"; answer: SignInAnswer }
@@ -451,7 +469,7 @@ export function SignInPage({
           key={view.shown}
           onSubmit={(event) => {
             stopOffering();
-            submit(event, () => client.submitIdentifier(identifier));
+            submit(event, () => sendIdentifier(client, identifier));
           }}
         >
           {passkeyNoAnswer ? <Notice kind="danger">{text.passkeyNoAnswer}</Notice> : null}
