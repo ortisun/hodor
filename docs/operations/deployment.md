@@ -61,6 +61,7 @@ flowchart TB
 | Replicas | Server: 3 minimum, horizontal pod autoscaler on CPU and request concurrency. Worker: 2 minimum |
 | Scheduling | Topology spread across zones; PodDisruptionBudget keeps a majority |
 | Probes | `startupz` (migrations compatible, keys loaded), `readyz` (database reachable, not draining), `livez` (process responsive). Readiness does not depend on Redis, Open Policy Agent or external identity providers |
+| Client address | The ingress controller's pod range in `trustedProxies`, with the network policy on, so that limits count each client: [the address of each client](install-on-kubernetes.md#the-address-of-each-client) |
 | Shutdown | On SIGTERM: fail readiness, wait for the load balancer, drain in-flight requests, stop; workers finish or release the current job |
 | Network policy | Ingress to `:8080` only from the gateway; `:9090` only from monitoring; Open Policy Agent reachable only on localhost; egress restricted to database, Redis, key management service, collector and an egress proxy for identity providers and webhooks |
 | Pod security | Non-root, no privilege escalation, all capabilities dropped, read-only filesystem, seccomp default |
