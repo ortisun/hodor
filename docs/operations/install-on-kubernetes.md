@@ -207,6 +207,22 @@ networkPolicy:
 - **Turn on the network policy so that only the ingress controller can connect.** The pod range also holds every other pod of the cluster, and any of them could otherwise write the header.
 - **The ingress controller must see the client's own address.** Behind a cloud load balancer, that takes the load balancer's PROXY protocol or a service with `externalTrafficPolicy: Local`, as your ingress controller's documentation describes. Otherwise it forwards the address of a node.
 
+#### Inside a service mesh
+
+A service mesh that puts a sidecar in Hodor's pods, as Istio does in its sidecar mode and as Linkerd does, changes what Hodor sees. Every connection then comes from the sidecar in Hodor's own pod: from `127.0.0.6` with Istio, from the pod itself with Linkerd. The sidecar passes `X-Forwarded-For` on as the caller wrote it, without checking it.
+
+**Never name the sidecar's address in `trustedProxies`.** Every request reaches Hodor through the sidecar, so every workload that can reach Hodor would choose its own address, and the limits on sign-in attempts would count whatever it wrote.
+
+Telling the ingress controller from other callers by their identity in the mesh is planned, as [Hodor runs inside a mesh too](../decisions/0029-hodor-in-a-service-mesh.md#hodor-runs-inside-a-mesh-too) says (Issue-112), and not built yet. Until it is, choose one of these:
+
+| Choice | What it takes | What it gives |
+|---|---|---|
+| Keep Hodor's pods out of the mesh | Install Hodor in a namespace the mesh does not inject. With Istio, no `istio-injection` or `istio.io/rev` label on it; with Linkerd, no `linkerd.io/inject` annotation | The rules above hold as written. Connections to Hodor are not mutual TLS of the mesh; the network policy is what limits who connects |
+| Istio's ambient mode instead of sidecars | Hodor's namespace in ambient mode, with no waypoint in front of Hodor | ztunnel keeps the caller's own address, so the ingress controller's pod range is named as above |
+| Leave `trustedProxies` empty | Nothing | Safe, but everyone shares one limit on sign-in attempts, as with no proxy named |
+
+Behind a waypoint of Istio's ambient mode, what address Hodor sees has not been checked. Treat a waypoint as a sidecar until it has.
+
 ## Upgrading
 
 1. With a published version, there is nothing to build. With an image of your own, build and push the image of the new version, as in [step 1](#1-get-the-image).
@@ -306,6 +322,7 @@ kind delete cluster --name hodor
 
 | Missing | Until then |
 |---|---|
+| Trusting a forwarded address behind a mesh's sidecar | Hodor's pods stay out of the mesh, or Istio's ambient mode is used, as [inside a service mesh](#inside-a-service-mesh) says |
 | Autoscaling on request concurrency | The autoscaler follows processor use only |
 | Dashboards and alerts | Metrics and traces are sent where `telemetry` says; what is drawn and alerted from them is yours |
 | The Open Policy Agent sidecar and Redis | Neither is used by Hodor yet: both belong to later phases of the [roadmap](../product/roadmap.md) |
