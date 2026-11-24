@@ -457,10 +457,10 @@ The message names the organization and the tenant, so that the person knows what
 
 1. The invitation is looked up by the hash of the token. An unknown, accepted, withdrawn or expired invitation is refused, all four in the same way.
 2. The password is checked against the tenant's [password policy](tenant.md#password-policy). A password that is not acceptable is refused, and the invitation stays good.
-3. The invitation is used up. Only one request gets past this point.
-4. The user is created, already active, with the address as a verified login identifier, the password is set, and the membership is made with the invitation's units.
+3. In one transaction, the user is created, already active, with the address as a verified login identifier; the invitation is used up; and the membership is made with the invitation's units. Only one request gets past this point, and a request that loses leaves no account behind.
+4. The password is set. If the server is too busy to hash it, the account exists without a password; the person gets in by recovering it, since the address is already verified.
 
-If the address acquired an account between describing and accepting, step 4 is refused and the person is told to sign in and accept again. The tenant's registration policy does not apply: an administrator chose to let this person in.
+If the address acquired an account between describing and accepting, step 3 is refused and the person is told to sign in and accept again. The tenant's registration policy does not apply: an administrator chose to let this person in.
 
 **When the address has an account**, the person signs in as that account first, and accepts while signed in. The session's user must have the invited address among their login identifiers; another signed-in person is refused, and the invitation stays good. Accepting marks the address verified, since the person just proved they read it.
 

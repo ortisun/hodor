@@ -67,7 +67,7 @@ impl VerificationSecret {
     /// Number of characters in a secret.
     pub const LENGTH: usize = 64;
 
-    fn generate(random: &dyn RandomSource) -> Self {
+    pub(crate) fn generate(random: &dyn RandomSource) -> Self {
         let mut bytes = [0_u8; 32];
         random.fill(&mut bytes);
         let mut text = String::with_capacity(Self::LENGTH);

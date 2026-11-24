@@ -17,15 +17,18 @@ pub enum Template {
     PasswordRecovery,
     /// A password was changed.
     PasswordChanged,
+    /// A person is invited to join an organization.
+    OrganizationInvitation,
 }
 
 impl Template {
     /// Every template.
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::EmailVerification,
         Self::AlreadyRegistered,
         Self::PasswordRecovery,
         Self::PasswordChanged,
+        Self::OrganizationInvitation,
     ];
 
     /// The name the template is stored and reported under.
@@ -36,6 +39,7 @@ impl Template {
             Self::AlreadyRegistered => "already_registered",
             Self::PasswordRecovery => "password_recovery",
             Self::PasswordChanged => "password_changed",
+            Self::OrganizationInvitation => "organization_invitation",
         }
     }
 
@@ -64,6 +68,9 @@ impl Template {
                 &["link", "tenant_name", "expires_at"]
             }
             Self::AlreadyRegistered | Self::PasswordChanged => &["tenant_name"],
+            Self::OrganizationInvitation => {
+                &["link", "tenant_name", "organization_name", "expires_at"]
+            }
         }
     }
 
@@ -138,6 +145,26 @@ impl Template {
                  Se foi você, não há nada a fazer.\n\n\
                  Se não foi você, escolha uma nova senha agora na página de entrada \
                  e avise as pessoas responsáveis por {tenant_name}.\n",
+            ),
+            (Self::OrganizationInvitation, Language::English) => (
+                "You are invited to join {organization_name} at {tenant_name}",
+                "Hello,\n\n\
+                 You are invited to join {organization_name} at {tenant_name}.\n\n\
+                 To accept, open this link:\n\n\
+                 {link}\n\n\
+                 If you have no account yet, you will choose a password there. \
+                 The link works once and stops working on {expires_at}.\n\n\
+                 If you do not know why you were invited, ignore this message and nothing will happen.\n",
+            ),
+            (Self::OrganizationInvitation, Language::Portuguese) => (
+                "Você foi convidado para {organization_name} em {tenant_name}",
+                "Olá,\n\n\
+                 Você foi convidado para fazer parte de {organization_name} em {tenant_name}.\n\n\
+                 Para aceitar, abra este link:\n\n\
+                 {link}\n\n\
+                 Se ainda não tiver uma conta, você escolherá uma senha lá. \
+                 O link funciona uma única vez e deixa de funcionar em {expires_at}.\n\n\
+                 Se não souber por que foi convidado, ignore esta mensagem e nada acontecerá.\n",
             ),
         }
     }
