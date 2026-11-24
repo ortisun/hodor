@@ -108,6 +108,11 @@ define_id!(
     UserId
 );
 define_id!(
+    /// Identifies a group of users of a tenant. It lives here, not in the
+    /// identity context, because other contexts give things to groups.
+    GroupId
+);
+define_id!(
     /// Identifies one domain event; handlers deduplicate on it.
     EventId
 );

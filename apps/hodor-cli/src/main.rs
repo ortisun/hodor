@@ -12,10 +12,10 @@ use hodor_adapters_crypto::{
     AwsLcHmacSha1, BundleSigningKey, LocalKeyProvider, OsRandom, SecretKeys, Sha256Digest,
 };
 use hodor_adapters_postgres::{
-    Database, PgAccessTokenStore, PgAuditLog, PgBundleStore, PgInstanceStatusStore,
-    PgInstanceStore, PgKeyStore, PgLinkStore, PgPool, PgProviderStore, PgRecoveryCodeStore,
-    PgRoleAssignmentStore, PgSealingStateStore, PgTenantDirectory, PgTenantRepository, PgTotpStore,
-    PgUploadedDecisionStore, PgUserRepository, reseal_tenant,
+    Database, PgAccessTokenStore, PgAuditLog, PgBundleStore, PgGroupRepository,
+    PgInstanceStatusStore, PgInstanceStore, PgKeyStore, PgLinkStore, PgPool, PgProviderStore,
+    PgRecoveryCodeStore, PgRoleAssignmentStore, PgSealingStateStore, PgTenantDirectory,
+    PgTenantRepository, PgTotpStore, PgUploadedDecisionStore, PgUserRepository, reseal_tenant,
 };
 use hodor_audit::api::AuditService;
 use hodor_authorization::api::{AuthorizationService, Namespace, Role};
@@ -729,6 +729,16 @@ enum TenantCommand {
         #[arg(long, value_enum)]
         policy: SecondFactorArg,
     },
+    /// Set how deep groups of the tenant may be nested: the longest chain of
+    /// groups inside a group, counting itself, from 1 to 10.
+    GroupDepth {
+        /// The tenant's slug.
+        #[arg(long)]
+        slug: String,
+        /// The deepest a group may be.
+        #[arg(long)]
+        depth: u8,
+    },
     /// Replace the assurance levels applications ask for in `acr_values`
     /// and tokens name in `acr`; without `--level`, print them.
     AssuranceLevels {
@@ -850,6 +860,14 @@ async fn run_tenant(
             settings.authentication.second_factor = policy;
             service.change_settings(&tenant, settings, caller()).await?;
             Ok(format!("{} second-factor {said}", entry.slug))
+        }
+        TenantCommand::GroupDepth { slug, depth } => {
+            let entry = existing(service, &slug).await?;
+            let tenant = TenantContext::assume(entry.tenant_id);
+            let mut settings = service.get(&tenant).await?.snapshot().settings.clone();
+            settings.groups.max_depth = depth;
+            service.change_settings(&tenant, settings, caller()).await?;
+            Ok(format!("{} group-depth {depth}", entry.slug))
         }
         TenantCommand::AssuranceLevels { slug, levels } => {
             let entry = existing(service, &slug).await?;
@@ -988,7 +1006,8 @@ async fn person(
         Arc::new(database.clone()),
         Arc::new(PgUserRepository),
         Arc::new(SystemClock),
-    );
+    )
+    .with_groups(Arc::new(PgGroupRepository));
     let user = identity
         .find_by_login(&tenant, login)
         .await?
@@ -1646,7 +1665,8 @@ async fn bootstrap_administrator(
     // tenant context: the operator names the tenant.
     let tenant = TenantContext::assume(entry.tenant_id);
 
-    let identity = IdentityService::new(units(), Arc::new(PgUserRepository), clock.clone());
+    let identity = IdentityService::new(units(), Arc::new(PgUserRepository), clock.clone())
+        .with_groups(Arc::new(PgGroupRepository));
     let address = NormalizedIdentifier::parse(IdentifierKind::Email, email)?;
     let user = match identity
         .find_by_login(&tenant, address.normalized())

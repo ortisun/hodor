@@ -346,6 +346,29 @@ pub struct AuthenticationPolicy {
     pub assurance_levels: AssuranceLevels,
 }
 
+/// The bound on how deep groups may be nested.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupPolicy {
+    /// The deepest a group may be: the longest chain of groups inside it,
+    /// counting itself.
+    pub max_depth: u8,
+}
+
+impl Default for GroupPolicy {
+    fn default() -> Self {
+        Self { max_depth: 5 }
+    }
+}
+
+impl GroupPolicy {
+    fn validate(&self) -> Result<(), DomainError> {
+        if !(1..=10).contains(&self.max_depth) {
+            return Err(invalid("the depth of groups must be between 1 and 10"));
+        }
+        Ok(())
+    }
+}
+
 /// All the policies of one tenant.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct TenantSettings {
@@ -361,6 +384,10 @@ pub struct TenantSettings {
     /// policy existed read as the default.
     #[serde(default)]
     pub authentication: AuthenticationPolicy,
+    /// How deep groups may be nested. Settings stored before this policy
+    /// existed read as the default.
+    #[serde(default)]
+    pub groups: GroupPolicy,
 }
 
 impl TenantSettings {
@@ -373,6 +400,7 @@ impl TenantSettings {
         self.password.validate()?;
         self.session.validate()?;
         self.lockout.validate()?;
+        self.groups.validate()?;
         self.authentication.assurance_levels.validate()
     }
 }
@@ -411,6 +439,25 @@ mod tests {
             .remove("authentication");
         let read: TenantSettings = serde_json::from_value(stored).expect("still reads");
         assert_eq!(read, TenantSettings::default());
+    }
+
+    #[test]
+    fn the_depth_of_groups_is_five_by_default_and_bounded() {
+        let mut settings = TenantSettings::default();
+        assert_eq!(settings.groups.max_depth, 5);
+        let mut stored = serde_json::to_value(&settings).expect("serializes");
+        stored.as_object_mut().expect("an object").remove("groups");
+        let read: TenantSettings = serde_json::from_value(stored).expect("older settings read");
+        assert_eq!(
+            read.groups.max_depth, 5,
+            "settings stored before the policy read as the default"
+        );
+        for depth in [0, 11] {
+            settings.groups.max_depth = depth;
+            assert!(settings.validate().is_err(), "{depth}");
+        }
+        settings.groups.max_depth = 10;
+        settings.validate().expect("valid");
     }
 
     #[test]

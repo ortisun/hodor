@@ -3,9 +3,12 @@
 //! The in-memory fake and the PostgreSQL adapter both run the contract,
 //! which is what makes the fake a faithful stand-in in use case tests.
 
-use crate::api::{IdentifierKind, NormalizedIdentifier, Profile, User, UserKind, UserRepository};
+use crate::api::{
+    Group, GroupMember, GroupName, GroupPolicy, GroupRepository, IdentifierKind,
+    NormalizedIdentifier, Profile, User, UserKind, UserRepository,
+};
 use hodor_kernel::{
-    DomainError, TenantContext, TenantId, Timestamp, UnitOfWork, UnitOfWorkFactory, UserId,
+    DomainError, GroupId, TenantContext, TenantId, Timestamp, UnitOfWork, UnitOfWorkFactory, UserId,
 };
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -428,4 +431,513 @@ async fn users_are_listed_in_the_order_they_were_created(ports: &Ports<'_>) {
     assert_eq!(list(None, 2).await, created[..2]);
     assert_eq!(list(Some(created[1].id()), 2).await, created[2..4]);
     assert!(list(Some(created[4].id()), 10).await.is_empty());
+}
+
+/// Groups and their members kept in memory.
+#[derive(Debug, Clone, Default)]
+pub struct InMemoryGroups {
+    state: Arc<Mutex<GroupRows>>,
+}
+
+#[derive(Debug, Default)]
+struct GroupRows {
+    groups: BTreeMap<(TenantId, GroupId), Group>,
+    members: std::collections::BTreeSet<(TenantId, GroupId, GroupMember)>,
+}
+
+impl InMemoryGroups {
+    fn state(&self) -> std::sync::MutexGuard<'_, GroupRows> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+fn name_taken() -> DomainError {
+    DomainError::conflict(
+        "identity.group_name_taken",
+        "another group of the tenant has this name",
+    )
+}
+
+fn group_with_version(group: &Group, version: u32) -> Group {
+    let mut state = group.snapshot().clone();
+    state.version = version;
+    Group::from_snapshot(state)
+}
+
+fn name_used(rows: &GroupRows, tenant: TenantId, group: &Group) -> bool {
+    rows.groups.iter().any(|((owner, id), other)| {
+        *owner == tenant
+            && *id != group.id()
+            && other.name().normalized() == group.name().normalized()
+    })
+}
+
+#[async_trait::async_trait]
+impl GroupRepository for InMemoryGroups {
+    async fn insert(&self, uow: &mut dyn UnitOfWork, group: &Group) -> Result<(), DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let mut rows = self.state();
+        if name_used(&rows, tenant, group) {
+            return Err(name_taken());
+        }
+        rows.groups.insert((tenant, group.id()), group.clone());
+        Ok(())
+    }
+
+    async fn get(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: GroupId,
+    ) -> Result<Option<Group>, DomainError> {
+        Ok(self
+            .state()
+            .groups
+            .get(&(uow.tenant().tenant_id(), id))
+            .cloned())
+    }
+
+    async fn list(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        after: Option<GroupId>,
+        limit: u32,
+    ) -> Result<Vec<Group>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        Ok(self
+            .state()
+            .groups
+            .iter()
+            .filter(|((owner, id), _)| *owner == tenant && after.is_none_or(|after| *id > after))
+            .take(limit as usize)
+            .map(|(_, group)| group.clone())
+            .collect())
+    }
+
+    async fn update(&self, uow: &mut dyn UnitOfWork, group: &Group) -> Result<(), DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let mut rows = self.state();
+        let stored = rows.groups.get(&(tenant, group.id())).ok_or_else(|| {
+            DomainError::not_found("identity.group_not_found", "the group does not exist")
+        })?;
+        if stored.snapshot().version != group.snapshot().version {
+            return Err(DomainError::conflict(
+                "identity.group_modified_concurrently",
+                "the group was changed by someone else; reload and try again",
+            ));
+        }
+        if name_used(&rows, tenant, group) {
+            return Err(name_taken());
+        }
+        rows.groups.insert(
+            (tenant, group.id()),
+            group_with_version(group, group.snapshot().version + 1),
+        );
+        Ok(())
+    }
+
+    async fn delete(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: GroupId,
+    ) -> Result<Option<u64>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let mut rows = self.state();
+        if rows.groups.remove(&(tenant, id)).is_none() {
+            return Ok(None);
+        }
+        let before = rows.members.len();
+        rows.members
+            .retain(|(owner, group, _)| !(*owner == tenant && *group == id));
+        let members = (before - rows.members.len()) as u64;
+        rows.members
+            .retain(|(owner, _, member)| !(*owner == tenant && *member == GroupMember::Group(id)));
+        Ok(Some(members))
+    }
+
+    async fn add_member(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        group: GroupId,
+        member: GroupMember,
+        _now: Timestamp,
+    ) -> Result<bool, DomainError> {
+        Ok(self
+            .state()
+            .members
+            .insert((uow.tenant().tenant_id(), group, member)))
+    }
+
+    async fn remove_member(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        group: GroupId,
+        member: GroupMember,
+    ) -> Result<bool, DomainError> {
+        Ok(self
+            .state()
+            .members
+            .remove(&(uow.tenant().tenant_id(), group, member)))
+    }
+
+    async fn members(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        group: GroupId,
+        after: Option<GroupMember>,
+        limit: u32,
+    ) -> Result<Vec<GroupMember>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        Ok(self
+            .state()
+            .members
+            .iter()
+            .filter(|(owner, of, member)| {
+                *owner == tenant && *of == group && after.is_none_or(|after| *member > after)
+            })
+            .take(limit as usize)
+            .map(|(_, _, member)| *member)
+            .collect())
+    }
+
+    async fn lock_nesting(&self, _uow: &mut dyn UnitOfWork) -> Result<(), DomainError> {
+        // One process, and every call below finishes before the next.
+        Ok(())
+    }
+
+    async fn nesting(
+        &self,
+        uow: &mut dyn UnitOfWork,
+    ) -> Result<Vec<(GroupId, GroupId)>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        Ok(self
+            .state()
+            .members
+            .iter()
+            .filter_map(|(owner, group, member)| match member {
+                GroupMember::Group(inner) if *owner == tenant => Some((*group, *inner)),
+                _ => None,
+            })
+            .collect())
+    }
+
+    async fn groups_of(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        user: UserId,
+    ) -> Result<Vec<GroupId>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        Ok(self
+            .state()
+            .members
+            .iter()
+            .filter(|(owner, _, member)| *owner == tenant && *member == GroupMember::User(user))
+            .map(|(_, group, _)| *group)
+            .collect())
+    }
+}
+
+/// A group policy with one bound for every tenant.
+#[derive(Debug, Clone, Copy)]
+pub struct FixedGroupPolicy(pub u8);
+
+#[async_trait::async_trait]
+impl GroupPolicy for FixedGroupPolicy {
+    async fn max_depth(&self, _uow: &mut dyn UnitOfWork) -> Result<u8, DomainError> {
+        Ok(self.0)
+    }
+}
+
+/// The ports the contract of groups runs against.
+#[derive(Clone)]
+pub struct GroupPorts<'a> {
+    /// Starts units of work.
+    pub units_of_work: &'a dyn UnitOfWorkFactory,
+    /// Where the users that become members are stored.
+    pub users: &'a dyn UserRepository,
+    /// The repository under test.
+    pub groups: &'a dyn GroupRepository,
+}
+
+impl std::fmt::Debug for GroupPorts<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GroupPorts").finish_non_exhaustive()
+    }
+}
+
+fn a_group(name: &str) -> Group {
+    let name = GroupName::parse(name).expect("a name");
+    Group::create(name, Some("Who pays the bills".to_owned()), MOMENT)
+        .expect("a group")
+        .0
+}
+
+/// Runs the contract of groups. Each case uses tenants of its own.
+///
+/// # Panics
+///
+/// Panics when the implementation breaks the contract.
+pub async fn run_group_contract(ports: GroupPorts<'_>) {
+    let ports = &ports;
+    // In one unit of work per step, committed, as the use cases do.
+    macro_rules! within {
+        ($tenant:expr, |$uow:ident| $body:expr) => {{
+            let mut $uow = ports.units_of_work.begin($tenant).await.expect("begin");
+            let value = $body;
+            $uow.commit().await.expect("commit");
+            value
+        }};
+    }
+
+    // A stored group is loaded unchanged, and is invisible elsewhere.
+    let (home, elsewhere) = (tenant(), tenant());
+    let finance = a_group("Finance");
+    within!(&home, |uow| ports
+        .groups
+        .insert(uow.as_mut(), &finance)
+        .await
+        .expect("insert"));
+    let loaded = within!(&home, |uow| ports
+        .groups
+        .get(uow.as_mut(), finance.id())
+        .await
+        .expect("get"));
+    assert_eq!(loaded.as_ref(), Some(&finance));
+    let hidden = within!(&elsewhere, |uow| ports
+        .groups
+        .get(uow.as_mut(), finance.id())
+        .await
+        .expect("get"));
+    assert_eq!(
+        hidden, None,
+        "a group of one tenant is not seen from another"
+    );
+
+    // Names are unique in a tenant without regard to case, and only there.
+    let taken = within!(&home, |uow| ports
+        .groups
+        .insert(uow.as_mut(), &a_group("finance"))
+        .await);
+    assert_eq!(
+        taken.expect_err("taken").code(),
+        "identity.group_name_taken"
+    );
+    within!(&elsewhere, |uow| ports
+        .groups
+        .insert(uow.as_mut(), &a_group("finance"))
+        .await
+        .expect("another tenant"));
+
+    // A change is stored with a higher version; a stale one is refused, and
+    // so is a name another group has.
+    let payables = a_group("payables");
+    within!(&home, |uow| ports
+        .groups
+        .insert(uow.as_mut(), &payables)
+        .await
+        .expect("insert"));
+    let mut renamed = finance.clone();
+    renamed
+        .change(
+            GroupName::parse("Finance team").expect("a name"),
+            None,
+            MOMENT,
+        )
+        .expect("a change");
+    within!(&home, |uow| ports
+        .groups
+        .update(uow.as_mut(), &renamed)
+        .await
+        .expect("update"));
+    let stored = within!(&home, |uow| ports
+        .groups
+        .get(uow.as_mut(), finance.id())
+        .await
+        .expect("get"))
+    .expect("stored");
+    assert_eq!(stored.name().as_str(), "Finance team");
+    assert_eq!(stored.description(), None);
+    assert_eq!(stored.snapshot().version, finance.snapshot().version + 1);
+    let stale = within!(&home, |uow| ports
+        .groups
+        .update(uow.as_mut(), &renamed)
+        .await);
+    assert_eq!(
+        stale.expect_err("stale").code(),
+        "identity.group_modified_concurrently"
+    );
+    let mut clash = stored.clone();
+    clash
+        .change(GroupName::parse("PAYABLES").expect("a name"), None, MOMENT)
+        .expect("a change");
+    let clash = within!(&home, |uow| ports.groups.update(uow.as_mut(), &clash).await);
+    assert_eq!(
+        clash.expect_err("taken").code(),
+        "identity.group_name_taken"
+    );
+    let mut abroad = stored.clone();
+    abroad
+        .change(GroupName::parse("Elsewhere").expect("a name"), None, MOMENT)
+        .expect("a change");
+    let abroad = within!(&elsewhere, |uow| ports
+        .groups
+        .update(uow.as_mut(), &abroad)
+        .await);
+    assert_eq!(
+        abroad.expect_err("not there").code(),
+        "identity.group_not_found"
+    );
+
+    // Members: users first, then groups, each in the order of identifiers,
+    // once each; the links between groups and the groups of a user follow.
+    let mut people = Vec::new();
+    for index in 0..3 {
+        let user = person(vec![email(&format!("member{index}@example.com"))]);
+        store(
+            &Ports {
+                units_of_work: ports.units_of_work,
+                users: ports.users,
+            },
+            &home,
+            &user,
+        )
+        .await
+        .expect("a user");
+        people.push(user.id());
+    }
+    people.sort();
+    let mut expected: Vec<GroupMember> = people.iter().copied().map(GroupMember::User).collect();
+    expected.push(GroupMember::Group(payables.id()));
+    for member in expected.iter().rev() {
+        let added = within!(&home, |uow| ports
+            .groups
+            .add_member(uow.as_mut(), finance.id(), *member, MOMENT)
+            .await
+            .expect("add"));
+        assert!(added);
+    }
+    let again = within!(&home, |uow| ports
+        .groups
+        .add_member(uow.as_mut(), finance.id(), expected[0], MOMENT)
+        .await
+        .expect("add"));
+    assert!(!again, "a member is in a group once");
+    let all = within!(&home, |uow| ports
+        .groups
+        .members(uow.as_mut(), finance.id(), None, 10)
+        .await
+        .expect("members"));
+    assert_eq!(all, expected);
+    let page = within!(&home, |uow| ports
+        .groups
+        .members(uow.as_mut(), finance.id(), Some(expected[1]), 2)
+        .await
+        .expect("members"));
+    assert_eq!(page, expected[2..4]);
+    let nesting = within!(&home, |uow| ports
+        .groups
+        .nesting(uow.as_mut())
+        .await
+        .expect("nesting"));
+    assert_eq!(nesting, [(finance.id(), payables.id())]);
+    let of = within!(&home, |uow| ports
+        .groups
+        .groups_of(uow.as_mut(), people[0])
+        .await
+        .expect("groups of"));
+    assert_eq!(of, [finance.id()]);
+    let elsewhere_nesting = within!(&elsewhere, |uow| ports
+        .groups
+        .nesting(uow.as_mut())
+        .await
+        .expect("nesting"));
+    assert!(elsewhere_nesting.is_empty(), "another tenant sees no link");
+    within!(&home, |uow| ports
+        .groups
+        .lock_nesting(uow.as_mut())
+        .await
+        .expect("the lock"));
+
+    // Taking a member out.
+    let removed = within!(&home, |uow| ports
+        .groups
+        .remove_member(uow.as_mut(), finance.id(), expected[0])
+        .await
+        .expect("remove"));
+    assert!(removed);
+    let removed_again = within!(&home, |uow| ports
+        .groups
+        .remove_member(uow.as_mut(), finance.id(), expected[0])
+        .await
+        .expect("remove"));
+    assert!(!removed_again);
+
+    // Deleting a group takes its members out of it and it out of others.
+    let accounts = a_group("accounts");
+    within!(&home, |uow| ports
+        .groups
+        .insert(uow.as_mut(), &accounts)
+        .await
+        .expect("insert"));
+    within!(&home, |uow| ports
+        .groups
+        .add_member(
+            uow.as_mut(),
+            payables.id(),
+            GroupMember::Group(accounts.id()),
+            MOMENT
+        )
+        .await
+        .expect("add"));
+    within!(&home, |uow| ports
+        .groups
+        .add_member(
+            uow.as_mut(),
+            payables.id(),
+            GroupMember::User(people[1]),
+            MOMENT
+        )
+        .await
+        .expect("add"));
+    let deleted = within!(&home, |uow| ports
+        .groups
+        .delete(uow.as_mut(), payables.id())
+        .await
+        .expect("delete"));
+    assert_eq!(deleted, Some(2), "two direct members");
+    let nesting = within!(&home, |uow| ports
+        .groups
+        .nesting(uow.as_mut())
+        .await
+        .expect("nesting"));
+    assert!(
+        nesting.is_empty(),
+        "no link to or from a deleted group remains"
+    );
+    let of = within!(&home, |uow| ports
+        .groups
+        .groups_of(uow.as_mut(), people[1])
+        .await
+        .expect("groups of"));
+    assert_eq!(of, [finance.id()]);
+    let gone = within!(&home, |uow| ports
+        .groups
+        .delete(uow.as_mut(), payables.id())
+        .await
+        .expect("delete"));
+    assert_eq!(gone, None);
+
+    // Listing in the order of creation.
+    let listed = within!(&home, |uow| ports
+        .groups
+        .list(uow.as_mut(), None, 10)
+        .await
+        .expect("list"));
+    let ids: Vec<GroupId> = listed.iter().map(Group::id).collect();
+    assert_eq!(ids, [finance.id(), accounts.id()]);
+    let after = within!(&home, |uow| ports
+        .groups
+        .list(uow.as_mut(), Some(finance.id()), 10)
+        .await
+        .expect("list"));
+    assert_eq!(after.len(), 1);
 }
