@@ -10,11 +10,11 @@ use clap::{Parser, ValueEnum};
 use hodor_adapters_crypto::{LocalKeyProvider, OsRandom, SecretKeys, Sha256Digest};
 use hodor_adapters_policy_check::{OpaProcessChecker, RunLimits};
 use hodor_adapters_postgres::{
-    AccessTokenCleanup, CleanupReport, Database, DecisionLogMaintenance, KeyRotationJob,
-    OutboxDispatcher, PendingAuthorizationCleanup, PgAuditLog, PgBundleStore,
-    PgInstanceStatusStore, PgInstanceStore, PgKeyStore, PgMessageQueue, PgPendingMessages,
-    PgPolicyVersionStore, PgPool, PgPublicationStore, PgSimulationStore, PgUploadedDecisionStore,
-    PolicyCheckJob, connect_pool, ping_pool,
+    AccessTokenCleanup, CleanupReport, Database, DecisionLogMaintenance, ExpiredKind,
+    ExpiredRowCleanup, KeyRotationJob, OutboxDispatcher, PendingAuthorizationCleanup, PgAuditLog,
+    PgBundleStore, PgInstanceStatusStore, PgInstanceStore, PgKeyStore, PgMessageQueue,
+    PgPendingMessages, PgPolicyVersionStore, PgPool, PgPublicationStore, PgSimulationStore,
+    PgUploadedDecisionStore, PolicyCheckJob, connect_pool, ping_pool,
 };
 use hodor_adapters_smtp::SmtpSender;
 use hodor_audit::api::{AuditHandler, AuditService};
@@ -26,6 +26,7 @@ use hodor_observability::{LogFormat, Telemetry};
 use hodor_protocol_http::{Health, ReadinessCheck, ops_router, serve};
 use opentelemetry::KeyValue;
 use opentelemetry::metrics::Counter;
+use std::collections::HashMap;
 use std::error::Error;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -97,6 +98,11 @@ struct Config {
     /// Most rows a cleanup job removes in one tenant per pass.
     #[arg(long, env = "HODOR_CLEANUP_BATCH_SIZE", default_value_t = 500)]
     cleanup_batch_size: u32,
+
+    /// Retentions that differ from the defaults, as `kind=days` pairs
+    /// separated by commas, such as `sessions=30,messages=90`.
+    #[arg(long, env = "HODOR_CLEANUP_RETENTION_DAYS", default_value = "")]
+    cleanup_retention_days: String,
 
     /// The keys that wrap the tenants' signing keys: the same as the
     /// server's. Unset: keys do not rotate, and no tenant gets one.
@@ -229,6 +235,7 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
         time::Duration::hours(config.key_publication_hours),
         time::Duration::hours(config.key_overlap_hours),
     )?;
+    let retentions = cleanup_retentions(&config.cleanup_retention_days)?;
     let root_keys = config
         .secret_keys
         .map(|setting| SecretKeys::parse(&Secret::from(setting)))
@@ -283,6 +290,20 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
     ));
     let access_token_cleanup =
         CleanupJob::AccessTokens(AccessTokenCleanup::new(platform.clone(), database.clone()));
+    let expired_rows: Vec<CleanupJob> = ExpiredKind::ALL
+        .into_iter()
+        .map(|kind| {
+            CleanupJob::Expired(ExpiredRowCleanup::new(
+                kind,
+                retentions
+                    .get(&kind)
+                    .copied()
+                    .unwrap_or(kind.default_retention_days()),
+                platform.clone(),
+                database.clone(),
+            ))
+        })
+        .collect();
     let decision_log_maintenance = CleanupJob::DecisionLog(DecisionLogMaintenance::new(
         platform.clone(),
         database.clone(),
@@ -361,19 +382,25 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
             stopped.clone(),
         ),
         cleanup_loop(
-            &pending_cleanup,
+            std::slice::from_ref(&pending_cleanup),
             config.cleanup_batch_size,
             Duration::from_millis(config.cleanup_interval_ms),
             stopped.clone(),
         ),
         cleanup_loop(
-            &access_token_cleanup,
+            std::slice::from_ref(&access_token_cleanup),
             config.cleanup_batch_size,
             Duration::from_millis(config.cleanup_interval_ms),
             stopped.clone(),
         ),
         cleanup_loop(
-            &decision_log_maintenance,
+            std::slice::from_ref(&decision_log_maintenance),
+            config.cleanup_batch_size,
+            Duration::from_millis(config.cleanup_interval_ms),
+            stopped.clone(),
+        ),
+        cleanup_loop(
+            &expired_rows,
             config.cleanup_batch_size,
             Duration::from_millis(config.cleanup_interval_ms),
             stopped.clone(),
@@ -404,6 +431,8 @@ enum CleanupJob {
     /// The partitions of the record of decisions, and each tenant's records
     /// past its retention.
     DecisionLog(DecisionLogMaintenance),
+    /// Rows of one kind that stopped being useful, past their retention.
+    Expired(ExpiredRowCleanup),
 }
 
 impl CleanupJob {
@@ -413,6 +442,7 @@ impl CleanupJob {
             Self::PendingAuthorizations(_) => "pending_authorizations",
             Self::AccessTokens(_) => "access_tokens",
             Self::DecisionLog(_) => "decision_log",
+            Self::Expired(job) => job.kind().name(),
         }
     }
 
@@ -420,6 +450,7 @@ impl CleanupJob {
         match self {
             Self::PendingAuthorizations(job) => job.run(now, batch).await,
             Self::AccessTokens(job) => job.run(now, batch).await,
+            Self::Expired(job) => job.run(now, batch).await,
             Self::DecisionLog(job) => {
                 let report = job.run(now, batch).await?;
                 if report.created > 0 || report.dropped > 0 {
@@ -438,11 +469,11 @@ impl CleanupJob {
     }
 }
 
-/// Runs a cleanup job until asked to stop: now, then after every pause. A
-/// pass that removed a full batch somewhere is followed by another at once,
-/// since more may be waiting.
+/// Runs cleanup jobs until asked to stop: a pass of each now, then after
+/// every pause. When a pass of any of them removed a full batch somewhere,
+/// the next pass follows at once, since more may be waiting.
 async fn cleanup_loop(
-    cleanup: &CleanupJob,
+    jobs: &[CleanupJob],
     batch_size: u32,
     interval: Duration,
     mut stopped: watch::Receiver<bool>,
@@ -456,37 +487,48 @@ async fn cleanup_loop(
         .u64_counter("hodor.cleanup.passes")
         .with_description("Passes of the cleanup jobs, by job and outcome")
         .build();
-    let job = KeyValue::new("job", cleanup.name());
 
     while !*stopped.borrow() {
-        let now = SystemClock.now();
-        let pause = match cleanup.run(now, batch_size).await {
-            Ok(report) => {
-                passes.add(1, &[job.clone(), KeyValue::new("outcome", "ok")]);
-                removed.add(report.removed, std::slice::from_ref(&job));
-                if report.removed > 0 {
-                    tracing::info!(
-                        job = cleanup.name(),
-                        tenants = report.tenants,
-                        removed = report.removed,
-                        "expired rows removed"
-                    );
+        let mut full = false;
+        let mut failed = false;
+        for cleanup in jobs {
+            if *stopped.borrow() {
+                return;
+            }
+            let job = KeyValue::new("job", cleanup.name());
+            let now = SystemClock.now();
+            match cleanup.run(now, batch_size).await {
+                Ok(report) => {
+                    passes.add(1, &[job.clone(), KeyValue::new("outcome", "ok")]);
+                    removed.add(report.removed, std::slice::from_ref(&job));
+                    if report.removed > 0 {
+                        tracing::info!(
+                            job = cleanup.name(),
+                            tenants = report.tenants,
+                            removed = report.removed,
+                            "expired rows removed"
+                        );
+                    }
+                    // A full batch in every tenant looked at: there may be more.
+                    full |= report.tenants > 0
+                        && report.removed >= report.tenants * u64::from(batch_size);
                 }
-                // A full batch in every tenant looked at: there may be more.
-                let full =
-                    report.tenants > 0 && report.removed >= report.tenants * u64::from(batch_size);
-                (!full).then_some(interval)
+                Err(error) => {
+                    passes.add(1, &[job.clone(), KeyValue::new("outcome", "error")]);
+                    tracing::warn!(
+                        job = cleanup.name(),
+                        code = error.code(),
+                        detail = ?error.detail(),
+                        "cleanup pass failed"
+                    );
+                    failed = true;
+                }
             }
-            Err(error) => {
-                passes.add(1, &[job.clone(), KeyValue::new("outcome", "error")]);
-                tracing::warn!(
-                    job = cleanup.name(),
-                    code = error.code(),
-                    detail = ?error.detail(),
-                    "cleanup pass failed"
-                );
-                Some(interval.max(MIN_ERROR_PAUSE))
-            }
+        }
+        let pause = if failed {
+            Some(interval.max(MIN_ERROR_PAUSE))
+        } else {
+            (!full).then_some(interval)
         };
         if let Some(pause) = pause {
             tokio::select! {
@@ -501,6 +543,48 @@ async fn cleanup_loop(
 /// every pause. A pass that looked at as many tenants as it may is
 /// followed by another at once, unless a step failed in one of them.
 /// Without root keys there is nothing to do.
+/// Reads `HODOR_CLEANUP_RETENTION_DAYS`: `kind=days` pairs separated by
+/// commas. A kind that is not known, a kind given twice, or a number of
+/// days that is not a whole number stops the worker from starting.
+fn cleanup_retentions(setting: &str) -> Result<HashMap<ExpiredKind, u32>, String> {
+    let mut retentions = HashMap::new();
+    for pair in setting
+        .split(',')
+        .map(str::trim)
+        .filter(|pair| !pair.is_empty())
+    {
+        let (kind, days) = pair.split_once('=').ok_or_else(|| {
+            format!("HODOR_CLEANUP_RETENTION_DAYS: `{pair}` is not written as kind=days")
+        })?;
+        let kind = kind.trim();
+        if matches!(kind, "pending_authorizations" | "access_tokens") {
+            return Err(format!(
+                "HODOR_CLEANUP_RETENTION_DAYS: the retention of `{kind}` is fixed at 0"
+            ));
+        }
+        let kind: ExpiredKind = kind
+            .parse()
+            .map_err(|error| format!("HODOR_CLEANUP_RETENTION_DAYS: {error}"))?;
+        let days = days.trim();
+        let days: u32 = days
+            .parse()
+            .ok()
+            .filter(|_| days.bytes().all(|byte| byte.is_ascii_digit()))
+            .filter(|days| *days <= 3650)
+            .ok_or_else(|| {
+                format!(
+                    "HODOR_CLEANUP_RETENTION_DAYS: `{days}` is not a whole number of days from 0 to 3650"
+                )
+            })?;
+        if retentions.insert(kind, days).is_some() {
+            return Err(format!(
+                "HODOR_CLEANUP_RETENTION_DAYS: `{kind}` is given more than once"
+            ));
+        }
+    }
+    Ok(retentions)
+}
+
 /// The policy lifecycle over the application role's database.
 fn policy_service(database: &Database) -> PolicyService {
     let bundles = BundleService::new(
@@ -808,5 +892,40 @@ async fn stop_signal() {
     #[cfg(not(unix))]
     {
         let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
+#[cfg(test)]
+mod cleanup_retention_tests {
+    use super::*;
+
+    #[test]
+    fn retentions_are_read_as_kind_and_days() {
+        let retentions = cleanup_retentions(" sessions=30, messages = 90 ,").expect("read");
+        assert_eq!(retentions.get(&ExpiredKind::Sessions), Some(&30));
+        assert_eq!(retentions.get(&ExpiredKind::Messages), Some(&90));
+        assert_eq!(retentions.len(), 2);
+        assert!(cleanup_retentions("").expect("nothing").is_empty());
+    }
+
+    #[test]
+    fn a_retention_that_cannot_be_used_stops_the_worker() {
+        for setting in [
+            "sessions",
+            "sessions=",
+            "sessions=-1",
+            "sessions=+1",
+            "sessions=1.5",
+            "sessions=3651",
+            "audit=1",
+            "sessions=1,sessions=2",
+            "pending_authorizations=1",
+            "access_tokens=0",
+        ] {
+            assert!(
+                cleanup_retentions(setting).is_err(),
+                "{setting} was accepted"
+            );
+        }
     }
 }

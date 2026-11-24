@@ -7,8 +7,8 @@ crates declare: the unit of work and the unit of work factory from
 `hodor-kernel`, and one store or repository per bounded context (audit,
 authentication, authorization, credential, federation, identity,
 notification, session, tenant). It also holds the outbox dispatcher, the
-cleanup jobs for expired pending authorizations and records of access
-tokens, the embedded schema
+cleanup jobs for expired pending authorizations, records of access
+tokens and every other kind of row that stopped being useful, the embedded schema
 migrations, and a feature-gated test-support module.
 
 Tenant data is reached only through a `TenantTransaction`
@@ -36,6 +36,7 @@ All modules are private; the public surface is the set of re-exports in
 | `OutboxDispatcher`, `DispatchReport` | `outbox.rs` | Delivers pending outbox events to `hodor_kernel::EventHandler`s. |
 | `PendingAuthorizationCleanup`, `CleanupReport` | `cleanup.rs` | `new(platform, database)`; `run(now, batch)` finds, through the platform pool, up to 100 tenants (`TENANTS_PER_PASS`) that have pending authorizations expired at `now`, and in each tenant removes up to `batch` of them in its own unit of work, through `PgPendingAuthorizationStore::remove_expired`. The report counts the tenants and the rows removed. |
 | `AccessTokenCleanup` | `cleanup.rs` | The same for the register: `new(platform, database)`; `run(now, batch)` finds up to 100 tenants with records of access tokens expired at `now`, and in each removes up to `batch` through `PgAccessTokenRecordStore::remove_expired`. |
+| `ExpiredKind`, `ExpiredRowCleanup` | `cleanup.rs` | `ExpiredKind` names the twelve kinds of row of the cleanup in `docs/operations/deployment.md` (`name`, `default_retention_days`, `FromStr`); each has two SQL statements written whole with `concat!` in `queries`, never assembled at run time. `ExpiredRowCleanup::new(kind, retention_days, platform, database)`; `run(now, batch)` finds up to 100 tenants with rows that stopped being useful before `now` less the retention, and in each removes up to `batch` of them, chosen with `FOR UPDATE SKIP LOCKED` by `ctid`, in a transaction of that tenant as the application role. |
 | `DecisionLogMaintenance`, `DecisionLogMaintenanceReport` | `decision_log.rs` | `new(platform, database)`; `run(now, batch)` calls `"authorization".maintain_decision_log_partitions(now, DAYS_PREPARED_AHEAD = 7, 400)` through the platform pool (partitions created and dropped), then finds up to 100 tenants with records or uploaded decisions older than their retention and, in each, removes up to `batch` of each through the application role. |
 | `KeyRotationJob`, `RotationPass` | `key_rotation.rs` | `new(platform, keys: KeyService, policy: RotationPolicy)`; `run(now)` takes `pg_try_advisory_xact_lock` (key `0x686f646f726b6579`, "hodorkey") in a transaction of the platform pool and, without it, answers `skipped`. With it, it finds up to 100 active tenants (`platform.tenant_directory`) that have something due by the rules of `KeySet::rotation_plan`, runs `KeyService::rotate_due` in each, and records a tenant's error in `failures` and goes on. `RotationPass { skipped, tenants, failures, changes }` with `was_full()`. The lock ends with the transaction. |
 | `PolicyCheckJob`, `PolicyCheckPass` | `policy_lifecycle.rs` | `new(platform, policies: PolicyService, checker)`; `run()` takes `pg_try_advisory_xact_lock` (key `0x686f646f72706f6c`, "hodorpol"), finds up to 100 tenants with a version in `validating` or `testing` or a simulation `waiting`, through the platform pool, and calls `PolicyService::run_waiting` in each; a tenant whose run could not start is a failure of the pass |

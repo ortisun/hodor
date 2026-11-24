@@ -113,7 +113,6 @@ These are recorded here so they are not forgotten; each is picked up by the issu
 | The Argon2id hasher was not checked against a hash produced by another implementation; it relies on the library's own conformance | When a second implementation is at hand, for example password import |
 | Records removed from the end of a tenant's audit chain, or a chain rewritten whole, are noticed only through the chain head, which lives in the same database | Exporting the latest hash regularly, later in Phase 1 |
 | Audit records do not carry the address a request came from or the application that made it, and events caused by people who are not signed in are recorded as anonymous | When events carry them: with OAuth clients in Phase 2 |
-| Rows of expired and revoked sessions are never removed | A cleanup job, later in Phase 1 |
 | The cross-tenant suite does not cover OAuth tokens and codes, which do not exist yet, or the pages in a browser | Phase 2 for OAuth; hardening pass for the pages |
 | The pages show the tenant's slug, not its name, logo or colors, and offer registration even when the tenant does not accept it; the person is told after asking | A public description of the tenant, Phase 2; branding, Phase 3 |
 | The pages have no place to see and end one's sessions, though the interaction interface can | The account console, Phase 2 |
@@ -124,8 +123,6 @@ These are recorded here so they are not forgotten; each is picked up by the issu
 | Listing users reads each user with a query of its own | When a tenant's user list is slow |
 | Asking to register or recover answers the same whoever the address belongs to, but not in the same time: an address with something to send costs one more write. The difference was not measured | Hardening pass |
 | A registration that fails after the user was created and before the password was set leaves an account without a password; the person gets in by recovering it | Accepted; see [the authentication context](../architecture/contexts/authentication.md#registration) |
-| Used, replaced and expired verification tokens are never removed | A cleanup job, later in Phase 1 |
-| Records of messages that were sent, failed or expired are never removed | A cleanup job, later in Phase 1 |
 | The worker opens a new connection to the mail server for every message | When the volume of mail calls for it |
 | The mail adapter was tested against a mail server without encryption or a password; the encrypted and authenticated paths rely on the mail library | Before the first production deployment |
 | The trace of a request has one span, the request itself: database calls are not traced. The demonstration receives the trace; no test in `cargo test` does | First issue that adds a traced database call |
@@ -138,6 +135,7 @@ These are recorded here so they are not forgotten; each is picked up by the issu
 | A directory's own certificate authority cannot be given: a connection over `ldaps://` trusts what the operating system trusts | When a directory with a private authority is to be used |
 | The demonstration needs Python 3 on the machine that runs it | Accepted: it uses only the standard library |
 | SQL is checked at run time, not at compile time (`sqlx::query!` with the offline cache is not set up). Every query is exercised by an integration test instead | A dedicated issue, not yet scheduled |
+| The cleanup looks for rows that stopped being useful without an index on most tables, so a pass reads the whole table | When a table is large enough for a pass to be slow |
 | Continuous integration actions are pinned by tag, not by commit SHA | Hardening pass (threat Threat-General-15) |
 
 ## Milestone 2: Signing in with external identities
@@ -245,7 +243,7 @@ Specified in [the authorization context](../architecture/contexts/authorization.
 Planned in [the epics](epics.md#milestone-6-hodor-runs-behind-a-load-balancer-and-cleans-up-after-itself); [Decision 0027](../decisions/0027-what-0.3.0-holds.md) says what each holds and what it leaves to its phase. 
 | Milestone | Slices | Done | Total |
 |---|---|---|---|
-| 6 — Hodor runs behind a load balancer and cleans up after itself | U and V: behind a load balancer, what is shipped | 1 | 5 |
+| 6 — Hodor runs behind a load balancer and cleans up after itself | U and V: behind a load balancer, what is shipped | 2 | 5 |
 | 7 — Groups, organizations and SCIM | W and X: groups and organizations, SCIM | 0 | 7 |
 | 8 — Workloads, agents and webhooks | Y and Z: workloads and agents, webhooks | 0 | 5 |
 | 9 — What 0.2.0 left out | OpenID Connect; email, access lists and enrollment | 0 | 7 |
@@ -255,6 +253,7 @@ Planned in [the epics](epics.md#milestone-6-hodor-runs-behind-a-load-balancer-an
 | Issue | Status | What exists |
 |---|---|---|
 | Issue-81 The forwarded client address | Done | `HODOR_TRUSTED_PROXIES` names the load balancers and web servers whose forwarded header is read, as address ranges; `HODOR_FORWARDED_HEADER` says which one, `x-forwarded-for` or `forwarded`, and no other is read. The client address is set once as a request arrives, in `hodor-protocol-http`: the connection's address unless it is a trusted proxy, otherwise the nearest address of the header that is not one, so what a client writes at the start of its own header is never reached. Ports, brackets and IPv4 addresses held in IPv6 are read; anything that does not read, or more than 32 trusted proxies in a row, falls back to the connection's address and is counted by `hodor.http.forwarded_address.unreadable`. The server refuses to start with a range it cannot read or one that holds every address. The Docker installation trusts every private address, since its server's port is published on the machine alone; the chart has `trustedProxies` and `forwardedHeader`. Tested: the rules on ranges and headers by unit tests, the address reaching every route through the router, and two clients behind one proxy limited apart on recovery requests, a forged header included. Not tried with a real load balancer. Specified in [the client address](../api/api-spec.md#the-client-address) |
+| Issue-82 One cleanup job for every kind of expired row | Done | `hodor-worker` removes twelve more kinds of row once they stopped being useful and their retention passed: sessions, sign-ins in progress, registration and recovery links, messages, unfinished WebAuthn registrations, authorization requests and codes, revoked grants with what hangs from them, refresh token families, remembered client assertions, consents and access tokens of the administration interface. Retentions are 0, 1, 7 or 30 days by kind, changed with `HODOR_CLEANUP_RETENTION_DAYS`; the worker refuses a kind it does not know, a kind given twice or a retention it cannot read. One generic job in `hodor-adapters-postgres`, `ExpiredRowCleanup`, finds tenants through the platform connection and removes a batch in each as the application role, rows chosen with `FOR UPDATE SKIP LOCKED`; each kind's two statements are written whole from literals. The audit log, the history of consents and the record of decisions are never touched. Tested on PostgreSQL: every kind's statements run against the real schema, sessions ended three ways removed in two tenants and the recent and live ones kept, two workers removing forty rows once each, the batch bound, a longer retention, messages pending kept, links still good kept; the setting read by unit tests. Specified in [cleanup](../operations/deployment.md#cleanup) |
 
 ## Admin console
 
