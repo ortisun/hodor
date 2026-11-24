@@ -49,7 +49,10 @@ Routers, as assembled in `run`:
   `hodor_protocol_http::consent_routes`, whose `ConsentState` shares the
   `ConsentService` and `SessionService` of the authorization endpoint.
 - `/api/v1/admin` nests `hodor_protocol_http::admin_routes` with the
-  `AdminState` built by `administration`.
+  `AdminState` built by `administration`; its `webhooks` is the
+  `WebhookService` of `webhooks`, with `HODOR_SECRET_KEYS` only, whose
+  addresses are checked by a `GuardedHttpClient` with the development
+  exception.
 - `/console/api` nests `hodor_protocol_http::console_routes`.
 - `/api/v1/authorization` nests `hodor_protocol_http::authorization_api_routes`
   with the `AuthorizationApiState` built by `authorization_api`, only when

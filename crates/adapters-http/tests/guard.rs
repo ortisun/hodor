@@ -5,7 +5,7 @@
 //! servers are used to show that without it they cannot be reached.
 
 use hodor_adapters_http::{GuardedHttpClient, OutboundPolicy};
-use hodor_kernel::{HttpClient as _, HttpRequest};
+use hodor_kernel::{DestinationCheck as _, HttpClient as _, HttpRequest};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -310,4 +310,42 @@ async fn a_body_is_posted_with_its_content_type() {
     assert!(request.contains("content-type: application/x-www-form-urlencoded"));
     assert!(request.ends_with("grant_type=authorization_code"));
     assert!(request.contains("user-agent: hodor"));
+}
+
+#[tokio::test]
+async fn an_address_is_checked_without_being_called() {
+    let server = serve(b"HTTP/1.1 204 No Content\r\n\r\n", Duration::ZERO).await;
+    let development = format!("127.0.0.1:{}", server.port);
+    let guarded = client(std::slice::from_ref(&development));
+    // A public address written as numbers needs no resolver.
+    guarded
+        .check("https://93.184.216.34/hooks")
+        .await
+        .expect("public");
+    for (url, code) in [
+        ("https://127.0.0.1/", "http.destination_forbidden"),
+        ("https://[::1]:8443/", "http.destination_forbidden"),
+        (
+            "https://169.254.169.254/latest/meta-data",
+            "http.destination_forbidden",
+        ),
+        ("https://10.1.2.3/", "http.destination_forbidden"),
+        // A name that resolves to this machine.
+        ("https://localhost/", "http.destination_forbidden"),
+        ("http://93.184.216.34/", "http.url_invalid"),
+        ("https://user:password@93.184.216.34/", "http.url_invalid"),
+        ("not an address", "http.url_invalid"),
+        // The reserved top-level domain never resolves.
+        ("https://nowhere.invalid/", "http.unreachable"),
+    ] {
+        let error = guarded.check(url).await.expect_err(url);
+        assert_eq!(error.code(), code, "{url}");
+        assert!(!error.message().contains("127.0.0.1"), "{url}");
+    }
+    // The development exception is taken as it is, as the client takes it.
+    guarded
+        .check(&format!("http://{development}/in"))
+        .await
+        .expect("development host");
+    assert_eq!(server.seen(), 0, "checking calls nothing");
 }

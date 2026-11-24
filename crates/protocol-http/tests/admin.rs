@@ -85,6 +85,12 @@ struct World {
     totp: hodor_credential::api::TotpService,
     /// The record of decisions.
     decisions: hodor_authorization::testing::InMemoryDecisionLog,
+    /// The webhooks of every tenant, and the outbound client their
+    /// deliveries go through.
+    webhooks: hodor_webhooks::testing::InMemoryWebhooks,
+    endpoints: hodor_webhooks::testing::RecordingEndpoints,
+    /// How many committed events were handed to the webhooks fan-out.
+    fanned_out: AtomicUsize,
     /// The administrator of Acme and their token.
     administrator: UserId,
     administrator_token: String,
@@ -322,6 +328,18 @@ async fn world_with_keys(with_keys: bool) -> World {
         &identity,
         &tenants,
     );
+    let webhook_rows = hodor_webhooks::testing::InMemoryWebhooks::default();
+    let webhooks = with_keys.then(|| {
+        hodor_webhooks::api::WebhookService::new(
+            units(),
+            Arc::new(webhook_rows.clone()),
+            Arc::new(webhook_rows.clone()),
+            Arc::new(FakeSecretBox),
+            Arc::new(hodor_webhooks::testing::FakeDestinations),
+            Arc::new(SequentialRandom::default()),
+            clock.clone(),
+        )
+    });
     let state = AdminState {
         tokens: tokens.clone(),
         authorization: authorization.clone(),
@@ -357,6 +375,7 @@ async fn world_with_keys(with_keys: bool) -> World {
             Arc::new(hodor_identity::testing::RecordingWorkloadAccess::default()),
             clock.clone(),
         ),
+        webhooks,
     };
     let router = public_router(
         Arc::new(Tenants {
@@ -385,6 +404,9 @@ async fn world_with_keys(with_keys: bool) -> World {
         keys_of_people,
         totp,
         decisions: decision_store,
+        webhooks: webhook_rows,
+        endpoints: hodor_webhooks::testing::RecordingEndpoints::default(),
+        fanned_out: AtomicUsize::new(0),
         administrator: UserId::generate(),
         administrator_token: String::new(),
     };
@@ -571,6 +593,8 @@ impl Operation {
                 .replace("{role}", "editor")
                 .replace("{number}", "7")
                 .replace("{simulation_id}", &UserId::generate().to_string())
+                .replace("{endpoint_id}", &UserId::generate().to_string())
+                .replace("{delivery_id}", &UserId::generate().to_string())
         )
     }
 }
@@ -617,7 +641,7 @@ fn the_document_and_the_routes_list_the_same_operations_and_permissions() {
         })
         .collect();
     assert_eq!(documented, served);
-    assert_eq!(served.len(), 113);
+    assert_eq!(served.len(), 122);
 
     // Every operation says how it refuses.
     let document: serde_json::Value = serde_json::from_str(ADMIN_OPENAPI).expect("valid JSON");
@@ -4032,4 +4056,399 @@ async fn an_administrator_manages_service_accounts_and_agents_and_binds_clients_
         .await;
     assert_eq!(agent.status, StatusCode::CREATED);
     assert_eq!(agent.body["kind"], "agent");
+}
+
+impl World {
+    /// Does the worker's part for webhooks: makes the deliveries of the
+    /// events announced in Acme since it last did, then sends what is due,
+    /// once.
+    async fn deliver_webhooks(&self, retry: hodor_webhooks::api::RetryPolicy) {
+        let fan_out = hodor_webhooks::api::WebhookFanOut::new(
+            Arc::new(self.webhooks.clone()),
+            Arc::new(self.webhooks.clone()),
+            self.clock.clone(),
+        );
+        let events = self.units_of_work.committed_events();
+        let from = self.fanned_out.swap(events.len(), Ordering::SeqCst);
+        for event in &events[from..] {
+            if event.metadata.tenant_id != self.acme.tenant_id()
+                || !fan_out.handles(&event.event_type)
+            {
+                continue;
+            }
+            let mut uow = self.units_of_work.begin(&self.acme).await.expect("begin");
+            fan_out.handle(uow.as_mut(), event).await.expect("fan out");
+            uow.commit().await.expect("commit");
+        }
+        let sender = hodor_webhooks::api::WebhookSender::new(
+            hodor_webhooks::api::SenderPorts {
+                units_of_work: Arc::new(self.units_of_work.clone()),
+                endpoints: Arc::new(self.webhooks.clone()),
+                deliveries: Arc::new(self.webhooks.clone()),
+                due: Arc::new(self.webhooks.clone()),
+                secrets: Arc::new(FakeSecretBox),
+                http: Arc::new(self.endpoints.clone()),
+                hmac: Arc::new(hodor_webhooks::testing::FakeHmac),
+                clock: self.clock.clone(),
+            },
+            hodor_webhooks::api::DeliverySettings {
+                retry,
+                ..hodor_webhooks::api::DeliverySettings::default()
+            },
+        );
+        for lease in sender.lease_due(100).await.expect("lease") {
+            sender.send(lease).await.expect("send");
+        }
+    }
+}
+
+#[tokio::test]
+async fn an_administrator_registers_subscribes_rotates_and_removes_a_webhook_endpoint() {
+    let world = world().await;
+    let types = world
+        .as_administrator(Method::GET, "/webhook-event-types", None)
+        .await;
+    assert_eq!(types.status, StatusCode::OK);
+    assert!(
+        types.body["items"]
+            .as_array()
+            .expect("items")
+            .contains(&serde_json::json!("session.started"))
+    );
+
+    let registered = world
+        .as_administrator(
+            Method::POST,
+            "/webhook-endpoints",
+            Some(serde_json::json!({
+                "url": "https://hooks.example.com/hodor?token=receiver",
+                "description": "Our directory",
+                "event_types": ["session.started"],
+            })),
+        )
+        .await;
+    assert_eq!(registered.status, StatusCode::CREATED);
+    assert_eq!(
+        registered
+            .headers
+            .get(header::CACHE_CONTROL)
+            .map(|value| value.as_bytes()),
+        Some(b"no-store".as_slice())
+    );
+    let secret = registered.body["secret"]
+        .as_str()
+        .expect("secret")
+        .to_owned();
+    assert!(secret.starts_with("whsec_"));
+    let endpoint = registered.body["endpoint"]["id"]
+        .as_str()
+        .expect("an endpoint")
+        .to_owned();
+    assert_eq!(
+        registered.body["endpoint"]["event_types"],
+        serde_json::json!(["session.started"])
+    );
+    assert_eq!(
+        registered.body["endpoint"]["secrets"],
+        serde_json::json!([{ "created_at": "1970-01-01T00:00:00Z", "expires_at": null }])
+    );
+
+    // The secret is never shown again.
+    let listed = world
+        .as_administrator(Method::GET, "/webhook-endpoints", None)
+        .await;
+    assert_eq!(listed.status, StatusCode::OK);
+    assert_eq!(listed.body["items"].as_array().map(Vec::len), Some(1));
+    let read = world
+        .as_administrator(Method::GET, &format!("/webhook-endpoints/{endpoint}"), None)
+        .await;
+    assert_eq!(read.body, registered.body["endpoint"]);
+    for reply in [&listed, &read] {
+        assert!(!reply.body.to_string().contains(&secret));
+    }
+
+    let changed = world
+        .as_administrator(
+            Method::PUT,
+            &format!("/webhook-endpoints/{endpoint}/subscriptions"),
+            Some(
+                serde_json::json!({ "event_types": ["session.revoked", "identity.user_created"] }),
+            ),
+        )
+        .await;
+    assert_eq!(changed.status, StatusCode::OK);
+    assert_eq!(
+        changed.body["event_types"],
+        serde_json::json!(["identity.user_created", "session.revoked"])
+    );
+
+    world.clock.advance(Duration::minutes(30));
+    let rotated = world
+        .as_administrator(
+            Method::POST,
+            &format!("/webhook-endpoints/{endpoint}:rotate-secret"),
+            Some(serde_json::json!({ "overlap_hours": 2 })),
+        )
+        .await;
+    assert_eq!(rotated.status, StatusCode::OK);
+    let new_secret = rotated.body["secret"].as_str().expect("secret");
+    assert_ne!(new_secret, secret);
+    assert_eq!(
+        rotated.body["endpoint"]["secrets"],
+        serde_json::json!([
+            { "created_at": "1970-01-01T00:30:00Z", "expires_at": null },
+            { "created_at": "1970-01-01T00:00:00Z", "expires_at": "1970-01-01T02:30:00Z" },
+        ])
+    );
+    let default_overlap = world
+        .as_administrator(
+            Method::POST,
+            &format!("/webhook-endpoints/{endpoint}:rotate-secret"),
+            None,
+        )
+        .await;
+    assert_eq!(default_overlap.status, StatusCode::OK);
+
+    world.record_audit().await;
+    let records = world
+        .as_administrator(Method::GET, "/audit-records", None)
+        .await;
+    let actions: Vec<&str> = records.body["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .filter_map(|record| record["action"].as_str())
+        .filter(|action| action.starts_with("webhooks."))
+        .collect();
+    assert_eq!(
+        actions.len(),
+        4,
+        "registered, subscriptions changed, rotated twice: {actions:?}"
+    );
+    assert!(!records.body.to_string().contains("hooks.example.com"));
+
+    let removed = world
+        .as_administrator(
+            Method::DELETE,
+            &format!("/webhook-endpoints/{endpoint}"),
+            None,
+        )
+        .await;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT);
+    let gone = world
+        .as_administrator(Method::GET, &format!("/webhook-endpoints/{endpoint}"), None)
+        .await;
+    assert_eq!(
+        (gone.status, gone.code()),
+        (StatusCode::NOT_FOUND, "webhooks.endpoint_not_found")
+    );
+}
+
+#[tokio::test]
+async fn an_endpoint_that_may_not_be_called_or_names_no_known_type_is_refused() {
+    let world = world().await;
+    for (body, code) in [
+        (
+            serde_json::json!({ "url": "https://169.254.169.254/latest/meta-data" }),
+            "webhooks.endpoint_address_forbidden",
+        ),
+        (
+            serde_json::json!({ "url": "https://localhost:8443/" }),
+            "webhooks.endpoint_address_forbidden",
+        ),
+        (
+            serde_json::json!({ "url": "http://hooks.example.com/" }),
+            "webhooks.endpoint_address_invalid",
+        ),
+        (
+            serde_json::json!({ "url": "https://nowhere.example/" }),
+            "webhooks.endpoint_address_unresolvable",
+        ),
+        (
+            serde_json::json!({ "url": "https://hooks.example.com/", "event_types": ["keys.version_created"] }),
+            "webhooks.event_type_unknown",
+        ),
+        (
+            serde_json::json!({ "url": "https://hooks.example.com/", "secret": "mine" }),
+            "request.body_invalid",
+        ),
+    ] {
+        let reply = world
+            .as_administrator(Method::POST, "/webhook-endpoints", Some(body.clone()))
+            .await;
+        assert_eq!(
+            (reply.status, reply.code()),
+            (StatusCode::UNPROCESSABLE_ENTITY, code),
+            "{body}"
+        );
+    }
+    let listed = world
+        .as_administrator(Method::GET, "/webhook-endpoints", None)
+        .await;
+    assert_eq!(listed.body["items"], serde_json::json!([]));
+    let action = world
+        .as_administrator(
+            Method::POST,
+            &format!("/webhook-endpoints/{}:frobnicate", UserId::generate()),
+            None,
+        )
+        .await;
+    assert_eq!(
+        (action.status, action.code()),
+        (StatusCode::NOT_FOUND, "route.not_found")
+    );
+}
+
+#[tokio::test]
+async fn deliveries_are_listed_and_a_set_aside_one_is_delivered_again_in_its_tenant_only() {
+    let world = world().await;
+    // What happened before the endpoint existed is not sent to it.
+    world
+        .deliver_webhooks(hodor_webhooks::api::RetryPolicy::DEFAULT)
+        .await;
+    let registered = world
+        .as_administrator(
+            Method::POST,
+            "/webhook-endpoints",
+            Some(serde_json::json!({
+                "url": "https://down.example.com/",
+                "event_types": ["identity.user_created"],
+            })),
+        )
+        .await;
+    let endpoint = registered.body["endpoint"]["id"]
+        .as_str()
+        .expect("an endpoint")
+        .to_owned();
+    // An event of a subscribed type: a user is created.
+    world
+        .as_administrator(
+            Method::POST,
+            "/users",
+            Some(serde_json::json!({ "email": "ana@example.com" })),
+        )
+        .await;
+    world.endpoints.answer(
+        "https://down.example.com/",
+        hodor_webhooks::testing::Answer::Status(500),
+    );
+    world
+        .deliver_webhooks(
+            hodor_webhooks::api::RetryPolicy::new(1, Duration::seconds(1)).expect("policy"),
+        )
+        .await;
+
+    let set_aside = world
+        .as_administrator(
+            Method::GET,
+            &format!("/webhook-deliveries?status=set_aside&endpoint_id={endpoint}"),
+            None,
+        )
+        .await;
+    assert_eq!(set_aside.status, StatusCode::OK);
+    let items = set_aside.body["items"].as_array().expect("items");
+    assert_eq!(items.len(), 1);
+    let delivery = &items[0];
+    assert_eq!(delivery["status"], "set_aside");
+    assert_eq!(delivery["event_type"], "identity.user_created");
+    assert_eq!(delivery["attempts"], 1);
+    assert_eq!(delivery["last_response_status"], 500);
+    assert_eq!(delivery["next_attempt_at"], serde_json::Value::Null);
+    assert!(delivery.get("payload").is_none(), "the body is never shown");
+    let id = delivery["id"].as_str().expect("an id").to_owned();
+
+    // Another tenant's administrator sees nothing of it.
+    let (_, globex_token) = world
+        .person(
+            &world.globex,
+            "root@globex.example",
+            &[Role::TenantAdministrator],
+        )
+        .await;
+    let theirs = world
+        .send(
+            Method::GET,
+            "/t/globex/api/v1/admin/webhook-deliveries",
+            Some(&format!("Bearer {globex_token}")),
+            None,
+        )
+        .await;
+    assert_eq!(theirs.body["items"], serde_json::json!([]));
+    let refused = world
+        .send(
+            Method::POST,
+            &format!("/t/globex/api/v1/admin/webhook-deliveries/{id}:redeliver"),
+            Some(&format!("Bearer {globex_token}")),
+            None,
+        )
+        .await;
+    assert_eq!(
+        (refused.status, refused.code()),
+        (StatusCode::NOT_FOUND, "webhooks.delivery_not_found")
+    );
+
+    let again = world
+        .as_administrator(
+            Method::POST,
+            &format!("/webhook-deliveries/{id}:redeliver"),
+            None,
+        )
+        .await;
+    assert_eq!(again.status, StatusCode::OK);
+    assert_eq!(again.body["status"], "pending");
+    assert_eq!(again.body["attempts"], 0);
+    let twice = world
+        .as_administrator(
+            Method::POST,
+            &format!("/webhook-deliveries/{id}:redeliver"),
+            None,
+        )
+        .await;
+    assert_eq!(
+        (twice.status, twice.code()),
+        (StatusCode::CONFLICT, "webhooks.delivery_not_set_aside")
+    );
+
+    world.endpoints.answer(
+        "https://down.example.com/",
+        hodor_webhooks::testing::Answer::Status(204),
+    );
+    world
+        .deliver_webhooks(hodor_webhooks::api::RetryPolicy::DEFAULT)
+        .await;
+    let delivered = world
+        .as_administrator(Method::GET, "/webhook-deliveries?status=delivered", None)
+        .await;
+    assert_eq!(delivered.body["items"].as_array().map(Vec::len), Some(1));
+
+    for query in ["status=lost", "endpoint_id=not-an-identifier"] {
+        let reply = world
+            .as_administrator(Method::GET, &format!("/webhook-deliveries?{query}"), None)
+            .await;
+        assert_eq!(
+            (reply.status, reply.code()),
+            (StatusCode::UNPROCESSABLE_ENTITY, "request.query_invalid"),
+            "{query}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn without_keys_webhooks_are_not_offered() {
+    let world = world_with_keys(false).await;
+    let reply = world
+        .as_administrator(
+            Method::POST,
+            "/webhook-endpoints",
+            Some(serde_json::json!({ "url": "https://hooks.example.com/" })),
+        )
+        .await;
+    assert_eq!(
+        (reply.status, reply.code()),
+        (StatusCode::SERVICE_UNAVAILABLE, "webhooks.not_configured")
+    );
+    let types = world
+        .as_administrator(Method::GET, "/webhook-event-types", None)
+        .await;
+    assert_eq!(types.status, StatusCode::OK);
 }

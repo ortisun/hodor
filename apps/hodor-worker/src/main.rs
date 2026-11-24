@@ -1,29 +1,36 @@
 //! Background jobs composition root.
 //!
-//! The worker delivers outbox events to their handlers, of which the audit
-//! log is the first, delivers queued messages to the mail server, runs the
-//! cleanup jobs, rotates the tenants' signing keys, and checks, tests and
-//! simulates policy versions with the `opa` binary. See
-//! `docs/operations/deployment.md`, "The worker".
+//! The worker delivers outbox events to their handlers, the audit log and
+//! the fan-out of webhooks, delivers queued messages to the mail server,
+//! sends webhooks, runs the cleanup jobs, rotates the tenants' signing
+//! keys, and checks, tests and simulates policy versions with the `opa`
+//! binary. See `docs/operations/deployment.md`, "The worker".
 
 use clap::{Parser, ValueEnum};
-use hodor_adapters_crypto::{LocalKeyProvider, OsRandom, SecretKeys, Sha256Digest};
+use hodor_adapters_crypto::{
+    AwsLcHmacSha256, LocalKeyProvider, OsRandom, SecretKeys, Sha256Digest,
+};
+use hodor_adapters_http::{GuardedHttpClient, OutboundPolicy};
 use hodor_adapters_policy_check::{OpaProcessChecker, RunLimits};
 use hodor_adapters_postgres::{
     AccessTokenCleanup, CleanupReport, Database, DecisionLogMaintenance, ExpiredKind,
     ExpiredRowCleanup, KeyRotationJob, OutboxDispatcher, PendingAuthorizationCleanup, PgAuditLog,
-    PgBundleStore, PgInstanceStatusStore, PgInstanceStore, PgKeyStore, PgMessageQueue,
-    PgPendingMessages, PgPolicyVersionStore, PgPool, PgPublicationStore, PgSimulationStore,
-    PgUploadedDecisionStore, PolicyCheckJob, connect_pool, ping_pool,
+    PgBundleStore, PgDeliveryStore, PgDueDeliveries, PgEndpointStore, PgInstanceStatusStore,
+    PgInstanceStore, PgKeyStore, PgMessageQueue, PgPendingMessages, PgPolicyVersionStore, PgPool,
+    PgPublicationStore, PgSealingStateStore, PgSimulationStore, PgUploadedDecisionStore,
+    PolicyCheckJob, connect_pool, ping_pool,
 };
 use hodor_adapters_smtp::SmtpSender;
 use hodor_audit::api::{AuditHandler, AuditService};
 use hodor_authorization_opa::api::{BundleService, PolicyService};
 use hodor_kernel::{Clock as _, DomainError, Secret, SystemClock, Timestamp};
-use hodor_keys::api::{KeyService, RotationPolicy};
+use hodor_keys::api::{KeyService, RotationPolicy, TenantSecretBox};
 use hodor_notification::api::DeliveryService;
 use hodor_observability::{LogFormat, Telemetry};
 use hodor_protocol_http::{Health, ReadinessCheck, ops_router, serve};
+use hodor_webhooks::api::{
+    AttemptOutcome, DeliverySettings, RetryPolicy, SenderPorts, WebhookFanOut, WebhookSender,
+};
 use opentelemetry::KeyValue;
 use opentelemetry::metrics::Counter;
 use std::collections::HashMap;
@@ -33,6 +40,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
+use tokio::task::JoinSet;
 
 /// Shortest pause after a failed pass, so a broken database is not hammered.
 const MIN_ERROR_PAUSE: Duration = Duration::from_secs(1);
@@ -159,6 +167,42 @@ struct Config {
     #[arg(long, env = "HODOR_POLICY_CHECK_INTERVAL_MS", default_value_t = 2000)]
     policy_check_interval_ms: u64,
 
+    /// Attempts before a webhook delivery is set aside, 1 to 20.
+    #[arg(long, env = "HODOR_WEBHOOK_MAX_ATTEMPTS", default_value_t = 8)]
+    webhook_max_attempts: u32,
+
+    /// The wait after a delivery's first failed attempt; each next wait is
+    /// twice as long, up to an hour.
+    #[arg(long, env = "HODOR_WEBHOOK_FIRST_RETRY_MS", default_value_t = 30_000)]
+    webhook_first_retry_ms: u64,
+
+    /// The longest one attempt may take, 1 to 30 seconds.
+    #[arg(long, env = "HODOR_WEBHOOK_TIME_LIMIT_SECONDS", default_value_t = 10)]
+    webhook_time_limit_seconds: u64,
+
+    /// Deliveries leased at once to one endpoint, across every worker, 1 to
+    /// 32.
+    #[arg(
+        long,
+        env = "HODOR_WEBHOOK_IN_FLIGHT_PER_ENDPOINT",
+        default_value_t = 4
+    )]
+    webhook_in_flight_per_endpoint: u32,
+
+    /// Deliveries this worker sends at once, 1 to 256.
+    #[arg(long, env = "HODOR_WEBHOOK_CONCURRENCY", default_value_t = 32)]
+    webhook_concurrency: u32,
+
+    /// Pause between passes when no delivery is due.
+    #[arg(long, env = "HODOR_WEBHOOK_POLL_INTERVAL_MS", default_value_t = 1000)]
+    webhook_poll_interval_ms: u64,
+
+    /// Hosts with their ports that webhooks may reach without the address
+    /// check and over plain HTTP, separated by commas. For a development
+    /// stack on one machine; never set it anywhere real.
+    #[arg(long, env = "HODOR_OUTBOUND_DEVELOPMENT_HOSTS", value_delimiter = ',')]
+    outbound_development_hosts: Vec<String>,
+
     /// Log rendering.
     #[arg(long, env = "HODOR_LOG_FORMAT", value_enum, default_value = "json")]
     log_format: LogFormatArg,
@@ -229,6 +273,13 @@ fn main() -> Result<(), Box<dyn Error>> {
 async fn run(config: Config) -> Result<(), Box<dyn Error>> {
     // Checked before anything is connected, so that a mistake in the mail
     // or rotation settings is reported at once.
+    let delivery_settings = webhook_settings(&config)?;
+    let development_hosts: Vec<String> = config
+        .outbound_development_hosts
+        .iter()
+        .map(|host| host.trim().to_owned())
+        .filter(|host| !host.is_empty())
+        .collect();
     let mail_sender = mail_sender(config.smtp_url, config.mail_from.as_deref())?;
     let rotation_policy = RotationPolicy::new(
         time::Duration::days(config.key_rotation_days),
@@ -238,8 +289,10 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
     let retentions = cleanup_retentions(&config.cleanup_retention_days)?;
     let root_keys = config
         .secret_keys
+        .clone()
         .map(|setting| SecretKeys::parse(&Secret::from(setting)))
-        .transpose()?;
+        .transpose()?
+        .map(Arc::new);
 
     let database = Database::connect(
         &Secret::from(config.database_url),
@@ -308,17 +361,29 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
         platform.clone(),
         database.clone(),
     ));
+    let webhook_sender = match &root_keys {
+        Some(root) => Some(Arc::new(webhook_sender(
+            development_hosts,
+            &database,
+            &platform,
+            root,
+            delivery_settings,
+        )?)),
+        None => None,
+    };
     let rotation = root_keys.map(|root| {
         let keys = KeyService::new(
             Arc::new(database.clone()),
             Arc::new(PgKeyStore),
-            Arc::new(LocalKeyProvider::new(Arc::new(root))),
+            Arc::new(LocalKeyProvider::new(root)),
             Arc::new(SystemClock),
         );
         KeyRotationJob::new(platform.clone(), keys, rotation_policy)
     });
     if rotation.is_none() {
-        tracing::warn!("HODOR_SECRET_KEYS is not set: keys do not rotate and no tenant gets one");
+        tracing::warn!(
+            "HODOR_SECRET_KEYS is not set: keys do not rotate, no tenant gets one, and no webhook is sent"
+        );
     }
     let policy_checks = match &config.open_policy_agent_binary {
         Some(binary) => {
@@ -347,8 +412,18 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
             None
         }
     };
-    let dispatcher =
-        OutboxDispatcher::new(platform, database, vec![Arc::new(AuditHandler::new(audit))]);
+    // The fan-out of webhooks needs no key: deliveries are made whether or
+    // not this worker can send them.
+    let fan_out = WebhookFanOut::new(
+        Arc::new(PgEndpointStore),
+        Arc::new(PgDeliveryStore),
+        Arc::new(SystemClock),
+    );
+    let dispatcher = OutboxDispatcher::new(
+        platform,
+        database,
+        vec![Arc::new(AuditHandler::new(audit)), Arc::new(fan_out)],
+    );
 
     let ops_listener = TcpListener::bind(config.ops_addr).await?;
     tracing::info!(ops = %ops_listener.local_addr()?, "hodor-worker started");
@@ -379,6 +454,12 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
             delivery.as_ref(),
             config.mail_batch_size,
             Duration::from_millis(config.mail_poll_interval_ms),
+            stopped.clone(),
+        ),
+        webhook_loop(
+            webhook_sender,
+            config.webhook_concurrency as usize,
+            Duration::from_millis(config.webhook_poll_interval_ms),
             stopped.clone(),
         ),
         cleanup_loop(
@@ -735,6 +816,167 @@ async fn rotation_loop(
                 _ = stopped.changed() => {}
             }
         }
+    }
+}
+
+/// Reads the settings of webhook delivery. A value out of its bounds stops
+/// the worker from starting.
+fn webhook_settings(config: &Config) -> Result<DeliverySettings, Box<dyn Error>> {
+    let first_wait = i64::try_from(config.webhook_first_retry_ms)
+        .map(time::Duration::milliseconds)
+        .map_err(|_| "HODOR_WEBHOOK_FIRST_RETRY_MS is too large")?;
+    let retry = RetryPolicy::new(config.webhook_max_attempts, first_wait).map_err(|_| {
+        "HODOR_WEBHOOK_MAX_ATTEMPTS is 1 to 20, and HODOR_WEBHOOK_FIRST_RETRY_MS more than 0 and at most an hour"
+    })?;
+    if !(1..=30).contains(&config.webhook_time_limit_seconds) {
+        return Err("HODOR_WEBHOOK_TIME_LIMIT_SECONDS is 1 to 30".into());
+    }
+    if !(1..=32).contains(&config.webhook_in_flight_per_endpoint) {
+        return Err("HODOR_WEBHOOK_IN_FLIGHT_PER_ENDPOINT is 1 to 32".into());
+    }
+    if !(1..=256).contains(&config.webhook_concurrency) {
+        return Err("HODOR_WEBHOOK_CONCURRENCY is 1 to 256".into());
+    }
+    Ok(DeliverySettings {
+        retry,
+        time_limit: Duration::from_secs(config.webhook_time_limit_seconds),
+        in_flight_per_endpoint: config.webhook_in_flight_per_endpoint,
+    })
+}
+
+/// What sends webhooks: the guarded outbound client with the time limit of
+/// an attempt and a small limit on answers, and the secret box that opens
+/// the endpoints' secrets with the same root keys as the server.
+fn webhook_sender(
+    development_hosts: Vec<String>,
+    database: &Database,
+    platform: &PgPool,
+    root: &Arc<SecretKeys>,
+    settings: DeliverySettings,
+) -> Result<WebhookSender, Box<dyn Error>> {
+    let http = GuardedHttpClient::new(OutboundPolicy {
+        timeout: settings.time_limit,
+        connect_timeout: settings.time_limit.min(Duration::from_secs(5)),
+        max_response_bytes: 64 * 1024,
+        development_hosts,
+    })?;
+    let secrets = TenantSecretBox::new(
+        Arc::new(database.clone()),
+        Arc::new(PgKeyStore),
+        Arc::new(LocalKeyProvider::new(root.clone())),
+        Arc::new(PgSealingStateStore),
+        Some(root.clone()),
+        Arc::new(SystemClock),
+    );
+    Ok(WebhookSender::new(
+        SenderPorts {
+            units_of_work: Arc::new(database.clone()),
+            endpoints: Arc::new(PgEndpointStore),
+            deliveries: Arc::new(PgDeliveryStore),
+            due: Arc::new(PgDueDeliveries::new(platform.clone())),
+            secrets: Arc::new(secrets),
+            http: Arc::new(http),
+            hmac: Arc::new(AwsLcHmacSha256),
+            clock: Arc::new(SystemClock),
+        },
+        settings,
+    ))
+}
+
+/// Counts what one send did, and says what went wrong.
+fn finished(
+    done: Result<Result<AttemptOutcome, DomainError>, tokio::task::JoinError>,
+    attempts: &Counter<u64>,
+    passes: &Counter<u64>,
+) {
+    match done {
+        Ok(Ok(outcome)) => {
+            attempts.add(1, &[KeyValue::new("outcome", outcome.as_str())]);
+            if outcome == AttemptOutcome::SetAside {
+                tracing::warn!("a webhook delivery failed for the last time and was set aside");
+            }
+        }
+        Ok(Err(error)) => {
+            passes.add(1, &[KeyValue::new("outcome", "error")]);
+            tracing::warn!(code = error.code(), detail = ?error.detail(), "a webhook attempt could not be recorded");
+        }
+        Err(error) => {
+            passes.add(1, &[KeyValue::new("outcome", "error")]);
+            tracing::warn!(%error, "a webhook attempt stopped");
+        }
+    }
+}
+
+/// Sends webhooks until asked to stop, many at once and each on its own:
+/// while there is room, it leases what is due and starts sending it; when
+/// nothing is due or there is no room, it waits for a send to finish, the
+/// poll interval, or the stop. A send that takes long holds only its own
+/// place. On stop, the sends under way finish, each within its time limit.
+/// Without root keys there is nothing to do.
+async fn webhook_loop(
+    sender: Option<Arc<WebhookSender>>,
+    concurrency: usize,
+    poll_interval: Duration,
+    mut stopped: watch::Receiver<bool>,
+) {
+    let Some(sender) = sender else {
+        return;
+    };
+    let meter = opentelemetry::global::meter("hodor.worker");
+    let attempts: Counter<u64> = meter
+        .u64_counter("hodor.webhooks.attempts")
+        .with_description("Webhook delivery attempts, by outcome")
+        .build();
+    let passes: Counter<u64> = meter
+        .u64_counter("hodor.webhooks.passes")
+        .with_description("Passes of the webhook delivery loop, by outcome")
+        .build();
+
+    let mut running = JoinSet::new();
+    while !*stopped.borrow() {
+        while let Some(done) = running.try_join_next() {
+            finished(done, &attempts, &passes);
+        }
+        let room = concurrency.saturating_sub(running.len());
+        let mut leased = 0;
+        let mut failed = false;
+        if room > 0 {
+            match sender
+                .lease_due(u32::try_from(room).unwrap_or(u32::MAX))
+                .await
+            {
+                Ok(leases) => {
+                    passes.add(1, &[KeyValue::new("outcome", "ok")]);
+                    leased = leases.len();
+                    for lease in leases {
+                        let sender = sender.clone();
+                        running.spawn(async move { sender.send(lease).await });
+                    }
+                }
+                Err(error) => {
+                    passes.add(1, &[KeyValue::new("outcome", "error")]);
+                    tracing::warn!(code = error.code(), detail = ?error.detail(), "webhook pass failed");
+                    failed = true;
+                }
+            }
+        }
+        if leased == 0 || running.len() >= concurrency {
+            let pause = if failed {
+                poll_interval.max(MIN_ERROR_PAUSE)
+            } else {
+                poll_interval
+            };
+            tokio::select! {
+                Some(done) = running.join_next(), if !running.is_empty() && !failed => {
+                    finished(done, &attempts, &passes);
+                }
+                () = tokio::time::sleep(pause) => {}
+                _ = stopped.changed() => {}
+            }
+        }
+    }
+    while let Some(done) = running.join_next().await {
+        finished(done, &attempts, &passes);
     }
 }
 

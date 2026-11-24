@@ -1,0 +1,29 @@
+[package]
+name = "hodor-webhooks"
+description = "The webhooks context: endpoints of a tenant subscribed to its events, signed deliveries made from the outbox and sent by the worker."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[features]
+# In-memory stores, fakes of the outbound ports and the contract suite that
+# every implementation of the stores must pass.
+testing = ["hodor-kernel/testing"]
+
+[dependencies]
+async-trait.workspace = true
+base64.workspace = true
+hodor-kernel.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+time.workspace = true
+
+[dev-dependencies]
+hodor-kernel = { workspace = true, features = ["testing"] }
+hodor-webhooks = { path = ".", features = ["testing"] }
+tokio.workspace = true
+
+[lints]
+workspace = true

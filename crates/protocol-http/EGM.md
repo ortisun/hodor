@@ -39,7 +39,7 @@ From `[dependencies]` in `Cargo.toml`:
 
 Development only (`[dev-dependencies]`): `hodor-adapters-crypto` and
 `hodor-adapters-ldap` (both with `testing`), the `testing` feature of the
-domain crates, `hodor-notification`, `hodor-tenant` and `hodor-saml`, plus
+domain crates, `hodor-notification`, `hodor-tenant`, `hodor-webhooks` and `hodor-saml`, plus
 `miniz_oxide`, `base64`, `tower` and `tokio` with
 `io-util` and `test-util`.
 

@@ -3,7 +3,7 @@
   "info": {
     "title": "Hodor administration interface",
     "version": "1.0.0",
-    "description": "Users, their sessions and second factors, the audit log, the identity providers, the keys, the applications, the assurance levels, the roles and their permissions, the bindings of resource servers to engines, the policy versions and the record of decisions of a tenant, for the people who run it. Paths are relative to https://{host}/t/{slug}/api/v1/admin. Every operation needs an access token whose user holds a role with the permission named in `x-hodor-permission`."
+    "description": "Users, their sessions and second factors, the audit log, the identity providers, the keys, the applications, the assurance levels, the roles and their permissions, the bindings of resource servers to engines, the policy versions, the record of decisions and the webhooks of a tenant, for the people who run it. Paths are relative to https://{host}/t/{slug}/api/v1/admin. Every operation needs an access token whose user holds a role with the permission named in `x-hodor-permission`."
   },
   "servers": [
     {
@@ -8886,6 +8886,823 @@
           }
         }
       }
+    },
+    "/webhook-event-types": {
+      "get": {
+        "operationId": "listWebhookEventTypes",
+        "summary": "List the event types an endpoint can be subscribed to",
+        "x-hodor-permission": "webhooks:read",
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The catalog of published event types.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "items"
+                  ],
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/webhook-endpoints": {
+      "get": {
+        "operationId": "listWebhookEndpoints",
+        "summary": "List the tenant's webhook endpoints, in the order they were registered",
+        "x-hodor-permission": "webhooks:read",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "The `next_cursor` of the page before."
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "A page of endpoints, without any secret.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "items"
+                  ],
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/WebhookEndpoint"
+                      }
+                    },
+                    "next_cursor": {
+                      "type": "string",
+                      "description": "Present when more results exist."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A value breaks its rule, or the body is not of the expected shape.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The installation has no keys to seal the secrets of webhooks with: `webhooks.not_configured`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "registerWebhookEndpoint",
+        "summary": "Register an endpoint; its secret is in this answer and never again",
+        "x-hodor-permission": "webhooks:write",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewWebhookEndpoint"
+              }
+            }
+          }
+        },
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "The endpoint and its secret. Sent with `Cache-Control: no-store`.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookEndpointWithSecret"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The tenant has 20 endpoints already: `webhooks.too_many_endpoints`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "An address that is not HTTPS, leads somewhere that may not be called or resolves to nothing; an unknown event type; a description that breaks its rule; or a body that is not of the expected shape.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The installation has no keys to seal the secrets of webhooks with: `webhooks.not_configured`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/webhook-endpoints/{endpoint_id}": {
+      "get": {
+        "operationId": "getWebhookEndpoint",
+        "summary": "Read one endpoint, without its secret",
+        "x-hodor-permission": "webhooks:read",
+        "parameters": [
+          {
+            "name": "endpoint_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The endpoint.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookEndpoint"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No endpoint of that identifier: `webhooks.endpoint_not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The installation has no keys to seal the secrets of webhooks with: `webhooks.not_configured`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "removeWebhookEndpoint",
+        "summary": "Remove an endpoint, with its subscriptions, secrets and deliveries",
+        "x-hodor-permission": "webhooks:write",
+        "parameters": [
+          {
+            "name": "endpoint_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "Removed."
+          },
+          "404": {
+            "description": "No endpoint of that identifier: `webhooks.endpoint_not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The installation has no keys to seal the secrets of webhooks with: `webhooks.not_configured`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/webhook-endpoints/{endpoint_id}/subscriptions": {
+      "put": {
+        "operationId": "replaceWebhookSubscriptions",
+        "summary": "Replace the event types an endpoint receives",
+        "x-hodor-permission": "webhooks:write",
+        "parameters": [
+          {
+            "name": "endpoint_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WebhookSubscriptions"
+              }
+            }
+          }
+        },
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The endpoint.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookEndpoint"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No endpoint of that identifier: `webhooks.endpoint_not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The endpoint changed meanwhile: `webhooks.endpoint_changed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "An event type that is not in the catalog, or a body that is not of the expected shape.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The installation has no keys to seal the secrets of webhooks with: `webhooks.not_configured`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/webhook-endpoints/{endpoint_id}:rotate-secret": {
+      "post": {
+        "operationId": "rotateWebhookSecret",
+        "summary": "Give an endpoint a new secret, in this answer and never again; the one it replaces keeps signing for the overlap",
+        "x-hodor-permission": "webhooks:write",
+        "parameters": [
+          {
+            "name": "endpoint_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WebhookSecretRotation"
+              }
+            }
+          }
+        },
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The endpoint and its new secret. Sent with `Cache-Control: no-store`.",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookEndpointWithSecret"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No endpoint of that identifier: `webhooks.endpoint_not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "An overlap that is not 0 to 168 hours, or a body that is not of the expected shape.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The installation has no keys to seal the secrets of webhooks with: `webhooks.not_configured`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/webhook-deliveries": {
+      "get": {
+        "operationId": "listWebhookDeliveries",
+        "summary": "List deliveries, newest first, of one endpoint or all, of one status or all",
+        "x-hodor-permission": "webhooks:read",
+        "parameters": [
+          {
+            "name": "endpoint_id",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Only the deliveries of this endpoint."
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "pending",
+                "delivered",
+                "set_aside"
+              ]
+            },
+            "description": "Only the deliveries in this status; `set_aside` lists what kept failing."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "The `next_cursor` of the page before."
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "A page of deliveries, without their bodies.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "items"
+                  ],
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/WebhookDelivery"
+                      }
+                    },
+                    "next_cursor": {
+                      "type": "string",
+                      "description": "Present when more results exist."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A query that cannot be read: `request.query_invalid`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The installation has no keys to seal the secrets of webhooks with: `webhooks.not_configured`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/webhook-deliveries/{delivery_id}:redeliver": {
+      "post": {
+        "operationId": "redeliverWebhook",
+        "summary": "Put a set-aside delivery back to pending, due at once",
+        "x-hodor-permission": "webhooks:write",
+        "parameters": [
+          {
+            "name": "delivery_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The delivery, pending.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookDelivery"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No delivery of that identifier: `webhooks.delivery_not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The delivery is not set aside: `webhooks.delivery_not_set_aside`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The installation has no keys to seal the secrets of webhooks with: `webhooks.not_configured`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -11698,6 +12515,219 @@
               "format": "uuid"
             },
             "description": "Replaces every owner it has."
+          }
+        }
+      },
+      "WebhookEndpoint": {
+        "type": "object",
+        "required": [
+          "id",
+          "url",
+          "event_types",
+          "secrets",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "url": {
+            "type": "string",
+            "maxLength": 1000,
+            "description": "Where deliveries are sent: HTTPS."
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "event_types": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The event types it receives, from the catalog."
+          },
+          "secrets": {
+            "type": "array",
+            "description": "The secrets that sign now, newest first; never the secrets themselves.",
+            "items": {
+              "type": "object",
+              "required": [
+                "created_at",
+                "expires_at"
+              ],
+              "properties": {
+                "created_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "expires_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time",
+                  "description": "`null` for the current secret."
+                }
+              }
+            }
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "WebhookEndpointWithSecret": {
+        "type": "object",
+        "required": [
+          "endpoint",
+          "secret"
+        ],
+        "properties": {
+          "endpoint": {
+            "$ref": "#/components/schemas/WebhookEndpoint"
+          },
+          "secret": {
+            "type": "string",
+            "pattern": "^whsec_",
+            "description": "`whsec_` and the Base64 of 32 random bytes, as Standard Webhooks libraries read it. Shown here and never again."
+          }
+        }
+      },
+      "NewWebhookEndpoint": {
+        "type": "object",
+        "required": [
+          "url"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "url": {
+            "type": "string",
+            "maxLength": 1000
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "event_types": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": []
+          }
+        }
+      },
+      "WebhookSubscriptions": {
+        "type": "object",
+        "required": [
+          "event_types"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "event_types": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "WebhookSecretRotation": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "overlap_hours": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 168,
+            "default": 24,
+            "description": "How long the secret it replaces keeps signing."
+          }
+        }
+      },
+      "WebhookDelivery": {
+        "type": "object",
+        "required": [
+          "id",
+          "endpoint_id",
+          "event_id",
+          "event_type",
+          "status",
+          "attempts",
+          "next_attempt_at",
+          "last_response_status",
+          "last_error",
+          "created_at",
+          "finished_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "endpoint_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "event_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Also the `webhook-id` of every attempt."
+          },
+          "event_type": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "delivered",
+              "set_aside"
+            ]
+          },
+          "attempts": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "next_attempt_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Set only while pending."
+          },
+          "last_response_status": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "last_error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 500
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "finished_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
           }
         }
       }

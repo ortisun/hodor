@@ -47,7 +47,7 @@ reach other crates through `hodor_authorization::api`.
   | `WorkloadsRead` | `workloads:read` |
   | `WorkloadsWrite` | `workloads:write` |
 
-  `Permission::ALL` lists all twenty-nine; `from_name(name) -> Option<Permission>`.
+  `Permission::ALL` lists all thirty-one, `webhooks:read` and `webhooks:write` the last; `from_name(name) -> Option<Permission>`.
   The auditor holds every permission that ends in `:read`, and nothing else.
 - `Role` (`role.rs:Role`): `TenantAdministrator` (`tenant_administrator`) and
   `TenantAuditor` (`tenant_auditor`); `Role::ALL`, `as_str`,
