@@ -113,6 +113,11 @@ define_id!(
     GroupId
 );
 define_id!(
+    /// Identifies an organization of a tenant. It lives here because tokens
+    /// carry it and roles are scoped to it.
+    OrganizationId
+);
+define_id!(
     /// Identifies one domain event; handlers deduplicate on it.
     EventId
 );

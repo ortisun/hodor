@@ -13,9 +13,10 @@ use hodor_adapters_crypto::{
 };
 use hodor_adapters_postgres::{
     Database, PgAccessTokenStore, PgAuditLog, PgBundleStore, PgGroupRepository,
-    PgInstanceStatusStore, PgInstanceStore, PgKeyStore, PgLinkStore, PgPool, PgProviderStore,
-    PgRecoveryCodeStore, PgRoleAssignmentStore, PgSealingStateStore, PgTenantDirectory,
-    PgTenantRepository, PgTotpStore, PgUploadedDecisionStore, PgUserRepository, reseal_tenant,
+    PgInstanceStatusStore, PgInstanceStore, PgKeyStore, PgLinkStore, PgOrganizationRepository,
+    PgPool, PgProviderStore, PgRecoveryCodeStore, PgRoleAssignmentStore, PgSealingStateStore,
+    PgTenantDirectory, PgTenantRepository, PgTotpStore, PgUploadedDecisionStore, PgUserRepository,
+    reseal_tenant,
 };
 use hodor_audit::api::AuditService;
 use hodor_authorization::api::{AuthorizationService, Namespace, Role};
@@ -1007,7 +1008,8 @@ async fn person(
         Arc::new(PgUserRepository),
         Arc::new(SystemClock),
     )
-    .with_groups(Arc::new(PgGroupRepository));
+    .with_groups(Arc::new(PgGroupRepository))
+    .with_organizations(Arc::new(PgOrganizationRepository));
     let user = identity
         .find_by_login(&tenant, login)
         .await?
@@ -1666,7 +1668,8 @@ async fn bootstrap_administrator(
     let tenant = TenantContext::assume(entry.tenant_id);
 
     let identity = IdentityService::new(units(), Arc::new(PgUserRepository), clock.clone())
-        .with_groups(Arc::new(PgGroupRepository));
+        .with_groups(Arc::new(PgGroupRepository))
+        .with_organizations(Arc::new(PgOrganizationRepository));
     let address = NormalizedIdentifier::parse(IdentifierKind::Email, email)?;
     let user = match identity
         .find_by_login(&tenant, address.normalized())

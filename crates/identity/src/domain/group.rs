@@ -26,11 +26,7 @@ impl GroupName {
     ///
     /// `Invalid` with code `identity.group_name_invalid`.
     pub fn parse(name: &str) -> Result<Self, DomainError> {
-        let count = name.chars().count();
-        let fits = (1..=MAX_NAME_CHARACTERS).contains(&count)
-            && name.trim() == name
-            && !name.chars().any(char::is_control);
-        if fits {
+        if name_fits(name) {
             Ok(Self(name.to_owned()))
         } else {
             Err(DomainError::invalid(
@@ -51,6 +47,15 @@ impl GroupName {
     pub fn normalized(&self) -> String {
         self.0.to_lowercase()
     }
+}
+
+/// Whether a name of a group, an organization or a unit keeps the rules:
+/// 1 to 100 characters, no control characters, no space at either end.
+pub(crate) fn name_fits(name: &str) -> bool {
+    let count = name.chars().count();
+    (1..=MAX_NAME_CHARACTERS).contains(&count)
+        && name.trim() == name
+        && !name.chars().any(char::is_control)
 }
 
 /// Checks a description: up to 500 characters, no control characters but
