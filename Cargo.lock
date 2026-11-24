@@ -1653,6 +1653,7 @@ dependencies = [
  "hodor-keys",
  "hodor-notification",
  "hodor-oauth",
+ "hodor-provisioning",
  "hodor-saml",
  "hodor-session",
  "hodor-tenant",
@@ -1935,6 +1936,7 @@ dependencies = [
  "hodor-keys",
  "hodor-notification",
  "hodor-oauth",
+ "hodor-provisioning",
  "hodor-saml",
  "hodor-session",
  "hodor-tenant",
@@ -1949,6 +1951,21 @@ dependencies = [
  "tower",
  "tower-http 0.7.1",
  "tracing",
+]
+
+[[package]]
+name = "hodor-provisioning"
+version = "0.2.0"
+dependencies = [
+ "async-trait",
+ "hodor-identity",
+ "hodor-kernel",
+ "hodor-provisioning",
+ "proptest",
+ "serde",
+ "serde_json",
+ "time",
+ "tokio",
 ]
 
 [[package]]
@@ -1995,6 +2012,7 @@ dependencies = [
  "hodor-oauth",
  "hodor-observability",
  "hodor-protocol-http",
+ "hodor-provisioning",
  "hodor-session",
  "hodor-tenant",
  "jsonwebtoken",

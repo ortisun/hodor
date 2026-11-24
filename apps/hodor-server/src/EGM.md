@@ -58,6 +58,11 @@ Routers, as assembled in `run`:
   `PgEngineBindingStore`, `ServerSubjects` and the registry of
   `authorization_engines` (the native engine with its simulator, and Open
   Policy Agent).
+- `/scim/v2` nests `hodor_protocol_http::scim_routes` with the `ScimState`
+  built by `scim`, only when `keys` built a `KeyService`: the same
+  `ResourceAccessService` as the Authorization API (`resource_access`), and a
+  `ProvisioningService` over `IdentityService`, `GroupService`,
+  `PgProvisionedUserRepository` and `PgProvisionedGroupRepository`.
 - `/oauth2/jwks`: `hodor_protocol_http::key_set_routes(KeyService)` is merged
   into the tenant routes when `keys` built a `KeyService` (`PgKeyStore`,
   `LocalKeyProvider` over `HODOR_SECRET_KEYS`); otherwise a warning is logged

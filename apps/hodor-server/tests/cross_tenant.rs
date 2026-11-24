@@ -1649,3 +1649,289 @@ async fn one_tenants_roles_bindings_and_policies_are_invisible_and_unusable_from
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
+
+/// A directory's client of a tenant that opened SCIM: the resource server
+/// `urn:hodor:scim` and a client allowed the scope `scim`. Answers a token
+/// the client got for itself.
+async fn scim_token(world: &World, tenant: &Tenant) -> String {
+    use base64::Engine as _;
+    use hodor_adapters_postgres::{PgApplicationStore, PgClientStore, PgResourceServerStore};
+    use hodor_oauth::api::{
+        ApplicationPorts, ApplicationService, ApplicationSettings, AuthenticationMethod,
+        ClientSettings, ClientType, CreateClient, CreateResourceServer, GrantType,
+        ResourceServerSettings, ScopeDefinition,
+    };
+    let applications = ApplicationService::new(ApplicationPorts {
+        units_of_work: Arc::new(world.database.app().clone()),
+        applications: Arc::new(PgApplicationStore),
+        clients: Arc::new(PgClientStore),
+        resource_servers: Arc::new(PgResourceServerStore),
+        digest: Arc::new(Sha256Digest),
+        random: Arc::new(OsRandom),
+        clock: Arc::new(SystemClock),
+    });
+    let application = applications
+        .create_application(
+            &tenant.context,
+            ApplicationSettings {
+                name: "SCIM".to_owned(),
+                first_party: true,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("application");
+    applications
+        .create_resource_server(
+            &tenant.context,
+            CreateResourceServer {
+                application_id: application.id(),
+                audience: "urn:hodor:scim".to_owned(),
+                settings: ResourceServerSettings {
+                    name: "SCIM".to_owned(),
+                    scopes: vec![ScopeDefinition {
+                        name: "scim".to_owned(),
+                        description: "Provision users and groups".to_owned(),
+                    }],
+                },
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("resource server");
+    let mut settings = ClientSettings::new(
+        "Directory",
+        ClientType::Confidential,
+        vec![GrantType::ClientCredentials],
+        Vec::new(),
+    );
+    settings.authentication_method = AuthenticationMethod::ClientSecretBasic;
+    settings.allowed_scopes = vec!["scim".to_owned()];
+    let (client, secret) = applications
+        .create_client(
+            &tenant.context,
+            CreateClient {
+                application_id: application.id(),
+                client_type: ClientType::Confidential,
+                settings,
+                secret_lifetime: None,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("client");
+    let basic = base64::engine::general_purpose::STANDARD.encode(format!(
+        "{}:{}",
+        client.id(),
+        secret.expect("a secret").expose()
+    ));
+    let response = Client::new()
+        .post(format!(
+            "{}/t/{}/oauth2/token",
+            world.server.base, tenant.slug
+        ))
+        .header("authorization", format!("Basic {basic}"))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(
+            form_urlencoded::Serializer::new(String::new())
+                .extend_pairs([
+                    ("grant_type", "client_credentials"),
+                    ("resource", "urn:hodor:scim"),
+                    ("scope", "scim"),
+                ])
+                .finish(),
+        )
+        .send()
+        .await
+        .expect("token response");
+    let body: serde_json::Value = response.json().await.expect("token body");
+    body["access_token"].as_str().expect("a token").to_owned()
+}
+
+/// A request to a tenant's SCIM server. Answers the status, the challenge
+/// and the body.
+async fn scim(
+    world: &World,
+    tenant: &Tenant,
+    token: &str,
+    method: Method,
+    path: &str,
+    body: Option<serde_json::Value>,
+) -> (StatusCode, Option<String>, serde_json::Value) {
+    let mut request = Client::new()
+        .request(
+            method,
+            format!("{}/t/{}/scim/v2{path}", world.server.base, tenant.slug),
+        )
+        .bearer_auth(token);
+    if let Some(body) = body {
+        request = request
+            .header("content-type", "application/scim+json")
+            .body(body.to_string());
+    }
+    let response = request.send().await.expect("response");
+    let challenge = response
+        .headers()
+        .get("www-authenticate")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let status = response.status();
+    (
+        status,
+        challenge,
+        response.json().await.unwrap_or(serde_json::Value::Null),
+    )
+}
+
+#[tokio::test]
+async fn a_scim_clients_token_and_identifiers_mean_nothing_in_another_tenant() {
+    let world = world_with(&[("HODOR_SECRET_KEYS", ROOT_KEY)]).await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    let acme_token = scim_token(&world, acme).await;
+    let globex_token = scim_token(&world, globex).await;
+    let user = |name: &str| serde_json::json!({ "schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"], "userName": name });
+    let group = |name: &str, members: serde_json::Value| {
+        serde_json::json!({
+            "schemas": ["urn:ietf:params:scim:schemas:core:2.0:Group"],
+            "displayName": name,
+            "members": members,
+        })
+    };
+
+    // In Acme, its directory sees its person and puts them in a group.
+    let (status, _, person) = scim(
+        &world,
+        acme,
+        &acme_token,
+        Method::GET,
+        &format!("/Users/{}", acme.ana),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{person}");
+    assert_eq!(person["userName"], EMAIL);
+    let (status, _, made) = scim(
+        &world,
+        acme,
+        &acme_token,
+        Method::POST,
+        "/Groups",
+        Some(group(
+            "finance",
+            serde_json::json!([{ "value": acme.ana.to_string() }]),
+        )),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{made}");
+    let acme_group = made["id"].as_str().expect("an id").to_owned();
+
+    // Acme's token is not authenticated by Globex, on any route.
+    let ana = acme.ana.to_string();
+    let routes = [
+        (Method::GET, "/ServiceProviderConfig".to_owned(), None),
+        (Method::GET, "/ResourceTypes".to_owned(), None),
+        (Method::GET, "/Schemas".to_owned(), None),
+        (Method::GET, "/Users".to_owned(), None),
+        (Method::POST, "/Users".to_owned(), Some(user("intruder"))),
+        (Method::GET, format!("/Users/{ana}"), None),
+        (Method::PUT, format!("/Users/{ana}"), Some(user("intruder"))),
+        (Method::GET, "/Groups".to_owned(), None),
+        (
+            Method::POST,
+            "/Groups".to_owned(),
+            Some(group("intruders", serde_json::json!([]))),
+        ),
+        (Method::GET, format!("/Groups/{acme_group}"), None),
+        (
+            Method::PUT,
+            format!("/Groups/{acme_group}"),
+            Some(group("intruders", serde_json::json!([]))),
+        ),
+        (Method::DELETE, format!("/Groups/{acme_group}"), None),
+    ];
+    for (method, path, body) in &routes {
+        let (status, challenge, answer) = scim(
+            &world,
+            globex,
+            &acme_token,
+            method.clone(),
+            path,
+            body.clone(),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "{method} {path}: {answer}"
+        );
+        assert_eq!(
+            challenge.as_deref(),
+            Some("Bearer error=\"invalid_token\""),
+            "{method} {path}"
+        );
+        assert_eq!(answer["status"], "401");
+    }
+
+    // Globex's own directory does not find Acme's person or group by
+    // naming them, and cannot make Acme's person a member.
+    for (method, path, body) in [
+        (Method::GET, format!("/Users/{ana}"), None),
+        (
+            Method::PUT,
+            format!("/Users/{ana}"),
+            Some(user("ana.silva")),
+        ),
+        (Method::GET, format!("/Groups/{acme_group}"), None),
+        (
+            Method::PUT,
+            format!("/Groups/{acme_group}"),
+            Some(group("finance", serde_json::json!([]))),
+        ),
+        (Method::DELETE, format!("/Groups/{acme_group}"), None),
+    ] {
+        let (status, _, answer) =
+            scim(&world, globex, &globex_token, method.clone(), &path, body).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{method} {path}: {answer}");
+    }
+    let (status, _, answer) = scim(
+        &world,
+        globex,
+        &globex_token,
+        Method::POST,
+        "/Groups",
+        Some(group("finance", serde_json::json!([{ "value": ana }]))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{answer}");
+    assert_eq!(answer["scimType"], "invalidValue");
+
+    // Globex finds its own person by the shared address, never Acme's.
+    let (status, _, found) = scim(
+        &world,
+        globex,
+        &globex_token,
+        Method::GET,
+        &format!("/Users?filter=userName%20eq%20%22{EMAIL}%22"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{found}");
+    assert_eq!(found["totalResults"], 1);
+    assert_eq!(found["Resources"][0]["id"], globex.ana.to_string());
+
+    // Both tenants are as they were.
+    let (status, _, kept) = scim(
+        &world,
+        acme,
+        &acme_token,
+        Method::GET,
+        &format!("/Groups/{acme_group}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(kept["displayName"], "finance");
+    assert_eq!(kept["members"][0]["value"], ana);
+    let (_, _, groups) = scim(&world, globex, &globex_token, Method::GET, "/Groups", None).await;
+    assert_eq!(groups["totalResults"], 0);
+}

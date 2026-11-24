@@ -25,6 +25,7 @@ mod pages;
 mod policy_agent;
 mod problem;
 mod request;
+mod scim;
 mod server;
 mod tenant;
 mod token;
@@ -55,6 +56,7 @@ pub use pages::{
 pub use policy_agent::policy_agent_routes;
 pub use problem::Problem;
 pub use request::ClientAddress;
+pub use scim::{SCIM_AUDIENCE, SCIM_MEDIA_TYPE, SCIM_SCOPE, ScimState, scim_routes};
 pub use server::{Limits, public_router, public_router_behind, serve};
 pub use tenant::{ResolvedTenant, TenantResolver, TenantSlug, TenantStatus};
 pub use token::{TokenState, token_routes};

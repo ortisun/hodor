@@ -22,7 +22,7 @@ and the workspace crates `hodor-adapters-crypto`, `hodor-adapters-http`,
 `hodor-authorization-opa`,
 `hodor-credential`,
 `hodor-federation`, `hodor-identity`, `hodor-kernel`, `hodor-notification`,
-`hodor-observability`, `hodor-protocol-http`, `hodor-session` and
+`hodor-observability`, `hodor-protocol-http`, `hodor-provisioning`, `hodor-session` and
 `hodor-tenant`. The tests use `hodor-adapters-postgres` and `hodor-kernel`
 with the `testing` feature.
 

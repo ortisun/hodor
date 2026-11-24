@@ -17,7 +17,7 @@ port, which adapter crates implement.
 
 - `hodor-kernel` (`crates/kernel`): units of work, tenant context, errors, events, clock, identifiers and paging types. The `testing` feature of this crate turns on `hodor-kernel/testing`.
 - Other dependencies: `async-trait`, `serde`. Test-only dependencies: `tokio`, `proptest`.
-- Crates in this workspace that depend on `hodor-identity` (from their `Cargo.toml`): `crates/adapters-postgres`, `crates/authentication`, `crates/federation`, `crates/protocol-http`.
+- Crates in this workspace that depend on `hodor-identity` (from their `Cargo.toml`): `crates/adapters-postgres`, `crates/authentication`, `crates/federation`, `crates/protocol-http`, `crates/provisioning`.
 - The `UserRepository` port is implemented by `PgUserRepository` in `crates/adapters-postgres/src/identity.rs`.
 
 ## Verification

@@ -18,11 +18,11 @@ use hodor_adapters_postgres::{
     PgEngineBindingStore, PgGrantStore, PgGroupPolicy, PgGroupRepository, PgInstanceStatusStore,
     PgInstanceStore, PgInvitationRepository, PgKeyStore, PgLinkStore, PgMessageQueue,
     PgNativeRoleStore, PgOrganizationRepository, PgPasswordStore, PgPendingAuthorizationStore,
-    PgPolicyVersionStore, PgProviderStore, PgPublicationStore, PgRecoveryCodeStore,
-    PgRefreshTokenStore, PgResourceServerStore, PgRoleAssignmentStore, PgSealingStateStore,
-    PgSessionStore, PgSimulationStore, PgTenantDirectory, PgTenantRepository, PgTotpStore,
-    PgTransactionStore, PgUploadedDecisionStore, PgUserRepository, PgVerificationTokenStore,
-    PgWebAuthnStore,
+    PgPolicyVersionStore, PgProviderStore, PgProvisionedGroupRepository,
+    PgProvisionedUserRepository, PgPublicationStore, PgRecoveryCodeStore, PgRefreshTokenStore,
+    PgResourceServerStore, PgRoleAssignmentStore, PgSealingStateStore, PgSessionStore,
+    PgSimulationStore, PgTenantDirectory, PgTenantRepository, PgTotpStore, PgTransactionStore,
+    PgUploadedDecisionStore, PgUserRepository, PgVerificationTokenStore, PgWebAuthnStore,
 };
 use hodor_audit::api::AuditService;
 use hodor_authentication::api::{
@@ -60,13 +60,14 @@ use hodor_observability::{LogFormat, Telemetry};
 use hodor_protocol_http::{
     AdminState, AuthorizationApiState, AuthorizationState, ConsentState, ConsoleState,
     DiscoveryState, ForwardedHeader, Health, InteractionState, InvitationState, Limits,
-    LogoutState, Pages, ReadinessCheck, ResolvedTenant, TenantResolver,
+    LogoutState, Pages, ReadinessCheck, ResolvedTenant, ScimState, TenantResolver,
     TenantStatus as HttpTenantStatus, TokenState, TrustedProxies, UserInfoState, admin_routes,
     authorization_api_routes, authorization_routes, consent_routes, console_routes,
     discovery_routes, interaction_routes, invitation_routes, key_set_routes, logout_routes,
-    ops_router, parse_ranges, policy_agent_routes, public_router_behind, serve, token_routes,
-    userinfo_routes,
+    ops_router, parse_ranges, policy_agent_routes, public_router_behind, scim_routes, serve,
+    token_routes, userinfo_routes,
 };
+use hodor_provisioning::api::{ProvisioningPorts, ProvisioningService};
 use hodor_session::api::SessionService;
 use hodor_tenant::api::{TenantDirectory as _, TenantService, TenantStatus};
 use standing::{ServerMemberships, ServerStanding};
@@ -391,6 +392,10 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
                         keys.clone(),
                         engines,
                     )),
+                )
+                .nest(
+                    "/scim/v2",
+                    scim_routes(scim(&config, &database, keys.clone())),
                 )
                 .merge(key_set_routes(keys))
                 .merge(discovery_routes(DiscoveryState {
@@ -825,18 +830,7 @@ fn authorization_api(
         clock: clock.clone(),
     });
     AuthorizationApiState {
-        access: ResourceAccessService::new(ResourceAccessPorts {
-            keys,
-            verifier: Arc::new(AwsLcVerifier),
-            register: AccessTokenRegister::new(
-                units(),
-                Arc::new(PgAccessTokenRecordStore),
-                Arc::new(PgGrantStore),
-                Arc::new(PgRefreshTokenStore),
-            ),
-            applications: applications.clone(),
-            clock: clock.clone(),
-        }),
+        access: resource_access(database, keys, applications.clone()),
         evaluation: EvaluationService::new(
             units(),
             Arc::new(PgRoleAssignmentStore),
@@ -865,6 +859,65 @@ fn authorization_api(
             clock,
         )
         .with_decision_log(decision_log(database)),
+        public_url: config.public_url.clone(),
+    }
+}
+
+/// Checks the access tokens presented to Hodor's own resource servers, the
+/// Authorization API and the SCIM server, against the tenants' keys and
+/// the register of access tokens.
+fn resource_access(
+    database: &Database,
+    keys: KeyService,
+    applications: ApplicationService,
+) -> ResourceAccessService {
+    let units = || -> Arc<dyn hodor_kernel::UnitOfWorkFactory> { Arc::new(database.clone()) };
+    ResourceAccessService::new(ResourceAccessPorts {
+        keys,
+        verifier: Arc::new(AwsLcVerifier),
+        register: AccessTokenRegister::new(
+            units(),
+            Arc::new(PgAccessTokenRecordStore),
+            Arc::new(PgGrantStore),
+            Arc::new(PgRefreshTokenStore),
+        ),
+        applications,
+        clock: Arc::new(SystemClock),
+    })
+}
+
+/// Builds everything the SCIM server needs. Like the Authorization API, it
+/// checks access tokens against the tenants' keys.
+fn scim(config: &Config, database: &Database, keys: KeyService) -> ScimState {
+    let clock = Arc::new(SystemClock);
+    let units = || -> Arc<dyn hodor_kernel::UnitOfWorkFactory> { Arc::new(database.clone()) };
+    let applications = ApplicationService::new(ApplicationPorts {
+        units_of_work: units(),
+        applications: Arc::new(PgApplicationStore),
+        clients: Arc::new(PgClientStore),
+        resource_servers: Arc::new(PgResourceServerStore),
+        digest: Arc::new(Sha256Digest),
+        random: Arc::new(OsRandom),
+        clock: clock.clone(),
+    });
+    ScimState {
+        access: resource_access(database, keys, applications),
+        provisioning: ProvisioningService::new(ProvisioningPorts {
+            units_of_work: units(),
+            identity: IdentityService::new(units(), Arc::new(PgUserRepository), clock.clone())
+                .with_groups(Arc::new(PgGroupRepository))
+                .with_organizations(Arc::new(PgOrganizationRepository)),
+            groups: GroupService::new(
+                units(),
+                Arc::new(PgGroupRepository),
+                Arc::new(PgUserRepository),
+                Arc::new(PgGroupPolicy),
+                clock.clone(),
+            ),
+            users: Arc::new(PgProvisionedUserRepository),
+            provisioned_groups: Arc::new(PgProvisionedGroupRepository),
+            clock,
+        }),
         public_url: config.public_url.clone(),
     }
 }

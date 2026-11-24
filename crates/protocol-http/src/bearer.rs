@@ -35,7 +35,25 @@ pub(crate) fn not_cached(mut response: Response) -> Response {
 /// The answer to a refused token: `401` with the challenge, or `403` when
 /// the token lacks `scope`. `surface` names the resource server in the log.
 pub(crate) fn refused(refusal: BearerRefusal, scope: &str, surface: &str) -> Response {
-    let (status, challenge) = match refusal {
+    let (status, challenge) = challenge(refusal, scope, surface);
+    let mut response = status.into_response();
+    if let Ok(value) = HeaderValue::from_str(&challenge) {
+        response
+            .headers_mut()
+            .insert(header::WWW_AUTHENTICATE, value);
+    }
+    not_cached(response)
+}
+
+/// The status and the `WWW-Authenticate` challenge of a refused token,
+/// for a surface that writes its own body. `surface` names the resource
+/// server in the log.
+pub(crate) fn challenge(
+    refusal: BearerRefusal,
+    scope: &str,
+    surface: &str,
+) -> (StatusCode, String) {
+    match refusal {
         BearerRefusal::Missing => (StatusCode::UNAUTHORIZED, "Bearer".to_owned()),
         BearerRefusal::InvalidToken(reason) => {
             tracing::info!(reason, surface, "a bearer token was refused");
@@ -48,14 +66,7 @@ pub(crate) fn refused(refusal: BearerRefusal, scope: &str, surface: &str) -> Res
             StatusCode::FORBIDDEN,
             format!("Bearer error=\"insufficient_scope\", scope=\"{scope}\""),
         ),
-    };
-    let mut response = status.into_response();
-    if let Ok(value) = HeaderValue::from_str(&challenge) {
-        response
-            .headers_mut()
-            .insert(header::WWW_AUTHENTICATE, value);
     }
-    not_cached(response)
 }
 
 #[cfg(test)]

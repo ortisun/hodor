@@ -34,7 +34,9 @@ bound to. Implemented outside this crate by `PgUserRepository` in
 - `IdentityService::new(units_of_work: Arc<dyn UnitOfWorkFactory>, users: Arc<dyn UserRepository>, clock: Arc<dyn Clock>)`. The service is `Clone`; its `Debug` output shows no fields.
 - `create(tenant, command: CreateUser, caller) -> User`: runs `create_in` in its own unit of work and commits.
 - `create_in(uow, command, verified: bool, caller) -> User`: parses each identifier with `NormalizedIdentifier::parse`, calls `User::create`, and, when `verified` is set, verifies every identifier whose kind `needs_verification()`. Inserts the user and records the events in the caller's unit of work; it does not commit. After an error the caller must abandon the unit of work (doc comment).
-- `get(tenant, id) -> User`: `NotFound` with code `identity.user_not_found` if the tenant has no such user.
+- `get(tenant, id) -> User`: `NotFound` with code `identity.user_not_found` if the tenant has no such user. `get_in(uow, id)` does the same in the caller's unit of work.
+- `change_in(uow, id, caller, apply)`: loads the user, lets `apply: FnOnce(&mut User) -> Result<Vec<UserEvent>>` make any changes `User` allows, and stores it with every event in the caller's unit of work, without committing; nothing is stored when `apply` answers no event. `now()` is the service's clock, for `apply`. The provisioning context uses these.
+- `GroupService` (`groups.rs`) has the same pairs for groups: `create_in`, `get_in`, `change_in` (answers whether anything changed), `delete_in`, `add_member_in` and `remove_member_in` (answer whether the membership changed), `all_members_in` (every direct member, a thousand at a time) and `direct_groups_in`. Each public use case runs its `_in` variant in a unit of work of its own and commits.
 - `list(tenant, page: &PageRequest) -> Page<User>`: creation order, one page at a time. The cursor is a user identifier; a cursor that does not parse as `UserId` gives `Invalid` with code `request.cursor_invalid`. Asks the repository for `limit + 1` users to decide whether `next_cursor` is set.
 - `find_by_login(tenant, typed: &str) -> Option<User>`: interprets the typed text with `NormalizedIdentifier::from_login`; a malformed value returns `Ok(None)` without touching storage.
 - Lifecycle: `activate`, `suspend(…, reason, …)`, `reactivate`, `deactivate`, `restore`, `mark_deleted`. Each takes `(tenant, id, caller)` and returns the changed `User`.
@@ -43,8 +45,8 @@ bound to. Implemented outside this crate by `PgUserRepository` in
 
 ## Invariants
 
-- Tenant scoping: every use case except `create_in` starts its unit of work with `units_of_work.begin(tenant)`; `create_in` uses the caller's unit of work. Event metadata takes the tenant from `uow.tenant().tenant_id()` (`service.rs: IdentityService::record`).
-- One change per unit of work: the private `IdentityService::change` loads the user, applies one domain operation, and stores it with its events before committing. A change that produces no event (for example verifying an identifier that is already verified, or choosing the identifier that is already primary) is neither stored nor committed, and the user is returned unchanged.
+- Tenant scoping: every use case except the `*_in` variants starts its unit of work with `units_of_work.begin(tenant)`; `create_in` uses the caller's unit of work. Event metadata takes the tenant from `uow.tenant().tenant_id()` (`service.rs: IdentityService::record`).
+- One change per unit of work: the private `IdentityService::change` runs `change_in` and commits. A change that produces no event (for example verifying an identifier that is already verified, or choosing the identifier that is already primary) is not stored, and the user is returned unchanged.
 - Business rules (status transitions, identifier limits, verification before an email address becomes primary, the last identifier) are enforced by `User` in the domain layer, not here. Uniqueness of an identifier across the users of a tenant is left to `UserRepository::insert` and `update`, which return `identity.identifier_taken`.
 - Identifier values are parsed (`NormalizedIdentifier::parse`) before the clock is read or storage is touched, in `create_in` and `add_identifier`.
 
