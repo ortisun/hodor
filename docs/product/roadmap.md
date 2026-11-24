@@ -50,6 +50,14 @@ At the project owner's request, signing in with external identities is built bef
 
 [Decision 0027](../decisions/0027-what-0.3.0-holds.md) says why and what stays in each phase.
 
+0.4.0 holds three parts the project owner asked for after 0.3.0, so that Hodor works with several service meshes, Linkerd included. They are Milestones 10 to 12 in [the epics](epics.md#milestone-10-workloads-prove-who-they-are-with-their-certificates), built in this order:
+
+1. Workloads prove who they are to Hodor with the certificates and JWT-SVIDs their mesh or SPIRE gave them.
+2. Hodor in a service mesh: the mesh's proxies check Hodor's tokens and ask Hodor's decisions, Linkerd through policies written from Hodor's roles, and Hodor runs inside a mesh itself.
+3. An optional certificate authority per tenant, which signs the intermediate certificates of the tenant's meshes, with its key in OpenBao.
+
+[Decision 0028](../decisions/0028-what-0.4.0-holds.md) says why, [Decision 0029](../decisions/0029-hodor-in-a-service-mesh.md) how Hodor fits a mesh, and [Decision 0030](../decisions/0030-optional-certificate-authority.md) what the authority may sign.
+
 ## Console delivery
 
 The consoles trail their APIs by one phase so that the API is settled first.
@@ -73,6 +81,10 @@ The consoles trail their APIs by one phase so that the API is settled first.
 | Administrative role-based access control | Phase 5 / 7 | Fixed built-in admin roles in Phase 1 | The Admin API must be protected from its first endpoint |
 | Webhooks | Phase 8 | Phase 5 | First extension mechanism, and needed for security event management system delivery |
 | Native relationship-based access control | Phase 5 | Phase 5 stretch (Optional) | Large and separable; OpenFGA adapter is the alternative |
+| Mutual TLS client authentication and certificate-bound tokens | Phase 6 | 0.4.0, Milestone 10, with SPIFFE client authentication and certificates forwarded by trusted proxies | Workloads in a service mesh already hold a certificate; asking them for a second credential is the gap the owner asked to close |
+| Envoy external authorization and Linkerd policies | Not in the specification | 0.4.0, Milestone 11 | Meshes enforce at the proxy; Hodor stays the policy decision point ([Decision 0029](../decisions/0029-hodor-in-a-service-mesh.md)) |
+| A certificate authority per tenant | Not in the specification | 0.4.0, Milestone 12, Optional and off by default | One root per tenant across its meshes ([Decision 0030](../decisions/0030-optional-certificate-authority.md)) |
+| An external key provider | Phase 9 | OpenBao in 0.4.0, Milestone 12; the cloud's key management services stay in Phase 9 | The authority's key must never leave the provider that signs with it; the owner chose OpenBao, and the cloud's services fit the same port |
 
 ## Sizing
 

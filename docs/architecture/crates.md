@@ -24,7 +24,9 @@ hodor/
 ├── apps/
 │   ├── hodor-server/          # HTTP composition root
 │   ├── hodor-worker/          # jobs composition root
-│   └── hodor-cli/
+│   ├── hodor-cli/
+│   ├── hodor-ext-authz/       # Milestone 11: Envoy's external authorization, over the Authorization API
+│   └── hodor-cert-manager-issuer/  # Milestone 12, optional: cert-manager's outside issuer
 ├── crates/
 │   ├── kernel/
 │   ├── tenant/
@@ -48,7 +50,7 @@ hodor/
 │   ├── adapters-postgres/
 │   ├── adapters-redis/
 │   ├── adapters-crypto/
-│   ├── adapters-kms/
+│   ├── adapters-kms/           # Milestone 12: OpenBao; Phase 9: the cloud's key management services
 │   ├── adapters-http/          # Phase 3
 │   ├── adapters-ldap/          # Milestone 2: directories over LDAP
 │   ├── adapters-policy-check/  # Milestone 5: the opa binary, for the policy lifecycle

@@ -231,6 +231,25 @@ A SCIM client writes a tenant's people and groups: the [provisioning context](..
 | Threat-Webhooks-06 | A slow or dead endpoint exhausts the worker or holds up other tenants | No transaction is held during a request; a time limit per attempt; at most a few deliveries in flight per endpoint; deliveries set aside after a bound |
 | Threat-Webhooks-07 | A tenant makes Hodor send a flood of requests | At most 20 endpoints; one delivery per endpoint and event; a bound on attempts and growing waits |
 
+## Service meshes and certificates
+
+Planned for 0.4.0 ([Decision 0028](../decisions/0028-what-0.4.0-holds.md)). The controls are what the issues of Milestones 10 to 12 must build and test.
+
+| Identifier | Threat | Control |
+|---|---|---|
+| Threat-Mesh-01 | A client sends its own `Client-Cert`, `X-Forwarded-Client-Cert` or `l5d-client-id` and is taken for the workload it names | Only the one header the operator names is read, none by default; only from a trusted proxy; only its nearest element, the one the local proxy added |
+| Threat-Mesh-02 | A workload of one tenant's trust domain authenticates as a client of another tenant | Trust domains belong to a tenant; each client is bound to one exact SPIFFE identifier; the cross-tenant suite covers assertions, certificates and bundles |
+| Threat-Mesh-03 | A trust bundle is replaced by an attacker, through its bundle endpoint or the network | Bundle endpoints reached through the guarded outbound client over HTTPS only; a bundle that does not read keeps the previous one; every change of a bundle is audited |
+| Threat-Mesh-04 | A JWT-SVID is replayed at Hodor or at another audience | `aud` must be exactly the tenant's issuer, as the draft says, so an assertion for another tenant or another server is refused; the assertion is remembered by its hash until it expires, since `jti` may be absent, and refused a second time |
+| Threat-Mesh-05 | A certificate-bound access token is used without its certificate | `cnf` checked by UserInfo, introspection, the Authorization API and the administration interface; introspection returns `cnf` so that resource servers can check it |
+| Threat-Mesh-06 | A mesh lets requests through when `hodor-ext-authz` or Hodor cannot answer | The adapter answers denied on every failure; the guides set the proxy's own failure mode to deny; failing open stays a choice per action of the binding, in Hodor |
+| Threat-Mesh-07 | A compromised `hodor-ext-authz` asks about any subject | Its clients hold only `authz:evaluate`, each for one application; it is reachable only from the mesh's proxies; its decisions are recorded with the client that asked |
+| Threat-Mesh-08 | Hodor behind a sidecar trusts the sidecar's address, and since every caller arrives from it and the sidecar passes `X-Forwarded-For` unchanged, any workload writes its own forwarded address | The forwarded address is read from the local proxy only when the caller's mesh identity is a named ingress gateway; until that is built, the sidecar's address is never named and Hodor's port is left out of the sidecar's inbound interception |
+| Threat-Mesh-09 | The key of a tenant's certificate authority is stolen and used to make any workload of that tenant trusted | The authority is off unless turned on; it is refused on the local key provider outside development; the key is made and used in OpenBao, or later a cloud key management service, and never exported; Hodor's policy in OpenBao allows signing only; name constraints limit what it can sign to the tenant's trust domains; every signature audited |
+| Threat-Mesh-12 | `hodor-cert-manager-issuer` signs a request nobody approved, or a workload's own certificate | It sends only approved requests for an authority; its client holds only the signing scope; Hodor checks every request again, whoever sends it |
+| Threat-Mesh-10 | An administrator has an intermediate signed for another tenant's trust domain, or one that can sign further authorities | The request is checked before signing: only the tenant's own trust domains, name constraints copied in, a path length of zero, a lifetime bound |
+| Threat-Mesh-11 | An intermediate that should be withdrawn stays trusted | Withdrawing one removes it from the tenant's published bundle and from Hodor's own trust at once; intermediates are short-lived so that a mesh that keeps a copy loses it soon |
+
 ## Residual risks
 
 | Risk | Status |

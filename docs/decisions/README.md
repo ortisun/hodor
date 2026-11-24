@@ -33,6 +33,9 @@ All records below are **Proposed** unless marked otherwise: they become Accepted
 | [0025](0025-condition-language.md) | Conditions are Common Expression Language, interpreted by the `cel` crate in a crate of their own (Accepted) |
 | [0026](0026-policy-checks-in-a-sandbox.md) | Policies are checked by the `opa` binary, run by the worker as a child process with nothing of its own (Accepted) |
 | [0027](0027-what-0.3.0-holds.md) | 0.3.0 holds operations, groups and organizations with SCIM, workloads with webhooks, and what 0.2.0 left out (Accepted) |
+| [0028](0028-what-0.4.0-holds.md) | 0.4.0 holds workloads proven by their certificates, Hodor in a service mesh, and an optional certificate authority per tenant |
+| [0029](0029-hodor-in-a-service-mesh.md) | Hodor accepts the mesh's certificates and issues none to workloads; proxies check its tokens and ask its decisions through `hodor-ext-authz`; Linkerd gets policies written from Hodor's roles |
+| [0030](0030-optional-certificate-authority.md) | An optional certificate authority per tenant signs the intermediates of the tenant's meshes, only within its trust domains, and never a workload's own certificate |
 | [0031](0031-workloads-are-users.md) | Service accounts and agents are users of the identity context, and a client of the client credentials grant acts as one (Accepted) |
 | [0032](0032-webhooks.md) | Webhooks are a context of their own, signed as Standard Webhooks say, and sent on leases outside any transaction (Accepted) |
 | [0033](0033-api-keys.md) | API keys are credentials of workloads, recognized by their prefix, and never do more than their holder (Accepted) |

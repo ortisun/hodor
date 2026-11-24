@@ -86,6 +86,24 @@ Open Policy Agent itself stays under the Cloud Native Computing Foundation. In A
 | Entra ID | Workload ID; Agent ID generally available |
 | WorkOS, Clerk | Authorization for Model Context Protocol servers, generally available 2026 |
 
+### 2.6 Service meshes and workload certificates
+
+Checked against Keycloak and Ory Hydra only, the two self-hosted servers closest to Hodor. The other products of this page were not checked.
+
+| Feature | Hodor | Keycloak | Ory Hydra |
+|---|---|---|---|
+| Client authentication with a client certificate (RFC 8705) and tokens bound to it | Milestone 10 (0.4.0) | Yes | Not found in its documentation; a design in a discussion of its repository |
+| A client certificate forwarded by a proxy that ends TLS | Milestone 10, RFC 9440 from trusted proxies only | Lookup providers for Apache, HAProxy, NGINX, Traefik and RFC 9440 | No |
+| SPIFFE client authentication with a JWT-SVID | Milestone 10 | Preview, as part of federated client authentication, until the Internet-Draft is final | No |
+| Kubernetes service account tokens as client authentication | Not planned | Yes (federated client authentication) | No |
+| Signing a person in with a client certificate | Phase 6 | Yes, with revocation list and OCSP checks | No |
+| Decisions asked by a mesh's proxy (Envoy external authorization) | Milestone 11, through `hodor-ext-authz` | No | No; Ory Oathkeeper is a separate proxy |
+| Issuing certificates | Milestone 12: an optional authority per tenant that signs the intermediates of its meshes | No | No |
+
+Keycloak's federated client authentication trusts the outside provider fully: if that provider is compromised, it can mint assertions for every client that relies on it. Hodor binds each client to one SPIFFE identifier, so a compromised trust domain reaches only the clients bound to it.
+
+Issuing certificates is left to public key infrastructure tools in both products: HashiCorp Vault, smallstep, SPIRE, cert-manager and the clouds' own authorities. Hodor's authority is an opportunity rather than a gap: nobody in this comparison offers it.
+
 ## 3. Admin consoles
 
 | Product | Done well | Done badly |
@@ -170,3 +188,9 @@ These are features that competitors ship and Hodor's roadmap does not cover. Non
 20. NIST SP 800-63B-4, authenticator assurance levels: https://pages.nist.gov/800-63-4/sp800-63b/aal
 21. OWASP Application Security Verification Standard 5.0, session management: https://github.com/OWASP/ASVS/blob/v5.0.0/5.0/en/0x16-V7-Session-Management.md
 22. Secure by Design pledge: https://www.cisa.gov/securebydesign/pledge
+23. Keycloak, federated client authentication: https://www.keycloak.org/2026/01/federated-client-authentication
+24. Keycloak, the SPIFFE package of 26.8.1: https://www.keycloak.org/docs-api/26.8.1/javadocs/org/keycloak/broker/spiffe/package-summary.html
+25. Red Hat build of Keycloak, client certificate lookup behind a proxy: https://docs.redhat.com/ja/documentation/red_hat_build_of_keycloak/26.0/html/server_configuration_guide/reverseproxy-enabling-client-certificate-lookup
+26. Keycloak, the RFC 9440 client certificate lookup: https://www.keycloak.org/docs-api/latest/javadocs/org/keycloak/services/x509/Rfc9440ClientCertificateLookup.html
+27. Ory Hydra, mutual TLS client authentication proposal: https://github.com/ory/hydra/discussions/2273
+28. OAuth SPIFFE client authentication, Internet-Draft 03: https://datatracker.ietf.org/doc/html/draft-ietf-oauth-spiffe-client-auth-03
