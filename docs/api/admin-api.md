@@ -117,6 +117,7 @@ It needs `HODOR_DATABASE_URL`, like the tenant commands.
 | `DELETE /resource-servers/{resource_server_id}/roles/{role}` | `roles:write` | Remove a role that no other role includes |
 | `GET /users/{user_id}/role-assignments` | `roles:read` | List the roles a user holds |
 | `GET /clients/{client_id}/role-assignments` | `roles:read` | List the roles a client holds |
+| `GET /groups/{group_id}/role-assignments` | `roles:read` | List the roles a group holds |
 | `POST /role-assignments` | `roles:write` | Give a role to a user or a client |
 | `POST /role-assignments:revoke` | `roles:write` | Take a role away |
 | `GET /bindings` | `bindings:read` | List which engine answers for each resource server |
@@ -610,7 +611,7 @@ An included role of the same resource server makes a hierarchy, one of another a
 }
 ```
 
-Without `application_id` the role applies to the whole tenant. Revoking a role that was not held answers `404` with `authorization.assignment_not_found`.
+`principal.kind` is `user`, `client` or `group`. In place of `application_id`, `organization_id` scopes the assignment to an organization; giving both is refused with `authorization.scope_invalid`. Without either the role applies to the whole tenant. `GET /groups/{group_id}/role-assignments` lists the roles a group holds, under `roles:read`. Revoking a role that was not held answers `404` with `authorization.assignment_not_found`.
 
 | Situation | Status | Code |
 |---|---|---|
