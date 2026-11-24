@@ -43,9 +43,37 @@ An action is code that runs in continuous integration with access to the reposit
 - **`.github/scripts/supply_chain.py actions` fails** when a workflow names an action by anything but a full commit, a local action (`./…`) excepted.
 - **Dependabot keeps them current.** Once a week it proposes a pull request that moves an action to the commit of its newest release, with the comment changed to match. Its pull requests go through the same checks as any other.
 
+## What a release publishes
+
+From 0.3.0, pushing the tag of a release, such as `v0.3.0`, runs the workflow `.github/workflows/release.yml`. It publishes two things, both on the GitHub container registry, readable by anyone:
+
+| What | Where |
+|---|---|
+| The image, for `linux/amd64` and `linux/arm64` | `ghcr.io/ortisun/hodor:<version>`, such as `ghcr.io/ortisun/hodor:0.3.0` |
+| The Helm chart, as an OCI artifact | `oci://ghcr.io/ortisun/charts/hodor`, version `<version>` |
+
+How the image is made and published:
+
+- **Each architecture is built on a machine of its own architecture.** The two builds are then joined under one tag, so `docker pull` takes the right one.
+- **The image carries its software bill of materials and its provenance**, as attestations next to it in the registry. The bill of materials lists every package in the image. The provenance says which workflow built it, from which commit.
+- **The image and the chart are signed by the workflow, with no key kept anywhere.** [Sigstore](https://www.sigstore.dev/)'s `cosign` signs with a certificate made for this one run, which names the workflow and the tag. The signature is recorded in Sigstore's public transparency log, so a signature made in secret cannot pass.
+- **The workflow refuses to publish a tag that differs from the version of the chart and of the binaries**, as continuous integration already refuses a chart whose version differs from the binaries'.
+
+To check what you pulled before you run it:
+
+```bash
+cosign verify ghcr.io/ortisun/hodor:0.3.0 \
+  --certificate-identity-regexp '^https://github[.]com/ortisun/hodor/[.]github/workflows/release[.]yml@refs/tags/v' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+The chart is checked the same way, at `ghcr.io/ortisun/charts/hodor:0.3.0`.
+
+A pull request that changes the workflow or the Dockerfile runs the same builds for both architectures, and publishes and signs nothing. A broken release is then found before the tag, not after.
+
 ## Not checked yet
 
 | What | When |
 |---|---|
-| A software bill of materials and a signature for the image | [Issue-84](../product/epics.md#slice-v--what-is-shipped), with the published image |
-| The base images of the Dockerfile, named by tag rather than by digest | With the published image |
+| The base images of the Dockerfile, named by tag rather than by digest. Dependabot does not update them | When a base image changes under a tag and breaks a build, or before 1.0.0 |
+| Versions before 0.3.0 | They were never published. Build them from their tag |
