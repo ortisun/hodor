@@ -23,8 +23,8 @@ use hodor_oauth::api::{
 use hodor_oauth::testing::{
     AssertionStorePorts, DistinctRandom, FakeVerifier, InMemoryAccessTokenRecords,
     InMemoryAuthorizationCodes, InMemoryAuthorizationRequests, InMemoryClientAssertions,
-    InMemoryGrants, InMemoryRefreshTokens, InMemoryStores, StandingOf, fake_signature,
-    run_assertion_contract,
+    InMemoryGrants, InMemoryRefreshTokens, InMemoryStores, MembershipsOf, StandingOf,
+    fake_signature, run_assertion_contract,
 };
 use hodor_session::api::SessionId;
 use serde_json::{Value, json};
@@ -66,6 +66,7 @@ fn world() -> World {
         requests: Arc::new(requests),
         grants: Arc::new(grants.clone()),
         codes: Arc::new(code_store),
+        memberships: Arc::new(MembershipsOf::default()),
         digest: Arc::new(FakeDigest),
         random: Arc::new(DistinctRandom),
         clock: clock.clone(),
@@ -86,6 +87,7 @@ fn world() -> World {
         refresh_tokens: Arc::new(InMemoryRefreshTokens::new(&grants)),
         access_tokens: Arc::new(InMemoryAccessTokenRecords::new(&stores.clients)),
         standing: Arc::new(StandingOf::default()),
+        memberships: Arc::new(MembershipsOf::default()),
         secrets: Arc::new(FakeSecretBox),
         codes: codes.clone(),
         keys: keys.clone(),

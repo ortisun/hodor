@@ -13,7 +13,7 @@ use crate::domain::resource_server::{OPENID_SCOPES, ResourceServer};
 use crate::domain::text::is_scope;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use hodor_kernel::{Digest, DomainError, RandomSource, Secret, Timestamp, UserId};
+use hodor_kernel::{Digest, DomainError, OrganizationId, RandomSource, Secret, Timestamp, UserId};
 use hodor_session::api::SessionId;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -149,6 +149,10 @@ pub struct AuthorizationRequest {
     /// consent existed reads as third party, and asks.
     #[serde(default)]
     pub first_party: bool,
+    /// The organization the person signs in for, which the tokens carry as
+    /// `org_id`. The person must be a member of it.
+    #[serde(default)]
+    pub organization: Option<OrganizationId>,
 }
 
 /// An error that may be sent back to the client at its redirect address.
@@ -373,6 +377,17 @@ pub fn check_request(
     let login_hint = hint("login_hint")?;
     let ui_locales = hint("ui_locales")?;
     let acr_values = hint("acr_values")?;
+    let organization = match parameters.once("organization") {
+        None => None,
+        Some(value) => match value.parse::<OrganizationId>() {
+            Ok(organization) => Some(organization),
+            Err(_) => {
+                return Err(invalid(
+                    "organization is not the identifier of an organization",
+                ));
+            }
+        },
+    };
 
     // Scopes and the resource servers they are for.
     let mut scopes: Vec<String> = Vec::new();
@@ -461,6 +476,7 @@ pub fn check_request(
         ui_locales,
         acr_values,
         first_party: application.snapshot().settings.first_party,
+        organization,
     })
 }
 
@@ -725,6 +741,9 @@ pub struct Grant {
     pub scopes: Vec<String>,
     /// The audiences.
     pub audiences: Vec<String>,
+    /// The organization the person signed in for, if the request named
+    /// one.
+    pub organization: Option<OrganizationId>,
     /// Whether it stands.
     pub status: GrantStatus,
     /// When it was made.
@@ -746,6 +765,7 @@ impl Grant {
             session_id: person.session_id,
             scopes: request.scopes.clone(),
             audiences: request.audiences.clone(),
+            organization: request.organization,
             status: GrantStatus::Active,
             created_at: now,
             revoked_at: None,

@@ -28,7 +28,7 @@ pub mod api {
     pub use crate::application::ports::{
         AccessTokenRecordStore, ApplicationStore, AuthorizationCodeStore,
         AuthorizationRequestStore, ClientAssertionStore, ClientStore, ConsentStore, GrantStore,
-        PersonStanding, RefreshTokenStore, ResourceServerStore,
+        PersonMemberships, PersonStanding, RefreshTokenStore, ResourceServerStore,
     };
     pub use crate::application::resource_access::{
         ResourceAccessPorts, ResourceAccessService, ResourceCaller,

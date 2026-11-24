@@ -12,7 +12,8 @@ use hodor_oauth::api::{
 };
 use hodor_oauth::testing::{
     AuthorizationStorePorts, DistinctRandom, InMemoryAuthorizationCodes,
-    InMemoryAuthorizationRequests, InMemoryGrants, InMemoryStores, run_authorization_contract,
+    InMemoryAuthorizationRequests, InMemoryGrants, InMemoryStores, MembershipsOf,
+    run_authorization_contract,
 };
 use hodor_session::api::SessionId;
 use std::sync::Arc;
@@ -46,6 +47,7 @@ fn world() -> World {
         requests: Arc::new(requests),
         grants: Arc::new(grants.clone()),
         codes: Arc::new(codes),
+        memberships: Arc::new(MembershipsOf::default()),
         digest: Arc::new(FakeDigest),
         random: Arc::new(DistinctRandom),
         clock: clock.clone(),

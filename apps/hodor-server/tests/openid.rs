@@ -11,11 +11,15 @@ use hodor_adapters_crypto::{
 };
 use hodor_adapters_postgres::testing::TestDatabase;
 use hodor_adapters_postgres::{
-    PgApplicationStore, PgClientStore, PgKeyStore, PgPasswordStore, PgResourceServerStore,
+    PgApplicationStore, PgClientStore, PgGroupPolicy, PgGroupRepository, PgInvitationRepository,
+    PgKeyStore, PgOrganizationRepository, PgPasswordStore, PgResourceServerStore,
     PgTenantDirectory, PgTenantRepository, PgUserRepository,
 };
 use hodor_credential::api::{CredentialService, NewPassword, PasswordRules};
-use hodor_identity::api::{CreateUser, IdentifierKind, IdentityService, Profile, UserKind};
+use hodor_identity::api::{
+    CreateUser, GroupMember, GroupService, IdentifierKind, IdentityService, OrganizationService,
+    Profile, UserKind,
+};
 use hodor_kernel::{Caller, Digest as _, Secret, SystemClock, TenantContext};
 use hodor_keys::api::{KeyAlgorithm, KeyService, RotationPolicy};
 use hodor_oauth::api::{
@@ -28,7 +32,7 @@ use jsonwebtoken::jwk::JwkSet;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
 use reqwest::{Method, StatusCode};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 mod support;
@@ -195,7 +199,7 @@ async fn tenant_signing_with(
     );
     settings.authentication_method = AuthenticationMethod::None;
     settings.id_token_algorithm = id_token_algorithm;
-    settings.allowed_scopes = ["openid", "profile", "email", "payroll:read"]
+    settings.allowed_scopes = ["openid", "profile", "email", "groups", "payroll:read"]
         .map(str::to_owned)
         .to_vec();
     let (client, _) = applications
@@ -332,6 +336,19 @@ async fn the_discovery_document_names_what_answers() {
     assert_eq!(documents[0], documents[1], "one document at both addresses");
     let document = &documents[0];
     assert_eq!(document["issuer"], issuer("acme"));
+    assert!(
+        document["scopes_supported"]
+            .as_array()
+            .is_some_and(|scopes| scopes.contains(&Value::from("groups")))
+    );
+    for claim in ["org_id", "groups"] {
+        assert!(
+            document["claims_supported"]
+                .as_array()
+                .is_some_and(|claims| claims.contains(&Value::from(claim))),
+            "{claim}"
+        );
+    }
 
     // Every endpoint it names is there. The server is reached at its own
     // address, the document names the public one.
@@ -588,6 +605,99 @@ async fn an_application_learns_who_signed_in_and_reads_their_claims() {
 }
 
 /// Who Ana is in a tenant, by its slug.
+#[tokio::test]
+async fn a_token_names_the_organization_and_the_groups_of_the_person() {
+    let database = TestDatabase::start().await;
+    let client_id = tenant(&database, "acme").await;
+    let (tenant, ana) = ana_of(&database, "acme").await;
+    let units = || Arc::new(database.app().clone());
+    let clock = Arc::new(SystemClock);
+    let groups = GroupService::new(
+        units(),
+        Arc::new(PgGroupRepository),
+        Arc::new(PgUserRepository),
+        Arc::new(PgGroupPolicy),
+        clock.clone(),
+    );
+    let staff = groups
+        .create(&tenant, "staff", None, Caller::system())
+        .await
+        .expect("group")
+        .id();
+    let finance = groups
+        .create(&tenant, "finance", None, Caller::system())
+        .await
+        .expect("group")
+        .id();
+    groups
+        .add_member(
+            &tenant,
+            staff,
+            GroupMember::Group(finance),
+            Caller::system(),
+        )
+        .await
+        .expect("nested");
+    groups
+        .add_member(&tenant, finance, GroupMember::User(ana), Caller::system())
+        .await
+        .expect("member");
+    let organizations = OrganizationService::new(
+        units(),
+        Arc::new(PgOrganizationRepository),
+        Arc::new(PgInvitationRepository),
+        Arc::new(PgUserRepository),
+        clock,
+    );
+    let initech = organizations
+        .create(&tenant, "Initech", None, Caller::system())
+        .await
+        .expect("organization")
+        .id();
+    organizations
+        .add_member(&tenant, initech, ana, BTreeSet::new(), Caller::system())
+        .await
+        .expect("member");
+    let server = server(&database).await;
+    let mut browser = Browser::not_following(&server);
+    browser.sign_in("acme", "ana@example.com", PASSWORD).await;
+
+    let named = initech.to_string();
+    let code = code(
+        &mut browser,
+        "acme",
+        &authorize_query(
+            client_id,
+            "openid groups",
+            &[("organization", named.as_str())],
+        ),
+    )
+    .await;
+    let answer = redeem(&server, "acme", client_id, &code).await;
+    let access = claims_of(answer["access_token"].as_str().expect("an access token"));
+    assert_eq!(access["org_id"], named);
+    let mut expected = vec![staff.to_string(), finance.to_string()];
+    expected.sort();
+    assert_eq!(
+        access["groups"],
+        serde_json::json!(expected),
+        "her own group and the one that holds it"
+    );
+    let identity = claims_of(answer["id_token"].as_str().expect("an ID token"));
+    assert_eq!(identity["org_id"], named);
+    assert!(identity.get("groups").is_none());
+
+    let info = userinfo(
+        &server,
+        "acme",
+        Method::GET,
+        answer["access_token"].as_str(),
+    )
+    .await;
+    assert_eq!(info.status, StatusCode::OK);
+    assert_eq!(info.body["groups"], serde_json::json!(expected));
+}
+
 #[tokio::test]
 async fn a_client_that_asks_for_rs256_gets_id_tokens_from_the_published_rsa_key() {
     let database = TestDatabase::start().await;

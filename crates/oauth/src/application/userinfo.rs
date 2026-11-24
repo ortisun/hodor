@@ -1,9 +1,11 @@
 //! UserInfo: the claims of the person an access token was issued for.
 
 use crate::application::introspection::AccessTokenRegister;
+use crate::application::ports::PersonMemberships;
 use crate::domain::openid::{
     BearerRefusal, PersonClaims, PublishedKey, check_access_token, userinfo_claims,
 };
+use crate::domain::resource_server::GROUPS_SCOPE;
 use hodor_identity::api::{IdentifierKind, IdentityService, UserStatus};
 use hodor_kernel::{
     Clock, DomainError, ErrorKind, SignatureAlgorithm, SignatureVerifier, TenantContext,
@@ -49,6 +51,8 @@ pub struct UserInfoPorts {
     pub identity: IdentityService,
     /// Whether the token is still in force.
     pub register: AccessTokenRegister,
+    /// The person's groups, for the scope `groups`.
+    pub memberships: Arc<dyn PersonMemberships>,
     /// The time.
     pub clock: Arc<dyn Clock>,
 }
@@ -127,6 +131,14 @@ impl UserInfoService {
             return Ok(Err(BearerRefusal::InvalidToken("the person is not active")));
         }
         let snapshot = user.snapshot();
+        let groups = if checked.scopes.iter().any(|scope| scope == GROUPS_SCOPE) {
+            self.ports
+                .memberships
+                .effective_groups(tenant, checked.user_id)
+                .await?
+        } else {
+            Vec::new()
+        };
         let person = PersonClaims {
             name: snapshot.profile.display_name.clone(),
             preferred_username: user
@@ -142,6 +154,7 @@ impl UserInfoService {
                         identifier.is_verified(),
                     )
                 }),
+            groups,
         };
         Ok(Ok(userinfo_claims(
             checked.user_id,

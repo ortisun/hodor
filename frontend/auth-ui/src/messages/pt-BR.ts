@@ -96,6 +96,7 @@ export const ptBR: Messages = {
   consentScopeEmail: "Ver o seu endereço de email",
   consentScopeAddress: "Ver o seu endereço postal",
   consentScopePhone: "Ver o seu número de telefone",
+  consentScopeGroups: "Ver os grupos de que você faz parte",
   consentScopeOfResource: (description: string, resourceServer: string) =>
     resourceServer === "" ? description : `${description} (${resourceServer})`,
   consentAllow: "Permitir",

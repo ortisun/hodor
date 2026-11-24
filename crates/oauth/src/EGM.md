@@ -12,7 +12,7 @@ follows is `docs/architecture/contexts/oauth.md`.
   - Ports: `ApplicationStore`, `ClientStore`, `ResourceServerStore`,
     `AuthorizationRequestStore`, `GrantStore`, `AuthorizationCodeStore`,
     `ClientAssertionStore`, `RefreshTokenStore`, `AccessTokenRecordStore`,
-    `PersonStanding`, `ConsentStore`.
+    `PersonStanding`, `PersonMemberships`, `ConsentStore`.
   - Services: `ApplicationService`, `ApplicationPorts`, `CreateClient`,
     `RotateSecret`, `CreateResourceServer`; `AuthorizationCodeService`,
     `AuthorizationCodePorts`, `ResumedRequest`, `RedeemedCode`;
@@ -89,7 +89,9 @@ follows is `docs/architecture/contexts/oauth.md`.
   - `testing/refresh.rs`: `InMemoryRefreshTokens::new(&grants)`, which
     refuses a family whose grant the tenant does not have, with `all(tenant)`;
     `StandingOf`, a stand-in `PersonStanding` whose `end_session` and `bar`
-    end a session or bar a person; `RefreshStorePorts` and
+    end a session or bar a person; `MembershipsOf`, a stand-in
+    `PersonMemberships` whose `join`, `leave` and `set_groups` say what a
+    person is a member of; `RefreshStorePorts` and
     `run_refresh_token_contract(ports)`: a family stored whole and found by
     its token, a move once from a generation that keeps the earlier tokens
     known, a revocation that stops moves, tenants apart, and a family found

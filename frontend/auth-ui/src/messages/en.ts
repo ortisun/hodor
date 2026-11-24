@@ -94,6 +94,7 @@ export const en = {
   consentScopeEmail: "See your email address",
   consentScopeAddress: "See your postal address",
   consentScopePhone: "See your phone number",
+  consentScopeGroups: "See the groups you are in",
   consentScopeOfResource: (description: string, resourceServer: string) =>
     resourceServer === "" ? description : `${description} (${resourceServer})`,
   consentAllow: "Allow",

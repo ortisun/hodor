@@ -69,7 +69,7 @@ use hodor_protocol_http::{
 };
 use hodor_session::api::SessionService;
 use hodor_tenant::api::{TenantDirectory as _, TenantService, TenantStatus};
-use standing::ServerStanding;
+use standing::{ServerMemberships, ServerStanding};
 use std::error::Error;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -710,6 +710,7 @@ fn authorization(
             resource_servers: Arc::new(PgResourceServerStore),
             requests: Arc::new(PgAuthorizationRequestStore),
             grants: Arc::new(PgGrantStore),
+            memberships: Arc::new(ServerMemberships::over(database, clock.clone())),
             codes: Arc::new(PgAuthorizationCodeStore),
             digest: digest.clone(),
             random: random.clone(),
@@ -759,6 +760,7 @@ fn token(
         refresh_tokens: Arc::new(PgRefreshTokenStore),
         access_tokens: Arc::new(PgAccessTokenRecordStore),
         standing: Arc::new(standing),
+        memberships: Arc::new(ServerMemberships::over(database, clock.clone())),
         secrets,
         codes,
         keys,
@@ -795,6 +797,7 @@ fn userinfo(config: &Config, database: &Database, keys: KeyService) -> UserInfoS
                 Arc::new(PgGrantStore),
                 Arc::new(PgRefreshTokenStore),
             ),
+            memberships: Arc::new(ServerMemberships::over(database, clock.clone())),
             clock,
         }),
         public_url: config.public_url.clone(),

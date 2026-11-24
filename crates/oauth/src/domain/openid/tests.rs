@@ -83,6 +83,7 @@ fn the_id_token_says_who_signed_in_for_which_client() {
     let claims = id_token_claims(
         ISSUER,
         &code,
+        None,
         client,
         Duration::minutes(5),
         now(),
@@ -125,6 +126,7 @@ fn an_id_token_leaves_out_what_the_sign_in_did_not_have() {
     let claims = id_token_claims(
         ISSUER,
         &code(None, &["external"]),
+        None,
         ClientId::generate(),
         Duration::minutes(5),
         now(),
@@ -311,12 +313,17 @@ fn userinfo_answers_only_the_claims_of_the_token_s_scopes() {
         locale: Some("pt-BR".to_owned()),
         updated_at: Some(now()),
         email: Some(("ana@example.com".to_owned(), true)),
+        groups: vec![GroupId::generate()],
     };
     let scopes =
         |list: &[&str]| -> Vec<String> { list.iter().map(|scope| (*scope).to_owned()).collect() };
     assert_eq!(
         userinfo_claims(user, &scopes(&["openid"]), &person),
         json!({"sub": user.to_string()})
+    );
+    assert_eq!(
+        userinfo_claims(user, &scopes(&["openid", "groups"]), &person),
+        json!({"sub": user.to_string(), "groups": [person.groups[0].to_string()]})
     );
     assert_eq!(
         userinfo_claims(user, &scopes(&["openid", "email"]), &person),
@@ -409,4 +416,42 @@ fn discovery_names_only_what_is_built() {
     ] {
         assert!(document.get(absent).is_none(), "{absent} is not built");
     }
+}
+
+#[test]
+fn the_id_token_names_the_organization_of_the_sign_in() {
+    let organization = OrganizationId::generate();
+    let claims = id_token_claims(
+        ISSUER,
+        &code(None, &["password"]),
+        Some(organization),
+        ClientId::generate(),
+        Duration::minutes(5),
+        now(),
+        "token",
+        &FakeDigest,
+    );
+    assert_eq!(claims["org_id"], organization.to_string());
+    assert!(
+        claims.get("groups").is_none(),
+        "groups stay out of the ID token"
+    );
+}
+
+#[test]
+fn userinfo_answers_every_group_however_many() {
+    let person = PersonClaims {
+        name: None,
+        preferred_username: None,
+        locale: None,
+        updated_at: None,
+        email: None,
+        groups: (0..150).map(|_| GroupId::generate()).collect(),
+    };
+    let claims = userinfo_claims(
+        UserId::generate(),
+        &["openid".to_owned(), "groups".to_owned()],
+        &person,
+    );
+    assert_eq!(claims["groups"].as_array().map(Vec::len), Some(150));
 }

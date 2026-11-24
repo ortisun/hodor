@@ -89,6 +89,10 @@ Adapters implemented here:
   `hodor_oauth::api::PersonStanding` over `SessionService::list_for_user`
   (a session is active when it is among the person's active sessions) and
   `IdentityService::get` (`may_sign_in`; an unknown user may not).
+- `ServerMemberships` (`standing.rs`, `ServerMemberships::over(database,
+  clock)`) implements `hodor_oauth::api::PersonMemberships` over
+  `OrganizationService::organizations_of` (a member when the organization
+  is among the person's) and `GroupService::effective_groups`.
 
 Wiring functions: `interaction` (Argon2id hashing, identity, credential,
 WebAuthn with the relying party of `HODOR_PUBLIC_URL`, session, attempt

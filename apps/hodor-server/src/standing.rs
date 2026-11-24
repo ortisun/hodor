@@ -1,12 +1,18 @@
 //! What the OAuth context needs to know of a person, answered by the
 //! session and identity contexts: the OAuth context depends on neither.
 //!
-//! See `docs/architecture/contexts/oauth.md`, "Refresh tokens".
+//! See `docs/architecture/contexts/oauth.md`, "Refresh tokens" and "The
+//! organization of a sign-in".
 
-use hodor_identity::api::IdentityService;
-use hodor_kernel::{DomainError, ErrorKind, TenantContext, UserId};
-use hodor_oauth::api::PersonStanding;
+use hodor_adapters_postgres::{
+    Database, PgGroupPolicy, PgGroupRepository, PgInvitationRepository, PgOrganizationRepository,
+    PgUserRepository,
+};
+use hodor_identity::api::{GroupService, IdentityService, OrganizationService};
+use hodor_kernel::{Clock, DomainError, ErrorKind, GroupId, OrganizationId, TenantContext, UserId};
+use hodor_oauth::api::{PersonMemberships, PersonStanding};
 use hodor_session::api::{SessionId, SessionService};
+use std::sync::Arc;
 
 /// [`PersonStanding`] over the session and identity services.
 #[derive(Clone)]
@@ -46,5 +52,71 @@ impl PersonStanding for ServerStanding {
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
             Err(error) => Err(error),
         }
+    }
+}
+
+/// [`PersonMemberships`] over the group and organization services.
+#[derive(Clone)]
+pub(crate) struct ServerMemberships {
+    groups: GroupService,
+    organizations: OrganizationService,
+}
+
+impl ServerMemberships {
+    /// Over the tables of `database`.
+    pub(crate) fn over(database: &Database, clock: Arc<dyn Clock>) -> Self {
+        let units = Arc::new(database.clone());
+        Self {
+            groups: GroupService::new(
+                units.clone(),
+                Arc::new(PgGroupRepository),
+                Arc::new(PgUserRepository),
+                Arc::new(PgGroupPolicy),
+                clock.clone(),
+            ),
+            organizations: OrganizationService::new(
+                units,
+                Arc::new(PgOrganizationRepository),
+                Arc::new(PgInvitationRepository),
+                Arc::new(PgUserRepository),
+                clock,
+            ),
+        }
+    }
+}
+
+impl std::fmt::Debug for ServerMemberships {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ServerMemberships").finish_non_exhaustive()
+    }
+}
+
+#[async_trait::async_trait]
+impl PersonMemberships for ServerMemberships {
+    async fn is_member(
+        &self,
+        tenant: &TenantContext,
+        user: UserId,
+        organization: OrganizationId,
+    ) -> Result<bool, DomainError> {
+        Ok(self
+            .organizations
+            .organizations_of(tenant, user)
+            .await?
+            .iter()
+            .any(|membership| membership.organization == organization))
+    }
+
+    async fn effective_groups(
+        &self,
+        tenant: &TenantContext,
+        user: UserId,
+    ) -> Result<Vec<GroupId>, DomainError> {
+        Ok(self
+            .groups
+            .effective_groups(tenant, user)
+            .await?
+            .into_iter()
+            .collect())
     }
 }

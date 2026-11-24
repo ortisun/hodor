@@ -44,8 +44,8 @@ clients, resource_servers, digest, random, clock })`:
 ### Authorization endpoint (`authorization.rs`)
 
 `AuthorizationCodeService::new(AuthorizationCodePorts { units_of_work,
-applications, clients, resource_servers, requests, grants, codes, digest,
-random, clock })`:
+applications, clients, resource_servers, requests, grants, codes,
+memberships, digest, random, clock })`:
 
 - `check(tenant, parameters)`: loads the client the request names in this
   tenant, its application and the tenant's resource servers, and runs
@@ -55,7 +55,11 @@ random, clock })`:
 - `resume(tenant, id, secret)`: `None` unless the secret is the browser's;
   removes the request (once, even when expired) and returns it while it
   lives.
-- `issue_code(tenant, request, person, caller)`: stores a grant and a code
+- `admits(tenant, request, user)`: true when the request names no
+  organization, or `PersonMemberships::is_member` says the person is in
+  it; the endpoint answers `access_denied` otherwise, before consent.
+- `issue_code(tenant, request, person, caller)`: stores a grant, with the
+  request's organization, and a code
   in one unit of work with `oauth.authorization_code_issued`; returns the
   code once.
 - `redeem_code(tenant, code, presentation, caller)`: every refusal is
@@ -68,7 +72,8 @@ random, clock })`:
 
 `TokenService::new(TokenPorts { units_of_work, applications, clients,
 resource_servers, grants, assertions, refresh_tokens, access_tokens,
-standing, secrets, codes, keys, verifier, digest, random, clock })`, with `codes` the
+standing, memberships, secrets, codes, keys, verifier, digest, random,
+clock })`, with `codes` the
 `AuthorizationCodeService`, `keys` the `KeyService`, `standing` a
 `PersonStanding`, `access_tokens` the `AccessTokenRecordStore` of the
 register and `secrets` the kernel `SecretBox`. The retry window of
@@ -96,8 +101,10 @@ refresh tokens is `DEFAULT_RETRY_WINDOW`, 10 seconds;
     or unknown token is `invalid_grant`. `RefreshFamily::decide` in its own
     unit of work; a refusal that revokes (`OtherClient`, `Reused`) revokes
     the family, and on reuse the grant (`oauth.grant_revoked`), and commits
-    that. Then the grant must be active, `PersonStanding::may_sign_in`, and
-    without offline access `session_is_active`. The family's secret is
+    that. Then the grant must be active, `PersonStanding::may_sign_in`, the
+    person a member of the grant's organization, if any
+    (`PersonMemberships::is_member`), and without offline access
+    `session_is_active`. The family's secret is
     opened and the next token derived. A move is `RefreshTokenStore::advance`
     from the family's generation, with `oauth.refresh_token_rotated`; a move
     lost to another refresh looks the token up again, at most twice. A retry
@@ -109,6 +116,9 @@ refresh tokens is `DEFAULT_RETRY_WINDOW`, 10 seconds;
     names one resource server or is `invalid_target`. Records
     `oauth.client_access_token_issued`. No refresh token.
   - The access token: claims from `claims_for` with a `TokenSubject`,
+    whose `organization` is the grant's (`org_id`) and whose `groups` are
+    `PersonMemberships::effective_groups` when the scopes hold `groups`,
+    read for every token and left out past `MOST_GROUPS_IN_A_TOKEN`, 100;
     signed with `KeyAlgorithm::DEFAULT_SIGNING` through
     `KeyService::sign_naming_key` so that the header's `kid` is the version
     that signs. `TokenService::signed` makes the tenant's first key of the
@@ -184,7 +194,7 @@ whom a request waited for and their answer.
 ### UserInfo (`userinfo.rs`)
 
 `UserInfoService::new(UserInfoPorts { keys, verifier, identity, register,
-clock })`:
+memberships, clock })`:
 
 - `claims(tenant, issuer, token)`: the outer `Result` is storage; the
   inner one a `BearerRefusal` (`Missing`, `InvalidToken(reason)`,

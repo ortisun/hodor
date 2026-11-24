@@ -8,7 +8,9 @@ use crate::domain::authorization::AuthorizationCode;
 use crate::domain::client::{AuthenticationMethod, Client, ClientId};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use hodor_kernel::{RandomSource, Secret, SignatureAlgorithm, SignatureVerifier, Timestamp};
+use hodor_kernel::{
+    GroupId, OrganizationId, RandomSource, Secret, SignatureAlgorithm, SignatureVerifier, Timestamp,
+};
 use serde_json::{Map, Value, json};
 use std::collections::BTreeSet;
 use std::fmt;
@@ -596,7 +598,16 @@ pub struct TokenSubject {
     /// The methods of the sign-in, for its `amr`; none for client
     /// credentials.
     pub methods: Vec<String>,
+    /// The organization the person signed in for, its `org_id`.
+    pub organization: Option<OrganizationId>,
+    /// The person's effective groups when the scopes hold `groups`; none
+    /// otherwise.
+    pub groups: Option<Vec<GroupId>>,
 }
+
+/// The most groups an access token names. A person in more gets a token
+/// without `groups`, and reads them all at UserInfo.
+pub(crate) const MOST_GROUPS_IN_A_TOKEN: usize = 100;
 
 impl TokenSubject {
     /// The person and the grant of a redeemed `code`.
@@ -609,6 +620,8 @@ impl TokenSubject {
             signed_in_at: Some(code.signed_in_at),
             acr: code.acr.clone(),
             methods: code.methods.clone(),
+            organization: None,
+            groups: None,
         }
     }
 }
@@ -681,6 +694,15 @@ pub fn claims_for(
     let amr = crate::domain::openid::authentication_methods(&subject.methods);
     if !amr.is_empty() {
         claims["amr"] = json!(amr);
+    }
+    if let Some(organization) = subject.organization {
+        claims["org_id"] = json!(organization.to_string());
+    }
+    if let Some(groups) = &subject.groups
+        && groups.len() <= MOST_GROUPS_IN_A_TOKEN
+    {
+        let names: Vec<String> = groups.iter().map(ToString::to_string).collect();
+        claims["groups"] = json!(names);
     }
     AccessTokenClaims {
         token_id,

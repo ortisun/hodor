@@ -3,7 +3,7 @@
 
 use crate::application::ports::{
     ApplicationStore, AuthorizationCodeStore, AuthorizationRequestStore, ClientStore, GrantStore,
-    ResourceServerStore,
+    PersonMemberships, ResourceServerStore,
 };
 use crate::domain::authorization::{
     AuthorizationCode, AuthorizationParameters, AuthorizationRefusal, AuthorizationRequest,
@@ -14,7 +14,7 @@ use crate::domain::consent::ConsentWait;
 use crate::domain::event::OauthEvent;
 use hodor_kernel::{
     Caller, Clock, Digest, DomainError, EventEnvelope, EventMetadata, RandomSource, TenantContext,
-    Timestamp, UnitOfWork, UnitOfWorkFactory,
+    Timestamp, UnitOfWork, UnitOfWorkFactory, UserId,
 };
 use std::sync::Arc;
 
@@ -35,6 +35,8 @@ pub struct AuthorizationCodePorts {
     pub grants: Arc<dyn GrantStore>,
     /// Stores codes.
     pub codes: Arc<dyn AuthorizationCodeStore>,
+    /// Whether a person is a member of the organization a request names.
+    pub memberships: Arc<dyn PersonMemberships>,
     /// SHA-256.
     pub digest: Arc<dyn Digest>,
     /// The random bytes of codes and secrets.
@@ -224,6 +226,31 @@ impl AuthorizationCodeService {
             received_at: pending.received_at,
             consent: pending.consent,
         }))
+    }
+
+    /// Whether `user` may sign in for the organization `request` names: a
+    /// member of it. A request that names none admits everyone. An
+    /// organization the tenant does not have admits nobody, so that the
+    /// answer does not tell which ones exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    pub async fn admits(
+        &self,
+        tenant: &TenantContext,
+        request: &AuthorizationRequest,
+        user: UserId,
+    ) -> Result<bool, DomainError> {
+        match request.organization {
+            None => Ok(true),
+            Some(organization) => {
+                self.ports
+                    .memberships
+                    .is_member(tenant, user, organization)
+                    .await
+            }
+        }
     }
 
     /// Makes the grant and the code for a checked request and the person

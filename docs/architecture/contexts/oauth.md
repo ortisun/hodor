@@ -121,7 +121,7 @@ A resource server is an interface that accepts Hodor's access tokens. Its identi
 | Name | For administrators and the consent page. Same rule as an application's name |
 | Scopes | What it defines, each with a name and a description of up to 200 characters. At most 100 |
 
-A scope name follows the rule of [scopes a client may ask for](#scopes-a-client-may-ask-for), is unique within the resource server and is none of the names OpenID Connect defines: `openid`, `profile`, `email`, `address`, `phone`, `offline_access`.
+A scope name follows the rule of [scopes a client may ask for](#scopes-a-client-may-ask-for), is unique within the resource server and is none of the names OpenID Connect defines, `openid`, `profile`, `email`, `address`, `phone` and `offline_access`, nor `groups`, which Hodor answers itself ([the `groups` claim](#the-groups-claim)).
 
 ## Operations
 
@@ -283,12 +283,13 @@ A client of another tenant is unknown here: the client is looked up only in the 
 | `prompt` holds a value other than `none`, `login`, `consent` and `select_account`, or `none` with another | `invalid_request` |
 | `max_age` is not a whole number of seconds from 0 to 31 536 000 | `invalid_request` |
 | `login_hint`, `ui_locales` or `acr_values` is longer than 255 characters | `invalid_request` |
+| `organization` is not the identifier of an organization, a UUID | `invalid_request` |
 | `scope` is missing or empty, holds a scope the client may not ask for, or a scope that neither OpenID Connect nor a resource server of the request defines | `invalid_scope` |
 | More than 10 `resource` values; a `resource` that is not an absolute address without a fragment; or one that is not the audience of a resource server of this tenant ([RFC 8707](https://www.rfc-editor.org/rfc/rfc8707)) | `invalid_target` |
 
 **The resource servers of a request.** When the request names resources, they are the resource servers whose audiences it names, and every scope that is not one of OpenID Connect's must be defined by one of them. When it names none, they are the resource servers of the tenant that define the scopes asked for. The resource servers become the audiences of the tokens issued from the code (Issue-56).
 
-`nonce`, `login_hint` and `ui_locales` are kept with the request for the [ID token and the pages](#what-a-request-may-ask-of-the-sign-in); `acr_values` and `max_age` decide [the assurance and the step-up](#assurance-and-step-up). Parameters the endpoint does not know are ignored, as RFC 6749 requires; `claims` is one of them, so an `acr` asked for through it asks for nothing.
+`nonce`, `login_hint` and `ui_locales` are kept with the request for the [ID token and the pages](#what-a-request-may-ask-of-the-sign-in); `acr_values` and `max_age` decide [the assurance and the step-up](#assurance-and-step-up); `organization` names [the organization of the sign-in](#the-organization-of-a-sign-in). Parameters the endpoint does not know are ignored, as RFC 6749 requires; `claims` is one of them, so an `acr` asked for through it asks for nothing.
 
 ### Whether the person must sign in
 
@@ -350,11 +351,22 @@ The cookie:
 
 A browser has one pending authorization request per tenant at a time: a new one replaces the cookie of the one before, which then cannot be resumed.
 
+### The organization of a sign-in
+
+Issue-89. A client whose customers are [organizations](identity.md#organizations) of the tenant names the one a person signs in for with `organization`, the organization's identifier. The tokens then carry it as `org_id`, and a resource server, or the [Authorization API](../../api/api-spec.md), counts the roles the person holds in that organization ([Decision 0005](../../decisions/0005-tenant-and-organization.md)).
+
+- **The person must be a member.** Whether they are is decided once they are signed in and the session is enough, before consent is asked and before any code is made. A person who is not a member, and an organization the tenant does not have, are answered alike, at the redirect address, with `access_denied` and the description `the person is not a member of the organization`, so that a request does not tell which organizations exist. With `prompt=none` the answer is the same.
+- **The grant keeps it.** Every access token and ID token issued from the grant carries the same `org_id`, the refreshed ones included. A person who signs in for another organization makes another grant.
+- **A person who leaves the organization stops getting tokens for it.** Each refresh checks the membership again, and is refused with `invalid_grant` once it has ended ([refresh tokens](#refresh-tokens)). An access token already issued lives on until it expires, as with every other change: its lifetime is short.
+- **Without `organization`** the tokens carry no `org_id`, and only roles that are not scoped to an organization count.
+
+Hodor does not ask the person which organization they mean: the client names it, from its own address or from what the person chose in it. A page where a person chooses among their organizations is [not built yet](#not-built-yet).
+
 ### The authorization code
 
 When the person is signed in and the session is enough, a **grant** and an **authorization code** are made.
 
-- **The grant** records that this person let this client act for them, with the scopes and audiences of the request and the session it was made in. It is what the refresh tokens of Issue-57 belong to, and it can be revoked; revoking it ends whatever was issued from it.
+- **The grant** records that this person let this client act for them, with the scopes and audiences of the request, the session it was made in and the [organization](#the-organization-of-a-sign-in) the request named, if any. It is what the refresh tokens of Issue-57 belong to, and it can be revoked; revoking it ends whatever was issued from it.
 - **The code** is 32 random bytes from the operating system, written as base64url without padding. Hodor keeps only its SHA-256 hash ([Decision 0004](../../decisions/0004-token-formats.md)), with the grant, the client, the redirect address, the code challenge, the scopes, the audiences, the `nonce`, the session, the user, when they signed in, with which methods and the `acr` they reached ([what the code says](#assurance-and-step-up)). It lives **60 seconds**.
 - The browser is redirected to the redirect address with `code`, `state` when the request had one, and `iss`. The redirect address keeps its own query, and the parameters are added after it.
 
@@ -385,13 +397,14 @@ A refusal of any kind is one answer to the client, `invalid_grant`; the reason i
 | `AuthorizationRequestStore` | Store a pending authorization request; load one by its identifier; remove it only if it is still there, so that it is resumed once |
 | `GrantStore` | Store a grant; load one; store its revocation |
 | `AuthorizationCodeStore` | Store a code; find one by its hash; mark it redeemed only if it was not |
+| `PersonMemberships` | Whether the person is a member of an organization, and the person's effective groups. The server implements it over the identity context |
 
 ### Storage
 
 | Table | Holds |
 |---|---|
 | `oauth.authorization_request` | `tenant_id`, `id`, `secret_hash` (32 bytes), `client_id`, the checked request as `request` (`jsonb`), `received_at`, `expires_at` |
-| `oauth.authorization_grant` | `tenant_id`, `id`, `client_id`, `user_id`, `session_id`, `scopes`, `audiences`, `status` (`active` or `revoked`), `created_at`, `revoked_at`, `revocation_reason` |
+| `oauth.authorization_grant` | `tenant_id`, `id`, `client_id`, `user_id`, `session_id`, `scopes`, `audiences`, `organization` (null when the request named none), `status` (`active` or `revoked`), `created_at`, `revoked_at`, `revocation_reason` |
 | `oauth.authorization_code` | `tenant_id`, `code_hash` (32 bytes, the key), `grant_id`, `client_id`, `redirect_uri`, `scopes`, `audiences`, `code_challenge`, `nonce`, `session_id`, `user_id`, `signed_in_at`, `methods`, `acr` (null when no level was reached), `issued_at`, `expires_at`, `redeemed_at` |
 
 All three are tenant tables under row-level security. The request and the code reference their client, and the code its grant, with the tenant in the reference. A pending request and a code hold the hash of a secret, never the secret.
@@ -478,6 +491,8 @@ The access token is a JSON Web Token per [RFC 9068](https://www.rfc-editor.org/r
 | `auth_time` | When the person signed in; absent for client credentials, where nobody signed in |
 | `acr` | The level the sign-in reached, as the code says, and for a refreshed token as the code the refresh tokens came from says. Left out when it reached none, and for client credentials |
 | `amr` | The methods of the sign-in, named as [methods and assurance](#methods-and-assurance) says. Left out when none of them has a name in RFC 8176, and for client credentials |
+| `org_id` | The [organization of the sign-in](#the-organization-of-a-sign-in), by its identifier. Left out when the request named none, and for client credentials |
+| `groups` | With the scope `groups`, the person's [effective groups](#the-groups-claim) when the token is issued. Left out without it, for a person in more than 100 groups, and for client credentials |
 
 `acr`, `amr` and `auth_time` are the authentication claims of [RFC 9068, section 2.2.1](https://www.rfc-editor.org/rfc/rfc9068#section-2.2.1): a resource server that guards an operation behind a strong sign-in reads them from the token. `sid` is in the [ID token](#the-id-token) only.
 
@@ -510,7 +525,7 @@ Either way the person must still be allowed to sign in: a suspended, deactivated
 3. The family must still stand: not revoked, before its absolute lifetime and used within its idle time, both from the client's [token policy](#token-policy) when the family started. Otherwise `invalid_grant`.
 4. **The client must be the one the family was issued to.** A token presented by another client has leaked: the family is revoked, and the answer is `invalid_grant`.
 5. **A token that is not the newest of its family has been used before.** Within the retry window it may be [a retry](#a-retry-of-the-same-request). Otherwise this is reuse: the family and its grant are revoked, and everything issued from them with them, and the answer is `invalid_grant`.
-6. The grant must still be active, the person allowed to sign in and, without `offline_access`, the session still active; otherwise `invalid_grant`.
+6. The grant must still be active, the person allowed to sign in, a member of the grant's [organization](#the-organization-of-a-sign-in) if it has one and, without `offline_access`, the session still active; otherwise `invalid_grant`.
 7. `scope`, when given, must hold only scopes of the family; otherwise `invalid_scope`. A refresh can narrow the scopes of its access token and never widen them. The family keeps its own scopes, so a later refresh can ask for all of them again ([RFC 6749, section 6](https://www.rfc-editor.org/rfc/rfc6749#section-6)).
 8. `resource`, when given, must be one of the family's audiences; the access token is then for it alone. Otherwise `invalid_target`.
 
@@ -536,6 +551,7 @@ What the window allows: someone who stole the token one generation old and prese
 | The grant revoked, such as by a second use of its code | The family's next refresh is refused |
 | The session ended, without `offline_access` | The family's next refresh is refused |
 | The person may no longer sign in | The family's next refresh is refused |
+| The person is no longer a member of the grant's organization | The family's next refresh is refused |
 | The client or its application disabled, or the client no longer allowed the `refresh_token` grant | The family's next refresh is refused |
 | The absolute lifetime or the idle time passed | The family's next refresh is refused |
 | The client revoked a refresh token of the family at the [revocation endpoint](#revocation) | The family and its grant are revoked |
@@ -738,6 +754,7 @@ When the scopes of a code hold `openid`, the token endpoint answers with an `id_
 | `acr` | The level the sign-in reached, as the code says ([assurance and step-up](#assurance-and-step-up)). Left out when it reached no level of the tenant |
 | `amr` | The methods of the sign-in, as the next section says. Left out when none of them has a name in RFC 8176 |
 | `at_hash` | The base64url of the left half of the SHA-256 of the access token, so that the client can tell the two belong together |
+| `org_id` | The [organization of the sign-in](#the-organization-of-a-sign-in), as in the access token. Left out when the request named none |
 | `sid` | The identifier of the session the person signed in with: a UUID that names the session, never its token. [Logout](#logout-initiated-by-the-relying-party) uses it to know whether an ID token names the browser's current session |
 
 `azp` is not added: the audience is always the one client, and OpenID Connect asks for `azp` only when it is not.
@@ -797,8 +814,19 @@ The answer is JSON with `sub` and the claims of the token's scopes:
 | `openid` | `sub` |
 | `profile` | `name`, the person's display name; `preferred_username`, their primary username; `locale`; `updated_at`. Each is left out when the person has none |
 | `email` | `email`, the person's primary email address, and `email_verified`. Left out when they have no address |
+| `groups` | `groups`, the identifiers of the person's [effective groups](#the-groups-claim), all of them. An empty list when they are in none |
 
 The answer carries `Cache-Control: no-store`. A browser on another origin cannot call UserInfo yet: clients have no registered origins, so no cross-origin headers are sent.
+
+### The `groups` claim
+
+Issue-89. The scope `groups` asks for the [groups](identity.md#groups) the person is in. It is a scope of Hodor's, beside those of OpenID Connect: no resource server may define it, a client asks for it only if it may ask for it, as for any scope, and the consent page names it. Client credentials refuse it with `invalid_scope`, since nobody signed in.
+
+- **Which groups.** The person's effective groups: those they are in directly and those that hold one of them, however deep. A resource server that gives something to a parent group need not know its children.
+- **By identifier.** Each group is named by its `GroupId`, sorted, never by its name: a name can change, and a token issued before would then name another group, or none.
+- **When.** The groups are read each time an access token is issued, the refreshed ones included. A person taken out of a group loses it from the next token.
+- **Where.** In the access token and at UserInfo, not in the ID token: like the person's other claims, they stay out of a token that a browser may hold ([the ID token](#the-id-token)).
+- **How many.** The access token carries at most 100. A person in more gets an access token without `groups`, so that a token never grows without bound, and UserInfo answers them all. A resource server that must decide for such a person asks the [Authorization API](../../api/api-spec.md), which reads every group.
 
 ### What a request may ask of the sign-in
 
@@ -840,8 +868,8 @@ It names only what is built:
 | `revocation_endpoint_auth_signing_alg_values_supported`, `introspection_endpoint_auth_signing_alg_values_supported` | `ES256`, `RS256`, `PS256` |
 | `id_token_signing_alg_values_supported` | `ES256`, `RS256` |
 | `subject_types_supported` | `public` |
-| `scopes_supported` | `openid`, `profile`, `email`. A tenant's own scopes belong to its resource servers and are not listed |
-| `claims_supported` | The claims of the ID token and of UserInfo |
+| `scopes_supported` | `openid`, `profile`, `email`, `groups`. A tenant's own scopes belong to its resource servers and are not listed |
+| `claims_supported` | The claims of the ID token and of UserInfo, `org_id` and `groups` among them |
 | `acr_values_supported` | The names of the tenant's [assurance levels](tenant.md#assurance-levels), weakest first |
 | `prompt_values_supported` | `none`, `login`, `consent`, `select_account` |
 | `ui_locales_supported` | `en`, `pt-BR` |
@@ -857,6 +885,7 @@ The document may be kept by caches for five minutes and carries `Access-Control-
 | `KeyService` | Lists the tenant's published keys, to check an access token at UserInfo |
 | `SignatureVerifier` | Checks the access token's signature, from the kernel |
 | `IdentityService` | Reads the person, for UserInfo, from the identity context |
+| `PersonMemberships` | The person's effective groups, for the `groups` claim |
 
 ## Logout initiated by the relying party
 
@@ -984,7 +1013,7 @@ When the person must sign in first, they sign in, the request is resumed, and on
 `GET /interaction/consent` gives the page:
 
 - the name of the **application**, as its administrator registered it;
-- each **scope** asked for: for a scope of OpenID Connect, its name, which the page words in the person's language; for a scope of a resource server, the description the resource server gives, as written by the tenant's administrator, with the resource server's name;
+- each **scope** asked for: for a scope of OpenID Connect, or `groups`, its name, which the page words in the person's language; for a scope of a resource server, the description the resource server gives, as written by the tenant's administrator, with the resource server's name;
 - whether the request asks for **offline access**, so that the page says the application will keep access when the person is not there.
 
 It never shows the redirect address or anything else the client chose, so that a client cannot put words on Hodor's page.
@@ -1045,4 +1074,6 @@ Both are tenant tables under row-level security, and reference their client with
 | Request objects (`request`, `request_uri`) and pushed authorization requests | Phase 4, after 0.2.0 |
 | Pairwise subject identifiers, claim mappers per client | Phase 2, after 0.2.0 ([Decision 0023](../../decisions/0023-what-0.2.0-holds.md)) |
 | Opaque access tokens chosen per client | Not planned for 0.2.0 |
+| A page where a person chooses which of their organizations to sign in for, when the client names none | When a client needs it; the client names the organization |
+| The organization's name on the consent page | With the organization's branding |
 | Accepting any port for a loopback redirect address, which RFC 8252 suggests | Not planned: exact equality is kept |

@@ -679,6 +679,7 @@ describe("the consent page", () => {
       scopes: [
         { scope: "openid", kind: "openid" },
         { scope: "email", kind: "openid" },
+        { scope: "groups", kind: "openid" },
         {
           scope: "invoices:read",
           kind: "resource",
@@ -702,6 +703,7 @@ describe("the consent page", () => {
     expect(document.activeElement).toBe(heading);
     expect(screen.getByText(en.consentScopeOpenid)).toBeTruthy();
     expect(screen.getByText(en.consentScopeEmail)).toBeTruthy();
+    expect(screen.getByText(en.consentScopeGroups)).toBeTruthy();
     // The administrator's words are text, never markup.
     expect(screen.getByText(en.consentScopeOfResource("<b>Read your invoices</b>", "Invoices"))).toBeTruthy();
     expect(document.querySelector("main b")).toBeNull();

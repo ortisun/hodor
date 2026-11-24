@@ -274,8 +274,9 @@ async fn issue(
 
 /// Issues a code for a person whose session is enough, or, when they must
 /// be asked first, keeps the request and sends the browser to the consent
-/// page. Returns the answer and whether it set the cookie of a request it
-/// keeps.
+/// page. A person who is not a member of the organization the request
+/// names is sent back with `access_denied`. Returns the answer and whether
+/// it set the cookie of a request it keeps.
 async fn proceed(
     state: &AuthorizationState,
     tenant: &TenantContext,
@@ -283,6 +284,24 @@ async fn proceed(
     request: AuthorizationRequest,
     person: &SignedInPerson,
 ) -> (Response, bool) {
+    // The organization first: nobody is asked to agree to what they could
+    // not be given.
+    match state
+        .authorization
+        .admits(tenant, &request, person.user_id)
+        .await
+    {
+        Ok(true) => {}
+        Ok(false) => {
+            let error = error_for(
+                &request,
+                "access_denied",
+                "the person is not a member of the organization",
+            );
+            return (redirect_error(&error, &issuer(state, slug)), false);
+        }
+        Err(error) => return (Problem::from(error).into_response(), false),
+    }
     let ask = match state.consents.must_ask(tenant, &request, person).await {
         Ok(ask) => ask,
         Err(error) => return (Problem::from(error).into_response(), false),

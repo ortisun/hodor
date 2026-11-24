@@ -15,9 +15,9 @@ use hodor_oauth::api::{
     CreateClient, GrantType, RotateSecret,
 };
 use hodor_oauth::testing::{
-    AssertionStorePorts, AuthorizationStorePorts, ConsentStorePorts, DistinctRandom, Ports,
-    RefreshStorePorts, run_assertion_contract, run_authorization_contract, run_consent_contract,
-    run_contract, run_refresh_token_contract,
+    AssertionStorePorts, AuthorizationStorePorts, ConsentStorePorts, DistinctRandom, MembershipsOf,
+    Ports, RefreshStorePorts, run_assertion_contract, run_authorization_contract,
+    run_consent_contract, run_contract, run_refresh_token_contract,
 };
 use std::sync::Arc;
 use time::Duration;
@@ -217,6 +217,7 @@ async fn of_two_moves_of_one_family_at_the_same_moment_exactly_one_moves_it() {
         session_id: SessionId::generate(),
         scopes: vec!["openid".to_owned()],
         audiences: Vec::new(),
+        organization: None,
         status: GrantStatus::Active,
         created_at: now,
         revoked_at: None,
@@ -531,6 +532,7 @@ async fn of_two_redemptions_at_the_same_moment_one_wins_and_the_grant_is_revoked
         requests: Arc::new(PgAuthorizationRequestStore),
         grants: Arc::new(PgGrantStore),
         codes: Arc::new(PgAuthorizationCodeStore),
+        memberships: Arc::new(MembershipsOf::default()),
         digest: Arc::new(FakeDigest),
         random: Arc::new(DistinctRandom),
         clock: clock.clone(),
