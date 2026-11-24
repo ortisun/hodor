@@ -160,6 +160,20 @@ SAML is the highest-risk protocol in the plan because of XML Signature. See the 
 | Threat-PolicyAgent-09 | Unauthenticated Open Policy Agent API | Token or mTLS; network policy restricts access to Hodor |
 | Threat-PolicyAgent-10 | Decision cache returns a stale allow | Cache off by default; keyed by revision; short time to live; flushed on publish |
 
+## SCIM
+
+A SCIM client writes a tenant's people and groups: the [provisioning context](../architecture/contexts/provisioning.md).
+
+| Identifier | Threat | Control |
+|---|---|---|
+| Threat-Provisioning-01 | A SCIM client of one tenant reads or writes another tenant's users or groups | The token is checked against the tenant's own issuer and keys; every read and write is inside the tenant of the URL under row-level security; another tenant's identifiers are answered as ones that do not exist, and refused as members |
+| Threat-Provisioning-02 | A revoked or stolen SCIM token keeps working | The register of access tokens is read on every request, so a revoked token is refused at once; tokens are short-lived; the scope `scim` is given only to clients a tenant registers for it |
+| Threat-Provisioning-03 | An email address set through SCIM is taken as verified, so a SCIM client can give a person an address nobody proved they control, and with it messages sent there and a way to be found at sign-in | Accepted, and the tenant's choice: SCIM is the tenant's own system of record speaking, and opening it is a resource server and a client the tenant's administrator registers. Every address set is recorded with the client as actor. An address another user of the tenant has is refused, so SCIM cannot take over an existing account by its address |
+| Threat-Provisioning-04 | A filter as denial of service: very long, deeply nested, or with many comparisons | The parser refuses more than 1000 characters before reading, and more than 10 levels or 20 comparisons while reading; filterable attributes are a fixed set; pages hold at most 200 resources |
+| Threat-Provisioning-05 | SQL injection through a filter | A filter is compiled into SQL whose every value is a bound parameter and whose every attribute is one of a fixed set of expressions; nothing of the filter's text reaches the statement |
+| Threat-Provisioning-06 | A large request as denial of service | Bodies are limited to 64 kibibytes; a group takes at most 1000 members in one request; each text attribute at most 256 characters |
+| Threat-Provisioning-07 | What SCIM keeps of a person leaks through events or the audit log | Events carry identifiers only, never a department, a name or an address |
+
 ## Multi-tenancy
 
 | Identifier | Threat | Control |

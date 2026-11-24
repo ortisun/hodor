@@ -21,7 +21,9 @@ pub use clock::{Clock, SystemClock, Timestamp};
 pub use error::{DomainError, ErrorKind};
 pub use event::{Actor, Caller, DomainEvent, EventEnvelope, EventHandler, EventMetadata};
 pub use http::{HttpClient, HttpMethod, HttpRequest, HttpResponse};
-pub use id::{CorrelationId, EventId, GroupId, OrganizationId, ParseIdError, TenantId, UserId};
+pub use id::{
+    ClientActorId, CorrelationId, EventId, GroupId, OrganizationId, ParseIdError, TenantId, UserId,
+};
 pub use page::{Cursor, Page, PageRequest};
 pub use random::{Digest, RandomSource};
 pub use sealing::{SealedSecret, SecretBox};

@@ -123,6 +123,8 @@ A resource server is an interface that accepts Hodor's access tokens. Its identi
 
 A scope name follows the rule of [scopes a client may ask for](#scopes-a-client-may-ask-for), is unique within the resource server and is none of the names OpenID Connect defines, `openid`, `profile`, `email`, `address`, `phone` and `offline_access`, nor `groups`, which Hodor answers itself ([the `groups` claim](#the-groups-claim)).
 
+Two of Hodor's own interfaces are resource servers a tenant registers like any other, by their audience: [the Authorization API](authorization.md#who-may-ask), `urn:hodor:authorization`, and [the SCIM server](provisioning.md#who-may-call), `urn:hodor:scim`. Both check the tokens presented to them in one way, through the resource access use case: the signature by a published key of the tenant, the tenant's issuer, the expiry, the audience, the register of access tokens, and an enabled client of an enabled application. Which scope opens what is each interface's own rule.
+
 ## Operations
 
 | Use case | What it does |

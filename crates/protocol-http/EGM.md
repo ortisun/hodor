@@ -31,7 +31,7 @@ From `[dependencies]` in `Cargo.toml`:
 
 - Domain crates: `hodor-audit`, `hodor-authentication`,
   `hodor-authorization`, `hodor-credential`, `hodor-federation`,
-  `hodor-identity`, `hodor-oauth`, `hodor-session`.
+  `hodor-identity`, `hodor-oauth`, `hodor-provisioning`, `hodor-session`.
 - `hodor-kernel` (`TenantContext`, `DomainError`, `Caller`, `Digest`,
   `Clock`, `CorrelationId`).
 - Third party: `async-trait`, `axum`, `form_urlencoded`, `http-body-util`, `serde`,

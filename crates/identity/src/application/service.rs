@@ -149,6 +149,50 @@ impl IdentityService {
         self.load(uow.as_mut(), id).await
     }
 
+    /// Returns a user of the tenant, in the caller's unit of work.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NotFound` if the tenant has no such user.
+    pub async fn get_in(&self, uow: &mut dyn UnitOfWork, id: UserId) -> Result<User, DomainError> {
+        self.load(uow, id).await
+    }
+
+    /// Loads a user, lets `apply` make any of the changes a [`User`]
+    /// allows, and stores the result with every event they produced, in
+    /// the caller's unit of work. A change that produces no event changed
+    /// nothing and is not stored. Answers the user as `apply` left it.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NotFound` if the tenant has no such user, whatever `apply`
+    /// refuses, and what storing refuses, such as `Conflict` with code
+    /// `identity.identifier_taken`. After an error the unit of work must
+    /// be abandoned.
+    pub async fn change_in(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: UserId,
+        caller: Caller,
+        apply: impl FnOnce(&mut User) -> Result<Vec<UserEvent>, DomainError> + Send,
+    ) -> Result<User, DomainError> {
+        let mut user = self.load(uow, id).await?;
+        let events = apply(&mut user)?;
+        if events.is_empty() {
+            return Ok(user);
+        }
+        self.users.update(uow, &user).await?;
+        self.record(uow, caller, &events)?;
+        Ok(user)
+    }
+
+    /// The time this service reads, for changes made through
+    /// [`IdentityService::change_in`].
+    #[must_use]
+    pub fn now(&self) -> hodor_kernel::Timestamp {
+        self.clock.now()
+    }
+
     /// Returns the tenant's users in the order they were created, a page
     /// at a time.
     ///
@@ -441,13 +485,7 @@ impl IdentityService {
         apply: impl FnOnce(&mut User) -> Result<Vec<UserEvent>, DomainError> + Send,
     ) -> Result<User, DomainError> {
         let mut uow = self.units_of_work.begin(tenant).await?;
-        let mut user = self.load(uow.as_mut(), id).await?;
-        let events = apply(&mut user)?;
-        if events.is_empty() {
-            return Ok(user);
-        }
-        self.users.update(uow.as_mut(), &user).await?;
-        self.record(uow.as_mut(), caller, &events)?;
+        let user = self.change_in(uow.as_mut(), id, caller, apply).await?;
         uow.commit().await?;
         Ok(user)
     }

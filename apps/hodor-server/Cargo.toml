@@ -29,6 +29,7 @@ hodor-notification.workspace = true
 hodor-oauth.workspace = true
 hodor-observability.workspace = true
 hodor-protocol-http.workspace = true
+hodor-provisioning.workspace = true
 hodor-session.workspace = true
 hodor-tenant.workspace = true
 serde_json.workspace = true

@@ -70,12 +70,31 @@ impl GroupService {
         description: Option<String>,
         caller: Caller,
     ) -> Result<Group, DomainError> {
+        let mut uow = self.units_of_work.begin(tenant).await?;
+        let group = self
+            .create_in(uow.as_mut(), name, description, caller)
+            .await?;
+        uow.commit().await?;
+        Ok(group)
+    }
+
+    /// As [`GroupService::create`], in the caller's unit of work.
+    ///
+    /// # Errors
+    ///
+    /// As [`GroupService::create`]. After an error the unit of work must
+    /// be abandoned.
+    pub async fn create_in(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        name: &str,
+        description: Option<String>,
+        caller: Caller,
+    ) -> Result<Group, DomainError> {
         let name = GroupName::parse(name)?;
         let (group, event) = Group::create(name, description, self.clock.now())?;
-        let mut uow = self.units_of_work.begin(tenant).await?;
-        self.groups.insert(uow.as_mut(), &group).await?;
-        record(uow.as_mut(), &caller, self.clock.as_ref(), &[event])?;
-        uow.commit().await?;
+        self.groups.insert(uow, &group).await?;
+        record(uow, &caller, self.clock.as_ref(), &[event])?;
         Ok(group)
     }
 
@@ -87,6 +106,19 @@ impl GroupService {
     pub async fn get(&self, tenant: &TenantContext, id: GroupId) -> Result<Group, DomainError> {
         let mut uow = self.units_of_work.begin(tenant).await?;
         self.load(uow.as_mut(), id).await
+    }
+
+    /// As [`GroupService::get`], in the caller's unit of work.
+    ///
+    /// # Errors
+    ///
+    /// `NotFound` if the tenant has no such group.
+    pub async fn get_in(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: GroupId,
+    ) -> Result<Group, DomainError> {
+        self.load(uow, id).await
     }
 
     /// Returns the tenant's groups in the order they were created, a page
@@ -142,16 +174,40 @@ impl GroupService {
         description: Option<String>,
         caller: Caller,
     ) -> Result<Group, DomainError> {
-        let name = GroupName::parse(name)?;
         let mut uow = self.units_of_work.begin(tenant).await?;
-        let mut group = self.load(uow.as_mut(), id).await?;
-        let Some(event) = group.change(name, description, self.clock.now())? else {
-            return Ok(group);
-        };
-        self.groups.update(uow.as_mut(), &group).await?;
-        record(uow.as_mut(), &caller, self.clock.as_ref(), &[event])?;
+        let changed = self
+            .change_in(uow.as_mut(), id, name, description, caller)
+            .await?;
+        if !changed {
+            return self.load(uow.as_mut(), id).await;
+        }
         uow.commit().await?;
         self.get(tenant, id).await
+    }
+
+    /// As [`GroupService::change`], in the caller's unit of work. Says
+    /// whether anything changed.
+    ///
+    /// # Errors
+    ///
+    /// As [`GroupService::change`]. After an error the unit of work must
+    /// be abandoned.
+    pub async fn change_in(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: GroupId,
+        name: &str,
+        description: Option<String>,
+        caller: Caller,
+    ) -> Result<bool, DomainError> {
+        let name = GroupName::parse(name)?;
+        let mut group = self.load(uow, id).await?;
+        let Some(event) = group.change(name, description, self.clock.now())? else {
+            return Ok(false);
+        };
+        self.groups.update(uow, &group).await?;
+        record(uow, &caller, self.clock.as_ref(), &[event])?;
+        Ok(true)
     }
 
     /// Deletes a group, taking it out of every group it was in and every
@@ -167,19 +223,34 @@ impl GroupService {
         caller: Caller,
     ) -> Result<(), DomainError> {
         let mut uow = self.units_of_work.begin(tenant).await?;
+        self.delete_in(uow.as_mut(), id, caller).await?;
+        uow.commit().await
+    }
+
+    /// As [`GroupService::delete`], in the caller's unit of work.
+    ///
+    /// # Errors
+    ///
+    /// `NotFound` if the group does not exist. After an error the unit of
+    /// work must be abandoned.
+    pub async fn delete_in(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: GroupId,
+        caller: Caller,
+    ) -> Result<(), DomainError> {
         // A deleted group leaves the nesting: it waits for changes to it.
-        self.groups.lock_nesting(uow.as_mut()).await?;
+        self.groups.lock_nesting(uow).await?;
         let members = self
             .groups
-            .delete(uow.as_mut(), id)
+            .delete(uow, id)
             .await?
             .ok_or_else(group_not_found)?;
         let event = GroupEvent::Deleted {
             group_id: id,
             members,
         };
-        record(uow.as_mut(), &caller, self.clock.as_ref(), &[event])?;
-        uow.commit().await
+        record(uow, &caller, self.clock.as_ref(), &[event])
     }
 
     /// Adds a user or a group to a group. Adding a member that is one
@@ -200,10 +271,33 @@ impl GroupService {
         caller: Caller,
     ) -> Result<(), DomainError> {
         let mut uow = self.units_of_work.begin(tenant).await?;
-        self.load(uow.as_mut(), group).await?;
+        if self
+            .add_member_in(uow.as_mut(), group, member, caller)
+            .await?
+        {
+            uow.commit().await?;
+        }
+        Ok(())
+    }
+
+    /// As [`GroupService::add_member`], in the caller's unit of work. Says
+    /// whether the member was not one already.
+    ///
+    /// # Errors
+    ///
+    /// As [`GroupService::add_member`]. After an error the unit of work
+    /// must be abandoned.
+    pub async fn add_member_in(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        group: GroupId,
+        member: GroupMember,
+        caller: Caller,
+    ) -> Result<bool, DomainError> {
+        self.load(uow, group).await?;
         match member {
             GroupMember::User(user) => {
-                let found = self.users.get(uow.as_mut(), user).await?;
+                let found = self.users.get(uow, user).await?;
                 if found.is_none_or(|found| found.status() == UserStatus::Deleted) {
                     return Err(DomainError::not_found(
                         "identity.user_not_found",
@@ -212,28 +306,24 @@ impl GroupService {
                 }
             }
             GroupMember::Group(inner) => {
-                self.groups.lock_nesting(uow.as_mut()).await?;
+                self.groups.lock_nesting(uow).await?;
                 // Read again under the lock: a group deleted meanwhile is gone.
-                self.load(uow.as_mut(), group).await?;
-                self.load(uow.as_mut(), inner).await?;
-                let nesting = self.groups.nesting(uow.as_mut()).await?;
-                let max_depth = self.policy.max_depth(uow.as_mut()).await?;
+                self.load(uow, group).await?;
+                self.load(uow, inner).await?;
+                let nesting = self.groups.nesting(uow).await?;
+                let max_depth = self.policy.max_depth(uow).await?;
                 if !nesting.contains(&(group, inner)) {
                     check_nesting(group, inner, &nesting, max_depth)?;
                 }
             }
         }
         let now = self.clock.now();
-        if self
-            .groups
-            .add_member(uow.as_mut(), group, member, now)
-            .await?
-        {
+        let added = self.groups.add_member(uow, group, member, now).await?;
+        if added {
             let event = GroupEvent::added(group, member);
-            record(uow.as_mut(), &caller, self.clock.as_ref(), &[event])?;
-            uow.commit().await?;
+            record(uow, &caller, self.clock.as_ref(), &[event])?;
         }
-        Ok(())
+        Ok(added)
     }
 
     /// Takes a user or a group out of a group. Taking out what is not a
@@ -250,17 +340,63 @@ impl GroupService {
         caller: Caller,
     ) -> Result<(), DomainError> {
         let mut uow = self.units_of_work.begin(tenant).await?;
-        self.load(uow.as_mut(), group).await?;
         if self
-            .groups
-            .remove_member(uow.as_mut(), group, member)
+            .remove_member_in(uow.as_mut(), group, member, caller)
             .await?
         {
-            let event = GroupEvent::removed(group, member);
-            record(uow.as_mut(), &caller, self.clock.as_ref(), &[event])?;
             uow.commit().await?;
         }
         Ok(())
+    }
+
+    /// As [`GroupService::remove_member`], in the caller's unit of work.
+    /// Says whether it was a member.
+    ///
+    /// # Errors
+    ///
+    /// `NotFound` if the group does not exist. After an error the unit of
+    /// work must be abandoned.
+    pub async fn remove_member_in(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        group: GroupId,
+        member: GroupMember,
+        caller: Caller,
+    ) -> Result<bool, DomainError> {
+        self.load(uow, group).await?;
+        let removed = self.groups.remove_member(uow, group, member).await?;
+        if removed {
+            let event = GroupEvent::removed(group, member);
+            record(uow, &caller, self.clock.as_ref(), &[event])?;
+        }
+        Ok(removed)
+    }
+
+    /// Every direct member of a group, users first, then groups, in the
+    /// caller's unit of work.
+    ///
+    /// # Errors
+    ///
+    /// `NotFound` if the group does not exist.
+    pub async fn all_members_in(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        group: GroupId,
+    ) -> Result<Vec<GroupMember>, DomainError> {
+        const PAGE: u32 = 1000;
+        self.load(uow, group).await?;
+        let mut members = Vec::new();
+        loop {
+            let page = self
+                .groups
+                .members(uow, group, members.last().copied(), PAGE)
+                .await?;
+            let done = page.len() < PAGE as usize;
+            members.extend(page);
+            if done {
+                return Ok(members);
+            }
+        }
     }
 
     /// The direct members of a group, a page at a time: users first, then
@@ -330,6 +466,19 @@ impl GroupService {
             .await?
             .into_iter()
             .collect())
+    }
+
+    /// As [`GroupService::direct_groups`], in the caller's unit of work.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if storage fails.
+    pub async fn direct_groups_in(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        user: UserId,
+    ) -> Result<Vec<GroupId>, DomainError> {
+        self.groups.groups_of(uow, user).await
     }
 
     /// As [`GroupService::effective_groups`], in the caller's unit of work.

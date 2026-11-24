@@ -15,7 +15,7 @@ flowchart TB
     federation["federation"]
     oauth["oauth<br/>OAuth 2.x, OpenID Connect, clients, consent"]
     saml["saml"]
-    provisioning["provisioning<br/>SCIM, LDAP sync"]
+    provisioning["provisioning<br/>the SCIM server"]
     authorization["authorization"]
     audit["audit"]
     notification["notification"]
@@ -42,7 +42,7 @@ Relevant relationships:
 | Upstream → Downstream | Type | Note |
 |---|---|---|
 | `kernel` → all | Shared Kernel | Kept minimal; changes require review |
-| `identity` → `authentication`, `oauth`, `federation` | Customer/Supplier | Downstream uses the `identity::api` facade |
+| `identity` → `authentication`, `oauth`, `federation`, `provisioning` | Customer/Supplier | Downstream uses the `identity::api` facade |
 | `authentication` → `federation` | Open Host (`Authenticator` service provider interface) | Inverts the dependency: federation is a flow step |
 | `oauth` ↔ `authentication` | No code dependency | Joined over HTTP: `oauth` requires a session with certain facts; the interaction is orchestrated in `protocol-http` |
 | External identity providers → `federation` | Anti-Corruption Layer | Each connector translates the provider into `ExternalIdentity` |

@@ -34,7 +34,7 @@ sequenceDiagram
 | Action | The event's type, for example `authentication.succeeded` |
 | Occurred at | When the change happened |
 | Recorded at | When the record was appended |
-| Actor | Who caused it: a user, Hodor itself, or someone not signed in |
+| Actor | Who caused it: a user; a client of OAuth acting for itself, as a [SCIM client](provisioning.md#who-may-call) does; Hodor itself; or someone not signed in. Written `{ "kind": "user", "id": "…" }`, `{ "kind": "client", "id": "…" }`, `{ "kind": "system" }` or `{ "kind": "anonymous" }` |
 | Correlation | The request or job that caused it, shared by every event of one request |
 | Details | What the event carried |
 | Previous hash | The hash of the record before it; 32 zero bytes for the first |
@@ -63,7 +63,7 @@ The hash is the SHA-256 of these fields, each preceded by its length so that no 
 4. The event's identifier
 5. The action
 6. When it occurred, in microseconds since 1970, which is as fine as the database keeps time
-7. The actor
+7. The actor, as `user:<identifier>`, `client:<identifier>`, `system` or `anonymous`
 8. The correlation identifier
 9. The details, as JSON with the keys of every object in alphabetical order
 10. The previous hash

@@ -30,6 +30,7 @@ mod organization;
 mod outbox;
 mod policy_bundles;
 mod policy_lifecycle;
+mod provisioning;
 mod resealing;
 mod session;
 mod tenant;
@@ -74,6 +75,7 @@ pub use policy_bundles::{
 pub use policy_lifecycle::{
     PgPolicyVersionStore, PgPublicationStore, PgSimulationStore, PolicyCheckJob, PolicyCheckPass,
 };
+pub use provisioning::{PgProvisionedGroupRepository, PgProvisionedUserRepository};
 pub use resealing::{ResealReport, SEALED_COLUMNS, SealedColumn, reseal_tenant};
 pub use session::PgSessionStore;
 pub use sqlx::migrate::MigrateError;

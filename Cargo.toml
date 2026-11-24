@@ -30,6 +30,7 @@ hodor-notification = { path = "crates/notification" }
 hodor-oauth = { path = "crates/oauth" }
 hodor-observability = { path = "crates/observability" }
 hodor-protocol-http = { path = "crates/protocol-http" }
+hodor-provisioning = { path = "crates/provisioning" }
 hodor-saml = { path = "crates/saml" }
 hodor-session = { path = "crates/session" }
 hodor-tenant = { path = "crates/tenant" }

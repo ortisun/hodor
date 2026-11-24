@@ -95,6 +95,7 @@ fn write_canonical(value: &Value, out: &mut Vec<u8>) {
 fn actor_text(actor: Actor) -> String {
     match actor {
         Actor::User(user) => format!("user:{user}"),
+        Actor::Client(client) => format!("client:{client}"),
         Actor::System => "system".to_owned(),
         Actor::Anonymous => "anonymous".to_owned(),
     }
@@ -427,6 +428,10 @@ mod tests {
         );
         assert_ne!(hash_of(&|r| r.actor = Actor::System), original);
         assert_ne!(hash_of(&|r| r.actor = Actor::Anonymous), original);
+        assert_ne!(
+            hash_of(&|r| r.actor = Actor::Client(hodor_kernel::ClientActorId::generate())),
+            original
+        );
         assert_ne!(
             hash_of(&|r| r.correlation_id = CorrelationId::generate()),
             original

@@ -6,7 +6,7 @@
 
 use crate::clock::{Clock, Timestamp};
 use crate::error::DomainError;
-use crate::id::{CorrelationId, EventId, TenantId, UserId};
+use crate::id::{ClientActorId, CorrelationId, EventId, TenantId, UserId};
 use crate::uow::UnitOfWork;
 use serde::{Deserialize, Serialize};
 
@@ -16,6 +16,9 @@ use serde::{Deserialize, Serialize};
 pub enum Actor {
     /// A principal acting through an authenticated request.
     User(UserId),
+    /// A client of OAuth acting for itself, with an access token that
+    /// names no user: a SCIM client, for example.
+    Client(ClientActorId),
     /// Hodor itself: a scheduled job or an event handler.
     System,
     /// A request that was not authenticated, for example a failed login.

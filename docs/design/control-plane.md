@@ -85,7 +85,7 @@ flowchart LR
 | Audit | Audit records and exports | `/admin/audit-records` | 2 |
 | Audit | Streams and webhooks | `/admin/webhooks` | 5 |
 | Settings | Tenant, domains, branding | `/admin/tenant` and sub-resources | 2, branding in 4 |
-| Settings | SCIM and plugins | `/admin/scim-integrations`, `/admin/plugins` | 6, 8 |
+| Settings | SCIM and plugins | The resource server `urn:hodor:scim` ([the provisioning context](../architecture/contexts/provisioning.md#who-may-call)), `/admin/plugins` | 6, 8 |
 | Platform | Tenants | `/platform/v1/tenants`, `/platform/v1/operations/{id}` | 2 |
 | Platform | Support grants | `/platform/v1/support-grants` | 2 |
 

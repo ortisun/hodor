@@ -168,6 +168,7 @@ nav:
           - architecture/contexts/authorization.md
           - architecture/contexts/federation.md
           - architecture/contexts/oauth.md
+          - architecture/contexts/provisioning.md
   - Interfaces and protocols:
       - api/api-spec.md
       - api/interaction-api.md
