@@ -12,11 +12,14 @@ use hodor_adapters_crypto::{
 };
 use hodor_adapters_postgres::testing::TestDatabase;
 use hodor_adapters_postgres::{
-    PgApplicationStore, PgClientStore, PgKeyStore, PgPasswordStore, PgResourceServerStore,
-    PgTenantDirectory, PgTenantRepository, PgUserRepository,
+    PgApplicationStore, PgClientStore, PgInvitationRepository, PgKeyStore,
+    PgOrganizationRepository, PgPasswordStore, PgResourceServerStore, PgTenantDirectory,
+    PgTenantRepository, PgUserRepository,
 };
 use hodor_credential::api::{CredentialService, NewPassword, PasswordRules};
-use hodor_identity::api::{CreateUser, IdentifierKind, IdentityService, Profile, UserKind};
+use hodor_identity::api::{
+    CreateUser, IdentifierKind, IdentityService, OrganizationService, Profile, UserKind,
+};
 use hodor_kernel::{Caller, Secret, SystemClock, TenantContext};
 use hodor_keys::api::{KeyAlgorithm, KeyService, RotationPolicy};
 use hodor_oauth::api::{
@@ -31,7 +34,7 @@ use jsonwebtoken::{
 };
 use reqwest::{Method, StatusCode};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -240,7 +243,7 @@ async fn server(database: &TestDatabase) -> Server {
     start_server_with(database, &[("HODOR_SECRET_KEYS", ROOT_KEY)]).await
 }
 
-fn authorize_query(client_id: ClientId) -> String {
+fn authorize_query(client_id: ClientId, extra: &[(&str, &str)]) -> String {
     let challenge = s256_challenge(VERIFIER, &Sha256Digest);
     form_urlencoded::Serializer::new(String::new())
         .extend_pairs([
@@ -252,15 +255,30 @@ fn authorize_query(client_id: ClientId) -> String {
             ("code_challenge", &challenge),
             ("code_challenge_method", "S256"),
         ])
+        .extend_pairs(extra.iter().copied())
         .finish()
 }
 
 /// A code for `client_id`, from a browser that is signed in already.
 async fn code(browser: &mut Browser, slug: &str, client_id: ClientId) -> String {
+    code_with(browser, slug, client_id, &[]).await
+}
+
+/// A code for `client_id` with more parameters of the request, from a
+/// browser that is signed in already.
+async fn code_with(
+    browser: &mut Browser,
+    slug: &str,
+    client_id: ClientId,
+    extra: &[(&str, &str)],
+) -> String {
     let (status, location, body) = browser
         .navigate(
             Method::GET,
-            &format!("/t/{slug}/oauth2/authorize?{}", authorize_query(client_id)),
+            &format!(
+                "/t/{slug}/oauth2/authorize?{}",
+                authorize_query(client_id, extra)
+            ),
             None,
         )
         .await;
@@ -1266,4 +1284,331 @@ async fn a_person_deprovisioned_through_scim_loses_sessions_and_tokens_at_once()
         .await
         .expect("Ana");
     assert_eq!(status, "deactivated");
+}
+
+const TOKEN_EXCHANGE: &str = "urn:ietf:params:oauth:grant-type:token-exchange";
+const ACCESS_TOKEN_TYPE: &str = "urn:ietf:params:oauth:token-type:access_token";
+
+/// An agent of the tenant, and its client allowed client credentials and
+/// token exchange from Payroll's audience to itself. Answers the agent and
+/// the client's identifier and secret.
+async fn agent_with_a_client(
+    database: &TestDatabase,
+    tenant: &Tenant,
+) -> (hodor_kernel::UserId, (String, String)) {
+    let agent = IdentityService::new(
+        Arc::new(database.app().clone()),
+        Arc::new(PgUserRepository),
+        Arc::new(SystemClock),
+    )
+    .create(
+        &tenant.context,
+        CreateUser {
+            kind: UserKind::Agent,
+            identifiers: Vec::new(),
+            profile: Profile::default(),
+            confirmed: true,
+        },
+        Caller::system(),
+    )
+    .await
+    .expect("an agent")
+    .id();
+    let mut settings = ClientSettings::new(
+        "Assistant",
+        ClientType::Confidential,
+        vec![GrantType::ClientCredentials, GrantType::TokenExchange],
+        Vec::new(),
+    );
+    settings.allowed_scopes = vec!["payroll:read".to_owned()];
+    settings.principal = Some(agent);
+    settings.exchange_rules = vec![hodor_oauth::api::ExchangeRule {
+        subject_audience: AUDIENCE.to_owned(),
+        audience: AUDIENCE.to_owned(),
+    }];
+    let (client, secret) = tenant
+        .applications
+        .create_client(
+            &tenant.context,
+            CreateClient {
+                application_id: tenant.application,
+                client_type: ClientType::Confidential,
+                settings,
+                secret_lifetime: None,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("client");
+    (
+        agent,
+        (
+            client.id().to_string(),
+            secret.expect("a secret").expose().to_owned(),
+        ),
+    )
+}
+
+fn exchange_form<'a>(
+    subject: &'a str,
+    actor: &'a str,
+    extra: &[(&'a str, &'a str)],
+) -> Vec<(&'a str, &'a str)> {
+    let mut pairs = vec![
+        ("grant_type", TOKEN_EXCHANGE),
+        ("subject_token", subject),
+        ("subject_token_type", ACCESS_TOKEN_TYPE),
+        ("actor_token", actor),
+        ("actor_token_type", ACCESS_TOKEN_TYPE),
+    ];
+    pairs.extend_from_slice(extra);
+    pairs
+}
+
+#[tokio::test]
+async fn an_agent_holds_a_persons_token_on_their_behalf_until_it_may_no_longer_act() {
+    let database = TestDatabase::start().await;
+    let tenant = tenant(&database, "acme").await;
+    let server = server(&database).await;
+    let (web, secret) = client(
+        &tenant,
+        ClientType::Confidential,
+        AuthenticationMethod::ClientSecretBasic,
+    )
+    .await;
+    let secret = secret.expect("a secret");
+    let web_id = web.to_string();
+    let mut browser = Browser::not_following(&server);
+    browser.sign_in("acme", "ana@example.com", PASSWORD).await;
+    let code = code(&mut browser, "acme", web).await;
+    let person = token(
+        &server,
+        "acme",
+        Some((&web_id, &secret)),
+        &redeem(&code, &[]),
+    )
+    .await;
+    assert_eq!(person.status, StatusCode::OK, "{}", person.body);
+    let subject = person.body["access_token"]
+        .as_str()
+        .expect("a token")
+        .to_owned();
+    let ana = claims_of(&subject)["sub"].clone();
+
+    let (agent, agent_client) = agent_with_a_client(&database, &tenant).await;
+    let pair = (agent_client.0.as_str(), agent_client.1.as_str());
+    let own = token(
+        &server,
+        "acme",
+        Some(pair),
+        &[("grant_type", "client_credentials")],
+    )
+    .await;
+    assert_eq!(own.status, StatusCode::OK, "{}", own.body);
+    let actor = own.body["access_token"]
+        .as_str()
+        .expect("a token")
+        .to_owned();
+
+    // The exchange: the person's token, held by the agent.
+    let exchanged = token(
+        &server,
+        "acme",
+        Some(pair),
+        &exchange_form(&subject, &actor, &[("audience", AUDIENCE)]),
+    )
+    .await;
+    assert_eq!(exchanged.status, StatusCode::OK, "{}", exchanged.body);
+    assert_eq!(exchanged.body["issued_token_type"], ACCESS_TOKEN_TYPE);
+    assert_eq!(exchanged.body["scope"], "payroll:read");
+    assert!(exchanged.body.get("refresh_token").is_none());
+    let held = exchanged.body["access_token"]
+        .as_str()
+        .expect("a token")
+        .to_owned();
+    let said = claims_of(&held);
+    assert_eq!(said["sub"], ana);
+    assert_eq!(said["aud"], AUDIENCE);
+    assert_eq!(said["client_id"], agent_client.0.as_str());
+    assert_eq!(
+        said["act"],
+        json!({ "sub": agent.to_string(), "principal_kind": "agent" })
+    );
+    assert!(said.get("principal_kind").is_none());
+    let introspected =
+        ask_about(&server, "acme", "introspect", (pair.0, Some(pair.1)), &held).await;
+    assert_eq!(introspected.body["act"]["sub"], agent.to_string());
+
+    // A wider scope and another audience are refused.
+    for (extra, error) in [
+        (
+            &[("audience", AUDIENCE), ("scope", "payroll:read openid")][..],
+            "invalid_scope",
+        ),
+        (
+            &[("audience", "urn:example:elsewhere")][..],
+            "invalid_target",
+        ),
+    ] {
+        let refused = token(
+            &server,
+            "acme",
+            Some(pair),
+            &exchange_form(&subject, &actor, extra),
+        )
+        .await;
+        assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.body);
+        assert_eq!(refused.body["error"], error);
+    }
+
+    // The exchange is in the record of what happened, with its chain.
+    let (payload,): (Value,) = sqlx::query_as(
+        "SELECT payload FROM platform.outbox WHERE event_type = 'oauth.token_exchanged'",
+    )
+    .fetch_one(database.owner())
+    .await
+    .expect("the event");
+    assert_eq!(payload["actors"], json!([agent.to_string()]));
+    assert_eq!(payload["subject_id"], ana);
+    assert!(!payload.to_string().contains(&held), "never the token");
+
+    // Once the agent may no longer act, what it holds stops at once.
+    IdentityService::new(
+        Arc::new(database.app().clone()),
+        Arc::new(PgUserRepository),
+        Arc::new(SystemClock),
+    )
+    .deactivate(&tenant.context, agent, Caller::system())
+    .await
+    .expect("deactivated");
+    assert!(!is_active(&server, "acme", (pair.0, Some(pair.1)), &held).await);
+    let refused = token(
+        &server,
+        "acme",
+        Some(pair),
+        &exchange_form(&subject, &actor, &[("audience", AUDIENCE)]),
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::UNAUTHORIZED, "{}", refused.body);
+}
+
+#[tokio::test]
+async fn an_exchanged_token_keeps_the_organization_only_while_the_person_is_a_member() {
+    let database = TestDatabase::start().await;
+    let tenant = tenant(&database, "acme").await;
+    let server = server(&database).await;
+    let clock = Arc::new(SystemClock);
+    let organizations = OrganizationService::new(
+        Arc::new(database.app().clone()),
+        Arc::new(PgOrganizationRepository),
+        Arc::new(PgInvitationRepository),
+        Arc::new(PgUserRepository),
+        clock.clone(),
+    );
+    let initech = organizations
+        .create(&tenant.context, "Initech", None, Caller::system())
+        .await
+        .expect("organization")
+        .id();
+    let ana = IdentityService::new(
+        Arc::new(database.app().clone()),
+        Arc::new(PgUserRepository),
+        clock,
+    )
+    .find_by_login(&tenant.context, "ana@example.com")
+    .await
+    .expect("lookup")
+    .expect("ana")
+    .id();
+    organizations
+        .add_member(
+            &tenant.context,
+            initech,
+            ana,
+            BTreeSet::new(),
+            Caller::system(),
+        )
+        .await
+        .expect("member");
+    let (web, secret) = client(
+        &tenant,
+        ClientType::Confidential,
+        AuthenticationMethod::ClientSecretBasic,
+    )
+    .await;
+    let secret = secret.expect("a secret");
+    let web_id = web.to_string();
+    let mut browser = Browser::not_following(&server);
+    browser.sign_in("acme", "ana@example.com", PASSWORD).await;
+    let initech_id = initech.to_string();
+    let code = code_with(
+        &mut browser,
+        "acme",
+        web,
+        &[("organization", initech_id.as_str())],
+    )
+    .await;
+    let person = token(
+        &server,
+        "acme",
+        Some((&web_id, &secret)),
+        &redeem(&code, &[]),
+    )
+    .await;
+    assert_eq!(person.status, StatusCode::OK, "{}", person.body);
+    let subject = person.body["access_token"]
+        .as_str()
+        .expect("a token")
+        .to_owned();
+    assert_eq!(claims_of(&subject)["org_id"], initech_id.as_str());
+
+    let (_, agent_client) = agent_with_a_client(&database, &tenant).await;
+    let pair = (agent_client.0.as_str(), agent_client.1.as_str());
+    let own = token(
+        &server,
+        "acme",
+        Some(pair),
+        &[("grant_type", "client_credentials")],
+    )
+    .await;
+    assert_eq!(own.status, StatusCode::OK, "{}", own.body);
+    let actor = own.body["access_token"]
+        .as_str()
+        .expect("a token")
+        .to_owned();
+
+    // The token the agent holds is still for the organization the person
+    // signed in for, and carries no groups.
+    let exchanged = token(
+        &server,
+        "acme",
+        Some(pair),
+        &exchange_form(&subject, &actor, &[("audience", AUDIENCE)]),
+    )
+    .await;
+    assert_eq!(exchanged.status, StatusCode::OK, "{}", exchanged.body);
+    let said = claims_of(exchanged.body["access_token"].as_str().expect("a token"));
+    assert_eq!(said["org_id"], initech_id.as_str());
+    assert!(said.get("groups").is_none());
+
+    // Once the person leaves the organization, the exchange is refused.
+    organizations
+        .remove_member(&tenant.context, initech, ana, Caller::system())
+        .await
+        .expect("removed");
+    let refused = token(
+        &server,
+        "acme",
+        Some(pair),
+        &exchange_form(&subject, &actor, &[("audience", AUDIENCE)]),
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.body);
+    assert_eq!(refused.body["error"], "invalid_request");
+}
+
+/// The claims of a token, read without checking it.
+fn claims_of(token: &str) -> Value {
+    let payload = token.split('.').nth(1).expect("a payload");
+    serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).expect("base64url")).expect("JSON")
 }

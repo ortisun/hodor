@@ -430,7 +430,12 @@ async fn the_discovery_document_names_what_answers() {
         .iter()
         .filter_map(Value::as_str)
         .collect();
-    for grant in ["authorization_code", "refresh_token", "client_credentials"] {
+    for grant in [
+        "authorization_code",
+        "refresh_token",
+        "client_credentials",
+        "urn:ietf:params:oauth:grant-type:token-exchange",
+    ] {
         let response = http
             .post(local(&document["token_endpoint"]))
             .header("content-type", "application/x-www-form-urlencoded")

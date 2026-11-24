@@ -4697,3 +4697,93 @@ async fn a_workloads_api_key_is_shown_once_and_does_no_more_than_its_scopes_and_
         .await;
     assert_eq!(reply.status, StatusCode::UNAUTHORIZED);
 }
+
+#[tokio::test]
+async fn only_an_agents_client_is_given_the_token_exchange_grant_with_its_rules() {
+    let world = world().await;
+    let (ana, _) = world.person(&world.acme, "ana@example.com", &[]).await;
+    let owners = serde_json::json!([ana.to_string()]);
+    let agent = world
+        .as_administrator(
+            Method::POST,
+            "/agents",
+            Some(serde_json::json!({ "name": "Assistant", "owners": owners })),
+        )
+        .await;
+    let agent = agent.body["id"].as_str().expect("id").to_owned();
+    let account = world
+        .as_administrator(
+            Method::POST,
+            "/service-accounts",
+            Some(serde_json::json!({ "name": "Export", "owners": owners })),
+        )
+        .await;
+    let account = account.body["id"].as_str().expect("id").to_owned();
+    let application = world
+        .as_administrator(
+            Method::POST,
+            "/applications",
+            Some(serde_json::json!({ "name": "Assistant", "first_party": true })),
+        )
+        .await;
+    let clients = format!(
+        "/applications/{}/clients",
+        application.body["id"].as_str().expect("id")
+    );
+    let body = |principal: &str, rules: serde_json::Value| {
+        serde_json::json!({
+            "name": "Assistant", "type": "confidential",
+            "grant_types": ["client_credentials", "urn:ietf:params:oauth:grant-type:token-exchange"],
+            "principal": principal,
+            "exchange_rules": rules
+        })
+    };
+    let rules = serde_json::json!([
+        { "subject_audience": "urn:example:assistant", "audience": "https://api.example.com" }
+    ]);
+    let made = world
+        .as_administrator(Method::POST, &clients, Some(body(&agent, rules.clone())))
+        .await;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.body);
+    assert_eq!(made.body["exchange_rules"], rules);
+    for (principal, rules, code) in [
+        (
+            account.as_str(),
+            rules.clone(),
+            "oauth.client_principal_invalid",
+        ),
+        (
+            agent.as_str(),
+            serde_json::json!([]),
+            "oauth.client_exchange_rules_invalid",
+        ),
+    ] {
+        let refused = world
+            .as_administrator(Method::POST, &clients, Some(body(principal, rules)))
+            .await;
+        assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(refused.code(), code);
+    }
+    // A service account's client cannot be given the grant afterwards.
+    let plain = world
+        .as_administrator(
+            Method::POST,
+            &clients,
+            Some(serde_json::json!({
+                "name": "Export", "type": "confidential",
+                "grant_types": ["client_credentials"], "principal": account
+            })),
+        )
+        .await;
+    let refused = world
+        .as_administrator(
+            Method::PATCH,
+            &format!("/clients/{}", plain.body["id"].as_str().expect("id")),
+            Some(serde_json::json!({
+                "grant_types": ["client_credentials", "urn:ietf:params:oauth:grant-type:token-exchange"],
+                "exchange_rules": rules
+            })),
+        )
+        .await;
+    assert_eq!(refused.code(), "oauth.client_principal_invalid");
+}

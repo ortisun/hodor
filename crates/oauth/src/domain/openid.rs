@@ -216,6 +216,14 @@ pub struct ReadAccessToken {
     /// Its `principal_kind`, for the token of a client that acts as a
     /// workload.
     pub principal_kind: Option<String>,
+    /// Its `act`, for a token made by exchange.
+    pub act: Option<Value>,
+    /// Its `auth_time`, in seconds.
+    pub auth_time: Option<i64>,
+    /// Its `acr`.
+    pub acr: Option<String>,
+    /// Its `amr`.
+    pub amr: Option<Vec<String>>,
 }
 
 /// Reads an access token of the tenant: checks its shape, header, key,
@@ -304,6 +312,16 @@ pub fn read_access_token(
             .ok_or("the token does not say when it was issued")?,
         expires_at,
         principal_kind: text("principal_kind"),
+        act: claims.get("act").filter(|act| act.is_object()).cloned(),
+        auth_time: claims.get("auth_time").and_then(Value::as_i64),
+        acr: text("acr"),
+        amr: claims.get("amr").and_then(Value::as_array).map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        }),
     })
 }
 

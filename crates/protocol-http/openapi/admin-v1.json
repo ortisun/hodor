@@ -11361,7 +11361,8 @@
           "status",
           "created_at",
           "updated_at",
-          "principal"
+          "principal",
+          "exchange_rules"
         ],
         "properties": {
           "id": {
@@ -11399,7 +11400,8 @@
               "enum": [
                 "authorization_code",
                 "refresh_token",
-                "client_credentials"
+                "client_credentials",
+                "urn:ietf:params:oauth:grant-type:token-exchange"
               ]
             }
           },
@@ -11507,6 +11509,14 @@
             ],
             "format": "uuid",
             "description": "The service account or agent the client acts as: its tokens then name it in `sub` and carry `principal_kind`. Only with the `client_credentials` grant alone."
+          },
+          "exchange_rules": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+              "$ref": "#/components/schemas/ExchangeRule"
+            },
+            "description": "What an agent's client with the token exchange grant may exchange for which audience; empty otherwise."
           }
         }
       },
@@ -11563,7 +11573,8 @@
               "enum": [
                 "authorization_code",
                 "refresh_token",
-                "client_credentials"
+                "client_credentials",
+                "urn:ietf:params:oauth:grant-type:token-exchange"
               ]
             }
           },
@@ -11608,6 +11619,14 @@
             "type": "string",
             "format": "uuid",
             "description": "The service account or agent the client acts as: its tokens then name it in `sub` and carry `principal_kind`. Only with the `client_credentials` grant alone."
+          },
+          "exchange_rules": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+              "$ref": "#/components/schemas/ExchangeRule"
+            },
+            "description": "What an agent's client with the token exchange grant may exchange for which audience; empty otherwise."
           }
         }
       },
@@ -11636,7 +11655,8 @@
               "enum": [
                 "authorization_code",
                 "refresh_token",
-                "client_credentials"
+                "client_credentials",
+                "urn:ietf:params:oauth:grant-type:token-exchange"
               ]
             }
           },
@@ -11679,6 +11699,14 @@
             ],
             "format": "uuid",
             "description": "Binds the client to a service account or an agent; `null` removes the binding."
+          },
+          "exchange_rules": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+              "$ref": "#/components/schemas/ExchangeRule"
+            },
+            "description": "What an agent's client with the token exchange grant may exchange for which audience; empty otherwise. Replaces the list."
           }
         }
       },
@@ -13580,6 +13608,28 @@
             "maximum": 30,
             "default": 7,
             "description": "How long the old key keeps working."
+          }
+        }
+      },
+      "ExchangeRule": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "subject_audience",
+          "audience"
+        ],
+        "properties": {
+          "subject_audience": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255,
+            "description": "An audience the subject token must hold."
+          },
+          "audience": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255,
+            "description": "The audience the new token may be for."
           }
         }
       }

@@ -15,6 +15,7 @@ use sqlx::types::Uuid;
 const CLIENT_CONSTRAINT: &str = "access_token_client_fk";
 const GRANT_CONSTRAINT: &str = "access_token_grant_fk";
 const FAMILY_CONSTRAINT: &str = "access_token_family_fk";
+const PARENT_CONSTRAINT: &str = "access_token_parent_fk";
 
 fn get(error: sqlx::Error) -> DomainError {
     database_error(&error)
@@ -35,8 +36,8 @@ impl AccessTokenRecordStore for PgAccessTokenRecordStore {
         sqlx::query(
             "INSERT INTO oauth.access_token
                  (tenant_id, token_id, client_id, grant_id, family_id, expires_at,
-                  revoked_at, revocation_reason, principal_id)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+                  revoked_at, revocation_reason, principal_id, parent_token_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
         )
         .bind(tenant.as_uuid())
         .bind(&record.token_id)
@@ -47,6 +48,7 @@ impl AccessTokenRecordStore for PgAccessTokenRecordStore {
         .bind(record.revoked_at)
         .bind(record.revocation_reason.as_deref())
         .bind(record.principal_id.map(|principal| principal.as_uuid()))
+        .bind(record.parent_token_id.as_deref())
         .execute(connection(uow)?)
         .await
         .map_err(|error| match &error {
@@ -57,6 +59,10 @@ impl AccessTokenRecordStore for PgAccessTokenRecordStore {
                 Some(GRANT_CONSTRAINT) => {
                     DomainError::not_found("oauth.grant_not_found", "there is no such grant")
                 }
+                Some(PARENT_CONSTRAINT) => DomainError::not_found(
+                    "oauth.access_token_not_found",
+                    "there is no such token to exchange from",
+                ),
                 Some(FAMILY_CONSTRAINT) => DomainError::not_found(
                     "oauth.refresh_token_family_not_found",
                     "there is no such refresh token family",
@@ -75,8 +81,8 @@ impl AccessTokenRecordStore for PgAccessTokenRecordStore {
     ) -> Result<Option<AccessTokenRecord>, DomainError> {
         let tenant = uow.tenant().tenant_id();
         let row = sqlx::query(
-            "SELECT client_id, grant_id, family_id, principal_id, expires_at, revoked_at,
-                    revocation_reason
+            "SELECT client_id, grant_id, family_id, principal_id, parent_token_id, expires_at,
+                    revoked_at, revocation_reason
              FROM oauth.access_token
              WHERE tenant_id = $1 AND token_id = $2",
         )
@@ -97,6 +103,7 @@ impl AccessTokenRecordStore for PgAccessTokenRecordStore {
             grant_id: grant.map(GrantId::from_uuid),
             family_id: family.map(RefreshFamilyId::from_uuid),
             principal_id: principal.map(UserId::from_uuid),
+            parent_token_id: row.try_get("parent_token_id").map_err(get)?,
             expires_at: row.try_get("expires_at").map_err(get)?,
             revoked_at: row.try_get("revoked_at").map_err(get)?,
             revocation_reason: row.try_get("revocation_reason").map_err(get)?,

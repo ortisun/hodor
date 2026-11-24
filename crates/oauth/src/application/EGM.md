@@ -123,6 +123,22 @@ refresh tokens is `DEFAULT_RETRY_WINDOW`, 10 seconds;
     the principal when there is one, with `principal_kind`, and the client
     otherwise. Records `oauth.client_access_token_issued` with the
     principal. No refresh token.
+  - `urn:ietf:params:oauth:grant-type:token-exchange` (`exchange.rs`,
+    `TokenService::exchange`): the client must have the grant and act as an
+    agent that may act (`workload_that_may_act` answers `agent`); the actor
+    token must be the agent's own, issued to the client, without `act`, in
+    force; the subject token a person's (no `principal_kind`, `sub` not the
+    client, `may_sign_in`), in force, with a chain of fewer than
+    `MAX_ACTORS`; an exchange rule must pair one of its audiences with the
+    one asked, which must be a resource server's; `exchanged_scopes` only
+    narrows. Token refusals are `invalid_request`, the policy's
+    `invalid_target`. The new token is signed with `sign_living` for the
+    smaller of the client's lifetime and what is left of the subject
+    token, carries `act` (`act_claim`) and the subject's `auth_time`, `acr`
+    and `amr`, is recorded with the subject's grant and family, the agent as
+    principal and the subject token as parent (`exchanged_from`), and
+    records `oauth.token_exchanged` with the agent as actor. The answer has
+    `issued_token_type`.
   - The access token: claims from `claims_for` with a `TokenSubject`,
     whose `organization` is the grant's (`org_id`) and whose `groups` are
     `PersonMemberships::effective_groups` when the scopes hold `groups`,
@@ -148,7 +164,10 @@ refresh_tokens, standing)`, also `TokenService::register()`:
 `in_force(tenant, token_id, client_id)` is true only when the record
 exists, is not revoked, names that client, its grant and family, if
 any, are active, and its principal, if any, is a workload that may act
-(`PersonStanding::workload_that_may_act`).
+(`PersonStanding::workload_that_may_act`); and then each parent of a token
+made by exchange, up to `MAX_ACTORS` deep, is in force by the same checks.
+`record(tenant, token_id)` reads a record whatever its state, for an
+exchange to copy its grant and family.
 
 `WorkloadTokens::new(access_tokens, clock)`, also
 `TokenService::workload_tokens()`: `revoke_in(uow, principal, reason,

@@ -90,6 +90,8 @@ pub struct IssuedTokens {
     pub refresh_token: Option<Secret<String>>,
     /// The ID token, when the scopes hold `openid`.
     pub id_token: Option<Secret<String>>,
+    /// What was issued, for a token exchange (RFC 8693, section 2.2.1).
+    pub issued_token_type: Option<&'static str>,
 }
 
 impl fmt::Debug for IssuedTokens {
@@ -113,11 +115,11 @@ pub struct Issuer<'a> {
 }
 
 /// An access token, signed.
-struct SignedAccessToken {
-    token: String,
-    token_id: String,
-    expires_at: hodor_kernel::Timestamp,
-    lifetime: Duration,
+pub(crate) struct SignedAccessToken {
+    pub(crate) token: String,
+    pub(crate) token_id: String,
+    pub(crate) expires_at: hodor_kernel::Timestamp,
+    pub(crate) lifetime: Duration,
 }
 
 /// The use cases of the token endpoint.
@@ -246,6 +248,26 @@ impl TokenService {
                 )
                 .await
             }
+            GrantRequest::TokenExchange {
+                subject_token,
+                actor_token,
+                audience,
+                scope,
+            } => {
+                self.exchange(
+                    tenant,
+                    issuer,
+                    &client,
+                    crate::application::exchange::Exchange {
+                        subject_token: subject_token.expose(),
+                        actor_token: actor_token.expose(),
+                        audience: &audience,
+                        scope: scope.as_deref(),
+                    },
+                    correlation_id,
+                )
+                .await
+            }
         }
     }
 
@@ -348,6 +370,20 @@ impl TokenService {
         subject: &TokenSubject,
     ) -> Result<Result<SignedAccessToken, TokenError>, DomainError> {
         let lifetime = client.snapshot().settings.token_policy.access_token;
+        self.sign_living(tenant, issuer, client, subject, lifetime)
+            .await
+    }
+
+    /// Signs an access token about `subject` for `client`, living
+    /// `lifetime`.
+    pub(crate) async fn sign_living(
+        &self,
+        tenant: &TenantContext,
+        issuer: Issuer<'_>,
+        client: &Client,
+        subject: &TokenSubject,
+        lifetime: time::Duration,
+    ) -> Result<Result<SignedAccessToken, TokenError>, DomainError> {
         if lifetime > TokenPolicy::LONGEST_SIGNED_LIFETIME {
             // The token policy refuses such a lifetime; this is a last guard.
             return Ok(Err(TokenError::server_error(
@@ -622,6 +658,7 @@ impl TokenService {
             scope: redeemed.scopes.join(" "),
             refresh_token: family.map(|(_, first)| first.into_secret()),
             id_token,
+            issued_token_type: None,
         }))
     }
 
@@ -882,6 +919,8 @@ impl TokenService {
                 organization,
                 groups,
                 principal_kind: None,
+                act: None,
+                amr: None,
             };
             let signed = match self.sign(tenant, issuer, client, &subject).await? {
                 Ok(signed) => signed,
@@ -916,6 +955,7 @@ impl TokenService {
                 scope: subject.scopes.join(" "),
                 refresh_token: Some(next.into_secret()),
                 id_token: None,
+                issued_token_type: None,
             }));
         }
         // Lost the race every time: answered as if the token were reused,
@@ -1031,6 +1071,8 @@ impl TokenService {
             organization: None,
             groups: None,
             principal_kind: principal.map(|(_, kind)| kind.to_owned()),
+            act: None,
+            amr: None,
         };
         let signed = match self.sign(tenant, issuer, client, &subject).await? {
             Ok(signed) => signed,
@@ -1070,6 +1112,7 @@ impl TokenService {
             scope: subject.scopes.join(" "),
             refresh_token: None,
             id_token: None,
+            issued_token_type: None,
         }))
     }
 }

@@ -12,9 +12,10 @@ use crate::application::userinfo::published_keys;
 use crate::domain::authorization::GrantStatus;
 use crate::domain::client::{Client, ClientType};
 use crate::domain::event::OauthEvent;
+use crate::domain::exchange::MAX_ACTORS;
 use crate::domain::introspection::{
-    ActiveRefreshToken, REVOKED_BY_CLIENT, TokenQuery, active_access_token, active_refresh_token,
-    inactive,
+    AccessTokenRecord, ActiveRefreshToken, REVOKED_BY_CLIENT, TokenQuery, active_access_token,
+    active_refresh_token, inactive,
 };
 use crate::domain::openid::read_access_token;
 use crate::domain::refresh::{FamilyStatus, RefreshTokenHash};
@@ -78,34 +79,80 @@ impl AccessTokenRegister {
         token_id: &str,
         client_id: &str,
     ) -> Result<bool, DomainError> {
-        let mut uow = self.units_of_work.begin(tenant).await?;
-        let Some(record) = self.access_tokens.find(uow.as_mut(), token_id).await? else {
+        let Some(record) = self.record_in_force(tenant, token_id).await? else {
             return Ok(false);
         };
-        if record.revoked_at.is_some() || record.client_id.to_string() != client_id {
+        if record.client_id.to_string() != client_id {
             return Ok(false);
+        }
+        // A token made by exchange is in force only while the token it
+        // came from is, and that one while its own is, a bounded chain.
+        let mut parent = record.parent_token_id;
+        for _ in 0..=MAX_ACTORS {
+            let Some(id) = parent else {
+                return Ok(true);
+            };
+            let Some(record) = self.record_in_force(tenant, &id).await? else {
+                return Ok(false);
+            };
+            parent = record.parent_token_id;
+        }
+        Ok(false)
+    }
+
+    /// The record of `token_id` if it stands by itself: recorded, not
+    /// revoked, its grant and family active, and its principal one that
+    /// may act.
+    async fn record_in_force(
+        &self,
+        tenant: &TenantContext,
+        token_id: &str,
+    ) -> Result<Option<AccessTokenRecord>, DomainError> {
+        let mut uow = self.units_of_work.begin(tenant).await?;
+        let Some(record) = self.access_tokens.find(uow.as_mut(), token_id).await? else {
+            return Ok(None);
+        };
+        if record.revoked_at.is_some() {
+            return Ok(None);
         }
         if let Some(grant) = record.grant_id {
             let grant = self.grants.get(uow.as_mut(), grant).await?;
             if !grant.is_some_and(|grant| grant.status == GrantStatus::Active) {
-                return Ok(false);
+                return Ok(None);
             }
         }
         if let Some(family) = record.family_id {
             let family = self.refresh_tokens.get(uow.as_mut(), family).await?;
             if !family.is_some_and(|family| family.status == FamilyStatus::Active) {
-                return Ok(false);
+                return Ok(None);
             }
         }
         drop(uow);
-        if let Some(principal) = record.principal_id {
-            return Ok(self
+        if let Some(principal) = record.principal_id
+            && self
                 .standing
                 .workload_that_may_act(tenant, principal)
                 .await?
-                .is_some());
+                .is_none()
+        {
+            return Ok(None);
         }
-        Ok(true)
+        Ok(Some(record))
+    }
+
+    /// The record of `token_id`, whatever its state, for an exchange that
+    /// copies its grant and family.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    pub(crate) async fn record(
+        &self,
+        tenant: &TenantContext,
+        token_id: &str,
+    ) -> Result<Option<AccessTokenRecord>, DomainError> {
+        let mut uow = self.units_of_work.begin(tenant).await?;
+        self.access_tokens.find(uow.as_mut(), token_id).await
     }
 }
 

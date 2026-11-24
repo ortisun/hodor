@@ -2905,3 +2905,202 @@ async fn a_service_accounts_api_key_of_one_tenant_means_nothing_in_another() {
     let (status, _) = world.admin(acme, &key, Method::GET, "/users", None).await;
     assert_eq!(status, StatusCode::OK);
 }
+
+/// The person's access token in a tenant, from a code of its third-party
+/// application, which they agree to.
+async fn person_access_token(world: &World, tenant: &Tenant) -> String {
+    let (client, secret) = third_party_client(world, tenant).await;
+    let mut browser = Browser::not_following(&world.server);
+    let (_, body) = browser.sign_in(tenant.slug, EMAIL, PASSWORD).await;
+    assert_eq!(body["status"], "completed", "{body}");
+    let (status, _, _) = browser
+        .navigate(Method::GET, &authorize_path(tenant.slug, &client), None)
+        .await;
+    assert_eq!(status, StatusCode::FOUND);
+    let (status, question) = browser
+        .send(
+            Method::GET,
+            &format!("/t/{}/interaction/consent", tenant.slug),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{question}");
+    let (status, answer) = browser
+        .send(
+            Method::POST,
+            &format!("/t/{}/interaction/consent", tenant.slug),
+            Some(serde_json::json!({ "decision": "allow" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    let (_, location, _) = browser
+        .navigate(
+            Method::GET,
+            &format!("/t/{}/oauth2/authorize/resume", tenant.slug),
+            None,
+        )
+        .await;
+    let location = location.expect("a redirect");
+    let (_, query) = location.split_once('?').expect("a query");
+    let code = form_urlencoded::parse(query.as_bytes())
+        .find(|(name, _)| name == "code")
+        .expect("a code")
+        .1
+        .into_owned();
+    let (status, tokens) = oauth_form(
+        world,
+        tenant,
+        "token",
+        (&client, &secret),
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", code.as_str()),
+            ("redirect_uri", REDIRECT),
+            ("code_verifier", VERIFIER),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{tokens}");
+    tokens["access_token"].as_str().expect("access").to_owned()
+}
+
+/// An agent of the tenant with a client that exchanges the person's
+/// tokens for the invoices interface, and the agent's own token. Answers
+/// the client's identifier and secret and the agent's token.
+async fn agent_with_its_token(world: &World, tenant: &Tenant) -> ((String, String), String) {
+    let token = &tenant.administrator_token;
+    let (status, agent) = world
+        .admin(
+            tenant,
+            token,
+            Method::POST,
+            "/agents",
+            Some(serde_json::json!({ "name": "Assistant", "owners": [tenant.ana.to_string()] })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{agent}");
+    let (_, application) = world
+        .admin(
+            tenant,
+            token,
+            Method::POST,
+            "/applications",
+            Some(serde_json::json!({ "name": "Assistant", "first_party": true })),
+        )
+        .await;
+    let (status, client) = world
+        .admin(
+            tenant,
+            token,
+            Method::POST,
+            &format!(
+                "/applications/{}/clients",
+                application["id"].as_str().expect("id")
+            ),
+            Some(serde_json::json!({
+                "name": "Assistant", "type": "confidential",
+                "grant_types": [
+                    "client_credentials", "urn:ietf:params:oauth:grant-type:token-exchange"
+                ],
+                "allowed_scopes": ["invoices:read"],
+                "principal": agent["id"],
+                "exchange_rules": [{ "subject_audience": AUDIENCE, "audience": AUDIENCE }]
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{client}");
+    let pair = (
+        client["id"].as_str().expect("id").to_owned(),
+        client["client_secret"].as_str().expect("secret").to_owned(),
+    );
+    let (status, own) = oauth_form(
+        world,
+        tenant,
+        "token",
+        (&pair.0, &pair.1),
+        &[("grant_type", "client_credentials")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{own}");
+    (
+        pair,
+        own["access_token"].as_str().expect("token").to_owned(),
+    )
+}
+
+#[tokio::test]
+async fn a_token_of_one_tenant_is_refused_by_another_as_subject_and_as_actor_of_an_exchange() {
+    let world = world_with(&[("HODOR_SECRET_KEYS", ROOT_KEY)]).await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    let acme_person = person_access_token(&world, acme).await;
+    let globex_person = person_access_token(&world, globex).await;
+    let (acme_agent, acme_actor) = agent_with_its_token(&world, acme).await;
+    let (globex_agent, globex_actor) = agent_with_its_token(&world, globex).await;
+    let exchange = |subject: &str, actor: &str| {
+        vec![
+            (
+                "grant_type".to_owned(),
+                "urn:ietf:params:oauth:grant-type:token-exchange".to_owned(),
+            ),
+            ("subject_token".to_owned(), subject.to_owned()),
+            (
+                "subject_token_type".to_owned(),
+                "urn:ietf:params:oauth:token-type:access_token".to_owned(),
+            ),
+            ("actor_token".to_owned(), actor.to_owned()),
+            (
+                "actor_token_type".to_owned(),
+                "urn:ietf:params:oauth:token-type:access_token".to_owned(),
+            ),
+            ("audience".to_owned(), AUDIENCE.to_owned()),
+        ]
+    };
+
+    // Where they belong, the exchange works.
+    let pairs = exchange(&acme_person, &acme_actor);
+    let pairs: Vec<(&str, &str)> = pairs
+        .iter()
+        .map(|(n, v)| (n.as_str(), v.as_str()))
+        .collect();
+    let (status, body) = oauth_form(
+        &world,
+        acme,
+        "token",
+        (&acme_agent.0, &acme_agent.1),
+        &pairs,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // Globex's agent presents Acme's person as subject, or Acme's agent's
+    // token as actor: each is refused.
+    for (subject, actor) in [
+        (acme_person.as_str(), globex_actor.as_str()),
+        (globex_person.as_str(), acme_actor.as_str()),
+    ] {
+        let form = exchange(subject, actor);
+        let pairs: Vec<(&str, &str)> = form.iter().map(|(n, v)| (n.as_str(), v.as_str())).collect();
+        let (status, body) = oauth_form(
+            &world,
+            globex,
+            "token",
+            (&globex_agent.0, &globex_agent.1),
+            &pairs,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"], "invalid_request", "{body}");
+    }
+    // And Globex's own pair works there, so the refusals were the tenant's.
+    let form = exchange(&globex_person, &globex_actor);
+    let pairs: Vec<(&str, &str)> = form.iter().map(|(n, v)| (n.as_str(), v.as_str())).collect();
+    let (status, body) = oauth_form(
+        &world,
+        globex,
+        "token",
+        (&globex_agent.0, &globex_agent.1),
+        &pairs,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}

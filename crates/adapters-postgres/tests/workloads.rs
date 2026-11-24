@@ -121,17 +121,31 @@ async fn a_workload_is_created_changed_and_deleted_in_one_transaction_each() {
 }
 
 #[tokio::test]
-async fn the_database_keeps_a_client_with_a_principal_on_client_credentials_alone() {
+async fn the_database_keeps_the_grants_of_a_client_with_a_principal() {
     let database = TestDatabase::start().await;
-    let definition: String = sqlx::query_scalar(
-        "SELECT pg_get_constraintdef(oid) FROM pg_constraint
-         WHERE conname = 'client_principal_only_client_credentials'",
-    )
-    .fetch_one(database.owner())
-    .await
-    .expect("the constraint exists");
-    assert!(
-        definition.contains("principal_id IS NULL") && definition.contains("'client_credentials'"),
-        "{definition}"
-    );
+    for (name, expected) in [
+        (
+            "client_principal_grants",
+            &[
+                "principal_id IS NULL",
+                "'client_credentials'",
+                "token-exchange",
+            ][..],
+        ),
+        (
+            "client_token_exchange_needs_principal",
+            &["token-exchange", "principal_id IS NOT NULL"][..],
+        ),
+    ] {
+        let definition: String = sqlx::query_scalar(
+            "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = $1",
+        )
+        .bind(name)
+        .fetch_one(database.owner())
+        .await
+        .unwrap_or_else(|_| panic!("the constraint {name} exists"));
+        for part in expected {
+            assert!(definition.contains(part), "{name}: {definition}");
+        }
+    }
 }

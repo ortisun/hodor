@@ -620,6 +620,8 @@ fn a_token_about_a_client_has_no_auth_time() {
         organization: None,
         groups: None,
         principal_kind: None,
+        act: None,
+        amr: None,
     };
     let claims = super::claims_for(
         ISSUER,
@@ -648,6 +650,8 @@ fn person_subject(
         organization,
         groups,
         principal_kind: None,
+        act: None,
+        amr: None,
     }
 }
 

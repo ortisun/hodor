@@ -178,6 +178,46 @@ pub enum GrantType {
     RefreshToken,
     /// The client gets a token for itself.
     ClientCredentials,
+    /// An agent's client exchanges a person's token for one it holds on
+    /// the person's behalf (RFC 8693).
+    TokenExchange,
+}
+
+/// The name of the token exchange grant, as RFC 8693 writes it.
+pub const TOKEN_EXCHANGE_GRANT: &str = "urn:ietf:params:oauth:grant-type:token-exchange";
+
+/// The most exchange rules a client has.
+pub const MAX_EXCHANGE_RULES: usize = 20;
+
+/// The longest audience of an exchange rule.
+const MAX_EXCHANGE_AUDIENCE_LENGTH: usize = 255;
+
+/// One rule of an agent's client: a subject token that holds
+/// `subject_audience` may be exchanged for a token for `audience`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ExchangeRule {
+    /// An audience the subject token must hold.
+    pub subject_audience: String,
+    /// The audience the new token may be for.
+    pub audience: String,
+}
+
+impl ExchangeRule {
+    /// Whether this rule lets a token for `subject_audiences` become one
+    /// for `audience`.
+    #[must_use]
+    pub fn allows(&self, subject_audiences: &[String], audience: &str) -> bool {
+        self.audience == audience && subject_audiences.contains(&self.subject_audience)
+    }
+}
+
+fn exchange_rules_invalid(reason: &'static str) -> DomainError {
+    DomainError::invalid(
+        "oauth.client_exchange_rules_invalid",
+        "a client with the token exchange grant has 1 to 20 exchange rules, each a pair of \
+         audiences of at most 255 printable characters, and only such a client has them",
+    )
+    .with_detail(reason)
 }
 
 impl GrantType {
@@ -188,6 +228,7 @@ impl GrantType {
             Self::AuthorizationCode => "authorization_code",
             Self::RefreshToken => "refresh_token",
             Self::ClientCredentials => "client_credentials",
+            Self::TokenExchange => TOKEN_EXCHANGE_GRANT,
         }
     }
 
@@ -201,6 +242,7 @@ impl GrantType {
             "authorization_code" => Ok(Self::AuthorizationCode),
             "refresh_token" => Ok(Self::RefreshToken),
             "client_credentials" => Ok(Self::ClientCredentials),
+            TOKEN_EXCHANGE_GRANT => Ok(Self::TokenExchange),
             _ => Err(grants_invalid("the grant is not one Hodor knows")),
         }
     }
@@ -297,6 +339,9 @@ pub struct ClientSettings {
     /// then about that workload. Whether the identifier names one is
     /// checked by whoever binds it, through the identity context.
     pub principal: Option<UserId>,
+    /// What an agent's client may exchange for which audience; empty
+    /// unless it has the token exchange grant.
+    pub exchange_rules: Vec<ExchangeRule>,
 }
 
 fn redirect_invalid(reason: &'static str) -> DomainError {
@@ -439,6 +484,7 @@ impl ClientSettings {
             id_token_algorithm: IdTokenAlgorithm::default(),
             token_policy: TokenPolicy::default(),
             principal: None,
+            exchange_rules: Vec::new(),
         }
     }
 
@@ -476,9 +522,52 @@ impl ClientSettings {
         {
             return Err(grants_invalid("`client_credentials` for a public client"));
         }
-        if self.principal.is_some() && grant_types != [GrantType::ClientCredentials] {
+        let exchanges = grant_types.contains(&GrantType::TokenExchange);
+        if self.principal.is_some()
+            && (!grant_types.contains(&GrantType::ClientCredentials)
+                || grant_types.iter().any(|grant| {
+                    !matches!(
+                        grant,
+                        GrantType::ClientCredentials | GrantType::TokenExchange
+                    )
+                }))
+        {
             return Err(grants_invalid(
-                "a client with a principal has `client_credentials` and no other grant",
+                "a client with a principal has `client_credentials`, and may have token \
+                 exchange besides, and no other grant",
+            ));
+        }
+        if exchanges && self.principal.is_none() {
+            return Err(grants_invalid(
+                "the token exchange grant is for a client bound to an agent",
+            ));
+        }
+        let exchange_rules = without_repeats(self.exchange_rules);
+        let well_formed = |audience: &str| {
+            !audience.is_empty()
+                && audience.len() <= MAX_EXCHANGE_AUDIENCE_LENGTH
+                && audience.bytes().all(|b| b.is_ascii_graphic())
+        };
+        match (exchanges, exchange_rules.is_empty()) {
+            (true, true) => {
+                return Err(exchange_rules_invalid(
+                    "a client with the token exchange grant has an exchange rule",
+                ));
+            }
+            (false, false) => {
+                return Err(exchange_rules_invalid(
+                    "a client without the token exchange grant has no exchange rule",
+                ));
+            }
+            _ => {}
+        }
+        if exchange_rules.len() > MAX_EXCHANGE_RULES
+            || !exchange_rules
+                .iter()
+                .all(|rule| well_formed(&rule.subject_audience) && well_formed(&rule.audience))
+        {
+            return Err(exchange_rules_invalid(
+                "at most 20 rules, each a pair of audiences",
             ));
         }
         let redirect_uris = without_repeats(self.redirect_uris);
@@ -538,6 +627,7 @@ impl ClientSettings {
             id_token_algorithm: self.id_token_algorithm,
             token_policy: self.token_policy.checked()?,
             principal: self.principal,
+            exchange_rules,
         })
     }
 }
@@ -1004,6 +1094,46 @@ mod tests {
         assert!(
             matches!(&events[0], OauthEvent::ClientCreated { principal_id, .. } if *principal_id == Some(workload)),
             "{events:?}"
+        );
+
+        // An agent's client may also exchange tokens, with rules.
+        let mut exchanging = service.clone();
+        exchanging.grant_types = vec![GrantType::ClientCredentials, GrantType::TokenExchange];
+        assert_eq!(
+            create(ClientType::Confidential, exchanging.clone())
+                .expect_err("no rule")
+                .code(),
+            "oauth.client_exchange_rules_invalid"
+        );
+        exchanging.exchange_rules = vec![ExchangeRule {
+            subject_audience: "urn:example:assistant".to_owned(),
+            audience: "https://api.example.com".to_owned(),
+        }];
+        let (agent_client, _) =
+            create(ClientType::Confidential, exchanging.clone()).expect("valid");
+        assert!(agent_client.snapshot().settings.exchange_rules[0].allows(
+            &["urn:example:assistant".to_owned()],
+            "https://api.example.com"
+        ));
+        let mut unbound = exchanging.clone();
+        unbound.principal = None;
+        assert_eq!(
+            create(ClientType::Confidential, unbound)
+                .expect_err("no principal")
+                .code(),
+            "oauth.client_grants_invalid"
+        );
+        let mut stray = service.clone();
+        stray.exchange_rules = exchanging.exchange_rules.clone();
+        assert_eq!(
+            create(ClientType::Confidential, stray)
+                .expect_err("rules without the grant")
+                .code(),
+            "oauth.client_exchange_rules_invalid"
+        );
+        assert_eq!(
+            GrantType::parse(TOKEN_EXCHANGE_GRANT).expect("known"),
+            GrantType::TokenExchange
         );
 
         let mut bound_web = web();

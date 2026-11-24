@@ -16,8 +16,8 @@ use hodor_kernel::{DomainError, SystemClock, TenantContext, UserId};
 use hodor_oauth::api::{
     Application, ApplicationId, ApplicationPorts, ApplicationService, ApplicationSettings,
     AuthenticationMethod, Client, ClientId, ClientSettings, ClientType, CreateClient,
-    CreateResourceServer, GrantType, IdTokenAlgorithm, ResourceServerSettings, RotateSecret,
-    ScopeDefinition, Status,
+    CreateResourceServer, ExchangeRule, GrantType, IdTokenAlgorithm, ResourceServerSettings,
+    RotateSecret, ScopeDefinition, Status,
 };
 use hodor_tenant::api::TenantService;
 use std::fmt::Write as _;
@@ -120,6 +120,10 @@ pub(crate) enum ClientCommand {
         /// `client_credentials` grant alone.
         #[arg(long)]
         principal: Option<UserId>,
+        /// An exchange rule of an agent's client, written
+        /// `<subject audience>=><audience>`; given once for each.
+        #[arg(long = "exchange-rule")]
+        exchange_rules: Vec<String>,
     },
     /// List an application's clients.
     List {
@@ -333,6 +337,20 @@ async fn set_application(
     ))
 }
 
+/// An exchange rule written `<subject audience>=><audience>`.
+fn exchange_rule(written: &str) -> Result<ExchangeRule, DomainError> {
+    let (subject_audience, audience) = written.split_once("=>").ok_or_else(|| {
+        DomainError::invalid(
+            "oauth.client_exchange_rules_invalid",
+            "an exchange rule is written `<subject audience>=><audience>`",
+        )
+    })?;
+    Ok(ExchangeRule {
+        subject_audience: subject_audience.trim().to_owned(),
+        audience: audience.trim().to_owned(),
+    })
+}
+
 fn client_type(value: &str) -> Result<ClientType, DomainError> {
     match value {
         "confidential" => Ok(ClientType::Confidential),
@@ -364,6 +382,7 @@ pub(crate) async fn run_client(
             without_pkce,
             id_token_algorithm,
             principal,
+            exchange_rules,
         } => {
             let (tenant, service) = open(database, &tenant).await?;
             let kind = client_type(&kind)?;
@@ -381,9 +400,16 @@ pub(crate) async fn run_client(
             if let Some(algorithm) = id_token_algorithm {
                 settings.id_token_algorithm = IdTokenAlgorithm::parse(&algorithm)?;
             }
+            settings.exchange_rules = exchange_rules
+                .iter()
+                .map(|rule| exchange_rule(rule))
+                .collect::<Result<_, _>>()?;
             if let Some(principal) = principal {
-                settings.principal =
-                    Some(crate::workloads::principal_of(database, &tenant, principal).await?);
+                let agent_only = settings.grant_types.contains(&GrantType::TokenExchange);
+                settings.principal = Some(
+                    crate::workloads::principal_of(database, &tenant, principal, agent_only)
+                        .await?,
+                );
             }
             let (client, secret) = service
                 .create_client(

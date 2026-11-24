@@ -396,3 +396,114 @@ async fn a_workloads_api_keys_and_roles_are_managed_from_the_command_line() {
         "authorization.unknown_role",
     );
 }
+
+#[tokio::test]
+async fn an_agents_client_is_given_exchange_rules_from_the_command_line() {
+    let database = TestDatabase::start().await;
+    said(&run(
+        &database,
+        &["tenant", "create", "--slug", "acme", "--name", "Acme"],
+    ));
+    said(&run(
+        &database,
+        &[
+            "admin",
+            "bootstrap",
+            "--tenant",
+            "acme",
+            "--email",
+            "ana@example.com",
+        ],
+    ));
+    let (ana,): (sqlx::types::Uuid,) = sqlx::query_as(
+        "SELECT user_id FROM identity.user_identifier WHERE value_normalized = 'ana@example.com'",
+    )
+    .fetch_one(database.owner())
+    .await
+    .expect("the person");
+    let ana = ana.to_string();
+    let agent = word(
+        &run(
+            &database,
+            &[
+                "agent",
+                "create",
+                "--tenant",
+                "acme",
+                "--name",
+                "Assistant",
+                "--owner",
+                &ana,
+            ],
+        ),
+        1,
+    );
+    let account = word(
+        &run(
+            &database,
+            &[
+                "service-account",
+                "create",
+                "--tenant",
+                "acme",
+                "--name",
+                "Export",
+                "--owner",
+                &ana,
+            ],
+        ),
+        1,
+    );
+    let application = word(
+        &run(
+            &database,
+            &[
+                "application",
+                "add",
+                "--tenant",
+                "acme",
+                "--name",
+                "Assistant",
+                "--first-party",
+            ],
+        ),
+        1,
+    );
+    let client = |principal: &str| {
+        run(
+            &database,
+            &[
+                "client",
+                "add",
+                "--tenant",
+                "acme",
+                "--application",
+                &application,
+                "--name",
+                "Assistant",
+                "--type",
+                "confidential",
+                "--grant",
+                "client_credentials",
+                "--grant",
+                "urn:ietf:params:oauth:grant-type:token-exchange",
+                "--principal",
+                principal,
+                "--exchange-rule",
+                "urn:example:assistant=>https://api.example.com",
+            ],
+        )
+    };
+    said(&client(&agent));
+    let (rules,): (serde_json::Value,) = sqlx::query_as("SELECT exchange_rules FROM oauth.client")
+        .fetch_one(database.owner())
+        .await
+        .expect("the client");
+    assert_eq!(
+        rules,
+        serde_json::json!([
+            { "subject_audience": "urn:example:assistant", "audience": "https://api.example.com" }
+        ])
+    );
+    refused(&client(&account), "oauth.client_principal_invalid");
+}
