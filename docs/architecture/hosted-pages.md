@@ -99,6 +99,16 @@ The link in the message carries its token after `#`, which a browser never sends
 
 After finishing, the person is sent to sign in, with a message saying the account is ready or the password was changed. Neither page signs the person in.
 
+### Accepting an invitation
+
+`/account/accept-invitation`, the page the link of an [invitation](../architecture/contexts/authentication.md#invitations-to-an-organization) opens, reads the token from after `#` and asks what it is for. It shows the organization and the address, then one of three things:
+
+- the address has no account: a form to choose a password and, optionally, a name, which creates the account and the membership, then sends the person to sign in;
+- the address has an account and the person is signed in as it: one button, "join", which makes the membership and sends them to their account page;
+- the address has an account and nobody, or somebody else, is signed in: a button to sign in, which signs the person in and brings them back here.
+
+A link that no longer works says so, in the same words whatever the reason.
+
 ### A person's own factors
 
 `/account/security` shows the person's second factors and lets them change them, by the rules of [the authentication context](contexts/authentication.md#a-persons-own-factors). The account page links to it.

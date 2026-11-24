@@ -417,6 +417,59 @@ Making a token and putting its message in the [message queue](notification.md) h
 
 Finishing spans several contexts, each of which commits on its own. The order above is chosen so that a failure part-way never leaves a hole: once the token is used up, anything that fails afterwards costs the person a new request, never a second use of the token or an account without a password that anyone can reach.
 
+## Invitations to an organization
+
+An administrator invites a person to an organization by their email address ([invitations](identity.md#invitations)). The person accepts with the link that arrives in their mailbox, and becomes a member.
+
+```mermaid
+sequenceDiagram
+    actor Administrator
+    participant Hodor
+    participant Mailbox as The person's mailbox
+    actor Person
+
+    Administrator->>Hodor: invite ana@example.com to Acme
+    Hodor->>Mailbox: organization_invitation, with the link
+    Person->>Mailbox: reads the message
+    Person->>Hodor: describe the invitation, giving the token
+    Hodor-->>Person: Acme; the address has an account, or not
+    alt the address has no account
+        Person->>Hodor: accept, giving the token and a password
+        Hodor-->>Person: the account and the membership
+    else the address has an account
+        Person->>Hodor: signs in as that account
+        Person->>Hodor: accept, giving the token
+        Hodor-->>Person: the membership
+    end
+```
+
+### Inviting
+
+The secret of an invitation is made like a [verification token](#verification-tokens): 32 random bytes, written as 64 hexadecimal characters, of which Hodor keeps only the SHA-256. The invitation and the message `organization_invitation` are stored in one transaction. The link has the form `{public address}/t/{slug}/account/accept-invitation#token={token}`.
+
+The message names the organization and the tenant, so that the person knows what they are asked to join. Whether the address has an account changes nothing at this point: the same message goes in both cases.
+
+### Accepting
+
+**Describing.** Whoever holds the link can ask what it is for, before deciding: the organization's name, the address it was sent to, and whether that address has an account in the tenant. The link went to that mailbox, so its holder learns nothing they could not learn by trying to register.
+
+**When the address has no account**, accepting creates one:
+
+1. The invitation is looked up by the hash of the token. An unknown, accepted, withdrawn or expired invitation is refused, all four in the same way.
+2. The password is checked against the tenant's [password policy](tenant.md#password-policy). A password that is not acceptable is refused, and the invitation stays good.
+3. The invitation is used up. Only one request gets past this point.
+4. The user is created, already active, with the address as a verified login identifier, the password is set, and the membership is made with the invitation's units.
+
+If the address acquired an account between describing and accepting, step 4 is refused and the person is told to sign in and accept again. The tenant's registration policy does not apply: an administrator chose to let this person in.
+
+**When the address has an account**, the person signs in as that account first, and accepts while signed in. The session's user must have the invited address among their login identifiers; another signed-in person is refused, and the invitation stays good. Accepting marks the address verified, since the person just proved they read it.
+
+Accepting does not sign the person in. A person who accepted by creating an account signs in next, with the password they chose.
+
+### Limits
+
+Accepting is not limited, as finishing a registration is not: the token cannot be guessed. Inviting is done by administrators, whose requests are limited by the administration interface.
+
 ## A person's own factors
 
 A signed-in person manages their second factors themselves: an authenticator application, security keys and passkeys, and their recovery codes. `FactorService` holds these use cases; it asks the [credential context](credential.md) to do each thing and decides the rules that span several kinds of factor. The person reaches it through [their own pages](../hosted-pages.md#a-persons-own-factors) and [the interaction interface](../../api/interaction-api.md#managing-ones-factors); an administrator reaches part of it through [the administration interface](../../api/admin-api.md#a-users-factors).
