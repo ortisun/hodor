@@ -28,16 +28,18 @@ Every pod runs as a user that is not root, with a read-only file system, no Linu
 |---|---|
 | A Kubernetes cluster, version 1.27 or newer, and `kubectl` | Where Hodor runs |
 | Helm 3 or newer | To install the chart |
-| A registry the cluster can pull from, and Docker to build | The image is built from this repository: no registry publishes one yet |
+| The published image, or a registry of your own | From 0.3.0, the cluster pulls `ghcr.io/ortisun/hodor`. For an earlier version, you build the image and push it to a registry the cluster can pull from |
 | A PostgreSQL database, version 16 or newer, reachable from the cluster | Everything Hodor knows is there. A managed service with a standby and point-in-time recovery, as [deployment](deployment.md#database) describes |
 | A way in: an ingress controller, or a gateway of your own, serving HTTPS | The session cookie is marked `Secure`, and browsers do not send it over plain HTTP |
 | A mail server that accepts messages over SMTP | For the links that verify an address and recover a password |
 
 Run every command of this page from the root of a checkout of the repository; the [quick-start](quick-start.md#0-get-the-code) says how to get one. The commands use the namespace `hodor` and the release name `hodor`.
 
-## 1. Build and push the image
+## 1. Get the image
 
-Replace `registry.example.com` with your registry, here and in the steps that follow:
+From 0.3.0, every release publishes its image, `ghcr.io/ortisun/hodor:<version>`, and the chart uses it unless `image.repository` says otherwise. There is nothing to do in this step. To check its signature first, see [what a release publishes](../security/supply-chain.md#what-a-release-publishes).
+
+For an earlier version, or for a checkout of `develop`, build the image and push it to your registry. Replace `registry.example.com` with your registry, here and in the steps that follow:
 
 ```bash
 docker build --file deploy/docker/Dockerfile --tag registry.example.com/hodor:0.2.0 .
@@ -102,11 +104,9 @@ A password written into an address must be made of letters and digits, or be per
 
 ## 4. Install the chart
 
-Write your settings in a file, `hodor-values.yaml`. Three have no default: where the image is, the address people use, and the name of the Secret.
+Write your settings in a file, `hodor-values.yaml`. Two have no default: the address people use, and the name of the Secret. With an image you built, also set `image.repository` to where you pushed it.
 
 ```yaml
-image:
-  repository: registry.example.com/hodor
 publicUrl: https://login.example.com
 secret:
   name: hodor
@@ -117,6 +117,14 @@ ingress:
   enabled: true
   className: nginx
 ```
+
+From 0.3.0, install the published chart of the version you want:
+
+```bash
+helm install hodor oci://ghcr.io/ortisun/charts/hodor --version 0.3.0 --namespace hodor --values hodor-values.yaml --wait
+```
+
+For an earlier version, or a checkout of `develop`, install the chart from the checkout:
 
 ```bash
 helm install hodor deploy/install/helm/hodor --namespace hodor --values hodor-values.yaml --wait
@@ -150,7 +158,7 @@ kubectl exec --namespace hodor deployment/hodor-server -- /usr/local/bin/hodor-c
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `image.repository`, `image.tag` | None; the version of the chart | Where the image is, and which version runs |
+| `image.repository`, `image.tag` | `ghcr.io/ortisun/hodor`; the version of the chart | Where the image is, and which version runs |
 | `publicUrl` | None | The address people use: `https://`, the name, no path |
 | `secret.name` | None | The Secret of [step 3](#3-create-the-secret) |
 | `server.replicas` | `3` | Servers, when autoscaling is off |
@@ -201,9 +209,14 @@ networkPolicy:
 
 ## Upgrading
 
-1. Build and push the image of the new version, as in [step 1](#1-build-and-push-the-image).
-2. Get the chart of the same version: it is in the same checkout.
-3. Upgrade the release with the same values:
+1. With a published version, there is nothing to build. With an image of your own, build and push the image of the new version, as in [step 1](#1-get-the-image).
+2. Upgrade the release with the same values, and the chart of the new version. The published chart:
+
+```bash
+helm upgrade hodor oci://ghcr.io/ortisun/charts/hodor --version 0.3.0 --namespace hodor --values hodor-values.yaml --wait
+```
+
+Or the chart of a checkout at the new version:
 
 ```bash
 helm upgrade hodor deploy/install/helm/hodor --namespace hodor --values hodor-values.yaml --wait
@@ -296,5 +309,3 @@ kind delete cluster --name hodor
 | Autoscaling on request concurrency | The autoscaler follows processor use only |
 | Dashboards and alerts | Metrics and traces are sent where `telemetry` says; what is drawn and alerted from them is yours |
 | The Open Policy Agent sidecar and Redis | Neither is used by Hodor yet: both belong to later phases of the [roadmap](../product/roadmap.md) |
-| A published image, its software bill of materials and its signature | The image is built from the checkout and pushed to your registry |
-| A published chart | The chart is installed from the checkout |

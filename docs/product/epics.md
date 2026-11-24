@@ -319,7 +319,7 @@ Per-resource access control lists, relationship-based access control, assigning 
 | Identifier | Issue | Acceptance | Depends on |
 |---|---|---|---|
 | Issue-83 | Continuous integration actions pinned by commit, kept current by Dependabot; the licenses of the pages' dependencies checked against an allowed list, as `cargo deny` checks those of the crates (Threat-General-15) | Continuous integration fails on an action named by tag and on a page dependency under a license that is not allowed | — |
-| Issue-84 | The image and the chart published with each release: the image to the GitHub container registry with its software bill of materials and a signature, the chart as an OCI artifact; the installation pages install from them | A release tag publishes both; installing from them on a kind cluster passes the demonstration; the signature checks with the published key | Issue-83 |
+| Issue-84 | The image and the chart published with each release: the image to the GitHub container registry with its software bill of materials and a signature, the chart as an OCI artifact; the installation pages install from them | A release tag publishes both; installing from them on a kind cluster passes the demonstration; the signatures check against the identity of the release workflow | Issue-83 |
 | Issue-85 | Acceptance: the demonstration of the milestone behind the web server of the Docker package | It passes in continuous integration against the image | all |
 
 ### Explicitly not in Milestone 6

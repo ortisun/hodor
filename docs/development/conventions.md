@@ -150,7 +150,7 @@ A release is cut in these steps:
 1. Turn *Unreleased* in `CHANGELOG.md` into the section of the version, with its date, and set the version, through a pull request into `develop`.
 2. Cut `release/<version>` from `develop`. Only fixes go into it from then on.
 3. Open a pull request from `release/<version>` into `main`. It is merged with a **merge commit**, not squashed, so that `main` and `develop` keep one history, and only when continuous integration is green on its head.
-4. Tag the merge commit on `main` as `v<version>`, an annotated tag whose message is `v<version>`, and publish a release named `v<version>` from that tag, with its section of the changelog as notes.
+4. Tag the merge commit on `main` as `v<version>`, an annotated tag whose message is `v<version>`, and publish a release named `v<version>` from that tag, with its section of the changelog as notes. Pushing the tag publishes the image and the chart; wait for the workflow `Release` to pass, and say in the notes where they are ([what a release publishes](../security/supply-chain.md#what-a-release-publishes)). The first time, the GitHub container registry makes the two packages private: the owner makes `hodor` and `charts/hodor` public once, in their package settings.
 5. Merge `release/<version>` back into `develop` with a pull request and a merge commit, if the release branch received any commit, as it does when the version is set on it.
 
 ## 6. Definition of done

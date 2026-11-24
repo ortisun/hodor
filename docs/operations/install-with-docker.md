@@ -40,14 +40,18 @@ The Hodor containers run as a user that is not root, with a read-only file syste
 | What | Why |
 |---|---|
 | A machine with Docker Engine and Docker Compose 2.20 or newer | Everything runs in containers |
-| A checkout of this repository | The image is built from it: no registry publishes one yet. The [quick-start](quick-start.md#0-get-the-code) says how to get the code |
+| A checkout of this repository, at the tag of the version you install | The Compose file and its settings come from it. The [quick-start](quick-start.md#0-get-the-code) says how to get the code |
 | A name that points at the machine, such as `login.example.com`, and ports 80 and 443 reachable from the internet | For the profile `https`: the certificate is issued for that name, over those ports |
 | A mail server that accepts messages over SMTP | Hodor sends the links that verify an address and recover a password. Without one, the messages wait |
 | `openssl` | To make the passwords |
 
 Run every command of this page from the root of the checkout.
 
-## 1. Build the image
+## 1. Get the image
+
+From 0.3.0, every release publishes its image, `ghcr.io/ortisun/hodor:<version>`. Set `HODOR_IMAGE` to it in [step 2](#2-write-the-settings), and Compose pulls it when it starts. To check its signature first, see [what a release publishes](../security/supply-chain.md#what-a-release-publishes).
+
+For an earlier version, or for a checkout of `develop`, build the image instead:
 
 ```bash
 docker build --file deploy/docker/Dockerfile --tag hodor:0.2.0 .
@@ -177,7 +181,7 @@ Keep the backups and the key of `HODOR_SECRET_KEYS` in different places, both ou
 
 ### Upgrading
 
-1. Get the new version of the code and build its image under a new tag, as in [step 1](#1-build-the-image).
+1. Get the new version of the code. With a published version, its image is `ghcr.io/ortisun/hodor:<version>`; otherwise build its image under a new tag, as in [step 1](#1-get-the-image).
 2. Write the new tag in `HODOR_IMAGE`.
 3. Run the command of [step 3](#3-start) again. The migrations of the new version are applied first, then the server and the worker are replaced.
 4. If [deployment](deployment.md#upgrades) lists a command for the version you upgraded from, run it with the service `cli`. From 0.1.0:
@@ -195,4 +199,3 @@ Upgrade one release at a time: [deployment](deployment.md#upgrades) explains why
 | One machine | When the machine is down, Hodor is down. [Installing on Kubernetes](install-on-kubernetes.md) runs several servers |
 | No backups on a schedule | The command above is run by you, or by whatever you schedule it with |
 | No store for metrics and traces | Hodor sends them where you say; nothing here receives them. The development stack shows one way, with VictoriaMetrics and VictoriaTraces |
-| No published image | The image is built from the checkout, on the machine or wherever you build |
