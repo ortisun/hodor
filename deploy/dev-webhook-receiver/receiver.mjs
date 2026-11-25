@@ -1,9 +1,10 @@
 // A development receiver of webhooks. NOT FOR ANYTHING REAL.
 //
 // It answers every POST with 204 and keeps what it got, so that the
-// development stack and the demonstration of Milestone 8 have an endpoint
-// Hodor can deliver to. It checks nothing: checking a delivery's signature
-// is the part of the receiver the demonstration plays itself.
+// development stack and the demonstrations of Milestones 8 and 9 have an
+// endpoint Hodor can deliver webhooks and logout tokens to. It checks
+// nothing: checking a delivery's signature is the part of the receiver the
+// demonstrations play themselves.
 //
 // One file, no dependencies: Node.js and its standard library.
 // See docs/development/local-setup.md.
