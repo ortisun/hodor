@@ -5,6 +5,7 @@
 
 use crate::application::token::{IssuedTokens, Issuer, TokenService};
 use crate::application::userinfo::published_keys;
+use crate::domain::binding::CertificateThumbprint;
 use crate::domain::client::{Client, GrantType};
 use crate::domain::event::OauthEvent;
 use crate::domain::exchange::{MAX_ACTORS, act_claim, actors, chain_length, exchanged_scopes};
@@ -25,6 +26,12 @@ pub(crate) struct Exchange<'a> {
     pub(crate) audience: &'a str,
     /// The scopes asked for.
     pub(crate) scope: Option<&'a str>,
+    /// The certificate the request came with, which a bound subject or
+    /// actor token must name.
+    pub(crate) presented: Option<&'a CertificateThumbprint>,
+    /// The certificate the new token is bound to, for an agent's client
+    /// that asks for bound tokens.
+    pub(crate) bound: Option<CertificateThumbprint>,
 }
 
 /// Every refusal of a token presented in an exchange is this one answer,
@@ -94,6 +101,9 @@ impl TokenService {
                 "the actor token is not a token of this tenant",
             )));
         };
+        if let Err(reason) = actor.check_certificate(asked.presented) {
+            return Ok(Err(token_refused(reason)));
+        }
         if actor.client_id != client.id().to_string()
             || actor.subject != agent.to_string()
             || actor.principal_kind.as_deref() != Some("agent")
@@ -115,6 +125,11 @@ impl TokenService {
                 "the subject token is not a token of this tenant",
             )));
         };
+        // A subject token bound to the certificate of the person's client
+        // is not the agent's to present.
+        if let Err(reason) = subject.check_certificate(asked.presented) {
+            return Ok(Err(token_refused(reason)));
+        }
         if subject.principal_kind.is_some() || subject.subject == subject.client_id {
             return Ok(Err(token_refused(
                 "the subject token is not about a person",
@@ -238,6 +253,7 @@ impl TokenService {
                 client,
                 &token_subject,
                 lifetime,
+                asked.bound,
                 &serde_json::Map::new(),
             )
             .await?

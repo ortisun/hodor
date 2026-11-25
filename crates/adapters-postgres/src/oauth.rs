@@ -236,7 +236,8 @@ const CLIENT_COLUMNS: &str = "id, application_id, name, client_type, authenticat
      id_token_algorithm, access_token_seconds, id_token_seconds, refresh_token_seconds, \
      refresh_idle_seconds, consent_seconds, status, created_at, updated_at, version, principal_id, \
      exchange_rules, backchannel_logout_uri, backchannel_logout_session_required, subject_type, \
-     sector_identifier_uri, spiffe_id, linkerd_identity, request_object_signing_alg";
+     sector_identifier_uri, spiffe_id, linkerd_identity, request_object_signing_alg, \
+     certificate_bound_access_tokens";
 
 async fn load_client(
     connection: &mut PgConnection,
@@ -358,6 +359,9 @@ async fn load_client(
                     LinkerdIdentity::parse(&text).map_err(|_| corrupted("Linkerd identity"))
                 })
                 .transpose()?,
+            certificate_bound_access_tokens: row
+                .try_get("certificate_bound_access_tokens")
+                .map_err(get)?,
         },
         secrets,
         keys,
@@ -436,10 +440,11 @@ impl ClientStore for PgClientStore {
                   refresh_idle_seconds, consent_seconds, status, created_at, updated_at,
                   id_token_algorithm, principal_id, exchange_rules, backchannel_logout_uri,
                   backchannel_logout_session_required, subject_type, sector_identifier_uri,
-                  spiffe_id, linkerd_identity, request_object_signing_alg, version)
+                  spiffe_id, linkerd_identity, request_object_signing_alg,
+                  certificate_bound_access_tokens, version)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
                      $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28,
-                     $29, 0)",
+                     $29, $30, 0)",
         )
         .bind(tenant)
         .bind(state.id.as_uuid())
@@ -479,6 +484,7 @@ impl ClientStore for PgClientStore {
                 .request_object_algorithm
                 .map(RequestObjectAlgorithm::as_str),
         )
+        .bind(settings.certificate_bound_access_tokens)
         .execute(&mut *connection)
         .await;
         match inserted {
@@ -522,6 +528,7 @@ impl ClientStore for PgClientStore {
                  backchannel_logout_uri = $21, backchannel_logout_session_required = $22,
                  subject_type = $23, sector_identifier_uri = $24, spiffe_id = $25,
                  linkerd_identity = $26, request_object_signing_alg = $27,
+                 certificate_bound_access_tokens = $28,
                  version = version + 1
              WHERE tenant_id = $1 AND id = $2 AND version = $17",
         )
@@ -561,6 +568,7 @@ impl ClientStore for PgClientStore {
                 .request_object_algorithm
                 .map(RequestObjectAlgorithm::as_str),
         )
+        .bind(settings.certificate_bound_access_tokens)
         .execute(&mut *connection)
         .await
         .map_err(|error| match &error {

@@ -78,7 +78,9 @@ impl TokenService {
                 }
                 _ => Err("the forwarded Linkerd identity is not the client's"),
             },
-            ForwardedIdentity::Names { uris, dns_names } => {
+            ForwardedIdentity::Names {
+                uris, dns_names, ..
+            } => {
                 let names = CertificateNames {
                     uris: uris.clone(),
                     dns_names: dns_names.clone(),

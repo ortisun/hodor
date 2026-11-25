@@ -5142,3 +5142,209 @@ async fn a_request_object_signed_for_one_tenant_is_refused_by_another() {
         "{location:?}"
     );
 }
+
+/// A client of a tenant that asks for certificate-bound tokens, of an
+/// application with a resource server, allowed to ask the Authorization
+/// API, which the tenant opens. Answers the client's identifier and secret.
+async fn bound_client(world: &World, tenant: &Tenant) -> (String, String) {
+    let token = &tenant.administrator_token;
+    let (status, _) = world
+        .admin(tenant, token, Method::POST, "/keys/sig:rotate", None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let mut shop = String::new();
+    for (name, audience, scope) in [
+        (
+            "Authorization API",
+            "urn:hodor:authorization",
+            "authz:evaluate",
+        ),
+        ("Shop", "https://api.shop.example", "read"),
+    ] {
+        let (_, application) = world
+            .admin(
+                tenant,
+                token,
+                Method::POST,
+                "/applications",
+                Some(serde_json::json!({ "name": name, "first_party": true })),
+            )
+            .await;
+        let (status, _) = world
+            .admin(
+                tenant,
+                token,
+                Method::POST,
+                "/resource-servers",
+                Some(serde_json::json!({
+                    "application_id": application["id"],
+                    "audience": audience,
+                    "name": name,
+                    "scopes": [{ "name": scope, "description": "A scope" }]
+                })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::CREATED);
+        shop = application["id"].as_str().expect("id").to_owned();
+    }
+    let (status, client) = world
+        .admin(
+            tenant,
+            token,
+            Method::POST,
+            &format!("/applications/{shop}/clients"),
+            Some(serde_json::json!({
+                "name": "Shop back end",
+                "type": "confidential",
+                "grant_types": ["client_credentials"],
+                "allowed_scopes": ["authz:evaluate"],
+                "tls_client_certificate_bound_access_tokens": true,
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{client}");
+    (
+        client["id"].as_str().expect("id").to_owned(),
+        client["client_secret"]
+            .as_str()
+            .expect("a secret")
+            .to_owned(),
+    )
+}
+
+/// A form to a tenant's OAuth endpoint from a client of a secret, with the
+/// certificate the trusted proxy forwards in `Client-Cert`, if any.
+async fn bound_request(
+    world: &World,
+    tenant: &Tenant,
+    endpoint: &str,
+    client: &(String, String),
+    pairs: &[(&str, &str)],
+    certificate: Option<&[u8]>,
+) -> serde_json::Value {
+    use base64::Engine as _;
+    let mut request = Client::new()
+        .post(format!(
+            "{}/t/{}/oauth2/{endpoint}",
+            world.server.base, tenant.slug
+        ))
+        .basic_auth(&client.0, Some(&client.1))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(
+            form_urlencoded::Serializer::new(String::new())
+                .extend_pairs(pairs)
+                .finish(),
+        );
+    if let Some(certificate) = certificate {
+        request = request.header(
+            "client-cert",
+            format!(
+                ":{}:",
+                base64::engine::general_purpose::STANDARD.encode(certificate)
+            ),
+        );
+    }
+    let response = request.send().await.expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    response.json().await.expect("JSON")
+}
+
+/// Asks a tenant's Authorization API with `token` and the certificate the
+/// trusted proxy forwards, if any.
+async fn evaluate_with(
+    world: &World,
+    tenant: &Tenant,
+    token: &str,
+    certificate: Option<&[u8]>,
+) -> StatusCode {
+    use base64::Engine as _;
+    let mut request = Client::new()
+        .post(format!(
+            "{}/t/{}/api/v1/authorization/evaluate",
+            world.server.base, tenant.slug
+        ))
+        .bearer_auth(token)
+        .json(&serde_json::json!({
+            "subject": { "type": "user", "id": tenant.ana.to_string() },
+            "resource": { "type": "order", "id": "order-1" },
+            "action": "read",
+        }));
+    if let Some(certificate) = certificate {
+        request = request.header(
+            "client-cert",
+            format!(
+                ":{}:",
+                base64::engine::general_purpose::STANDARD.encode(certificate)
+            ),
+        );
+    }
+    request.send().await.expect("response").status()
+}
+
+#[tokio::test]
+async fn a_bound_token_of_one_tenant_is_refused_by_another_even_with_its_certificate() {
+    use hodor_adapters_crypto::testing::certificates::{Leaf, TestAuthority};
+    let world = world_with(&[
+        ("HODOR_SECRET_KEYS", ROOT_KEY),
+        ("HODOR_TRUSTED_PROXIES", "127.0.0.1"),
+        ("HODOR_FORWARDED_HEADER", "none"),
+        ("HODOR_CLIENT_IDENTITY_HEADER", "client-cert"),
+    ])
+    .await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    let acme_client = bound_client(&world, acme).await;
+    let globex_client = bound_client(&world, globex).await;
+    let certificate =
+        TestAuthority::root("mesh").issue(&Leaf::uri("spiffe://cluster.local/ns/shop/sa/web"));
+    let issued = bound_request(
+        &world,
+        acme,
+        "token",
+        &acme_client,
+        &[
+            ("grant_type", "client_credentials"),
+            ("scope", "authz:evaluate"),
+        ],
+        Some(&certificate),
+    )
+    .await;
+    let token = issued["access_token"].as_str().expect("a token");
+
+    // Where it belongs, it is taken with its certificate alone, and
+    // introspection answers its `cnf`.
+    assert_ne!(
+        evaluate_with(&world, acme, token, Some(&certificate)).await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        evaluate_with(&world, acme, token, None).await,
+        StatusCode::UNAUTHORIZED
+    );
+    let answer = bound_request(
+        &world,
+        acme,
+        "introspect",
+        &acme_client,
+        &[("token", token)],
+        None,
+    )
+    .await;
+    assert_eq!(answer["active"], true, "{answer}");
+    assert!(answer["cnf"]["x5t#S256"].is_string(), "{answer}");
+
+    // The other tenant refuses it, with the certificate it is bound to.
+    assert_eq!(
+        evaluate_with(&world, globex, token, Some(&certificate)).await,
+        StatusCode::UNAUTHORIZED
+    );
+    let answer = bound_request(
+        &world,
+        globex,
+        "introspect",
+        &globex_client,
+        &[("token", token)],
+        Some(&certificate),
+    )
+    .await;
+    assert_eq!(answer, serde_json::json!({ "active": false }));
+}

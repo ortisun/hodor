@@ -15,8 +15,8 @@ use axum::http::{HeaderMap, HeaderName};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use hodor_oauth::api::{
-    AuthenticationMethod, ForwardedIdentity, MAX_FORWARDED_CERTIFICATE_BYTES, MAX_FORWARDED_CHAIN,
-    MAX_LINKERD_IDENTITY_LENGTH,
+    AuthenticationMethod, CertificateThumbprint, ForwardedIdentity,
+    MAX_FORWARDED_CERTIFICATE_BYTES, MAX_FORWARDED_CHAIN, MAX_LINKERD_IDENTITY_LENGTH,
 };
 use std::str::FromStr;
 
@@ -58,6 +58,13 @@ impl IdentityHeader {
             ],
             Self::LinkerdClientId => &[AuthenticationMethod::LinkerdIdentity],
         }
+    }
+
+    /// Whether the header forwards certificates, or their hash, that
+    /// tokens can be bound to: Linkerd's forwards none.
+    #[must_use]
+    pub const fn forwards_certificates(self) -> bool {
+        matches!(self, Self::ClientCert | Self::XForwardedClientCert)
     }
 
     fn name(self) -> HeaderName {
@@ -224,6 +231,7 @@ fn pem_certificates(text: &str) -> Option<Vec<Vec<u8>>> {
 fn x_forwarded_client_cert(nearest: &str) -> Option<Read> {
     let (mut cert, mut chain) = (None, None);
     let (mut uris, mut dns_names) = (Vec::new(), Vec::new());
+    let mut hashes = Vec::new();
     for pair in split_outside(nearest, ';') {
         let pair = pair.trim();
         if pair.is_empty() {
@@ -237,6 +245,7 @@ fn x_forwarded_client_cert(nearest: &str) -> Option<Read> {
             "cert" | "chain" => return None,
             "uri" => uris.push(value),
             "dns" => dns_names.push(value),
+            "hash" => hashes.push(value),
             _ => {}
         }
     }
@@ -263,7 +272,17 @@ fn x_forwarded_client_cert(nearest: &str) -> Option<Read> {
     if uris.is_empty() && dns_names.is_empty() {
         return Some(Read::Absent);
     }
-    Some(Read::Identity(ForwardedIdentity::Names { uris, dns_names }))
+    // Without the certificate, its SHA-256 as Envoy writes it, for a bound
+    // token. One given twice, or that does not read, gives none.
+    let hash = match hashes.as_slice() {
+        [only] => CertificateThumbprint::from_hex(only),
+        _ => None,
+    };
+    Some(Read::Identity(ForwardedIdentity::Names {
+        uris,
+        dns_names,
+        hash,
+    }))
 }
 
 fn linkerd_client_id(nearest: &str) -> Option<Read> {
@@ -430,7 +449,9 @@ mod tests {
             Read::Identity(ForwardedIdentity::Names {
                 uris: vec!["spiffe://td/ns/shop/sa/web".to_owned()],
                 dns_names: vec!["web.shop.svc".to_owned(), "web.local".to_owned()],
-            })
+                hash: None,
+            }),
+            "a Hash that does not read gives no thumbprint"
         );
         let lines = headers(&[
             ("x-forwarded-client-cert", "URI=spiffe://td/forged"),
@@ -441,8 +462,59 @@ mod tests {
             Read::Identity(ForwardedIdentity::Names {
                 uris: vec!["spiffe://td/own".to_owned()],
                 dns_names: Vec::new(),
+                hash: None,
             }),
             "keys are read whatever their case, from the last line"
+        );
+    }
+
+    #[test]
+    fn envoy_s_hash_is_read_with_the_names_alone() {
+        let hash = "9f".repeat(32);
+        let element = |hash: &str| {
+            headers(&[(
+                "x-forwarded-client-cert",
+                &format!(
+                    "By=spiffe://td/forged;Hash={};URI=spiffe://td/forged,\
+                     By=spiffe://td/hodor;Hash={hash};Subject=\"\";URI=spiffe://td/web",
+                    "1".repeat(64)
+                ),
+            )])
+        };
+        assert_eq!(
+            read(IdentityHeader::XForwardedClientCert, &element(&hash)),
+            Read::Identity(ForwardedIdentity::Names {
+                uris: vec!["spiffe://td/web".to_owned()],
+                dns_names: Vec::new(),
+                hash: CertificateThumbprint::from_hex(&hash),
+            }),
+            "the nearest element's Hash, never an earlier one's"
+        );
+        assert!(CertificateThumbprint::from_hex(&hash).is_some());
+        let quoted = headers(&[(
+            "x-forwarded-client-cert",
+            &format!("Hash=\"{hash}\";URI=spiffe://td/web"),
+        )]);
+        assert_eq!(
+            read(IdentityHeader::XForwardedClientCert, &quoted),
+            Read::Identity(ForwardedIdentity::Names {
+                uris: vec!["spiffe://td/web".to_owned()],
+                dns_names: Vec::new(),
+                hash: CertificateThumbprint::from_hex(&hash),
+            })
+        );
+        let twice = headers(&[(
+            "x-forwarded-client-cert",
+            &format!("Hash={hash};Hash={hash};URI=spiffe://td/web"),
+        )]);
+        assert_eq!(
+            read(IdentityHeader::XForwardedClientCert, &twice),
+            Read::Identity(ForwardedIdentity::Names {
+                uris: vec!["spiffe://td/web".to_owned()],
+                dns_names: Vec::new(),
+                hash: None,
+            }),
+            "a Hash given twice gives none"
         );
     }
 

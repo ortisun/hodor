@@ -392,6 +392,10 @@ pub struct TokenRequest {
     pub client: PresentedClient,
     /// What it asks for.
     pub grant: GrantRequest,
+    /// What a trusted proxy forwarded about the caller, whatever the
+    /// client proves who it is with: its certificate binds the tokens of a
+    /// client that asks for certificate-bound access tokens.
+    pub forwarded: Option<ForwardedIdentity>,
 }
 
 /// The identifier and the secret of an `Authorization: Basic` header,
@@ -460,7 +464,23 @@ impl TokenRequest {
                 return Err(TokenError::unsupported_grant_type("the grant is unknown"));
             }
         };
-        Ok(Self { client, grant })
+        Ok(Self {
+            client,
+            grant,
+            forwarded: None,
+        })
+    }
+
+    /// The same request, with what a trusted proxy forwarded about the
+    /// caller: for the client to prove who it is with, when it sent its
+    /// identifier alone, and for its tokens to be bound to.
+    #[must_use]
+    pub fn with_forwarded(self, forwarded: Option<ForwardedIdentity>) -> Self {
+        Self {
+            client: self.client.with_forwarded(forwarded.clone()),
+            grant: self.grant,
+            forwarded,
+        }
     }
 }
 

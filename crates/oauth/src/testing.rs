@@ -488,6 +488,8 @@ fn client(application_id: ApplicationId, at: Timestamp) -> Client {
     settings.backchannel_logout_uri = Some("https://payroll.example.com/backchannel".to_owned());
     settings.backchannel_logout_session_required = true;
     settings.allowed_scopes = vec!["openid".to_owned(), "payroll:read".to_owned()];
+    // Stored and read back as every other setting.
+    settings.certificate_bound_access_tokens = true;
     Client::create(
         application_id,
         ClientType::Confidential,

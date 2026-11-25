@@ -70,6 +70,10 @@ pub mod api {
         LogoutTokenSubject, MAX_BACKCHANNEL_LOGOUT_URI_LENGTH, MAX_LOGOUT_ERROR_LENGTH,
         SESSION_REVOKED, check_backchannel_logout_uri, logout_token_claims, logout_token_header,
     };
+    pub use crate::domain::binding::{
+        CERTIFICATE_THUMBPRINT_MEMBER, CONFIRMATION_CLAIM, CertificateThumbprint,
+        check_confirmation,
+    };
     pub use crate::domain::claim_mapper::{
         ClaimMapper, ClaimMapperId, ClaimMapperSettings, ClaimMapperSnapshot, ClaimSource,
         ClaimTarget, LONGEST_LOCALE, MAX_CLAIM_MAPPERS, MAX_CONSTANT_BYTES, MOST_MAPPED_BYTES,
@@ -92,7 +96,8 @@ pub mod api {
     pub use crate::domain::forwarded::{
         CertificateNames, ForwardedIdentity, LinkerdIdentity, MAX_FORWARDED_CERTIFICATE_BYTES,
         MAX_FORWARDED_CHAIN, MAX_LINKERD_IDENTITY_LENGTH, WorkloadIdentity,
-        advertise_forwarded_methods, names_match,
+        advertise_certificate_bound_tokens, advertise_forwarded_methods, names_match,
+        presented_thumbprint,
     };
     pub use crate::domain::introspection::{
         AccessTokenRecord, ActiveRefreshToken, REVOKED_BY_CLIENT, TokenQuery, TokenTypeHint,

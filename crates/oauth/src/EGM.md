@@ -59,6 +59,10 @@ follows is `docs/architecture/contexts/oauth.md`.
     `ReturnAddress`, `logout_refusal`
     (the codes of the page), `MAX_LOGOUT_STATE_LENGTH`,
     `MAX_LOGOUT_LOCALES_LENGTH`.
+  - Certificate-bound access tokens: `CertificateThumbprint`,
+    `check_confirmation`, `CONFIRMATION_CLAIM`,
+    `CERTIFICATE_THUMBPRINT_MEMBER`, `presented_thumbprint`,
+    `advertise_certificate_bound_tokens`.
   - Forwarded identities: `CertificateCheck`, `ForwardedIdentity`,
     `CertificateNames`, `WorkloadIdentity`, `LinkerdIdentity`, `names_match`,
     `advertise_forwarded_methods` and their bounds.

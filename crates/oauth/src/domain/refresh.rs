@@ -6,6 +6,7 @@
 use crate::domain::authorization::{
     AuthorizationCode, GrantId, TOKEN_LENGTH, is_base64url, random_token, same_bytes,
 };
+use crate::domain::binding::CertificateThumbprint;
 use crate::domain::client::{ClientId, TokenPolicy};
 use crate::domain::event::OauthEvent;
 use base64::Engine as _;
@@ -233,6 +234,9 @@ pub struct RefreshFamily {
     pub revoked_at: Option<Timestamp>,
     /// Why, such as `refresh_token_reused`.
     pub revocation_reason: Option<String>,
+    /// The certificate a public client's family is bound to: every
+    /// refresh must come with it.
+    pub certificate: Option<CertificateThumbprint>,
 }
 
 /// A token of a family, as stored.
@@ -346,8 +350,27 @@ impl RefreshFamily {
             last_used_at: now,
             revoked_at: None,
             revocation_reason: None,
+            certificate: None,
         };
         (family, first)
+    }
+
+    /// The same family, bound to the certificate of `thumbprint`, or to
+    /// none.
+    #[must_use]
+    pub const fn bound_to(mut self, thumbprint: Option<CertificateThumbprint>) -> Self {
+        self.certificate = thumbprint;
+        self
+    }
+
+    /// Whether a refresh that came with the certificate of `presented` may
+    /// use the family: any refresh of a family bound to nothing, and only
+    /// one with the same certificate of a bound family.
+    #[must_use]
+    pub fn accepts_certificate(&self, presented: Option<&CertificateThumbprint>) -> bool {
+        self.certificate
+            .as_ref()
+            .is_none_or(|bound| presented == Some(bound))
     }
 
     /// The record of its first token.

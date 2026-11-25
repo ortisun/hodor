@@ -4,9 +4,10 @@
 //! Specified in `docs/architecture/contexts/oauth.md`, "An identity
 //! forwarded by a proxy", and Decision 0056.
 
+use crate::domain::binding::CertificateThumbprint;
 use crate::domain::client::AuthenticationMethod;
 use crate::domain::spiffe::SpiffeId;
-use hodor_kernel::DomainError;
+use hodor_kernel::{Digest, DomainError};
 use hodor_keys::api::TrustDomainName;
 use serde_json::Value;
 use std::fmt;
@@ -169,6 +170,8 @@ pub enum ForwardedIdentity {
         uris: Vec<String>,
         /// Its DNS names.
         dns_names: Vec<String>,
+        /// Its thumbprint, when the proxy gave it: Envoy's `Hash`.
+        hash: Option<CertificateThumbprint>,
     },
     /// The Linkerd identity Linkerd's proxy asserts.
     Linkerd(String),
@@ -182,14 +185,46 @@ impl fmt::Debug for ForwardedIdentity {
                 .field("bytes", &certificate.len())
                 .field("chain", &chain.len())
                 .finish(),
-            Self::Names { uris, dns_names } => f
+            Self::Names {
+                uris,
+                dns_names,
+                hash,
+            } => f
                 .debug_struct("Names")
                 .field("uris", uris)
                 .field("dns_names", dns_names)
+                .field("hash", hash)
                 .finish(),
             Self::Linkerd(identity) => f.debug_tuple("Linkerd").field(identity).finish(),
         }
     }
+}
+
+impl ForwardedIdentity {
+    /// The thumbprint of the certificate the request came with, which a
+    /// bound token must name: the SHA-256 of a forwarded certificate, or
+    /// the hash a proxy forwarded with the names alone. A Linkerd identity
+    /// has none.
+    #[must_use]
+    pub fn thumbprint(&self, digest: &dyn Digest) -> Option<CertificateThumbprint> {
+        match self {
+            Self::Certificate { certificate, .. } => {
+                Some(CertificateThumbprint::of_certificate(certificate, digest))
+            }
+            Self::Names { hash, .. } => *hash,
+            Self::Linkerd(_) => None,
+        }
+    }
+}
+
+/// The thumbprint of the certificate a request came with, if a trusted
+/// proxy forwarded one.
+#[must_use]
+pub fn presented_thumbprint(
+    forwarded: Option<&ForwardedIdentity>,
+    digest: &dyn Digest,
+) -> Option<CertificateThumbprint> {
+    forwarded.and_then(|identity| identity.thumbprint(digest))
 }
 
 /// The names of a certificate that a forwarded identity is matched by.
@@ -262,6 +297,18 @@ pub fn advertise_forwarded_methods(document: &mut Value, methods: &[Authenticati
     }
 }
 
+/// Says in a discovery document that tokens are bound to certificates
+/// when the client asks (RFC 8705, section 3.3): for an operator who named
+/// a header that forwards them.
+pub fn advertise_certificate_bound_tokens(document: &mut Value) {
+    if let Value::Object(members) = document {
+        members.insert(
+            "tls_client_certificate_bound_access_tokens".to_owned(),
+            Value::Bool(true),
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -295,6 +342,55 @@ mod tests {
             document["introspection_endpoint_auth_methods_supported"],
             serde_json::json!(["client_secret_basic", "tls_client_auth", "spiffe_x509"])
         );
+    }
+
+    #[test]
+    fn certificate_bound_tokens_are_advertised_only_when_asked() {
+        let mut document = serde_json::json!({ "issuer": "https://hodor.example/t/acme" });
+        assert!(
+            document
+                .get("tls_client_certificate_bound_access_tokens")
+                .is_none()
+        );
+        advertise_certificate_bound_tokens(&mut document);
+        assert_eq!(
+            document["tls_client_certificate_bound_access_tokens"],
+            serde_json::json!(true)
+        );
+    }
+
+    #[test]
+    fn a_certificate_s_thumbprint_or_envoy_s_hash_is_what_binds_a_token() {
+        use hodor_kernel::random::testing::FakeDigest;
+        let certificate = ForwardedIdentity::Certificate {
+            certificate: b"a certificate".to_vec(),
+            chain: Vec::new(),
+        };
+        assert_eq!(
+            certificate.thumbprint(&FakeDigest),
+            Some(CertificateThumbprint::of_certificate(
+                b"a certificate",
+                &FakeDigest
+            ))
+        );
+        let hash = CertificateThumbprint::from_bytes([3; 32]);
+        let names = ForwardedIdentity::Names {
+            uris: vec!["spiffe://td/web".to_owned()],
+            dns_names: Vec::new(),
+            hash: Some(hash),
+        };
+        assert_eq!(names.thumbprint(&FakeDigest), Some(hash));
+        let bare = ForwardedIdentity::Names {
+            uris: vec!["spiffe://td/web".to_owned()],
+            dns_names: Vec::new(),
+            hash: None,
+        };
+        assert_eq!(bare.thumbprint(&FakeDigest), None);
+        let linkerd =
+            ForwardedIdentity::Linkerd("web.shop.serviceaccount.identity.l.td".to_owned());
+        assert_eq!(linkerd.thumbprint(&FakeDigest), None);
+        assert_eq!(presented_thumbprint(None, &FakeDigest), None);
+        assert_eq!(presented_thumbprint(Some(&names), &FakeDigest), Some(hash));
     }
 
     #[test]

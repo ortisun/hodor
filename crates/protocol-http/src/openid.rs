@@ -16,7 +16,8 @@ use axum::routing::get;
 use axum::{Extension, Json, Router};
 use hodor_kernel::TenantContext;
 use hodor_oauth::api::{
-    BearerRefusal, OPENID_SCOPE, UserInfoService, advertise_forwarded_methods, discovery_document,
+    BearerRefusal, ForwardedIdentity, OPENID_SCOPE, UserInfoService,
+    advertise_certificate_bound_tokens, advertise_forwarded_methods, discovery_document,
 };
 use hodor_tenant::api::TenantService;
 
@@ -95,6 +96,9 @@ async fn discovery(
     let mut document = discovery_document(&issuer(&state.public_url, &slug), &names);
     if let Some(header) = state.identity_header {
         advertise_forwarded_methods(&mut document, header.methods());
+        if header.forwards_certificates() {
+            advertise_certificate_bound_tokens(&mut document);
+        }
     }
     let mut response = Json(document).into_response();
     let headers = response.headers_mut();
@@ -113,6 +117,7 @@ async fn userinfo(
     State(state): State<UserInfoState>,
     Extension(tenant): Extension<TenantContext>,
     Extension(TenantSlug(slug)): Extension<TenantSlug>,
+    forwarded: Option<Extension<ForwardedIdentity>>,
     headers: HeaderMap,
 ) -> Response {
     let Ok(token) = bearer(&headers) else {
@@ -122,9 +127,15 @@ async fn userinfo(
             "UserInfo",
         );
     };
+    let forwarded = forwarded.map(|Extension(found)| found);
     match state
         .userinfo
-        .claims(&tenant, &issuer(&state.public_url, &slug), token)
+        .claims(
+            &tenant,
+            &issuer(&state.public_url, &slug),
+            token,
+            forwarded.as_ref(),
+        )
         .await
     {
         Ok(Ok(claims)) => not_cached(Json(claims).into_response()),

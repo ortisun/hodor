@@ -1452,3 +1452,71 @@ async fn the_database_holds_each_method_to_its_identity() {
         );
     }
 }
+
+#[tokio::test]
+async fn the_database_binds_tokens_only_where_a_certificate_can_come() {
+    let database = TestDatabase::start().await;
+    let tenant = sqlx::types::Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO oauth.application VALUES ($1, $1, 'Shop', false, 'enabled', now(), now(), 0)",
+    )
+    .bind(tenant)
+    .execute(database.owner())
+    .await
+    .expect("application");
+    let insert = |method: &'static str, linkerd: Option<&'static str>, bound: bool| {
+        sqlx::query(
+            "INSERT INTO oauth.client
+                 (tenant_id, id, application_id, name, client_type, authentication_method,
+                  grant_types, redirect_uris, allowed_scopes, require_pkce,
+                  access_token_seconds, id_token_seconds, refresh_token_seconds,
+                  refresh_idle_seconds, status, created_at, updated_at, linkerd_identity,
+                  principal_id, certificate_bound_access_tokens)
+             VALUES ($1, gen_random_uuid(), $1, 'Web', 'confidential', $2,
+                     ARRAY['client_credentials'], ARRAY[]::text[], ARRAY[]::text[], true,
+                     300, 300, 2592000, 604800, 'enabled', now(), now(), $3,
+                     CASE WHEN $3 IS NOT NULL THEN gen_random_uuid() END, $4)",
+        )
+        .bind(tenant)
+        .bind(method)
+        .bind(linkerd)
+        .bind(bound)
+        .execute(database.owner())
+    };
+    let kept = insert("client_secret_basic", None, true).await;
+    assert!(kept.is_ok(), "{kept:?}");
+    let kept = insert(
+        "linkerd_identity",
+        Some("web.shop.serviceaccount.identity.linkerd.cluster.local"),
+        false,
+    )
+    .await;
+    assert!(kept.is_ok(), "{kept:?}");
+    let refused = insert(
+        "linkerd_identity",
+        Some("api.shop.serviceaccount.identity.linkerd.cluster.local"),
+        true,
+    )
+    .await;
+    assert!(refused.is_err(), "Linkerd forwards no certificate");
+
+    // A client made before the column is bound to nothing; a family's
+    // thumbprint is 32 bytes or none.
+    let unbound: bool = sqlx::query_scalar(
+        "SELECT column_default = 'false' FROM information_schema.columns
+         WHERE table_schema = 'oauth' AND table_name = 'client'
+           AND column_name = 'certificate_bound_access_tokens'",
+    )
+    .fetch_one(database.owner())
+    .await
+    .expect("column");
+    assert!(unbound);
+    let shape: String = sqlx::query_scalar(
+        "SELECT pg_get_constraintdef(oid) FROM pg_constraint
+         WHERE conname = 'refresh_token_family_certificate_thumbprint_shape'",
+    )
+    .fetch_one(database.owner())
+    .await
+    .expect("constraint");
+    assert!(shape.contains("32"), "{shape}");
+}
