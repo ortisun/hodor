@@ -1048,6 +1048,13 @@ fn finished(
                     what = names.what,
                     "a delivery failed for the last time and was set aside"
                 );
+            } else if outcome == "skipped" {
+                // The request was made, but the delivery had changed since
+                // it was leased, so what the endpoint answered is not kept.
+                tracing::warn!(
+                    what = names.what,
+                    "an attempt was made but not recorded: the delivery was no longer as it was leased"
+                );
             }
         }
         Ok(Err(error)) => {
