@@ -181,6 +181,34 @@ fn a_request_without_max_age_or_acr_values_takes_the_client_s_defaults() {
     );
     let longer = check(&defaults, &[("max_age", "86400")]).expect("accepted");
     assert_eq!(longer.max_age, Some(86_400));
+    // So does an essential `acr` of the `claims` parameter, which is the
+    // request's `acr_values` and not asked beside the defaults.
+    let essential = check(
+        &defaults,
+        &[(
+            "claims",
+            r#"{"id_token":{"acr":{"essential":true,"values":["urn:hodor:acr:single-factor"]}}}"#,
+        )],
+    )
+    .expect("accepted");
+    assert_eq!(
+        essential.acr_values.as_deref(),
+        Some("urn:hodor:acr:single-factor")
+    );
+    // An `acr` that is only a preference asks for no level, so the
+    // defaults stand.
+    let preferred = check(
+        &defaults,
+        &[(
+            "claims",
+            r#"{"id_token":{"acr":{"values":["urn:hodor:acr:single-factor"]}}}"#,
+        )],
+    )
+    .expect("accepted");
+    assert_eq!(
+        preferred.acr_values.as_deref(),
+        Some("urn:hodor:acr:mfa urn:example:gold")
+    );
     // A client without defaults asks for nothing.
     let plain = check(&setting(), &[]).expect("accepted");
     assert_eq!(plain.max_age, None);

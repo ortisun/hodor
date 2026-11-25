@@ -507,6 +507,56 @@ fn userinfo_answers_only_the_claims_of_the_token_s_scopes() {
 }
 
 #[test]
+fn userinfo_adds_the_claims_the_grant_was_asked_for_whatever_the_scopes() {
+    let user = UserId::generate();
+    let person = PersonClaims {
+        name: Some("Ana Lima".to_owned()),
+        email: Some(("ana@example.com".to_owned(), true)),
+        claims: every_claim(),
+        ..PersonClaims::default()
+    };
+    let openid = vec!["openid".to_owned()];
+    let asked = vec!["name".to_owned(), "phone_number".to_owned()];
+    assert_eq!(
+        userinfo_claims_with(&user.to_string(), &openid, &asked, &person),
+        json!({
+            "sub": user.to_string(),
+            "name": "Ana Lima",
+            "phone_number": person.claims.phone_number,
+        }),
+        "only what was asked: no `phone_number_verified`, no `email`"
+    );
+}
+
+#[test]
+fn every_claim_of_the_person_has_its_scope_and_its_value() {
+    let person = PersonClaims {
+        name: Some("Ana Lima".to_owned()),
+        preferred_username: Some("ana".to_owned()),
+        locale: Some("pt-BR".to_owned()),
+        updated_at: Some(now()),
+        email: Some(("ana@example.com".to_owned(), false)),
+        claims: every_claim(),
+        groups: Vec::new(),
+    };
+    for (name, scope) in PERSON_CLAIMS {
+        assert_eq!(scope_of_claim(name), Some(scope));
+        assert!(person_claim(name, &person).is_some(), "{name} has a value");
+        assert!(
+            person_claim(name, &PersonClaims::default()).is_none(),
+            "{name} is left out without a value"
+        );
+    }
+    assert_eq!(scope_of_claim("groups"), None);
+    assert_eq!(scope_of_claim("sub"), None);
+    assert_eq!(person_claim("email_verified", &person), Some(json!(false)));
+    assert_eq!(
+        person_claim("updated_at", &person),
+        Some(json!(now().unix_timestamp()))
+    );
+}
+
+#[test]
 fn discovery_names_only_what_is_built() {
     let document = discovery_document(ISSUER, &["urn:example:one", "urn:example:two"], false);
     assert_eq!(document["issuer"], ISSUER);
@@ -635,7 +685,7 @@ fn discovery_names_only_what_is_built() {
     );
     assert_eq!(document["request_uri_parameter_supported"], json!(true));
     assert_eq!(document["require_request_uri_registration"], json!(true));
-    assert_eq!(document["claims_parameter_supported"], json!(false));
+    assert_eq!(document["claims_parameter_supported"], json!(true));
     for absent in ["registration_endpoint", "device_authorization_endpoint"] {
         assert!(document.get(absent).is_none(), "{absent} is not built");
     }

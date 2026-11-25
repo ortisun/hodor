@@ -749,6 +749,9 @@ pub struct PersonAttributes {
     pub locale: Option<String>,
     /// The person's standard claims.
     pub claims: StandardClaims,
+    /// When the person was last changed, for the `updated_at` the `claims`
+    /// parameter may ask for. No mapper reads it.
+    pub updated_at: Option<Timestamp>,
 }
 
 /// What must be read for the mappers that apply to a token.

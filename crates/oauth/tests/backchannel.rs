@@ -169,6 +169,7 @@ impl World {
                     scopes: scopes.iter().map(|scope| (*scope).to_owned()).collect(),
                     audiences: Vec::new(),
                     organization: None,
+                    claims: hodor_oauth::api::GrantClaims::default(),
                     status: GrantStatus::Active,
                     created_at: self.clock.now(),
                     revoked_at: None,

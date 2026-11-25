@@ -135,7 +135,15 @@ memberships, verifier, digest, random, clock })`:
 - `issue_code(tenant, request, person, caller)`: stores a grant, with the
   request's organization, and a code
   in one unit of work with `oauth.authorization_code_issued`; returns the
-  code once.
+  code once. `issue_code_consented(tenant, request, person, consented,
+  caller)` does the same with the grant giving the claims of the `claims`
+  parameter that `consented` covers; `issue_code` passes the request's
+  scopes.
+- `with_pairwise_subjects(pairwise)` and `names_another(tenant, request,
+  user)`: whether the request asked through `claims` for a `sub` that is
+  not the person as its client knows them, pairwise for a pairwise client
+  (an error without pairwise subjects); a client the tenant no longer has
+  knows nobody.
 - `redeem_code(tenant, code, presentation, caller)`: every refusal is
   `oauth.code_refused` with the reason as its detail (`unknown`,
   `already_redeemed`, `expired`, `other_client`, ...). A second redemption,
@@ -185,6 +193,8 @@ attributes, the effective groups, the organization's name), and the claims
 of each target as `MappedClaims::of(target)`. The token endpoint reads the
 access token and the ID token of a code and the access token of a refresh;
 client credentials and token exchange pass none; UserInfo reads its own.
+`person(tenant, user)` reads the person's `PersonAttributes`, for the
+claims a grant gives the ID token through the `claims` parameter.
 
 ### Token endpoint (`token.rs`)
 
@@ -308,9 +318,11 @@ certificates; without them every JWT-SVID, and every client of
     are those, from a code and from a refresh. Without it a pairwise client
     is answered `oauth.pairwise_unavailable`, an error of storage.
   - The ID token, when the scopes hold `openid`: claims from
-    `id_token_claims`, signed the same way with the client's ID token
-    algorithm (`ClientSettings::id_token_algorithm`, ES256, RS256, PS256
-    or EdDSA) and
+    `id_token_claims`, then the person's claims of the grant's
+    `GrantClaims::id_token` (`add_asked_claims`, the person read through
+    `ClaimMapping::person`), then the mappers' claims, signed the same way
+    with the client's ID token algorithm
+    (`ClientSettings::id_token_algorithm`, ES256, RS256, PS256 or EdDSA) and
     lifetime, header `typ` `JWT`.
   - The register: every access token issued is recorded with
     `AccessTokenRecordStore::record` in the unit of work of its event: the
@@ -327,7 +339,9 @@ any, are active, and its principal, if any, is a workload that may act
 (`PersonStanding::workload_that_may_act`); and then each parent of a token
 made by exchange, up to `MAX_ACTORS` deep, is in force by the same checks.
 `record(tenant, token_id)` reads a record whatever its state, for an
-exchange to copy its grant and family.
+exchange to copy its grant and family. `grant_in_force(tenant, token_id,
+client_id)` answers the token's grant when it is in force, and
+`person_in_force` that grant's person.
 
 `WorkloadTokens::new(access_tokens, clock)`, also
 `TokenService::workload_tokens()`: `revoke_in(uow, principal, reason,
@@ -364,6 +378,10 @@ grants, clients, applications, resource_servers, digest, random, clock })`:
 - `must_ask(tenant, request, person)`: `must_ask` of the domain with the
   person's consent for the client; reads nothing when nobody is asked
   whatever was agreed (a first-party client without `prompt=consent`).
+- `consented_scopes(tenant, request, person)`: for a first-party client its
+  allowed scopes, otherwise the person's consent for it that stands, each
+  with the request's scopes: what the `claims` parameter may give claims
+  of (Decision 0068).
 - `hold(tenant, request, person)`: stores a pending request that waits for
   this person's consent in this session; returns its identifier and the
   browser's secret.
@@ -407,10 +425,11 @@ verifier, identity, register, memberships, mapping, digest, clock })`:
   `IdentityService::get`: an unknown user, or one who may not sign in (not
   `Active`, or a service account or an agent), is `InvalidToken`. The
   person is the one of the token's grant, through
-  `AccessTokenRegister::person_in_force`, never read from its `sub`.
-  Answers `userinfo_claims` for the token's scopes, with the token's own
-  `sub` and the person's standard claims from the snapshot, and the claims
-  of the client's mappers, as
+  `AccessTokenRegister::grant_in_force`, never read from its `sub`.
+  Answers `userinfo_claims_with` for the token's scopes and the grant's
+  `GrantClaims::userinfo`, with the token's own `sub` and the person's
+  standard claims from the snapshot, and the claims of the client's
+  mappers, as
   `UserInfoAnswer::Json`; when the token's client, read through
   `ClientStore::get` in the token's tenant, has a
   `ClientSettings::userinfo_algorithm`, as `UserInfoAnswer::Signed`: the

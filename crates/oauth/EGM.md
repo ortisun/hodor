@@ -32,7 +32,10 @@ standard claims at UserInfo, under the scopes `profile`, `address` and
 `phone`, and as attributes a claim mapper reads, their names reserved; and
 Issue-132: the client registration settings of a tenant, its registration
 policy and its initial access tokens, with the admission the registration
-endpoint asks for. Storage,
+endpoint asks for; and Issue-124: the `claims` parameter, which puts a
+person's claims in the ID token or at UserInfo as asked when a scope
+consented to for the client covers them, reads an essential `acr` as
+`acr_values` and a `sub` with a value as the person expected. Storage,
 randomness, hashing, signature checking and time are reached through ports
 and kernel traits.
 

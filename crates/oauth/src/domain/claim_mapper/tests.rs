@@ -510,6 +510,7 @@ fn each_source_writes_what_the_person_has_and_leaves_out_what_they_do_not() {
             email: Some(("ana@example.com".to_owned(), false)),
             locale: Some("pt-BR".to_owned()),
             claims: Default::default(),
+            updated_at: None,
         },
         groups: vec![finance, other],
         organization: Some(organization),

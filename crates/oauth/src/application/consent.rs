@@ -14,7 +14,8 @@ use crate::domain::authorization::{
 };
 use crate::domain::client::ClientId;
 use crate::domain::consent::{
-    Consent, ConsentAction, ConsentActor, ConsentAnswer, ConsentHistoryEntry, must_ask,
+    Consent, ConsentAction, ConsentActor, ConsentAnswer, ConsentHistoryEntry, consented_scopes,
+    must_ask,
 };
 use crate::domain::event::OauthEvent;
 use crate::domain::refresh::OFFLINE_ACCESS;
@@ -161,6 +162,39 @@ impl ConsentService {
             .get(uow.as_mut(), person.user_id, request.client_id)
             .await?;
         Ok(must_ask(request, standing.as_ref(), now))
+    }
+
+    /// The scopes consented to for the client of `request`, for `person`,
+    /// once a code may be issued: what the `claims` parameter may give
+    /// claims of (Decision 0068).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    pub async fn consented_scopes(
+        &self,
+        tenant: &TenantContext,
+        request: &AuthorizationRequest,
+        person: &SignedInPerson,
+    ) -> Result<Vec<String>, DomainError> {
+        let now = self.ports.clock.now();
+        let mut uow = self.ports.units_of_work.begin(tenant).await?;
+        if request.first_party {
+            let allowed = self
+                .ports
+                .clients
+                .get(uow.as_mut(), request.client_id)
+                .await?
+                .map(|client| client.snapshot().settings.allowed_scopes.clone())
+                .unwrap_or_default();
+            return Ok(consented_scopes(request, None, &allowed, now));
+        }
+        let standing = self
+            .ports
+            .consents
+            .get(uow.as_mut(), person.user_id, request.client_id)
+            .await?;
+        Ok(consented_scopes(request, standing.as_ref(), &[], now))
     }
 
     /// Keeps `request` while `person` is asked. The browser gets the

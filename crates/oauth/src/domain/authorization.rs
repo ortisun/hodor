@@ -6,6 +6,7 @@
 //! endpoint".
 
 use crate::domain::application::Application;
+use crate::domain::claims_parameter::{ClaimsRequest, GrantClaims, read_claims};
 use crate::domain::client::{Client, ClientId, GrantType};
 use crate::domain::consent::ConsentWait;
 use crate::domain::event::OauthEvent;
@@ -227,6 +228,14 @@ pub struct AuthorizationRequest {
     /// while the person signs in holds the hint's `sub` alone.
     #[serde(skip)]
     pub given_hint: Option<String>,
+    /// What the `claims` parameter asked for: the person's claims for the
+    /// ID token and for UserInfo, and the `sub` expected. Empty without
+    /// one.
+    #[serde(default, skip_serializing_if = "ClaimsRequest::is_empty")]
+    pub claims: ClaimsRequest,
+    /// The languages the client prefers for the claims, as given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claims_locales: Option<String>,
 }
 
 /// An error that may be sent back to the client at its redirect address.
@@ -570,15 +579,33 @@ fn check_parameters(
     let hint = |name: &str| -> Result<Option<String>, AuthorizationRefusal> {
         match parameters.once(name) {
             Some(value) if value.len() > MAX_HINT_LENGTH || !is_printable(value) => Err(invalid(
-                "login_hint, ui_locales and acr_values hold at most 255 characters",
+                "login_hint, ui_locales, claims_locales and acr_values hold at most 255 characters",
             )),
             value => Ok(value.map(str::to_owned)),
         }
     };
     let login_hint = hint("login_hint")?;
     let ui_locales = hint("ui_locales")?;
-    // A request that names no `acr_values` takes the client's defaults.
-    let acr_values = hint("acr_values")?.or_else(|| client.default_acr_values());
+    let claims_locales = hint("claims_locales")?;
+    let mut acr_values = hint("acr_values")?;
+    let claims = match parameters.once("claims") {
+        None => ClaimsRequest::default(),
+        Some(text) => {
+            let read = read_claims(text).map_err(invalid)?;
+            if read.acr_with_values && acr_values.is_some() {
+                return Err(invalid(
+                    "acr is asked for with values both in claims and in acr_values",
+                ));
+            }
+            if read.essential_acr.is_some() {
+                acr_values = read.essential_acr;
+            }
+            read.request
+        }
+    };
+    // A request that names no `acr_values`, neither as the parameter nor as
+    // an essential `acr` of `claims`, takes the client's defaults.
+    let acr_values = acr_values.or_else(|| client.default_acr_values());
     let organization = match parameters.once("organization") {
         None => None,
         Some(value) => match value.parse::<OrganizationId>() {
@@ -682,6 +709,8 @@ fn check_parameters(
         response_mode,
         id_token_hint: None,
         given_hint: parameters.id_token_hint().map(str::to_owned),
+        claims,
+        claims_locales,
     })
 }
 
@@ -851,6 +880,17 @@ impl AuthorizationRequest {
         }
     }
 
+    /// Whether the request asked through `claims` for a `sub` other than
+    /// `subject`, the person signed in as the client knows them. Such a
+    /// session is not used: the person signs in again.
+    #[must_use]
+    pub fn names_another(&self, subject: &str) -> bool {
+        self.claims
+            .subject
+            .as_deref()
+            .is_some_and(|wanted| wanted != subject)
+    }
+
     /// Whether a person who comes back to a request that arrived at
     /// `received_at` signed in as it asked: a request that asked for a new
     /// sign-in needs a session that signed in after it arrived.
@@ -1015,6 +1055,8 @@ pub struct Grant {
     /// The organization the person signed in for, if the request named
     /// one.
     pub organization: Option<OrganizationId>,
+    /// The claims asked through the `claims` parameter that it gives.
+    pub claims: GrantClaims,
     /// Whether it stands.
     pub status: GrantStatus,
     /// When it was made.
@@ -1037,6 +1079,7 @@ impl Grant {
             scopes: request.scopes.clone(),
             audiences: request.audiences.clone(),
             organization: request.organization,
+            claims: GrantClaims::default(),
             status: GrantStatus::Active,
             created_at: now,
             revoked_at: None,

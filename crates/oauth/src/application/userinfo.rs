@@ -10,7 +10,7 @@ use crate::domain::client::{ClientId, IdTokenAlgorithm};
 use crate::domain::forwarded::{ForwardedIdentity, presented_thumbprint};
 use crate::domain::openid::{
     BearerRefusal, PersonClaims, PublishedKey, check_access_token, signed_userinfo_claims,
-    userinfo_claims, userinfo_header,
+    userinfo_claims_with, userinfo_header,
 };
 use crate::domain::resource_server::GROUPS_SCOPE;
 use crate::domain::token::{compact, signing_input};
@@ -110,8 +110,9 @@ impl UserInfoService {
     }
 
     /// The answer for the person `token` was issued for: the claims of its
-    /// scopes and of its client's mappers, in JSON, or signed with the
-    /// client's UserInfo algorithm when it chose one. A token bound to a
+    /// scopes, those its grant was asked for UserInfo through the `claims`
+    /// parameter, and those of its client's mappers, in JSON, or signed with
+    /// the client's UserInfo algorithm when it chose one. A token bound to a
     /// certificate must come with the one a trusted proxy `forwarded`,
     /// whichever the answer.
     ///
@@ -144,16 +145,17 @@ impl UserInfoService {
         // The person is the one of the token's grant, never read from its
         // `sub`, which a pairwise client's token gives as a pairwise
         // identifier.
-        let Some(person) = self
+        let Some(grant) = self
             .ports
             .register
-            .person_in_force(tenant, &checked.token_id, &checked.client_id)
+            .grant_in_force(tenant, &checked.token_id, &checked.client_id)
             .await?
         else {
             return Ok(Err(BearerRefusal::InvalidToken(
                 "the token is not in force, or is about no person",
             )));
         };
+        let person = grant.user_id;
         let user = match self.ports.identity.get(tenant, person).await {
             Ok(user) => user,
             Err(error) if error.kind() == ErrorKind::NotFound => {
@@ -197,7 +199,14 @@ impl UserInfoService {
             claims: snapshot.claims.clone(),
             groups,
         };
-        let mut claims = userinfo_claims(&checked.subject, &checked.scopes, &person);
+        // The claims of the scopes, and those the grant was asked for
+        // UserInfo through `claims` that a consented scope covers.
+        let mut claims = userinfo_claims_with(
+            &checked.subject,
+            &checked.scopes,
+            &grant.claims.userinfo,
+            &person,
+        );
         let Ok(client_id) = checked.client_id.parse::<ClientId>() else {
             return Ok(Ok(UserInfoAnswer::Json(claims)));
         };

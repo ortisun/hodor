@@ -329,6 +329,7 @@ async fn of_two_moves_of_one_family_at_the_same_moment_exactly_one_moves_it() {
         scopes: vec!["openid".to_owned()],
         audiences: Vec::new(),
         organization: None,
+        claims: hodor_oauth::api::GrantClaims::default(),
         status: GrantStatus::Active,
         created_at: now,
         revoked_at: None,

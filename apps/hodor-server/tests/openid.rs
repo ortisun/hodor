@@ -360,6 +360,9 @@ async fn the_discovery_document_names_what_answers() {
     // Back-channel logout is offered, and every logout token carries `sid`.
     assert_eq!(document["backchannel_logout_supported"], true);
     assert_eq!(document["backchannel_logout_session_supported"], true);
+    // The `claims` parameter is read, and request objects by value.
+    assert_eq!(document["claims_parameter_supported"], true);
+    assert_eq!(document["request_parameter_supported"], true);
     // The authorization endpoint answers in the query and with the page of
     // `form_post`.
     assert_eq!(
@@ -1819,4 +1822,222 @@ async fn a_client_without_a_userinfo_algorithm_gets_json_and_its_choice_can_chan
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(kind, "application/jwt");
     assert_eq!(decode_header(&body).expect("header").alg, Algorithm::EdDSA);
+}
+
+/// Where a request's error or code is sent back, as parameters.
+async fn sent_back(browser: &mut Browser, slug: &str, query: &str) -> BTreeMap<String, String> {
+    let (status, location, body) = browser
+        .navigate(
+            Method::GET,
+            &format!("/t/{slug}/oauth2/authorize?{query}"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::FOUND, "{body}");
+    let location = location.expect("a redirect");
+    assert!(location.starts_with(REDIRECT), "{location}");
+    query_of(&location)
+}
+
+#[tokio::test]
+async fn the_claims_parameter_gives_consented_claims_where_asked_and_honors_a_sub() {
+    let database = TestDatabase::start().await;
+    let client_id = tenant(&database, "acme").await;
+    let (_, ana) = ana_of(&database, "acme").await;
+    let server = server(&database).await;
+    let mut browser = Browser::not_following(&server);
+    browser.sign_in("acme", "ana@example.com", PASSWORD).await;
+
+    // What the suite's `oidcc-claims-essential` asks: `name` at UserInfo,
+    // with the scope `openid` alone. The client's application is first
+    // party and may ask for `profile` and `email`: both count as consented.
+    let claims = serde_json::json!({
+        "userinfo": {"name": {"essential": true}},
+        "id_token": {"email": null, "preferred_username": {"essential": true}}
+    })
+    .to_string();
+    let signed_in = code(
+        &mut browser,
+        "acme",
+        &authorize_query(
+            client_id,
+            "openid",
+            &[("claims", claims.as_str()), ("claims_locales", "fr-CA en")],
+        ),
+    )
+    .await;
+    let tokens = redeem(&server, "acme", client_id, &signed_in).await;
+    let identity = claims_of(tokens["id_token"].as_str().expect("an ID token"));
+    assert_eq!(identity["email"], "ana@example.com", "under its own name");
+    assert_eq!(identity["preferred_username"], "ana.lima");
+    assert!(identity.get("name").is_none(), "asked for UserInfo only");
+    let info = userinfo(
+        &server,
+        "acme",
+        Method::GET,
+        tokens["access_token"].as_str(),
+    )
+    .await;
+    assert_eq!(info.status, StatusCode::OK);
+    assert_eq!(info.body["name"], "Ana Lima");
+    assert!(
+        info.body.get("email").is_none(),
+        "asked for the ID token only, and no scope of the token covers it"
+    );
+
+    // A request that names someone else is never answered with Ana's
+    // session: with prompt=none, login_required.
+    let someone_else = serde_json::json!({
+        "id_token": {"sub": {"value": hodor_kernel::UserId::generate().to_string()}}
+    })
+    .to_string();
+    let answer = sent_back(
+        &mut browser,
+        "acme",
+        &authorize_query(
+            client_id,
+            "openid",
+            &[("claims", someone_else.as_str()), ("prompt", "none")],
+        ),
+    )
+    .await;
+    assert_eq!(answer["error"], "login_required");
+    // Otherwise the person signs in again; Ana is still not the one named.
+    let (status, location, _) = browser
+        .navigate(
+            Method::GET,
+            &format!(
+                "/t/acme/oauth2/authorize?{}",
+                authorize_query(client_id, "openid", &[("claims", someone_else.as_str())])
+            ),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::FOUND);
+    assert!(
+        location
+            .expect("a redirect")
+            .starts_with("/t/acme/account/sign-in?"),
+    );
+    let (_, body) = browser.sign_in("acme", "ana@example.com", PASSWORD).await;
+    assert_eq!(body["continue"], "/t/acme/oauth2/authorize/resume");
+    let (status, location, _) = browser
+        .navigate(Method::GET, "/t/acme/oauth2/authorize/resume", None)
+        .await;
+    assert_eq!(status, StatusCode::FOUND);
+    assert_eq!(
+        query_of(&location.expect("a redirect"))["error"],
+        "access_denied"
+    );
+
+    // Her own `sub`: a code at once.
+    let herself = serde_json::json!({"id_token": {"sub": {"value": ana.to_string()}}}).to_string();
+    let signed_in = code(
+        &mut browser,
+        "acme",
+        &authorize_query(client_id, "openid", &[("claims", herself.as_str())]),
+    )
+    .await;
+    let tokens = redeem(&server, "acme", client_id, &signed_in).await;
+    assert_eq!(
+        claims_of(tokens["id_token"].as_str().expect("an ID token"))["sub"],
+        ana.to_string()
+    );
+
+    // A parameter that is not what OpenID Connect says is an invalid request.
+    let answer = sent_back(
+        &mut browser,
+        "acme",
+        &authorize_query(client_id, "openid", &[("claims", "[\"name\"]")]),
+    )
+    .await;
+    assert_eq!(answer["error"], "invalid_request");
+}
+
+#[tokio::test]
+async fn an_essential_acr_asked_through_claims_steps_the_person_up() {
+    let database = TestDatabase::start().await;
+    let client_id = tenant(&database, "acme").await;
+    let server = server(&database).await;
+    let mut browser = Browser::not_following(&server);
+    let (_, signed_in) = browser.sign_in("acme", "ana@example.com", PASSWORD).await;
+    assert_eq!(signed_in["status"], "completed");
+    let secret = enroll_application(&database, "acme").await;
+
+    // Beside `acr_values`, an `acr` with values is refused.
+    let essential = serde_json::json!({
+        "id_token": {"acr": {"essential": true, "values": ["urn:hodor:acr:mfa"]}}
+    })
+    .to_string();
+    let answer = sent_back(
+        &mut browser,
+        "acme",
+        &authorize_query(
+            client_id,
+            "openid",
+            &[
+                ("claims", essential.as_str()),
+                ("acr_values", "urn:hodor:acr:mfa"),
+            ],
+        ),
+    )
+    .await;
+    assert_eq!(answer["error"], "invalid_request");
+
+    // Not essential, it is a preference: no step-up, and the ID token says
+    // what the session reached.
+    let preferred =
+        serde_json::json!({"id_token": {"acr": {"values": ["urn:hodor:acr:mfa"]}}}).to_string();
+    let at_once = code(
+        &mut browser,
+        "acme",
+        &authorize_query(client_id, "openid", &[("claims", preferred.as_str())]),
+    )
+    .await;
+    let tokens = redeem(&server, "acme", client_id, &at_once).await;
+    assert_eq!(
+        claims_of(tokens["id_token"].as_str().expect("ID token"))["acr"],
+        "urn:hodor:acr:single-factor"
+    );
+
+    // Essential, it is a level to reach: the person is asked for the code
+    // of their application.
+    let (status, location, body) = browser
+        .navigate(
+            Method::GET,
+            &format!(
+                "/t/acme/oauth2/authorize?{}",
+                authorize_query(client_id, "openid", &[("claims", essential.as_str())])
+            ),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::FOUND, "{body}");
+    assert!(
+        location
+            .expect("a redirect")
+            .starts_with("/t/acme/account/sign-in?")
+    );
+    let (status, waiting) = browser
+        .send(Method::GET, "/t/acme/interaction/sign-in", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{waiting}");
+    assert_eq!(waiting["step"], "totp", "{waiting}");
+    let (status, done) = browser
+        .send(
+            Method::POST,
+            "/t/acme/interaction/sign-in/steps/totp",
+            Some(serde_json::json!({ "code": next_code(&secret) })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{done}");
+    let resume = done["continue"].as_str().expect("continue").to_owned();
+    let (status, location, body) = browser.navigate(Method::GET, &resume, None).await;
+    assert_eq!(status, StatusCode::FOUND, "{body}");
+    let answer = query_of(&location.expect("a redirect"));
+    let tokens = redeem(&server, "acme", client_id, &answer["code"]).await;
+    assert_eq!(
+        claims_of(tokens["id_token"].as_str().expect("ID token"))["acr"],
+        "urn:hodor:acr:mfa"
+    );
 }

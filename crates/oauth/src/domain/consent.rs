@@ -185,6 +185,37 @@ pub fn must_ask(
     !standing.is_some_and(|consent| consent.covers(request, now))
 }
 
+/// The scopes consented to for the client of `request`, once a code may
+/// be issued for it: for a first-party application, `allowed`, the scopes
+/// the client may ask for, which its administrator decided for the person;
+/// for a third-party one, the scopes of the request, which the person
+/// agreed to, and those of `standing`, their consent for the client, when
+/// it stands at `now`. What the `claims` parameter may give claims of
+/// (Decision 0068).
+#[must_use]
+pub fn consented_scopes(
+    request: &AuthorizationRequest,
+    standing: Option<&Consent>,
+    allowed: &[String],
+    now: Timestamp,
+) -> Vec<String> {
+    let mut scopes = request.scopes.clone();
+    let more: &[String] = if request.first_party {
+        allowed
+    } else {
+        match standing {
+            Some(consent) if consent.stands_at(now) => &consent.scopes,
+            _ => &[],
+        }
+    };
+    for scope in more {
+        if !scopes.contains(scope) {
+            scopes.push(scope.clone());
+        }
+    }
+    scopes
+}
+
 /// The person's answer to a request that waits for consent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConsentAnswer {

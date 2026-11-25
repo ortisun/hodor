@@ -221,6 +221,8 @@ fn asked(client: ClientId) -> AuthorizationRequest {
         response_mode: crate::domain::response::ResponseMode::Query,
         id_token_hint: None,
         given_hint: None,
+        claims: crate::api::ClaimsRequest::default(),
+        claims_locales: None,
     }
 }
 

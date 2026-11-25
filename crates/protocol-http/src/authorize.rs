@@ -267,9 +267,18 @@ async fn issue(
         actor: Actor::User(person.user_id),
         correlation_id: CorrelationId::generate(),
     };
+    // What the `claims` parameter may give claims of.
+    let consented = match state
+        .consents
+        .consented_scopes(tenant, request, person)
+        .await
+    {
+        Ok(consented) => consented,
+        Err(error) => return Problem::from(error).into_response(),
+    };
     match state
         .authorization
-        .issue_code(tenant, request, person, caller)
+        .issue_code_consented(tenant, request, person, &consented, caller)
         .await
     {
         Ok(code) => {
@@ -572,6 +581,20 @@ async fn authorize(
         },
         None => None,
     };
+    // A session of another person than the `sub` the request asked for
+    // through `claims` is not used either: the person signs in again.
+    let session = match session {
+        Some(session) => match state
+            .authorization
+            .names_another(tenant, &request, session.user_id())
+            .await
+        {
+            Ok(false) => Some(session),
+            Ok(true) => None,
+            Err(error) => return Problem::from(error).into_response(),
+        },
+        None => None,
+    };
     let now = state.authorization.now();
     let standing = match &session {
         Some(session) => match standing(state, tenant, &request, session, now, None).await {
@@ -763,6 +786,24 @@ async fn resume(
                     return response;
                 }
                 Err(response) => return *response,
+            }
+            match state
+                .authorization
+                .names_another(&tenant, &request, session.user_id())
+                .await
+            {
+                Ok(false) => {}
+                // Signed in, but as someone else than the `sub` the request
+                // asked for through `claims`.
+                Ok(true) => {
+                    let mut response = denied(
+                        &state,
+                        "the person signed in is not the one the request names",
+                    );
+                    forget_authorization(&mut response, &slug);
+                    return response;
+                }
+                Err(error) => return Problem::from(error).into_response(),
             }
             match standing(
                 &state,

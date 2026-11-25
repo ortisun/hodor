@@ -366,9 +366,11 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
     let authority = authority(&config, &database)?;
     let (interaction, invitations) = interaction(&config, &database)?;
     let mut authorization = authorization(&config, &database, interaction.authentication.clone())?;
-    // An `id_token_hint` is checked against the tenants' keys, and compared
-    // with a pairwise client's person through the pairwise secrets. Without
-    // keys there is no ID token, and a hint is refused.
+    // An `id_token_hint` is checked against the tenants' keys. The hint of a
+    // pairwise client, and a `sub` it asks for through `claims`, are compared
+    // with the person signed in by their pairwise identifier, through the
+    // pairwise secrets. Without keys there is no ID token, and a hint is
+    // refused.
     if let Some(keys) = &keys {
         authorization.authorization = authorization
             .authorization

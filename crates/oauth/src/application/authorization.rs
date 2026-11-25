@@ -150,9 +150,11 @@ impl AuthorizationCodeService {
         self
     }
 
-    /// Compares the hint of a pairwise client with the session's person as
-    /// that client knows them, through `pairwise`. Without it, the hint of
-    /// a pairwise client never names the session's person.
+    /// Compares the hint of a pairwise client, and the `sub` its request
+    /// asks for through `claims`, with the session's person as that client
+    /// knows them, through `pairwise`. Without it, the hint of a pairwise
+    /// client never names the session's person, and a request of a pairwise
+    /// client that asks for a `sub` cannot be answered.
     #[must_use]
     pub fn with_pairwise_subjects(mut self, pairwise: PairwiseSubjects) -> Self {
         self.pairwise = Some(pairwise);
@@ -577,8 +579,40 @@ impl AuthorizationCodeService {
         }
     }
 
+    /// Whether `request` asked through `claims` for a `sub` that is not
+    /// `user` as its client knows them. A client the tenant no longer has
+    /// knows nobody.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails, or the client is pairwise and
+    /// this service cannot name people to pairwise clients.
+    pub async fn names_another(
+        &self,
+        tenant: &TenantContext,
+        request: &AuthorizationRequest,
+        user: UserId,
+    ) -> Result<bool, DomainError> {
+        if request.claims.subject.is_none() {
+            return Ok(false);
+        }
+        let mut uow = self.ports.units_of_work.begin(tenant).await?;
+        let client = self
+            .ports
+            .clients
+            .get(uow.as_mut(), request.client_id)
+            .await?;
+        drop(uow);
+        let Some(client) = client else {
+            return Ok(true);
+        };
+        let subject = subject_for(self.pairwise.as_ref(), tenant, &client, user).await?;
+        Ok(request.names_another(&subject))
+    }
+
     /// Makes the grant and the code for a checked request and the person
-    /// signed in.
+    /// signed in, the scopes of the request being all that was consented
+    /// to.
     ///
     /// # Errors
     ///
@@ -590,8 +624,29 @@ impl AuthorizationCodeService {
         person: &SignedInPerson,
         caller: Caller,
     ) -> Result<CodeValue, DomainError> {
+        self.issue_code_consented(tenant, request, person, &request.scopes, caller)
+            .await
+    }
+
+    /// Makes the grant and the code for a checked request and the person
+    /// signed in, when `consented` are the scopes consented to for the
+    /// client: the grant gives the claims asked through `claims` that one
+    /// of them covers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    pub async fn issue_code_consented(
+        &self,
+        tenant: &TenantContext,
+        request: &AuthorizationRequest,
+        person: &SignedInPerson,
+        consented: &[String],
+        caller: Caller,
+    ) -> Result<CodeValue, DomainError> {
         let now = self.ports.clock.now();
-        let grant = Grant::make(request, person, now);
+        let mut grant = Grant::make(request, person, now);
+        grant.claims = request.claims.given(&request.scopes, consented);
         let (code, value) = AuthorizationCode::issue(
             &grant,
             request,

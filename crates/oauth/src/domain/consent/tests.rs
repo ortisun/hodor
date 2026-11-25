@@ -24,6 +24,8 @@ fn request(scopes: &[&str], first_party: bool) -> AuthorizationRequest {
         response_mode: crate::domain::response::ResponseMode::Query,
         id_token_hint: None,
         given_hint: None,
+        claims: crate::domain::claims_parameter::ClaimsRequest::default(),
+        claims_locales: None,
     }
 }
 
@@ -147,4 +149,41 @@ fn stored_values_are_read_back_and_unknown_ones_refused() {
     }
     assert!(ConsentAnswer::from_stored("maybe").is_err());
     assert!(ConsentActor::from_stored("someone").is_err());
+}
+
+#[test]
+fn the_scopes_consented_to_are_the_client_s_for_a_first_party_one_and_the_person_s_otherwise() {
+    let allowed = vec![
+        "openid".to_owned(),
+        "profile".to_owned(),
+        "email".to_owned(),
+    ];
+    let first = request(&["openid"], true);
+    assert_eq!(
+        consented_scopes(&first, None, &allowed, MOMENT),
+        ["openid", "profile", "email"]
+    );
+
+    let third = request(&["openid"], false);
+    assert_eq!(consented_scopes(&third, None, &allowed, MOMENT), ["openid"]);
+    let mut earlier = given(&request(&["openid", "profile"], false));
+    assert_eq!(
+        consented_scopes(&third, Some(&earlier), &[], MOMENT),
+        ["openid", "profile"]
+    );
+    // A consent that no longer stands counts for nothing.
+    assert_eq!(
+        consented_scopes(
+            &third,
+            Some(&earlier),
+            &[],
+            MOMENT + DEFAULT_CONSENT_LIFETIME
+        ),
+        ["openid"]
+    );
+    earlier.withdraw(ConsentActor::Person, MOMENT);
+    assert_eq!(
+        consented_scopes(&third, Some(&earlier), &[], MOMENT),
+        ["openid"]
+    );
 }
