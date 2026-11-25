@@ -48,6 +48,7 @@ fn world() -> World {
         grants: Arc::new(grants.clone()),
         codes: Arc::new(codes),
         memberships: Arc::new(MembershipsOf::default()),
+        verifier: Arc::new(hodor_oauth::testing::FakeVerifier),
         digest: Arc::new(FakeDigest),
         random: Arc::new(DistinctRandom),
         clock: clock.clone(),
@@ -178,7 +179,11 @@ async fn a_request_waits_for_its_browser_and_is_resumed_once() {
     let client_id = registered(&world, &tenant).await;
     let request = world
         .service
-        .check(&tenant, &parameters(&client_id))
+        .check(
+            &tenant,
+            "https://hodor.example.com/t/acme",
+            &parameters(&client_id),
+        )
         .await
         .expect("storage")
         .expect("accepted");
@@ -247,7 +252,11 @@ async fn a_client_of_another_tenant_is_unknown() {
     assert_eq!(
         world
             .service
-            .check(&elsewhere, &parameters(&client_id))
+            .check(
+                &elsewhere,
+                "https://hodor.example.com/t/acme",
+                &parameters(&client_id)
+            )
             .await
             .expect("storage"),
         Err(AuthorizationRefusal::NotRedirectable(
@@ -263,7 +272,11 @@ async fn a_code_is_redeemed_once_and_a_second_redemption_revokes_the_grant() {
     let client_id = registered(&world, &tenant).await;
     let request = world
         .service
-        .check(&tenant, &parameters(&client_id))
+        .check(
+            &tenant,
+            "https://hodor.example.com/t/acme",
+            &parameters(&client_id),
+        )
         .await
         .expect("storage")
         .expect("accepted");
@@ -346,7 +359,11 @@ async fn a_code_lives_sixty_seconds() {
     let client_id = registered(&world, &tenant).await;
     let request = world
         .service
-        .check(&tenant, &parameters(&client_id))
+        .check(
+            &tenant,
+            "https://hodor.example.com/t/acme",
+            &parameters(&client_id),
+        )
         .await
         .expect("storage")
         .expect("accepted");

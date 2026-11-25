@@ -144,7 +144,7 @@ The paths are relative to the tenant, `https://{host}/t/{slug}`, whose issuer is
 | `GET /.well-known/openid-configuration` | Provider metadata (built: [discovery](../architecture/contexts/oauth.md#discovery)) | OpenID Connect Discovery |
 | `GET /.well-known/oauth-authorization-server` | Authorization server metadata, the same document (built) | RFC 8414 |
 | `GET /oauth2/jwks` | Public signing keys (built: [the published key set](../architecture/contexts/keys.md#the-published-key-set)) | RFC 7517 |
-| `GET, POST /oauth2/authorize` | Authorization endpoint | RFC 6749, OpenID Connect Core |
+| `GET, POST /oauth2/authorize` | Authorization endpoint, with [request objects](../architecture/contexts/oauth.md#request-objects) by value | RFC 6749, OpenID Connect Core, RFC 9101 |
 | `GET /oauth2/authorize/resume` | Where the hosted pages send the browser after a sign-in, to go on with the pending authorization request ([the OAuth context](../architecture/contexts/oauth.md#signing-in-and-coming-back)) | — |
 | `POST /oauth2/par` | Pushed authorization request | RFC 9126 |
 | `POST /oauth2/token` | Token endpoint: `authorization_code`, `refresh_token` and `client_credentials` (built: [the token endpoint](../architecture/contexts/oauth.md#token-endpoint-and-client-authentication)), `urn:ietf:params:oauth:grant-type:device_code`, `…:token-exchange`, `…:jwt-bearer` | RFC 6749, 8628, 8693, 7523 |
@@ -157,7 +157,7 @@ The paths are relative to the tenant, `https://{host}/t/{slug}`, whose issuer is
 | `GET /oauth2/logout/finish` | Where a logout that asked the person ends ([finishing](../architecture/contexts/oauth.md#finishing)) | — |
 | `POST /oauth2/register`, `GET, PUT, DELETE /oauth2/register/{client_id}` | Dynamic client registration and management | RFC 7591, 7592 |
 
-Advertised in metadata and enforced: `response_types_supported: ["code"]`, `code_challenge_methods_supported: ["S256"]`, `authorization_response_iss_parameter_supported: true`, `id_token_signing_alg_values_supported` starting with `ES256` and `RS256`.
+Advertised in metadata and enforced: `response_types_supported: ["code"]`, `code_challenge_methods_supported: ["S256"]`, `authorization_response_iss_parameter_supported: true`, `id_token_signing_alg_values_supported` starting with `ES256` and `RS256`, `request_parameter_supported: true`, `request_object_signing_alg_values_supported: ["ES256", "RS256", "PS256", "none"]`.
 
 ## Interaction API
 

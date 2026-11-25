@@ -15,7 +15,7 @@ use crate::domain::pairwise::{
 use crate::domain::secret::{ClientSecret, ClientSecretHash, ClientSecretId, ClientSecretValue};
 use crate::domain::spiffe::SpiffeId;
 use crate::domain::text;
-use hodor_kernel::{Digest, DomainError, RandomSource, Timestamp, UserId};
+use hodor_kernel::{Digest, DomainError, RandomSource, SignatureAlgorithm, Timestamp, UserId};
 use hodor_keys::api::{KeyAlgorithm, RotationPolicy};
 use time::Duration;
 
@@ -83,6 +83,69 @@ impl IdTokenAlgorithm {
                 "a client's ID tokens are signed with `ES256` or `RS256`",
             )),
         }
+    }
+}
+
+/// How a client signs its request objects: its `request_object_signing_alg`
+/// of OpenID Connect Registration. A client that names none accepts every
+/// algorithm but `none`. See `docs/architecture/contexts/oauth.md`,
+/// "Request objects".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestObjectAlgorithm {
+    /// ECDSA on P-256 with SHA-256.
+    Es256,
+    /// RSA with PKCS#1 version 1.5 padding and SHA-256.
+    Rs256,
+    /// RSA with PSS padding and SHA-256.
+    Ps256,
+    /// Unsigned: the client's request objects protect nothing, and are
+    /// held to every check of a request without one.
+    None,
+}
+
+impl RequestObjectAlgorithm {
+    /// Every algorithm a client may name, as discovery lists them.
+    pub const ALL: [Self; 4] = [Self::Es256, Self::Rs256, Self::Ps256, Self::None];
+
+    /// The name JSON Web Signature gives it, which is also the stored name.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Es256 => "ES256",
+            Self::Rs256 => "RS256",
+            Self::Ps256 => "PS256",
+            Self::None => "none",
+        }
+    }
+
+    /// The signature it checks, or `None` for an unsigned object.
+    #[must_use]
+    pub const fn signature(self) -> Option<SignatureAlgorithm> {
+        match self {
+            Self::Es256 => Some(SignatureAlgorithm::Es256),
+            Self::Rs256 => Some(SignatureAlgorithm::Rs256),
+            Self::Ps256 => Some(SignatureAlgorithm::Ps256),
+            Self::None => None,
+        }
+    }
+
+    /// Reads the name JSON Web Signature gives it.
+    ///
+    /// # Errors
+    ///
+    /// Returns `oauth.client_request_object_algorithm_invalid` for any
+    /// other name.
+    pub fn parse(value: &str) -> Result<Self, DomainError> {
+        Self::ALL
+            .into_iter()
+            .find(|algorithm| algorithm.as_str() == value)
+            .ok_or_else(|| {
+                DomainError::invalid(
+                    "oauth.client_request_object_algorithm_invalid",
+                    "a client's request objects are signed with `ES256`, `RS256` or `PS256`, \
+                     or not signed with `none`",
+                )
+            })
     }
 }
 
@@ -454,6 +517,8 @@ pub struct ClientSettings {
     pub require_pkce: bool,
     /// How its ID tokens are signed.
     pub id_token_algorithm: IdTokenAlgorithm,
+    /// How it signs its request objects, if it named an algorithm.
+    pub request_object_algorithm: Option<RequestObjectAlgorithm>,
     /// Where its logout tokens are sent when a session it signed a person
     /// in with ends, if anywhere.
     pub backchannel_logout_uri: Option<String>,
@@ -638,6 +703,7 @@ impl ClientSettings {
             allowed_scopes: Vec::new(),
             require_pkce: true,
             id_token_algorithm: IdTokenAlgorithm::default(),
+            request_object_algorithm: None,
             backchannel_logout_uri: None,
             backchannel_logout_session_required: false,
             subject_type: SubjectType::Public,
@@ -827,6 +893,7 @@ impl ClientSettings {
             allowed_scopes,
             require_pkce: self.require_pkce,
             id_token_algorithm: self.id_token_algorithm,
+            request_object_algorithm: self.request_object_algorithm,
             backchannel_logout_uri: self.backchannel_logout_uri,
             backchannel_logout_session_required: self.backchannel_logout_session_required,
             subject_type: self.subject_type,
@@ -1578,6 +1645,38 @@ mod tests {
                 "oauth.client_id_token_algorithm_invalid"
             );
         }
+    }
+
+    #[test]
+    fn a_request_object_algorithm_is_named_as_json_web_signature_names_it() {
+        assert_eq!(web().request_object_algorithm, None);
+        for algorithm in RequestObjectAlgorithm::ALL {
+            assert_eq!(
+                RequestObjectAlgorithm::parse(algorithm.as_str()),
+                Ok(algorithm)
+            );
+        }
+        assert_eq!(
+            RequestObjectAlgorithm::Ps256.signature(),
+            Some(SignatureAlgorithm::Ps256)
+        );
+        assert_eq!(RequestObjectAlgorithm::None.signature(), None);
+        for refused in ["HS256", "ES384", "EdDSA", "None", "es256", ""] {
+            assert_eq!(
+                RequestObjectAlgorithm::parse(refused)
+                    .expect_err("refused")
+                    .code(),
+                "oauth.client_request_object_algorithm_invalid"
+            );
+        }
+        // Kept as it was given through every check of the settings.
+        let mut settings = web();
+        settings.request_object_algorithm = Some(RequestObjectAlgorithm::None);
+        let (client, _) = create(ClientType::Confidential, settings).expect("valid");
+        assert_eq!(
+            client.snapshot().settings.request_object_algorithm,
+            Some(RequestObjectAlgorithm::None)
+        );
     }
 
     #[test]

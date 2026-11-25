@@ -8,9 +8,9 @@ use hodor_oauth::api::{
     Application, ApplicationId, ApplicationSettings, ApplicationSnapshot, ApplicationStore,
     Audience, AuthenticationMethod, Client, ClientId, ClientKey, ClientSecret, ClientSecretHash,
     ClientSecretId, ClientSettings, ClientSnapshot, ClientStore, ClientType, ExchangeRule,
-    GrantType, IdTokenAlgorithm, LinkerdIdentity, ResourceServer, ResourceServerId,
-    ResourceServerSettings, ResourceServerSnapshot, ResourceServerStore, ScopeDefinition, SpiffeId,
-    Status, SubjectType, TokenPolicy,
+    GrantType, IdTokenAlgorithm, LinkerdIdentity, RequestObjectAlgorithm, ResourceServer,
+    ResourceServerId, ResourceServerSettings, ResourceServerSnapshot, ResourceServerStore,
+    ScopeDefinition, SpiffeId, Status, SubjectType, TokenPolicy,
 };
 use sqlx::PgConnection;
 use sqlx::Row as _;
@@ -236,7 +236,7 @@ const CLIENT_COLUMNS: &str = "id, application_id, name, client_type, authenticat
      id_token_algorithm, access_token_seconds, id_token_seconds, refresh_token_seconds, \
      refresh_idle_seconds, consent_seconds, status, created_at, updated_at, version, principal_id, \
      exchange_rules, backchannel_logout_uri, backchannel_logout_session_required, subject_type, \
-     sector_identifier_uri, spiffe_id, linkerd_identity";
+     sector_identifier_uri, spiffe_id, linkerd_identity, request_object_signing_alg";
 
 async fn load_client(
     connection: &mut PgConnection,
@@ -314,6 +314,14 @@ async fn load_client(
                     .map_err(get)?,
             )
             .map_err(|_| corrupted("ID token algorithm"))?,
+            request_object_algorithm: row
+                .try_get::<Option<String>, _>("request_object_signing_alg")
+                .map_err(get)?
+                .map(|name| {
+                    RequestObjectAlgorithm::parse(&name)
+                        .map_err(|_| corrupted("request object algorithm"))
+                })
+                .transpose()?,
             backchannel_logout_uri: row.try_get("backchannel_logout_uri").map_err(get)?,
             backchannel_logout_session_required: row
                 .try_get("backchannel_logout_session_required")
@@ -428,9 +436,10 @@ impl ClientStore for PgClientStore {
                   refresh_idle_seconds, consent_seconds, status, created_at, updated_at,
                   id_token_algorithm, principal_id, exchange_rules, backchannel_logout_uri,
                   backchannel_logout_session_required, subject_type, sector_identifier_uri,
-                  spiffe_id, linkerd_identity, version)
+                  spiffe_id, linkerd_identity, request_object_signing_alg, version)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-                     $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, 0)",
+                     $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28,
+                     $29, 0)",
         )
         .bind(tenant)
         .bind(state.id.as_uuid())
@@ -464,6 +473,11 @@ impl ClientStore for PgClientStore {
                 .linkerd_identity
                 .as_ref()
                 .map(LinkerdIdentity::as_str),
+        )
+        .bind(
+            settings
+                .request_object_algorithm
+                .map(RequestObjectAlgorithm::as_str),
         )
         .execute(&mut *connection)
         .await;
@@ -507,7 +521,8 @@ impl ClientStore for PgClientStore {
                  id_token_algorithm = $18, principal_id = $19, exchange_rules = $20,
                  backchannel_logout_uri = $21, backchannel_logout_session_required = $22,
                  subject_type = $23, sector_identifier_uri = $24, spiffe_id = $25,
-                 linkerd_identity = $26, version = version + 1
+                 linkerd_identity = $26, request_object_signing_alg = $27,
+                 version = version + 1
              WHERE tenant_id = $1 AND id = $2 AND version = $17",
         )
         .bind(tenant)
@@ -540,6 +555,11 @@ impl ClientStore for PgClientStore {
                 .linkerd_identity
                 .as_ref()
                 .map(LinkerdIdentity::as_str),
+        )
+        .bind(
+            settings
+                .request_object_algorithm
+                .map(RequestObjectAlgorithm::as_str),
         )
         .execute(&mut *connection)
         .await

@@ -463,6 +463,13 @@ fn discovery_names_only_what_is_built() {
         ]),
         "a public client may not introspect"
     );
+    assert_eq!(document["request_parameter_supported"], json!(true));
+    assert_eq!(
+        document["request_object_signing_alg_values_supported"],
+        json!(["ES256", "RS256", "PS256", "none"])
+    );
+    assert_eq!(document["request_uri_parameter_supported"], json!(false));
+    assert_eq!(document["claims_parameter_supported"], json!(false));
     for absent in [
         "registration_endpoint",
         "pushed_authorization_request_endpoint",

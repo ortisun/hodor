@@ -81,6 +81,8 @@ follows is `docs/architecture/contexts/oauth.md`.
     `ACR_MULTI_FACTOR`, `ACR_SINGLE_FACTOR`, `UI_LOCALES`.
   - The authorization endpoint's domain: `AuthorizationParameters`,
     `check_request`, `AuthorizationRequest`, `AuthorizationRefusal`,
+    `check_request_object`, `RequestObjectCheck`, `RequestObjectRefusal`,
+    `MAX_REQUEST_OBJECT_BYTES`, `RequestObjectAlgorithm`,
     `AuthorizationError`, `SignedInPerson`, `SessionDecision`,
     `PendingAuthorization`, `PendingAuthorizationId`, `BrowserSecret`,
     `Grant`, `GrantId`, `GrantStatus`, `AuthorizationCode`, `CodeHash`,

@@ -21,9 +21,9 @@ use hodor_kernel::{DomainError, ErrorKind, TenantContext, UserId};
 use hodor_oauth::api::{
     Application, ApplicationId, ApplicationSettings, AuthenticationMethod, Client, ClientId,
     ClientSecret, ClientSecretId, ClientSettings, ClientType, CreateClient, CreateResourceServer,
-    ExchangeRule, GrantType, IdTokenAlgorithm, LinkerdIdentity, ResourceServer, ResourceServerId,
-    ResourceServerSettings, RotateSecret, ScopeDefinition, SpiffeId, Status, SubjectType,
-    TokenPolicy,
+    ExchangeRule, GrantType, IdTokenAlgorithm, LinkerdIdentity, RequestObjectAlgorithm,
+    ResourceServer, ResourceServerId, ResourceServerSettings, RotateSecret, ScopeDefinition,
+    SpiffeId, Status, SubjectType, TokenPolicy,
 };
 use serde::{Deserialize, Serialize};
 use time::Duration;
@@ -406,6 +406,8 @@ struct ClientBody {
     allowed_scopes: Vec<String>,
     require_pkce: bool,
     id_token_signed_response_alg: &'static str,
+    /// How it signs its request objects, or `null` when none is chosen.
+    request_object_signing_alg: Option<&'static str>,
     /// Where its logout tokens are sent, or `null`.
     backchannel_logout_uri: Option<String>,
     backchannel_logout_session_required: bool,
@@ -449,6 +451,9 @@ impl From<&Client> for ClientBody {
             allowed_scopes: settings.allowed_scopes.clone(),
             require_pkce: settings.require_pkce,
             id_token_signed_response_alg: settings.id_token_algorithm.as_str(),
+            request_object_signing_alg: settings
+                .request_object_algorithm
+                .map(RequestObjectAlgorithm::as_str),
             backchannel_logout_uri: settings.backchannel_logout_uri.clone(),
             backchannel_logout_session_required: settings.backchannel_logout_session_required,
             subject_type: settings.subject_type.as_str(),
@@ -526,6 +531,7 @@ struct NewClientBody {
     allowed_scopes: Option<Vec<String>>,
     require_pkce: Option<bool>,
     id_token_signed_response_alg: Option<String>,
+    request_object_signing_alg: Option<String>,
     backchannel_logout_uri: Option<String>,
     backchannel_logout_session_required: Option<bool>,
     subject_type: Option<String>,
@@ -567,6 +573,9 @@ struct ClientChangesBody {
     allowed_scopes: Option<Vec<String>>,
     require_pkce: Option<bool>,
     id_token_signed_response_alg: Option<String>,
+    /// Left out: unchanged; `null`: none chosen; a name: replaced.
+    #[serde(default, deserialize_with = "present")]
+    request_object_signing_alg: Option<Option<String>>,
     /// Left out: unchanged; `null`: removed; an address: replaced.
     #[serde(default, deserialize_with = "present")]
     backchannel_logout_uri: Option<Option<String>>,
@@ -765,6 +774,10 @@ async fn create_client(
                 settings.id_token_algorithm =
                     IdTokenAlgorithm::parse(&algorithm).map_err(failed)?;
             }
+            if let Some(algorithm) = new.request_object_signing_alg {
+                settings.request_object_algorithm =
+                    Some(RequestObjectAlgorithm::parse(&algorithm).map_err(failed)?);
+            }
             settings.backchannel_logout_uri = new.backchannel_logout_uri;
             settings.backchannel_logout_session_required =
                 new.backchannel_logout_session_required.unwrap_or(false);
@@ -886,6 +899,13 @@ async fn change_client(
                 id_token_algorithm: match changes.id_token_signed_response_alg {
                     Some(algorithm) => IdTokenAlgorithm::parse(&algorithm).map_err(failed)?,
                     None => now.id_token_algorithm,
+                },
+                request_object_algorithm: match changes.request_object_signing_alg {
+                    None => now.request_object_algorithm,
+                    Some(None) => None,
+                    Some(Some(algorithm)) => {
+                        Some(RequestObjectAlgorithm::parse(&algorithm).map_err(failed)?)
+                    }
                 },
                 backchannel_logout_uri: changes
                     .backchannel_logout_uri

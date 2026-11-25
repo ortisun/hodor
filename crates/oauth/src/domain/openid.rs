@@ -5,7 +5,7 @@
 //! Specified in `docs/architecture/contexts/oauth.md`, "OpenID Provider".
 
 use crate::domain::authorization::AuthorizationCode;
-use crate::domain::client::{ClientId, IdTokenAlgorithm};
+use crate::domain::client::{ClientId, IdTokenAlgorithm, RequestObjectAlgorithm};
 use crate::domain::resource_server::GROUPS_SCOPE;
 use crate::domain::token::decode_json;
 use base64::Engine as _;
@@ -506,7 +506,10 @@ pub fn discovery_document(issuer: &str, acr_values: &[&str]) -> Value {
         "prompt_values_supported": ["none", "login", "consent", "select_account"],
         "ui_locales_supported": UI_LOCALES,
         "authorization_response_iss_parameter_supported": true,
-        "request_parameter_supported": false,
+        // Request objects by value; `none` only for a client that chose it.
+        "request_parameter_supported": true,
+        "request_object_signing_alg_values_supported":
+            RequestObjectAlgorithm::ALL.map(RequestObjectAlgorithm::as_str),
         "request_uri_parameter_supported": false,
         "claims_parameter_supported": false,
         // Every client with a back-channel logout address is told when a

@@ -170,6 +170,7 @@ fn world() -> World {
         grants: Arc::new(grants.clone()),
         codes: Arc::new(InMemoryAuthorizationCodes::new(&grants)),
         memberships: Arc::new(MembershipsOf::default()),
+        verifier: Arc::new(hodor_oauth::testing::FakeVerifier),
         digest: Arc::new(FakeDigest),
         random: Arc::new(DistinctRandom),
         clock: clock.clone(),

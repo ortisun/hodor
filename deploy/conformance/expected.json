@@ -23,12 +23,6 @@
   "oidcc-ensure-registered-redirect-uri": {
     "REVIEW": "Hodor shows its own error page and never sends the browser to an address that is not registered; the suite keeps a screenshot of that page for a person to look at."
   },
-  "oidcc-ensure-request-object-with-redirect-uri": {
-    "REVIEW": "Hodor refuses request objects and shows its own error page; the suite keeps a screenshot of that page for a person to look at."
-  },
-  "oidcc-unsigned-request-object-supported-correctly-or-rejected-as-unsupported": {
-    "SKIPPED": "Hodor answers `request_not_supported` to a request object, which the specification allows; the suite then has nothing to test."
-  },
   "oidcc-claims-essential": {
     "WARNING": "It asks for `name` through the `claims` parameter only. Hodor does not read that parameter, and discovery says so (`claims_parameter_supported` is false), so UserInfo gives the claims of the scopes, here only `sub`; supporting the parameter is optional (OpenID Connect Core, section 5.5)."
   }

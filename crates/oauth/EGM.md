@@ -22,10 +22,12 @@ deliveries made when a session ends and the logout tokens the worker signs
 and sends; and Issue-98: pairwise subject identifiers, with the subject
 type and sector identifier address of clients, the tenant's pairwise
 secret, and every token and answer naming the person as the client's
-sector knows them; and Issue-106: a client of a service account bound to
+sector knows them; Issue-106: a client of a service account bound to
 one SPIFFE identifier, proving who it is with a JWT-SVID (`spiffe_jwt`,
 draft-ietf-oauth-spiffe-client-auth-03) checked against its trust domain's
-bundle, read from the keys context. Storage,
+bundle, read from the keys context; and Issue-120: request objects by
+value at the authorization endpoint, checked with the client's keys or,
+for a client that chose `none`, unsigned. Storage,
 randomness, hashing, signature checking and time are reached through ports
 and kernel traits.
 

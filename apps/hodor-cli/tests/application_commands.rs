@@ -443,3 +443,79 @@ async fn a_client_is_made_pairwise_and_its_sector_identifier_address_fetched() {
     assert!(!unknown.status.success());
     assert!(text(&unknown.stderr).contains("oauth.client_subject_type_invalid"));
 }
+
+#[tokio::test]
+async fn a_client_is_told_how_it_signs_its_request_objects() {
+    let database = TestDatabase::start().await;
+    let created = run(
+        &database,
+        &["tenant", "create", "--slug", "acme", "--name", "Acme"],
+    );
+    assert!(created.status.success(), "{created:?}");
+    let added = run(
+        &database,
+        &[
+            "application",
+            "add",
+            "--tenant",
+            "acme",
+            "--name",
+            "Billing",
+            "--first-party",
+        ],
+    );
+    let application = value(&added, "application");
+    let client = |extra: &[&str]| {
+        let mut arguments = vec![
+            "client",
+            "add",
+            "--tenant",
+            "acme",
+            "--application",
+            &application,
+            "--name",
+            "Billing web site",
+            "--type",
+            "confidential",
+            "--grant",
+            "authorization_code",
+            "--redirect-uri",
+            "https://billing.example.com/callback",
+        ];
+        arguments.extend_from_slice(extra);
+        run(&database, &arguments)
+    };
+    let stored = |id: String| {
+        let database = &database;
+        async move {
+            sqlx::query_scalar::<_, Option<String>>(
+                "SELECT request_object_signing_alg FROM oauth.client WHERE id = $1::uuid",
+            )
+            .bind(id)
+            .fetch_one(database.owner())
+            .await
+            .expect("client")
+        }
+    };
+
+    // None chosen unless given.
+    let plain = client(&[]);
+    assert!(plain.status.success(), "{plain:?}");
+    assert_eq!(stored(value(&plain, "client")).await, None);
+
+    // `none`, as the conformance suite's clients are made.
+    let unsigned = client(&["--request-object-signing-alg", "none"]);
+    assert!(unsigned.status.success(), "{unsigned:?}");
+    assert_eq!(
+        stored(value(&unsigned, "client")).await.as_deref(),
+        Some("none")
+    );
+
+    // An algorithm Hodor does not check is refused with the context's code.
+    let refused = client(&["--request-object-signing-alg", "HS256"]);
+    assert!(!refused.status.success());
+    assert!(
+        text(&refused.stderr).contains("oauth.client_request_object_algorithm_invalid"),
+        "{refused:?}"
+    );
+}

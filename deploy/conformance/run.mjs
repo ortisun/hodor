@@ -141,6 +141,9 @@ function seedHodor() {
       "--grant", "authorization_code", "--grant", "refresh_token",
       "--redirect-uri", CALLBACK, "--post-logout-redirect-uri", POST_LOGOUT,
       "--scope", "openid", "--scope", "profile", "--scope", "email", "--scope", "offline_access",
+      // The suite's request object tests send unsigned objects, which Hodor
+      // reads only from a client that chose `none`.
+      "--request-object-signing-alg", "none",
       ...more,
     );
     return { client_id: printed(output, "client"), client_secret: printed(output, "secret") };

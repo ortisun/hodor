@@ -9,6 +9,9 @@ use crate::domain::application::Application;
 use crate::domain::client::{Client, ClientId, GrantType};
 use crate::domain::consent::ConsentWait;
 use crate::domain::event::OauthEvent;
+use crate::domain::request_object::{
+    RequestObjectCheck, RequestObjectRefusal, check_request_object, unchecked_claims,
+};
 use crate::domain::resource_server::{OPENID_SCOPES, ResourceServer};
 use crate::domain::text::is_scope;
 use base64::Engine as _;
@@ -58,9 +61,13 @@ pub struct AuthorizationParameters {
     pairs: Vec<(String, String)>,
 }
 
-enum Given<'a> {
+/// How a parameter was given.
+pub(crate) enum Given<'a> {
+    /// Not at all.
     Absent,
+    /// Once, with this value.
     Once(&'a str),
+    /// More than once.
     Repeated,
 }
 
@@ -75,7 +82,7 @@ impl AuthorizationParameters {
         }
     }
 
-    fn given(&self, name: &str) -> Given<'_> {
+    pub(crate) fn given(&self, name: &str) -> Given<'_> {
         let mut found = self.pairs.iter().filter(|(key, _)| key == name);
         match (found.next(), found.next()) {
             (None, _) => Given::Absent,
@@ -92,7 +99,7 @@ impl AuthorizationParameters {
             .collect()
     }
 
-    fn once(&self, name: &str) -> Option<&str> {
+    pub(crate) fn once(&self, name: &str) -> Option<&str> {
         match self.given(name) {
             Given::Once(value) => Some(value),
             Given::Absent | Given::Repeated => None,
@@ -108,11 +115,29 @@ impl AuthorizationParameters {
         })
     }
 
-    /// The `client_id`, if it was given once and is the identifier of a
-    /// client at all. Which tenant has it is for the store to say.
+    /// The client the request names: `client_id` given once, or, when it
+    /// is not given, the `client_id` of the request object, read without
+    /// checking anything, only to know whose keys check the object.
+    fn named_client(&self) -> Option<String> {
+        match self.given("client_id") {
+            Given::Once(named) => Some(named.to_owned()),
+            Given::Repeated => None,
+            Given::Absent => match self.given("request") {
+                Given::Once(object) => unchecked_claims(object)?
+                    .get("client_id")?
+                    .as_str()
+                    .map(str::to_owned),
+                Given::Absent | Given::Repeated => None,
+            },
+        }
+    }
+
+    /// The `client_id`, if the request names one client and it is the
+    /// identifier of a client at all. Which tenant has it is for the store
+    /// to say.
     #[must_use]
     pub fn client_id(&self) -> Option<ClientId> {
-        self.once("client_id")?.parse().ok()
+        self.named_client()?.parse().ok()
     }
 }
 
@@ -206,10 +231,79 @@ fn is_absolute_without_fragment(value: &str) -> bool {
 
 const PROMPTS: [&str; 4] = ["none", "login", "consent", "select_account"];
 
+/// The client and application a request names, if they may be answered
+/// at all: known in this tenant, enabled, and allowed the code.
+fn trusted_client<'c>(
+    parameters: &AuthorizationParameters,
+    client: Option<&'c Client>,
+    application: Option<&'c Application>,
+) -> Result<(&'c Client, &'c Application), AuthorizationRefusal> {
+    match (parameters.client_id(), client, application) {
+        (Some(named), Some(client), Some(application))
+            if named == client.id()
+                && client.is_enabled()
+                && application.is_enabled()
+                && client.application_id() == application.id()
+                && client
+                    .snapshot()
+                    .settings
+                    .grant_types
+                    .contains(&GrantType::AuthorizationCode) =>
+        {
+            Ok((client, application))
+        }
+        _ => Err(AuthorizationRefusal::NotRedirectable(
+            "oauth.authorization_client_unknown",
+        )),
+    }
+}
+
+/// Where a refused request object is answered: the redirect address
+/// outside it when it is one of the client's, otherwise the object's own
+/// when it is, each with the `state` given beside it; otherwise Hodor's
+/// own page.
+fn refused_object(
+    outside: &AuthorizationParameters,
+    object: Option<&str>,
+    client: &Client,
+    refusal: RequestObjectRefusal,
+) -> AuthorizationRefusal {
+    let readable = |state: Option<&str>| {
+        state
+            .filter(|value| value.len() <= MAX_OPAQUE_LENGTH && is_printable(value))
+            .map(str::to_owned)
+    };
+    let from_outside = outside
+        .once("redirect_uri")
+        .filter(|uri| client.accepts_redirect_uri(uri))
+        .map(|uri| (uri.to_owned(), readable(outside.once("state"))));
+    let target = from_outside.or_else(|| {
+        let claims = unchecked_claims(object?)?;
+        let uri = claims.get("redirect_uri")?.as_str()?;
+        client.accepts_redirect_uri(uri).then(|| {
+            (
+                uri.to_owned(),
+                readable(claims.get("state").and_then(serde_json::Value::as_str)),
+            )
+        })
+    });
+    match target {
+        Some((redirect_uri, state)) => AuthorizationRefusal::Redirect(AuthorizationError {
+            redirect_uri,
+            error: refusal.error(),
+            description: refusal.description(),
+            state,
+        }),
+        None => AuthorizationRefusal::NotRedirectable("oauth.authorization_request_object_invalid"),
+    }
+}
+
 /// Checks a request in the order the specification gives, the first
 /// failure deciding the answer. `client` is the client its `client_id`
 /// names in this tenant, `application` that client's application, and
-/// `servers` the tenant's resource servers.
+/// `servers` the tenant's resource servers. A request object in `request`
+/// is checked first, with `objects`, and its parameters are then the
+/// request.
 ///
 /// # Errors
 ///
@@ -220,24 +314,35 @@ pub fn check_request(
     client: Option<&Client>,
     application: Option<&Application>,
     servers: &[ResourceServer],
+    objects: RequestObjectCheck<'_>,
 ) -> Result<AuthorizationRequest, AuthorizationRefusal> {
-    let unknown = AuthorizationRefusal::NotRedirectable("oauth.authorization_client_unknown");
-    let (client, application) = match (parameters.given("client_id"), client, application) {
-        (Given::Once(named), Some(client), Some(application))
-            if named.parse::<ClientId>().ok() == Some(client.id())
-                && client.is_enabled()
-                && application.is_enabled()
-                && client.application_id() == application.id()
-                && client
-                    .snapshot()
-                    .settings
-                    .grant_types
-                    .contains(&GrantType::AuthorizationCode) =>
-        {
-            (client, application)
-        }
-        _ => return Err(unknown),
+    let object = match parameters.given("request") {
+        Given::Absent => return check_parameters(parameters, client, application, servers),
+        Given::Once(object) => Some(object),
+        Given::Repeated => None,
     };
+    let (client, application) = trusted_client(parameters, client, application)?;
+    let checked = match object {
+        Some(object) => check_request_object(object, client, parameters, objects),
+        None => Err(RequestObjectRefusal::Contradicted(
+            "a parameter is given more than once",
+        )),
+    };
+    match checked {
+        Ok(inside) => check_parameters(&inside, Some(client), Some(application), servers),
+        Err(refusal) => Err(refused_object(parameters, object, client, refusal)),
+    }
+}
+
+/// Checks the parameters of a request, without a request object: those
+/// given, or those a checked request object gave.
+fn check_parameters(
+    parameters: &AuthorizationParameters,
+    client: Option<&Client>,
+    application: Option<&Application>,
+    servers: &[ResourceServer],
+) -> Result<AuthorizationRequest, AuthorizationRefusal> {
+    let (client, application) = trusted_client(parameters, client, application)?;
     let redirect_uri = match parameters.given("redirect_uri") {
         Given::Once(uri) if client.accepts_redirect_uri(uri) => uri.to_owned(),
         Given::Once(_) => {
@@ -271,16 +376,10 @@ pub fn check_request(
     if parameters.any_repeated() {
         return Err(invalid("a parameter is given more than once"));
     }
-    if parameters.once("request").is_some() {
-        return Err(refuse(
-            "request_not_supported",
-            "request objects are not supported",
-        ));
-    }
     if parameters.once("request_uri").is_some() {
         return Err(refuse(
             "request_uri_not_supported",
-            "request objects are not supported",
+            "references to a request object are not supported",
         ));
     }
     if parameters

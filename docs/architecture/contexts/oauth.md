@@ -4,7 +4,7 @@ The `oauth` context makes Hodor an OAuth 2.x authorization server and an OpenID 
 
 It does not sign anyone in. When a request needs a person, it hands the request to the `authentication` context and takes the session that comes back. The two contexts do not depend on each other: the HTTP layer joins them ([crates.md](../crates.md)).
 
-This page specifies what Issue-53 builds: applications, clients and resource servers, and the rules they keep; what Issue-55 builds: the authorization endpoint, grants and authorization codes; what Issue-56 builds: the token endpoint, client authentication and access tokens; what Issue-59 builds: the OpenID Provider; what Issue-60 builds: logout initiated by the relying party; what Issue-62 builds: [consent](#consent); what Issue-93 builds: [clients that act as a workload](#clients-that-act-as-a-workload); what Issue-106 builds: [a JWT-SVID as a client's proof](#checking-a-jwt-svid); what Issue-107 builds: [an identity forwarded by a proxy](#an-identity-forwarded-by-a-proxy) as a client's proof; what Issue-95 builds: [token exchange](#token-exchange); what Issue-100 builds: [back-channel logout](#back-channel-logout); what Issue-98 builds: [pairwise subject identifiers](#pairwise-subject-identifiers); and what Issue-99 builds: [claim mappers](#claim-mappers). The other endpoints and tokens are added by Issue-57 and Issue-58, under the headings at the end of this page.
+This page specifies what Issue-53 builds: applications, clients and resource servers, and the rules they keep; what Issue-55 builds: the authorization endpoint, grants and authorization codes; what Issue-56 builds: the token endpoint, client authentication and access tokens; what Issue-59 builds: the OpenID Provider; what Issue-60 builds: logout initiated by the relying party; what Issue-62 builds: [consent](#consent); what Issue-93 builds: [clients that act as a workload](#clients-that-act-as-a-workload); what Issue-106 builds: [a JWT-SVID as a client's proof](#checking-a-jwt-svid); what Issue-107 builds: [an identity forwarded by a proxy](#an-identity-forwarded-by-a-proxy) as a client's proof; what Issue-95 builds: [token exchange](#token-exchange); what Issue-100 builds: [back-channel logout](#back-channel-logout); what Issue-98 builds: [pairwise subject identifiers](#pairwise-subject-identifiers); and what Issue-99 builds: [claim mappers](#claim-mappers); and what Issue-120 builds: [request objects](#request-objects). The other endpoints and tokens are added by Issue-57 and Issue-58, under the headings at the end of this page.
 
 ## Applications
 
@@ -39,6 +39,7 @@ A client is what talks to Hodor's endpoints. Its identifier is the `client_id` o
 | Scopes | The scopes it may ask for. At most 50 |
 | PKCE | Whether it must send a code challenge. Always for a public client; on by default for a confidential one |
 | ID token algorithm | How its [ID tokens](#the-id-token) are signed, its `id_token_signed_response_alg` of OpenID Connect Registration: `ES256` unless changed, or `RS256` |
+| Request object algorithm | How it signs its [request objects](#request-objects), its `request_object_signing_alg` of OpenID Connect Registration: none chosen unless changed, which accepts `ES256`, `RS256` and `PS256`; one of the three, which accepts only it; or `none`, which accepts only unsigned request objects |
 | Subject type | How it knows a person, its `subject_type` of OpenID Connect Registration: `public`, the person's user identifier, unless changed, or `pairwise`, an identifier of its sector alone. See [pairwise subject identifiers](#pairwise-subject-identifiers) |
 | Sector identifier address | Optional, for a pairwise client: an address that lists its redirect addresses and whose host is its sector, its `sector_identifier_uri`. See [the sector identifier address](#the-sector-identifier-address) |
 | Token policy | How long its tokens live |
@@ -210,7 +211,7 @@ For an operator who can reach the database, as for tenants and identity provider
 | `hodor-cli application add --tenant acme --name Billing [--first-party]` | Registers an application, enabled; third party unless `--first-party` is given. Prints its identifier |
 | `hodor-cli application list --tenant acme` | One line per application: identifier, status, first or third party, name |
 | `hodor-cli application disable --tenant acme --id …`, `enable` | |
-| `hodor-cli client add --tenant acme --application … --name … --type confidential --grant authorization_code --redirect-uri https://… --scope openid` | Creates a client. `--grant`, `--redirect-uri`, `--post-logout-redirect-uri` and `--scope` are given once per value; `--method` chooses the authentication method, `--secret-days` the lifetime of the first secret, `--without-pkce` lets a confidential client redeem a code without PKCE, `--id-token-algorithm` signs its ID tokens with `RS256` instead of `ES256`, `--backchannel-logout-uri` gives it a [back-channel logout address](#the-back-channel-logout-address), checked with the development exception of `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` as the server has it, `--backchannel-logout-session-required` records that it needs `sid`, `--subject-type pairwise` makes it [pairwise](#pairwise-subject-identifiers), `--sector-identifier-uri` gives it a [sector identifier address](#the-sector-identifier-address), fetched through a guarded client with the same development exception, `--principal` binds it to a service account or an agent, and `--exchange-rule '<subject audience>=><audience>'`, once per rule, gives an agent's client its exchange rules. Prints the `client_id` and, for a client with a secret method, the secret, once |
+| `hodor-cli client add --tenant acme --application … --name … --type confidential --grant authorization_code --redirect-uri https://… --scope openid` | Creates a client. `--grant`, `--redirect-uri`, `--post-logout-redirect-uri` and `--scope` are given once per value; `--method` chooses the authentication method, `--secret-days` the lifetime of the first secret, `--without-pkce` lets a confidential client redeem a code without PKCE, `--id-token-algorithm` signs its ID tokens with `RS256` instead of `ES256`, `--request-object-signing-alg` chooses its [request object algorithm](#request-objects), `ES256`, `RS256`, `PS256` or `none`, `--backchannel-logout-uri` gives it a [back-channel logout address](#the-back-channel-logout-address), checked with the development exception of `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` as the server has it, `--backchannel-logout-session-required` records that it needs `sid`, `--subject-type pairwise` makes it [pairwise](#pairwise-subject-identifiers), `--sector-identifier-uri` gives it a [sector identifier address](#the-sector-identifier-address), fetched through a guarded client with the same development exception, `--principal` binds it to a service account or an agent, and `--exchange-rule '<subject audience>=><audience>'`, once per rule, gives an agent's client its exchange rules. Prints the `client_id` and, for a client with a secret method, the secret, once |
 | `hodor-cli client list --tenant acme --application …` | One line per client: `client_id`, status, type, authentication method, name |
 | `hodor-cli client rotate-secret --tenant acme --id … [--lifetime-days 365] [--keep-previous-days 7]` | Gives a client a new secret and prints it, once |
 | `hodor-cli client disable --tenant acme --id …`, `enable` | |
@@ -272,6 +273,7 @@ Every table is a tenant table under row-level security, in the schema `oauth`. R
 | `linkerd_identity` | `text` | The [Linkerd identity](#the-spiffe-identifier-of-a-client) of a client using `linkerd_identity` or `tls_client_auth`, or null, compared byte for byte (`COLLATE "C"`). Check constraints keep its shape (`client_linkerd_identity_shape`), its method (`client_identity_of_its_method`) and a principal with it (`client_linkerd_identity_needs_principal`); the partial unique index `client_linkerd_identity_unique` keeps it unique in the tenant |
 | `exchange_rules` | `jsonb` | The exchange rules, a list of `{"subject_audience": …, "audience": …}`; empty unless the client has the token exchange grant |
 | `id_token_algorithm` | `text` | `ES256` or `RS256`, by a check constraint; `ES256` for a client made before it existed |
+| `request_object_signing_alg` | `text` | `ES256`, `RS256`, `PS256` or `none`, by a check constraint, or null when none is chosen, as for every client made before it existed |
 | `backchannel_logout_uri` | `text` | The [back-channel logout address](#the-back-channel-logout-address), or null. At most 2000 characters, `https://` or `http://`, compared byte for byte (`COLLATE "C"`); a check constraint allows it only with the `authorization_code` grant |
 | `backchannel_logout_session_required` | `boolean` | `false` for a client made before it existed; a check constraint allows `true` only with an address |
 | `subject_type` | `text` | `public` or `pairwise`, by a check constraint; `public` for a client made before it existed. A check constraint allows `pairwise` only with the `authorization_code` grant |
@@ -341,8 +343,8 @@ A client of another tenant is unknown here: the client is looked up only in the 
 | Failure | `error` |
 |---|---|
 | A parameter other than `resource` is given more than once | `invalid_request` |
-| `request` is given: request objects are not supported | `request_not_supported` |
-| `request_uri` is given: request objects are not supported | `request_uri_not_supported` |
+| `request` is given: it is read as a [request object](#request-objects), whose checks come first | `invalid_request_object` |
+| `request_uri` is given: references to a request object are not supported yet | `request_uri_not_supported` |
 | `response_mode` is given and is not `query` | `invalid_request` |
 | `response_type` is missing | `invalid_request` |
 | `response_type` is anything but `code` | `unsupported_response_type` |
@@ -360,6 +362,44 @@ A client of another tenant is unknown here: the client is looked up only in the 
 **The resource servers of a request.** When the request names resources, they are the resource servers whose audiences it names, and every scope that is not one of OpenID Connect's must be defined by one of them. When it names none, they are the resource servers of the tenant that define the scopes asked for. The resource servers become the audiences of the tokens issued from the code (Issue-56).
 
 `nonce`, `login_hint` and `ui_locales` are kept with the request for the [ID token and the pages](#what-a-request-may-ask-of-the-sign-in); `acr_values` and `max_age` decide [the assurance and the step-up](#assurance-and-step-up); `organization` names [the organization of the sign-in](#the-organization-of-a-sign-in). Parameters the endpoint does not know are ignored, as RFC 6749 requires; `claims` is one of them, so an `acr` asked for through it asks for nothing.
+
+### Request objects
+
+Issue-120. A client may send its request as a **request object**: a JSON Web Token whose claims are the parameters of the request, given by value as `request` ([OpenID Connect Core, section 6](https://openid.net/specs/openid-connect-core-1_0.html#JWTRequests), and [RFC 9101](https://www.rfc-editor.org/rfc/rfc9101)). A request object signed by the client tells Hodor that the request is the client's, and nobody changed it in the browser on the way. How it is checked is [Decision 0045](../../decisions/0045-request-objects-and-pushed-requests.md). A reference to one, `request_uri`, is answered `request_uri_not_supported` until pushed authorization requests (Issue-121) and references at a client's address (Issue-122) are built.
+
+**How a client signs.** Its request object algorithm, its `request_object_signing_alg` of OpenID Connect Registration, says which objects are accepted from it:
+
+| The client's algorithm | Accepted |
+|---|---|
+| None chosen, the default | An object signed with `ES256`, `RS256` or `PS256` by one of the client's keys |
+| `ES256`, `RS256` or `PS256` | An object signed with that algorithm by one of the client's keys; any other is refused |
+| `none` | An unsigned object only: its header's `alg` is `none` and its signature is empty. A signed one is refused, as OpenID Connect Registration says of every algorithm a client names |
+
+The keys are the client's own [keys](#keys), which only a client with `private_key_jwt` has; keys at the client's `jwks_uri` come with dynamic client registration ([Milestone 15](../../product/epics.md#milestone-15-clients-that-register-themselves)). A client that proves who it is with a secret can therefore send only unsigned objects, and only once an administrator chose `none` for it. **An unsigned object protects nothing**: anyone who can send a browser to Hodor could have written it, so every check of the endpoint applies to what it holds, exactly as to a request without one.
+
+**Which client.** The object is checked for the client that `client_id` names outside it, looked up in the tenant the address names, as for every request. When `client_id` is not given outside, the object's own `client_id` is read first, only to know which client to check it for. A client of another tenant is unknown there, and its object is never checked: the answer is the page of an unknown client.
+
+**The checks.** They are made in this order, nothing else the object says is used before its signature has been checked, and the first that fails decides the answer, `invalid_request_object`:
+
+| Check | Refused when |
+|---|---|
+| Size and shape | It is larger than 16 kibibytes, is not three parts of base64url, or its header or claims are not JSON objects |
+| Algorithm | The header's `alg` is not one the client's algorithm accepts. The shared-secret algorithms can never be named |
+| Key and signature | For a signed object, as for [a client assertion](#checking-a-client-assertion): the header names by `kid` a key the client does not have, or names none while more than one of its keys fits the algorithm, or the signature does not verify over the first two parts exactly as they arrived. For an unsigned object, the third part is not empty |
+| `iss` | A signed object has none, or any object has one that is not the client's identifier |
+| `client_id` | It is given and is not the client's identifier |
+| `aud` | It is given and does not hold the tenant's issuer |
+| `exp` | It is given and is in the past, allowing 60 seconds for clocks, or is not a whole number of seconds |
+| `nbf` | It is given and is in the future, allowing 60 seconds, or is not a whole number of seconds |
+| Its parameters | It holds `request` or `request_uri`, or a parameter whose value is a list of anything but text |
+
+`jti` is not remembered, and `exp` and `nbf` may be left out: an object may be sent again until it expires, as the same request could be. A client held to a [security profile](../../decisions/0052-security-profiles.md) will need them, in 0.6.0.
+
+**The parameters inside win.** Once checked, the object's claims are the request. Text is read as it is; a number or a boolean as the text JSON writes it; an object, such as `claims`, as its JSON; a list as the parameter given once for each element, which only `resource` may be. `iss`, `aud`, `exp`, `nbf`, `iat` and `jti` are the object's own and not parameters. Of the parameters outside the object, only `client_id` is read, as RFC 9101 says: the others are ignored, a `redirect_uri` or a `state` included. OpenID Connect asks a client to repeat `response_type`, `client_id` and `scope` outside; when it does, they must have the values they have inside, the scopes in any order, or the answer is `invalid_request`. `request` and `request_uri` together are `invalid_request`.
+
+**Then every check of the endpoint applies** to the parameters read from the object, in the order of [checking the request](#checking-the-request): a redirect address in the object that is not one of the client's is answered with Hodor's own page, whatever the one outside says, and PKCE, the scopes and the resources are checked as for any request. The object itself is never kept: what waits while the person signs in is the checked request, as for every request.
+
+**Where a refused object is answered.** An error goes only to one of the client's redirect addresses: to the `redirect_uri` outside the object when it is one, otherwise to the object's own when it is one, read without trusting anything else it says, each with the `state` given beside it. When neither is, the answer is Hodor's own page, `oauth.authorization_request_object_invalid`. A redirect address of the client is where its answers go in any case, so an error sent there tells nobody else anything.
 
 ### Whether the person must sign in
 
@@ -472,6 +512,7 @@ When a person is deprovisioned, every active grant of theirs, for every client, 
 | `GrantStore` | Store a grant; load one; store its revocation; list a person's active grants, for one client or for all |
 | `AuthorizationCodeStore` | Store a code; find one by its hash; mark it redeemed only if it was not |
 | `PersonMemberships` | Whether the person is a member of an organization, and the person's effective groups. The server implements it over the identity context |
+| `SignatureVerifier` | Checks the signature of a [request object](#request-objects), from the kernel |
 
 ### Storage
 
@@ -1073,7 +1114,9 @@ It names only what is built:
 | `prompt_values_supported` | `none`, `login`, `consent`, `select_account` |
 | `ui_locales_supported` | `en`, `pt-BR` |
 | `authorization_response_iss_parameter_supported` | `true` |
-| `request_parameter_supported`, `request_uri_parameter_supported`, `claims_parameter_supported` | `false` |
+| `request_parameter_supported` | `true`: [request objects](#request-objects) by value are read |
+| `request_object_signing_alg_values_supported` | `ES256`, `RS256`, `PS256` and `none`: `none` only for a client whose administrator chose it |
+| `request_uri_parameter_supported`, `claims_parameter_supported` | `false` |
 | `backchannel_logout_supported`, `backchannel_logout_session_supported` | `true`: [back-channel logout](#back-channel-logout) is offered, and every logout token carries `sid` |
 
 **`spiffe_jwt` follows draft-ietf-oauth-spiffe-client-auth-03**, the version of the Internet-Draft Hodor implements ([checking a JWT-SVID](#checking-a-jwt-svid)). The draft is not yet a standard and may change; a change of the version Hodor follows is a change to Hodor, written in the changelog ([Decision 0029](../../decisions/0029-hodor-in-a-service-mesh.md#consequences)). `spiffe_x509` follows the same version, section 3.3 ([an identity forwarded by a proxy](#an-identity-forwarded-by-a-proxy)); the draft's `spiffe_wit` is not offered.
@@ -1667,7 +1710,11 @@ Administrators reach them through [the administration interface](../../api/admin
 | Asking for an `acr` with the `claims` parameter. `acr_values` is the way to ask | 0.5.0, [Milestone 13](../../product/epics.md#milestone-13-requests-that-say-what-they-need) |
 | A page where a person sees the history of their consents | The account console, Phase 2 |
 | Limits on requests to the authorization endpoint per address | With the other limits per address, before any deployment behind a load balancer |
-| Request objects (`request`, `request_uri`) and pushed authorization requests | 0.5.0, [Milestone 13](../../product/epics.md#milestone-13-requests-that-say-what-they-need) ([Decision 0045](../../decisions/0045-request-objects-and-pushed-requests.md)) |
+| Pushed authorization requests, and request objects by reference at a client's address (`request_uri`) | 0.5.0, [Milestone 13](../../product/epics.md#milestone-13-requests-that-say-what-they-need), Issue-121 and Issue-122 ([Decision 0045](../../decisions/0045-request-objects-and-pushed-requests.md)) |
+| Request objects signed with a key at the client's `jwks_uri` | 0.5.0, [Milestone 15](../../product/epics.md#milestone-15-clients-that-register-themselves) |
+| Encrypted request objects | 0.6.0, [Milestone 18](../../product/epics.md#milestone-18-fapi-20-message-signing-and-fapi-10-advanced) ([Decision 0048](../../decisions/0048-encryption.md)) |
+| `exp`, `nbf` and `jti` required in a request object, and its `jti` remembered | 0.6.0, with [security profiles](../../decisions/0052-security-profiles.md) |
+| Choosing a client's request object algorithm from the console | With the console pages of clients |
 | Fetching a sector identifier address again after the client was saved | Not planned: only its host is used ([Decision 0040](../../decisions/0040-pairwise-subjects.md)) |
 | Finding a person by a pairwise identifier outside a token's record, for the Authorization API or a resource server | Not planned: it would undo what the identifier hides ([Decision 0040](../../decisions/0040-pairwise-subjects.md)) |
 | A pairwise client that registers itself, and the suite's pairwise tests, which need it: there is no dynamic client registration | 0.5.0, [Milestone 15](../../product/epics.md#milestone-15-clients-that-register-themselves) ([Decision 0049](../../decisions/0049-dynamic-client-registration.md)) |

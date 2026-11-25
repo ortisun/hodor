@@ -12,9 +12,10 @@ use crate::domain::authorization::{
 };
 use crate::domain::consent::ConsentWait;
 use crate::domain::event::OauthEvent;
+use crate::domain::request_object::RequestObjectCheck;
 use hodor_kernel::{
-    Caller, Clock, Digest, DomainError, EventEnvelope, EventMetadata, RandomSource, TenantContext,
-    Timestamp, UnitOfWork, UnitOfWorkFactory, UserId,
+    Caller, Clock, Digest, DomainError, EventEnvelope, EventMetadata, RandomSource,
+    SignatureVerifier, TenantContext, Timestamp, UnitOfWork, UnitOfWorkFactory, UserId,
 };
 use std::sync::Arc;
 
@@ -37,6 +38,8 @@ pub struct AuthorizationCodePorts {
     pub codes: Arc<dyn AuthorizationCodeStore>,
     /// Whether a person is a member of the organization a request names.
     pub memberships: Arc<dyn PersonMemberships>,
+    /// Checks the signature of a request object.
+    pub verifier: Arc<dyn SignatureVerifier>,
     /// SHA-256.
     pub digest: Arc<dyn Digest>,
     /// The random bytes of codes and secrets.
@@ -130,7 +133,8 @@ impl AuthorizationCodeService {
         Ok(())
     }
 
-    /// Checks a request against the client it names in this tenant.
+    /// Checks a request against the client it names in this tenant, whose
+    /// issuer is `issuer`, its request object first when it has one.
     ///
     /// # Errors
     ///
@@ -139,6 +143,7 @@ impl AuthorizationCodeService {
     pub async fn check(
         &self,
         tenant: &TenantContext,
+        issuer: &str,
         parameters: &AuthorizationParameters,
     ) -> Result<Result<AuthorizationRequest, AuthorizationRefusal>, DomainError> {
         let mut uow = self.ports.units_of_work.begin(tenant).await?;
@@ -165,6 +170,11 @@ impl AuthorizationCodeService {
             client.as_ref(),
             application.as_ref(),
             &servers,
+            RequestObjectCheck {
+                issuer,
+                now: self.ports.clock.now(),
+                verifier: self.ports.verifier.as_ref(),
+            },
         ))
     }
 

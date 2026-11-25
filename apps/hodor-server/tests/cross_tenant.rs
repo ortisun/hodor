@@ -4941,3 +4941,204 @@ async fn a_certificate_of_one_tenants_trust_domain_is_refused_by_another_under_t
         );
     }
 }
+
+/// A first-party client of `tenant` that signs its request objects with a
+/// P-256 key of its own, `kid` `signing` in every tenant; the private half
+/// is returned.
+async fn request_object_client(world: &World, tenant: &Tenant) -> (String, Vec<u8>) {
+    use aws_lc_rs::rand::SystemRandom;
+    use aws_lc_rs::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, KeyPair as _};
+    use base64::Engine as _;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use hodor_adapters_postgres::{PgApplicationStore, PgClientStore, PgResourceServerStore};
+    use hodor_oauth::api::{
+        ApplicationPorts, ApplicationService, ApplicationSettings, AuthenticationMethod,
+        ClientSettings, ClientType, CreateClient, GrantType,
+    };
+    let applications = ApplicationService::new(ApplicationPorts {
+        units_of_work: Arc::new(world.database.app().clone()),
+        applications: Arc::new(PgApplicationStore),
+        clients: Arc::new(PgClientStore),
+        resource_servers: Arc::new(PgResourceServerStore),
+        digest: Arc::new(Sha256Digest),
+        random: Arc::new(OsRandom),
+        clock: Arc::new(SystemClock),
+    });
+    let application = applications
+        .create_application(
+            &tenant.context,
+            ApplicationSettings {
+                name: "Billing".to_owned(),
+                first_party: true,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("application");
+    let mut settings = ClientSettings::new(
+        "Billing web",
+        ClientType::Confidential,
+        vec![GrantType::AuthorizationCode],
+        vec![REDIRECT.to_owned()],
+    );
+    settings.authentication_method = AuthenticationMethod::PrivateKeyJwt;
+    settings.allowed_scopes = vec!["openid".to_owned()];
+    let (client, _) = applications
+        .create_client(
+            &tenant.context,
+            CreateClient {
+                application_id: application.id(),
+                client_type: ClientType::Confidential,
+                settings,
+                secret_lifetime: None,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("client");
+    let pkcs8 =
+        EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
+            .expect("key");
+    let pair =
+        EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8.as_ref()).expect("pair");
+    let point = pair.public_key().as_ref();
+    let jwk = serde_json::json!({
+        "kty": "EC", "crv": "P-256", "kid": "signing",
+        "x": URL_SAFE_NO_PAD.encode(&point[1..33]),
+        "y": URL_SAFE_NO_PAD.encode(&point[33..65]),
+    });
+    applications
+        .add_client_key(
+            &tenant.context,
+            client.id(),
+            &jwk.to_string(),
+            Caller::system(),
+        )
+        .await
+        .expect("key");
+    (client.id().to_string(), pkcs8.as_ref().to_vec())
+}
+
+/// A request object of `client` for `audience`, signed with `key`.
+fn request_object(client: &str, audience: &str, key: &[u8]) -> String {
+    use aws_lc_rs::rand::SystemRandom;
+    use aws_lc_rs::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair};
+    use base64::Engine as _;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("after 1970")
+        .as_secs();
+    let encode = |value: serde_json::Value| URL_SAFE_NO_PAD.encode(value.to_string());
+    let input = format!(
+        "{}.{}",
+        encode(serde_json::json!({"alg": "ES256", "kid": "signing"})),
+        encode(serde_json::json!({
+            "iss": client,
+            "aud": audience,
+            "exp": now + 300,
+            "client_id": client,
+            "response_type": "code",
+            "redirect_uri": REDIRECT,
+            "scope": "openid",
+            "state": "inside",
+            "code_challenge": hodor_oauth::api::s256_challenge(VERIFIER, &Sha256Digest),
+            "code_challenge_method": "S256",
+        }))
+    );
+    let pair = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, key).expect("pair");
+    let signature = pair
+        .sign(&SystemRandom::new(), input.as_bytes())
+        .expect("signature");
+    format!("{input}.{}", URL_SAFE_NO_PAD.encode(signature.as_ref()))
+}
+
+/// Where the authorization endpoint of `tenant` sends a signed-in browser
+/// for `client` with `object`: the status, and the query of the redirect.
+async fn with_request_object(
+    browser: &mut Browser,
+    tenant: &Tenant,
+    client: &str,
+    object: &str,
+) -> (StatusCode, Option<String>) {
+    let query = form_urlencoded::Serializer::new(String::new())
+        .extend_pairs([
+            ("client_id", client),
+            ("response_type", "code"),
+            ("scope", "openid"),
+            ("redirect_uri", REDIRECT),
+            ("request", object),
+        ])
+        .finish();
+    let (status, location, _) = browser
+        .navigate(
+            Method::GET,
+            &format!("/t/{}/oauth2/authorize?{query}", tenant.slug),
+            None,
+        )
+        .await;
+    (status, location)
+}
+
+#[tokio::test]
+async fn a_request_object_signed_for_one_tenant_is_refused_by_another() {
+    let world = world_with(&[("HODOR_SECRET_KEYS", ROOT_KEY)]).await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    let (acme_client, acme_key) = request_object_client(&world, acme).await;
+    let (globex_client, globex_key) = request_object_client(&world, globex).await;
+    let acme_issuer = "http://localhost:8080/t/acme";
+    let globex_issuer = "http://localhost:8080/t/globex";
+    let object = request_object(&acme_client, acme_issuer, &acme_key);
+
+    // At Acme, the object is the request.
+    let mut at_acme = Browser::not_following(&world.server);
+    let (_, body) = at_acme.sign_in(acme.slug, EMAIL, PASSWORD).await;
+    assert_eq!(body["status"], "completed", "{body}");
+    let (status, location) = with_request_object(&mut at_acme, acme, &acme_client, &object).await;
+    assert_eq!(status, StatusCode::FOUND);
+    assert!(
+        location.as_deref().is_some_and(|to| to.contains("code=")),
+        "{location:?}"
+    );
+
+    let mut at_globex = Browser::not_following(&world.server);
+    let (_, body) = at_globex.sign_in(globex.slug, EMAIL, PASSWORD).await;
+    assert_eq!(body["status"], "completed", "{body}");
+
+    // At Globex, Acme's client is nobody: Hodor's own page, and nothing is
+    // checked or sent to an address.
+    let (status, location) =
+        with_request_object(&mut at_globex, globex, &acme_client, &object).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(location, None);
+
+    // Named for Globex's own client, Acme's object is signed by a key
+    // Globex's client does not have.
+    let (status, location) =
+        with_request_object(&mut at_globex, globex, &globex_client, &object).await;
+    assert_eq!(status, StatusCode::FOUND);
+    let location = location.expect("a redirect");
+    assert!(
+        location.contains("error=invalid_request_object") && !location.contains("code="),
+        "{location}"
+    );
+
+    // Globex's client's own object, made for Acme's issuer, is not for
+    // Globex either; for Globex's issuer it is the request.
+    let for_acme = request_object(&globex_client, acme_issuer, &globex_key);
+    let (_, location) =
+        with_request_object(&mut at_globex, globex, &globex_client, &for_acme).await;
+    assert!(
+        location
+            .as_deref()
+            .is_some_and(|to| to.contains("error=invalid_request_object")),
+        "{location:?}"
+    );
+    let for_globex = request_object(&globex_client, globex_issuer, &globex_key);
+    let (_, location) =
+        with_request_object(&mut at_globex, globex, &globex_client, &for_globex).await;
+    assert!(
+        location.as_deref().is_some_and(|to| to.contains("code=")),
+        "{location:?}"
+    );
+}
