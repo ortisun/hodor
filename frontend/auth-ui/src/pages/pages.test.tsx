@@ -1565,6 +1565,26 @@ describe("signing in by email on the sign-in page", () => {
     expect(screen.queryByText(en.rejected, { exact: false })).toBeNull();
   });
 
+  it("asks for a code once, and asks where the sign-in stands when the server says it moved on", async () => {
+    // Asking keeps nothing in the sign-in, so the server does not refuse it
+    // for another request; a second ask would send a second message.
+    const { props, sent, user } = page({
+      "GET /sign-in/alternatives": [offered(["email_code"]), offered(["email_code"])],
+      "GET /session": [nobody, nobody],
+      "GET /sign-in": [pending("identifier"), pending("identifier")],
+      "POST /sign-in/steps/email_code/send": [problem(409, "authentication.transaction_modified_concurrently")],
+    });
+    render(<SignInPage {...props} notice={null} />);
+    await user.type(await screen.findByLabelText(en.identifierLabel), "ana@example.com");
+    await user.click(await screen.findByRole("button", { name: en.emailMeACode }));
+
+    await waitFor(() =>
+      expect(sent.filter((request) => request.method === "GET" && request.path === "/sign-in")).toHaveLength(2),
+    );
+    expect(sent.filter((request) => request.path === "/sign-in/steps/email_code/send")).toHaveLength(1);
+    expect(screen.queryByText(en.emailCodeSent("ana@example.com"))).toBeNull();
+  });
+
   it("asks for a link and says to open it in this browser", async () => {
     const { props, sent, user } = page({
       "GET /sign-in/alternatives": [offered(["email_link"])],
