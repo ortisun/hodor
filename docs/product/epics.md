@@ -36,7 +36,10 @@ Epics map to roadmap phases. Issues are written in full only for Milestone 1; la
 | Epic 27 | Governance | 7 | Requirement-Tenancy-06 |
 | Epic 28 | Plugin runtime | 8 | Requirement-Plugin-01 |
 | Epic 29 | Software development kits, Terraform, developer portal | 8 | Requirement-Workload-03 |
-| Epic 30 | Production readiness | 9 | Requirement-Key-03, Requirement-Operations, Requirement-Performance |
+| Epic 30 | Production readiness | 9 | Requirement-Key-03, 06, Requirement-Operations, Requirement-Performance |
+| Epic 31 | Workload certificates and SPIFFE | 6 | Requirement-OAuth-14, 23, Requirement-Workload-04, 05 |
+| Epic 32 | Service mesh integration | 8 | Requirement-Authorization-12, Requirement-Workload-06, Requirement-Operations-08 |
+| Epic 33 | Certificate authority per tenant | 6 | Requirement-Key-04 |
 
 ## Milestone 1: Walking skeleton
 
@@ -410,6 +413,95 @@ One-time passwords by text message, HOTP, front-channel logout, relationship-bas
 ### After Milestone 9
 
 0.3.0 is released when Milestone 9 is done, following [the release rules](../development/conventions.md#releases).
+
+## Milestone 10: Workloads prove who they are with their certificates
+
+**Goal**: a service account proves who it is to Hodor with the identity its service mesh or SPIRE already gave it, and needs no secret: a JWT-SVID as its client assertion, the certificate its sidecar presented in mutual TLS as the proxy in front of Hodor forwards it, or the identity Linkerd's proxy asserts. A token can be bound to the certificate. Each tenant trusts only the trust domains it names. The first part of 0.4.0 ([Decision 0028](../decisions/0028-what-0.4.0-holds.md)); how each way works is [Decision 0029](../decisions/0029-hodor-in-a-service-mesh.md#a-workload-proves-who-it-is-in-one-of-three-ways).
+
+**Demo script**: on a kind cluster with SPIRE and Istio, give a tenant the SPIRE trust domain by its bundle endpoint and Istio's trust domain as checked by the mesh. Bind a service account's clients to one SPIFFE identifier of each. Get a token with a JWT-SVID, then with no credential at all from a workload whose sidecar presents its certificate, and read the `cnf` of the bound token. Present the bound token without the certificate and see it refused. Present a JWT-SVID twice, one of another trust domain and one with another tenant's issuer as audience, and see all three refused. Send `X-Forwarded-Client-Cert` from outside the mesh and see it ignored.
+
+### Slice Trust domains and SPIFFE (Epic 31)
+
+| Identifier | Issue | Acceptance | Depends on |
+|---|---|---|---|
+| Issue-105 | Trust domains of a tenant: a name and a bundle uploaded by an administrator, fetched from a SPIFFE bundle endpoint (`https_web`) through the guarded outbound client and refreshed by the worker, or marked as checked by the mesh; every change audited | A bundle that does not read is refused and the previous one stays; a bundle endpoint at a private address is refused; one tenant's trust domain is never read for another, even under the same name | Issue-93 |
+| Issue-106 | SPIFFE client authentication with a JWT-SVID (`spiffe_jwt`, draft-ietf-oauth-spiffe-client-auth-03): a client of a service account bound to one SPIFFE identifier; the assertion checked against its trust domain's bundle, `aud` exactly the tenant's issuer, remembered by its hash until it expires; at the token, introspection and revocation endpoints; advertised in the metadata | An assertion of another trust domain, for another identifier, with another tenant's issuer as audience, or presented a second time is refused; the version of the draft is named in the metadata page | Issue-105 |
+
+### Slice Mutual TLS (Epic 31)
+
+| Identifier | Issue | Acceptance | Depends on |
+|---|---|---|---|
+| Issue-107 | The caller's identity from the proxy in front of Hodor: the one header the operator names, `client-cert` (RFC 9440), `x-forwarded-client-cert` (Envoy) or `l5d-client-id` (Linkerd), read only from a trusted proxy and from its nearest element; the methods `tls_client_auth` (RFC 8705), `spiffe_x509` and `linkerd_identity`; the chain checked against the bundle when the certificate is forwarded, the proxy relied on only for a trust domain checked by the mesh | The header from an untrusted peer is ignored; an element a caller wrote before the proxy's own is never read; a certificate that does not chain to the trust domain's bundle is refused; no header is read when none is named | Issue-105 |
+| Issue-108 | Certificate-bound access tokens (RFC 8705): `cnf` with `x5t#S256` for a client that asks for them, from the forwarded certificate or Envoy's `Hash`; checked by UserInfo, introspection, the Authorization API and the administration interface; returned by introspection; refresh tokens of public clients bound too | A bound token presented without its certificate, or with another, is refused everywhere Hodor checks tokens; introspection returns `cnf` | Issue-107 |
+| Issue-109 | Managing trust domains and the clients bound to identities, and acceptance: the administration interface, the command-line tool and the console pages; the cross-tenant suite extended to trust domains, bundles, assertions, forwarded identities and bound tokens; the demonstration of the milestone with SPIRE and Istio on kind | They pass in continuous integration against the image | all |
+
+### Explicitly not in Milestone 10
+
+Prefix matches of SPIFFE identifiers, Kubernetes service account tokens as client authentication, signing a person in with a client certificate (Requirement-Authentication-12), Hodor ending TLS itself, workload identity federation from a cloud provider.
+
+## Milestone 11: Hodor in a service mesh
+
+**Goal**: a service mesh's proxies check Hodor's tokens and ask Hodor's decisions. Istio, Consul and Envoy Gateway ask through `hodor-ext-authz`. Linkerd gets a gateway in front, policies written from Hodor's roles, and applications that ask for themselves. Hodor runs inside a mesh with every client still limited apart. The second part of 0.4.0 ([Decision 0029](../decisions/0029-hodor-in-a-service-mesh.md)).
+
+**Demo script**: on a kind cluster with Istio, protect an application with `RequestAuthentication` for the tenant's issuer and an `AuthorizationPolicy` of action `CUSTOM` pointing at `hodor-ext-authz`. Call it as a person who holds the role and as one who does not, and read both decisions in Hodor's record. Stop Hodor and see the call denied. On a kind cluster with Linkerd, put Envoy Gateway in front and do the same; then write the Linkerd policies for the application, apply them, and see a workload whose service account holds no role refused by Linkerd itself. Run Hodor inside each mesh and fail passwords from two addresses through the gateway until one is locked out, and see the other still sign in. Send a forwarded address from a workload that is not the gateway and see it ignored.
+
+### Slice External authorization (Epic 32)
+
+| Identifier | Issue | Acceptance | Depends on |
+|---|---|---|---|
+| Issue-110 | `hodor-ext-authz`: a binary of the workspace serving Envoy's external authorization over gRPC; the subject from the checked token's `sub` or from the caller's identity resolved to its service account; the resource and the action from route rules or from context per route; one client per application chosen by the destination's identity; authenticated to Hodor by its own mesh identity; denied on every failure; no cache; its own image and chart values | Its decision equals the one `evaluate` gives; Hodor unreachable, a destination with no client or a route with no rule each answer denied; a token of another tenant is refused; latency at the 99th percentile is measured and published | Issue-107 |
+
+### Slice Linkerd (Epic 32)
+
+| Identifier | Issue | Acceptance | Depends on |
+|---|---|---|---|
+| Issue-111 | Linkerd policies from Hodor's roles: `hodor-cli mesh linkerd-policy` writes, for one application, the `MeshTLSAuthentication` and the `AuthorizationPolicy` naming the Linkerd identities of the service accounts that hold a role on its resource server; written, never applied; says what changed since the last run | The output is accepted by the cluster on a dry run; a service account without a role, or of another tenant, never appears; a role taken away disappears from the next run | Issue-107 |
+
+### Slice Inside a mesh (Epic 32)
+
+| Identifier | Issue | Acceptance | Depends on |
+|---|---|---|---|
+| Issue-112 | Hodor inside a mesh: the identities of the ingress gateways named by the operator; the forwarded address read from the local proxy only when the caller's identity is one of them; the chart's values for Istio and Linkerd, the probes, the egress to identity providers and webhooks, and the network policy beside the mesh's own | Behind a gateway two clients have separate lockouts; a forwarded address sent by any other workload is ignored; the forwarded address is ignored when the identity header is absent | Issue-107 |
+| Issue-113 | The service mesh guide, `docs/operations/service-mesh.md`: for Istio (sidecars and ambient), Linkerd, Consul and Envoy Gateway, how to check Hodor's tokens, ask its decisions, give workloads their identity at Hodor, and run Hodor inside; what was tried and what was not | Every example for Istio and Linkerd runs in the demonstration; the others are marked as not tried | Issue-110, Issue-111, Issue-112 |
+| Issue-114 | Acceptance: the demonstration of the milestone with Istio and with Linkerd on kind | It passes in continuous integration against the image | all |
+
+### Explicitly not in Milestone 11
+
+A controller that applies Linkerd policies as roles change, a cache of decisions in `hodor-ext-authz`, Hodor answering Envoy's external authorization inside `hodor-server`, meshes other than Istio and Linkerd tried in continuous integration, Kuma and Cilium.
+
+## Milestone 12: An optional certificate authority per tenant
+
+**Goal**: a tenant that turns it on has a certificate authority of its own, whose key OpenBao holds and never lets out. It signs the intermediate certificates of the tenant's meshes, only for the tenant's trust domains, by hand or through cert-manager. Every mesh of the tenant then trusts one root, and Hodor trusts what it signed. The third part of 0.4.0 ([Decision 0030](../decisions/0030-optional-certificate-authority.md)).
+
+**Demo script**: on an installation with the authority off, see that no route and no metadata mention it. Try to create an authority on the local key provider and see it refused. Start OpenBao, point Hodor's key provider at it, turn the authority on, create a tenant's authority for two trust domains and read its name constraints. Install `hodor-cert-manager-issuer` on a kind cluster with Istio and another with Linkerd, and let cert-manager keep Istio's `cacerts` and Linkerd's identity issuer current through it. Call a workload of the Linkerd cluster from one of the Istio cluster over mutual TLS under the one root. Ask for an intermediate for another tenant's trust domain, for one that is not an authority and for one past the bound, and see all three refused. Withdraw an intermediate and see Hodor stop trusting its workloads at once. Read the audit record of each signature.
+
+### Slice The key provider (Epic 30)
+
+| Identifier | Issue | Acceptance | Depends on |
+|---|---|---|---|
+| Issue-115 | The OpenBao key provider in `hodor-adapters-kms`: ECDSA P-256 keys made in the Transit secrets engine, not exportable, signing in the DER and JOSE encodings; one key per tenant and version; Hodor signed in by Kubernetes authentication or an AppRole, with a policy that allows nothing but signing and reading public keys on its mount; usable for the tenants' token signing keys too; OpenBao in the development stack and in continuous integration | A key's private part is never readable through Hodor's policy; material of one tenant or version is refused for another; with OpenBao down, signing fails and nothing falls back to the local provider; the contract suite of the key provider passes against it as against the local one | — |
+
+### Slice The authority (Epic 33)
+
+| Identifier | Issue | Acceptance | Depends on |
+|---|---|---|---|
+| Issue-116 | The certificate authority of a tenant: off unless the installation and the tenant turn it on; refused on the local key provider outside development; a root generated in OpenBao, or an intermediate under the tenant's own root; name constraints for its trust domains; its bundle published as a SPIFFE bundle endpoint under the tenant's issuer and trusted by Hodor's own trust domains; its own permissions; every signature audited | With the authority off nothing of it is reachable; the key never leaves the key provider; a certificate under it for a name outside its trust domains fails verification; one tenant's authority is never used for another | Issue-105, Issue-115 |
+| Issue-117 | Signing intermediates: a certificate signing request checked for path length zero, names within the trust domains, name constraints never widened, the key and the lifetime bound; through the administration interface and `hodor-cli authority sign`; withdrawal, removed from Hodor's trust at once | Each refused request names its reason; a withdrawn intermediate's workloads are refused on the next request; the signature checks with an independent library | Issue-116 |
+
+### Slice Meshes on the authority (Epic 33)
+
+| Identifier | Issue | Acceptance | Depends on |
+|---|---|---|---|
+| Issue-118 | `hodor-cert-manager-issuer`: an outside issuer for cert-manager, written with the Kubernetes client for Rust, that signs through Hodor only approved requests for an authority, authenticated by its own identity through a client holding only the signing scope; its image, chart and permissions in the cluster | An unapproved request, or one that is not for an authority, is never sent to Hodor; Linkerd's identity issuer and Istio's `cacerts` are renewed without anyone acting | Issue-117 |
+| Issue-119 | Acceptance: the demonstration of the milestone, an Istio cluster and a Linkerd cluster under one tenant's root on kind; the cross-tenant suite extended to authorities, requests and bundles | It passes in continuous integration against the image | all |
+
+### Explicitly not in Milestone 12
+
+Workloads' own certificates, short-lived certificates in exchange for an access token (Requirement-Key-05), ACME, EST, CMP and SCEP, certificates for people, revocation lists and OCSP, Consul, the cloud's key management services (Phase 9), the root keys of secrets at rest in OpenBao.
+
+### After Milestone 12
+
+0.4.0 is released when Milestone 12 is done, following [the release rules](../development/conventions.md#releases). If Milestone 12 slips, the owner may release 0.4.0 with Milestones 10 and 11 ([Decision 0028](../decisions/0028-what-0.4.0-holds.md#decision)).
 
 ## Later epics at story level
 

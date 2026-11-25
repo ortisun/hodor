@@ -41,7 +41,8 @@ Hodor is an identity and access management platform written in Rust that acts as
 - No implicit grant and no resource owner password credentials grant.
 - No database-per-tenant in v1 (see [Decision 0006](../decisions/0006-tenant-isolation.md)).
 - No reimplementation of a Rego engine: Open Policy Agent is used as is.
-- Not an API gateway: Hodor is the policy decision and administration point; enforcement (policy enforcement point) stays in applications.
+- Not an API gateway: Hodor is the policy decision and administration point; enforcement (policy enforcement point) stays in applications, or in a service mesh's proxies, which ask through `hodor-ext-authz` ([Decision 0029](../decisions/0029-hodor-in-a-service-mesh.md)).
+- Not a public key infrastructure: Hodor never issues a workload's own certificate. The optional authority per tenant signs only the intermediates of the tenant's service meshes ([Decision 0030](../decisions/0030-optional-certificate-authority.md)).
 - No microservices at the start.
 
 ## 6. Scope by capability
@@ -55,6 +56,7 @@ Hodor is an identity and access management platform written in Rust that acts as
 | Multi-factor authentication, passkeys, flow engine | Identity provider | 4 |
 | Native authorization + Open Policy Agent | Policy decision point / policy administration point | 5 |
 | SAML, LDAP, SCIM | Identity provider / service provider / client / SCIM server | 6 |
+| Workload certificates, service meshes, an optional certificate authority per tenant | Verifier of workload identities / policy decision point for the mesh's proxies / authority above the meshes | 6 and 8, pulled into 0.4.0 |
 | Governance (access reviews, delegation) | — | 7 |
 | Plugins, software development kits, Terraform | — | 8 |
 | High availability, disaster recovery, external key management service, hardening | — | 9 |
