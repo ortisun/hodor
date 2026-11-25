@@ -341,16 +341,16 @@ Nothing is shown and nothing is stored until the request has been checked. The c
 
 A client of another tenant is unknown here: the client is looked up only in the tenant the address names.
 
-**Then, everything else, answered at the redirect address.** From here on, an error is sent back by redirecting the browser to the redirect address with `error`, `error_description`, `state` when the request had one, and `iss`:
+**Then, everything else, answered at the redirect address.** From here on, an error is sent back to the redirect address with `error`, `error_description`, `state` when the request had one, and `iss`, in the [response mode](#response-modes) the answer would have had:
 
 | Failure | `error` |
 |---|---|
 | A parameter other than `resource` is given more than once | `invalid_request` |
 | `request` is given: it is read as a [request object](#request-objects), whose checks come first | `invalid_request_object` |
 | `request_uri` is given: references to a request object are not supported yet | `request_uri_not_supported` |
-| `response_mode` is given and is not `query` | `invalid_request` |
 | `response_type` is missing | `invalid_request` |
 | `response_type` is anything but `code` | `unsupported_response_type` |
+| `response_mode` is given and is not a [response mode](#response-modes) Hodor offers, `query` or `form_post`, or is one the response type does not allow | `invalid_request` |
 | `code_challenge` is missing for a client that requires PKCE (every public client, and a confidential one unless an administrator turned it off) | `invalid_request` |
 | `code_challenge_method` is missing or is not `S256`. `plain` is refused: a challenge without a method means `plain` ([RFC 7636](https://www.rfc-editor.org/rfc/rfc7636#section-4.3)) | `invalid_request` |
 | `code_challenge` is not 43 characters of base64url without padding, the length of a SHA-256 digest | `invalid_request` |
@@ -481,9 +481,48 @@ When the person is signed in and the session is enough, a **grant** and an **aut
 
 - **The grant** records that this person let this client act for them, with the scopes and audiences of the request, the session it was made in and the [organization](#the-organization-of-a-sign-in) the request named, if any. It is what the refresh tokens of Issue-57 belong to, and it can be revoked; revoking it ends whatever was issued from it.
 - **The code** is 32 random bytes from the operating system, written as base64url without padding. Hodor keeps only its SHA-256 hash ([Decision 0004](../../decisions/0004-token-formats.md)), with the grant, the client, the redirect address, the code challenge, the scopes, the audiences, the `nonce`, the session, the user, when they signed in, with which methods and the `acr` they reached ([what the code says](#assurance-and-step-up)). It lives **60 seconds**.
-- The browser is redirected to the redirect address with `code`, `state` when the request had one, and `iss`. The redirect address keeps its own query, and the parameters are added after it.
+- The answer goes to the redirect address with `code`, `state` when the request had one, and `iss`, in the request's [response mode](#response-modes): by default the browser is redirected with them added to the address's query, after its own.
 
-Every answer of the endpoint, a redirect included, carries `Cache-Control: no-store`, so that no code or error is kept by a cache.
+Every answer of the endpoint, a redirect and the page of `form_post` included, carries `Cache-Control: no-store`, so that no code or error is kept by a cache.
+
+### Response modes
+
+Issue-129. The **response mode** says how the answer reaches the client's redirect address ([OAuth 2.0 Multiple Response Type Encoding Practices](https://openid.net/specs/oauth-v2-multiple-response-types-1_0.html#ResponseModes)). A request names it with `response_mode`; a request that names none is answered in the default mode of its response type, the query for `code`. A mode is not registered: every client may use every mode Hodor offers, and only the response type limits it ([Decision 0046](../../decisions/0046-responses-through-the-browser.md)).
+
+| Mode | How the answer arrives |
+|---|---|
+| `query` | The browser is redirected, status `302`, to the redirect address with the parameters added to its query, after the address's own |
+| `form_post` | The browser is given [a page of Hodor's](#the-page-of-form_post) that posts the parameters to the redirect address as a form ([OAuth 2.0 Form Post Response Mode](https://openid.net/specs/oauth-v2-form-post-response-mode-1_0.html)) |
+
+- **The response type decides which modes it allows.** `code` allows both. The types that return a token, which Issue-127 and Issue-128 bring, will never be answered in the query, as Multiple Response Type Encoding Practices says, and will default to the fragment.
+- **Any other mode is refused**, `invalid_request`: an unknown one, and those not built yet, `fragment` (Issue-127) and the four of JWT Secured Authorization Response Mode, `query.jwt`, `fragment.jwt`, `form_post.jwt` and `jwt` (Issue-148).
+- **The mode is chosen once**, when the request is checked, and kept with it: a request kept while the person signs in, steps up or is asked for consent is answered in its mode when the browser comes back. A request kept before modes existed reads as the query.
+- **An error comes in the mode the answer would have had**, as Form Post asks of a server that offers it: the mode the request names, when Hodor offers it and the response type allows it; otherwise the default of the response type; and the query when the response type cannot be read either. A refused [request object](#request-objects) is answered in the mode named beside the redirect address it is answered at, outside the object or inside it. An error answered with Hodor's own page, before the redirect address is trusted, is never sent to the client in any mode.
+- **The parameters are the same in every mode**: `code`, `state` when the request had one, and `iss`; or `error`, `error_description`, `state` and `iss`.
+
+#### The page of `form_post`
+
+The page posts the answer to the redirect address and does nothing else:
+
+- **One form**, `method="post"`, whose `action` is the redirect address of the checked request exactly as registered, its own query included, and one hidden field for each parameter of the answer, named and valued as the parameter. There is no other field: the parameters arrive at the client as the body of the post, `application/x-www-form-urlencoded`, and nothing else does.
+- **Every name and value is escaped**: `&`, `<`, `>`, `"` and `'` are written as character references, the redirect address too, so that nothing in a value, `state` included, can end the attribute or add markup.
+- **One script of one line**, `document.forms[0].submit();`, sends the form as the page loads. For a browser that runs no script, the form holds a sentence, "If you are not taken back to the application, continue.", and a **button** that sends the same form. They are not inside `noscript`, so that a person whose browser stopped the script for any reason can still go on; a browser that runs it leaves the page before they matter. The button has no name, so it adds nothing to what is posted.
+- **It loads nothing**: no style, image, font or other script, and nothing of another origin. Its words are in English, as Hodor's other pages of the endpoint are.
+
+It is answered with status `200`, `Content-Type: text/html; charset=utf-8`, and these headers:
+
+| Header | Value | Why |
+|---|---|---|
+| `Content-Security-Policy` | `default-src 'none'; script-src 'sha256-…'; base-uri 'none'; frame-ancestors 'none'; require-trusted-types-for 'script'; trusted-types 'none'`, where `sha256-…` is the base64 of the SHA-256 of the script | Only that script runs, inline or not; nothing loads; the page cannot be framed, which would let another site make the person post it |
+| `Cache-Control` | `no-store` | The answer is used once: neither a cache nor the browser's history may keep the code, as Form Post requires |
+| `Pragma` | `no-cache` | The same, for caches of HTTP/1.0, as the specification's example shows |
+| `Referrer-Policy` | `no-referrer` | The post carries no `Referer`, which would otherwise be the address of the authorization endpoint with the request in its query |
+
+The other security headers of every answer of Hodor, `X-Frame-Options: DENY` and `X-Content-Type-Options: nosniff` among them, are added as for any page.
+
+**Why the policy has no `form-action`.** `form-action` names where a form may post, but browsers check it again at every redirect that follows the post, so a client whose redirect address answers the post by sending the browser to another of its own origins would be refused. The form's only target is the checked redirect address, written by Hodor, and the page holds no markup but Hodor's own, so there is no other form to keep from posting.
+
+**The client's cookies.** The post is a navigation from Hodor's origin to the client's, made by a form: a browser sends with it only the client's cookies marked `SameSite=None`. A client that keeps what it needs to finish the sign-in in a cookie marked `Lax` or `Strict` does not get it at its redirect address, and must keep it otherwise, as `state` lets it.
 
 ### Redeeming a code
 
@@ -1135,7 +1174,7 @@ It names only what is built:
 | `issuer` | The tenant's issuer, exactly as every token and redirect carries it |
 | `authorization_endpoint`, `token_endpoint`, `userinfo_endpoint`, `jwks_uri`, `revocation_endpoint`, `introspection_endpoint`, `end_session_endpoint` | The seven addresses under `{issuer}/oauth2`; the last is [logout](#logout-initiated-by-the-relying-party) |
 | `response_types_supported` | `code` |
-| `response_modes_supported` | `query` |
+| `response_modes_supported` | `query`, `form_post`: the [response modes](#response-modes) the authorization endpoint answers in |
 | `grant_types_supported` | The grants the token endpoint answers: `authorization_code`, `refresh_token`, `client_credentials` and `urn:ietf:params:oauth:grant-type:token-exchange` |
 | `code_challenge_methods_supported` | `S256` |
 | `token_endpoint_auth_methods_supported` | `client_secret_basic`, `client_secret_post`, `private_key_jwt`, `spiffe_jwt`, `none`; and, when the operator names [the header of a forwarded identity](../../api/api-spec.md#the-callers-identity-from-a-proxy), `tls_client_auth` and `spiffe_x509` for `client-cert` and `x-forwarded-client-cert`, or `linkerd_identity` for `l5d-client-id` |
