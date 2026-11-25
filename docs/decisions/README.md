@@ -48,4 +48,15 @@ All records below are **Proposed** unless marked otherwise: they become Accepted
 | [0040](0040-pairwise-subjects.md) | A pairwise client knows a person by an identifier of its sector alone, in every token, answer and logout it is given (Accepted) |
 | [0041](0041-claim-mappers.md) | Claim mappers name their tokens, never a claim Hodor sets, and are bounded when they are saved (Accepted) |
 | [0042](0042-trust-domains.md) | Trust domains are kept by the keys context, under its permissions, and a bundle replaces the one in force only when it reads and does not go back (Accepted) |
+| [0044](0044-what-0.5.0-and-0.6.0-hold.md) | OpenID certification is two versions: 0.5.0 holds every OpenID Connect profile, 0.6.0 holds FAPI 1.0 Advanced, FAPI 2.0 and FAPI-CIBA |
+| [0045](0045-request-objects-and-pushed-requests.md) | A request object and a pushed authorization request become the same pending request, kept per tenant by the hash of its reference, used once |
+| [0046](0046-responses-through-the-browser.md) | Every response type and mode of OpenID Connect is offered per client; an access token through the browser only for a client an administrator marks so |
+| [0047](0047-claims-and-the-person-s-claims.md) | The `claims` parameter asks only for claims the scopes and consent already allow, and a person keeps the standard claims of OpenID Connect |
+| [0048](0048-encryption.md) | JSON Web Encryption with Hodor's own code over `aws-lc-rs`, for a short list of algorithms, with encryption keys per tenant |
+| [0049](0049-dynamic-client-registration.md) | Dynamic client registration is off in every tenant until an administrator chooses initial access tokens, software statements or open registration, under a policy |
+| [0050](0050-logout-and-session-state-in-the-browser.md) | Front-channel logout is a page of Hodor's that loads each client's address in a frame; session management reads a browser state that is not the session |
+| [0051](0051-conformance-runs-and-certification.md) | Every certification plan runs in continuous integration, a core set on each pull request and all of them nightly; certification is asked for per version, in one batch per specification |
+| [0052](0052-security-profiles.md) | A client is held to a FAPI security profile, checked when it is saved and at every request; under FAPI 2.0 its refresh tokens are not rotated |
+| [0053](0053-dpop.md) | DPoP nonces are derived from a secret of the tenant, proofs are remembered by their `jti`, and access tokens and public clients' refresh tokens are bound |
+| [0054](0054-backchannel-authentication.md) | A backchannel authentication request reaches the person on the account page, by email, and through the tenant's own authentication device service; poll, ping, and push outside FAPI |
 | [0055](0055-spiffe-jwt-client-authentication.md) | A client of a service account is bound to one SPIFFE identifier, and its JWT-SVID is used once, remembered by the hash of what it signs (Accepted) |

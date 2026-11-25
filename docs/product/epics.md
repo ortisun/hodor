@@ -16,7 +16,7 @@ Epics map to roadmap phases. Issues are written in full only for Milestone 1; la
 | Epic 7 | Keys | 2 | Requirement-Key-01, 02 |
 | Epic 8 | Applications and clients | 2 | Requirement-OAuth-22 |
 | Epic 9 | OAuth 2.x core | 2 | Requirement-OAuth-01 to 07, 17 |
-| Epic 10 | OpenID Connect | 2 | Requirement-OAuth-08, 10, 11, Requirement-Authentication-10 |
+| Epic 10 | OpenID Connect | 2 | Requirement-OAuth-08, 10, 11, 20, 25, 26, 33, Requirement-Authentication-10 |
 | Epic 11 | Consent | 2 | Requirement-OAuth-09 |
 | Epic 12 | Admin console v1 | 2 | — |
 | Epic 13 | Federation core | 3 | Requirement-Federation-01, 02, 04, 05, 08 |
@@ -40,6 +40,10 @@ Epics map to roadmap phases. Issues are written in full only for Milestone 1; la
 | Epic 31 | Workload certificates and SPIFFE | 6 | Requirement-OAuth-14, 23, Requirement-Workload-04, 05 |
 | Epic 32 | Service mesh integration | 8 | Requirement-Authorization-12, Requirement-Workload-06, Requirement-Operations-08 |
 | Epic 33 | Certificate authority per tenant | 6 | Requirement-Key-04 |
+| Epic 34 | Signed and encrypted requests and answers | 4 | Requirement-OAuth-24, 27, 28, 29, 30 |
+| Epic 35 | FAPI security profiles | 4 | Requirement-OAuth-31, 34 |
+| Epic 36 | Client-initiated backchannel authentication | 4 | Requirement-OAuth-32 |
+| Epic 37 | OpenID certification | 9 | Requirement-Operations-09 |
 
 ## Milestone 1: Walking skeleton
 
@@ -503,6 +507,193 @@ Workloads' own certificates, short-lived certificates in exchange for an access 
 
 0.4.0 is released when Milestone 12 is done, following [the release rules](../development/conventions.md#releases). If Milestone 12 slips, the owner may release 0.4.0 with Milestones 10 and 11 ([Decision 0028](../decisions/0028-what-0.4.0-holds.md#decision)).
 
+## Milestone 13: Requests that say what they need
+
+**Goal**: a client says what it needs in a signed request, by value, by reference or pushed to Hodor first, and asks for exactly the claims it wants, in the ID token or at UserInfo. A person has the standard claims of OpenID Connect. Every parameter of a request that the Basic OpenID Provider plan sends is honored rather than ignored. The first part of 0.5.0 ([Decision 0044](../decisions/0044-what-0.5.0-and-0.6.0-hold.md)); how requests are kept is [Decision 0045](../decisions/0045-request-objects-and-pushed-requests.md), and what the `claims` parameter may ask for is [Decision 0047](../decisions/0047-claims-and-the-person-s-claims.md).
+
+**Demo script**: give a person a given name, a family name, a telephone number and a postal address on the account page. Send a client's request as a request object signed with its key and read the claims it asked for through `claims` in the ID token. Push a request, follow the reference in the browser, then send the reference again and see it refused. Send a request object signed by another client's key, a reference pushed by another client, and a reference of another tenant, and see all three refused. Ask through `claims` for a claim of a scope the person did not consent to and see it left out. Ask for `acr` as essential and see the person stepped up. Send `prompt=none` with the ID token of another person as `id_token_hint` and see `login_required`. Run the Basic plan and see no test skipped but those of the unsigned ID token.
+
+### Slice Request objects and pushed requests (Epics 19 and 34)
+
+| Identifier | Issue | Acceptance | Depends on |
+|---|---|---|---|
+| Issue-120 | Request objects by value (OpenID Connect Core, section 6, and RFC 9101): signed with the client's keys in `ES256`, `RS256` or `PS256`, unsigned only for a client whose `request_object_signing_alg` is `none`; `iss`, `client_id`, `aud`, `exp` and `nbf` checked; the parameters inside win, and those repeated outside must match; every check of the authorization endpoint applied to what was inside; discovery says so | A request object signed by another client's key, by another tenant's client, or not signed for a client that names an algorithm is refused with `invalid_request_object`; the Basic plan's request object tests pass instead of being skipped | — |
+| Issue-121 | Pushed authorization requests (RFC 9126): `/t/{slug}/oauth2/par`, the client authenticated as at the token endpoint, checked when pushed, kept as a pending authorization request by the hash of its reference, used once, living 60 seconds unless the tenant sets 10 to 600; `require_pushed_authorization_requests` per client and as the tenant's default; at most 5 pending per client | A reference used twice, past its life, by another client or at another tenant is refused with `invalid_request_uri`; a pushed request that fails a check is answered at once, never at the redirect address; a client that requires pushed requests is refused without one | Issue-120 |
+| Issue-122 | Request objects by reference at a client's address: `request_uris` registered on the client, fetched through the guarded outbound client only when the reference starts with one of them, at most 16 kibibytes within 5 seconds, no redirect followed, the hash after `#` checked | An address the client did not register is never fetched; an address that resolves to a private network is refused; content whose hash differs from the fragment is refused | Issue-120 |
+
+### Slice Claims and the parameters of a request (Epics 2 and 10)
+
+| Identifier | Issue | Acceptance | Depends on |
+|---|---|---|---|
+| Issue-123 | The standard claims of a person (Requirement-Identity-04): names, nickname, picture, website, gender, birth date, time zone, telephone number with whether it is verified, and postal address, each optional and bounded; edited on the account page, through the administration interface and the command-line tool, mapped from identity providers and SCIM; the scopes `address` and `phone` offered; UserInfo answers them | The suite's tests of `profile`, `address`, `phone` and every scope at once pass without warning or skip; no event or log carries a value; the export of a person's data holds them | — |
+| Issue-124 | The `claims` parameter: a claim given only when a consented scope covers it, in the ID token, at UserInfo or both as asked; `acr` as essential read as `acr_values`; a `sub` with a value honored; `claims_locales`; at most 4 kibibytes and 64 claims; `claims_parameter_supported` true | `oidcc-claims-essential` passes; a claim of a scope the person did not consent to is never given; an essential `acr` steps the person up; a claim that would cross the bound of the ID token is left out, never cut | Issue-123 |
+| Issue-125 | The parameters of a request completed: `id_token_hint` at the authorization endpoint, a hint of another person answered `login_required` with `prompt=none` and a new sign-in otherwise; `display`; `prompt=create`, which opens registration (Initiating User Registration via OpenID Connect); `default_max_age`, `require_auth_time` and `default_acr_values` of a client; the access token read from a form body at UserInfo (RFC 6750, section 2.2) | `oidcc-userinfo-post-body` passes without warning; a hint signed by another tenant is refused; `prompt=create` on a tenant closed to registration is answered as the specification says | — |
+| Issue-126 | Acceptance: the Basic and Config plans with nothing skipped but what the target names; the cross-tenant suite extended to request objects, pushed references, `request_uris` and claims; the demonstration of the milestone | They pass in continuous integration against the image | all |
+
+### Explicitly not in Milestone 13
+
+Encrypted request objects (Milestone 18), request objects required by a security profile (Milestones 17 and 18), `verified_claims` of OpenID Connect for Identity Assurance, custom attributes of a person, a telephone number as a login identifier (Phase 4).
+
+## Milestone 14: Answers through the browser
+
+**Goal**: a client gets its answer in any response type and response mode of OpenID Connect: an ID token through the browser, alone or with a code, in the fragment or posted as a form; an access token through the browser only when an administrator marked the client for it. UserInfo answers signed when a client asks. The second part of 0.5.0; the rules are [Decision 0046](../decisions/0046-responses-through-the-browser.md).
+
+**Demo script**: make a single-page application's client with the response type `id_token` and sign in: the ID token in the fragment holds the person's name, as no access token came with it. Make a client with `code id_token`, check `c_hash` against the code, and redeem the code. Ask for `id_token token` with a client that is not marked and see `unauthorized_client`; mark it, see the finding on the security posture, and get an access token that lives five minutes. Ask for `form_post` and see the page post the answer. Ask UserInfo for a signed answer and check it against the key set. Run the Implicit, Hybrid and three Form Post plans.
+
+### Slice Response types and modes (Epic 10)
+
+| Identifier | Issue | Acceptance | Depends on |
+|---|---|---|---|
+| Issue-127 | An ID token through the browser: the response types `id_token`, `code id_token` and `none`, registered per client (`response_types`); the `fragment` mode; `nonce` required where an ID token is returned; `c_hash`, `at_hash` and `s_hash`; the claims of the scopes in the ID token when no access token comes with it; `query` refused for a type that returns a token | A type the client did not register is `unauthorized_client`; an ID token through the browser without `nonce` is never issued; `c_hash` and `at_hash` check with an independent library | Issue-124 |
+| Issue-128 | An access token through the browser for a marked client: `token`, `id_token token`, `code token`, `code id_token token`; the mark set by an administrator, recorded and shown as a finding of the security posture; the token living five minutes at most and carrying only the scopes the mark allows; never with a refresh token | An unmarked client is refused; a client of a security profile cannot be marked; a refresh token is never issued through the browser; the finding disappears when the mark is removed | Issue-127 |
+| Issue-129 | The `form_post` response mode: a page of Hodor's own that posts the answer and does nothing else, with its content security policy, `Cache-Control: no-store`, `Referrer-Policy: no-referrer` and a button for a browser without script | The page loads no other script and no resource of another origin; the three Form Post plans pass | Issue-127 |
+
+### Slice Signed answers (Epic 34)
+
+| Identifier | Issue | Acceptance | Depends on |
+|---|---|---|---|
+| Issue-130 | Signed UserInfo answers (`userinfo_signed_response_alg`) and every signing algorithm for a client's ID token and UserInfo: `RS256`, `PS256`, `ES256`, and `EdDSA` with keys on Ed25519 made by the key provider; discovery names them | A signed answer checks against the tenant's key set with an independent library; a client that names an algorithm the tenant cannot sign with cannot be saved | — |
+| Issue-131 | Acceptance: the Implicit and Hybrid plans in every response type, the three Form Post plans; the cross-tenant suite extended to response types, marks and signed answers; the demonstration of the milestone | They pass in continuous integration against the image | all |
+
+### Explicitly not in Milestone 14
+
+JWT Secured Authorization Response Mode and encrypted answers (Milestone 18), an access token through the browser for a client of a security profile, refresh tokens issued through the browser.
+
+## Milestone 15: Clients that register themselves
+
+**Goal**: a tenant that chooses so lets clients register themselves, with an initial access token an administrator handed out, with a software statement signed by an issuer it trusts, or openly within bounds, and always under its registration policy. A registered client reads, changes and removes its registration, and keeps its keys at an address of its own. The third part of 0.5.0; the rules are [Decision 0049](../decisions/0049-dynamic-client-registration.md).
+
+**Demo script**: see the registration endpoint answer `404` in a tenant that has not turned it on. Turn it on with an application for registered clients and a policy that allows only the authorization code, then make an initial access token good for one registration. Register a client with it, read the registration back, change its name, and remove it. Register again with the same token and see it refused. Register with a software statement of an issuer the tenant trusts, and with one of another issuer. Register a client whose keys are at `jwks_uri`, rotate its key there, and see its next assertion accepted. Ask for the grant `client_credentials` and see the policy refuse it. Run the Dynamic and 3rd Party-Init plans.
+
+### Slice Registration (Epic 19)
+
+| Identifier | Issue | Acceptance | Depends on |
+|---|---|---|---|
+| Issue-132 | Turning registration on per tenant, the application of registered clients, the registration policy, and initial access tokens: shown once, kept as hashes, expiring, good for a number of registrations; through the administration interface, the command-line tool and the console | With registration off nothing of it is reachable and discovery names no endpoint; a token past its count or its expiry is refused; a token of another tenant is unknown | — |
+| Issue-133 | The registration endpoint (RFC 7591 and OpenID Connect Dynamic Client Registration): every member Hodor supports, checked as an administrator's change is, the addresses Hodor will call checked by the guarded outbound client; `logo_uri`, `policy_uri` and `tos_uri` shown on the consent page; a registered client never first party; at most 10 registrations per minute per tenant and address | A member the policy does not allow is refused with `invalid_client_metadata`; a redirect address with a fragment is refused with `invalid_redirect_uri`; a `sector_identifier_uri` that does not list the redirect addresses is refused; the registration tests of the Dynamic plan pass | Issue-132 |
+| Issue-134 | Managing a registration (RFC 7592): read, change and remove with the registration access token, replaced at every change; `initiate_login_uri` kept, HTTPS only, and used by the account page's list of applications to start a sign-in at the client (third-party initiated login) | A registration access token reads only its own registration; an old token is refused after a change; an `initiate_login_uri` that is not HTTPS is refused; the 3rd Party-Init plan passes | Issue-133 |
+| Issue-135 | Software statements: issuers a tenant trusts, by keys or by `jwks_uri`; a statement's claims win over the body's; the policy still applies | A statement of an issuer the tenant does not trust, expired, or signed with `none` is refused; a statement trusted by one tenant is refused by another | Issue-133 |
+
+### Slice Keys at an address (Epic 8)
+
+| Identifier | Issue | Acceptance | Depends on |
+|---|---|---|---|
+| Issue-136 | A client's keys at its `jwks_uri`, for any client: fetched through the guarded outbound client, kept for an hour at most, fetched again for an unknown `kid` at most once a minute per client, no redirect followed | A key removed from the address stops being accepted within the hour; a burst of unknown `kid` values causes one fetch a minute; `oidcc-refresh-token-rp-key-rotation` passes | Issue-133 |
+| Issue-137 | Acceptance: the Dynamic plan with the response types of 0.5.0, the 3rd Party-Init plan, the pairwise registration tests (`oidcc-registration-sector-uri`, `oidcc-registration-sector-bad`), the rotation of Hodor's own signing key by `hodor-cli` during `oidcc-server-rotate-keys`; the cross-tenant suite extended to initial access tokens, registration access tokens, software statements and `jwks_uri`; the demonstration of the milestone | They pass in continuous integration against the image | all |
+
+### Explicitly not in Milestone 15
+
+Open registration in a tenant that holds a client of a security profile, registering clients of the client credentials grant or token exchange, `client_secret_jwt`, the registration of FAPI ecosystems (open banking directories), a page where a developer registers by hand.
+
+## Milestone 16: Sign-out and session state through the browser, and the OpenID Connect certification
+
+**Goal**: applications are told through the browser that a session ended, by front-channel logout, and can watch the session with session management. Every OpenID Connect and logout plan runs in continuous integration as [Decision 0051](../decisions/0051-conformance-runs-and-certification.md) says, and everything the owner needs to certify 0.5.0 is ready. The last part of 0.5.0; the browser's logout is [Decision 0050](../decisions/0050-logout-and-session-state-in-the-browser.md).
+
+**Demo script**: sign in to two example applications, one with a front-channel logout address and one with session management. Sign out at the second: Hodor's page loads the first application's address in a frame with `iss` and `sid`, and the second's iframe answers `changed`. End the session from the administration interface and see that only back-channel logout reaches anyone. Read the nightly run of every plan. Run the certification script against a disposable deployment, read the configuration it prints for the hosted suite, and see it disable the clients and revoke the keys afterwards.
+
+### Slice Logout through the browser (Epic 10)
+
+| Identifier | Issue | Acceptance | Depends on |
+|---|---|---|---|
+| Issue-138 | The RP-Initiated plan in continuous integration, for each response type of 0.5.0, and what it finds; the logout plans run with every response type as the Foundation asks | The RP-Initiated and Back-Channel plans pass for each response type; every page the suite asks a screenshot of is Hodor's own error page or question | Issue-131 |
+| Issue-139 | Front-channel logout: `frontchannel_logout_uri` and `frontchannel_logout_session_required` on a client; the signed-out page that loads each client's address in a frame with `iss` and `sid` as that client knows them, for at most five seconds, before the finish; its content security policy | A session ended without the browser loads no frame; a pairwise client gets its pairwise `sid`; the page never takes the list of addresses from the browser; the Front-Channel plan passes | Issue-138 |
+| Issue-140 | Session management: the browser state cookie per tenant, `session_state` in every authorization response, the `check_session_iframe`, off unless the tenant turns it on | The browser state is replaced when the session ends or its person changes; it never holds or reveals the session token; the Session plan passes | Issue-138 |
+
+### Slice Certification (Epic 37)
+
+| Identifier | Issue | Acceptance | Depends on |
+|---|---|---|---|
+| Issue-141 | Conformance runs as Decision 0051 says: a job per plan in a matrix against one image; the core set on every pull request; every plan on a label, every night and on pull requests into `main`; `expected.json` per plan and variant; an issue opened when the nightly run fails | The nightly run of every 0.5.0 plan is green; a deliberately broken plan fails its own job and opens an issue | — |
+| Issue-142 | The certification deployment: `deploy/certification/` with the web server's settings, and a script that makes through `hodor-cli` the tenants, clients and person every plan needs, prints the configuration for the hosted suite, and on request disables the clients and revokes the keys; [how certification is obtained](../operations/certification.md) kept current | The script, run against a disposable deployment, makes everything each 0.5.0 plan needs, and afterwards nothing it made still works | Issue-141 |
+| Issue-143 | Acceptance: every OpenID Connect and logout plan of 0.5.0 passing in continuous integration against the image; the cross-tenant suite extended to front-channel logout and browser states; the demonstration of the milestone; the Certification of Conformance drafted for each profile, for the owner to sign | They pass in continuous integration against the image | all |
+
+### Explicitly not in Milestone 16
+
+Running the hosted suite and submitting, which are the owner's; logout when a session runs out by itself; a partitioned browser state.
+
+### After Milestone 16
+
+0.5.0 is released when Milestone 16 is done, following [the release rules](../development/conventions.md#releases). The owner then asks for certification of every OpenID Connect and logout profile in one batch ([how certification is obtained](../operations/certification.md)).
+
+## Milestone 17: FAPI 2.0 Security Profile
+
+**Goal**: a client can be held to the FAPI 2.0 Security Profile, for the authorization code or for client credentials: its requests are pushed, its tokens bound to its key by DPoP or to its certificate by mutual TLS, and it proves who it is with a signed assertion or its certificate. A client that is a company's server, not a workload of a mesh, authenticates with its certificate. The first part of 0.6.0 ([Decision 0044](../decisions/0044-what-0.5.0-and-0.6.0-hold.md)); the profiles are [Decision 0052](../decisions/0052-security-profiles.md), DPoP is [Decision 0053](../decisions/0053-dpop.md).
+
+**Demo script**: make a client of the FAPI 2.0 Security Profile and try to give it a secret, then `RS256`: both refused. Send it to the authorization endpoint without pushing and see it refused. Push, sign in, redeem the code with a DPoP proof, read UserInfo with the bound token and a new proof, then present the token as `Bearer` and with a proof of another key: both refused. Replay a proof and see it refused. Refresh twice and see the same refresh token work. Upload a tenant's authority for client certificates, make a client of `tls_client_auth` with a subject name, and get a token bound to the certificate through the alias address. Run the FAPI 2.0 Security Profile plan in its variants.
+
+### Slice DPoP (Epic 19)
+
+| Identifier | Issue | Acceptance | Depends on |
+|---|---|---|---|
+| Issue-144 | DPoP (RFC 9449): proofs checked at the pushed request, token, UserInfo, introspection and revocation endpoints, the Authorization API and the administration interface; nonces derived from a secret of the tenant per five-minute window; `jti` remembered for two minutes in PostgreSQL or Redis; `cnf` with `jkt`; the refresh tokens of public clients bound; `dpop_jkt` and proofs at the pushed request binding the code; a client that requires DPoP | A proof replayed, for another method or address, too old, with a private key in its header or signed with `none` is refused; a bound token without a proof, as `Bearer` or with another key is refused everywhere Hodor checks tokens; the suite's resource tests of DPoP pass against UserInfo | — |
+
+### Slice Security profiles (Epic 35)
+
+| Identifier | Issue | Acceptance | Depends on |
+|---|---|---|---|
+| Issue-145 | Security profiles per client and the FAPI 2.0 Security Profile: the profile checked when the client is saved and at every request; pushed requests, `code` only, PKCE with `S256`, `iss` in the response, bound tokens, `private_key_jwt` or mutual TLS, `PS256`, `ES256` or `EdDSA`, the issuer alone as a client assertion's `aud`, references living under 600 seconds; refresh tokens not rotated; the profile for client credentials | A client that could not keep its profile cannot be saved, naming the rule; every rule refuses a request that breaks it; a refresh token of a FAPI 2.0 client is the same after a refresh, and is refused from another client or without its binding | Issue-121, Issue-144, Issue-108 |
+| Issue-146 | Mutual TLS for clients that are not workloads: a tenant's authorities for client certificates; `tls_client_auth` with the subject name metadata of RFC 8705; `self_signed_tls_client_auth`; `mtls_endpoint_aliases` when the operator gives a second public address; the web server's TLS settings for FAPI in the installation pages and the conformance stack | A certificate that chains to another tenant's authority, or whose subject does not match, is refused; a self-signed certificate that is not one of the client's keys is refused; the token endpoint outside the aliases refuses a bound request without a certificate | Issue-107, Issue-108 |
+| Issue-147 | Acceptance: the FAPI 2.0 Security Profile plan with `private_key_jwt` and mutual TLS, each with DPoP and with mutual TLS, with OpenID Connect, and for client credentials; the cross-tenant suite extended to proofs, nonces, profiles and client certificate authorities; the demonstration of the milestone | They pass in continuous integration against the image | all |
+
+### Explicitly not in Milestone 17
+
+Grant management, rich authorization requests (Requirement-OAuth-18), the ecosystems' profiles, Hodor ending TLS itself, DPoP for the administration interface's own sessions.
+
+## Milestone 18: FAPI 2.0 Message Signing and FAPI 1.0 Advanced
+
+**Goal**: a client can be held to FAPI 2.0 Message Signing or to FAPI 1.0 Advanced: its requests are signed objects with bounded lifetimes, its answers come signed as JWT Secured Authorization Response Mode (JARM) or as a hybrid response with `s_hash`, and its resource servers can ask for signed introspection answers. Encryption of every answer and request comes last, and may slip. The second part of 0.6.0; encryption is [Decision 0048](../decisions/0048-encryption.md).
+
+**Demo script**: make a client of FAPI 2.0 Message Signing, push a signed request object whose `exp` is 70 minutes after its `nbf` and see it refused, then a good one, and check the JARM answer against the key set. Introspect its token as a resource server that asks for a JWT and check the signature. Make a client of FAPI 1.0 Advanced, sign in with `code id_token`, and check `s_hash` and `c_hash`; ask for `code` alone without JARM and see it refused. Ask for an encrypted ID token and decrypt it with the client's key. Run the FAPI 1.0 Advanced plan in its eight variants and the Message Signing plan.
+
+### Slice Message Signing (Epics 34 and 35)
+
+| Identifier | Issue | Acceptance | Depends on |
+|---|---|---|---|
+| Issue-148 | JWT Secured Authorization Response Mode: `query.jwt`, `fragment.jwt`, `form_post.jwt` and `jwt`; `authorization_signed_response_alg`; signed errors; `iss`, `aud` and `exp` within ten minutes | The answer checks with an independent library; an error is signed too; a client of FAPI 1.0 or Message Signing that asks for JARM gets it with `PS256` or `ES256` only | Issue-129 |
+| Issue-149 | JWT introspection responses (RFC 9701): `Accept: application/token-introspection+jwt`, signed with the tenant's key, `introspection_signed_response_alg` per client, the same members as today's answer under `token_introspection` | The answer checks with an independent library; a token the caller may not learn about is answered `active: false` in the signed answer as in the plain one | — |
+| Issue-150 | The FAPI 2.0 Message Signing profile: pushed requests as signed request objects, `exp` and `nbf` required and bounded to 60 minutes, `aud` the issuer, JARM when asked | Each rule refuses a request that breaks it; the Message Signing plan passes with signed requests and with JARM | Issue-145, Issue-148 |
+
+### Slice FAPI 1.0 Advanced (Epic 35)
+
+| Identifier | Issue | Acceptance | Depends on |
+|---|---|---|---|
+| Issue-151 | The FAPI 1.0 Advanced profile: a signed request object always, by value or pushed, with the 60-minute bounds; `code id_token` with `s_hash` and `c_hash`, or `code` with JARM, never `code` alone; `PS256` or `ES256`; tokens bound to the client's certificate whatever its authentication; PKCE when pushed; discovery that does not require pushed requests for a tenant that also takes them by value | Each rule refuses a request that breaks it; a token issued to a client of `private_key_jwt` is still bound to its certificate | Issue-146, Issue-148 |
+
+### Slice Encryption (Epic 34)
+
+| Identifier | Issue | Acceptance | Depends on |
+|---|---|---|---|
+| Issue-152 | JSON Web Encryption (Requirement-OAuth-28, Optional): Hodor's own layer over `aws-lc-rs`; `RSA-OAEP`, `RSA-OAEP-256`, `ECDH-ES` and `ECDH-ES` with key wrap, `A128CBC-HS256`, `A256CBC-HS512`, `A128GCM`, `A256GCM`; encryption keys per tenant in its key set, rotated with an overlap; encrypted ID tokens, UserInfo answers, JARM and introspection answers; encrypted request objects decrypted | The examples of RFC 7520 pass; every malformed object of the corpus is refused with one error and no difference in time; what Hodor encrypts opens with an independent library; `RSA1_5`, `dir` and compression are refused | Issue-148 |
+| Issue-153 | Acceptance: the FAPI 1.0 Advanced plan with `private_key_jwt` and mutual TLS, by value and pushed, plain and with JARM; the FAPI 2.0 Message Signing plan with signed requests and JARM; the cross-tenant suite extended to signed responses, introspection answers and encryption keys; the demonstration of the milestone | They pass in continuous integration against the image | Issues 148 to 151 |
+
+### Explicitly not in Milestone 18
+
+HTTP message signatures (RFC 9421), the ecosystems' profiles of FAPI 1.0, FAPI 1.0 Baseline, encryption with a shared secret or `RSA1_5`.
+
+## Milestone 19: Client-initiated backchannel authentication
+
+**Goal**: a client with no browser, a call centre or a shop's terminal, asks Hodor to have a person approve a sign-in on a device of theirs: Hodor's account page, an email, or the tenant's own application told through a webhook. The client gets the tokens by polling, by being pinged, or, outside FAPI, pushed. A client can be held to FAPI-CIBA. Everything the owner needs to certify 0.6.0 is ready. The last part of 0.6.0; the design is [Decision 0054](../decisions/0054-backchannel-authentication.md).
+
+**Demo script**: from a terminal client, ask for a person by email address with a binding message and poll: `authorization_pending`. On the person's account page, read the binding message, approve with a passkey, and see the next poll answer the tokens and the one after refused. Ask again with a ping client and see the worker call its notification address. Subscribe a webhook to the request event, answer through the administration interface as the tenant's authentication device service would, and see the client get its tokens. Ask for a person of another tenant and see `unknown_user_id`. Let a request expire and see `expired_token`. Run the FAPI-CIBA plan in poll and ping.
+
+### Slice Backchannel authentication (Epic 36)
+
+| Identifier | Issue | Acceptance | Depends on |
+|---|---|---|---|
+| Issue-154 | The backchannel authentication endpoint and poll mode ("OpenID Connect Client-Initiated Backchannel Authentication Flow - Core 1.0"): one hint among `login_hint`, `id_token_hint` and `login_hint_token`; signed requests; `binding_message`; `requested_expiry` within the tenant's bound; `auth_req_id` kept as a hash; the CIBA grant at the token endpoint with `authorization_pending`, `slow_down`, `access_denied` and `expired_token` | Two hints or none are refused; an unknown person and one who may not sign in are answered alike; the tokens are given once; an `auth_req_id` of another client or tenant is refused | Issue-120 |
+| Issue-155 | Reaching the person and approving: the requests waiting on the account page, approval demanding the sign-in the request asks for and the tenant's level for backchannel authentication; a message by email when the tenant turns it on; the event `oauth.backchannel_authentication_requested` offered to webhooks and the operation of the administration interface through which an authentication device service reports the answer; limits per client and person | A request is approved only after a sign-in that reaches its level; the email and the event never carry the hint; an authentication device service of another tenant cannot answer; the conformance stack's helper approves only through that operation | Issue-154 |
+| Issue-156 | Ping and push: the worker calls `backchannel_client_notification_endpoint` with the client's `client_notification_token`, through the guarded outbound client, with the retries of a logout token; push sends the tokens there, for a client of no security profile | A notification address that resolves to a private network is refused; a client of a profile cannot register push; the suite's ping tests of a notification endpoint that answers an error pass | Issue-154 |
+| Issue-157 | The FAPI-CIBA profile: signed requests with `exp`, `nbf`, `iat`, `jti` and `aud` and the 60-minute bound, poll or ping only, tokens bound to the client's certificate, `PS256` or `ES256`, `private_key_jwt` or mutual TLS | Each rule refuses a request that breaks it | Issue-146, Issue-154 |
+| Issue-158 | Acceptance: the FAPI-CIBA plan in poll and ping with `private_key_jwt` and mutual TLS; the cross-tenant suite extended to backchannel requests, approvals and notifications; the demonstration of the milestone; the Certification of Conformance drafted for each FAPI and CIBA profile, for the owner to sign | They pass in continuous integration against the image | all |
+
+### Explicitly not in Milestone 19
+
+A mobile application of Hodor's own, `user_code`, backchannel authentication for the ecosystems' profiles, push mode under any security profile.
+
+### After Milestone 19
+
+0.6.0 is released when Milestone 19 is done, following [the release rules](../development/conventions.md#releases). If Issue-152, encryption, slips, 0.6.0 is released without it ([Decision 0044](../decisions/0044-what-0.5.0-and-0.6.0-hold.md#what-is-in-and-what-is-out)). The owner then asks for certification of FAPI 1.0 Advanced, FAPI 2.0 and FAPI-CIBA in one batch ([how certification is obtained](../operations/certification.md)).
+
 ## Later epics at story level
 
 **Epic 7 Keys** — key set and version model with states; local provider with envelope encryption; scheduled rotation job with advisory lock; JWKS publication with overlap; revoke; admin API.
@@ -529,7 +720,7 @@ Workloads' own certificates, short-lived certificates in exchange for an access 
 
 **Epic 18 Sessions and account console** — concurrent limits; device metadata; login history; account console pages; data export; account deletion.
 
-**Epic 19 OAuth extensions** — pushed authorization requests; DPoP with nonce; device authorization grant; dynamic client registration.
+**Epic 19 OAuth extensions** — pushed authorization requests; DPoP with nonce; device authorization grant; dynamic client registration with initial access tokens, software statements and its management. Pushed requests, DPoP and registration are planned in full in Milestones 13, 15 and 17.
 
 **Epic 20 Authorization core and native engine** — request and decision model; engine registry and bindings; subject attribute source; roles, hierarchy, assignments with scopes; access control list; attribute-based access control conditions; decision log; Authorization API; explanation filtering; relationship-based access control tuples and bounded check (stretch).
 

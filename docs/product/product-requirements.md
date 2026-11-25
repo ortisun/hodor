@@ -38,7 +38,7 @@ Hodor is an identity and access management platform written in Rust that acts as
 ## 5. Non-goals
 
 - Not an LDAP directory (Hodor is an LDAP *client*, not a server).
-- No implicit grant and no resource owner password credentials grant.
+- No resource owner password credentials grant. The implicit grant, and every response type that returns an access token through the browser, only for a client an administrator marks, for compatibility and certification, never by default ([Decision 0046](../decisions/0046-responses-through-the-browser.md)).
 - No database-per-tenant in v1 (see [Decision 0006](../decisions/0006-tenant-isolation.md)).
 - No reimplementation of a Rego engine: Open Policy Agent is used as is.
 - Not an API gateway: Hodor is the policy decision and administration point; enforcement (policy enforcement point) stays in applications, or in a service mesh's proxies, which ask through `hodor-ext-authz` ([Decision 0029](../decisions/0029-hodor-in-a-service-mesh.md)).

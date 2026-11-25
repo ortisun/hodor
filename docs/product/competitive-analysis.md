@@ -35,9 +35,9 @@ Hodor's column is the plan, with the phase from the [roadmap](roadmap.md) in whi
 | SCIM server | Phase 6 | Supported since 26.8 | Inbound, enterprise connections (not verified) | Yes | Outbound provisioning (not verified) | Yes (not verified) | Outbound, improved in 2026.2 |
 | LDAP and Active Directory | Phase 6 (client) | Federation and Kerberos | Connector | Interface (not verified) | Through Domain Services (not verified) | As identity provider (not verified) | LDAP outpost, RADIUS (not verified) |
 | PKCE | Phase 2, mandatory | Yes | Yes | Yes | Yes | Yes | Yes |
-| Pushed authorization requests | Phase 4 | Yes | Add-on | Yes (not verified) | Unknown | Unknown | Unknown |
-| DPoP | Phase 4 | Yes (26.4) | Add-on | Yes (not verified) | Own proof-of-possession (not verified) | Unknown | Unknown |
-| FAPI 2.0 | Not planned as a profile | Final Security Profile and Message Signing (26.4) | Certified, add-on | Unknown | No (not verified) | Unknown | Unknown |
+| Pushed authorization requests | 0.5.0, Milestone 13 | Yes | Add-on | Yes (not verified) | Unknown | Unknown | Unknown |
+| DPoP | 0.6.0, Milestone 17 | Yes (26.4) | Add-on | Yes (not verified) | Own proof-of-possession (not verified) | Unknown | Unknown |
+| FAPI 2.0 | 0.6.0, Milestones 17 and 18 | Final Security Profile and Message Signing (26.4) | Certified, add-on | Unknown | No (not verified) | Unknown | Unknown |
 
 ### 2.2 Authentication and sessions
 
@@ -104,6 +104,24 @@ Keycloak's federated client authentication trusts the outside provider fully: if
 
 Issuing certificates is left to public key infrastructure tools in both products: HashiCorp Vault, smallstep, SPIRE, cert-manager and the clouds' own authorities. Hodor's authority is an opportunity rather than a gap: nobody in this comparison offers it.
 
+### 2.7 OpenID certification
+
+Read from the Foundation's lists of certified OpenID Providers in November 2026 (sources 29 to 33). A profile is named as the Foundation's tables name it; the year is that of the most recent certification found.
+
+| Implementation | OpenID Connect | Logout | FAPI and backchannel authentication |
+|---|---|---|---|
+| Hodor | Basic and Config pass in continuous integration, never certified; every profile planned for 0.5.0 | Back-Channel passes in continuous integration; every profile planned for 0.5.0 | Planned for 0.6.0 |
+| Keycloak | Basic, Implicit, Hybrid, Config, Dynamic, Form Post (18.0.0, 2022) | All four (18.0.0) | FAPI 1.0 Advanced, eight variants (15.0.2, 2021); FAPI-CIBA, four (2022); no FAPI 2.0 listed, though 26.4 supports it |
+| Authlete | Basic, Implicit, Hybrid, Config, Dynamic, Form Post (2.2, 2020) | None | FAPI 1.0 Advanced, eight; FAPI-CIBA, four; FAPI 2.0 final, seven and client credentials (3.0, 2025 and 2026) |
+| node-oidc-provider | Basic, Implicit, Hybrid, Config, Form Post, 3rd Party-Init (2020) | RP-Initiated, Back-Channel | FAPI 1.0 Advanced, eight; FAPI-CIBA, four; FAPI 2.0 final, seven (9.2.0, 2025) |
+| Ory Hydra | Basic, Implicit, Hybrid, Config, Dynamic (1.0.0, 2018) | None | None |
+| Zitadel | Basic (1.53.1, 2021) | None | None |
+| Authelia | Basic, Implicit, Hybrid, Config, Form Post (4.39, 2025) | None | None |
+| Issuerd, in Rust | Basic, Implicit, Hybrid, Config, Dynamic, Form Post, 3rd Party-Init (0.1.17, 2026) | All four (0.1.19) | None |
+| Nazo Auth Server, in Rust | Basic, Config, Form Post, 3rd Party-Init (0.2.0, 2026) | All four | FAPI 2.0 Security Profile in every variant, Message Signing with signed requests and JARM; FAPI-CIBA, four |
+
+Certification is common among Hodor's open-source peers, and two servers written in Rust already hold most profiles. Hodor's [plan](../decisions/0044-what-0.5.0-and-0.6.0-hold.md) closes the gap at 0.5.0 for OpenID Connect and at 0.6.0 for FAPI; the differentiator stays what it was, tenant isolation and authorization, not the certificates themselves.
+
 ## 3. Admin consoles
 
 | Product | Done well | Done badly |
@@ -156,7 +174,7 @@ These are features that competitors ship and Hodor's roadmap does not cover. Non
 
 | Gap | Who ships it | Suggestion |
 |---|---|---|
-| FAPI 2.0 security profile | Keycloak, Auth0 | Add as a conformance target in Phase 4, when pushed authorization requests and DPoP land; most of the building blocks are already planned |
+| FAPI 2.0 security profile | Keycloak, Auth0 | Decided: a certification target of 0.6.0, with FAPI 1.0 Advanced and FAPI-CIBA ([Decision 0044](../decisions/0044-what-0.5.0-and-0.6.0-hold.md)) |
 | Bot detection on sign-up and sign-in | Auth0, Okta, Entra ID, Clerk | Add a risk signal source behind the existing extension points in Phase 4, without third-party scripts in the hosted login |
 | Report-only mode for authentication policy conditions | Entra ID | Extend flow simulation (Requirement-Authentication-11) with a report-only mode that records what a draft would have decided on live traffic |
 | Continuous session evaluation across applications | Entra ID, Okta | Consider the OpenID Shared Signals Framework for session revocation events, after back-channel logout in Phase 2 |
@@ -194,3 +212,8 @@ These are features that competitors ship and Hodor's roadmap does not cover. Non
 26. Keycloak, the RFC 9440 client certificate lookup: https://www.keycloak.org/docs-api/latest/javadocs/org/keycloak/services/x509/Rfc9440ClientCertificateLookup.html
 27. Ory Hydra, mutual TLS client authentication proposal: https://github.com/ory/hydra/discussions/2273
 28. OAuth SPIFFE client authentication, Internet-Draft 03: https://datatracker.ietf.org/doc/html/draft-ietf-oauth-spiffe-client-auth-03
+29. OpenID Foundation, certified OpenID Providers: https://openid.net/certification/certified-openid-providers-profiles/
+30. OpenID Foundation, certified OpenID Providers for logout profiles: https://openid.net/certification/certified-openid-providers-for-logout-profiles/
+31. OpenID Foundation, certified FAPI 1.0 Advanced OpenID Providers: https://openid.net/certification/certified-fapi1-adv-openid-providers-profiles/
+32. OpenID Foundation, certified FAPI 2.0 OpenID Providers: https://openid.net/certification/certified-fapi-2-0-op-security-profile-final-message-signing-final/
+33. OpenID Foundation, certified FAPI-CIBA OpenID Providers: https://openid.net/certification/certified-fapi-ciba-openid-providers-profiles/
