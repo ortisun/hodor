@@ -350,11 +350,24 @@ def retried_set_aside_and_delivered_again(admin, endpoint, secret, path, address
     check(arrived["headers"]["webhook-id"] == delivery["event_id"] and signed_with(arrived, secret),
           "the event arrives with the same webhook-id, signed")
 
-    def delivered():
-        items = admin.call("GET", f"/webhook-deliveries?endpoint_id={endpoint}&status=delivered")["items"]
-        return items if len(items) == 2 else None
+    # The delivery asked for again is recorded as delivered, as the first
+    # one was. When it is not, every delivery of the endpoint is shown, so
+    # that a failure says what each one became.
+    listed = []
 
-    until("both deliveries delivered", delivered)
+    def delivered():
+        listed[:] = admin.call("GET", f"/webhook-deliveries?endpoint_id={endpoint}")["items"]
+        statuses = {item["id"]: item["status"] for item in listed}
+        return statuses if statuses.get(delivery["id"]) == "delivered" else None
+
+    try:
+        statuses = until("the delivery asked for again to be recorded as delivered", delivered)
+    except Failed as failure:
+        for item in listed:
+            shown(f"{item['id']} {item['status']}, {item['attempts']} attempts, last: {item.get('last_error')}")
+        raise failure
+    check(sorted(statuses.values()) == ["delivered", "delivered"],
+          "both deliveries are recorded as delivered")
     return delivery["id"]
 
 
