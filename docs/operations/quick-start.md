@@ -19,7 +19,7 @@ The stack uses the ports 8080, 9090, 8025, 8428, 9400, 9500 and 10428 on `localh
 
 ## 0. Get the code
 
-The branch `main` holds the latest release, 0.2.0, whose [changelog](https://github.com/ortisun/hodor/blob/main/CHANGELOG.md#020---2026-11-23) says what it holds and what it is not ready for; the work towards the next one happens on `develop`. Clone the release and run every command of this page from the root of the checkout:
+The branch `main` holds the latest release, 0.3.0, whose [changelog](https://github.com/ortisun/hodor/blob/main/CHANGELOG.md#030---2026-11-25) says what it holds and what it is not ready for; the work towards the next one happens on `develop`. Clone the release and run every command of this page from the root of the checkout:
 
 ```bash
 git clone https://github.com/ortisun/hodor.git
