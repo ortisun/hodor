@@ -42,3 +42,4 @@ All records below are **Proposed** unless marked otherwise: they become Accepted
 | [0037](0037-back-channel-logout.md) | Back-channel logout is made by the OAuth context from the end of a session, and sent by the worker on leases as webhooks are (Accepted) |
 | [0039](0039-enrolling-during-a-sign-in.md) | A second factor is enrolled during a sign-in at the last step of the flow, only by a person the policy holds back, and counts as that sign-in's second factor (Accepted) |
 | [0040](0040-pairwise-subjects.md) | A pairwise client knows a person by an identifier of its sector alone, in every token, answer and logout it is given (Accepted) |
+| [0041](0041-claim-mappers.md) | Claim mappers name their tokens, never a claim Hodor sets, and are bounded when they are saved (Accepted) |

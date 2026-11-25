@@ -10875,6 +10875,426 @@
           }
         }
       }
+    },
+    "/clients/{client_id}/claim-mappers": {
+      "get": {
+        "operationId": "listClaimMappers",
+        "summary": "List a client's claim mappers, by claim name",
+        "x-hodor-permission": "applications:read",
+        "parameters": [
+          {
+            "name": "client_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The client's mappers.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "items"
+                  ],
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/ClaimMapper"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such client in this tenant.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createClaimMapper",
+        "summary": "Add a claim mapper to a client",
+        "x-hodor-permission": "applications:write",
+        "parameters": [
+          {
+            "name": "client_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewClaimMapper"
+              }
+            }
+          }
+        },
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "The mapper.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClaimMapper"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such client in this tenant.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Another mapper of the client has the claim (`oauth.claim_mapper_name_taken`), or the client has 20 (`oauth.claim_mappers_too_many`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A value breaks its rule (`oauth.claim_mapper_name_invalid`, `oauth.claim_mapper_name_reserved`, `oauth.claim_mapper_targets_invalid`, `oauth.claim_mapper_source_invalid`, `oauth.claim_mapper_scope_not_allowed`, `oauth.claim_mapper_group_unknown`), or the client's mappers would add more than 4096 bytes to one target in the worst case (`oauth.claim_mapper_token_too_large`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/clients/{client_id}/claim-mappers/{claim_mapper_id}": {
+      "get": {
+        "operationId": "getClaimMapper",
+        "summary": "Read one claim mapper",
+        "x-hodor-permission": "applications:read",
+        "parameters": [
+          {
+            "name": "client_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "claim_mapper_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The mapper.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClaimMapper"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such client in this tenant, or no such mapper of it.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "replaceClaimMapper",
+        "summary": "Replace a claim mapper, checked again with the client's other mappers",
+        "x-hodor-permission": "applications:write",
+        "parameters": [
+          {
+            "name": "client_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "claim_mapper_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewClaimMapper"
+              }
+            }
+          }
+        },
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The mapper.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClaimMapper"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such client in this tenant, or no such mapper of it.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Another mapper of the client has the claim, or someone else changed the mapper at the same moment.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A value breaks its rule (`oauth.claim_mapper_name_invalid`, `oauth.claim_mapper_name_reserved`, `oauth.claim_mapper_targets_invalid`, `oauth.claim_mapper_source_invalid`, `oauth.claim_mapper_scope_not_allowed`, `oauth.claim_mapper_group_unknown`), or the client's mappers would add more than 4096 bytes to one target in the worst case (`oauth.claim_mapper_token_too_large`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteClaimMapper",
+        "summary": "Delete a claim mapper",
+        "x-hodor-permission": "applications:write",
+        "parameters": [
+          {
+            "name": "client_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "claim_mapper_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "The mapper is deleted."
+          },
+          "404": {
+            "description": "No such client in this tenant, or no such mapper of it.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -14310,6 +14730,140 @@
             "minLength": 1,
             "maxLength": 255,
             "description": "The audience the new token may be for."
+          }
+        }
+      },
+      "ClaimMapperSource": {
+        "type": "object",
+        "required": [
+          "kind"
+        ],
+        "description": "Where the value comes from. `attribute` names `attribute`: `display_name`, `username`, `email`, `email_verified` or `locale`. `groups` has nothing else. `group_member` names `group_id`, a group of the tenant. `organization` names `attribute`: `id` or `name`. `constant` names `value`, any JSON value but null, at most 1024 bytes.",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "attribute",
+              "groups",
+              "group_member",
+              "organization",
+              "constant"
+            ]
+          },
+          "attribute": {
+            "type": "string",
+            "enum": [
+              "display_name",
+              "username",
+              "email",
+              "email_verified",
+              "locale",
+              "id",
+              "name"
+            ]
+          },
+          "group_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "value": {
+            "description": "The constant."
+          }
+        },
+        "additionalProperties": false
+      },
+      "NewClaimMapper": {
+        "type": "object",
+        "required": [
+          "claim",
+          "targets",
+          "source"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "claim": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "Printable ASCII without spaces, double quotes or backslashes; not a name Hodor sets; unique among the client's mappers, without regard to case."
+          },
+          "targets": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 3,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "enum": [
+                "id_token",
+                "access_token",
+                "userinfo"
+              ]
+            }
+          },
+          "scope": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When given, the claim is added only to tokens whose scopes hold it. A scope the client may ask for."
+          },
+          "source": {
+            "$ref": "#/components/schemas/ClaimMapperSource"
+          }
+        }
+      },
+      "ClaimMapper": {
+        "type": "object",
+        "required": [
+          "id",
+          "client_id",
+          "claim",
+          "targets",
+          "scope",
+          "source",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "client_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "claim": {
+            "type": "string"
+          },
+          "targets": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "id_token",
+                "access_token",
+                "userinfo"
+              ]
+            }
+          },
+          "scope": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "$ref": "#/components/schemas/ClaimMapperSource"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
           }
         }
       }
