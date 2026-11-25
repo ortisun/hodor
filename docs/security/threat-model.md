@@ -112,7 +112,7 @@ Baseline: RFC 9700 and RFC 6819.
 | Threat-OpenID-04 | Logout CSRF and post-logout open redirect | `id_token_hint` required for redirect; registered `post_logout_redirect_uri`; confirmation page otherwise |
 | Threat-OpenID-05 | Forged back-channel logout | Signed logout token with `events` claim, `jti` replay cache at the relying party; Hodor signs with the tenant key |
 | Threat-OpenID-06 | UserInfo over-disclosure | Claims limited to consented scopes and the `claims` request |
-| Threat-OpenID-07 | Malicious `request` object or `request_uri` | Request objects must be signed by a registered client key; `request_uri` only from pushed authorization requests |
+| Threat-OpenID-07 | Malicious `request` object or `request_uri` | Request objects must be signed by a registered client key, unless an administrator chose `none` for the client, whose unsigned objects are then held to every check of a request without one; `request_uri` only from pushed authorization requests and the client's registered addresses |
 
 ## SAML
 

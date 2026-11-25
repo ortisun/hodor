@@ -12638,6 +12638,7 @@
           "allowed_scopes",
           "require_pkce",
           "id_token_signed_response_alg",
+          "request_object_signing_alg",
           "backchannel_logout_uri",
           "backchannel_logout_session_required",
           "subject_type",
@@ -12726,6 +12727,20 @@
               "RS256"
             ],
             "description": "How the client's ID tokens are signed. ES256 unless given."
+          },
+          "request_object_signing_alg": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "ES256",
+              "RS256",
+              "PS256",
+              "none",
+              null
+            ],
+            "description": "How the client signs its request objects (`request_object_signing_alg` of OpenID Connect Registration): ES256, RS256 or PS256 accepts only objects signed with that algorithm by one of its keys; none accepts only unsigned objects; null, the default, accepts any of the three."
           },
           "backchannel_logout_uri": {
             "type": [
@@ -12948,6 +12963,16 @@
             ],
             "description": "How the client's ID tokens are signed. ES256 unless given."
           },
+          "request_object_signing_alg": {
+            "type": "string",
+            "enum": [
+              "ES256",
+              "RS256",
+              "PS256",
+              "none"
+            ],
+            "description": "How the client signs its request objects (`request_object_signing_alg` of OpenID Connect Registration): ES256, RS256 or PS256 accepts only objects signed with that algorithm by one of its keys; none accepts only unsigned objects; null, the default, accepts any of the three."
+          },
           "backchannel_logout_uri": {
             "type": "string",
             "maxLength": 2000,
@@ -13067,6 +13092,20 @@
               "RS256"
             ],
             "description": "How the client's ID tokens are signed. ES256 unless given."
+          },
+          "request_object_signing_alg": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "ES256",
+              "RS256",
+              "PS256",
+              "none",
+              null
+            ],
+            "description": "How the client signs its request objects (`request_object_signing_alg` of OpenID Connect Registration): ES256, RS256 or PS256 accepts only objects signed with that algorithm by one of its keys; none accepts only unsigned objects; null, the default, accepts any of the three. `null` removes it."
           },
           "backchannel_logout_uri": {
             "type": [
