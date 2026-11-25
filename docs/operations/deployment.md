@@ -202,7 +202,7 @@ The server checks the schema version at startup and refuses to run against a sch
 
 | Signal | Content |
 |---|---|
-| Metrics | The set in section 20 of the specification, plus outbox lag, job queue depth, hashing queue depth, breaker state per Open Policy Agent binding, key age. Pushed over OTLP to VictoriaMetrics ([Decision 0015](../decisions/0015-observability-stack.md)); no scrape endpoint |
+| Metrics | The set in section 20 of the specification, plus outbox lag, job queue depth, hashing queue depth, breaker state per Open Policy Agent binding, key age. Pushed over OTLP to VictoriaMetrics ([Decision 0015](../decisions/0015-observability-stack.md)); no scrape endpoint. Every process names itself with `service.name`, `service.version` and `service.instance.id`, a random identifier made when it starts, so that the series of two replicas never mix; add series up across instances to count for the whole deployment |
 | Traces | One trace per request across server, database, Open Policy Agent and outbound calls; worker jobs linked to the originating request by `correlation_id` |
 | Logs | JSON to stdout with `tenant_id`, `request_id`, `trace_id`; no bodies, no secrets |
 | Dashboards and alerts | Shipped with the chart: authentication failure spike, token error rate, p99 latency, outbox lag, Open Policy Agent unhealthy, key rotation overdue, certificate expiry, database pool saturation |

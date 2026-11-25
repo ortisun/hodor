@@ -33,6 +33,7 @@ Every release of Hodor, newest first. The rules for versions and releases are in
 ### Fixed
 
 - A link to the console's screens of applications, clients and authorization, or a reload of one, answered with not found; the server now answers every screen the console has with its page.
+- Two processes of the same kind, such as two workers or two replicas of the server, sent their metrics as one series, so that each overwrote the other's counts in VictoriaMetrics. Each process now names itself with `service.instance.id`, a random identifier made when it starts.
 
 ## [0.2.0] - 2026-11-23
 
