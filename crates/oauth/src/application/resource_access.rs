@@ -130,37 +130,31 @@ impl ResourceAccessService {
         let Ok(client_id) = read.client_id.parse::<ClientId>() else {
             return Ok(Err(InvalidToken("the token names no client of the tenant")));
         };
-        let client = match self.ports.applications.client(tenant, client_id).await {
-            Ok(client) => client,
+        // The client, its application and its resource server are read in
+        // one transaction.
+        let found = match self
+            .ports
+            .applications
+            .client_with_application(tenant, client_id)
+            .await
+        {
+            Ok(found) => found,
             Err(error) if error.kind() == ErrorKind::NotFound => {
                 return Ok(Err(InvalidToken("the client does not exist")));
             }
             Err(error) => return Err(error),
         };
-        if !client.is_enabled() {
+        if !found.client.is_enabled() {
             return Ok(Err(InvalidToken("the client is disabled")));
         }
-        let application_id = client.snapshot().application_id;
-        let application = match self
-            .ports
-            .applications
-            .application(tenant, application_id)
-            .await
-        {
-            Ok(application) => application,
-            Err(error) if error.kind() == ErrorKind::NotFound => {
-                return Ok(Err(InvalidToken("the application does not exist")));
-            }
-            Err(error) => return Err(error),
+        let application_id = found.client.snapshot().application_id;
+        let Some(application) = found.application else {
+            return Ok(Err(InvalidToken("the application does not exist")));
         };
         if !application.is_enabled() {
             return Ok(Err(InvalidToken("the application is disabled")));
         }
-        let resource_server = self
-            .ports
-            .applications
-            .resource_server_of(tenant, application_id)
-            .await?;
+        let resource_server = found.resource_server;
         Ok(Ok(ResourceCaller {
             client_id,
             application_id,

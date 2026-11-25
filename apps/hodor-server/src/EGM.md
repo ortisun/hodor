@@ -107,9 +107,13 @@ Adapters implemented here:
 - `TenantLockout` implements `hodor_federation::api::LockoutPolicy`, reading
   the tenant's lockout settings into `LockoutRules`.
 - `ServerSubjects` (`subjects.rs`) implements
-  `hodor_authorization::api::SubjectAttributeSource`: a user's `status` and
-  `kind` through `IdentityService::get`, a client's `application`,
-  `client_type` and `enabled` through `ApplicationService::client`, and its
+  `hodor_authorization::api::SubjectAttributeSource`: a user's `status`,
+  `kind`, `groups` and `organizations` in one transaction of its
+  `units_of_work`, through `IdentityService::get_in`,
+  `GroupService::effective_groups_in` and
+  `OrganizationService::organizations_of_in`, never kept between
+  decisions; a client's `application`, `client_type` and `enabled` through
+  `ApplicationService::client`, and its
   `principal` only when it is bound to one; an identifier that does not
   parse or is not found has no attributes.
 - `ServerStanding` (`standing.rs`), built by `standing`, implements

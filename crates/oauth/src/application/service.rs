@@ -55,6 +55,19 @@ pub struct CreateResourceServer {
     pub settings: ResourceServerSettings,
 }
 
+/// A client, its application and that application's resource server,
+/// read together: what a resource server of Hodor's checks of the client a
+/// token was issued to.
+#[derive(Debug, Clone)]
+pub struct ClientWithApplication {
+    /// The client.
+    pub client: Client,
+    /// Its application, if the tenant still has it.
+    pub application: Option<Application>,
+    /// The application's resource server, if it has one.
+    pub resource_server: Option<ResourceServer>,
+}
+
 fn application_not_found() -> DomainError {
     DomainError::not_found(
         "oauth.application_not_found",
@@ -663,6 +676,66 @@ impl ApplicationService {
             .ok_or_else(client_not_found)
     }
 
+    /// The client with this identifier, its application and that
+    /// application's resource server, in one transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NotFound` if the tenant has no such client, and an error if
+    /// storage fails.
+    pub async fn client_with_application(
+        &self,
+        tenant: &TenantContext,
+        id: ClientId,
+    ) -> Result<ClientWithApplication, DomainError> {
+        let mut uow = self.units_of_work.begin(tenant).await?;
+        let client = self
+            .clients
+            .get(uow.as_mut(), id)
+            .await?
+            .ok_or_else(client_not_found)?;
+        let application_id = client.snapshot().application_id;
+        let application = self.applications.get(uow.as_mut(), application_id).await?;
+        let resource_server = match application {
+            Some(_) => {
+                self.resource_servers
+                    .find_by_application(uow.as_mut(), application_id)
+                    .await?
+            }
+            None => None,
+        };
+        Ok(ClientWithApplication {
+            client,
+            application,
+            resource_server,
+        })
+    }
+
+    /// The application with this identifier and its resource server, in one
+    /// transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NotFound` if the tenant has no such application, and an
+    /// error if storage fails.
+    pub async fn application_with_resource_server(
+        &self,
+        tenant: &TenantContext,
+        id: ApplicationId,
+    ) -> Result<(Application, Option<ResourceServer>), DomainError> {
+        let mut uow = self.units_of_work.begin(tenant).await?;
+        let application = self
+            .applications
+            .get(uow.as_mut(), id)
+            .await?
+            .ok_or_else(application_not_found)?;
+        let resource_server = self
+            .resource_servers
+            .find_by_application(uow.as_mut(), id)
+            .await?;
+        Ok((application, resource_server))
+    }
+
     /// The clients of an application, oldest first.
     ///
     /// # Errors
@@ -799,12 +872,9 @@ impl ApplicationService {
         application_id: ApplicationId,
     ) -> Result<Option<ResourceServer>, DomainError> {
         let mut uow = self.units_of_work.begin(tenant).await?;
-        Ok(self
-            .resource_servers
-            .list(uow.as_mut())
-            .await?
-            .into_iter()
-            .find(|server| server.snapshot().application_id == application_id))
+        self.resource_servers
+            .find_by_application(uow.as_mut(), application_id)
+            .await
     }
 
     /// The tenant's resource servers, oldest first.

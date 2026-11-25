@@ -15,7 +15,7 @@ tenant and records its events in it.
 | --- | --- |
 | `ApplicationStore` | `insert`, `update` (version checked), `get`, `list` (oldest first) |
 | `ClientStore` | `insert` (`oauth.application_not_found` for an application the tenant does not have), `update` (version checked; replaces secrets and keys), `get`, `list_for_application` (oldest first) |
-| `ResourceServerStore` | `insert` (`oauth.audience_taken`, `oauth.application_has_resource_server`, `oauth.application_not_found`), `update` (version checked; replaces the scopes), `get`, `find_by_audience` (exact), `list` (oldest first) |
+| `ResourceServerStore` | `insert` (`oauth.audience_taken`, `oauth.application_has_resource_server`, `oauth.application_not_found`), `update` (version checked; replaces the scopes), `get`, `find_by_audience` (exact), `find_by_application` (the application's one, if any), `list` (oldest first) |
 | `AuthorizationRequestStore` | `insert` (`oauth.client_not_found`), `get`, `remove` (answers whether this call removed it), `answer` (records the answer of a request that waits for consent and has none; answers whether this call recorded it) |
 | `GrantStore` | `insert` (`oauth.client_not_found`), `get`, `update` (status and revocation; `oauth.grant_not_found`), `list_active_for(user, client)`, `list_active_of(user)` (every client, oldest first) |
 | `ConsentStore` | `get(user, client)` (withdrawn and expired included), `save` (replaces; `oauth.client_not_found`), `list_standing(user, now)` (newest first), `record` (a history entry; `oauth.client_not_found`) |
@@ -55,7 +55,13 @@ clients, resource_servers, digest, random, clock })`:
   `change_resource_server`, `resource_server`,
   `resource_server_by_audience` (`oauth.resource_server_not_found` also for
   a value that cannot be an audience), `resource_server_of(application_id)`
-  (the application's one, if any), `resource_servers`.
+  (the application's one, if any, through `find_by_application`),
+  `resource_servers`.
+- Read together, in one transaction: `client_with_application(client_id)`
+  (a `ClientWithApplication`: the client, its application if the tenant
+  still has it, and that application's resource server; `NotFound` only
+  for the client) and `application_with_resource_server(application_id)`
+  (`NotFound` for the application).
 
 ### Authorization endpoint (`authorization.rs`)
 
@@ -294,7 +300,8 @@ applications, clock })`:
   the inner one a `BearerRefusal`. Reads the token with `read_access_token`
   against the tenant's published keys, then requires `audience` among its
   audiences, the register's `in_force`, an enabled client of the tenant and
-  an enabled application; each failure is `InvalidToken`. Answers a
+  an enabled application, the last two read with their resource server by
+  `client_with_application`; each failure is `InvalidToken`. Answers a
   `ResourceCaller` (client, application, subject, scopes, the
   application's resource server). Checks no scope: `has_scope` is for the
   resource server. The Authorization API is its caller.

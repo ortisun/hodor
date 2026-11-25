@@ -25,7 +25,7 @@ All modules are private; the public surface is the set of re-exports in
 
 | Symbol | Source | What it is |
 | --- | --- | --- |
-| `connect_pool(url, max_connections)` | `database.rs` | Opens a plain `PgPool`, for connections that are not tenant-scoped. |
+| `connect_pool(url, max_connections)` | `database.rs` | Opens a plain `PgPool`, for connections that are not tenant-scoped. `Database::connect` uses it too. sqlx checks a connection with a ping when it is handed back; the pool pings it again before handing it out only when it has been idle for more than `CHECKED_IF_IDLE_FOR` (one second), not on every acquire. |
 | `ping_pool(pool)` | `database.rs` | Runs `SELECT 1`, for readiness probes. |
 | `Database` | `database.rs` | Handle to the database as the application role sees it: `connect`, `from_pool`, `begin(tenant)`, `ping`, `pool`. `pool()` is documented as "health checks only": queries on it have no tenant bound and see no tenant rows. |
 | `TenantTransaction` | `database.rs` | A transaction bound to one tenant: `tenant_id`, `connection`, `commit`, `rollback`. |
@@ -134,8 +134,9 @@ Compiled only with the `testing` feature (`lib.rs`:
 
 ### Tenant binding
 
-- `Database::begin` runs `SELECT set_config('app.tenant_id', $1, true)` right
-  after `BEGIN`. The setting is transaction-local, so it disappears at commit
+- `Database::begin` sends `BEGIN; SELECT set_config('app.tenant_id',
+  '<uuid>', true)` as one simple query, one round trip (`begin_statement`,
+  the tenant's UUID written in). The setting is transaction-local, so it disappears at commit
   or rollback and never leaks to the next user of a pooled connection; the
   documentation says this also keeps the adapter compatible with connection
   poolers in transaction mode (`database.rs:Database::begin`).

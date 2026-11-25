@@ -747,6 +747,29 @@ impl ResourceServerStore for PgResourceServerStore {
         }
     }
 
+    async fn find_by_application(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        application_id: ApplicationId,
+    ) -> Result<Option<ResourceServer>, DomainError> {
+        let tenant = uow.tenant().tenant_id().as_uuid();
+        let connection = connection(uow)?;
+        // On the index of `resource_server_application_unique`.
+        let row = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "SELECT {SERVER_COLUMNS} FROM oauth.resource_server
+             WHERE tenant_id = $1 AND application_id = $2"
+        )))
+        .bind(tenant)
+        .bind(application_id.as_uuid())
+        .fetch_optional(&mut *connection)
+        .await
+        .map_err(get)?;
+        match row {
+            Some(row) => Ok(Some(load_server(connection, tenant, &row).await?)),
+            None => Ok(None),
+        }
+    }
+
     async fn list(&self, uow: &mut dyn UnitOfWork) -> Result<Vec<ResourceServer>, DomainError> {
         let tenant = uow.tenant().tenant_id().as_uuid();
         let connection = connection(uow)?;
