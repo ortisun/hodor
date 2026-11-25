@@ -28,7 +28,7 @@ A request is answered only if all of these hold, checked in this order:
 
 What a key does is in the audit log with its holder as the actor.
 
-An access token of Hodor's token endpoint is neither of these, and is not good here: a [certificate-bound one](../architecture/contexts/oauth.md#certificate-bound-access-tokens) is refused with `401` whether or not its certificate comes with it ([Decision 0057](../decisions/0057-certificate-bound-access-tokens.md)).
+An access token of Hodor's token endpoint is neither of these, and is not good here: a [certificate-bound one](../architecture/contexts/oauth.md#certificate-bound-access-tokens) is refused with `401` whether or not its certificate comes with it ([Decision 0057](../decisions/0057-certificate-bound-access-tokens.md)). The one exception is [signing an intermediate](#intermediates), which also takes an access token of a service account's client for the audience `urn:hodor:certificate-authority`, as [who may sign](../architecture/contexts/keys.md#who-may-sign) specifies ([Decision 0074](../decisions/0074-hodor-cert-manager-issuer.md)).
 
 The check comes before anything else. A request that is refused learns nothing about what it asked for: not whether a user exists, not whether a body was valid.
 
@@ -627,6 +627,14 @@ The intermediates the tenant's certificate authority signs for its meshes, speci
 ```
 
 and answers `201` with the intermediate. It needs `certificate-authority:sign`, which the tenant administrator holds, and so does the built-in role `certificate_signer`, which holds nothing else: the role of a workload whose API key holds the one scope `certificate-authority:sign` ([who may sign](../architecture/contexts/keys.md#who-may-sign)).
+
+This operation alone also takes, as its bearer, an access token of the tenant's token endpoint issued to a client acting as a service account, for the audience `urn:hodor:certificate-authority` and with the scope `certificate-authority:sign`, which is how [`hodor-cert-manager-issuer`](../operations/hodor-cert-manager-issuer.md) signs:
+
+```
+Authorization: Bearer eyJhbGciOiJFUzI1NiIsInR5cCI6ImF0K2p3dCIs…
+```
+
+Such a token that is not good, not for that audience, or not of a service account's client is answered `401` `admin.not_authenticated`; one without the scope, or whose service account does not hold `certificate-authority:sign` through its roles, `403` `admin.forbidden`. A bound token must come with its certificate. Every other operation refuses it with `401`.
 
 `GET /certificate-authority/intermediates` answers `{ "items": [ … ], "next_cursor": … }`, the intermediates of the tenant's authority, newest first, a page at a time as users are. `GET /certificate-authority/intermediates/{intermediate_id}` answers one.
 
