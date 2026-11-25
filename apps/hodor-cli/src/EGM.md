@@ -7,7 +7,8 @@ The operations tool of a Hodor installation: `main.rs`, and
 `decisions.rs` for `hodor-cli authorization decision-log show|set` and
 `hodor-cli authorization decisions`, and `roles.rs` for
 `hodor-cli authorization permission declare|remove|list`, `role define|remove|list`,
-`assign`, `revoke`, `bind`, `unbind` and `bindings` (a resource server named by
+`assign`, `revoke`, `access-entry grant|list|remove`, `bind`, `unbind` and
+`bindings` (a resource server named by
 its audience; `bind` knows the engine names `native` and `open_policy_agent`
 through a registry of names only, since the tool never evaluates). It parses
 the command line with clap (`Cli`, `Command`), connects to PostgreSQL and calls

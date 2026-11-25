@@ -17,7 +17,11 @@ The authorization context: it "answers whether a user may do something"
   declares per resource server, roles that hold them and include other
   roles (hierarchy and composites, no cycle, at most ten deep), assignments
   to users and clients for the tenant or one application with an optional
-  start and end, managed by `RoleService` and answered by `NativeEngine`.
+  start and end, managed by `RoleService` and answered by `NativeEngine`;
+- access control lists (Issue-102): entries that let one user, client or
+  group do what one declared permission says to one resource, managed by
+  `AccessListService` and read by `NativeEngine` before roles at every
+  decision that names a resource, never cached.
 
 The specification is `docs/architecture/contexts/authorization.md`
 (`src/lib.rs`).
@@ -28,7 +32,8 @@ The specification is `docs/architecture/contexts/authorization.md`
   `testing` module, and links to `application` and `domain`.
 - Port traits implemented by adapters: `RoleAssignmentStore`,
   `EngineBindingStore` and `NativeRoleStore` (all in
-  `crates/adapters-postgres/src/authorization.rs`); `ConditionLanguage`
+  `crates/adapters-postgres/src/authorization.rs`), `AccessListStore`
+  (`crates/adapters-postgres/src/access_list.rs`); `ConditionLanguage`
   (implemented by `CelConditionLanguage` in `crates/authorization-native`);
   `SubjectAttributeSource` (no implementation yet outside `testing`).
 - Engine traits implemented by engines: `AuthorizationEngine`,
@@ -37,14 +42,17 @@ The specification is `docs/architecture/contexts/authorization.md`
   `roles_of`, `check`), `EvaluationService` (`bind`, `unbind`, `binding`,
   `bindings`, `evaluate`, `evaluate_batch`, `simulate`) and `RoleService`
   (`declare_permission`, `remove_permission`, `permissions`, `define_role`,
-  `remove_role`, `roles`, `role`, `assign`, `revoke`, `assignments_of`).
+  `remove_role`, `roles`, `role`, `assign`, `revoke`, `assignments_of`)
+  and `AccessListService` (`grant`, `remove`, `entry`, `entries`).
 - Domain events: `AuthorizationEvent` (`authorization.role_assigned`,
   `authorization.role_revoked`, `authorization.engine_bound`,
   `authorization.engine_unbound`, `authorization.failed_open`,
   `authorization.permission_declared`, `authorization.permission_removed`,
   `authorization.role_defined`, `authorization.role_removed`,
   `authorization.principal_role_assigned`,
-  `authorization.principal_role_revoked`).
+  `authorization.principal_role_revoked`,
+  `authorization.access_entry_granted`,
+  `authorization.access_entry_removed`).
 
 ### Workspace dependencies (`Cargo.toml`)
 
@@ -72,6 +80,10 @@ The specification is `docs/architecture/contexts/authorization.md`
 - Nothing a tenant defines reaches `hodor:admin`: no permission or role
   there, no role including a built-in role, no assignment of a built-in role
   through `RoleService` (`src/domain/native.rs`).
+- Entries of access control lists are read at every decision that names a
+  resource, never cached, and do not raise the role revision; one that
+  applies allows with `matching_entry` before roles are read
+  (`src/application/native.rs:NativeEngine::tenant_answer`).
 - An unchanged assignment announces nothing
   (`src/application/service.rs:AuthorizationService::assign`, `::revoke`).
 - Only `Effect::Allow` permits (`src/domain/decision.rs:AuthorizationDecision::permits`).
@@ -90,8 +102,8 @@ The specification is `docs/architecture/contexts/authorization.md`
 
 ## Side Effects
 
-- Storage only through `RoleAssignmentStore`, `EngineBindingStore` and
-  `NativeRoleStore`,
+- Storage only through `RoleAssignmentStore`, `EngineBindingStore`,
+  `NativeRoleStore` and `AccessListStore`,
   inside `hodor_kernel` units of work; records `AuthorizationEvent` values
   with `UnitOfWork::record_event`.
 - `EvaluationService` calls the registered engines and the

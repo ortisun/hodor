@@ -3,7 +3,8 @@
 //! Answers one question: may this subject do this? Hodor's administration
 //! asks it through the built-in roles; applications ask it through the
 //! engine bound to their resource server, such as the native engine over
-//! the roles the tenant defined. Whoever asks obeys the answer.
+//! the roles and the access control lists the tenant defined. Whoever
+//! asks obeys the answer.
 //!
 //! The specification of what is built is
 //! `docs/architecture/contexts/authorization.md`; this crate follows it.
@@ -15,6 +16,7 @@ pub mod testing;
 
 /// What other crates may use from this context.
 pub mod api {
+    pub use crate::application::access_list::{AccessListService, Granted};
     pub use crate::application::decision_log::{Decided, DecisionLog};
     pub use crate::application::engine::{
         AuthorizationEngine, EngineCapabilities, EngineRegistry, EvaluationInput, PolicySelection,
@@ -26,11 +28,14 @@ pub mod api {
         MAX_CONDITION_TIME, MAX_CONDITIONS_PER_DECISION, NativeEngine,
     };
     pub use crate::application::ports::{
-        CompiledCondition, ConditionLanguage, DecisionLogStore, EngineBindingStore,
-        NativeRoleStore, RoleAssignmentStore, SubjectAttributeSource,
+        AccessListStore, CompiledCondition, ConditionLanguage, DecisionLogStore,
+        EngineBindingStore, NativeRoleStore, RoleAssignmentStore, SubjectAttributeSource,
     };
     pub use crate::application::roles::{RoleService, Validity};
     pub use crate::application::service::AuthorizationService;
+    pub use crate::domain::access_list::{
+        AccessEntry, AccessEntryFilter, AccessEntryId, MATCHING_ENTRY, MAX_ENTRIES_PER_DECISION,
+    };
     pub use crate::domain::binding::{BindingSettings, DEFAULT_TIME_LIMIT, EngineBinding};
     pub use crate::domain::condition::{
         Condition, ConditionContext, ConditionInput, ConditionResource, ConditionSubject,

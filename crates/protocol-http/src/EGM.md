@@ -65,7 +65,12 @@ its settings, `admin/decisions.rs`),
 `roles: RoleService` and `evaluation: EvaluationService` (`hodor_authorization`;
 permissions, roles, assignments and bindings, `admin/authorization.rs`, a
 resource server named in the path by its identifier and standing for its
-audience), `policies: Option<PolicyService>` (`hodor_authorization_opa`; policy
+audience), `access_lists: AccessListService` (`hodor_authorization`; the
+entries of access control lists, `admin/access_lists.rs`, granted under a
+resource server named by its identifier and read and removed by their own
+identifier at `/access-entries/{entry_id}`; granting the same entry again
+answers `200` with it instead of `201`; the principal is checked to be of
+the tenant by `admin/authorization.rs:principal`), `policies: Option<PolicyService>` (`hodor_authorization_opa`; policy
 versions drafted, checked, tested and simulated, and the publication status;
 `None` answers `404` `authorization.policies_unavailable`; publishing is not a
 route, since only the command line holds the key that signs bundles),

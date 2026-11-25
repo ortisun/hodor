@@ -38,6 +38,9 @@ The modules `application` and `domain` are private; other crates use only
   `AssignmentScope`, `RoleAssignment`, `Grant`, `Holding`,
   `MAX_DESCRIPTION_LENGTH`, `MAX_ROLE_PERMISSIONS`, `MAX_INCLUDED_ROLES`,
   `MAX_INCLUSION_DEPTH`.
+- Access control lists: `AccessListStore` (port trait),
+  `AccessListService`, `Granted`, `AccessEntry`, `AccessEntryId`,
+  `AccessEntryFilter`, `MATCHING_ENTRY`, `MAX_ENTRIES_PER_DECISION`.
 - Conditions: `ConditionLanguage` and `CompiledCondition` (port traits),
   `Condition`, `ConditionInput`, `ConditionSubject`, `ConditionResource`,
   `ConditionContext`, `MAX_CONDITION_LENGTH`, `condition_invalid`,
@@ -59,7 +62,10 @@ is, with the crate feature `testing`.
   refuses a role naming an undeclared permission or a missing role, an
   assignment of a missing role, and removing an included role),
   `NativeRolePorts { units_of_work, roles }`,
-  `run_native_role_contract(ports)`.
+  `run_native_role_contract(ports)`. It also implements `AccessListStore`,
+  refusing an entry of an undeclared permission and removing the entries of
+  a removed permission; `AccessListPorts { units_of_work, roles, entries }`,
+  `run_access_list_contract(ports)`.
 - `FakeConditionLanguage` (implements `ConditionLanguage`): knows `true`,
   `false` and `fail`, refuses `costly` as too costly and anything else as
   invalid; `runs()` counts how many times its conditions ran.
@@ -71,11 +77,12 @@ is, with the crate feature `testing`.
 ### Subdirectories
 
 - [application](./application/EGM.md): `AuthorizationService`,
-  `EvaluationService`, `RoleService`, the engine traits, `EngineRegistry`,
+  `EvaluationService`, `RoleService`, `AccessListService`, the engine traits, `EngineRegistry`,
   `NativeEngine` and the ports.
 - [domain](./domain/EGM.md): `Permission`, `Role`, `Effect`, `Decision`, the
   request and decision types, `EngineBinding`, `AuthorizationEvent` and the
-  native role-based access control types (`native.rs`).
+  native role-based access control types (`native.rs`) and the entries of
+  access control lists (`access_list.rs`).
 
 ## Invariants
 
@@ -99,6 +106,16 @@ is, with the crate feature `testing`.
   a missing role is refused; a role another role includes cannot be removed
   (`authorization.role_in_use`); removing a role removes its assignments;
   nothing is seen from another tenant.
+- `testing.rs:run_access_list_contract` states what every
+  `AccessListStore` must do: an entry is kept as given and read by its
+  identifier; the same principal, permission and resource is stored once
+  and found with `same_as`; an entry of an undeclared permission is
+  refused; `allowing` answers only the entries of that resource server,
+  permission and resource naming one of the principals; another tenant's
+  entries are never read, reached or removed; listings are oldest first, a
+  page at a time, narrowed by kind, resource and principal, and refuse a
+  foreign cursor with `request.query_invalid`; `remove` answers the entry
+  once; removing a permission removes its entries in its tenant only.
 
 ## Side Effects
 

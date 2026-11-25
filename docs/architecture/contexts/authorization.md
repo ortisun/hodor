@@ -6,7 +6,8 @@ The whole design, with policies, several engines and Open Policy Agent, is in [a
 
 - the fixed roles that protect Hodor's own administration interface, from Milestone 1;
 - the engine contract of [Decision 0009](../../decisions/0009-authorization-engine-contract.md), from Milestone 5 (Issue-72): the request, the decision, engines and the binding that says which engine answers for a resource server;
-- native role-based access control, from Milestone 5 (Issue-73): permissions and roles a tenant defines for its resource servers, who holds them, and the native engine that answers from them. The fixed roles above are its built-in roles for Hodor's administration.
+- native role-based access control, from Milestone 5 (Issue-73): permissions and roles a tenant defines for its resource servers, who holds them, and the native engine that answers from them. The fixed roles above are its built-in roles for Hodor's administration;
+- per-resource access control lists, from Milestone 9 (Issue-102): entries that let one user, client or group do what one permission says to one resource, read by the native engine beside the roles.
 
 ## Permissions
 
@@ -43,6 +44,8 @@ A permission names something that can be done: a kind of resource and an action 
 | `workloads:write` | Creating service accounts and agents, renaming them, replacing their owners, and disabling, enabling and deleting them |
 | `webhooks:read` | Seeing the tenant's webhook endpoints, without their secrets, the event types they can receive, and their deliveries, without their bodies |
 | `webhooks:write` | Registering and removing webhook endpoints, replacing their subscriptions, rotating their secrets, and delivering again what was set aside |
+| `access-entries:read` | Seeing the entries of the access control lists of resource servers |
+| `access-entries:write` | Granting and removing entries of access control lists |
 
 ## Roles
 
@@ -51,7 +54,7 @@ A role is a named set of permissions. The roles of Hodor's administration are fi
 | Role | Permissions | Meant for |
 |---|---|---|
 | `tenant_administrator` | All of the above | The people who run a tenant |
-| `tenant_auditor` | `users:read`, `sessions:read`, `audit:read`, `identity-providers:read`, `keys:read`, `applications:read`, `assurance-levels:read`, `credentials:read`, `decisions:read`, `roles:read`, `bindings:read`, `policies:read`, `groups:read`, `organizations:read`, `workloads:read`, `webhooks:read` | People who must be able to see everything and change nothing |
+| `tenant_auditor` | `users:read`, `sessions:read`, `audit:read`, `identity-providers:read`, `keys:read`, `applications:read`, `assurance-levels:read`, `credentials:read`, `decisions:read`, `roles:read`, `bindings:read`, `policies:read`, `groups:read`, `organizations:read`, `workloads:read`, `webhooks:read`, `access-entries:read` | People who must be able to see everything and change nothing |
 
 A user holds a role in one tenant. Holding a role in one tenant means nothing in another: an assignment is a row of its tenant, like everything else.
 
@@ -424,7 +427,7 @@ Assigning the same role to the same principal with the same scope again replaces
 
 ### How the native engine decides
 
-For a request about the resource server `namespace`, with the resource kind `kind` and the action `action`:
+For a request about the resource server `namespace`, with the resource kind `kind` and the action `action`, when the request names a resource identifier, [the access control list](#access-control-lists) is read first: an entry for the request's resource that names the subject or one of its groups allows, and roles are not read. Otherwise:
 
 1. The principals are the request's subject and, for a user, every group in the user's resolved attribute `groups`. The assignments of each in the tenant are read.
 2. An assignment counts when it is in force at the moment of the decision and its scope is the whole tenant, the application named by the request's context, or the organization named by the request's context when the user's resolved attribute `organizations` holds it.
@@ -491,6 +494,96 @@ They are not reachable through the administration interface, the command-line to
 | `authorization.role_assignment` | See [above](#authorizationrole_assignment) | Who holds which role |
 
 All are tenant tables under row-level security. None of them may name `hodor:admin` except the assignments of the built-in roles.
+
+## Access control lists
+
+A role says what a principal may do to every resource of a kind. An **entry** of an access control list says what a principal may do to **one** resource: the group `finance` may read the document `d-42`. Entries belong to the native engine, which reads them beside the roles; an engine bound by a tenant to Open Policy Agent never sees them. Why they are built this way is [Decision 0035](../../decisions/0035-access-control-lists.md).
+
+```mermaid
+flowchart LR
+    principal["User, client or group"] -- "entry" --> permission["One permission of a resource server"]
+    permission -- "on" --> resource["One resource: its kind is the permission's, and an identifier"]
+```
+
+### An entry
+
+| Part | What it is | Rules |
+|---|---|---|
+| Identifier | A new identifier for every entry | It is how an entry is read and removed |
+| Resource server | Its namespace, a resource server's audience | Never `hodor:admin`: `authorization.namespace_reserved` |
+| Permission | A permission written `resource:action`, such as `document:read`. Its first half is the kind of the resource | It must be declared for the resource server: `authorization.permission_not_declared` |
+| Resource | The resource's identifier, as the application names it in a request | 1 to 255 characters, no control character: `authorization.resource_invalid` |
+| Principal | A user, a client or a group, by its identifier, as for [assignments](#assignments). A service account and an agent are users | The administration interface refuses one that is not of the tenant, as for assignments |
+| Granted at | When it was granted | |
+
+**An entry only allows**, and has no scope, no start, no end and no condition: it holds until it is removed.
+
+- **Granting the same principal the same permission on the same resource again** answers the entry that exists, changes nothing and announces nothing.
+- **Removing a permission removes every entry that names it**, as it removes it from every role.
+- **An entry that names a user, a client or a group that is removed later stays**, and allows nothing: identifiers are not reused.
+
+### How entries decide
+
+For a request about the resource server `namespace` that names a resource of the kind `kind` with the identifier `id`, and the action `action`, before roles are read ([how the native engine decides](#how-the-native-engine-decides)):
+
+1. The principals are the subject and, for a user, every group in the user's resolved attribute `groups`, as for roles.
+2. The entries of the tenant for `namespace`, the permission `kind:action` and the resource `id` that name one of the principals are read, at most 64.
+3. If there is one, the answer is **allow** with the reason `matching_entry`. It names each entry that allowed, written `entry:<identifier>`, and reports the tenant's role revision.
+4. If there is none, roles decide, as [the native engine decides](#how-the-native-engine-decides). A deny still says `no_matching_role`: the answer does not tell whether the resource has entries for others.
+
+A request that names no resource identifier is decided by roles alone. An entry allows only on its own resource: `document:read` on `d-42` says nothing about `d-43`, nor about `d-42` of another resource server.
+
+**Entries are not cached.** They are read at every decision that names a resource, in one query on an index of the tenant, the resource server, the resource and the principal. A new entry, a removed one, and a person taken out of a group that an entry names all take effect on the next decision, whichever instance of Hodor answers it. Granting and removing entries does not raise the role revision, so it does not make the engine read every principal's roles again.
+
+A simulation says which entry decided, as it says which role did.
+
+### Operations of access control lists
+
+| Use case | What it does |
+|---|---|
+| Grant | Gives a principal a permission on one resource, or answers the entry that already does |
+| Remove | Removes an entry by its identifier |
+| Entry | Reads one entry by its identifier |
+| Entries | Lists the entries of a resource server, oldest first, a page at a time, filtered by resource kind, resource and principal |
+
+### Events of access control lists
+
+| Event type | When |
+|---|---|
+| `authorization.access_entry_granted` | An entry was granted; carries its identifier, the namespace, the permission, the resource and the principal |
+| `authorization.access_entry_removed` | An entry was removed; carries the same |
+
+### Port of access control lists
+
+| Port | Purpose |
+|---|---|
+| `AccessListStore` | Store, read, list and remove a tenant's entries, find the one that names the same principal, permission and resource, and read the entries of one resource that name some principals |
+
+### Storage of access control lists
+
+`authorization.access_entry`, migration 0061:
+
+| Column | Type | Notes |
+|---|---|---|
+| `tenant_id`, `id` | `uuid`, `uuid` | Primary key |
+| `namespace` | `text` | Never `hodor:admin` |
+| `permission` | `text` | With the namespace and the tenant, a reference to `authorization.permission`: an entry goes with its permission |
+| `resource_kind` | `text` | Generated: the first half of the permission |
+| `resource_id` | `text` | 1 to 255 characters |
+| `principal_kind`, `principal_id` | `text`, `text` | `user`, `client` or `group`; the identifier has 1 to 255 characters. Not a reference, as for assignments: contexts do not reference each other's tables |
+| `granted_at` | `timestamptz` | |
+
+A tenant table under row-level security. The namespace, the permission, the resource and the principal are unique together in a tenant. An index on the tenant, the namespace, the resource kind and the resource answers the decisions and the listings of a resource; another on the tenant and the principal answers the listings of a principal.
+
+### Command-line tool
+
+What an administrator does through [the administration interface](../../api/admin-api.md#access-control-lists), an operator can do with `hodor-cli`, against the database, naming the tenant by its slug and the resource server by its audience. A refusal has the same code, and the command exits with a status that is not zero.
+
+| Command | Does |
+|---|---|
+| `hodor-cli authorization access-entry grant --tenant <slug> --namespace <audience> --permission <resource:action> --resource <id> (--user <id> \| --client <id> \| --group <id>)` | Grants an entry, or finds the one that exists, and prints `granted <entry id>` |
+| `hodor-cli authorization access-entry list --tenant <slug> --namespace <audience> [--resource-kind <kind>] [--resource <id>] [--user <id> \| --client <id> \| --group <id>]` | Prints `<entry id> <permission> <resource> <principal kind>:<principal id>` for every entry that matches, oldest first |
+| `hodor-cli authorization access-entry remove --tenant <slug> --id <entry id>` | Removes an entry, and prints `removed`, or `no such entry` |
 
 ## Open Policy Agent as an engine
 
@@ -857,4 +950,6 @@ All three are tenant tables under row-level security. The files and the reports 
 | Instances and their credentials managed through the administration interface, a query token of each instance's own for the Data API, and mutual TLS | Issue-80 |
 | A cache of decisions | When a binding declares its policy deterministic |
 | Managing bindings, permissions, roles and assignments through the administration interface, the command-line tool and the console | Issue-80 |
-| Access control lists and relationships | Later phase ([Decision 0023](../../decisions/0023-what-0.2.0-holds.md)) |
+| Relationships between resources (relationship-based access control) | Later phase ([Decision 0023](../../decisions/0023-what-0.2.0-holds.md)) |
+| Entries of an access control list that deny, and entries with a scope, a start, an end or a condition | When asked for ([Decision 0035](../../decisions/0035-access-control-lists.md)) |
+| Managing access control lists from the console | With the console pages of authorization |

@@ -4824,6 +4824,372 @@
         }
       }
     },
+    "/resource-servers/{resource_server_id}/access-entries": {
+      "get": {
+        "operationId": "listAccessEntries",
+        "summary": "List the entries of a resource server's access control lists, oldest first",
+        "x-hodor-permission": "access-entries:read",
+        "parameters": [
+          {
+            "name": "resource_server_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "resource_kind",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Only entries on resources of this kind."
+          },
+          {
+            "name": "resource_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Only entries on the resource of this identifier."
+          },
+          {
+            "name": "principal_kind",
+            "in": "query",
+            "schema": {
+              "enum": [
+                "user",
+                "client",
+                "group"
+              ]
+            },
+            "description": "Only entries of this principal; given with `principal_id`."
+          },
+          {
+            "name": "principal_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Only entries of this principal; given with `principal_kind`."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "The `next_cursor` of the page before."
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "A page of entries.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "items"
+                  ],
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/AccessEntry"
+                      }
+                    },
+                    "next_cursor": {
+                      "type": "string",
+                      "description": "Present when more results exist."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No resource server of that identifier: `oauth.resource_server_not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A principal kind without an identifier, or the other way round, a limit or a cursor that cannot be read: `request.query_invalid`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "grantAccessEntry",
+        "summary": "Grant a principal a permission on one resource",
+        "x-hodor-permission": "access-entries:write",
+        "parameters": [
+          {
+            "name": "resource_server_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewAccessEntry"
+              }
+            }
+          }
+        },
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "The new entry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccessEntry"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The principal already had that permission on that resource: the entry that exists. Nothing changed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccessEntry"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource server, or a principal that is not of this tenant; the code says which.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A body or a value the rules of the authorization context refuse, such as a permission the resource server does not declare; the code says which.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/access-entries/{entry_id}": {
+      "get": {
+        "operationId": "getAccessEntry",
+        "summary": "Read one entry of an access control list",
+        "x-hodor-permission": "access-entries:read",
+        "parameters": [
+          {
+            "name": "entry_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The entry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccessEntry"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No entry of that identifier in this tenant: `authorization.access_entry_not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "removeAccessEntry",
+        "summary": "Remove an entry of an access control list",
+        "x-hodor-permission": "access-entries:write",
+        "parameters": [
+          {
+            "name": "entry_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "Removed."
+          },
+          "404": {
+            "description": "No entry of that identifier in this tenant: `authorization.access_entry_not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/bindings": {
       "get": {
         "operationId": "listBindings",
@@ -11979,7 +12345,7 @@
               "type": "string",
               "maxLength": 200
             },
-            "description": "Paths erased from the input before a record is stored: `subject.attributes.…`, `asserted.…`, `resource.attributes.…` or `context.attributes.…`, with `*` alone as the last segment."
+            "description": "Paths erased from the input before a record is stored: `subject.attributes.\u2026`, `asserted.\u2026`, `resource.attributes.\u2026` or `context.attributes.\u2026`, with `*` alone as the last segment."
           },
           "retention_days": {
             "type": "integer",
@@ -12347,6 +12713,108 @@
           "assigned_at": {
             "type": "string",
             "format": "date-time"
+          }
+        }
+      },
+      "AccessEntry": {
+        "type": "object",
+        "description": "An entry of an access control list: a principal may do what a permission says to one resource.",
+        "required": [
+          "id",
+          "namespace",
+          "permission",
+          "resource_kind",
+          "resource_id",
+          "principal",
+          "granted_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "namespace": {
+            "type": "string",
+            "description": "The audience of the resource server."
+          },
+          "permission": {
+            "type": "string",
+            "description": "A permission the resource server declares, written `resource:action`."
+          },
+          "resource_kind": {
+            "type": "string",
+            "description": "The first half of the permission."
+          },
+          "resource_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "principal": {
+            "type": "object",
+            "required": [
+              "kind",
+              "id"
+            ],
+            "properties": {
+              "kind": {
+                "enum": [
+                  "user",
+                  "client",
+                  "group"
+                ],
+                "description": "A service account or an agent is a `user`."
+              },
+              "id": {
+                "type": "string",
+                "format": "uuid"
+              }
+            }
+          },
+          "granted_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "NewAccessEntry": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "permission",
+          "resource_id",
+          "principal"
+        ],
+        "properties": {
+          "permission": {
+            "type": "string",
+            "description": "A permission the resource server declares, written `resource:action`."
+          },
+          "resource_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "principal": {
+            "type": "object",
+            "required": [
+              "kind",
+              "id"
+            ],
+            "properties": {
+              "kind": {
+                "enum": [
+                  "user",
+                  "client",
+                  "group"
+                ],
+                "description": "A service account or an agent is a `user`."
+              },
+              "id": {
+                "type": "string",
+                "format": "uuid"
+              }
+            }
           }
         }
       },

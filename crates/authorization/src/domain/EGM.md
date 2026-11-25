@@ -6,7 +6,7 @@ The domain model of the authorization context: the fixed permissions, the
 fixed roles that hold them, the answer to a check (`role.rs`); the request an
 engine answers (`request.rs`); the decision (`decision.rs`); the binding of a
 resource server to an engine (`binding.rs`); native role-based access
-control (`native.rs`); the record of decisions (`decision_log.rs`); and the context's events (`event.rs`). The code is pure. Both modules are `pub(crate)`; the public names
+control (`native.rs`); access control lists (`access_list.rs`); the record of decisions (`decision_log.rs`); and the context's events (`event.rs`). The code is pure. Both modules are `pub(crate)`; the public names
 reach other crates through `hodor_authorization::api`.
 
 ## Interface
@@ -46,8 +46,12 @@ reach other crates through `hodor_authorization::api`.
   | `OrganizationsWrite` | `organizations:write` |
   | `WorkloadsRead` | `workloads:read` |
   | `WorkloadsWrite` | `workloads:write` |
+  | `WebhooksRead` | `webhooks:read` |
+  | `WebhooksWrite` | `webhooks:write` |
+  | `AccessEntriesRead` | `access-entries:read` |
+  | `AccessEntriesWrite` | `access-entries:write` |
 
-  `Permission::ALL` lists all thirty-one, `webhooks:read` and `webhooks:write` the last; `from_name(name) -> Option<Permission>`.
+  `Permission::ALL` lists all thirty-three, `access-entries:read` and `access-entries:write` the last; `from_name(name) -> Option<Permission>`.
   The auditor holds every permission that ends in `:read`, and nothing else.
 - `AUTHORIZATION_API_SCOPES` (`authz:evaluate`, `authz:simulate`, `authz:explain`) and `check_key_scopes(scopes, names_application)`: the rule every interface that makes an API key follows; a scope is a `Permission` name or one of those three (`authorization.scope_unknown`), and a scope of the Authorization API comes with an application, which comes with one (`authorization.scope_needs_application`, `authorization.application_without_scope`).
 - `Role` (`role.rs:Role`): `TenantAdministrator` (`tenant_administrator`) and
@@ -117,6 +121,21 @@ reach other crates through `hodor_authorization::api`.
   `in_force_at`, `same_grant`), `Grant { namespace, permission, condition,
   assignment }`; crate-private `grants_of` and `grant_applies`.
 
+### Access control lists (`access_list.rs`)
+
+- `AccessEntryId` (`define_id!`).
+- `AccessEntry::new(id, namespace, permission, resource_id, principal,
+  granted_at)`: never `hodor:admin` (`authorization.namespace_reserved`), a
+  resource identifier of 1 to 255 characters without control characters
+  (`authorization.resource_invalid`); `resource_kind()` is the first half of
+  the permission; `same_grant`, `reference()` (`entry:<identifier>`),
+  `allows(namespace, permission, resource_id, principals)`.
+- `AccessEntryFilter { namespace, resource_kind, resource_id, principal }`
+  with `of(namespace)` and `passes(entry)`.
+- `MATCHING_ENTRY` (`matching_entry`), `MAX_ENTRIES_PER_DECISION` (64);
+  crate-private `principals_of(subject, groups)`: the subject and, for a
+  user, a group principal for each resolved group.
+
 ### The record of decisions (`decision_log.rs`)
 
 - `DecisionLogMode` (`Full`, `Sampled { allow_percent }` from 1 to 99,
@@ -170,6 +189,8 @@ implements `hodor_kernel::DomainEvent`:
 | `RoleRemoved` | `namespace`, `name` | `authorization.role_removed` |
 | `PrincipalRoleAssigned` | `principal_kind`, `principal`, `namespace`, `role`, `application` | `authorization.principal_role_assigned` |
 | `PrincipalRoleRevoked` | `principal_kind`, `principal`, `namespace`, `role`, `application` | `authorization.principal_role_revoked` |
+| `AccessEntryGranted` | `entry`, `namespace`, `permission`, `resource`, `principal_kind`, `principal` | `authorization.access_entry_granted` |
+| `AccessEntryRemoved` | `entry`, `namespace`, `permission`, `resource`, `principal_kind`, `principal` | `authorization.access_entry_removed` |
 
 ## Invariants
 
@@ -201,6 +222,8 @@ implements `hodor_kernel::DomainEvent`:
   (`role.rs:Decision::for_roles`).
 - `Role::from_name` returns `Invalid` code `authorization.unknown_role` for an
   unknown name (`role.rs:Role::from_name`).
+- An entry only allows, and only on its own resource of its own resource
+  server, to its own principal (`access_list.rs:AccessEntry::allows`).
 - A binding is never for `hodor:admin` (`authorization.namespace_reserved`);
   its time limit is 1 to 5000 whole milliseconds
   (`authorization.time_limit_invalid`); a sensitive binding lets nothing fail

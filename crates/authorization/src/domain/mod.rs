@@ -1,5 +1,6 @@
 //! Domain model of the authorization context.
 
+pub(crate) mod access_list;
 pub(crate) mod binding;
 pub(crate) mod condition;
 pub(crate) mod decision;

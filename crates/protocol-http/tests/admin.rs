@@ -132,6 +132,7 @@ fn authorization_services(
     hodor_authorization::api::RoleService,
     hodor_authorization::api::EvaluationService,
     hodor_authorization_opa::api::PolicyService,
+    hodor_authorization::api::AccessListService,
 ) {
     use hodor_authorization::testing::{
         InMemoryEngineBindings, InMemoryNativeRoles, StaticSubjectAttributes,
@@ -148,7 +149,8 @@ fn authorization_services(
         Arc::new(assignments.clone()),
         Arc::new(roles.clone()),
         clock.clone(),
-    );
+    )
+    .with_access_lists(Arc::new(roles.clone()));
     let mut registry = hodor_authorization::api::EngineRegistry::new();
     registry.register(Arc::new(engine)).expect("register");
     let evaluation = hodor_authorization::api::EvaluationService::new(
@@ -179,9 +181,15 @@ fn authorization_services(
         clock.clone(),
     );
     (
-        hodor_authorization::api::RoleService::new(units(), Arc::new(roles), clock),
+        hodor_authorization::api::RoleService::new(units(), Arc::new(roles.clone()), clock.clone()),
         evaluation,
         policies,
+        hodor_authorization::api::AccessListService::new(
+            units(),
+            Arc::new(roles.clone()),
+            Arc::new(roles),
+            clock,
+        ),
     )
 }
 
@@ -360,6 +368,7 @@ async fn world_with_keys(with_keys: bool) -> World {
             clock.clone(),
         ),
         roles: authorization_parts.0,
+        access_lists: authorization_parts.3,
         evaluation: authorization_parts.1,
         policies: Some(authorization_parts.2),
         public_url: "https://auth.example".to_owned(),
@@ -602,6 +611,7 @@ impl Operation {
                 .replace("{simulation_id}", &UserId::generate().to_string())
                 .replace("{endpoint_id}", &UserId::generate().to_string())
                 .replace("{delivery_id}", &UserId::generate().to_string())
+                .replace("{entry_id}", &UserId::generate().to_string())
         )
     }
 }
@@ -648,7 +658,7 @@ fn the_document_and_the_routes_list_the_same_operations_and_permissions() {
         })
         .collect();
     assert_eq!(documented, served);
-    assert_eq!(served.len(), 130);
+    assert_eq!(served.len(), 134);
 
     // Every operation says how it refuses.
     let document: serde_json::Value = serde_json::from_str(ADMIN_OPENAPI).expect("valid JSON");
@@ -4786,4 +4796,281 @@ async fn only_an_agents_client_is_given_the_token_exchange_grant_with_its_rules(
         )
         .await;
     assert_eq!(refused.code(), "oauth.client_principal_invalid");
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn an_administrator_grants_lists_and_removes_entries_of_access_control_lists() {
+    let world = world().await;
+    let application = world
+        .as_administrator(
+            Method::POST,
+            "/applications",
+            Some(serde_json::json!({ "name": "Documents", "first_party": true })),
+        )
+        .await;
+    let application = application.body["id"].as_str().expect("id").to_owned();
+    let server = world
+        .as_administrator(
+            Method::POST,
+            "/resource-servers",
+            Some(serde_json::json!({
+                "application_id": application,
+                "audience": "https://api.documents.example.com",
+                "name": "Documents interface",
+            })),
+        )
+        .await;
+    let server = server.body["id"].as_str().expect("id").to_owned();
+    let declared = world
+        .as_administrator(
+            Method::PUT,
+            &format!("/resource-servers/{server}/permissions/document:read"),
+            Some(serde_json::json!({ "description": "Read a document" })),
+        )
+        .await;
+    assert_eq!(declared.status, StatusCode::OK, "{}", declared.body);
+    let group = world
+        .as_administrator(
+            Method::POST,
+            "/groups",
+            Some(serde_json::json!({ "name": "finance" })),
+        )
+        .await
+        .body["id"]
+        .as_str()
+        .expect("a group")
+        .to_owned();
+    let entries = format!("/resource-servers/{server}/access-entries");
+
+    // Granted once, answered again the second time.
+    let share = serde_json::json!({
+        "permission": "document:read",
+        "resource_id": "d-42",
+        "principal": { "kind": "group", "id": group },
+    });
+    let granted = world
+        .as_administrator(Method::POST, &entries, Some(share.clone()))
+        .await;
+    assert_eq!(granted.status, StatusCode::CREATED, "{}", granted.body);
+    assert_eq!(
+        granted.body["namespace"],
+        "https://api.documents.example.com"
+    );
+    assert_eq!(granted.body["resource_kind"], "document");
+    assert_eq!(granted.body["resource_id"], "d-42");
+    assert_eq!(granted.body["principal"]["kind"], "group");
+    let entry = granted.body["id"].as_str().expect("id").to_owned();
+    let again = world
+        .as_administrator(Method::POST, &entries, Some(share))
+        .await;
+    assert_eq!(again.status, StatusCode::OK);
+    assert_eq!(again.body["id"], entry.as_str());
+    let to_ana = world
+        .as_administrator(
+            Method::POST,
+            &entries,
+            Some(serde_json::json!({
+                "permission": "document:read",
+                "resource_id": "d-43",
+                "principal": { "kind": "user", "id": world.administrator.to_string() },
+            })),
+        )
+        .await;
+    assert_eq!(to_ana.status, StatusCode::CREATED, "{}", to_ana.body);
+
+    // What the rules refuse.
+    let globex = world.globex.clone();
+    let (stranger, globex_token) = world
+        .person(&globex, "root@globex.example", &[Role::TenantAdministrator])
+        .await;
+    for (asked, status, code) in [
+        (
+            serde_json::json!({
+                "permission": "document:write", "resource_id": "d-42",
+                "principal": { "kind": "group", "id": group },
+            }),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "authorization.permission_not_declared",
+        ),
+        (
+            serde_json::json!({
+                "permission": "read", "resource_id": "d-42",
+                "principal": { "kind": "group", "id": group },
+            }),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "authorization.permission_invalid",
+        ),
+        (
+            serde_json::json!({
+                "permission": "document:read", "resource_id": "",
+                "principal": { "kind": "group", "id": group },
+            }),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "authorization.resource_invalid",
+        ),
+        (
+            serde_json::json!({
+                "permission": "document:read", "resource_id": "d-42",
+                "principal": { "kind": "organization", "id": group },
+            }),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "authorization.principal_kind_invalid",
+        ),
+        (
+            serde_json::json!({
+                "permission": "document:read", "resource_id": "d-42",
+                "principal": { "kind": "user", "id": stranger.to_string() },
+            }),
+            StatusCode::NOT_FOUND,
+            "identity.user_not_found",
+        ),
+        (
+            serde_json::json!({
+                "permission": "document:read", "resource_id": "d-42",
+                "principal": { "kind": "group", "id": UserId::generate().to_string() },
+            }),
+            StatusCode::NOT_FOUND,
+            "identity.group_not_found",
+        ),
+        (
+            serde_json::json!({ "permission": "document:read" }),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "request.body_invalid",
+        ),
+    ] {
+        let refused = world
+            .as_administrator(Method::POST, &entries, Some(asked))
+            .await;
+        assert_eq!(refused.status, status, "{code}: {}", refused.body);
+        assert_eq!(refused.code(), code);
+    }
+    let nowhere = world
+        .as_administrator(
+            Method::GET,
+            &format!("/resource-servers/{}/access-entries", UserId::generate()),
+            None,
+        )
+        .await;
+    assert_eq!(nowhere.code(), "oauth.resource_server_not_found");
+
+    // Listed oldest first, a page at a time, and narrowed.
+    let listed = world.as_administrator(Method::GET, &entries, None).await;
+    assert_eq!(listed.status, StatusCode::OK, "{}", listed.body);
+    assert_eq!(listed.body["items"].as_array().map(Vec::len), Some(2));
+    assert_eq!(listed.body["items"][0]["id"], entry.as_str());
+    let first = world
+        .as_administrator(Method::GET, &format!("{entries}?limit=1"), None)
+        .await;
+    let cursor = first.body["next_cursor"].as_str().expect("more").to_owned();
+    let second = world
+        .as_administrator(
+            Method::GET,
+            &format!("{entries}?limit=1&cursor={cursor}"),
+            None,
+        )
+        .await;
+    assert_eq!(second.body["items"][0]["resource_id"], "d-43");
+    assert!(second.body.get("next_cursor").is_none());
+    for (query, expected) in [
+        ("resource_id=d-42", 1),
+        ("resource_kind=document", 2),
+        ("resource_kind=folder", 0),
+        (&*format!("principal_kind=group&principal_id={group}"), 1),
+    ] {
+        let narrowed = world
+            .as_administrator(Method::GET, &format!("{entries}?{query}"), None)
+            .await;
+        assert_eq!(
+            narrowed.body["items"].as_array().map(Vec::len),
+            Some(expected),
+            "{query}"
+        );
+    }
+    for query in [
+        "principal_kind=group",
+        "principal_kind=team&principal_id=x",
+        "cursor=nonsense",
+        "limit=0",
+    ] {
+        let refused = world
+            .as_administrator(Method::GET, &format!("{entries}?{query}"), None)
+            .await;
+        assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY, "{query}");
+        assert_eq!(refused.code(), "request.query_invalid", "{query}");
+    }
+
+    // Read, and out of reach of another tenant's administrator.
+    let one = world
+        .as_administrator(Method::GET, &format!("/access-entries/{entry}"), None)
+        .await;
+    assert_eq!(one.status, StatusCode::OK);
+    assert_eq!(one.body, granted.body);
+    for method in [Method::GET, Method::DELETE] {
+        let theirs = world
+            .send(
+                method.clone(),
+                &format!("/t/globex/api/v1/admin/access-entries/{entry}"),
+                Some(&format!("Bearer {globex_token}")),
+                None,
+            )
+            .await;
+        assert_eq!(theirs.status, StatusCode::NOT_FOUND, "{method}");
+        assert_eq!(theirs.code(), "authorization.access_entry_not_found");
+    }
+    let unknown = world
+        .as_administrator(Method::GET, "/access-entries/not-an-identifier", None)
+        .await;
+    assert_eq!(unknown.code(), "authorization.access_entry_not_found");
+
+    // An auditor reads entries and may not grant or remove them.
+    let acme = world.acme.clone();
+    let (_, auditor) = world
+        .person(&acme, "auditor@example.com", &[Role::TenantAuditor])
+        .await;
+    let as_auditor = format!("Bearer {auditor}");
+    let read = world
+        .send(
+            Method::GET,
+            &format!("/t/acme/api/v1/admin/access-entries/{entry}"),
+            Some(&as_auditor),
+            None,
+        )
+        .await;
+    assert_eq!(read.status, StatusCode::OK);
+    let refused = world
+        .send(
+            Method::DELETE,
+            &format!("/t/acme/api/v1/admin/access-entries/{entry}"),
+            Some(&as_auditor),
+            None,
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+
+    // Removed once.
+    let removed = world
+        .as_administrator(Method::DELETE, &format!("/access-entries/{entry}"), None)
+        .await;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT);
+    let gone = world
+        .as_administrator(Method::DELETE, &format!("/access-entries/{entry}"), None)
+        .await;
+    assert_eq!(gone.status, StatusCode::NOT_FOUND);
+    assert_eq!(gone.code(), "authorization.access_entry_not_found");
+
+    // Both changes are in the audit log; granting again is not.
+    world.record_audit().await;
+    let records = world
+        .as_administrator(Method::GET, "/audit-records?limit=200", None)
+        .await;
+    let said = records.body.to_string();
+    assert_eq!(
+        said.matches("authorization.access_entry_granted").count(),
+        2
+    );
+    assert_eq!(
+        said.matches("authorization.access_entry_removed").count(),
+        1
+    );
 }

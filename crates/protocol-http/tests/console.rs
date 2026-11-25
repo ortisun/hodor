@@ -158,6 +158,7 @@ fn authorization_services(
     hodor_authorization::api::RoleService,
     hodor_authorization::api::EvaluationService,
     hodor_authorization_opa::api::PolicyService,
+    hodor_authorization::api::AccessListService,
 ) {
     use hodor_authorization::testing::{
         InMemoryEngineBindings, InMemoryNativeRoles, StaticSubjectAttributes,
@@ -174,7 +175,8 @@ fn authorization_services(
         Arc::new(assignments.clone()),
         Arc::new(roles.clone()),
         clock.clone(),
-    );
+    )
+    .with_access_lists(Arc::new(roles.clone()));
     let mut registry = hodor_authorization::api::EngineRegistry::new();
     registry.register(Arc::new(engine)).expect("register");
     let evaluation = hodor_authorization::api::EvaluationService::new(
@@ -205,9 +207,15 @@ fn authorization_services(
         clock.clone(),
     );
     (
-        hodor_authorization::api::RoleService::new(units(), Arc::new(roles), clock),
+        hodor_authorization::api::RoleService::new(units(), Arc::new(roles.clone()), clock.clone()),
         evaluation,
         policies,
+        hodor_authorization::api::AccessListService::new(
+            units(),
+            Arc::new(roles.clone()),
+            Arc::new(roles),
+            clock,
+        ),
     )
 }
 
@@ -301,6 +309,7 @@ fn world() -> World {
             clock.clone(),
         ),
         roles: authorization_parts.0,
+        access_lists: authorization_parts.3,
         evaluation: authorization_parts.1,
         policies: Some(authorization_parts.2),
         public_url: "https://auth.example".to_owned(),

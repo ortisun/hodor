@@ -172,7 +172,7 @@ Standard collection and item routes (`GET` list, `POST`, `GET`, `PATCH`, `DELETE
 | Service accounts and agents | `/admin/service-accounts`, `/admin/agents`, `/service-accounts/{id}/api-keys` | `:disable`, `:enable` (built: [the administration interface](admin-api.md#service-accounts-and-agents)); their clients are the applications' clients with a `principal`; API keys with rotation come with Issue-94 |
 | Identity providers | `/admin/identity-providers`, `/admin/routing-rules` | `POST /identity-providers/{id}:test`, `:deactivate` |
 | Authentication | `/admin/auth-flows`, `/auth-flows/{id}/versions` | `POST /versions/{v}:validate`, `:simulate`, `:publish` |
-| Authorization | `/admin/roles`, `/permissions`, `/role-assignments`, `/acl`, `/relation-tuples`, `/policies`, `/policies/{id}/versions`, `/bundles`, `/engine-bindings`, `/decision-logs` | `POST /versions/{v}:validate`, `:test`, `:simulate`, `:publish`; `POST /policies/{id}:rollback` |
+| Authorization | `/admin/roles`, `/permissions`, `/role-assignments`, `/resource-servers/{id}/access-entries`, `/access-entries`, `/relation-tuples`, `/policies`, `/policies/{id}/versions`, `/bundles`, `/engine-bindings`, `/decision-logs` | `POST /versions/{v}:validate`, `:test`, `:simulate`, `:publish`; `POST /policies/{id}:rollback` |
 | Keys | `/admin/keys/{set}` | `POST /keys/{set}:rotate`, `POST /keys/{set}/versions/{kid}:revoke` (built: [the administration interface](admin-api.md#keys)) |
 | Sessions | `/admin/sessions` | `DELETE`, `POST /sessions:revoke-all` |
 | Audit | `/admin/audit-records` (read-only) | `POST /audit-records:export` |

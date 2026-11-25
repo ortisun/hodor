@@ -125,6 +125,10 @@ It needs `HODOR_DATABASE_URL`, like the tenant commands.
 | `GET /groups/{group_id}/role-assignments` | `roles:read` | List the roles a group holds |
 | `POST /role-assignments` | `roles:write` | Give a role to a user or a client |
 | `POST /role-assignments:revoke` | `roles:write` | Take a role away |
+| `GET /resource-servers/{resource_server_id}/access-entries` | `access-entries:read` | List the entries of a resource server's access control lists, oldest first |
+| `POST /resource-servers/{resource_server_id}/access-entries` | `access-entries:write` | Grant a principal a permission on one resource |
+| `GET /access-entries/{entry_id}` | `access-entries:read` | Read one entry |
+| `DELETE /access-entries/{entry_id}` | `access-entries:write` | Remove an entry |
 | `GET /bindings` | `bindings:read` | List which engine answers for each resource server |
 | `GET /resource-servers/{resource_server_id}/binding` | `bindings:read` | Read a resource server's binding |
 | `PUT /resource-servers/{resource_server_id}/binding` | `bindings:write` | Bind a resource server to an engine, or change the binding |
@@ -669,6 +673,38 @@ An included role of the same resource server makes a hierarchy, one of another a
 | A role that holds a permission its resource server does not declare | `422` | `authorization.permission_not_declared` |
 | Removing a role another role includes | `409` | `authorization.role_in_use` |
 | Giving a role that does not exist | `422` | `authorization.role_not_found` |
+
+### Access control lists
+
+Specified in [access control lists](../architecture/contexts/authorization.md#access-control-lists). The resource server is named in the path by its identifier; its audience is the namespace of the entry. An entry is answered as:
+
+```json
+{
+  "id": "0193f3a1-…",
+  "namespace": "https://api.example.com",
+  "permission": "document:read",
+  "resource_kind": "document",
+  "resource_id": "d-42",
+  "principal": { "kind": "group", "id": "0193f2a0-…" },
+  "granted_at": "2026-11-24T14:03:11Z"
+}
+```
+
+`POST /resource-servers/{resource_server_id}/access-entries` takes `{ "permission": "document:read", "resource_id": "d-42", "principal": { "kind": "group", "id": "0193f2a0-…" } }` and answers `201` with the new entry. When the principal already has that permission on that resource, it answers `200` with the entry that exists, and nothing changes. `principal.kind` is `user`, `client` or `group`; a service account or an agent is a `user`. The principal must be of the tenant, as for [a role assignment](#roles-and-their-permissions).
+
+`GET /resource-servers/{resource_server_id}/access-entries` answers `{ "items": [ … ], "next_cursor": … }`, oldest first, a page at a time with `limit` and `cursor`. The query may also hold `resource_kind`, `resource_id`, and `principal_kind` with `principal_id`, each narrowing the list. `DELETE /access-entries/{entry_id}` answers `204`.
+
+| Situation | Status | Code |
+|---|---|---|
+| No resource server of that identifier | `404` | `oauth.resource_server_not_found` |
+| No entry of that identifier in the tenant | `404` | `authorization.access_entry_not_found` |
+| A principal that is not of the tenant | `404` | `identity.user_not_found`, `oauth.client_not_found`, `identity.group_not_found` |
+| A permission that is not one, or that the resource server does not declare | `422` | `authorization.permission_invalid`, `authorization.permission_not_declared` |
+| A resource identifier that is empty, longer than 255 characters or holds a control character | `422` | `authorization.resource_invalid` |
+| A principal kind that is not one of the three | `422` | `authorization.principal_kind_invalid` |
+| A query whose principal has a kind without an identifier, or the other way round, or a cursor this interface did not give | `422` | `request.query_invalid` |
+
+What an administrator does here is in the audit log, through [the events of access control lists](../architecture/contexts/authorization.md#events-of-access-control-lists).
 
 ### Bindings
 
