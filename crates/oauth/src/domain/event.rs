@@ -222,7 +222,24 @@ pub enum OauthEvent {
         /// `revoked_by_client`.
         reason: &'static str,
     },
-    /// A client revoked an access token. Never carries the token.
+    /// An agent exchanged a person's token for one it holds on the
+    /// person's behalf. Never carries a token.
+    TokenExchanged {
+        /// The agent's client that asked.
+        client_id: ClientId,
+        /// The person the new token is about, its `sub`.
+        subject_id: String,
+        /// Every actor of the new token, the newest first.
+        actors: Vec<String>,
+        /// The audience the new token is for.
+        audience: String,
+        /// The new token's `jti`.
+        token_id: String,
+        /// When it expires.
+        #[serde(with = "time::serde::rfc3339")]
+        expires_at: Timestamp,
+    },
+    /// An access token was revoked. Never carries the token.
     AccessTokenRevoked {
         /// The client it was issued to.
         client_id: ClientId,
@@ -262,6 +279,7 @@ impl DomainEvent for OauthEvent {
             Self::RefreshTokenRotated { .. } => "oauth.refresh_token_rotated",
             Self::RefreshTokenFamilyRevoked { .. } => "oauth.refresh_token_family_revoked",
             Self::AccessTokenRevoked { .. } => "oauth.access_token_revoked",
+            Self::TokenExchanged { .. } => "oauth.token_exchanged",
         }
     }
 }

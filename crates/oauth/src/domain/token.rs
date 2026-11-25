@@ -192,8 +192,15 @@ impl PresentedClient {
 
 /// The grants the token endpoint answers, as the discovery document names
 /// them. A grant added to [`GrantRequest`] is added here too.
-pub const SUPPORTED_GRANT_TYPES: [&str; 3] =
-    ["authorization_code", "refresh_token", "client_credentials"];
+pub const SUPPORTED_GRANT_TYPES: [&str; 4] = [
+    "authorization_code",
+    "refresh_token",
+    "client_credentials",
+    crate::domain::client::TOKEN_EXCHANGE_GRANT,
+];
+
+/// The one kind of token Hodor exchanges and issues by exchange.
+pub const ACCESS_TOKEN_TYPE: &str = "urn:ietf:params:oauth:token-type:access_token";
 
 /// What the client asks for.
 #[derive(Debug, Clone)]
@@ -222,6 +229,19 @@ pub enum GrantRequest {
         scope: Option<String>,
         /// The one resource asked for.
         resource: Option<String>,
+    },
+    /// A person's token, exchanged by an agent for one it holds on the
+    /// person's behalf (RFC 8693).
+    TokenExchange {
+        /// The person's token.
+        subject_token: Secret<String>,
+        /// The agent's own token.
+        actor_token: Secret<String>,
+        /// The one audience the new token is for, from `audience` or
+        /// `resource`.
+        audience: String,
+        /// The scopes asked for.
+        scope: Option<String>,
     },
 }
 
@@ -267,6 +287,25 @@ impl PartialEq for GrantRequest {
                     resource: other_resource,
                 },
             ) => scope == other_scope && resource == other_resource,
+            (
+                Self::TokenExchange {
+                    subject_token,
+                    actor_token,
+                    audience,
+                    scope,
+                },
+                Self::TokenExchange {
+                    subject_token: other_subject,
+                    actor_token: other_actor,
+                    audience: other_audience,
+                    scope: other_scope,
+                },
+            ) => {
+                subject_token.expose() == other_subject.expose()
+                    && actor_token.expose() == other_actor.expose()
+                    && audience == other_audience
+                    && scope == other_scope
+            }
             _ => false,
         }
     }
@@ -345,12 +384,55 @@ impl TokenRequest {
                 scope: text("scope"),
                 resource: text("resource"),
             },
+            Some(crate::domain::client::TOKEN_EXCHANGE_GRANT) => token_exchange(&text)?,
             Some(_) => {
                 return Err(TokenError::unsupported_grant_type("the grant is unknown"));
             }
         };
         Ok(Self { client, grant })
     }
+}
+
+/// Reads the parameters of a token exchange (RFC 8693, section 2.1): both
+/// tokens, as access tokens, and one audience.
+fn token_exchange(text: &impl Fn(&str) -> Option<String>) -> Result<GrantRequest, TokenError> {
+    let token = |name: &str, kind: &str| -> Result<Secret<String>, TokenError> {
+        let value = text(name).ok_or(TokenError::invalid_request(
+            "both the subject token and the actor token are needed",
+        ))?;
+        if text(kind).as_deref() != Some(ACCESS_TOKEN_TYPE) {
+            return Err(TokenError::invalid_request(
+                "only access tokens are exchanged",
+            ));
+        }
+        Ok(Secret::from(value))
+    };
+    let subject_token = token("subject_token", "subject_token_type")?;
+    let actor_token = token("actor_token", "actor_token_type")?;
+    if text("requested_token_type").is_some_and(|asked| asked != ACCESS_TOKEN_TYPE) {
+        return Err(TokenError::invalid_request(
+            "only an access token is issued by exchange",
+        ));
+    }
+    let audience = match (text("audience"), text("resource")) {
+        (Some(one), None) | (None, Some(one)) => one,
+        (Some(_), Some(_)) => {
+            return Err(TokenError::invalid_target(
+                "name the audience once, as `audience` or as `resource`",
+            ));
+        }
+        (None, None) => {
+            return Err(TokenError::invalid_target(
+                "the audience of the new token is needed",
+            ));
+        }
+    };
+    Ok(GrantRequest::TokenExchange {
+        subject_token,
+        actor_token,
+        audience,
+        scope: text("scope"),
+    })
 }
 
 pub(crate) fn presented_client(
@@ -607,6 +689,12 @@ pub struct TokenSubject {
     /// kind, `service_account` or `agent`, written as `principal_kind`;
     /// none otherwise.
     pub principal_kind: Option<String>,
+    /// For a token made by exchange, who acts for the subject, written as
+    /// `act`; none otherwise.
+    pub act: Option<Value>,
+    /// For a token made by exchange, the subject token's `amr`, written as
+    /// it was in place of what `methods` would give.
+    pub amr: Option<Vec<String>>,
 }
 
 /// The most groups an access token names. A person in more gets a token
@@ -627,6 +715,8 @@ impl TokenSubject {
             organization: None,
             groups: None,
             principal_kind: None,
+            act: None,
+            amr: None,
         }
     }
 }
@@ -696,9 +786,21 @@ pub fn claims_for(
     if let Some(acr) = &subject.acr {
         claims["acr"] = json!(acr);
     }
-    let amr = crate::domain::openid::authentication_methods(&subject.methods);
-    if !amr.is_empty() {
-        claims["amr"] = json!(amr);
+    match &subject.amr {
+        Some(amr) => {
+            if !amr.is_empty() {
+                claims["amr"] = json!(amr);
+            }
+        }
+        None => {
+            let amr = crate::domain::openid::authentication_methods(&subject.methods);
+            if !amr.is_empty() {
+                claims["amr"] = json!(amr);
+            }
+        }
+    }
+    if let Some(act) = &subject.act {
+        claims["act"] = act.clone();
     }
     if let Some(organization) = subject.organization {
         claims["org_id"] = json!(organization.to_string());

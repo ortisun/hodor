@@ -963,3 +963,437 @@ async fn the_tokens_of_a_workload_are_revoked_with_it_and_stay_revoked() {
         .expect("client credentials");
     assert!(active(&world, &tenant.context, &machine, &access(&third)).await);
 }
+
+const LEDGER: &str = "urn:example:ledger";
+const TOKEN_EXCHANGE: &str = "urn:ietf:params:oauth:grant-type:token-exchange";
+const ACCESS_TOKEN_TYPE: &str = "urn:ietf:params:oauth:token-type:access_token";
+
+/// The ledger, a second resource server that also defines `read`, on the
+/// application of the clients.
+async fn ledger(world: &World, tenant: &Tenant) {
+    world
+        .applications
+        .create_resource_server(
+            &tenant.context,
+            CreateResourceServer {
+                application_id: tenant.application,
+                audience: LEDGER.to_owned(),
+                settings: ResourceServerSettings {
+                    name: "Ledger".to_owned(),
+                    scopes: vec![ScopeDefinition {
+                        name: "read".to_owned(),
+                        description: "Read the ledger".to_owned(),
+                    }],
+                },
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("resource server");
+}
+
+/// An agent's client of the application that owns the resource server,
+/// allowed client credentials and token exchange with `rules`.
+async fn agent_client(
+    world: &World,
+    tenant: &Tenant,
+    agent: UserId,
+    rules: &[(&str, &str)],
+) -> Credentials {
+    let mut settings = ClientSettings::new(
+        "Assistant",
+        ClientType::Confidential,
+        vec![GrantType::ClientCredentials, GrantType::TokenExchange],
+        Vec::new(),
+    );
+    settings.authentication_method = AuthenticationMethod::ClientSecretBasic;
+    settings.allowed_scopes = vec!["read".to_owned()];
+    settings.principal = Some(agent);
+    settings.exchange_rules = rules
+        .iter()
+        .map(|(from, to)| hodor_oauth::api::ExchangeRule {
+            subject_audience: (*from).to_owned(),
+            audience: (*to).to_owned(),
+        })
+        .collect();
+    let (client, secret) = world
+        .applications
+        .create_client(
+            &tenant.context,
+            CreateClient {
+                application_id: tenant.resource_owner,
+                client_type: ClientType::Confidential,
+                settings,
+                secret_lifetime: None,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("client");
+    Credentials {
+        id: client.id(),
+        secret: secret.map(|secret| secret.expose().to_owned()),
+    }
+}
+
+async fn exchange(
+    world: &World,
+    tenant: &TenantContext,
+    client: &Credentials,
+    subject: &str,
+    actor: &str,
+    extra: &[(&str, &str)],
+) -> Result<IssuedTokens, TokenError> {
+    let mut form = vec![
+        ("grant_type".to_owned(), TOKEN_EXCHANGE.to_owned()),
+        ("subject_token".to_owned(), subject.to_owned()),
+        (
+            "subject_token_type".to_owned(),
+            ACCESS_TOKEN_TYPE.to_owned(),
+        ),
+        ("actor_token".to_owned(), actor.to_owned()),
+        ("actor_token_type".to_owned(), ACCESS_TOKEN_TYPE.to_owned()),
+    ];
+    form.extend(
+        extra
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned())),
+    );
+    ask(world, tenant, client, form).await
+}
+
+/// A tenant with the ledger, a person's tokens, and an agent with its
+/// client and its own token.
+struct Exchanging {
+    tenant: Tenant,
+    person: IssuedTokens,
+    agent: UserId,
+    client: Credentials,
+    actor: String,
+}
+
+async fn exchanging(world: &World, rules: &[(&str, &str)]) -> Exchanging {
+    let tenant = tenant(world).await;
+    ledger(world, &tenant).await;
+    let code_client = confidential(world, &tenant).await;
+    let person = signed_in(world, &tenant.context, &code_client, "openid read").await;
+    let agent = UserId::generate();
+    world.standing.workload(agent, "agent");
+    let client = agent_client(world, &tenant, agent, rules).await;
+    let actor = ask(world, &tenant.context, &client, client_credentials())
+        .await
+        .expect("the agent's own token");
+    Exchanging {
+        tenant,
+        person,
+        agent,
+        client,
+        actor: access(&actor),
+    }
+}
+
+#[tokio::test]
+async fn an_agent_exchanges_a_persons_token_for_one_it_holds_on_their_behalf() {
+    let world = world();
+    let setup = exchanging(&world, &[(AUDIENCE, LEDGER)]).await;
+    let issued = exchange(
+        &world,
+        &setup.tenant.context,
+        &setup.client,
+        &access(&setup.person),
+        &setup.actor,
+        &[("audience", LEDGER)],
+    )
+    .await
+    .expect("exchanged");
+    assert_eq!(issued.issued_token_type, Some(ACCESS_TOKEN_TYPE));
+    assert!(issued.refresh_token.is_none() && issued.id_token.is_none());
+    assert_eq!(issued.scope, "read", "openid is never exchanged");
+    let answer = introspect(
+        &world,
+        &setup.tenant.context,
+        &setup.client,
+        &access(&issued),
+    )
+    .await
+    .expect("answered");
+    assert_eq!(answer["active"], true, "{answer}");
+    assert_eq!(answer["aud"], LEDGER);
+    assert_eq!(answer["client_id"], setup.client.id.to_string());
+    assert_eq!(answer["act"]["sub"], setup.agent.to_string());
+    assert_eq!(answer["act"]["principal_kind"], "agent");
+    assert!(
+        answer.get("principal_kind").is_none(),
+        "the subject is a person"
+    );
+    assert!(
+        world
+            .units
+            .committed_event_types()
+            .iter()
+            .any(|event| event == "oauth.token_exchanged")
+    );
+    let record = world
+        .records
+        .all(setup.tenant.context.tenant_id())
+        .into_iter()
+        .find(|record| record.parent_token_id.is_some())
+        .expect("recorded with its parent");
+    assert_eq!(record.principal_id, Some(setup.agent));
+    assert!(record.grant_id.is_some(), "the person's grant");
+}
+
+#[tokio::test]
+async fn an_exchange_for_a_wider_scope_or_another_audience_is_refused() {
+    let world = world();
+    let setup = exchanging(&world, &[(AUDIENCE, LEDGER), (AUDIENCE, "urn:nowhere")]).await;
+    let subject = access(&setup.person);
+    let refused = |extra: &'static [(&'static str, &'static str)]| {
+        exchange(
+            &world,
+            &setup.tenant.context,
+            &setup.client,
+            &subject,
+            &setup.actor,
+            extra,
+        )
+    };
+    for (extra, error) in [
+        (
+            &[("audience", LEDGER), ("scope", "read write")][..],
+            "invalid_scope",
+        ),
+        (
+            &[("audience", LEDGER), ("scope", "openid")][..],
+            "invalid_scope",
+        ),
+        (&[("audience", AUDIENCE)][..], "invalid_target"),
+        (&[("audience", "urn:nowhere")][..], "invalid_target"),
+        (&[][..], "invalid_target"),
+        (
+            &[("audience", LEDGER), ("resource", LEDGER)][..],
+            "invalid_target",
+        ),
+        (
+            &[
+                ("audience", LEDGER),
+                (
+                    "requested_token_type",
+                    "urn:ietf:params:oauth:token-type:id_token",
+                ),
+            ][..],
+            "invalid_request",
+        ),
+    ] {
+        let answer = refused(extra).await.expect_err("refused");
+        assert_eq!(answer.error, error, "{extra:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_chain_past_three_actors_is_refused() {
+    let world = world();
+    let setup = exchanging(&world, &[(AUDIENCE, LEDGER), (LEDGER, LEDGER)]).await;
+    let mut subject = access(&setup.person);
+    for hop in 1..=3 {
+        let issued = exchange(
+            &world,
+            &setup.tenant.context,
+            &setup.client,
+            &subject,
+            &setup.actor,
+            &[("audience", LEDGER)],
+        )
+        .await
+        .unwrap_or_else(|error| panic!("hop {hop}: {error:?}"));
+        subject = access(&issued);
+    }
+    let answer = introspect(&world, &setup.tenant.context, &setup.client, &subject)
+        .await
+        .expect("answered");
+    assert_eq!(answer["act"]["act"]["act"]["sub"], setup.agent.to_string());
+    let refused = exchange(
+        &world,
+        &setup.tenant.context,
+        &setup.client,
+        &subject,
+        &setup.actor,
+        &[("audience", LEDGER)],
+    )
+    .await
+    .expect_err("a fourth actor");
+    assert_eq!(refused.error, "invalid_request");
+}
+
+#[tokio::test]
+async fn an_exchanged_token_stops_with_the_agent_down_the_chain() {
+    let world = world();
+    let setup = exchanging(&world, &[(AUDIENCE, LEDGER), (LEDGER, LEDGER)]).await;
+    let first = exchange(
+        &world,
+        &setup.tenant.context,
+        &setup.client,
+        &access(&setup.person),
+        &setup.actor,
+        &[("audience", LEDGER)],
+    )
+    .await
+    .expect("exchanged");
+    let second = exchange(
+        &world,
+        &setup.tenant.context,
+        &setup.client,
+        &access(&first),
+        &setup.actor,
+        &[("audience", LEDGER)],
+    )
+    .await
+    .expect("exchanged again");
+    for token in [&first, &second] {
+        assert!(active(&world, &setup.tenant.context, &setup.client, &access(token)).await);
+    }
+    // Disabling the agent stops every token it holds for the person, down
+    // the chain.
+    world.standing.bar(setup.agent);
+    for token in [&first, &second] {
+        assert!(
+            !active(&world, &setup.tenant.context, &setup.client, &access(token)).await,
+            "the agent may no longer act"
+        );
+    }
+}
+
+#[tokio::test]
+async fn revoking_the_subject_token_stops_what_was_exchanged_from_it() {
+    let world = world();
+    let tenant = tenant(&world).await;
+    ledger(&world, &tenant).await;
+    let code_client = confidential(&world, &tenant).await;
+    let person = signed_in(&world, &tenant.context, &code_client, "openid read").await;
+    let agent = UserId::generate();
+    world.standing.workload(agent, "agent");
+    let client = agent_client(&world, &tenant, agent, &[(AUDIENCE, LEDGER)]).await;
+    let actor = access(
+        &ask(&world, &tenant.context, &client, client_credentials())
+            .await
+            .expect("the agent's token"),
+    );
+    let issued = exchange(
+        &world,
+        &tenant.context,
+        &client,
+        &access(&person),
+        &actor,
+        &[("audience", LEDGER)],
+    )
+    .await
+    .expect("exchanged");
+    assert!(active(&world, &tenant.context, &client, &access(&issued)).await);
+    revoke(&world, &tenant.context, &code_client, &access(&person)).await;
+    assert!(!active(&world, &tenant.context, &client, &access(&issued)).await);
+    // And ending the person's grant stops a fresh one too.
+    let again = signed_in(&world, &tenant.context, &code_client, "openid read").await;
+    let issued = exchange(
+        &world,
+        &tenant.context,
+        &client,
+        &access(&again),
+        &actor,
+        &[("audience", LEDGER)],
+    )
+    .await
+    .expect("exchanged");
+    revoke(
+        &world,
+        &tenant.context,
+        &code_client,
+        &refresh_token_of(&again),
+    )
+    .await;
+    assert!(!active(&world, &tenant.context, &client, &access(&issued)).await);
+}
+
+#[tokio::test]
+async fn only_an_agents_own_token_acts_and_only_a_persons_is_exchanged() {
+    let world = world();
+    let setup = exchanging(&world, &[(AUDIENCE, LEDGER)]).await;
+    // A service account's client may not exchange at all.
+    let account = UserId::generate();
+    world.standing.workload(account, "service_account");
+    let account_client = agent_client(&world, &setup.tenant, account, &[(AUDIENCE, LEDGER)]).await;
+    let account_token = access(
+        &ask(
+            &world,
+            &setup.tenant.context,
+            &account_client,
+            client_credentials(),
+        )
+        .await
+        .expect("its own token"),
+    );
+    let refused = exchange(
+        &world,
+        &setup.tenant.context,
+        &account_client,
+        &access(&setup.person),
+        &account_token,
+        &[("audience", LEDGER)],
+    )
+    .await
+    .expect_err("not an agent");
+    assert_eq!(refused.error, "unauthorized_client");
+
+    // Another agent's token is no actor for this client, and a workload's
+    // token, or the agent's own, is no subject.
+    let other = UserId::generate();
+    world.standing.workload(other, "agent");
+    let other_client = agent_client(&world, &setup.tenant, other, &[(AUDIENCE, LEDGER)]).await;
+    let other_token = access(
+        &ask(
+            &world,
+            &setup.tenant.context,
+            &other_client,
+            client_credentials(),
+        )
+        .await
+        .expect("its own token"),
+    );
+    for (subject, actor) in [
+        (access(&setup.person), other_token.clone()),
+        (access(&setup.person), access(&setup.person)),
+        (account_token.clone(), setup.actor.clone()),
+        (setup.actor.clone(), setup.actor.clone()),
+        ("not a token".to_owned(), setup.actor.clone()),
+    ] {
+        let refused = exchange(
+            &world,
+            &setup.tenant.context,
+            &setup.client,
+            &subject,
+            &actor,
+            &[("audience", LEDGER)],
+        )
+        .await
+        .expect_err("refused");
+        assert_eq!(refused.error, "invalid_request");
+    }
+
+    // Without both tokens, or with another kind, the request is refused.
+    let missing = ask(
+        &world,
+        &setup.tenant.context,
+        &setup.client,
+        vec![
+            ("grant_type".to_owned(), TOKEN_EXCHANGE.to_owned()),
+            ("subject_token".to_owned(), access(&setup.person)),
+            (
+                "subject_token_type".to_owned(),
+                ACCESS_TOKEN_TYPE.to_owned(),
+            ),
+            ("audience".to_owned(), LEDGER.to_owned()),
+        ],
+    )
+    .await
+    .expect_err("no actor");
+    assert_eq!(missing.error, "invalid_request");
+}

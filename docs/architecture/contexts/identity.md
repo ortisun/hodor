@@ -239,7 +239,7 @@ A **service account** is a program of the tenant that acts on its own: a nightly
 
 A workload proves who it is as a [client of the client credentials grant](oauth.md#clients-that-act-as-a-workload) bound to it, or with an [API key](credential.md#api-keys) it holds. It has no login identifier, no password and no second factor, and [only a person may sign in](#lifecycle), so no part of a sign-in can make a session for it.
 
-**An agent differs from a service account only in its kind**, for now. [Token exchange](../../product/epics.md#slice-y--workloads-and-agents-epic-22) (Issue-95) lets an agent, and only an agent, act on a person's behalf. A service account always acts as itself.
+**An agent differs from a service account in one thing**: [token exchange](oauth.md#token-exchange) lets an agent, and only an agent, act on a person's behalf, with a token whose `act` names it. A service account always acts as itself, and neither is ever the subject of an exchange.
 
 ### Its lifecycle
 
@@ -505,6 +505,5 @@ A tenant table under row-level security. That the workload is a service account 
 | Linked external identities | Phase 3 |
 | Non-ASCII email addresses | Not scheduled |
 | Purging the remaining row of a Deleted user | With the tenant purge job |
-| An agent acting on a person's behalf through token exchange | Milestone 8, Issue-95 |
 | Console pages for service accounts and agents | Milestone 8, Issue-97 |
 | Listing the clients bound to a workload, and the workloads a person owns | When the console pages need them, Issue-97 |

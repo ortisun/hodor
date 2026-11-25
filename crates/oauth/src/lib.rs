@@ -51,13 +51,17 @@ pub mod api {
     };
     pub use crate::domain::client::{
         AuthenticationMethod, Client, ClientId, ClientSettings, ClientSnapshot, ClientType,
-        GrantType, IdTokenAlgorithm, MAX_CLIENTS, MAX_REDIRECT_URIS, MAX_SCOPES, TokenPolicy,
+        ExchangeRule, GrantType, IdTokenAlgorithm, MAX_CLIENTS, MAX_EXCHANGE_RULES,
+        MAX_REDIRECT_URIS, MAX_SCOPES, TOKEN_EXCHANGE_GRANT, TokenPolicy,
     };
     pub use crate::domain::consent::{
         Consent, ConsentAction, ConsentActor, ConsentAnswer, ConsentHistoryEntry, ConsentWait,
         DEFAULT_CONSENT_LIFETIME, LONGEST_CONSENT_LIFETIME, SHORTEST_CONSENT_LIFETIME, must_ask,
     };
     pub use crate::domain::event::OauthEvent;
+    pub use crate::domain::exchange::{
+        MAX_ACTORS, act_claim, actors, chain_length, exchanged_scopes,
+    };
     pub use crate::domain::introspection::{
         AccessTokenRecord, ActiveRefreshToken, REVOKED_BY_CLIENT, TokenQuery, TokenTypeHint,
         active_access_token, active_refresh_token, inactive,
@@ -88,9 +92,10 @@ pub mod api {
     };
     pub use crate::domain::text::{MAX_SCOPE_LENGTH, is_scope};
     pub use crate::domain::token::{
-        ASSERTION_LONGEST_AHEAD, ASSERTION_TYPE, AccessTokenClaims, AssertionAudience,
-        BasicCredentials, CLOCK_ALLOWANCE, CheckedAssertion, GrantRequest, MAX_ASSERTION_BYTES,
-        MAX_ASSERTION_ID_LENGTH, PresentedClient, SUPPORTED_GRANT_TYPES, TokenError, TokenRequest,
-        TokenSubject, access_token_claims, assertion_issuer, check_assertion, claims_for,
+        ACCESS_TOKEN_TYPE, ASSERTION_LONGEST_AHEAD, ASSERTION_TYPE, AccessTokenClaims,
+        AssertionAudience, BasicCredentials, CLOCK_ALLOWANCE, CheckedAssertion, GrantRequest,
+        MAX_ASSERTION_BYTES, MAX_ASSERTION_ID_LENGTH, PresentedClient, SUPPORTED_GRANT_TYPES,
+        TokenError, TokenRequest, TokenSubject, access_token_claims, assertion_issuer,
+        check_assertion, claims_for,
     };
 }

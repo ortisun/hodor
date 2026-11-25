@@ -16,13 +16,13 @@ use axum::http::header::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Extension, Json};
-use hodor_identity::api::UserStatus;
+use hodor_identity::api::{UserKind, UserStatus};
 use hodor_kernel::{DomainError, ErrorKind, TenantContext, UserId};
 use hodor_oauth::api::{
     Application, ApplicationId, ApplicationSettings, AuthenticationMethod, Client, ClientId,
     ClientSecret, ClientSecretId, ClientSettings, ClientType, CreateClient, CreateResourceServer,
-    GrantType, IdTokenAlgorithm, ResourceServer, ResourceServerId, ResourceServerSettings,
-    RotateSecret, ScopeDefinition, Status, TokenPolicy,
+    ExchangeRule, GrantType, IdTokenAlgorithm, ResourceServer, ResourceServerId,
+    ResourceServerSettings, RotateSecret, ScopeDefinition, Status, TokenPolicy,
 };
 use serde::{Deserialize, Serialize};
 use time::Duration;
@@ -407,6 +407,7 @@ struct ClientBody {
     id_token_signed_response_alg: &'static str,
     /// The service account or agent it acts as, or `null`.
     principal: Option<String>,
+    exchange_rules: Vec<ExchangeRuleBody>,
     token_policy: TokenPolicyBody,
     /// What identifies each secret and when it expires: never the secret
     /// or its hash.
@@ -435,6 +436,14 @@ impl From<&Client> for ClientBody {
             require_pkce: settings.require_pkce,
             id_token_signed_response_alg: settings.id_token_algorithm.as_str(),
             principal: settings.principal.map(|principal| principal.to_string()),
+            exchange_rules: settings
+                .exchange_rules
+                .iter()
+                .map(|rule| ExchangeRuleBody {
+                    subject_audience: rule.subject_audience.clone(),
+                    audience: rule.audience.clone(),
+                })
+                .collect(),
             token_policy: TokenPolicyBody {
                 access_token_seconds: policy.access_token.whole_seconds(),
                 id_token_seconds: policy.id_token.whole_seconds(),
@@ -494,6 +503,25 @@ struct NewClientBody {
     token_policy: Option<TokenPolicyInput>,
     secret_lifetime_days: Option<u32>,
     principal: Option<String>,
+    exchange_rules: Option<Vec<ExchangeRuleBody>>,
+}
+
+/// One exchange rule, as the interface writes it.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExchangeRuleBody {
+    subject_audience: String,
+    audience: String,
+}
+
+fn exchange_rules(given: Vec<ExchangeRuleBody>) -> Vec<ExchangeRule> {
+    given
+        .into_iter()
+        .map(|rule| ExchangeRule {
+            subject_audience: rule.subject_audience,
+            audience: rule.audience,
+        })
+        .collect()
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -511,6 +539,7 @@ struct ClientChangesBody {
     /// Left out: unchanged; `null`: removed; an identifier: replaced.
     #[serde(default, deserialize_with = "present")]
     principal: Option<Option<String>>,
+    exchange_rules: Option<Vec<ExchangeRuleBody>>,
 }
 
 /// A field that may be given as `null`, told apart from one left out.
@@ -528,7 +557,10 @@ async fn principal_of(
     state: &Shared,
     tenant: &TenantContext,
     given: &str,
+    grants: &[GrantType],
 ) -> Result<UserId, Box<Response>> {
+    // Only an agent acts on a person's behalf.
+    let exchanges = grants.contains(&GrantType::TokenExchange);
     let refused = || {
         failed(DomainError::invalid(
             "oauth.client_principal_invalid",
@@ -537,7 +569,13 @@ async fn principal_of(
     };
     let id: UserId = given.parse().map_err(|_| refused())?;
     match state.identity.get(tenant, id).await {
-        Ok(user) if user.kind().is_workload() && user.status() != UserStatus::Deleted => Ok(id),
+        Ok(user)
+            if user.kind().is_workload()
+                && user.status() != UserStatus::Deleted
+                && (!exchanges || user.kind() == UserKind::Agent) =>
+        {
+            Ok(id)
+        }
         Ok(_) => Err(refused()),
         Err(error) if error.kind() == ErrorKind::NotFound => Err(refused()),
         Err(error) => Err(failed(error)),
@@ -645,8 +683,12 @@ async fn create_client(
             if let Some(policy) = new.token_policy {
                 settings.token_policy = policy.over(settings.token_policy);
             }
+            if let Some(rules) = new.exchange_rules {
+                settings.exchange_rules = exchange_rules(rules);
+            }
             if let Some(principal) = &new.principal {
-                settings.principal = Some(principal_of(&state, &tenant, principal).await?);
+                settings.principal =
+                    Some(principal_of(&state, &tenant, principal, &settings.grant_types).await?);
             }
             let (client, secret) = state
                 .applications
@@ -715,16 +757,17 @@ async fn change_client(
                 .await
                 .map_err(failed)?;
             let now = current.snapshot().settings.clone();
+            let grants = match changes.grant_types {
+                Some(given) => grant_types(&given)?,
+                None => now.grant_types.clone(),
+            };
             let settings = ClientSettings {
                 name: changes.name.unwrap_or(now.name),
                 authentication_method: match changes.authentication_method {
                     Some(method) => AuthenticationMethod::parse(&method).map_err(failed)?,
                     None => now.authentication_method,
                 },
-                grant_types: match changes.grant_types {
-                    Some(given) => grant_types(&given)?,
-                    None => now.grant_types,
-                },
+                grant_types: grants.clone(),
                 redirect_uris: changes.redirect_uris.unwrap_or(now.redirect_uris),
                 post_logout_redirect_uris: changes
                     .post_logout_redirect_uris
@@ -739,10 +782,19 @@ async fn change_client(
                     .token_policy
                     .map_or(now.token_policy, |given| given.over(now.token_policy)),
                 principal: match &changes.principal {
-                    None => now.principal,
+                    // Kept, but checked again when the grants now exchange.
+                    None => match now.principal {
+                        Some(kept) if grants.contains(&GrantType::TokenExchange) => {
+                            Some(principal_of(&state, &tenant, &kept.to_string(), &grants).await?)
+                        }
+                        kept => kept,
+                    },
                     Some(None) => None,
-                    Some(Some(given)) => Some(principal_of(&state, &tenant, given).await?),
+                    Some(Some(given)) => Some(principal_of(&state, &tenant, given, &grants).await?),
                 },
+                exchange_rules: changes
+                    .exchange_rules
+                    .map_or(now.exchange_rules, exchange_rules),
             };
             let client = state
                 .applications

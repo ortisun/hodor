@@ -268,6 +268,22 @@ async fn the_records_of_a_principal_are_revoked_together(ports: AccessTokenRecor
         .expect("find")
         .expect("recorded");
     assert_eq!(found.principal_id, Some(workload), "the principal is kept");
+    // A token exchanged from another keeps its parent.
+    let child = record_of(client.id(), "jti-child", later)
+        .for_principal(Some(other))
+        .exchanged_from("jti-one");
+    ports
+        .access_tokens
+        .record(uow.as_mut(), &child)
+        .await
+        .expect("record");
+    let kept = ports
+        .access_tokens
+        .find(uow.as_mut(), "jti-child")
+        .await
+        .expect("find")
+        .expect("recorded");
+    assert_eq!(kept.parent_token_id.as_deref(), Some("jti-one"));
     let mut revoked = ports
         .access_tokens
         .revoke_for_principal(uow.as_mut(), workload, moment(), "workload_disabled")

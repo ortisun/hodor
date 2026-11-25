@@ -205,6 +205,7 @@ pub(crate) async fn principal_of(
     database: &Database,
     tenant: &TenantContext,
     principal: UserId,
+    agent_only: bool,
 ) -> Result<UserId, DomainError> {
     let refused = || {
         DomainError::invalid(
@@ -213,7 +214,11 @@ pub(crate) async fn principal_of(
         )
     };
     match identity(database).get(tenant, principal).await {
-        Ok(user) if user.kind().is_workload() && user.status() != UserStatus::Deleted => {
+        Ok(user)
+            if user.kind().is_workload()
+                && user.status() != UserStatus::Deleted
+                && (!agent_only || user.kind() == UserKind::Agent) =>
+        {
             Ok(principal)
         }
         Ok(_) => Err(refused()),

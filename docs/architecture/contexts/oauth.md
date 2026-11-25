@@ -4,7 +4,7 @@ The `oauth` context makes Hodor an OAuth 2.x authorization server and an OpenID 
 
 It does not sign anyone in. When a request needs a person, it hands the request to the `authentication` context and takes the session that comes back. The two contexts do not depend on each other: the HTTP layer joins them ([crates.md](../crates.md)).
 
-This page specifies what Issue-53 builds: applications, clients and resource servers, and the rules they keep; what Issue-55 builds: the authorization endpoint, grants and authorization codes; what Issue-56 builds: the token endpoint, client authentication and access tokens; what Issue-59 builds: the OpenID Provider; what Issue-60 builds: logout initiated by the relying party; what Issue-62 builds: [consent](#consent); and what Issue-93 builds: [clients that act as a workload](#clients-that-act-as-a-workload). The other endpoints and tokens are added by Issue-57 and Issue-58, under the headings at the end of this page.
+This page specifies what Issue-53 builds: applications, clients and resource servers, and the rules they keep; what Issue-55 builds: the authorization endpoint, grants and authorization codes; what Issue-56 builds: the token endpoint, client authentication and access tokens; what Issue-59 builds: the OpenID Provider; what Issue-60 builds: logout initiated by the relying party; what Issue-62 builds: [consent](#consent); what Issue-93 builds: [clients that act as a workload](#clients-that-act-as-a-workload); and what Issue-95 builds: [token exchange](#token-exchange). The other endpoints and tokens are added by Issue-57 and Issue-58, under the headings at the end of this page.
 
 ## Applications
 
@@ -30,7 +30,8 @@ A client is what talks to Hodor's endpoints. Its identifier is the `client_id` o
 | Name | For administrators. Same rule as an application's name |
 | Type | `confidential`: it runs where it can keep a secret, such as a server. `public`: it runs where it cannot, such as a browser or a mobile application. Chosen when the client is created and never changed |
 | Authentication method | How it proves who it is at the token endpoint: `client_secret_basic`, `client_secret_post`, `private_key_jwt` or `none` |
-| Grants | What it may ask for: `authorization_code`, `refresh_token`, `client_credentials` |
+| Grants | What it may ask for: `authorization_code`, `refresh_token`, `client_credentials`, and `urn:ietf:params:oauth:grant-type:token-exchange` for [token exchange](#token-exchange) |
+| Exchange rules | For a client with the token exchange grant: which tokens it may exchange for which audience. At most 20 |
 | Redirect addresses | Where the authorization endpoint may send a person back to. At most 10 |
 | Post-logout redirect addresses | Where [logout](#logout-initiated-by-the-relying-party) may send a person back to. At most 10 |
 | Scopes | The scopes it may ask for. At most 50 |
@@ -55,7 +56,8 @@ Every change to a client is checked against all of these at once; a change that 
 - **A client with `authorization_code` has at least one redirect address, and one without it has none.**
 - **Only a client with `authorization_code` has post-logout redirect addresses**, since only it gets ID tokens and signs people in. It may have none.
 - **A client has at least one grant.**
-- **A client with a principal has the `client_credentials` grant and no other.** It is the workload's credential, and nothing it gets is about a person.
+- **A client with a principal has the `client_credentials` grant**, and may have the token exchange grant besides; no other. It is the workload's credential.
+- **The token exchange grant needs a principal, which must be an agent, and at least one exchange rule; exchange rules need the grant.** Only an agent acts on a person's behalf ([Decision 0031](../../decisions/0031-workloads-are-users.md)). Each rule is a pair of audiences, the one a subject token must hold and the one the new token is for, each at most 255 printable characters, each pair once.
 - **Switching the authentication method drops what the old one used.** A client that moves away from a secret method loses its secrets, and one that moves away from `private_key_jwt` loses its keys.
 
 ### Redirect addresses
@@ -175,7 +177,7 @@ For an operator who can reach the database, as for tenants and identity provider
 | `hodor-cli application add --tenant acme --name Billing [--first-party]` | Registers an application, enabled; third party unless `--first-party` is given. Prints its identifier |
 | `hodor-cli application list --tenant acme` | One line per application: identifier, status, first or third party, name |
 | `hodor-cli application disable --tenant acme --id …`, `enable` | |
-| `hodor-cli client add --tenant acme --application … --name … --type confidential --grant authorization_code --redirect-uri https://… --scope openid` | Creates a client. `--grant`, `--redirect-uri`, `--post-logout-redirect-uri` and `--scope` are given once per value; `--method` chooses the authentication method, `--secret-days` the lifetime of the first secret, `--without-pkce` lets a confidential client redeem a code without PKCE, `--id-token-algorithm` signs its ID tokens with `RS256` instead of `ES256` and `--principal` binds it to a service account or an agent. Prints the `client_id` and, for a client with a secret method, the secret, once |
+| `hodor-cli client add --tenant acme --application … --name … --type confidential --grant authorization_code --redirect-uri https://… --scope openid` | Creates a client. `--grant`, `--redirect-uri`, `--post-logout-redirect-uri` and `--scope` are given once per value; `--method` chooses the authentication method, `--secret-days` the lifetime of the first secret, `--without-pkce` lets a confidential client redeem a code without PKCE, `--id-token-algorithm` signs its ID tokens with `RS256` instead of `ES256`, `--principal` binds it to a service account or an agent, and `--exchange-rule '<subject audience>=><audience>'`, once per rule, gives an agent's client its exchange rules. Prints the `client_id` and, for a client with a secret method, the secret, once |
 | `hodor-cli client list --tenant acme --application …` | One line per client: `client_id`, status, type, authentication method, name |
 | `hodor-cli client rotate-secret --tenant acme --id … [--lifetime-days 365] [--keep-previous-days 7]` | Gives a client a new secret and prints it, once |
 | `hodor-cli client disable --tenant acme --id …`, `enable` | |
@@ -230,7 +232,8 @@ Every table is a tenant table under row-level security, in the schema `oauth`. R
 | `name`, `client_type`, `authentication_method`, `status` | `text` | A check constraint keeps a public client on `none` |
 | `grant_types`, `redirect_uris`, `post_logout_redirect_uris`, `allowed_scopes` | `text[]` | Redirect addresses of both kinds are compared byte for byte (`COLLATE "C"`) |
 | `require_pkce` | `boolean` | A check constraint keeps it true for a public client |
-| `principal_id` | `uuid` | The workload the client acts as, or null. Not a reference: contexts do not reference each other's tables. A check constraint allows it only with the `client_credentials` grant alone |
+| `principal_id` | `uuid` | The workload the client acts as, or null. Not a reference: contexts do not reference each other's tables. Check constraints allow it only with `client_credentials` and, besides, `urn:ietf:params:oauth:grant-type:token-exchange`, and require it with the latter |
+| `exchange_rules` | `jsonb` | The exchange rules, a list of `{"subject_audience": …, "audience": …}`; empty unless the client has the token exchange grant |
 | `id_token_algorithm` | `text` | `ES256` or `RS256`, by a check constraint; `ES256` for a client made before it existed |
 | `access_token_seconds`, `id_token_seconds`, `refresh_token_seconds`, `refresh_idle_seconds`, `consent_seconds` | `integer` | The token policy |
 | `created_at`, `updated_at` | `timestamptz` | |
@@ -450,7 +453,7 @@ Issue-56 builds the token endpoint, the four ways a client proves who it is ther
 - A parameter given more than once is `invalid_request`, since the specification forbids it.
 - `grant_type` is required:
   - missing: `invalid_request`;
-  - `authorization_code`, `refresh_token` and `client_credentials`: answered as the sections below say;
+  - `authorization_code`, `refresh_token`, `client_credentials` and `urn:ietf:params:oauth:grant-type:token-exchange`: answered as the sections below say;
   - anything else: `unsupported_grant_type`.
 - A client that is not allowed the grant it asks for is answered `unauthorized_client`.
 
@@ -524,6 +527,7 @@ The access token is a JSON Web Token per [RFC 9068](https://www.rfc-editor.org/r
 | `org_id` | The [organization of the sign-in](#the-organization-of-a-sign-in), by its identifier. Left out when the request named none, and for client credentials |
 | `groups` | With the scope `groups`, the person's [effective groups](#the-groups-claim) when the token is issued. Left out without it, for a person in more than 100 groups, and for client credentials |
 | `principal_kind` | `service_account` or `agent`, for the token of a [client that acts as a workload](#clients-that-act-as-a-workload). Left out otherwise |
+| `act` | For a token made by [token exchange](#token-exchange): who acts for the subject, the newest actor outermost. Left out otherwise |
 
 `acr`, `amr` and `auth_time` are the authentication claims of [RFC 9068, section 2.2.1](https://www.rfc-editor.org/rfc/rfc9068#section-2.2.1): a resource server that guards an operation behind a strong sign-in reads them from the token. `sid` is in the [ID token](#the-id-token) only.
 
@@ -598,6 +602,41 @@ With `grant_type=client_credentials`, a confidential client gets an access token
 - **The access token** has the client's identifier as `sub` and `client_id`, and no `auth_time`. **No refresh token** is issued: the client can always authenticate again.
 - **A client bound to a principal** gets a token whose `sub` is the principal and which carries `principal_kind`, and only while the principal may act; otherwise the answer is `invalid_client` ([clients that act as a workload](#clients-that-act-as-a-workload)).
 
+### Token exchange
+
+Issue-95. With `grant_type=urn:ietf:params:oauth:grant-type:token-exchange`, an agent's client exchanges a token a person gave it for one it holds on the person's behalf ([RFC 8693](https://www.rfc-editor.org/rfc/rfc8693), [Decision 0034](../../decisions/0034-token-exchange.md)).
+
+| Parameter | |
+|---|---|
+| `subject_token` | Required: the person's access token, or one an earlier exchange made for a person |
+| `subject_token_type` | Required: `urn:ietf:params:oauth:token-type:access_token` |
+| `actor_token` | Required: an access token of the agent, issued to the client asking, with client credentials |
+| `actor_token_type` | Required with `actor_token`: `urn:ietf:params:oauth:token-type:access_token` |
+| `audience` or `resource` | Required, one of them, once: the audience of a resource server of the tenant the new token is for |
+| `scope` | Optional: the scopes asked for |
+| `requested_token_type` | Optional: only `urn:ietf:params:oauth:token-type:access_token` |
+
+The checks, in order:
+
+1. **The client** must be allowed the grant: a confidential client bound to an agent ([clients that act as a workload](#clients-that-act-as-a-workload)). Otherwise `unauthorized_client`; a client whose agent may not act is `invalid_client`, as for client credentials.
+2. **The request** must name the two tokens with their types, and one audience: otherwise `invalid_request`, or `invalid_target` without an audience. Another token type than an access token is `invalid_request`.
+3. **The actor token** must pass the checks of [UserInfo](#userinfo) up to `exp`, be [in force](#the-register-of-access-tokens), be issued to the client asking, name its agent in `sub` with `principal_kind` `agent`, and carry no `act`. Otherwise `invalid_request`.
+4. **The subject token** must pass the same checks, be in force, and be about a person: no `principal_kind`, a `sub` that is not a client, a person who may still sign in and, when the subject token's grant names an [organization](#the-organization-of-a-sign-in), still a member of it. Otherwise `invalid_request`.
+5. **The chain**: the subject token's `act`, read as far as the bound and no further, holds at most two actors, so that the new chain holds at most three. Otherwise `invalid_request`.
+6. **The policy**: one of the client's exchange rules pairs one of the subject token's audiences with the audience asked. Otherwise `invalid_target`, and so is an audience that is no resource server of the tenant.
+7. **The scopes** asked must each be held by the subject token, allowed to the client and defined by the audience's resource server; without `scope`, the token carries every scope that meets all three. A scope that is not, or none left, is `invalid_scope`. OpenID Connect's scopes are never exchanged.
+
+The new access token:
+
+- `sub` is the person, `client_id` the agent's client, `aud` the audience asked, `scope` the scopes above;
+- `act` is `{"sub": "<agent>", "principal_kind": "agent"}`, with the subject token's own `act` inside it as `act`: the newest actor outermost ([RFC 8693, section 4.1](https://www.rfc-editor.org/rfc/rfc8693#section-4.1));
+- `auth_time`, `acr` and `amr` are the subject token's, when it has them: they say how the person signed in;
+- `org_id` is the organization of the subject token's grant, when it names one; `groups` never appears, since the `groups` scope is one of OpenID Connect's and is not exchanged;
+- it lives the client's access token lifetime, or until the subject token expires if that comes first;
+- its record in the register names the subject token as its **parent**, the parent's grant and refresh token family, and the agent as its principal. It is in force only while all of them stand: revoking the person's token, ending their grant, deprovisioning them or disabling the agent stops it at once.
+
+The answer is as for any token, with `issued_token_type` `urn:ietf:params:oauth:token-type:access_token`, and never a refresh token or an ID token.
+
 ### The answer
 
 ```json
@@ -620,6 +659,7 @@ With `grant_type=client_credentials`, a confidential client gets an access token
 | Event type | When |
 |---|---|
 | `oauth.access_token_issued` | An access token was issued for a person. It carries the client, the grant, the user, the token's `jti` and when it expires, never the token |
+| `oauth.token_exchanged` | An agent exchanged a person's token. It carries the client, the person, every actor of the new token from the newest to the oldest, the audience, the new token's `jti` and when it expires. The agent is the actor of the record |
 | `oauth.client_access_token_issued` | An access token was issued with client credentials. It carries the client, the principal it acts as when it is bound to one, the token's `jti` and when it expires |
 | `oauth.refresh_token_family_started` | A family started with a code. It carries the family, the grant, the client, the user and whether it is for offline access |
 | `oauth.refresh_token_rotated` | A family moved to the generation it carries |
@@ -657,14 +697,15 @@ Issue-58 lets a client end a token before it expires, at the revocation endpoint
 
 An access token is a signed JSON Web Token that a resource server can check by itself, so Hodor cannot take one back from a resource server that never asks. What Hodor can do is keep, for every access token it issues, whether it is still **in force**. This is the deny-list of `jti` that [Decision 0004](../../decisions/0004-token-formats.md) names, kept the other way round: an access token is recorded when it is issued, and is in force only while its record says so.
 
-**The record** holds the token's `jti`, the client it was issued to, the grant it was issued under (none for [client credentials](#client-credentials)), the refresh token family it came from (none for a code or client credentials), the principal it was issued for (only for a [client that acts as a workload](#clients-that-act-as-a-workload)), when it expires, and whether and why it was revoked. The token itself is never stored.
+**The record** holds the token's `jti`, the client it was issued to, the grant it was issued under (none for [client credentials](#client-credentials)), the refresh token family it came from (none for a code or client credentials), the principal it was issued for (only for a [client that acts as a workload](#clients-that-act-as-a-workload) and for [token exchange](#token-exchange)), the token it was exchanged from (its parent, only for token exchange), when it expires, and whether and why it was revoked. The token itself is never stored.
 
 **An access token is in force** when:
 
 - its record exists and is not revoked;
 - the grant it was issued under, if any, is active;
 - the refresh token family it came from, if any, is active;
-- the principal it was issued for, if any, is a service account or an agent that may act, asked of `PersonStanding` each time.
+- the principal it was issued for, if any, is a service account or an agent that may act, asked of `PersonStanding` each time;
+- the token it was exchanged from, if any, is in force itself.
 
 A token without a record is not in force. That holds for a record removed with its client or grant, and for one removed after the token expired.
 
@@ -741,6 +782,7 @@ Any other token is answered as not active.
 | `iat` | Its `iat` | When this token was issued |
 | `token_type` | `Bearer` | `refresh_token` |
 | `principal_kind` | Its `principal_kind`, when it has one | Never |
+| `act` | Its `act`, when it has one | Never |
 
 ### Limits
 
@@ -765,7 +807,7 @@ Revoking a refresh token records `oauth.refresh_token_family_revoked` and `oauth
 
 ### Storage
 
-`oauth.access_token` holds `tenant_id`, `token_id` (the `jti`), `client_id`, `grant_id`, `family_id`, `principal_id`, `expires_at`, `revoked_at` and `revocation_reason`, with the tenant and the `jti` as primary key, and an index on the tenant and the principal for revoking a workload's tokens. It is a tenant table under row-level security. It references its client, its grant and its family with the tenant, so a record goes when they go, and the token with it.
+`oauth.access_token` holds `tenant_id`, `token_id` (the `jti`), `client_id`, `grant_id`, `family_id`, `principal_id`, `parent_token_id` (the token it was exchanged from, referenced with the tenant, so that a record goes with its parent), `expires_at`, `revoked_at` and `revocation_reason`, with the tenant and the `jti` as primary key, and an index on the tenant and the principal for revoking a workload's tokens. It is a tenant table under row-level security. It references its client, its grant and its family with the tenant, so a record goes when they go, and the token with it.
 
 ## OpenID Provider
 
@@ -894,7 +936,7 @@ It names only what is built:
 | `authorization_endpoint`, `token_endpoint`, `userinfo_endpoint`, `jwks_uri`, `revocation_endpoint`, `introspection_endpoint`, `end_session_endpoint` | The seven addresses under `{issuer}/oauth2`; the last is [logout](#logout-initiated-by-the-relying-party) |
 | `response_types_supported` | `code` |
 | `response_modes_supported` | `query` |
-| `grant_types_supported` | The grants the token endpoint answers: `authorization_code`, `refresh_token` and `client_credentials` |
+| `grant_types_supported` | The grants the token endpoint answers: `authorization_code`, `refresh_token`, `client_credentials` and `urn:ietf:params:oauth:grant-type:token-exchange` |
 | `code_challenge_methods_supported` | `S256` |
 | `token_endpoint_auth_methods_supported` | `client_secret_basic`, `client_secret_post`, `private_key_jwt`, `none` |
 | `token_endpoint_auth_signing_alg_values_supported` | `ES256`, `RS256`, `PS256` |

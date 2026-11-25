@@ -7,8 +7,8 @@ use hodor_kernel::{DomainError, Timestamp, UnitOfWork, UserId};
 use hodor_oauth::api::{
     Application, ApplicationId, ApplicationSettings, ApplicationSnapshot, ApplicationStore,
     Audience, AuthenticationMethod, Client, ClientId, ClientKey, ClientSecret, ClientSecretHash,
-    ClientSecretId, ClientSettings, ClientSnapshot, ClientStore, ClientType, GrantType,
-    IdTokenAlgorithm, ResourceServer, ResourceServerId, ResourceServerSettings,
+    ClientSecretId, ClientSettings, ClientSnapshot, ClientStore, ClientType, ExchangeRule,
+    GrantType, IdTokenAlgorithm, ResourceServer, ResourceServerId, ResourceServerSettings,
     ResourceServerSnapshot, ResourceServerStore, ScopeDefinition, Status, TokenPolicy,
 };
 use sqlx::PgConnection;
@@ -172,6 +172,43 @@ impl ApplicationStore for PgApplicationStore {
     }
 }
 
+/// A client's exchange rules as they are stored.
+fn exchange_rules_of(settings: &ClientSettings) -> serde_json::Value {
+    serde_json::Value::Array(
+        settings
+            .exchange_rules
+            .iter()
+            .map(|rule| {
+                serde_json::json!({
+                    "subject_audience": rule.subject_audience,
+                    "audience": rule.audience,
+                })
+            })
+            .collect(),
+    )
+}
+
+fn exchange_rules_from(stored: &serde_json::Value) -> Result<Vec<ExchangeRule>, DomainError> {
+    let invalid = || corrupted("exchange rules");
+    stored
+        .as_array()
+        .ok_or_else(invalid)?
+        .iter()
+        .map(|rule| {
+            let text = |name: &str| {
+                rule.get(name)
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+                    .ok_or_else(invalid)
+            };
+            Ok(ExchangeRule {
+                subject_audience: text("subject_audience")?,
+                audience: text("audience")?,
+            })
+        })
+        .collect()
+}
+
 /// [`ClientStore`] on `oauth.client`, `oauth.client_secret` and
 /// `oauth.client_key`.
 #[derive(Debug, Clone, Copy, Default)]
@@ -180,7 +217,8 @@ pub struct PgClientStore;
 const CLIENT_COLUMNS: &str = "id, application_id, name, client_type, authentication_method, \
      grant_types, redirect_uris, post_logout_redirect_uris, allowed_scopes, require_pkce, \
      id_token_algorithm, access_token_seconds, id_token_seconds, refresh_token_seconds, \
-     refresh_idle_seconds, consent_seconds, status, created_at, updated_at, version, principal_id";
+     refresh_idle_seconds, consent_seconds, status, created_at, updated_at, version, principal_id, \
+     exchange_rules";
 
 async fn load_client(
     connection: &mut PgConnection,
@@ -269,6 +307,10 @@ async fn load_client(
                 .try_get::<Option<Uuid>, _>("principal_id")
                 .map_err(get)?
                 .map(UserId::from_uuid),
+            exchange_rules: exchange_rules_from(
+                &row.try_get::<serde_json::Value, _>("exchange_rules")
+                    .map_err(get)?,
+            )?,
         },
         secrets,
         keys,
@@ -345,10 +387,10 @@ impl ClientStore for PgClientStore {
                   grant_types, redirect_uris, post_logout_redirect_uris, allowed_scopes,
                   require_pkce, access_token_seconds, id_token_seconds, refresh_token_seconds,
                   refresh_idle_seconds, consent_seconds, status, created_at, updated_at,
-                  id_token_algorithm, principal_id,
+                  id_token_algorithm, principal_id, exchange_rules,
                   version)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-                     $17, $18, $19, $20, $21, 0)",
+                     $17, $18, $19, $20, $21, $22, 0)",
         )
         .bind(tenant)
         .bind(state.id.as_uuid())
@@ -371,6 +413,7 @@ impl ClientStore for PgClientStore {
         .bind(state.updated_at)
         .bind(settings.id_token_algorithm.as_str())
         .bind(settings.principal.map(|principal| principal.as_uuid()))
+        .bind(exchange_rules_of(settings))
         .execute(&mut *connection)
         .await;
         match inserted {
@@ -400,7 +443,8 @@ impl ClientStore for PgClientStore {
                  access_token_seconds = $10, id_token_seconds = $11,
                  refresh_token_seconds = $12, refresh_idle_seconds = $13,
                  consent_seconds = $14, status = $15, updated_at = $16,
-                 id_token_algorithm = $18, principal_id = $19, version = version + 1
+                 id_token_algorithm = $18, principal_id = $19, exchange_rules = $20,
+                 version = version + 1
              WHERE tenant_id = $1 AND id = $2 AND version = $17",
         )
         .bind(tenant)
@@ -422,6 +466,7 @@ impl ClientStore for PgClientStore {
         .bind(version_of(state.version)?)
         .bind(settings.id_token_algorithm.as_str())
         .bind(settings.principal.map(|principal| principal.as_uuid()))
+        .bind(exchange_rules_of(settings))
         .execute(&mut *connection)
         .await
         .map_err(get)?;

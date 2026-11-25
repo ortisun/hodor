@@ -85,8 +85,9 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   (`token` required, a parameter twice or more than one way of proving who
   the client is `invalid_request`, no client named `invalid_client`),
   `TokenTypeHint` (an unknown hint is ignored), `AccessTokenRecord` (with
-  `issued` and `for_principal`), the answers `inactive`, `active_access_token`
-  (with `principal_kind` when the token has it) and
+  `issued`, `for_principal` and `exchanged_from`), the answers `inactive`,
+  `active_access_token` (with `principal_kind` and `act` when the token has
+  them) and
   `active_refresh_token` (`ActiveRefreshToken`), and `REVOKED_BY_CLIENT`.
   Its cases are at the bottom of the file.
 - `refresh.rs`: refresh tokens. `RefreshFamily` (`start` from a redeemed
@@ -125,6 +126,15 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   `consent/tests.rs`.
 - `event.rs`: `OauthEvent`, twenty-five variants, each named `oauth.*`.
 - `text.rs`: the rules of names and of scopes (`is_scope`).
+- `exchange.rs`: token exchange. `MAX_ACTORS` (3), `chain_length` (counts
+  `act` links as far as one past the bound), `actors` (the `sub` of each,
+  newest first), `act_claim(agent, previous)` and `exchanged_scopes`
+  (asked, or every scope held by the subject token, allowed to the client
+  and defined by the audience; `invalid_scope` otherwise). Its cases are at
+  the bottom of the file. `token.rs` reads the grant in `token_exchange`
+  (`ACCESS_TOKEN_TYPE` for both tokens and for `requested_token_type`, one
+  audience from `audience` or `resource`), and `TokenSubject` carries `act`
+  and an `amr` written as given.
 
 ## Invariants
 
@@ -134,7 +144,10 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   PKCE; a confidential client never uses `none`; `client_credentials` is
   for confidential clients; `refresh_token` comes with
   `authorization_code`, which comes with at least one redirect address; a
-  client with a `principal` has `client_credentials` and no other grant.
+  client with a `principal` has `client_credentials` and may have
+  `TokenExchange` besides, and no other grant; `TokenExchange`
+  (`TOKEN_EXCHANGE_GRANT`) needs a principal and 1 to `MAX_EXCHANGE_RULES`
+  `ExchangeRule`s, which only it has (`oauth.client_exchange_rules_invalid`).
 - A rotation keeps only the newest previous working secret, until the
   overlap ends; every other secret is dropped, so at most two work.
 - Leaving a secret method drops the secrets, and leaving `private_key_jwt`

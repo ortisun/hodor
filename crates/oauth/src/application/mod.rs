@@ -2,6 +2,7 @@
 
 pub(crate) mod authorization;
 pub(crate) mod consent;
+pub(crate) mod exchange;
 pub(crate) mod introspection;
 pub(crate) mod logout;
 pub(crate) mod ports;

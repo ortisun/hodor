@@ -275,7 +275,7 @@ The binaries resolve a subject's attributes through the identity and OAuth conte
 | A user | `status` (`active`, `suspended`, …), `kind` (`human`, `service_account` or `agent`), `groups`, the identifiers of every group the user is in, directly or through other groups, and `organizations`, the identifiers of the organizations the user is a member of |
 | A client | `application` (its application's identifier), `client_type` (`confidential` or `public`) and `enabled`; and `principal`, the identifier of the service account or agent it acts as, only when it is [bound to one](oauth.md#clients-that-act-as-a-workload) |
 
-A [service account or an agent](identity.md#service-accounts-and-agents) is a user. The token of a client that acts as one names it in `sub`, so an application that asks about the token's subject asks about the workload, with the subject kind `user`, and the roles assigned to the workload decide.
+A token made by [token exchange](oauth.md#token-exchange) names the person in `sub` and the agent in `act`: an application that asks about the token's subject asks about the person, and may pass the agent as an asserted attribute when its policy cares. A [service account or an agent](identity.md#service-accounts-and-agents) is a user. The token of a client that acts as one names it in `sub`, so an application that asks about the token's subject asks about the workload, with the subject kind `user`, and the roles assigned to the workload decide.
 
 A subject Hodor does not know, including an identifier that is not one of its own, has no attributes, as for any engine. The attributes are given to the engine and never written back to the caller.
 
