@@ -241,7 +241,7 @@ async function makePerson(browser) {
   cli(
     "user", "claims", "--tenant", TENANT, "--user", PERSON,
     "--given-name", "Ada", "--middle-name", "Augusta", "--family-name", "Conformance",
-    "--nickname", "Ada", "--gender", "female", "--birthdate", "1815-12-10",
+    "--nickname", "Ada", "--gender", "female", "--birthdate", "1990-12-10",
     "--zoneinfo", "Europe/London", "--profile", "https://ada.example.com/profile",
     "--picture", "https://ada.example.com/picture.png", "--website", "https://ada.example.com",
     "--phone-number", "+44 20 7946 0000", "--phone-number-verified", "true",
