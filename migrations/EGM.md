@@ -82,6 +82,8 @@ Tables created, by file:
 | `0084_oauth_identity_binds_one_service_account.sql` | drops the unique indexes `client_spiffe_id_unique` and `client_linkerd_identity_unique` of `oauth.client` and creates the plain partial indexes `client_spiffe_id_bound` and `client_linkerd_identity_bound` on the tenant and the identity: an identity may bind several clients of the tenant acting as one principal, which the client store checks under a transaction-scoped advisory lock (Decision 0058) |
 | `0094_keys_certificate_authority.sql` | `keys.certificate_authority`: the certificate authority of a tenant, one per tenant (primary key `tenant_id`), `root` or `intermediate`, `awaiting_certificate` (an intermediate only) or `active`; 1 to 10 trust domains, a root's lifetime exactly for a root, the key's provider, material and P-256 point, a request exactly for an intermediate, and the certificate with its serial number, validity, SHA-256 and activation time exactly when active; a chain of at most 5 for an intermediate only. Adds `authority` to `trust_domain_source_known` of `keys.trust_domain` |
 | `0096_oauth_client_request_object_algorithm.sql` | `oauth.client.request_object_signing_alg`: how a client signs its request objects, `ES256`, `RS256`, `PS256` or `none` by the check constraint `client_request_object_signing_alg_known`, or null (none chosen, the value of every client made before it) |
+| `0110_keys_intermediates.sql` | `keys.intermediate`: the intermediates a tenant's certificate authority signs, primary key `(tenant_id, id)`, `authority_id` kept without a foreign key so that removing the authority keeps them; a serial number unique per tenant (`intermediate_serial_number_unique`), the subject as text, at most 20 names, 1 to 20 permitted and at most 20 excluded DNS names, the certificate, and the SHA-256 of the certificate, of its subject public key info and of its request; `active` or `withdrawn`, with `withdrawn_at` and a reason of 1 to 200 characters exactly when withdrawn (`intermediate_withdrawn_exactly`). Indexes on the key's hash and on `(authority_id, id)`. `hodor_app` may not delete a row |
+| `0111_authorization_certificate_signer.sql` | Adds `certificate_signer` to the built-in roles `role_assignment_built_in` allows in `"authorization".role_assignment` |
 
 No migration creates a type, an extension or seed rows; enumerations are text
 columns with `CHECK ... IN (...)` constraints.
@@ -116,7 +118,8 @@ columns with `CHECK ... IN (...)` constraints.
   `identity_provider_secret_is_sealed`. Every access token expires
   (constraint `access_token_expires` in `0014_credential_access_token.sql`).
 - In `"authorization".role_assignment`, the namespace `hodor:admin` holds
-  only `tenant_administrator` and `tenant_auditor`, given to users for the
+  only `tenant_administrator`, `tenant_auditor` and `certificate_signer`
+  (since `0111`), given to users for the
   whole tenant without a start or end (constraint `role_assignment_built_in`);
   any other assignment names a role of `"authorization".role` through the
   generated column `role_namespace` (constraint `role_assignment_role_exists`,

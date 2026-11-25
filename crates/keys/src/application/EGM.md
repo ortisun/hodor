@@ -106,7 +106,10 @@ across tenants, the longest waiting first.
 
 - `TrustDomainPorts { units_of_work, store, destinations: Arc<dyn
   DestinationCheck>, http: Arc<dyn HttpClient>, digest: Arc<dyn Digest>,
-  clock }`; `TrustDomainService::new(ports)`.
+  clock }`; `TrustDomainService::new(ports)`;
+  `with_intermediates(store)`, from which `withdrawn_keys(tenant)` reads the
+  keys of the tenant's withdrawn intermediates that have not expired (none
+  without it).
 - `TrustSourceRequest { Uploaded { bundle }, BundleEndpoint { url }, Mesh }`
   with `from_parts(source, bundle, url)`
   (`keys.trust_domain_source_invalid`).
@@ -138,7 +141,8 @@ across tenants, the longest waiting first.
 ### The certificate authority (`authority.rs`)
 
 - `AuthorityPorts { units_of_work, store: Arc<dyn AuthorityStore>,
-  trust_domains: Arc<dyn TrustDomainStore>, maker: Arc<dyn KeyProvider>,
+  trust_domains: Arc<dyn TrustDomainStore>, intermediates: Arc<dyn
+  IntermediateStore>, maker: Arc<dyn KeyProvider>,
   signer: Arc<dyn KeyProvider>, certificates: Arc<dyn CertificateWriter>,
   digest, clock }`; `AuthorityService::new(ports, for_development)`,
   `for_development()`. `maker` makes the authority's key
@@ -153,6 +157,10 @@ across tenants, the longest waiting first.
 | `install(tenant, certificate, chain, caller)` | Reads the PEM certificate and chain, then under `lock` installs it (`CertificateAuthority::install`), updates it, records `keys.authority_activated` and adds its trust domains. |
 | `remove(tenant, caller)` | Under `lock`, removes the trust domains of its names that still have the source `authority`, then the authority; records `keys.trust_domain_removed` for each and `keys.authority_removed`. |
 | `bundle(tenant)` | The bundle of the tenant's active authority, or `None`. |
+| `sign(tenant, request, lifetime_days, caller) -> Intermediate` | `keys.authority_not_found`, `keys.authority_not_active`; reads the request with `CertificateWriter::read_request`, checks it (`check_request`: authority, path length, names, constraints, key), refuses a key ever withdrawn (`keys.intermediate_key_withdrawn`), computes the validity (`keys.intermediate_lifetime_invalid`), writes the part to be signed with `intermediate_to_be_signed` and has the authority's key sign it in DER outside any transaction; then, under `lock` of the authority, checks it is still the same and active and the key still not withdrawn, inserts the intermediate and records `keys.authority_signed` (`intermediate_certificate`, with `intermediate_id` and `request_sha256`). |
+| `intermediates(tenant, page) -> (Page<SignedIntermediate>, chain)` | Those of the tenant's authority, newest first; `request.cursor_invalid`. |
+| `intermediate(tenant, id) -> Intermediate` | `keys.intermediate_not_found` for one of another authority or none. |
+| `withdraw(tenant, id, reason, caller) -> (Vec<SignedIntermediate>, chain)` | Under `lock` of the authority, withdraws it and every other intermediate of the tenant of the same key not yet withdrawn, updates each and records `keys.intermediate_withdrawn` for each; `keys.intermediate_reason_invalid`, `keys.intermediate_withdrawn`. |
 
 - `TrustDomainService::replace` refuses a trust domain of source
   `authority` with `keys.trust_domain_of_authority` before anything is

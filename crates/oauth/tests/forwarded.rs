@@ -86,6 +86,7 @@ impl CertificateCheck for FakeCertificates {
         certificate: &[u8],
         _chain: &[Vec<u8>],
         authorities: &[&str],
+        _withdrawn: &[String],
         _now: Timestamp,
     ) -> bool {
         let Some(read) = certificate

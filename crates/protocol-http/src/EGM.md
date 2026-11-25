@@ -81,10 +81,13 @@ route, since only the command line holds the key that signs bundles),
 `admin/trust_domains.rs`, `/trust-domains` and
 `/trust-domains/{trust_domain_id}`, under `keys:read` and `keys:write`; a
 bundle is taken and answered as JSON),
-`authority: Option<AuthorityService>` (`hodor_keys`; the four operations of
-`admin/certificate_authority.rs`, `/certificate-authority` and
-`/certificate-authority:install`, under `certificate-authority:read` and
-`certificate-authority:write`, merged into the routes only when it is
+`authority: Option<AuthorityService>` (`hodor_keys`; the eight operations of
+`admin/certificate_authority.rs`, `/certificate-authority`,
+`/certificate-authority:install`, `/certificate-authority/intermediates`
+and `/certificate-authority/intermediates/{intermediate_id}` with its
+`:withdraw` action in the last segment, under `certificate-authority:read`,
+`certificate-authority:write` and `certificate-authority:sign` (signing
+alone), merged into the routes only when it is
 `Some`; when `None`, `GET /openapi.json` answers the document without those
 operations and their schemas, and `/me` lists neither permission),
 `webhooks: Option<WebhookService>` (`hodor_webhooks`; endpoints,

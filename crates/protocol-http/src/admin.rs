@@ -189,6 +189,26 @@ pub const ADMIN_OPERATIONS: &[(&str, &str, Permission)] = &[
         "/certificate-authority",
         Permission::CertificateAuthorityWrite,
     ),
+    (
+        "POST",
+        "/certificate-authority/intermediates",
+        Permission::CertificateAuthoritySign,
+    ),
+    (
+        "GET",
+        "/certificate-authority/intermediates",
+        Permission::CertificateAuthorityRead,
+    ),
+    (
+        "GET",
+        "/certificate-authority/intermediates/{intermediate_id}",
+        Permission::CertificateAuthorityRead,
+    ),
+    (
+        "POST",
+        "/certificate-authority/intermediates/{intermediate_id}:withdraw",
+        Permission::CertificateAuthorityWrite,
+    ),
     ("GET", "/applications", Permission::ApplicationsRead),
     ("POST", "/applications", Permission::ApplicationsWrite),
     (
@@ -1055,6 +1075,9 @@ fn document_without_authority() -> &'static str {
                 "CertificateAuthority",
                 "NewCertificateAuthority",
                 "CertificateAuthorityCertificate",
+                "Intermediate",
+                "NewIntermediate",
+                "IntermediateWithdrawal",
             ] {
                 schemas.remove(schema);
             }

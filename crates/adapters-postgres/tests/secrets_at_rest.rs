@@ -439,6 +439,11 @@ const NOT_SEALED_SECRETS: &[(&str, &str, &str)] = &[
         "a certificate, published in the authority's bundle",
     ),
     (
+        "keys.intermediate",
+        "certificate",
+        "an intermediate's certificate, handed to its mesh, which publishes it",
+    ),
+    (
         "credential.webauthn_credential",
         "credential_id",
         "the identifier the authenticator made",

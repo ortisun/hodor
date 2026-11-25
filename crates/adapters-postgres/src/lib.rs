@@ -18,6 +18,7 @@ mod decision_log;
 mod federation;
 mod group;
 mod identity;
+mod intermediates;
 mod invitation;
 mod key_rotation;
 mod keys;
@@ -67,6 +68,7 @@ pub use decision_log::{
 pub use federation::{PgLinkStore, PgPendingAuthorizationStore, PgProviderStore};
 pub use group::{PgGroupPolicy, PgGroupRepository};
 pub use identity::{PgUserRepository, PgWorkloadRepository};
+pub use intermediates::PgIntermediateStore;
 pub use invitation::PgInvitationRepository;
 pub use key_rotation::{KeyRotationJob, RotationPass};
 pub use keys::{PgKeyStore, PgSealingStateStore};

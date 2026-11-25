@@ -2,21 +2,25 @@
 //! console interfaces manage it. Routed only when the installation turns
 //! the authority on.
 //!
-//! Specified in `docs/api/admin-api.md`, "The certificate authority".
+//! Specified in `docs/api/admin-api.md`, "The certificate authority" and
+//! "Intermediates".
 
-use super::{Shared, authorize, body, failed, respond, written};
+use super::{
+    PageBody, Shared, authorize, body, failed, page_request, parameter, problem, respond, written,
+};
 use crate::tenant::TenantSlug;
 use axum::Router;
 use axum::body::Bytes;
-use axum::extract::State;
+use axum::extract::{RawPathParams, RawQuery, State};
 use axum::http::StatusCode;
 use axum::http::header::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Extension, Json};
-use hodor_kernel::{DomainError, TenantContext};
+use hodor_kernel::{DomainError, Page, TenantContext};
 use hodor_keys::api::{
-    AuthorityId, AuthorityService, CertificateAuthority, NameConstraints, NewAuthority, to_pem,
+    AuthorityId, AuthorityService, CertificateAuthority, IntermediateConstraints, IntermediateId,
+    NameConstraints, NewAuthority, SignedIntermediate, to_pem,
 };
 use serde::{Deserialize, Serialize};
 
@@ -29,6 +33,16 @@ pub(super) fn routes() -> Router<Shared> {
                 .delete(remove_authority),
         )
         .route("/certificate-authority:install", post(install_certificate))
+        .route(
+            "/certificate-authority/intermediates",
+            get(list_intermediates).post(sign_intermediate),
+        )
+        // `POST …/{intermediate_id}:withdraw` arrives here too: the action
+        // is part of the last segment.
+        .route(
+            "/certificate-authority/intermediates/{intermediate}",
+            get(read_intermediate).post(withdraw_intermediate),
+        )
 }
 
 /// The address of a tenant's published bundle.
@@ -145,6 +159,67 @@ struct InstallBody {
     chain: Vec<String>,
 }
 
+#[derive(Serialize)]
+struct IntermediateBody {
+    id: IntermediateId,
+    authority_id: AuthorityId,
+    state: &'static str,
+    serial_number: String,
+    subject: String,
+    uris: Vec<String>,
+    dns_names: Vec<String>,
+    name_constraints: IntermediateConstraints,
+    not_before: String,
+    not_after: String,
+    certificate: String,
+    chain: Vec<String>,
+    certificate_sha256: String,
+    public_key_sha256: String,
+    request_sha256: String,
+    signed_at: String,
+    withdrawn_at: Option<String>,
+    withdrawal_reason: Option<String>,
+}
+
+impl IntermediateBody {
+    fn of(intermediate: &SignedIntermediate, chain: &[Vec<u8>]) -> Self {
+        let state = intermediate.snapshot();
+        Self {
+            id: state.id,
+            authority_id: state.authority_id,
+            state: state.state.as_str(),
+            serial_number: state.serial_number.clone(),
+            subject: state.subject.clone(),
+            uris: state.uris.clone(),
+            dns_names: state.dns_names.clone(),
+            name_constraints: state.constraints.clone(),
+            not_before: written(state.not_before),
+            not_after: written(state.not_after),
+            certificate: to_pem("CERTIFICATE", &state.certificate),
+            chain: chain.iter().map(|der| to_pem("CERTIFICATE", der)).collect(),
+            certificate_sha256: state.certificate_sha256.clone(),
+            public_key_sha256: state.public_key_sha256.clone(),
+            request_sha256: state.request_sha256.clone(),
+            signed_at: written(state.signed_at),
+            withdrawn_at: state.withdrawn_at.map(written),
+            withdrawal_reason: state.withdrawal_reason.clone(),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SignBody {
+    certificate_signing_request: String,
+    lifetime_days: Option<u32>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WithdrawBody {
+    reason: String,
+}
+
 /// The authority's use cases: there are always some where these routes
 /// are mounted.
 fn service(state: &Shared) -> Result<&AuthorityService, Box<Response>> {
@@ -256,6 +331,153 @@ async fn remove_authority(
                 .await
                 .map_err(failed)?;
             Ok(StatusCode::NO_CONTENT.into_response())
+        }
+        .await,
+    )
+}
+
+fn intermediate_not_found() -> Box<Response> {
+    failed(DomainError::not_found(
+        "keys.intermediate_not_found",
+        "the certificate authority signed no such intermediate",
+    ))
+}
+
+async fn sign_intermediate(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+    bytes: Bytes,
+) -> Response {
+    respond(
+        async {
+            let caller = authorize(
+                &state,
+                &tenant,
+                &headers,
+                "POST",
+                "/certificate-authority/intermediates",
+            )
+            .await?;
+            let asked: SignBody = body(&bytes)?;
+            let signed = service(&state)?
+                .sign(
+                    &tenant,
+                    &asked.certificate_signing_request,
+                    asked.lifetime_days,
+                    caller,
+                )
+                .await
+                .map_err(failed)?;
+            Ok((
+                StatusCode::CREATED,
+                Json(IntermediateBody::of(&signed.intermediate, &signed.chain)),
+            )
+                .into_response())
+        }
+        .await,
+    )
+}
+
+async fn list_intermediates(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+    RawQuery(query): RawQuery,
+) -> Response {
+    respond(
+        async {
+            authorize(
+                &state,
+                &tenant,
+                &headers,
+                "GET",
+                "/certificate-authority/intermediates",
+            )
+            .await?;
+            let page = page_request(query.as_deref())?;
+            let (found, chain) = service(&state)?
+                .intermediates(&tenant, &page)
+                .await
+                .map_err(failed)?;
+            let page = Page {
+                items: found
+                    .items
+                    .iter()
+                    .map(|intermediate| IntermediateBody::of(intermediate, &chain))
+                    .collect(),
+                next_cursor: found.next_cursor,
+            };
+            Ok(Json(PageBody::from(page)).into_response())
+        }
+        .await,
+    )
+}
+
+async fn read_intermediate(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+    parameters: RawPathParams,
+) -> Response {
+    respond(
+        async {
+            authorize(
+                &state,
+                &tenant,
+                &headers,
+                "GET",
+                "/certificate-authority/intermediates/{intermediate_id}",
+            )
+            .await?;
+            let id: IntermediateId =
+                parameter(&parameters, "intermediate").ok_or_else(intermediate_not_found)?;
+            let found = service(&state)?
+                .intermediate(&tenant, id)
+                .await
+                .map_err(failed)?;
+            Ok(Json(IntermediateBody::of(&found.intermediate, &found.chain)).into_response())
+        }
+        .await,
+    )
+}
+
+/// `POST /certificate-authority/intermediates/{intermediate_id}:withdraw`.
+/// The action is part of the last segment of the path.
+async fn withdraw_intermediate(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+    parameters: RawPathParams,
+    bytes: Bytes,
+) -> Response {
+    respond(
+        async {
+            let caller = authorize(
+                &state,
+                &tenant,
+                &headers,
+                "POST",
+                "/certificate-authority/intermediates/{intermediate_id}:withdraw",
+            )
+            .await?;
+            let segment: String =
+                parameter(&parameters, "intermediate").ok_or_else(intermediate_not_found)?;
+            let Some(id) = segment.strip_suffix(":withdraw") else {
+                return Err(problem(
+                    StatusCode::NOT_FOUND,
+                    "route.not_found",
+                    "there is no such action on an intermediate",
+                ));
+            };
+            let id: IntermediateId = id.parse().map_err(|_| intermediate_not_found())?;
+            let asked: WithdrawBody = body(&bytes)?;
+            let (withdrawn, chain) = service(&state)?
+                .withdraw(&tenant, id, &asked.reason, caller)
+                .await
+                .map_err(failed)?;
+            let first = withdrawn.first().ok_or_else(intermediate_not_found)?;
+            Ok(Json(IntermediateBody::of(first, &chain)).into_response())
         }
         .await,
     )

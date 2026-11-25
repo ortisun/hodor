@@ -42,6 +42,14 @@ surface through `pub mod api`.
     `MAX_INTERMEDIATE_LIFETIME_DAYS` (365), `MAX_CHAIN_LENGTH` (5),
     `PATH_LENGTH` (1), `EXCLUDED_IP_RANGES`, `BUNDLE_REFRESH_HINT_SECONDS`
     (300), `BACKDATING` (1 minute).
+  - The intermediates it signs: `Intermediate` (an intermediate with the
+    chain above it), the port `IntermediateStore`; `SignedIntermediate`,
+    `IntermediateSnapshot`, `IntermediateId`, `IntermediateState`,
+    `IntermediateConstraints`, `RequestFacts`, `RequestKey`,
+    `RequestedConstraints`, `intermediate_request_invalid`, and the bounds
+    `MAX_REQUEST_BYTES` (16 kibibytes), `MAX_INTERMEDIATE_NAMES` (20),
+    `MAX_CONSTRAINED_NAMES` (20), `MAX_SUBJECT_LENGTH` (1000),
+    `MIN_RSA_BITS` (3072), `MAX_RSA_BITS` (8192).
   - Service: `KeyService`, `RotationReport`, `Signature`.
   - Secrets at rest: `TenantSecretBox`, `SEALED_FORMAT` (2), `LOST_RACE`.
   - Event: `KeyEvent`.
@@ -69,6 +77,14 @@ surface through `pub mod api`.
     unchanged within its tenant only, an update that needs the version it
     read (`keys.authority_changed`), a removal that reaches its tenant
     only.
+  - `InMemoryIntermediates`: an `IntermediateStore` in memory;
+    `sample_intermediate(authority, key, signed_at)`; and
+    `run_intermediate_contract(units_of_work, store)`, the contract of
+    intermediate stores: read back unchanged within its tenant only, listed
+    for one authority newest first a page at a time, found by the hash of
+    their key, withdrawn once from a reading (`keys.intermediate_changed`),
+    and a withdrawn key listed until its intermediate expires, in its
+    tenant only.
   - `InMemoryTrustDomains`: a `TrustDomainStore` and `DueRefreshes` in
     memory; its `update` checks and increments the version.
   - `FakeBundleEndpoints`: an `HttpClient` and `DestinationCheck` whose

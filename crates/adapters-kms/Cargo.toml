@@ -17,7 +17,7 @@ tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-hodor-adapters-crypto.workspace = true
+hodor-adapters-crypto = { workspace = true, features = ["testing"] }
 hodor-adapters-http.workspace = true
 hodor-kernel = { workspace = true, features = ["testing"] }
 hodor-keys = { workspace = true, features = ["testing"] }

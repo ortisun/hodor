@@ -15,7 +15,13 @@ const WEB: &str = "spiffe://cluster.local/ns/shop/sa/web";
 fn chains(certificate: &[u8], chain: &[Vec<u8>], elements: &[Value]) -> bool {
     let written: Vec<String> = elements.iter().map(Value::to_string).collect();
     let authorities: Vec<&str> = written.iter().map(String::as_str).collect();
-    X509CertificateCheck.chains_to(certificate, chain, &authorities, OffsetDateTime::now_utc())
+    X509CertificateCheck.chains_to(
+        certificate,
+        chain,
+        &authorities,
+        &[],
+        OffsetDateTime::now_utc(),
+    )
 }
 
 #[test]
@@ -135,7 +141,13 @@ fn an_element_that_is_not_an_authority_holding_its_key_trusts_nothing() {
     );
     for unreadable in ["", "{}", "not json", r#"{"x5c":["!!"]}"#, r#"{"x5c":[]}"#] {
         assert!(
-            !X509CertificateCheck.chains_to(&leaf, &[], &[unreadable], OffsetDateTime::now_utc()),
+            !X509CertificateCheck.chains_to(
+                &leaf,
+                &[],
+                &[unreadable],
+                &[],
+                OffsetDateTime::now_utc()
+            ),
             "{unreadable}"
         );
     }
@@ -161,6 +173,7 @@ fn a_certificate_out_of_its_time_does_not_chain() {
             &leaf,
             &[],
             &[&element],
+            &[],
             OffsetDateTime::now_utc() + Duration::days(365 * 3000),
         ),
         "checked at the time given"

@@ -34,6 +34,8 @@ time.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+base64.workspace = true
+hodor-adapters-crypto = { workspace = true, features = ["testing"] }
 hodor-adapters-postgres = { workspace = true, features = ["testing"] }
 hodor-authorization = { workspace = true, features = ["testing"] }
 hodor-authorization-opa = { workspace = true, features = ["testing"] }

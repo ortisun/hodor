@@ -12,7 +12,9 @@ use hodor_keys::api::{
     KeyProvider, NewAuthority, SignatureEncoding, TrustDomainPorts, TrustDomainService,
     TrustSource, TrustSourceRequest, to_pem,
 };
-use hodor_keys::testing::{FakeBundleEndpoints, InMemoryAuthorities, InMemoryTrustDomains};
+use hodor_keys::testing::{
+    FakeBundleEndpoints, InMemoryAuthorities, InMemoryIntermediates, InMemoryTrustDomains,
+};
 use rcgen::{
     BasicConstraints, CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose,
     GeneralSubtree, IsCa, KeyPair, KeyUsagePurpose, NameConstraints, RemoteKeyPair, SanType,
@@ -44,6 +46,7 @@ fn world(for_development: bool) -> World {
             units_of_work: Arc::new(units_of_work.clone()),
             store: Arc::new(InMemoryAuthorities::default()),
             trust_domains: Arc::new(store.clone()),
+            intermediates: Arc::new(InMemoryIntermediates::default()),
             maker: provider.clone(),
             signer: provider.clone(),
             certificates: Arc::new(X509Certificates),
@@ -392,6 +395,7 @@ async fn a_certificate_below_it_for_a_name_outside_its_trust_domains_fails_verif
                 certificate,
                 &intermediates,
                 std::slice::from_ref(&anchor),
+                &[],
                 now
             )
             .ok(),
@@ -417,6 +421,7 @@ async fn a_certificate_below_it_for_a_name_outside_its_trust_domains_fails_verif
             certificate,
             &intermediates,
             std::slice::from_ref(&anchor),
+            &[],
             now,
         )
         .expect_err("refused by Hodor's chain checking");
@@ -440,6 +445,7 @@ async fn a_certificate_below_it_for_a_name_outside_its_trust_domains_fails_verif
                 certificate,
                 &intermediates,
                 &[element],
+                &[],
                 now
             ));
         }
@@ -448,6 +454,7 @@ async fn a_certificate_below_it_for_a_name_outside_its_trust_domains_fails_verif
                 certificate,
                 &intermediates,
                 &[element],
+                &[],
                 now
             ));
         }
@@ -456,10 +463,10 @@ async fn a_certificate_below_it_for_a_name_outside_its_trust_domains_fails_verif
     // Directly below the root, the same holds.
     let (params, key) = leaf(vec![uri("spiffe://edge.example.com/x")]);
     let (direct, _) = signed_by_authority(&world, &authority, params, &key).await;
-    assert!(check_path(&direct, &[], std::slice::from_ref(&anchor), now).is_ok());
+    assert!(check_path(&direct, &[], std::slice::from_ref(&anchor), &[], now).is_ok());
     let (params, key) = leaf(vec![uri("spiffe://elsewhere.example/x")]);
     let (direct, _) = signed_by_authority(&world, &authority, params, &key).await;
-    assert!(check_path(&direct, &[], std::slice::from_ref(&anchor), now).is_err());
+    assert!(check_path(&direct, &[], std::slice::from_ref(&anchor), &[], now).is_err());
 
     // `rustls-webpki` given the anchor as it is refuses even a URI within
     // the trust domains: why Hodor reads the URI constraints itself.
@@ -666,7 +673,7 @@ async fn an_intermediate_asks_for_its_certificate_and_takes_only_one_that_fits()
     let (params, key) = leaf(vec![uri("spiffe://prod.example.com/x")]);
     let (below, _) = signed_by_authority(&world, &installed, params, &key).await;
     let anchor = installed.certificate().expect("certificate").der.clone();
-    assert!(check_path(&below, &[], &[anchor], SystemClock.now()).is_ok());
+    assert!(check_path(&below, &[], &[anchor], &[], SystemClock.now()).is_ok());
 }
 
 /// The name constraints a request asks for, as the content of the

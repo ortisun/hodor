@@ -962,3 +962,172 @@ async fn a_workload_certificate_under_the_tenants_authority_proves_a_client_with
             .await,
     );
 }
+
+/// A request to the administration interface with another bearer than the
+/// administrator's.
+async fn admin_as(
+    world: &World,
+    bearer: &str,
+    method: Method,
+    path: &str,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
+    let url = format!("{}/t/acme/api/v1/admin{path}", world.server.base);
+    let mut request = Client::new().request(method, url).bearer_auth(bearer);
+    if let Some(body) = body {
+        request = request.json(&body);
+    }
+    let response = request.send().await.expect("response");
+    let status = response.status();
+    (status, response.json().await.unwrap_or(Value::Null))
+}
+
+fn der_of(pem: &str) -> Vec<u8> {
+    let body: String = pem
+        .lines()
+        .filter(|line| !line.starts_with("-----"))
+        .collect();
+    STANDARD.decode(body).expect("base64")
+}
+
+#[tokio::test]
+async fn a_workload_under_a_signed_intermediate_is_accepted_and_refused_from_the_request_after_its_withdrawal()
+ {
+    use hodor_adapters_crypto::testing::certificates::{MeshIntermediate, MeshRequest};
+    const PROD_WEB: &str = "spiffe://prod.example.com/ns/shop/sa/web";
+    let world = behind_proxy_with_an_authority().await;
+    world
+        .admin(
+            Method::POST,
+            "/certificate-authority",
+            Some(json!({ "kind": "root", "trust_domains": ["prod.example.com"] })),
+        )
+        .await;
+
+    // The workload that signs: a service account holding only
+    // `certificate_signer`, with a key of the one scope
+    // `certificate-authority:sign`.
+    let signer = world.service_account().await;
+    AuthorizationService::new(
+        Arc::new(world.database.app().clone()),
+        Arc::new(PgRoleAssignmentStore),
+        Arc::new(SystemClock),
+    )
+    .assign(
+        &world.tenant,
+        signer.parse().expect("an identifier"),
+        Role::CertificateSigner,
+        Caller::system(),
+    )
+    .await
+    .expect("role");
+    let made = world
+        .admin(
+            Method::POST,
+            &format!("/service-accounts/{signer}/api-keys"),
+            Some(
+                json!({ "name": "cert-manager issuer", "scopes": ["certificate-authority:sign"] }),
+            ),
+        )
+        .await;
+    let key = made["api_key"].as_str().expect("the key").to_owned();
+    let (status, _) = admin_as(
+        &world,
+        &key,
+        Method::POST,
+        "/service-accounts/x/api-keys",
+        Some(json!({ "name": "more", "scopes": ["users:read"] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // It signs a mesh's intermediate, and does nothing else.
+    let mesh = MeshIntermediate::new(&MeshRequest::authority("istio-ca"));
+    let (status, signed) = admin_as(
+        &world,
+        &key,
+        Method::POST,
+        "/certificate-authority/intermediates",
+        Some(json!({ "certificate_signing_request": mesh.request(), "lifetime_days": 2 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{signed}");
+    for (method, path) in [
+        (Method::GET, "/certificate-authority/intermediates"),
+        (Method::GET, "/certificate-authority"),
+        (Method::DELETE, "/certificate-authority"),
+        (Method::GET, "/users"),
+    ] {
+        let (status, _) = admin_as(&world, &key, method.clone(), path, None).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{method} {path}");
+    }
+    let id = signed["id"].as_str().expect("id").to_owned();
+    let (status, _) = admin_as(
+        &world,
+        &key,
+        Method::POST,
+        &format!("/certificate-authority/intermediates/{id}:withdraw"),
+        Some(json!({ "reason": "not its to do" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // A workload of the mesh, under the intermediate, gets a token.
+    let intermediate = der_of(signed["certificate"].as_str().expect("PEM"));
+    let client = world
+        .client("spiffe_x509", json!({ "spiffe_id": PROD_WEB }))
+        .await;
+    let workload = mesh.issue(&Leaf::uri(PROD_WEB));
+    let headers = vec![
+        ("client-cert", byte_sequence(&workload)),
+        ("client-cert-chain", byte_sequence(&intermediate)),
+    ];
+    issued(&world.token(&client, &headers).await);
+    issued(&world.token(&client, &headers).await);
+
+    // Another mesh's intermediate, of another key, stays trusted.
+    let other = MeshIntermediate::new(&MeshRequest::authority("linkerd-issuer"));
+    let (_, other_signed) = admin_as(
+        &world,
+        &key,
+        Method::POST,
+        "/certificate-authority/intermediates",
+        Some(json!({ "certificate_signing_request": other.request() })),
+    )
+    .await;
+    let other_headers = vec![
+        (
+            "client-cert",
+            byte_sequence(&other.issue(&Leaf::uri(PROD_WEB))),
+        ),
+        (
+            "client-cert-chain",
+            byte_sequence(&der_of(other_signed["certificate"].as_str().expect("PEM"))),
+        ),
+    ];
+    issued(&world.token(&client, &other_headers).await);
+
+    // Withdrawn: the very next request is refused.
+    let withdrawn = world
+        .admin(
+            Method::POST,
+            &format!("/certificate-authority/intermediates/{id}:withdraw"),
+            Some(json!({ "reason": "the cluster's key leaked" })),
+        )
+        .await;
+    assert_eq!(withdrawn["state"], "withdrawn");
+    refused(&world.token(&client, &headers).await);
+    issued(&world.token(&client, &other_headers).await);
+
+    // The key is never signed again.
+    let (status, again) = admin_as(
+        &world,
+        &key,
+        Method::POST,
+        "/certificate-authority/intermediates",
+        Some(json!({ "certificate_signing_request": mesh.request() })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(again["code"], "keys.intermediate_key_withdrawn");
+}

@@ -108,6 +108,38 @@ through `crate::api`.
 - `to_pem(label, der)`, `hexadecimal(bytes)`.
 - `trust_domain.rs` gains `TrustSource::Authority` (`authority`) and
   `CheckedSource::Authority(TrustBundle)`.
+- `CertificateAuthority::chain_above()`: its certificate, then the chain
+  above it.
+
+### `intermediate.rs`
+
+- `IntermediateId`; `RequestFacts` (what `CertificateWriter::read_request`
+  reads: the request, its subject and subject public key info in DER, its
+  `RequestKey` (`P256(point)`, `P384`, `Rsa(bits)`, `Other(name)`), what
+  its basic constraints say, its URIs, DNS names and names of other kinds,
+  its subject alternative names' value, its `RequestedConstraints`).
+- `check_request(request, authority) -> IntermediateConstraints`, in order:
+  `keys.intermediate_not_an_authority`,
+  `keys.intermediate_path_length_invalid` (above zero),
+  `keys.intermediate_name_outside_trust_domains` (a URI whose host is not a
+  trust domain, a DNS name not one nor under one, another kind, more than
+  20), `keys.intermediate_constraints_widened` (a permitted DNS name outside,
+  more than 20, addresses or another kind permitted),
+  `keys.intermediate_constraints_unsupported` (URI subtrees, excluded
+  subtrees of another kind, more than 20 excluded),
+  `keys.intermediate_key_unsuitable` (not P-256, P-384 or RSA of 3072 to
+  8192 bits, or the authority's own key); each with the reason as detail.
+  Without a narrowing the permitted DNS names are the authority's trust
+  domains; every address is excluded.
+- `validity(lifetime_days, authority, now)`: the bound unless given, 1 to
+  the bound, ending no later than the authority
+  (`keys.intermediate_lifetime_invalid`); from `now - BACKDATING`.
+- `check_active` (`keys.authority_not_active`), `trust_domains_signed_for`,
+  `check_reason` (`keys.intermediate_reason_invalid`: 1 to 200 printable
+  characters).
+- `SignedIntermediate` over `IntermediateSnapshot`; `IntermediateState {
+  Active, Withdrawn }`; `withdraw(reason, now)`
+  (`keys.intermediate_withdrawn` when it is already).
 
 ### `event.rs`
 
@@ -135,8 +167,9 @@ through `crate::api`.
 | Variant | Fields | `event_type()` |
 | --- | --- | --- |
 | `Created` | `authority_id`, `kind`, `trust_domains`, `key_id`, `provider`, `for_development` | `keys.authority_created` |
-| `Signed` | `authority_id`, `signed` (`certificate` or `certificate_signing_request`), `signed_sha256`, `serial_number` for a certificate, `trust_domains` | `keys.authority_signed` |
+| `Signed` | `authority_id`, `signed` (`certificate`, `certificate_signing_request` or `intermediate_certificate`), `signed_sha256`, `serial_number` for a certificate, `trust_domains`, and for an intermediate `intermediate_id` and `request_sha256` | `keys.authority_signed` |
 | `Activated` | `authority_id`, `serial_number`, `certificate_sha256`, `not_after` (RFC 3339) | `keys.authority_activated` |
+| `IntermediateWithdrawn` | `authority_id`, `intermediate_id`, `serial_number`, `public_key_sha256`, `reason` | `keys.intermediate_withdrawn` |
 | `Removed` | `authority_id`, `key_id` | `keys.authority_removed` |
 
 `BundleSummary` is `bundle_sha256`, `sequence`, `x509_authorities` and
