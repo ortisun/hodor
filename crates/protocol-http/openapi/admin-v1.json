@@ -11833,6 +11833,8 @@
           "id_token_signed_response_alg",
           "backchannel_logout_uri",
           "backchannel_logout_session_required",
+          "subject_type",
+          "sector_identifier_uri",
           "token_policy",
           "secrets",
           "keys",
@@ -11923,6 +11925,22 @@
           "backchannel_logout_session_required": {
             "type": "boolean",
             "description": "Whether the client needs `sid` in its logout tokens; `true` only with `backchannel_logout_uri`. Hodor puts `sid` in every logout token."
+          },
+          "subject_type": {
+            "type": "string",
+            "enum": [
+              "public",
+              "pairwise"
+            ],
+            "description": "How the client knows a person: `public`, by the user identifier, or `pairwise`, by an identifier of its sector alone, in its ID tokens, access tokens, UserInfo, introspection and logout tokens. `pairwise` only for a client with `authorization_code`."
+          },
+          "sector_identifier_uri": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 2000,
+            "description": "For a pairwise client only: an HTTPS address of at most 2000 characters, fetched when it is set, that must answer a JSON array holding every redirect address of the client. Its host is the client's sector. Refused if it leads to a private network."
           },
           "token_policy": {
             "$ref": "#/components/schemas/TokenPolicy"
@@ -12107,6 +12125,20 @@
             "description": "Whether the client needs `sid` in its logout tokens; `true` only with `backchannel_logout_uri`. Hodor puts `sid` in every logout token.",
             "default": false
           },
+          "subject_type": {
+            "type": "string",
+            "enum": [
+              "public",
+              "pairwise"
+            ],
+            "description": "How the client knows a person: `public`, by the user identifier, or `pairwise`, by an identifier of its sector alone, in its ID tokens, access tokens, UserInfo, introspection and logout tokens. `pairwise` only for a client with `authorization_code`.",
+            "default": "public"
+          },
+          "sector_identifier_uri": {
+            "type": "string",
+            "maxLength": 2000,
+            "description": "For a pairwise client only: an HTTPS address of at most 2000 characters, fetched when it is set, that must answer a JSON array holding every redirect address of the client. Its host is the client's sector. Refused if it leads to a private network."
+          },
           "token_policy": {
             "$ref": "#/components/schemas/TokenPolicyInput"
           },
@@ -12200,6 +12232,22 @@
           "backchannel_logout_session_required": {
             "type": "boolean",
             "description": "Whether the client needs `sid` in its logout tokens; `true` only with `backchannel_logout_uri`. Hodor puts `sid` in every logout token."
+          },
+          "subject_type": {
+            "type": "string",
+            "enum": [
+              "public",
+              "pairwise"
+            ],
+            "description": "How the client knows a person: `public`, by the user identifier, or `pairwise`, by an identifier of its sector alone, in its ID tokens, access tokens, UserInfo, introspection and logout tokens. `pairwise` only for a client with `authorization_code`."
+          },
+          "sector_identifier_uri": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 2000,
+            "description": "For a pairwise client only: an HTTPS address of at most 2000 characters, fetched when it is set, that must answer a JSON array holding every redirect address of the client. Its host is the client's sector. Refused if it leads to a private network. `null` removes it."
           },
           "token_policy": {
             "$ref": "#/components/schemas/TokenPolicyInput"

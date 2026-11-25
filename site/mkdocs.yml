@@ -232,6 +232,7 @@ nav:
       - decisions/0036-codes-and-links-by-email.md
       - decisions/0037-back-channel-logout.md
       - decisions/0039-enrolling-during-a-sign-in.md
+      - decisions/0040-pairwise-subjects.md
   - Contributing:
       - development/conventions.md
       - development/documentation-site.md

@@ -248,7 +248,7 @@ Invariants: a transaction only advances through its current step; it expires in 
 
 ### `oauth`
 
-Specified in [the OAuth context](contexts/oauth.md). Pairwise subjects are not built for 0.2.0.
+Specified in [the OAuth context](contexts/oauth.md). A client's subject type and sector decide how it knows a person ([pairwise subject identifiers](contexts/oauth.md#pairwise-subject-identifiers)).
 
 ```mermaid
 classDiagram
