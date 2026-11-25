@@ -163,7 +163,7 @@ impl WorkloadAccess for CommandLineAccess {
     }
 }
 
-fn identity(database: &Database) -> IdentityService {
+pub(crate) fn identity(database: &Database) -> IdentityService {
     IdentityService::new(
         Arc::new(database.clone()),
         Arc::new(PgUserRepository),

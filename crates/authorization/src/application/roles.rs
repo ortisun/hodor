@@ -10,7 +10,7 @@ use crate::domain::native::{
     AssignmentScope, PermissionDefinition, PermissionName, RoleAssignment, RoleContents,
     RoleDefinition, RoleGraph, RoleKey,
 };
-use crate::domain::request::{Namespace, Subject};
+use crate::domain::request::{ApplicationReference, Namespace, OrganizationReference, Subject};
 use hodor_kernel::{
     Caller, Clock, DomainError, EventEnvelope, EventMetadata, TenantContext, Timestamp, UnitOfWork,
     UnitOfWorkFactory,
@@ -435,6 +435,46 @@ impl RoleService {
         )?;
         uow.commit().await?;
         Ok(true)
+    }
+
+    /// Of the assignments of `principals`, those in force now that give a
+    /// role on the resource server `namespace`, its own or one that
+    /// includes one of its own, and apply to requests made for
+    /// `application`: for the whole tenant, for that application, or for
+    /// one of `organizations`, the organizations the principals are
+    /// members of. Which permissions the role holds is not looked at.
+    ///
+    /// # Errors
+    ///
+    /// Storage errors.
+    pub async fn assignments_on(
+        &self,
+        tenant: &TenantContext,
+        principals: &[Subject],
+        namespace: &Namespace,
+        application: &ApplicationReference,
+        organizations: &[OrganizationReference],
+    ) -> Result<Vec<RoleAssignment>, DomainError> {
+        let mut uow = self.units_of_work.begin(tenant).await?;
+        let graph = RoleGraph::new(self.store.roles(uow.as_mut()).await?);
+        let now = self.clock.now();
+        let mut held = Vec::new();
+        for principal in principals {
+            for assignment in self.store.assignments_of(uow.as_mut(), principal).await? {
+                let applies = match assignment.scope() {
+                    AssignmentScope::Tenant => true,
+                    AssignmentScope::Application(scoped) => scoped == application,
+                    AssignmentScope::Organization(scoped) => organizations.contains(scoped),
+                };
+                if applies
+                    && assignment.in_force_at(now)
+                    && graph.reaches(assignment.role(), namespace)
+                {
+                    held.push(assignment);
+                }
+            }
+        }
+        Ok(held)
     }
 
     /// A principal's assignments of roles the tenant defined.

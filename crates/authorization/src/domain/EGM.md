@@ -119,6 +119,8 @@ reach other crates through `hodor_authorization::api`.
   `authorization.condition_without_permission`. `RoleDefinition` (`new`,
   `replaced`, `restore`, `built_in(Role)`).
 - `RoleGraph`: `new`, `built_in`, `get`, `roles`, `including`,
+  `reaches(key, namespace)` (the role or one it includes, as far as
+  inclusion goes, is of `namespace`),
   `check(candidate, declared)`, `permissions_held(start)`, and
   `holdings(start)`: each `Holding { namespace, permission, condition }`,
   the condition being the one of the role that holds the permission.

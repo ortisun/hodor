@@ -313,7 +313,7 @@ fn written(moment: time::OffsetDateTime) -> String {
     moment.format(&Rfc3339).unwrap_or_default()
 }
 
-fn application_id(value: &str) -> Result<ApplicationId, DomainError> {
+pub(crate) fn application_id(value: &str) -> Result<ApplicationId, DomainError> {
     value.parse().map_err(|_| {
         DomainError::not_found(
             "oauth.application_not_found",
@@ -329,7 +329,7 @@ fn client_id(value: &str) -> Result<ClientId, DomainError> {
 }
 
 /// The tenant a command names, and the use cases to run it with.
-async fn open(
+pub(crate) async fn open(
     database: &Database,
     slug: &str,
 ) -> Result<(TenantContext, ApplicationService), DomainError> {

@@ -6,6 +6,7 @@ mod applications;
 mod authority;
 mod decisions;
 mod memberships;
+mod mesh;
 mod policies;
 mod roles;
 mod trust_domains;
@@ -297,6 +298,21 @@ enum Command {
         database_url: Option<String>,
         #[command(subcommand)]
         command: applications::ResourceServerCommand,
+    },
+
+    /// Write the policies of a service mesh from Hodor's roles, for the
+    /// operator to apply.
+    Mesh {
+        /// Connection URL of the application role.
+        #[arg(
+            long,
+            env = "HODOR_DATABASE_URL",
+            hide_env_values = true,
+            global = true
+        )]
+        database_url: Option<String>,
+        #[command(subcommand)]
+        command: mesh::MeshCommand,
     },
 
     /// Manage a tenant's webhook endpoints and their deliveries.
@@ -2250,6 +2266,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         } => {
             let database = connect(database_url).await?;
             print(applications::run_resource_server(&database, command).await)?;
+        }
+        Command::Mesh {
+            database_url,
+            command,
+        } => {
+            let database = connect(database_url).await?;
+            print(mesh::run(&database, command).await)?;
         }
         Command::Webhook {
             database_url,
