@@ -44,7 +44,9 @@ address.
     `text.emailMeACode` or `text.emailMeALink` asks
     `client.askByEmail(method, identifier, text.locale)` (nothing typed shows
     `text.typeAddressFirst` and sends nothing; the passkey offer is stopped
-    first, and a `transaction_modified_concurrently` is asked once more);
+    first, and the request is sent once: asking keeps nothing in the
+    sign-in, so the server never refuses it for the passkey request, and a
+    second request would send a second message);
     then, while the step stays `identifier`, a code form
     (`text.emailCodeLabel`, `autocomplete="one-time-code"`) that calls
     `client.submitEmailCode`, or the notice `text.emailLinkSent`, each with a

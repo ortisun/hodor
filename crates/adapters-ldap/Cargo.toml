@@ -10,13 +10,14 @@ license.workspace = true
 
 [features]
 # A directory in a container, with people in it, for tests.
-testing = ["dep:testcontainers", "dep:tokio"]
+testing = ["dep:hodor-test-containers", "dep:testcontainers", "dep:tokio"]
 
 [dependencies]
 async-trait.workspace = true
 hodor-federation.workspace = true
 hodor-kernel.workspace = true
 ldap3 = { workspace = true }
+hodor-test-containers = { workspace = true, optional = true }
 testcontainers = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 

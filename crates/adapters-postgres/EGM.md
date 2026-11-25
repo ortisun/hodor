@@ -19,7 +19,8 @@ repository's top-level `migrations/` folder at compile time
   SQL.
 - Feature `testing` (`Cargo.toml`): enables `pub mod testing`
   (`TestDatabase`, `schema_violations`) and the optional dependencies
-  `testcontainers`, `testcontainers-modules` and `tokio`.
+  `hodor-test-containers`, `testcontainers`, `testcontainers-modules` and
+  `tokio`.
 
 ### Workspace dependencies
 
@@ -35,6 +36,8 @@ From `[dependencies]` in `Cargo.toml`:
   `TenantContext` and `DomainError` types).
 - Third party: `async-trait`, `serde_json`, `sqlx`, `time`, and, behind
   `testing`, `testcontainers`, `testcontainers-modules`, `tokio`.
+- Behind `testing` only: `hodor-test-containers`, which starts the
+  container (`tests/containers/EGM.md`).
 
 Development only (`[dev-dependencies]`): `hodor-adapters-crypto`, which the
 `Cargo.toml` comment says is used by the full sign-in test to run the real
@@ -63,6 +66,7 @@ crates and of this crate itself.
 - Requires a running Docker daemon. All fourteen integration test files in
   `tests/` use `TestDatabase`, which starts a PostgreSQL container
   (`testcontainers_modules::postgres::Postgres`, tag `17-alpine`) through
-  `testcontainers` (`src/testing.rs`). The crate depends on itself
+  `hodor-test-containers` (`src/testing.rs`), with its port published on
+  `127.0.0.1` alone. The crate depends on itself
   with `features = ["testing"]` in `[dev-dependencies]`, so the feature is on
   for tests without extra flags.

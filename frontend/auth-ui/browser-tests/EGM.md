@@ -183,6 +183,12 @@ watched page and the steps a person repeats.
   `step-up.spec.ts`, `email-sign-in.spec.ts` and `enrollment.spec.ts` also
   need `docker compose` on the machine that runs the
   tests, to run `hodor-cli` in the stack.
+- A test reads the messages to an address by their number, `mailTo(address,
+  n)` reading the `n`-th oldest. Registering sends one message, and so does
+  each request for a code or a link, which the server never refuses after
+  sending it (`docs/architecture/contexts/authentication.md`, "Signing in
+  with a code or a link by email"): in `email-sign-in.spec.ts` the second
+  message holds the first code or link, and the third the next one.
 - Tests run one at a time (`workers: 1`, `fullyParallel: false`), because
   the server limits attempts by the address requests come from and every test
   comes from the same one (comment in `../playwright.config.ts`).

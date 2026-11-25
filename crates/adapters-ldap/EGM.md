@@ -16,12 +16,12 @@ It implements the federation context port `hodor_federation::api::DirectoryClien
 From `Cargo.toml`:
 
 - Hodor crates: `hodor-kernel`, `hodor-federation`.
-- Runtime: `async-trait`, `ldap3`, and the optional `testcontainers` and `tokio`.
+- Runtime: `async-trait`, `ldap3`, and the optional `hodor-test-containers`, `testcontainers` and `tokio`.
 - Development only: this crate itself with the `testing` feature, and `tokio`.
 
 ## Features
 
-- `testing = ["dep:testcontainers", "dep:tokio"]`: compiles the public `testing` module, which runs a directory in a container with people in it, for tests (`Cargo.toml` `[features]`; `#[cfg(feature = "testing")]` in `src/lib.rs`).
+- `testing = ["dep:hodor-test-containers", "dep:testcontainers", "dep:tokio"]`: compiles the public `testing` module, which runs a directory in a container with people in it, for tests (`Cargo.toml` `[features]`; `#[cfg(feature = "testing")]` in `src/lib.rs`).
 
 ## Verification
 

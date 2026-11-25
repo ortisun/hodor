@@ -6,7 +6,6 @@ use hodor_observability::{Config, LogFormat, Telemetry};
 use opentelemetry::KeyValue;
 use std::time::Duration;
 use testcontainers::core::IntoContainerPort as _;
-use testcontainers::runners::AsyncRunner as _;
 use testcontainers::{GenericImage, ImageExt as _};
 
 const VICTORIA_METRICS_PORT: u16 = 8428;
@@ -25,18 +24,18 @@ async fn wait_until_healthy(client: &reqwest::Client, base: &str) {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn metrics_are_exported_to_victoria_metrics() {
-    let container = GenericImage::new("victoriametrics/victoria-metrics", "v1.156.0")
-        .with_exposed_port(VICTORIA_METRICS_PORT.tcp())
-        // Make freshly ingested samples visible to queries at once.
-        .with_cmd(["-search.latencyOffset=0s"])
-        .start()
-        .await
-        .expect("VictoriaMetrics container should start; is Docker running?");
-    let host = container.get_host().await.expect("container host");
-    let port = container
-        .get_host_port_ipv4(VICTORIA_METRICS_PORT)
-        .await
-        .expect("container port");
+    let container = hodor_test_containers::start(
+        "VictoriaMetrics",
+        || {
+            GenericImage::new("victoriametrics/victoria-metrics", "v1.156.0")
+                // Make freshly ingested samples visible to queries at once.
+                .with_cmd(["-search.latencyOffset=0s"])
+        },
+        &[VICTORIA_METRICS_PORT.tcp()],
+    )
+    .await;
+    let host = hodor_test_containers::HOST;
+    let port = container.port(VICTORIA_METRICS_PORT);
     let base = format!("http://{host}:{port}");
     let client = reqwest::Client::new();
     wait_until_healthy(&client, &base).await;

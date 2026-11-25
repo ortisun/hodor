@@ -36,6 +36,8 @@ hodor-provisioning = { path = "crates/provisioning" }
 hodor-saml = { path = "crates/saml" }
 hodor-session = { path = "crates/session" }
 hodor-tenant = { path = "crates/tenant" }
+# Only for tests: how they start containers and reach them.
+hodor-test-containers = { path = "tests/containers" }
 hodor-webhooks = { path = "crates/webhooks" }
 
 argon2 = "0.6"

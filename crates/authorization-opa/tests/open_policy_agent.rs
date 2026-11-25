@@ -30,7 +30,6 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use testcontainers::core::{IntoContainerPort as _, WaitFor};
-use testcontainers::runners::AsyncRunner as _;
 use testcontainers::{ContainerAsync, GenericImage, ImageExt as _};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch;
@@ -145,7 +144,9 @@ impl Gate {
                     continue;
                 }
                 tokio::spawn(async move {
-                    let Ok(mut instance) = TcpStream::connect(("127.0.0.1", port)).await else {
+                    let Ok(mut instance) =
+                        TcpStream::connect((hodor_test_containers::HOST, port)).await
+                    else {
                         return;
                     };
                     tokio::select! {
@@ -194,26 +195,31 @@ async fn start(tenant: &TenantContext) -> Instance {
     let mut documents = policies(tenant);
     let broken_at = documents.find("\npackage ").expect("two packages");
     let broken = documents.split_off(broken_at);
-    let container = GenericImage::new(name, tag)
-        .with_exposed_port(8181.tcp())
-        .with_wait_for(WaitFor::message_on_either_std("Initializing server"))
-        .with_copy_to("/policies/authz.rego", AUTHORIZATION.as_bytes().to_vec())
-        .with_copy_to("/policies/documents.rego", documents.into_bytes())
-        .with_copy_to("/policies/broken.rego", broken.into_bytes())
-        .with_copy_to("/policies/slow.rego", slow_policy(tenant).into_bytes())
-        .with_cmd([
-            "run",
-            "--server",
-            "--addr=0.0.0.0:8181",
-            "--authentication=token",
-            "--authorization=basic",
-            "--log-level=info",
-            "/policies",
-        ])
-        .start()
-        .await
-        .expect("Open Policy Agent starts; is Docker running?");
-    let port = container.get_host_port_ipv4(8181).await.expect("port");
+    let started = hodor_test_containers::start(
+        "Open Policy Agent",
+        || {
+            GenericImage::new(name, tag)
+                .with_exposed_port(8181.tcp())
+                .with_wait_for(WaitFor::message_on_either_std("Initializing server"))
+                .with_copy_to("/policies/authz.rego", AUTHORIZATION.as_bytes().to_vec())
+                .with_copy_to("/policies/documents.rego", documents.clone().into_bytes())
+                .with_copy_to("/policies/broken.rego", broken.clone().into_bytes())
+                .with_copy_to("/policies/slow.rego", slow_policy(tenant).into_bytes())
+                .with_cmd([
+                    "run",
+                    "--server",
+                    "--addr=0.0.0.0:8181",
+                    "--authentication=token",
+                    "--authorization=basic",
+                    "--log-level=info",
+                    "/policies",
+                ])
+        },
+        &[8181.tcp()],
+    )
+    .await;
+    let port = started.port(8181);
+    let container = started.into_container();
     let (gate, own) = Gate::to(port).await;
     let origin = format!("http://127.0.0.1:{own}");
     answering(&origin).await;

@@ -150,7 +150,7 @@ A tenant may let people sign in with [a code or a link sent to their address](..
 { "email": "ana@example.com", "locale": "pt-BR" }
 ```
 
-`locale` is optional: the language of the message when the person has none of their own. The answer is `202` with `{ "status": "accepted" }`, the same whether the address has an account, has one that may not sign in, or is not an address at all. Asking again replaces what was sent before.
+`locale` is optional: the language of the message when the person has none of their own. The answer is `202` with `{ "status": "accepted" }`, the same whether the address has an account, has one that may not sign in, or is not an address at all. Asking again replaces what was sent before. Asking keeps nothing in the sign-in, so it is not refused because another request of the same sign-in, such as the page's request for the passkey challenge, changed it at the same moment: one request sends one message.
 
 **A code.** The page asks for the code and sends it to `POST /interaction/sign-in/steps/email_code`. The answer has [the shape of every sign-in response](#what-a-sign-in-response-looks-like): `completed`, or `pending` with the next step when the person has a second factor, or `rejected`, which leaves the code good for another try.
 

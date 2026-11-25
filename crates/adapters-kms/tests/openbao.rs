@@ -18,7 +18,6 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use std::time::Duration;
 use testcontainers::core::{IntoContainerPort as _, WaitFor};
-use testcontainers::runners::AsyncRunner as _;
 use testcontainers::{ContainerAsync, GenericImage, ImageExt as _};
 
 /// Pinned, like every image a test starts.
@@ -49,20 +48,22 @@ impl OpenBao {
         if tls {
             command.extend(["-dev-tls", "-dev-tls-cert-dir=/openbao/logs"]);
         }
-        let container = GenericImage::new(name, tag)
-            .with_exposed_port(8200.tcp())
-            .with_wait_for(WaitFor::message_on_either_std(
-                "Development mode should NOT be used",
-            ))
-            .with_env_var("BAO_DEV_ROOT_TOKEN_ID", ROOT)
-            .with_cmd(command)
-            .start()
-            .await
-            .expect("OpenBao starts; is Docker running?");
-        let port = container
-            .get_host_port_ipv4(8200.tcp())
-            .await
-            .expect("port");
+        let container = hodor_test_containers::start(
+            "OpenBao",
+            || {
+                GenericImage::new(name, tag)
+                    .with_exposed_port(8200.tcp())
+                    .with_wait_for(WaitFor::message_on_either_std(
+                        "Development mode should NOT be used",
+                    ))
+                    .with_env_var("BAO_DEV_ROOT_TOKEN_ID", ROOT)
+                    .with_cmd(command.clone())
+            },
+            &[8200.tcp()],
+        )
+        .await;
+        let port = container.port(8200);
+        let container = container.into_container();
         let mut administrator = reqwest::Client::builder().no_proxy();
         let scheme = if tls {
             let authority = container
