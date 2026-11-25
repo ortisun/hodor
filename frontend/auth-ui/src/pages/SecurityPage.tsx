@@ -13,7 +13,7 @@ import { QrCode } from "../parts/QrCode";
 import { Action, Submit } from "../parts/Submit";
 import { PageLink, Ways, Words } from "../parts/Words";
 import { askToCreate, webAuthnAvailable } from "../webauthn";
-import { asFailure, type PageProps } from "./shared";
+import { asFailure, grouped, type PageProps } from "./shared";
 
 interface SecurityPageProps extends PageProps {
   /** Sends the person to sign in again and come back here. */
@@ -28,11 +28,6 @@ type View =
   | { kind: "removing"; what: "application" | Key }
   | { kind: "generating" }
   | { kind: "renaming"; key: Key };
-
-/** The key of an authenticator application in groups of four, as people type it. */
-function grouped(secret: string): string {
-  return secret.replace(/(.{4})/g, "$1 ").trim();
-}
 
 /** Whether changes are allowed now, by the time the server gave. */
 function recent(factors: Factors): boolean {

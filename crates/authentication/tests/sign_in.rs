@@ -334,7 +334,7 @@ async fn signing_in_starts_a_session_that_the_session_context_recognizes() {
     );
     let done = world.password(id, PASSWORD).await.expect("password");
 
-    let SignIn::Completed { session, token } = done else {
+    let SignIn::Completed { session, token, .. } = done else {
         panic!("expected completion: {done:?}");
     };
     let state = session.snapshot();

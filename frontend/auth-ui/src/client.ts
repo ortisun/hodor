@@ -36,7 +36,17 @@ export interface SignInAnswer {
    * tenant, and nothing else.
    */
   continueTo?: string;
+  /**
+   * The recovery codes made with a second factor the person just set up
+   * during the sign-in, shown once before the page goes on.
+   */
+  recoveryCodes?: string[];
 }
+
+/** What a person may set up at the enrollment step of a sign-in. */
+export type EnrollmentKind = "authenticator_application" | "security_key" | "passkey";
+
+const ENROLLMENT_KINDS: readonly EnrollmentKind[] = ["authenticator_application", "security_key", "passkey"];
 
 /** An identity provider as the sign-in page shows it. */
 export interface OfferedProvider {
@@ -224,6 +234,10 @@ export class Client {
     if (status === "completed" && next !== null && this.#isOwnAuthorization(next)) {
       answer.continueTo = next;
     }
+    const codes = codesOf(reply.body);
+    if (codes !== null && codes.length > 0) {
+      answer.recoveryCodes = codes;
+    }
     return answer;
   }
 
@@ -393,6 +407,54 @@ export class Client {
   /** Sends the token of the link that came by email, within this browser's sign-in. */
   async submitEmailLink(token: string): Promise<SignInAnswer> {
     return this.#signIn(await this.#send("POST", "/sign-in/steps/email_link", { token }));
+  }
+
+  /** What can be set up at the enrollment step of a sign-in here, in the order to offer it. */
+  async enrollmentKinds(): Promise<EnrollmentKind[]> {
+    const reply = await this.#send("GET", "/sign-in/steps/enrollment/kinds");
+    const listed = reply.body["kinds"];
+    return Array.isArray(listed)
+      ? ENROLLMENT_KINDS.filter((kind) => listed.includes(kind))
+      : [];
+  }
+
+  /** Begins setting up an authenticator application at the enrollment step. The secret is given once. */
+  async beginApplicationEnrollment(): Promise<Enrollment> {
+    const reply = await this.#send("POST", "/sign-in/steps/enrollment/options", { kind: "authenticator_application" });
+    const secret = text(reply.body["secret"]);
+    const uri = text(reply.body["uri"]);
+    if (secret === null || uri === null) {
+      throw new Failure(null, reply.status);
+    }
+    return { secret, uri };
+  }
+
+  /** Begins registering a security key, or a passkey, at the enrollment step: the options for the browser. */
+  async beginKeyEnrollment(passkey: boolean): Promise<Record<string, unknown>> {
+    const reply = await this.#send("POST", "/sign-in/steps/enrollment/options", {
+      kind: passkey ? "passkey" : "security_key",
+    });
+    const options = reply.body["public_key"];
+    if (typeof options !== "object" || options === null) {
+      throw new Failure(null, reply.status);
+    }
+    return options as Record<string, unknown>;
+  }
+
+  /** Finishes setting up the application with a code it shows. */
+  async finishApplicationEnrollment(code: string): Promise<SignInAnswer> {
+    return this.#signIn(await this.#send("POST", "/sign-in/steps/enrollment", { code }));
+  }
+
+  /** Finishes registering the key with what the browser answered. */
+  async finishKeyEnrollment(registration: KeyRegistration, name: string): Promise<SignInAnswer> {
+    const named = name.trim();
+    return this.#signIn(
+      await this.#send("POST", "/sign-in/steps/enrollment", {
+        ...registration,
+        ...(named === "" ? {} : { name: named }),
+      }),
+    );
   }
 
   /** Sends one of the person's recovery codes, in place of their security key or the code of their application. */

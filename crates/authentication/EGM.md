@@ -25,12 +25,14 @@ contexts, which this crate calls through their services. The specification is
   `authentication.failed`, `authentication.locked_out`,
   `authentication.registration_completed`,
   `authentication.recovery_requested`, `authentication.password_reset`,
-  `authentication.email_sign_in_sent`).
+  `authentication.email_sign_in_sent`, `authentication.second_factor_enrolled`).
 - Extension point: the `Authenticator` trait, with the built-in
   `IdentifierAuthenticator`, `PasswordAuthenticator`, `TotpAuthenticator`,
   `RecoveryCodeAuthenticator`, a substitute of the second factor step, and
   the alternatives `PasskeyAuthenticator` and `EmailAuthenticator` (a code
-  or a link by email).
+  or a link by email), and `EnrollmentAuthenticator`, the last step, which
+  sets up a second factor during a sign-in for a person whose tenant
+  requires one and who has none.
 
 ### Workspace dependencies (`Cargo.toml`)
 

@@ -1,6 +1,7 @@
 //! The engine that interprets flows.
 
 use crate::domain::authenticator::{Authenticator, ExternalInput, Factor, StepInput, StepOutcome};
+use crate::domain::enrollment::Enrolled;
 use crate::domain::flow::{AuthFlow, Condition, FlowStep, Requirement};
 use crate::domain::transaction::{AuthTransaction, TransactionStatus};
 use hodor_kernel::{DomainError, TenantContext, Timestamp};
@@ -26,6 +27,17 @@ pub enum Progress {
     },
     /// The step was rejected once too often. The transaction has failed.
     Failed,
+}
+
+/// What submitting a step led to, and what the step put in use, if it was
+/// the enrollment step: the recovery codes made with it are to be shown
+/// once.
+#[derive(Debug, Clone)]
+pub struct Submitted {
+    /// Where the transaction stands.
+    pub progress: Progress,
+    /// What the step enrolled, when it enrolled something.
+    pub enrolled: Option<Enrolled>,
 }
 
 /// Interprets flows: checks that a flow is valid and advances
@@ -224,6 +236,26 @@ impl FlowEngine {
         demanded: Assurance,
         now: Timestamp,
     ) -> Result<Progress, DomainError> {
+        self.submit_step(tenant, flow, transaction, input, demanded, now)
+            .await
+            .map(|submitted| submitted.progress)
+    }
+
+    /// Runs the current step as [`Self::submit`] does, and also answers
+    /// what the step put in use when it was the enrollment step.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::submit`].
+    pub async fn submit_step(
+        &self,
+        tenant: &TenantContext,
+        flow: &AuthFlow,
+        transaction: &mut AuthTransaction,
+        input: &StepInput,
+        demanded: Assurance,
+        now: Timestamp,
+    ) -> Result<Submitted, DomainError> {
         transaction.require_in_progress(now)?;
         let current = flow.steps.get(transaction.snapshot().current_step);
         // An alternative is accepted only while no step has been satisfied.
@@ -277,16 +309,19 @@ impl FlowEngine {
             ))
         };
         let before = transaction.clone();
+        let mut enrolled = None;
         match authenticator.perform(tenant, transaction, input).await? {
             StepOutcome::Rejected => {
                 let attempts_left = transaction.record_rejection();
-                return Ok(
-                    if transaction.snapshot().status == TransactionStatus::Failed {
-                        Progress::Failed
-                    } else {
-                        Progress::Rejected { attempts_left }
-                    },
-                );
+                let progress = if transaction.snapshot().status == TransactionStatus::Failed {
+                    Progress::Failed
+                } else {
+                    Progress::Rejected { attempts_left }
+                };
+                return Ok(Submitted {
+                    progress,
+                    enrolled: None,
+                });
             }
             StepOutcome::Authenticated { user } if is_alternative => transaction
                 .record_authenticated(user, authenticator.traits().method, flow.required_steps()),
@@ -297,21 +332,27 @@ impl FlowEngine {
             StepOutcome::Proven if !is_alternative => {
                 transaction.record_satisfied(authenticator.traits().method);
             }
+            StepOutcome::Enrolled(put_in_use) if !is_alternative => {
+                transaction.record_satisfied(authenticator.traits().method);
+                enrolled = Some(put_in_use);
+            }
             StepOutcome::Authenticated { .. }
             | StepOutcome::Identified { .. }
-            | StepOutcome::Proven => return Err(misbehaved()),
+            | StepOutcome::Proven
+            | StepOutcome::Enrolled(_) => return Err(misbehaved()),
         }
         let must_reach = flow.minimum_assurance.max(demanded);
         if let Err(error) = self.pass_over(tenant, flow, transaction, must_reach).await {
             *transaction = before;
             return Err(error);
         }
-        Ok(match flow.steps.get(transaction.snapshot().current_step) {
+        let progress = match flow.steps.get(transaction.snapshot().current_step) {
             Some(next) => Progress::Next {
                 step: next.key.clone(),
             },
             None => Progress::ReadyToComplete,
-        })
+        };
+        Ok(Submitted { progress, enrolled })
     }
 
     /// Asks the current step's authenticator for a challenge, keeps it in
@@ -382,6 +423,9 @@ impl FlowEngine {
             })?;
         if let Some(challenge) = made.challenge {
             transaction.record_challenge(challenge);
+        }
+        if let Some(begun) = made.enrollment {
+            transaction.record_enrollment(begun);
         }
         Ok(made.options)
     }

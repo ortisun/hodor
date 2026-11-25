@@ -57,6 +57,13 @@ pub enum AuthenticationEvent {
         /// `email_code` or `email_link`.
         method: &'static str,
     },
+    /// A person put a second factor in use during a sign-in.
+    SecondFactorEnrolled {
+        /// Whose factor it is.
+        user_id: UserId,
+        /// `authenticator_application`, `security_key` or `passkey`.
+        kind: &'static str,
+    },
 }
 
 impl DomainEvent for AuthenticationEvent {
@@ -69,6 +76,7 @@ impl DomainEvent for AuthenticationEvent {
             Self::RecoveryRequested { .. } => "authentication.recovery_requested",
             Self::PasswordReset { .. } => "authentication.password_reset",
             Self::EmailSignInSent { .. } => "authentication.email_sign_in_sent",
+            Self::SecondFactorEnrolled { .. } => "authentication.second_factor_enrolled",
         }
     }
 }

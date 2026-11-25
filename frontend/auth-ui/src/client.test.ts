@@ -201,6 +201,42 @@ describe("the client for the interaction interface", () => {
     expect(sent[0]?.body).toEqual({ code: "the-code", state: "the-state" });
   });
 
+  it("sets up a second factor at the enrollment step and reads the recovery codes shown once", async () => {
+    const { client, sent } = scripted({
+      "GET /sign-in/steps/enrollment/kinds": [json(200, { kinds: ["passkey", "sms", "authenticator_application"] })],
+      "POST /sign-in/steps/enrollment/options": [
+        json(200, { kind: "authenticator_application", secret: "JBSWY3DP", uri: "otpauth://totp/a:b?secret=JBSWY3DP" }),
+        json(200, { kind: "security_key", public_key: { challenge: "AA" } }),
+      ],
+      "POST /sign-in/steps/enrollment": [
+        json(200, { status: "completed", recovery_codes: ["7K2M-QX9D-4HVN-R8TA", 7] }),
+        json(200, { status: "pending", step: "enrollment", recovery_codes: [] }),
+      ],
+    });
+    expect(await client.enrollmentKinds()).toEqual(["authenticator_application", "passkey"]);
+    expect(await client.beginApplicationEnrollment()).toEqual({
+      secret: "JBSWY3DP",
+      uri: "otpauth://totp/a:b?secret=JBSWY3DP",
+    });
+    expect(await client.beginKeyEnrollment(false)).toEqual({ challenge: "AA" });
+    expect(await client.finishApplicationEnrollment("123456")).toEqual({
+      status: "completed",
+      step: null,
+      attemptsLeft: null,
+      recoveryCodes: ["7K2M-QX9D-4HVN-R8TA"],
+    });
+    expect(
+      await client.finishKeyEnrollment({ client_data: "Aw", attestation_object: "BA", transports: [] }, "  "),
+    ).toEqual({ status: "pending", step: "enrollment", attemptsLeft: null });
+    expect(sent.map((request) => request.body)).toEqual([
+      null,
+      { kind: "authenticator_application" },
+      { kind: "security_key" },
+      { code: "123456" },
+      { client_data: "Aw", attestation_object: "BA", transports: [] },
+    ]);
+  });
+
   it("finishes a SAML sign-in with the receipt and no code", async () => {
     const { client, sent } = scripted({
       "POST /sign-in/providers/corp/callback": [json(200, { status: "completed" })],

@@ -54,6 +54,13 @@ export const ptBR: Messages = {
     "Este link só funciona no navegador em que foi pedido, por dez minutos. Abra-o lá, ou entre por aqui.",
   signInLinkRefused: "Esse link não funcionou. Ele pode já ter sido usado, ou ter expirado.",
   methodNotOffered: "Esta forma de entrar não é oferecida aqui.",
+  enrollLead:
+    "Sua organização exige um segundo fator, e você ainda não tem nenhum. Configure um para terminar de entrar. Ele será pedido em todas as próximas entradas.",
+  enrollKeysLead: "Ou use uma chave de segurança, ou uma chave de acesso guardada neste dispositivo ou no seu celular.",
+  confirmAndSignIn: "Confirmar e entrar",
+  chooseAnotherWay: "Escolher outra forma",
+  nothingToSetUp: "Este navegador não consegue configurar um segundo fator aqui. Entre por outro navegador.",
+  enrollmentNotNeeded: "Agora você tem um segundo fator. Entre de novo para usá-lo.",
 
   registerTitle: "Criar uma conta",
   registerLead: "Informe seu endereço de email. Uma mensagem vai levar um link para você terminar.",

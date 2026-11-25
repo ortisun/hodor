@@ -494,6 +494,53 @@ pub async fn run_transaction_contract(ports: TransactionPorts<'_>) {
     assert_eq!(reloaded.challenge(), None);
     assert_eq!(reloaded.snapshot().version, 3);
 
+    // What the enrollment step began is stored, in place of what it began
+    // before, and is kept through a rejection.
+    let mut enrolling = reloaded.clone();
+    enrolling.record_enrollment(crate::api::BegunEnrollment::AuthenticatorApplication(
+        hodor_credential::api::TotpId::generate(),
+    ));
+    let begun = crate::api::BegunEnrollment::Passkey(
+        hodor_credential::api::WebAuthnRegistrationId::generate(),
+    );
+    enrolling.record_enrollment(begun);
+    update(&ports, &tenant, &enrolling).await.expect("update");
+    let reloaded = stored(&ports, &tenant, transaction.id())
+        .await
+        .expect("exists");
+    assert_eq!(reloaded.begun_enrollment(), Some(begun));
+    let mut mistyped = reloaded.clone();
+    mistyped.record_rejection();
+    update(&ports, &tenant, &mistyped).await.expect("update");
+    let reloaded = stored(&ports, &tenant, transaction.id())
+        .await
+        .expect("exists");
+    assert_eq!(reloaded.begun_enrollment(), Some(begun));
+    for other in [
+        crate::api::BegunEnrollment::SecurityKey(
+            hodor_credential::api::WebAuthnRegistrationId::generate(),
+        ),
+        crate::api::BegunEnrollment::AuthenticatorApplication(
+            hodor_credential::api::TotpId::generate(),
+        ),
+    ] {
+        let mut replaced = stored(&ports, &tenant, transaction.id())
+            .await
+            .expect("exists");
+        replaced.record_enrollment(other);
+        update(&ports, &tenant, &replaced).await.expect("update");
+        assert_eq!(
+            stored(&ports, &tenant, transaction.id())
+                .await
+                .expect("exists")
+                .begun_enrollment(),
+            Some(other)
+        );
+    }
+    let reloaded = stored(&ports, &tenant, transaction.id())
+        .await
+        .expect("exists");
+
     // Of two requests working from the same version, the second is
     // refused. This is what makes completion happen once.
     let (mut first, mut second) = (reloaded.clone(), reloaded.clone());
@@ -512,6 +559,11 @@ pub async fn run_transaction_contract(ports: TransactionPorts<'_>) {
         .expect("exists");
     assert_eq!(ended.snapshot().satisfied_methods, ["password"]);
     assert_eq!(ended.snapshot().status, first.snapshot().status);
+    assert_eq!(
+        ended.begun_enrollment(),
+        None,
+        "a satisfied step empties what it began"
+    );
 
     // A transaction cannot be updated from another tenant.
     let error = update(&ports, &elsewhere, &ended)

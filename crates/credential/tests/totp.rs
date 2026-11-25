@@ -224,6 +224,90 @@ async fn an_enrollment_not_confirmed_in_time_is_gone() {
 }
 
 #[tokio::test]
+async fn a_named_enrollment_is_confirmed_only_while_it_is_the_one_waiting() {
+    let world = world();
+    let first = world.begin().await;
+    // Another enrollment begun since takes its place: naming the first
+    // confirms nothing, even with a code of the first or of the second.
+    let second = world.begin().await;
+    assert_ne!(first.id(), second.id());
+    for typed in [world.phone(&first, 0), world.phone(&second, 0)] {
+        let error = world
+            .service
+            .confirm_enrollment_of(
+                &world.tenant,
+                world.user,
+                first.id(),
+                &code(&typed),
+                Caller::system(),
+            )
+            .await
+            .expect_err("not the one waiting");
+        assert_eq!(error.code(), "credential.totp_enrollment_not_found");
+    }
+    assert!(
+        !world
+            .service
+            .has_totp(&world.tenant, world.user)
+            .await
+            .expect("has")
+    );
+
+    // A wrong code for the one waiting leaves it waiting, and the right
+    // one puts it in use.
+    let error = world
+        .service
+        .confirm_enrollment_of(
+            &world.tenant,
+            world.user,
+            second.id(),
+            &code("000000"),
+            Caller::system(),
+        )
+        .await
+        .expect_err("wrong code");
+    assert_eq!(error.code(), "credential.totp_code_wrong");
+    world
+        .service
+        .confirm_enrollment_of(
+            &world.tenant,
+            world.user,
+            second.id(),
+            &code(&world.phone(&second, 0)),
+            Caller::system(),
+        )
+        .await
+        .expect("confirm");
+    assert!(
+        world
+            .service
+            .has_totp(&world.tenant, world.user)
+            .await
+            .expect("has")
+    );
+
+    // Another person's enrollment is not this person's to confirm.
+    let other = UserId::generate();
+    let theirs = world
+        .service
+        .begin_enrollment(&world.tenant, other, "Acme", "bruno@example.com")
+        .await
+        .expect("begin");
+    let error = world
+        .service
+        .confirm_enrollment_of(
+            &world.tenant,
+            world.user,
+            theirs.id(),
+            &code(&world.phone(&theirs, 0)),
+            Caller::system(),
+        )
+        .await
+        .expect_err("another person's");
+    assert_eq!(error.code(), "credential.totp_enrollment_not_found");
+}
+
+#[tokio::test]
 async fn the_code_that_confirmed_cannot_sign_in() {
     let world = world();
     let enrollment = world.begin().await;

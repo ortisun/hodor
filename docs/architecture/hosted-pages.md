@@ -87,7 +87,7 @@ When the answer names the `enrollment` step, the sign-in page says that the orga
 - **An authenticator application.** The page begins the enrollment and shows the QR code, drawn in the page from the `otpauth://` address as [the security page](#a-persons-own-factors) draws it, the secret as text in groups of four, and one field for the code the application shows, with `autocomplete="one-time-code"` and a numeric keyboard on phones. A rejected code shows "that did not work" on the same form, the QR code still shown, and the person types the code again. "Choose another way" goes back to the choice.
 - **A security key or a passkey.** The page asks for a name, as the security page does, then begins the registration and asks the authenticator through the browser. When the authenticator gives no answer, nothing is sent and the page says the key did not answer; a rejected answer shows "that did not work", and pressing the button again begins a new registration.
 - **The recovery codes.** When the answer that completes the sign-in holds recovery codes, the page shows them once, in a list the person can copy, as the security page does, with a button the person presses once they have kept them. Only then does it go on, to `continue` or the account page. Leaving the page forgets them; the person can make a new set from the security page.
-- `authentication.enrollment_not_needed` means the person has a factor by now: the page starts the sign-in again, which asks for it.
+- `authentication.enrollment_not_needed` means the person has a factor by now: the page says so and starts the sign-in again, which asks for it.
 
 ### Signing in through an identity provider
 
@@ -164,7 +164,7 @@ The pages show their own words, chosen by the `code` of the [problem document](.
 | `authentication.registration_closed` | This organization does not accept registrations |
 | `authentication.verification_token_invalid` | The link was already used or has expired; how to ask for a new one |
 | `authentication.method_not_offered` | This way of signing in is not offered here |
-| `authentication.enrollment_not_needed` | Nothing: the page starts the sign-in again, which asks for the factor the person has now |
+| `authentication.enrollment_not_needed` | The person has a second factor now and is to sign in again to use it; the page starts the sign-in again, which asks for it |
 | `credential.password_too_short`, `credential.password_too_long`, `credential.password_is_own_name`, `credential.password_reused` | What is wrong with the password, next to the field |
 | `identity.display_name_invalid` | The name cannot be used, next to the field |
 | `credential.hashing_overloaded` | The server is busy; try again in a moment |

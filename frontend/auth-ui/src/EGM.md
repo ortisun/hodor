@@ -65,7 +65,9 @@ its header); the pages see plain values.
   - `Failure` - `code` (the problem document's `code`), `status` (`0` when
     unreachable), `requestId`, `retryAfterSeconds`; getter `unreachable`.
   - Types `SignInStatus` (`pending | rejected | failed | completed`),
-    `SignInAnswer` (`status`, `step`, `attemptsLeft`), `OfferedProvider`
+    `SignInAnswer` (`status`, `step`, `attemptsLeft`, `continueTo?`, and
+    `recoveryCodes?` when the answer holds a non-empty `recovery_codes`),
+    `EnrollmentKind` (`authenticator_application | security_key | passkey`), `OfferedProvider`
     (`alias`, `displayName`, `isDirectory` when `kind === "ldap"`), `Session`
     (`userId`, `sessionId`, `signedInAt`, `expiresAt`).
   - `Client(tenant, fetch?)` - base path `/t/{tenant}/interaction`; methods
@@ -98,6 +100,11 @@ its header); the pages see plain values.
     | `askByEmail("code" or "link", email, locale)` | `POST /sign-in/steps/email_code/send` or `/email_link/send` |
     | `submitEmailCode(code)` | `POST /sign-in/steps/email_code` |
     | `submitEmailLink(token)` | `POST /sign-in/steps/email_link` |
+    | `enrollmentKinds()` | `GET /sign-in/steps/enrollment/kinds` (the known kinds listed, in their order) |
+    | `beginApplicationEnrollment()` | `POST /sign-in/steps/enrollment/options` `{ "kind": "authenticator_application" }` (answers an `Enrollment`) |
+    | `beginKeyEnrollment(passkey)` | `POST /sign-in/steps/enrollment/options` `{ "kind": "passkey" }` or `"security_key"` (answers `public_key`) |
+    | `finishApplicationEnrollment(code)` | `POST /sign-in/steps/enrollment` `{ "code" }` |
+    | `finishKeyEnrollment(registration, name)` | `POST /sign-in/steps/enrollment` with the registration and the name, left out when blank |
     | `askToRegister(email, locale)` | `POST /registration` |
     | `completeRegistration(token, password, displayName)` | `POST /registration/complete` |
     | `askToRecover(email, locale)` | `POST /recovery` |

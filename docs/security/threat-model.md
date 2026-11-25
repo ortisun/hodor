@@ -239,3 +239,4 @@ A SCIM client writes a tenant's people and groups: the [provisioning context](..
 | SMS one-time password interception (SIM swap) | Inherent; SMS is offered as low assurance and excluded from high `acr` |
 | Phishing of passwords and TOTP | Reduced by passkeys; not eliminated while phishable factors are enabled |
 | Compromised upstream identity provider | Limited by claim allow-lists and per-provider multi-factor authentication policy; cannot be eliminated |
+| Whoever holds the first factor of a person who never set up a second one binds a factor of their own while signing in, under a policy that requires one ([enrolling during a sign-in](../architecture/contexts/authentication.md#enrolling-a-second-factor-during-a-sign-in)) | Inherent in trust on first use; the enrollment is in the audit log, and a tenant that cannot accept it has its people enroll before turning the policy on ([Decision 0039](../decisions/0039-enrolling-during-a-sign-in.md)) |

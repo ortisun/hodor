@@ -29,9 +29,10 @@ use hodor_adapters_postgres::{
 use hodor_audit::api::AuditService;
 use hodor_authentication::api::{
     AccountService, AttemptGuard, AuthFlow, AuthenticationService, Condition, EmailAuthenticator,
-    EmailSignInPorts, FactorService, FlowEngine, IdentifierAuthenticator, InvitationContexts,
-    InvitationService, LockoutRules, PasskeyAuthenticator, PasswordAuthenticator,
-    RecoveryCodeAuthenticator, Requirement, TotpAuthenticator, WebAuthnAuthenticator,
+    EmailSignInPorts, EnrollmentAuthenticator, FactorService, FlowEngine, IdentifierAuthenticator,
+    InvitationContexts, InvitationService, LockoutRules, PasskeyAuthenticator,
+    PasswordAuthenticator, RecoveryCodeAuthenticator, Requirement, TotpAuthenticator,
+    WebAuthnAuthenticator,
 };
 use hodor_authorization::api::{
     AccessListService, AuthorizationService, DecisionLog, EngineRegistry, EvaluationService,
@@ -630,6 +631,20 @@ fn interaction(
             )
             .with_substitute(TotpAuthenticator::KIND, RecoveryCodeAuthenticator::KIND);
     }
+    // A person whose tenant requires a second factor and who has none sets
+    // one up at the last step, after the first factor, through the use
+    // cases of their own pages. Never in a step-up, never for a person who
+    // has a factor: they are asked for it by the steps before.
+    let factors = factor_service(config, database, &identity, &tenants, webauthn)?;
+    engine = engine.with(Arc::new(EnrollmentAuthenticator::new(
+        factors.clone(),
+        identity.clone(),
+    )));
+    flow = flow.with_step(
+        EnrollmentAuthenticator::KIND,
+        EnrollmentAuthenticator::KIND,
+        Requirement::Conditional(Condition::AssuranceNotReached),
+    );
     let external = external_sign_in(config, database, &identity, &tenants, &guard)?;
     if let Some(external) = &external {
         engine = engine.with(Arc::new(ExternalIdentityAuthenticator::new(
@@ -671,7 +686,6 @@ fn interaction(
         clock.clone(),
         &config.public_url,
     );
-    let factors = factor_service(config, database, &identity, &tenants, webauthn)?;
     let authentication = AuthenticationService::new(
         units(),
         Arc::new(PgTransactionStore),

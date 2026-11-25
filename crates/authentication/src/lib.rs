@@ -20,6 +20,7 @@ pub mod api {
         RecoveryCodeAuthenticator, TotpAuthenticator, WebAuthnAuthenticator,
     };
     pub use crate::application::email::{EmailAuthenticator, EmailSignInPorts};
+    pub use crate::application::enrollment::EnrollmentAuthenticator;
     pub use crate::application::factors::{
         FactorService, Factors, RECENT_SIGN_IN, RegisteredKey, Remover, recent_sign_in_required,
         recent_sign_in_until, signed_in_recently,
@@ -42,7 +43,8 @@ pub mod api {
     pub use crate::domain::email::{
         EmailMethod, EmailSecret, EmailSecretHash, EmailSignIn, EmailSignInSnapshot, EmailUse,
     };
-    pub use crate::domain::engine::{FlowEngine, Progress};
+    pub use crate::domain::engine::{FlowEngine, Progress, Submitted};
+    pub use crate::domain::enrollment::{BegunEnrollment, Enrolled, EnrollmentKind};
     pub use crate::domain::event::AuthenticationEvent;
     pub use crate::domain::flow::{AuthFlow, Condition, FlowStep, Requirement};
     pub use crate::domain::transaction::{

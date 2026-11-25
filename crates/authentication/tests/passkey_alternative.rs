@@ -149,6 +149,7 @@ impl Authenticator for Passkey {
     ) -> Result<Option<StepChallenge>, DomainError> {
         Ok(Some(StepChallenge {
             challenge: Some([7; 32]),
+            enrollment: None,
             options: json!({ "allowCredentials": [] }),
         }))
     }

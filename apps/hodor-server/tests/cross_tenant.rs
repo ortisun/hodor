@@ -3670,3 +3670,148 @@ async fn a_code_or_a_link_sent_in_one_tenant_signs_nobody_in_at_another() {
         }
     }
 }
+
+/// Makes a tenant require a second factor of everyone who signs in.
+async fn require_second_factor(world: &World, tenant: &Tenant) {
+    let tenants = TenantService::new(
+        Arc::new(world.database.app().clone()),
+        Arc::new(PgTenantRepository),
+        Arc::new(PgTenantDirectory::new(world.database.app().clone())),
+        Arc::new(SystemClock),
+    );
+    let mut settings = tenants
+        .get(&tenant.context)
+        .await
+        .expect("tenant")
+        .snapshot()
+        .settings
+        .clone();
+    settings.authentication.second_factor = hodor_tenant::api::SecondFactorPolicy::Required;
+    tenants
+        .change_settings(&tenant.context, settings, Caller::system())
+        .await
+        .expect("settings");
+}
+
+async fn enrollment(
+    browser: &mut Browser,
+    tenant: &Tenant,
+    what: &str,
+    body: serde_json::Value,
+) -> (StatusCode, serde_json::Value) {
+    browser
+        .send(
+            Method::POST,
+            &format!(
+                "/t/{}/interaction/sign-in/steps/enrollment{what}",
+                tenant.slug
+            ),
+            Some(body),
+        )
+        .await
+}
+
+#[tokio::test]
+async fn an_enrollment_begun_in_one_tenant_cannot_be_finished_in_another() {
+    use hodor_adapters_crypto::testing::webauthn::SoftwareAuthenticator;
+    let world = world_with(&[("HODOR_SECRET_KEYS", ROOT_KEY)]).await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    require_second_factor(&world, acme).await;
+    require_second_factor(&world, globex).await;
+
+    // In Acme, the shared person reaches the enrollment step and begins
+    // an application.
+    let (mut in_acme, body) = waiting_after_password(&world, acme).await;
+    assert_eq!(body["step"], "enrollment", "{body}");
+    let (status, application) = enrollment(
+        &mut in_acme,
+        acme,
+        "/options",
+        serde_json::json!({ "kind": "authenticator_application" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{application}");
+    let acme_secret = support::base32(application["secret"].as_str().expect("secret"));
+
+    // Acme's sign-in does not exist at Globex, whatever is asked of it.
+    let mut carried = Browser::new(&world.server);
+    carried.cookies = in_acme.cookies.clone();
+    carried.csrf_token = in_acme.csrf_token.clone();
+    for (what, body) in [
+        (
+            "/options",
+            serde_json::json!({ "kind": "authenticator_application" }),
+        ),
+        (
+            "",
+            serde_json::json!({ "code": application_code(&acme_secret, 0) }),
+        ),
+    ] {
+        let (status, body) = enrollment(&mut carried, globex, what, body).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+        assert_eq!(body["code"], "authentication.transaction_not_found");
+    }
+
+    // Globex's own sign-in of the same person has begun nothing: the code
+    // of Acme's secret, and the answer to a registration Acme began, are
+    // rejections there.
+    let (mut in_globex, body) = waiting_after_password(&world, globex).await;
+    assert_eq!(body["step"], "enrollment", "{body}");
+    let (_, body) = enrollment(
+        &mut in_globex,
+        globex,
+        "",
+        serde_json::json!({ "code": application_code(&acme_secret, 0) }),
+    )
+    .await;
+    assert_eq!(body["status"], "rejected", "{body}");
+    let (status, begun) = enrollment(
+        &mut in_acme,
+        acme,
+        "/options",
+        serde_json::json!({ "kind": "security_key" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{begun}");
+    // The relying party of the server, as `HODOR_PUBLIC_URL` leaves it.
+    let key = SoftwareAuthenticator::new("http://localhost:8080");
+    let acme_answer = key.register(&begun["public_key"]);
+    let (status, _) = enrollment(
+        &mut in_globex,
+        globex,
+        "/options",
+        serde_json::json!({ "kind": "security_key" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, body) = enrollment(&mut in_globex, globex, "", acme_answer.clone()).await;
+    assert_eq!(body["status"], "rejected", "{body}");
+
+    // Acme finishes its own, and its factor means nothing at Globex: the
+    // person there still has none, and sets one up of Globex's own.
+    let (_, body) = enrollment(&mut in_acme, acme, "", acme_answer).await;
+    assert_eq!(body["status"], "completed", "{body}");
+    let (_, body) = enrollment(
+        &mut in_globex,
+        globex,
+        "/options",
+        serde_json::json!({ "kind": "authenticator_application" }),
+    )
+    .await;
+    let globex_secret = support::base32(body["secret"].as_str().expect("secret"));
+    assert_ne!(globex_secret, acme_secret);
+    let (_, body) = enrollment(
+        &mut in_globex,
+        globex,
+        "",
+        serde_json::json!({ "code": application_code(&globex_secret, 0) }),
+    )
+    .await;
+    assert_eq!(body["status"], "completed", "{body}");
+
+    // Each tenant asks for its own factor at the next sign-in.
+    let (_, body) = waiting_after_password(&world, acme).await;
+    assert_eq!(body["step"], "webauthn", "{body}");
+    let (_, body) = waiting_after_password(&world, globex).await;
+    assert_eq!(body["step"], "totp", "{body}");
+}

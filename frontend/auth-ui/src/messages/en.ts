@@ -52,6 +52,13 @@ export const en = {
     "This link works only in the browser where it was asked for, within ten minutes. Open it there, or sign in here.",
   signInLinkRefused: "That link did not work. It may have been used already, or have expired.",
   methodNotOffered: "This way of signing in is not offered here.",
+  enrollLead:
+    "Your organization requires a second factor, and you have none yet. Set one up to finish signing in. Every later sign-in asks for it.",
+  enrollKeysLead: "Or use a security key, or a passkey kept by this device or your phone.",
+  confirmAndSignIn: "Confirm and sign in",
+  chooseAnotherWay: "Choose another way",
+  nothingToSetUp: "This browser cannot set up a second factor here. Sign in from another browser.",
+  enrollmentNotNeeded: "You have a second factor now. Sign in again to use it.",
 
   registerTitle: "Create an account",
   registerLead: "Give your email address. A message will bring you a link to finish.",

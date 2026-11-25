@@ -72,6 +72,7 @@ bound to.
 - `TotpService::new(units_of_work, store: Arc<dyn TotpStore>, secrets: Arc<dyn SecretBox>, mac: Arc<dyn HmacSha1>, random, clock)`.
   - `begin_enrollment(tenant, user_id, issuer, account) -> TotpEnrollment`: 20 random bytes, sealed for `credential.totp_secret`; the secret is returned once, in Base32 and as an `otpauth://totp/` address.
   - `confirm_enrollment(tenant, user_id, code, caller)`: `NotFound` `credential.totp_enrollment_not_found` when nothing waits or it waited ten minutes; `Invalid` `credential.totp_code_wrong` for a wrong code; records `credential.totp_enrolled`.
+  - `confirm_enrollment_of(tenant, user_id, id, code, caller)`: the same, only while the enrollment waiting is `id`; one begun since is `NotFound` `credential.totp_enrollment_not_found`.
   - `verify(tenant, user_id: Option<UserId>, code) -> TotpCheck`: `Verified` or `Rejected`; a right code is marked used in the same call.
   - `has_totp(tenant, user_id) -> bool` and `remove(tenant, user_id, caller) -> bool` (records `credential.totp_removed` when one was in use).
 - `totp_code_at(mac, secret, moment) -> String` (`totp.rs`): the six digits an application shows.

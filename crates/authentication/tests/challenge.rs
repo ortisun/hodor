@@ -97,6 +97,7 @@ impl Authenticator for Signer {
         let byte = self.made.fetch_add(1, Ordering::SeqCst) + 1;
         Ok(Some(StepChallenge {
             challenge: Some([byte; 32]),
+            enrollment: None,
             options: json!({ "challenge": byte }),
         }))
     }

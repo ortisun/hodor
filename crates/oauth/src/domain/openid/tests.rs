@@ -68,6 +68,20 @@ fn each_method_is_named_as_rfc_8176_names_it() {
         authentication_methods(&methods(&["email_code", "totp"])),
         ["otp", "mfa"]
     );
+    assert!(
+        authentication_methods(&methods(&["enrollment"])).is_empty(),
+        "RFC 8176 has no name for a factor put in use during the sign-in"
+    );
+    assert_eq!(
+        authentication_methods(&methods(&["password", "enrollment"])),
+        ["pwd", "mfa"],
+        "a factor set up after the password counts as something held, as \
+         it does for the acr"
+    );
+    assert_eq!(
+        authentication_methods(&methods(&["external", "enrollment"])),
+        ["mfa"]
+    );
     assert!(authentication_methods(&methods(&["something-new"])).is_empty());
 }
 
