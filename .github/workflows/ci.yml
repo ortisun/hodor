@@ -332,6 +332,33 @@ jobs:
             echo "a configuration without a tenant was accepted"; exit 1
           fi
 
+  # The image of hodor-cert-manager-issuer, built as the release builds it: it prints the public part of a key,
+  # and stops at once on a configuration that does not read. It needs a Kubernetes interface to run, which this
+  # job has not. docs/operations/hodor-cert-manager-issuer.md.
+  cert-manager-issuer-image:
+    name: Image of hodor-cert-manager-issuer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Build the image
+        run: docker build --file deploy/docker/cert-manager-issuer.Dockerfile --tag hodor-cert-manager-issuer:ci .
+      - name: It prints the public part of a key
+        run: |
+          mkdir -p "$RUNNER_TEMP/issuer"
+          openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$RUNNER_TEMP/issuer/key.pem"
+          chmod -R a+rX "$RUNNER_TEMP/issuer"
+          docker run --rm --volume "$RUNNER_TEMP/issuer:/keys:ro" hodor-cert-manager-issuer:ci \
+            jwk --key /keys/key.pem --key-id ci > "$RUNNER_TEMP/jwk.json"
+          jq -e '.kty == "EC" and .crv == "P-256" and .kid == "ci" and (has("d") | not)' "$RUNNER_TEMP/jwk.json"
+      - name: It refuses a configuration that does not read
+        run: |
+          echo '{ "hodor": { "url": "http://hodor:8080" } }' > "$RUNNER_TEMP/issuer/broken.json"
+          chmod a+r "$RUNNER_TEMP/issuer/broken.json"
+          if docker run --rm --volume "$RUNNER_TEMP/issuer:/etc/hodor-cert-manager-issuer:ro" \
+            --env HODOR_CERT_MANAGER_ISSUER_CONFIG=/etc/hodor-cert-manager-issuer/broken.json hodor-cert-manager-issuer:ci; then
+            echo "a configuration without a tenant was accepted"; exit 1
+          fi
+
   # The two installation packages in deploy/install: the Helm chart renders and the Compose file is valid.
   # Neither is installed here; docs/operations/install-with-docker.md and install-on-kubernetes.md say how
   # that was checked by hand.
@@ -376,7 +403,27 @@ jobs:
           --set "extAuthz.applications[0].routes[0].path=/orders/{id}"
           --set "extAuthz.applications[0].routes[0].resourceType=order"
           --set "extAuthz.applications[0].routes[0].action=read"
+          --set certManagerIssuer.enabled=true --set certManagerIssuer.tenant=acme
+          --set certManagerIssuer.clientId=0193f3c0-2d4e-7b1a-9c55-6b1f2c9d4e01
+          --set certManagerIssuer.approveWithCertManager.enabled=true
           > /dev/null
+      - name: Render the chart with cert-manager's issuer alone, signing in with its key
+        run: >
+          helm lint "$CHART" --strict
+          --set certManagerIssuer.enabled=true --set certManagerIssuer.only=true
+          --set certManagerIssuer.tenant=acme --set certManagerIssuer.hodorUrl=https://login.example.com
+          --set certManagerIssuer.clientId=0193f3c0-2d4e-7b1a-9c55-6b1f2c9d4e01
+          --set certManagerIssuer.authentication.method=private_key_jwt
+          --set certManagerIssuer.authentication.privateKeyJwt.secretName=hodor-cert-manager-issuer-key
+          && helm template hodor-issuer "$CHART" --namespace cert-manager
+          --set certManagerIssuer.enabled=true --set certManagerIssuer.only=true
+          --set certManagerIssuer.tenant=acme --set certManagerIssuer.hodorUrl=https://login.example.com
+          --set certManagerIssuer.clientId=0193f3c0-2d4e-7b1a-9c55-6b1f2c9d4e01
+          --set certManagerIssuer.authentication.method=private_key_jwt
+          --set certManagerIssuer.authentication.privateKeyJwt.secretName=hodor-cert-manager-issuer-key
+          > rendered.yaml
+          && ! grep -q 'name: hodor-issuer-hodor-server' rendered.yaml
+          && grep -q 'kind: CustomResourceDefinition' rendered.yaml
       - name: Render the chart signing in to OpenBao with an AppRole
         run: >
           helm template hodor "$CHART" --namespace hodor $REQUIRED
@@ -392,6 +439,12 @@ jobs:
           refused helm template hodor "$CHART" --namespace hodor $REQUIRED --set keyProvider.signingKeys=openbao
           refused helm template hodor "$CHART" --namespace hodor $REQUIRED --set keyProvider.openbao.enabled=true
           refused helm template hodor "$CHART" --namespace hodor $REQUIRED --set extAuthz.enabled=true
+          ISSUER="--set certManagerIssuer.enabled=true --set certManagerIssuer.tenant=acme --set certManagerIssuer.clientId=c"
+          refused helm template hodor "$CHART" --namespace hodor $REQUIRED --set certManagerIssuer.enabled=true
+          refused helm template hodor "$CHART" --namespace hodor $REQUIRED --set certManagerIssuer.enabled=true --set certManagerIssuer.tenant=acme
+          refused helm template hodor "$CHART" --namespace hodor $ISSUER --set certManagerIssuer.only=true
+          refused helm template hodor "$CHART" --namespace hodor $REQUIRED $ISSUER --set certManagerIssuer.authentication.method=private_key_jwt
+          refused helm template hodor "$CHART" --namespace hodor $REQUIRED $ISSUER --set certManagerIssuer.authentication.method=client_secret_basic
       - name: The Compose file is valid with every part
         env:
           HODOR_IMAGE: hodor:test

@@ -285,6 +285,74 @@ extAuthz:
   tolerations: []
   affinity: {}
 
+# hodor-cert-manager-issuer: cert-manager's outside issuer, which signs the approved requests for an authority of
+# its HodorIssuer and HodorClusterIssuer through the tenant's certificate authority. Off by default.
+# docs/operations/hodor-cert-manager-issuer.md says what it does and how to set its tenant up;
+# docs/operations/install-on-kubernetes.md lists these values. cert-manager must be installed first.
+certManagerIssuer:
+  enabled: false
+  # true: the release holds the issuer alone, for a cluster of meshes where Hodor does not run. None of Hodor's
+  # own values is then needed, and hodorUrl is required.
+  only: false
+  image:
+    # Its own image. Empty tag: the version this chart was made for.
+    repository: ghcr.io/ortisun/hodor-cert-manager-issuer
+    tag: ""
+  # The tenant's slug. Required when enabled.
+  tenant: ""
+  # Where it reaches Hodor. Empty: this release's Service, http://<release>.<namespace>.svc.cluster.local:<port>.
+  # Required with only.
+  hodorUrl: ""
+  # The tenant's issuer, which its assertions name as their audience. Empty: publicUrl followed by /t/<tenant>,
+  # or with only, hodorUrl followed by /t/<tenant>.
+  issuer: ""
+  # How long one call to Hodor may take, from 1 to 60000.
+  timeoutMilliseconds: 10000
+  # The client of the issuer's service account in Hodor, holding the scope certificate-authority:sign. Required
+  # when enabled.
+  clientId: ""
+  authentication:
+    # forwarded: the client proves who it is with the identity of the issuer's pod in its mesh, which its sidecar
+    # presents; nothing secret is held. private_key_jwt: with the key in the Secret below.
+    method: forwarded
+    privateKeyJwt:
+      # The Secret, in the release's namespace, that holds the key in PEM. Required with private_key_jwt.
+      secretName: ""
+      # The key of the Secret that holds it.
+      key: key.pem
+      # The kid of the key among the client's keys, if it has more than one.
+      keyId: ""
+  # true: the chart defines the kinds HodorIssuer and HodorClusterIssuer. false: they are defined already, by
+  # another release in the same cluster.
+  customResourceDefinitions: true
+  # cert-manager's own approver approves every request of the issuers it may approve for. true: it may approve
+  # for HodorIssuer and HodorClusterIssuer, so that whoever can create a CertificateRequest naming one has it
+  # approved. false: approve otherwise, with approver-policy for example.
+  approveWithCertManager:
+    enabled: false
+    # cert-manager's own service account.
+    serviceAccount: cert-manager
+    namespace: cert-manager
+  # Its own Kubernetes service account, which its ClusterRole is bound to and which gives it its mesh identity.
+  serviceAccount:
+    # false: the pod uses the service account named below, which must exist.
+    create: true
+    # Empty: "<release>-cert-manager-issuer".
+    name: ""
+    annotations: {}
+  resources:
+    requests:
+      cpu: 50m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
+  extraEnvironment: []
+  # Where a mesh's sidecar is asked for, when the namespace does not ask for it already.
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
 serviceAccount:
   # false: the pods use the service account named below, which must exist.
   create: true

@@ -12055,7 +12055,7 @@
         "operationId": "signIntermediate",
         "summary": "Sign an intermediate of a mesh from its certificate signing request",
         "x-hodor-permission": "certificate-authority:sign",
-        "description": "The request must prove its key, ask for an authority with no path length above zero, name nothing outside the authority's trust domains, ask for name constraints that only narrow and none on URIs, hold an ECDSA key on P-256 or P-384 or an RSA key of 3072 to 8192 bits never withdrawn, and live within the authority's bound. Hodor writes a path length of zero, `keyCertSign` and `cRLSign`, and the DNS and address constraints itself. Every refusal names its reason in `detail`. Routed only when the installation sets `HODOR_CERTIFICATE_AUTHORITY` to `on` or `development`; otherwise this document does not name it.",
+        "description": "The request must prove its key, ask for an authority with no path length above zero, name nothing outside the authority's trust domains, ask for name constraints that only narrow and none on URIs, hold an ECDSA key on P-256 or P-384 or an RSA key of 3072 to 8192 bits never withdrawn, and live within the authority's bound. Hodor writes a path length of zero, `keyCertSign` and `cRLSign`, and the DNS and address constraints itself. Every refusal names its reason in `detail`. This operation alone also takes, as its bearer, an access token of the tenant's token endpoint issued to a client acting as a service account, for the audience `urn:hodor:certificate-authority` and with the scope `certificate-authority:sign`, as `hodor-cert-manager-issuer` presents; the service account must hold `certificate-authority:sign` through its roles. Routed only when the installation sets `HODOR_CERTIFICATE_AUTHORITY` to `on` or `development`; otherwise this document does not name it.",
         "requestBody": {
           "required": true,
           "content": {
@@ -12068,7 +12068,7 @@
         },
         "responses": {
           "401": {
-            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "description": "No access token, or one that is not good in this tenant; an access token of the token endpoint that is not for `urn:hodor:certificate-authority` or not of a service account's client, or bound and presented without its certificate. The same in every case.",
             "headers": {
               "WWW-Authenticate": {
                 "schema": {
@@ -12085,7 +12085,7 @@
             }
           },
           "403": {
-            "description": "The token is good and its user may not do this.",
+            "description": "The token is good and its user may not do this; or an access token of the token endpoint without the scope `certificate-authority:sign`.",
             "content": {
               "application/problem+json": {
                 "schema": {

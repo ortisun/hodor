@@ -515,7 +515,7 @@ The authority's bundle is published at `GET /t/{tenant}/certificate-authority/bu
 
 The authority signs the intermediate certificates of the tenant's meshes, and nothing else: an Istio cluster's `cacerts`, Linkerd's identity issuer, SPIRE's upstream authority. A mesh makes its own key and a certificate signing request for it; Hodor checks the request, signs a certificate for it with the authority's key, and keeps what it signed. A workload's own certificate always comes from its mesh. Why it is built this way is [Decision 0071](../../decisions/0071-signing-intermediates.md).
 
-An administrator signs through [the administration interface](../../api/admin-api.md#intermediates) or `hodor-cli authority sign`; `hodor-cert-manager-issuer` (Issue-118) signs through the same operation ([who may sign](#who-may-sign)).
+An administrator signs through [the administration interface](../../api/admin-api.md#intermediates) or `hodor-cli authority sign`; [`hodor-cert-manager-issuer`](../../operations/hodor-cert-manager-issuer.md) signs through the same operation for cert-manager, with an access token of its own client ([who may sign](#who-may-sign)).
 
 #### What a request must be
 
@@ -581,7 +581,19 @@ Removing the authority keeps its intermediates and their withdrawals, so that a 
 
 - **`certificate-authority:sign` is a permission of its own**, held by the tenant administrator and by the built-in role `certificate_signer`, which holds nothing else ([roles](authorization.md#roles)). The auditor does not hold it.
 - **A workload signs with that role and that scope.** The service account that signs, such as the one of `hodor-cert-manager-issuer`, is given `certificate_signer` with `hodor-cli admin grant`, and an API key holding the one scope `certificate-authority:sign`: the key signs and does nothing else ([API keys](credential.md#api-keys)).
-- **Through a client, with an access token** (Issue-118). A client acting as that service account, proving who it is with its mesh identity (`spiffe_x509`, `spiffe_jwt`, `tls_client_auth`, `linkerd_identity`) or a signed assertion (`private_key_jwt`), gets an access token with the client credentials grant for the audience `urn:hodor:certificate-authority` and the scope `certificate-authority:sign`, which a tenant opens by registering a resource server with that audience and scope, as it does for [the Authorization API](authorization.md#the-authorization-api). The signing operation takes such a token, and no other operation of the administration interface does; the service account must still hold `certificate-authority:sign` through its roles.
+- **Through a client, with an access token** ([Decision 0074](../../decisions/0074-hodor-cert-manager-issuer.md)). A client acting as that service account, proving who it is with its mesh identity (`spiffe_x509`, `spiffe_jwt`, `tls_client_auth`, `linkerd_identity`) or a signed assertion (`private_key_jwt`), gets an access token with the client credentials grant for the audience `urn:hodor:certificate-authority` and the scope `certificate-authority:sign`. A tenant opens that audience by registering, once, a resource server with it and the one scope `certificate-authority:sign`, on an application of its own, as it does for [the Authorization API](authorization.md#who-may-ask). This is how `hodor-cert-manager-issuer` signs.
+
+The signing operation takes such a token, and no other operation of the administration interface or of the console interface does. It is checked in this order:
+
+| Check | Refused with |
+|---|---|
+| It is good: signed by a published key of the tenant, from the tenant's issuer, not expired, presented with its certificate when it is [bound to one](oauth.md#certificate-bound-access-tokens), in force in the register of access tokens, its client and the client's application enabled. A token of another tenant fails here | `401` `admin.not_authenticated` |
+| Its audience includes `urn:hodor:certificate-authority` | `401` `admin.not_authenticated` |
+| Its client acts as a service account: its `principal_kind` is `service_account`. A token about a person, an agent or the client itself is not good here | `401` `admin.not_authenticated` |
+| It holds the scope `certificate-authority:sign` | `403` `admin.forbidden` |
+| The service account holds `certificate-authority:sign` through its roles, as for any caller | `403` `admin.forbidden` |
+
+What it signs is recorded with the service account as the actor. A token for that audience presented to any other operation is refused with `401`, as every access token of the token endpoint is there.
 - **`hodor-cli authority sign`** signs as Hodor itself, as the tool's other commands act: whoever runs it can read the database and reach the key provider already. It needs `HODOR_CERTIFICATE_AUTHORITY` set as the server has it.
 
 Every signature is recorded as `keys.authority_signed`, with who asked, the hash of the request and of the part signed, the serial number, the intermediate's identifier and the trust domains it was signed for ([events of the authority](#events-of-the-authority)).
@@ -752,6 +764,6 @@ A tenant table under row-level security. An index on `public_key_sha256` serves 
 | The cloud's key management services: Amazon Web Services, Google Cloud, Azure Key Vault (Requirement-Key-03) | Phase 9, on the same port and the same contract |
 | Data keys, and the root keys of secrets at rest, in OpenBao or a key management service | Not scheduled ([Decision 0030](../../decisions/0030-optional-certificate-authority.md#what-protects-the-key)) |
 | Showing which provider holds a version, in the administration interface and `hodor-cli keys` | When someone asks |
-| The signing operation taking an access token of a client with the scope `certificate-authority:sign`, for `hodor-cert-manager-issuer` | Issue-118 |
 | Removing intermediates long expired; one that was withdrawn must still refuse its key | Not scheduled |
+| `spiffe_jwt` for `hodor-cert-manager-issuer`, and more than one replica of it | Not scheduled ([Decision 0074](../../decisions/0074-hodor-cert-manager-issuer.md)) |
 | Managing the certificate authority from the command-line tool, beyond signing, listing and withdrawing intermediates, and from the console | Not scheduled |

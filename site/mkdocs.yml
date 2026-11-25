@@ -140,6 +140,7 @@ nav:
       - Envoy's external authorization: operations/hodor-ext-authz.md
       - Deployment: operations/deployment.md
       - Keys in OpenBao: operations/keys-in-openbao.md
+      - cert-manager's issuer: operations/hodor-cert-manager-issuer.md
       - OpenID conformance: operations/conformance.md
       - OpenID certification: operations/certification.md
   - Examples:
@@ -259,6 +260,7 @@ nav:
       - decisions/0058-hodor-ext-authz.md
       - decisions/0062-the-certificate-authority-of-a-tenant.md
       - decisions/0071-signing-intermediates.md
+      - decisions/0074-hodor-cert-manager-issuer.md
   - Contributing:
       - development/conventions.md
       - development/documentation-site.md

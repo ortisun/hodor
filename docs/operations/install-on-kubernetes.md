@@ -20,6 +20,7 @@ The chart is in `deploy/install/helm/hodor/`. It installs Hodor and nothing arou
 | HorizontalPodAutoscaler | `<release>-server` | Only with `server.autoscaling.enabled`: adds servers as processor use grows |
 | NetworkPolicy | `<release>` | Only with `networkPolicy.enabled`: who may reach the servers, and optionally where Hodor's pods may connect |
 | Deployment, Service, ServiceAccount, ConfigMap, PodDisruptionBudget | `<release>-ext-authz` | Only with `extAuthz.enabled`: [`hodor-ext-authz`](hodor-ext-authz.md), from its own image, two replicas by default, its gRPC port 9191 in the Service. Its service account gives it its mesh identity. See [Envoy's external authorization](#envoys-external-authorization) |
+| CustomResourceDefinition, Deployment, ServiceAccount, ClusterRole, ClusterRoleBinding, ConfigMap | `<release>-cert-manager-issuer` | Only with `certManagerIssuer.enabled`: [`hodor-cert-manager-issuer`](hodor-cert-manager-issuer.md), from its own image, one replica, with the kinds `HodorIssuer` and `HodorClusterIssuer` and what it may do in the cluster. See [cert-manager's issuer](#cert-managers-issuer) |
 
 Every pod runs as a user that is not root, with a read-only file system, no Linux capability, no privilege escalation and the default seccomp profile, which the `restricted` Pod Security Standard asks for. The three health checks of [deployment](deployment.md#kubernetes-reference), `/startupz`, `/readyz` and `/livez`, are wired to the operations port.
 
@@ -181,6 +182,7 @@ kubectl exec --namespace hodor deployment/hodor-server -- /usr/local/bin/hodor-c
 | `keyProvider.openbao.certificateAuthority.configMap`, `key` | Empty; `ca.crt` | A ConfigMap holding the certificate of the authority that issued OpenBao's certificate. Set, only that authority is trusted for OpenBao |
 | `outboundAuthorities.configMap`, `outboundAuthorities.key` | Empty; `authorities.pem` | A ConfigMap of yours whose key holds the certificates, in PEM, of the authorities Hodor's outbound requests trust in place of the image's, for an identity provider or a bundle endpoint served under an authority of your own. It replaces them all: [the authorities it trusts](../security/outbound-http.md#the-authorities-it-trusts) |
 | `extAuthz.enabled` | `false` | Installs `hodor-ext-authz`. See [Envoy's external authorization](#envoys-external-authorization) |
+| `certManagerIssuer.enabled` | `false` | Installs `hodor-cert-manager-issuer`. See [cert-manager's issuer](#cert-managers-issuer) |
 
 Changing the Secret does not restart anything. After changing it, restart the pods so that they read it again:
 
@@ -286,6 +288,51 @@ extAuthz:
 | `extAuthz.podAnnotations`, `extAuthz.extraEnvironment`, `extAuthz.nodeSelector`, `extAuthz.tolerations`, `extAuthz.affinity` | Empty | As for the server. The annotations are where a mesh's sidecar is asked for, when the namespace does not ask for it already |
 
 With `networkPolicy.enabled` and `networkPolicy.egress.enabled`, its pods may also reach the servers' public port. Setting up the tenant, the service account and the clients it uses is in [setting it up in Hodor](hodor-ext-authz.md#setting-it-up-in-hodor).
+
+### cert-manager's issuer
+
+With `certManagerIssuer.enabled`, the chart installs [`hodor-cert-manager-issuer`](hodor-cert-manager-issuer.md), which signs the intermediates cert-manager keeps for the tenant's meshes through the tenant's certificate authority. It runs from its own image, `ghcr.io/ortisun/hodor-cert-manager-issuer`, as a Kubernetes service account of its own, `<release>-cert-manager-issuer`, bound to the one ClusterRole of [what it may do in the cluster](hodor-cert-manager-issuer.md#what-it-may-do-in-the-cluster). Its configuration file is written from the values into a ConfigMap, and a change of the values restarts its pod. cert-manager must be installed first, with its feature gate `UseCertificateRequestBasicConstraints` on, so that the requests it writes ask for an authority ([what it signs](hodor-cert-manager-issuer.md#what-it-signs)).
+
+Beside Hodor, proving who it is with its mesh identity:
+
+```yaml
+certManagerIssuer:
+  enabled: true
+  tenant: acme
+  clientId: 0193f3c0-2d4e-7b1a-9c55-6b1f2c9d4e01
+  podAnnotations:
+    linkerd.io/inject: enabled
+```
+
+Alone, in a cluster of meshes where Hodor does not run, proving who it is with its key:
+
+```bash
+helm install hodor-issuer deploy/install/helm/hodor --namespace cert-manager \
+  --set certManagerIssuer.enabled=true --set certManagerIssuer.only=true \
+  --set certManagerIssuer.tenant=acme --set certManagerIssuer.hodorUrl=https://login.example.com \
+  --set certManagerIssuer.clientId=0193f3c0-2d4e-7b1a-9c55-6b1f2c9d4e01 \
+  --set certManagerIssuer.authentication.method=private_key_jwt \
+  --set certManagerIssuer.authentication.privateKeyJwt.secretName=hodor-cert-manager-issuer-key
+```
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `certManagerIssuer.only` | `false` | The release holds the issuer alone: no migration, server, worker or Service of Hodor, and none of Hodor's own values needed |
+| `certManagerIssuer.image.repository`, `certManagerIssuer.image.tag` | `ghcr.io/ortisun/hodor-cert-manager-issuer`; the version of the chart | Where its image is, and which version runs |
+| `certManagerIssuer.tenant` | None | The tenant's slug. Required when enabled |
+| `certManagerIssuer.hodorUrl` | The release's Service, `http://<release>.<namespace>.svc.cluster.local:8080` | Where it reaches Hodor. Required with `only` |
+| `certManagerIssuer.issuer` | `publicUrl` followed by `/t/<tenant>`; with `only`, `hodorUrl` followed by `/t/<tenant>` | The tenant's issuer, which its assertions name |
+| `certManagerIssuer.timeoutMilliseconds` | `10000` | How long one call to Hodor may take |
+| `certManagerIssuer.clientId` | None | Its client in Hodor. Required when enabled |
+| `certManagerIssuer.authentication.method` | `forwarded` | `forwarded`: its mesh identity; `private_key_jwt`: its key |
+| `certManagerIssuer.authentication.privateKeyJwt.secretName`, `key`, `keyId` | None; `key.pem`; empty | For `private_key_jwt`: the Secret holding its key in PEM, the key of the Secret, and the key's `kid` among the client's keys |
+| `certManagerIssuer.customResourceDefinitions` | `true` | Whether the chart defines `HodorIssuer` and `HodorClusterIssuer`. `false` when another release of the cluster defines them |
+| `certManagerIssuer.approveWithCertManager.enabled`, `serviceAccount`, `namespace` | `false`; `cert-manager`; `cert-manager` | Lets cert-manager's own approver approve every request of Hodor's two kinds. Prefer approver-policy: [who may have an intermediate signed](hodor-cert-manager-issuer.md#who-may-have-an-intermediate-signed) |
+| `certManagerIssuer.serviceAccount.name`, `certManagerIssuer.serviceAccount.annotations` | `<release>-cert-manager-issuer` | Its Kubernetes service account. `certManagerIssuer.serviceAccount.create: false` uses one that exists |
+| `certManagerIssuer.resources` | 50m and 32Mi to 128Mi | Requests and limits |
+| `certManagerIssuer.podAnnotations`, `certManagerIssuer.extraEnvironment`, `certManagerIssuer.nodeSelector`, `certManagerIssuer.tolerations`, `certManagerIssuer.affinity` | Empty | As for the server. The annotations are where a mesh's sidecar is asked for, when the namespace does not ask for it already |
+
+With `networkPolicy.enabled` and `networkPolicy.egress.enabled`, its pod may also reach the servers' public port; list the Kubernetes interface's address in `networkPolicy.egress.to`, since the issuer watches it. Setting up the tenant, the service account and the client it uses is in [setting it up in Hodor](hodor-cert-manager-issuer.md#setting-it-up-in-hodor). Uninstalling the release removes the two kinds, and every `HodorIssuer` and `HodorClusterIssuer` with them.
 
 ## Upgrading
 

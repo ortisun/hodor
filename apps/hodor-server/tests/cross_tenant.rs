@@ -6189,3 +6189,158 @@ async fn an_intermediate_of_one_tenants_authority_is_never_read_withdrawn_or_tru
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(refused["code"], "keys.intermediate_key_withdrawn");
 }
+
+/// A tenant's signing client, as `hodor-cert-manager-issuer` has one: the
+/// authority's audience opened, a service account holding
+/// `certificate_signer`, and its client with a secret. Answers the
+/// client's identifier and secret.
+async fn signing_client(world: &World, tenant: &Tenant) -> (String, String) {
+    let token = &tenant.administrator_token;
+    let (status, _) = world
+        .admin(tenant, token, Method::POST, "/keys/sig:rotate", None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, created) = world
+        .admin(
+            tenant,
+            token,
+            Method::POST,
+            "/certificate-authority",
+            Some(serde_json::json!({ "kind": "root", "trust_domains": ["cluster.local"] })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let (_, application) = world
+        .admin(
+            tenant,
+            token,
+            Method::POST,
+            "/applications",
+            Some(serde_json::json!({ "name": "Certificate authority", "first_party": true })),
+        )
+        .await;
+    let (status, _) = world
+        .admin(
+            tenant,
+            token,
+            Method::POST,
+            "/resource-servers",
+            Some(serde_json::json!({
+                "application_id": application["id"],
+                "audience": "urn:hodor:certificate-authority",
+                "name": "Certificate authority",
+                "scopes": [{ "name": "certificate-authority:sign", "description": "Sign" }]
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, account) = world
+        .admin(
+            tenant,
+            token,
+            Method::POST,
+            "/service-accounts",
+            Some(serde_json::json!({ "name": "cert-manager issuer", "owners": [tenant.ana] })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{account}");
+    AuthorizationService::new(
+        Arc::new(world.database.app().clone()),
+        Arc::new(PgRoleAssignmentStore),
+        Arc::new(SystemClock),
+    )
+    .assign(
+        &tenant.context,
+        account["id"]
+            .as_str()
+            .expect("id")
+            .parse()
+            .expect("an identifier"),
+        Role::CertificateSigner,
+        Caller::system(),
+    )
+    .await
+    .expect("role");
+    let (status, client) = world
+        .admin(
+            tenant,
+            token,
+            Method::POST,
+            &format!(
+                "/applications/{}/clients",
+                application["id"].as_str().expect("id")
+            ),
+            Some(serde_json::json!({
+                "name": "cert-manager issuer",
+                "type": "confidential",
+                "principal": account["id"],
+                "grant_types": ["client_credentials"],
+                "allowed_scopes": ["certificate-authority:sign"],
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{client}");
+    (
+        client["id"].as_str().expect("id").to_owned(),
+        client["client_secret"]
+            .as_str()
+            .expect("a secret")
+            .to_owned(),
+    )
+}
+
+#[tokio::test]
+async fn a_signing_token_of_one_tenant_signs_nothing_at_another() {
+    use base64::Engine as _;
+    use hodor_adapters_crypto::testing::certificates::{MeshIntermediate, MeshRequest};
+    let world = world_with(&[
+        ("HODOR_SECRET_KEYS", ROOT_KEY),
+        ("HODOR_CERTIFICATE_AUTHORITY", "development"),
+    ])
+    .await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    // Both tenants are set up alike: an authority of the same trust domain,
+    // the same audience, and a service account that signs.
+    let (client, secret) = signing_client(&world, acme).await;
+    signing_client(&world, globex).await;
+    let basic = base64::engine::general_purpose::STANDARD.encode(format!("{client}:{secret}"));
+    let response = Client::new()
+        .post(format!("{}/t/acme/oauth2/token", world.server.base))
+        .header("authorization", format!("Basic {basic}"))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(
+            "grant_type=client_credentials&resource=urn%3Ahodor%3Acertificate-authority\
+             &scope=certificate-authority%3Asign",
+        )
+        .send()
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let answer: serde_json::Value = response.json().await.expect("JSON");
+    let signing = answer["access_token"].as_str().expect("a token").to_owned();
+
+    let mesh = MeshIntermediate::new(&MeshRequest::authority("istio-ca"));
+    let body = serde_json::json!({ "certificate_signing_request": mesh.request() });
+    let path = "/certificate-authority/intermediates";
+    let (status, signed) = world
+        .admin(acme, &signing, Method::POST, path, Some(body.clone()))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{signed}");
+
+    // At Globex: not authenticated, and nothing signed there.
+    let (status, refused) = world
+        .admin(globex, &signing, Method::POST, path, Some(body.clone()))
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{refused}");
+    assert_eq!(refused["code"], "admin.not_authenticated");
+    let (_, listed) = world
+        .admin(globex, &globex.administrator_token, Method::GET, path, None)
+        .await;
+    assert_eq!(listed["items"], serde_json::json!([]));
+
+    // It still signs where it belongs.
+    let (status, again) = world
+        .admin(acme, &signing, Method::POST, path, Some(body))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{again}");
+}

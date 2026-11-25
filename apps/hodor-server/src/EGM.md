@@ -94,7 +94,10 @@ Routers, as assembled in `run`:
   `KeyProviders` of
   `key_providers`, whose `authorities()` makes its key), given to the
   `AdminState` and merged as `authority_bundle_routes` into the tenant
-  routes. Without `HODOR_SECRET_KEYS`, or with another value, the server
+  routes. With it and the keys, `AdminState.certificate_signing` is the
+  `ResourceAccessService` of `resource_access`, which the signing of
+  intermediates checks access tokens for the audience
+  `urn:hodor:certificate-authority` with. Without `HODOR_SECRET_KEYS`, or with another value, the server
   stops at startup with `keys.authority_setting_invalid`. The
   `TrustDomainService` of `trust_domains` reads withdrawn keys from
   `PgIntermediateStore` whatever the setting, so that the token endpoint

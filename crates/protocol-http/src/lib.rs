@@ -34,8 +34,8 @@ mod tenant;
 mod token;
 
 pub use admin::{
-    ADMIN_OPENAPI, ADMIN_OPERATIONS, AdminState, CONSOLE_SESSION_HOURS, ConsoleState, admin_routes,
-    console_routes,
+    ADMIN_OPENAPI, ADMIN_OPERATIONS, AdminState, CERTIFICATE_AUTHORITY_AUDIENCE,
+    CONSOLE_SESSION_HOURS, ConsoleState, admin_routes, console_routes,
 };
 pub use authority_bundle::authority_bundle_routes;
 pub use authorization_api::{

@@ -1,3 +1,4 @@
+{{- if include "hodor.installsHodor" . }}
 {{- if .Values.server.autoscaling.enabled }}
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
@@ -21,4 +22,6 @@ spec:
         target:
           type: Utilization
           averageUtilization: {{ .Values.server.autoscaling.targetProcessorUtilizationPercentage }}
+{{- end }}
+
 {{- end }}

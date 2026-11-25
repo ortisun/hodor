@@ -285,3 +285,56 @@ topologySpreadConstraints:
 {{- $_ := set $config "applications" $applications -}}
 {{- $config | toPrettyJson -}}
 {{- end -}}
+
+{{/* Whether the release holds Hodor itself: always, unless it holds cert-manager's issuer alone. Renders
+     "true" or nothing. */}}
+{{- define "hodor.installsHodor" -}}
+{{- if not (and .Values.certManagerIssuer.enabled .Values.certManagerIssuer.only) -}}
+true
+{{- end -}}
+{{- end -}}
+
+{{/* The name of the service account hodor-cert-manager-issuer runs as, which its ClusterRole is bound to. */}}
+{{- define "hodor.certManagerIssuerServiceAccountName" -}}
+{{- if .Values.certManagerIssuer.serviceAccount.create -}}
+{{- .Values.certManagerIssuer.serviceAccount.name | default (printf "%s-cert-manager-issuer" (include "hodor.fullname" .)) -}}
+{{- else -}}
+{{- required "certManagerIssuer.serviceAccount.name is required when certManagerIssuer.serviceAccount.create is false" .Values.certManagerIssuer.serviceAccount.name -}}
+{{- end -}}
+{{- end -}}
+
+{{/* The configuration file of hodor-cert-manager-issuer, written from certManagerIssuer as
+     docs/operations/hodor-cert-manager-issuer.md describes it. */}}
+{{- define "hodor.certManagerIssuerConfig" -}}
+{{- $values := .Values.certManagerIssuer -}}
+{{- $tenant := required "certManagerIssuer.tenant is required when certManagerIssuer.enabled is true: the tenant's slug" $values.tenant -}}
+{{- $clientId := required "certManagerIssuer.clientId is required when certManagerIssuer.enabled is true: the client of the issuer's service account in Hodor" $values.clientId -}}
+{{- $url := "" -}}
+{{- if $values.only -}}
+{{- $url = required "certManagerIssuer.hodorUrl is required with certManagerIssuer.only: where the issuer reaches Hodor, such as https://login.example.com" $values.hodorUrl -}}
+{{- else -}}
+{{- $url = $values.hodorUrl | default (printf "http://%s.%s.svc.cluster.local:%v" (include "hodor.fullname" .) .Release.Namespace .Values.service.port) -}}
+{{- end -}}
+{{- $issuer := $values.issuer -}}
+{{- if not $issuer -}}
+{{- if $values.only -}}
+{{- $issuer = printf "%s/t/%s" (trimSuffix "/" $url) $tenant -}}
+{{- else -}}
+{{- $issuer = printf "%s/t/%s" (include "hodor.publicUrl" .) $tenant -}}
+{{- end -}}
+{{- end -}}
+{{- $method := $values.authentication.method -}}
+{{- $authentication := dict "method" $method -}}
+{{- if eq $method "private_key_jwt" -}}
+{{- $_ := required "certManagerIssuer.authentication.privateKeyJwt.secretName is required with private_key_jwt: the Secret that holds the client's key" $values.authentication.privateKeyJwt.secretName -}}
+{{- $_ := set $authentication "key_file" "/etc/hodor-cert-manager-issuer/key/key.pem" -}}
+{{- with $values.authentication.privateKeyJwt.keyId }}
+{{- $_ := set $authentication "key_id" . -}}
+{{- end }}
+{{- else if ne $method "forwarded" -}}
+{{- fail (printf "certManagerIssuer.authentication.method is forwarded or private_key_jwt; it is %q" $method) -}}
+{{- end -}}
+{{- $hodor := dict "url" $url "tenant" $tenant "issuer" $issuer "timeout_milliseconds" (int $values.timeoutMilliseconds) -}}
+{{- $config := dict "hodor" $hodor "client" (dict "client_id" $clientId "authentication" $authentication) -}}
+{{- $config | toPrettyJson -}}
+{{- end -}}

@@ -1559,8 +1559,21 @@ fn administration(
         ..OutboundPolicy::default()
     })?));
     let applications_for_subjects = applications.clone();
+    let authority = authority(config, database)?;
+    let keys = keys(config, database)?;
+    // The signing of intermediates takes an access token for the
+    // authority's audience, checked against the tenant's keys.
+    let certificate_signing = match (&authority, &keys) {
+        (Some(_), Some(keys)) => Some(resource_access(
+            database,
+            keys.clone(),
+            applications.clone(),
+        )),
+        _ => None,
+    };
     Ok(AdminState {
-        authority: authority(config, database)?,
+        authority,
+        certificate_signing,
         claim_mappers: ClaimMapperService::new(ClaimMapperPorts {
             units_of_work: units(),
             clients: Arc::new(PgClientStore),
@@ -1602,7 +1615,7 @@ fn administration(
         // The server reads the audit log; the worker writes it.
         audit: AuditService::new(units(), Arc::new(PgAuditLog), digest, clock.clone()),
         federation,
-        keys: keys(config, database)?,
+        keys,
         key_rotation: key_rotation(config)?,
         trust_domains: trust_domains(config, database)?,
         applications,

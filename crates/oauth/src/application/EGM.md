@@ -345,9 +345,10 @@ applications, digest, clock })`:
   an enabled application, the last two read with their resource server by
   `client_with_application`; each failure is `InvalidToken`. Answers a
   `ResourceCaller` (client, application, subject, scopes, the
-  application's resource server). Checks no scope: `has_scope` is for the
-  resource server. The Authorization API and the SCIM server are its
-  callers.
+  application's resource server, and the token's `principal_kind` when its
+  client acts as a workload). Checks no scope: `has_scope` is for the
+  resource server. The Authorization API, the SCIM server and the signing
+  of intermediates at the administration interface are its callers.
 
 ### Logout (`logout.rs`)
 

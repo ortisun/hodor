@@ -202,6 +202,10 @@ const RULES: &[Rule] = &[
     // like any application, so it holds no decision of its own and no
     // context crate (Decision 0058).
     adapter("hodor-ext-authz", &["hodor-observability"]),
+    // cert-manager's outside issuer asks Hodor over its token endpoint and
+    // the signing operation like any program of the tenant, so it holds no
+    // decision of its own and no context crate (Decision 0074).
+    adapter("hodor-cert-manager-issuer", &["hodor-observability"]),
     // Test support.
     adapter("hodor-architecture-tests", &[]),
     // How tests start containers and reach their ports; a dependency of
@@ -417,6 +421,21 @@ mod tests {
         let found = violations(&workspace);
         assert_eq!(found.len(), 1, "{found:?}");
         assert!(found[0].contains("`hodor-oauth`"), "{found:?}");
+    }
+
+    #[test]
+    fn the_certificate_issuer_reaches_no_context() {
+        let workspace = [
+            krate("hodor-observability", &[]),
+            krate("hodor-keys", &[]),
+            krate(
+                "hodor-cert-manager-issuer",
+                &["hodor-observability", "kube", "reqwest", "hodor-keys"],
+            ),
+        ];
+        let found = violations(&workspace);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("`hodor-keys`"), "{found:?}");
     }
 
     #[test]

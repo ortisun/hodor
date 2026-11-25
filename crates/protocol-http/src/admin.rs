@@ -65,6 +65,8 @@ mod trust_domains;
 mod webhooks;
 mod workloads;
 
+pub use certificate_authority::CERTIFICATE_AUTHORITY_AUDIENCE;
+
 /// The OpenAPI document of the interface, as served at `/openapi.json`.
 pub const ADMIN_OPENAPI: &str = include_str!("../openapi/admin-v1.json");
 
@@ -660,6 +662,11 @@ pub struct AdminState {
     /// turns the authority on: its operations are then not routed, not in
     /// the OpenAPI document, and its permissions not listed.
     pub authority: Option<hodor_keys::api::AuthorityService>,
+    /// Checks the access tokens a client presents to sign intermediates,
+    /// for the audience of the certificate authority. `None` unless the
+    /// installation turns the authority on and has keys to check tokens
+    /// with; the signing operation then takes no such token.
+    pub certificate_signing: Option<hodor_oauth::api::ResourceAccessService>,
     /// The applications, their clients and resource servers.
     pub applications: ApplicationService,
     /// The claim mappers of clients.

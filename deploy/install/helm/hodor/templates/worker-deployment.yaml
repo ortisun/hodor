@@ -1,3 +1,4 @@
+{{- if include "hodor.installsHodor" . }}
 {{- if and .Values.mail.enabled (not .Values.mail.from) }}
 {{- fail "mail.from is required when mail.enabled is true: the address messages come from, such as \"Hodor <no-reply@example.com>\"" }}
 {{- end }}
@@ -90,3 +91,5 @@ spec:
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+
+{{- end }}

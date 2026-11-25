@@ -1,12 +1,13 @@
 # Publishes the image and the chart of a release, signed. See
 # docs/security/supply-chain.md, "What a release publishes".
 #
-# On the tag of a release (v0.3.0): builds each image, Hodor's and that of
-# hodor-ext-authz, for each architecture on a machine of that architecture,
-# joins each image's architectures under one tag, signs the images and the
-# chart with cosign and the workflow's own identity, and publishes the
-# chart. On a pull request that changes this workflow or a Dockerfile: the
-# same builds, and nothing published or signed.
+# On the tag of a release (v0.3.0): builds each image, Hodor's, that of
+# hodor-ext-authz and that of hodor-cert-manager-issuer, for each
+# architecture on a machine of that architecture, joins each image's
+# architectures under one tag, signs the images and the chart with cosign
+# and the workflow's own identity, and publishes the chart. On a pull request
+# that changes this workflow or a Dockerfile: the same builds, and nothing
+# published or signed.
 name: Release
 
 on:
@@ -18,12 +19,13 @@ on:
       - .github/workflows/release.yml
       - deploy/docker/Dockerfile
       - deploy/docker/ext-authz.Dockerfile
+      - deploy/docker/cert-manager-issuer.Dockerfile
 
 permissions:
   contents: read
 
 env:
-  # Where the images are: Hodor's, and hodor-ext-authz's beside it.
+  # Where the images are: Hodor's, and hodor-ext-authz's and hodor-cert-manager-issuer's beside it.
   REGISTRY: ghcr.io/${{ github.repository_owner }}
   IMAGE: ghcr.io/${{ github.repository_owner }}/hodor
   CHARTS: oci://ghcr.io/${{ github.repository_owner }}/charts
@@ -56,7 +58,7 @@ jobs:
     needs: version
     strategy:
       matrix:
-        image: [hodor, hodor-ext-authz]
+        image: [hodor, hodor-ext-authz, hodor-cert-manager-issuer]
         architecture: [amd64, arm64]
         include:
           - architecture: amd64
@@ -67,6 +69,8 @@ jobs:
             dockerfile: deploy/docker/Dockerfile
           - image: hodor-ext-authz
             dockerfile: deploy/docker/ext-authz.Dockerfile
+          - image: hodor-cert-manager-issuer
+            dockerfile: deploy/docker/cert-manager-issuer.Dockerfile
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -139,7 +143,7 @@ jobs:
       - name: Join each image's architectures under the version's tag
         working-directory: digests
         run: |
-          for name in hodor hodor-ext-authz; do
+          for name in hodor hodor-ext-authz hodor-cert-manager-issuer; do
             image="$REGISTRY/$name"
             sources=()
             for digest in "$name"/*; do sources+=("$image@sha256:${digest#"$name"/}"); done
@@ -149,7 +153,7 @@ jobs:
           done
       - name: Sign the images
         run: |
-          for name in hodor hodor-ext-authz; do
+          for name in hodor hodor-ext-authz hodor-cert-manager-issuer; do
             image="$REGISTRY/$name"
             digest="$(docker buildx imagetools inspect "$image:$VERSION" --format '{{json .Manifest}}' | jq -r .digest)"
             cosign sign --yes "$image@$digest"
@@ -166,7 +170,7 @@ jobs:
       - name: Check every signature as a person would
         run: |
           identity='^https://github[.]com/${{ github.repository }}/[.]github/workflows/release[.]yml@refs/tags/v'
-          for artifact in "$IMAGE:$VERSION" "$REGISTRY/hodor-ext-authz:$VERSION" "${CHARTS#oci://}/hodor:$VERSION"; do
+          for artifact in "$IMAGE:$VERSION" "$REGISTRY/hodor-ext-authz:$VERSION" "$REGISTRY/hodor-cert-manager-issuer:$VERSION" "${CHARTS#oci://}/hodor:$VERSION"; do
             cosign verify "$artifact" \
               --certificate-identity-regexp "$identity" \
               --certificate-oidc-issuer https://token.actions.githubusercontent.com > /dev/null

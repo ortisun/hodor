@@ -2,17 +2,25 @@
 
 ## Overview
 
-The three binaries of a Hodor installation, and `hodor-ext-authz`, which runs
-beside a service mesh's proxies apart from them. Each is a Cargo package of the
-workspace (`members` in the root `Cargo.toml` includes `apps/*`) with a
-`src/main.rs`; `hodor-ext-authz` also has a library its tests and the
-server's drive, and reaches Hodor only over HTTP. The other three share PostgreSQL through `hodor-adapters-postgres` but
+The three binaries of a Hodor installation, and two that run apart from
+them: `hodor-ext-authz`, beside a service mesh's proxies, and
+`hodor-cert-manager-issuer`, in the clusters of the meshes. Each is a Cargo
+package of the workspace (`members` in the root `Cargo.toml` includes
+`apps/*`) with a `src/main.rs`; the last two also have a library their tests
+and the server's drive, and reach Hodor only over HTTP. The other three share
+PostgreSQL through `hodor-adapters-postgres` but
 connect with different roles: `hodor-cli migrate` as the schema owner, the
 server as the application role (`hodor_app`), and the worker as both the
 application role and the platform role (`hodor_platform`).
 
 ## Subdirectories & Boundaries
 
+- hodor-cert-manager-issuer:
+  [./hodor-cert-manager-issuer/EGM.md](./hodor-cert-manager-issuer/EGM.md) -
+  cert-manager's outside issuer: the approved requests for an authority of
+  its two kinds, signed through the tenant's certificate authority with an
+  access token of its own client; it connects to no database and depends on
+  no context crate.
 - hodor-cli: [./hodor-cli/EGM.md](./hodor-cli/EGM.md) - the operations tool:
   migrations, tenants, the first administrator, audit verification, identity
   providers, secret keys and a health probe.
@@ -29,4 +37,4 @@ application role and the platform role (`hodor_platform`).
 
 ## Verification
 
-- Run: `cargo test -p hodor-cli -p hodor-server -p hodor-worker -p hodor-ext-authz`
+- Run: `cargo test -p hodor-cli -p hodor-server -p hodor-worker -p hodor-ext-authz -p hodor-cert-manager-issuer`

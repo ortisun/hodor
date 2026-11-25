@@ -1,0 +1,82 @@
+{{- if and .Values.certManagerIssuer.enabled .Values.certManagerIssuer.customResourceDefinitions }}
+{{- range $kind := list (dict "kind" "HodorIssuer" "plural" "hodorissuers" "singular" "hodorissuer" "scope" "Namespaced" "serves" "the CertificateRequests of its own namespace") (dict "kind" "HodorClusterIssuer" "plural" "hodorclusterissuers" "singular" "hodorclusterissuer" "scope" "Cluster" "serves" "the CertificateRequests of every namespace") }}
+---
+# The kinds a cert-manager Certificate names in its issuerRef to be signed by hodor-cert-manager-issuer.
+# Their spec is empty: Hodor's address, the tenant and the client are the issuer's own configuration.
+# docs/operations/hodor-cert-manager-issuer.md, "Its kinds".
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: {{ printf "%s.hodor.ortisun.github.io" $kind.plural }}
+  labels:
+    {{- include "hodor.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: cert-manager-issuer
+spec:
+  group: hodor.ortisun.github.io
+  names:
+    kind: {{ $kind.kind }}
+    listKind: {{ printf "%sList" $kind.kind }}
+    plural: {{ $kind.plural }}
+    singular: {{ $kind.singular }}
+    categories:
+      - cert-manager
+  scope: {{ $kind.scope }}
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Ready
+          type: string
+          jsonPath: .status.conditions[?(@.type=="Ready")].status
+        - name: Reason
+          type: string
+          jsonPath: .status.conditions[?(@.type=="Ready")].reason
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          description: {{ printf "An issuer of hodor-cert-manager-issuer, which signs %s through the tenant's certificate authority in Hodor." $kind.serves | quote }}
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+            metadata:
+              type: object
+            spec:
+              type: object
+              description: Empty. Hodor's address, the tenant and the client are the issuer's own configuration.
+            status:
+              type: object
+              properties:
+                conditions:
+                  type: array
+                  description: Ready says whether Hodor gave the issuer an access token on its last try.
+                  items:
+                    type: object
+                    required: [type, status]
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                        enum: ["True", "False", "Unknown"]
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      observedGeneration:
+                        type: integer
+                        format: int64
+                  x-kubernetes-list-type: map
+                  x-kubernetes-list-map-keys: [type]
+{{- end }}
+{{- end }}

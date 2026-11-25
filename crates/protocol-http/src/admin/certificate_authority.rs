@@ -6,7 +6,8 @@
 //! "Intermediates".
 
 use super::{
-    PageBody, Shared, authorize, body, failed, page_request, parameter, problem, respond, written,
+    PageBody, Shared, authorize, bearer, body, failed, forbidden, not_authenticated, page_request,
+    parameter, problem, respond, written,
 };
 use crate::tenant::TenantSlug;
 use axum::Router;
@@ -17,12 +18,19 @@ use axum::http::header::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Extension, Json};
-use hodor_kernel::{DomainError, Page, TenantContext};
+use hodor_authorization::api::Permission;
+use hodor_kernel::{Actor, Caller, CorrelationId, DomainError, Page, TenantContext, UserId};
 use hodor_keys::api::{
     AuthorityId, AuthorityService, CertificateAuthority, IntermediateConstraints, IntermediateId,
     NameConstraints, NewAuthority, SignedIntermediate, to_pem,
 };
+use hodor_oauth::api::{ForwardedIdentity, ResourceAccessService, ResourceCaller};
 use serde::{Deserialize, Serialize};
+
+/// The audience an access token must name to sign intermediates.
+pub const CERTIFICATE_AUTHORITY_AUDIENCE: &str = "urn:hodor:certificate-authority";
+/// The scope such a token must hold.
+const SIGN_SCOPE: &str = "certificate-authority:sign";
 
 pub(super) fn routes() -> Router<Shared> {
     Router::new()
@@ -343,22 +351,133 @@ fn intermediate_not_found() -> Box<Response> {
     ))
 }
 
+/// Why an access token of the token endpoint may not sign.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SigningRefusal {
+    /// Not good here: `401`, as any credential that is not.
+    NotAuthenticated,
+    /// Good, and without the scope: `403`.
+    Forbidden,
+}
+
+/// The service account a checked access token signs for: its client must
+/// act as a service account, and the token hold the signing scope. Its
+/// audience and everything else about it were checked already.
+fn signing_workload(caller: &ResourceCaller) -> Result<UserId, SigningRefusal> {
+    if caller.principal_kind.as_deref() != Some("service_account") {
+        return Err(SigningRefusal::NotAuthenticated);
+    }
+    let Ok(workload) = caller.subject.parse::<UserId>() else {
+        return Err(SigningRefusal::NotAuthenticated);
+    };
+    if !caller.has_scope(SIGN_SCOPE) {
+        return Err(SigningRefusal::Forbidden);
+    }
+    Ok(workload)
+}
+
+/// Whether a bearer is an access token of the token endpoint, a JSON Web
+/// Token, rather than a token or a key of the credential context, which
+/// have no dot.
+fn is_access_token_of_the_token_endpoint(token: &str) -> bool {
+    token.split('.').count() == 3
+}
+
+/// Who signs with an access token of the token endpoint: checked through
+/// the resource access use case for the audience of the certificate
+/// authority, of a service account's client, with the signing scope, the
+/// service account active and holding `certificate-authority:sign`.
+async fn authorize_signing_token(
+    state: &Shared,
+    access: &ResourceAccessService,
+    tenant: &TenantContext,
+    slug: &str,
+    token: &str,
+    forwarded: Option<&ForwardedIdentity>,
+) -> Result<Caller, Box<Response>> {
+    let issuer = format!("{}/t/{slug}", state.public_url.trim_end_matches('/'));
+    let found = access
+        .caller(
+            tenant,
+            &issuer,
+            CERTIFICATE_AUTHORITY_AUDIENCE,
+            Some(token),
+            forwarded,
+        )
+        .await
+        .map_err(failed)?;
+    let Ok(found) = found else {
+        return Err(not_authenticated());
+    };
+    let workload = signing_workload(&found).map_err(|refusal| match refusal {
+        SigningRefusal::NotAuthenticated => not_authenticated(),
+        SigningRefusal::Forbidden => forbidden(),
+    })?;
+    match state.identity.get(tenant, workload).await {
+        Ok(account)
+            if account.is_workload_that_may_act()
+                && account.kind() == hodor_identity::api::UserKind::ServiceAccount => {}
+        Ok(_) => return Err(not_authenticated()),
+        Err(error) if error.code() == "identity.user_not_found" => {
+            return Err(not_authenticated());
+        }
+        Err(error) => return Err(failed(error)),
+    }
+    let decision = state
+        .authorization
+        .check(tenant, workload, Permission::CertificateAuthoritySign)
+        .await
+        .map_err(failed)?;
+    if !decision.is_allowed() {
+        return Err(forbidden());
+    }
+    Ok(Caller {
+        actor: Actor::User(workload),
+        correlation_id: CorrelationId::generate(),
+    })
+}
+
 async fn sign_intermediate(
     State(state): State<Shared>,
     Extension(tenant): Extension<TenantContext>,
+    Extension(TenantSlug(slug)): Extension<TenantSlug>,
+    forwarded: Option<Extension<ForwardedIdentity>>,
     headers: HeaderMap,
     bytes: Bytes,
 ) -> Response {
     respond(
         async {
-            let caller = authorize(
-                &state,
-                &tenant,
-                &headers,
-                "POST",
-                "/certificate-authority/intermediates",
-            )
-            .await?;
+            // Only the administration interface takes an access token of
+            // the token endpoint here; the console knows people by their
+            // session alone.
+            let signing_token = state
+                .certificate_signing
+                .as_ref()
+                .filter(|_| state.by_session.is_none())
+                .zip(bearer(&headers).filter(|token| is_access_token_of_the_token_endpoint(token)));
+            let caller = match signing_token {
+                Some((access, token)) => {
+                    authorize_signing_token(
+                        &state,
+                        access,
+                        &tenant,
+                        &slug,
+                        token,
+                        forwarded.as_ref().map(|Extension(found)| found),
+                    )
+                    .await?
+                }
+                None => {
+                    authorize(
+                        &state,
+                        &tenant,
+                        &headers,
+                        "POST",
+                        "/certificate-authority/intermediates",
+                    )
+                    .await?
+                }
+            };
             let asked: SignBody = body(&bytes)?;
             let signed = service(&state)?
                 .sign(
@@ -481,4 +600,88 @@ async fn withdraw_intermediate(
         }
         .await,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SigningRefusal, is_access_token_of_the_token_endpoint, signing_workload};
+    use hodor_kernel::UserId;
+    use hodor_oauth::api::{ApplicationId, ClientId, ResourceCaller};
+
+    fn caller(principal_kind: Option<&str>, subject: &str, scopes: &[&str]) -> ResourceCaller {
+        ResourceCaller {
+            client_id: ClientId::generate(),
+            application_id: ApplicationId::generate(),
+            subject: subject.to_owned(),
+            scopes: scopes.iter().map(|scope| (*scope).to_owned()).collect(),
+            resource_server: None,
+            principal_kind: principal_kind.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn a_service_accounts_token_with_the_scope_signs_for_the_service_account() {
+        let account = UserId::generate();
+        assert_eq!(
+            signing_workload(&caller(
+                Some("service_account"),
+                &account.to_string(),
+                &["certificate-authority:sign"]
+            )),
+            Ok(account)
+        );
+    }
+
+    #[test]
+    fn a_token_of_anything_but_a_service_account_is_not_good_here() {
+        let account = UserId::generate().to_string();
+        for kind in [None, Some("agent"), Some("human"), Some("")] {
+            assert_eq!(
+                signing_workload(&caller(kind, &account, &["certificate-authority:sign"])),
+                Err(SigningRefusal::NotAuthenticated),
+                "{kind:?}"
+            );
+        }
+        assert_eq!(
+            signing_workload(&caller(
+                Some("service_account"),
+                "not-a-user",
+                &["certificate-authority:sign"]
+            )),
+            Err(SigningRefusal::NotAuthenticated)
+        );
+    }
+
+    #[test]
+    fn a_token_without_the_signing_scope_is_forbidden() {
+        let account = UserId::generate().to_string();
+        for scopes in [
+            &[][..],
+            &["certificate-authority:write"][..],
+            &["certificate-authority:signer"][..],
+            &["authz:evaluate"][..],
+        ] {
+            assert_eq!(
+                signing_workload(&caller(Some("service_account"), &account, scopes)),
+                Err(SigningRefusal::Forbidden),
+                "{scopes:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_a_json_web_token_is_taken_for_a_token_of_the_token_endpoint() {
+        assert!(is_access_token_of_the_token_endpoint("eyJh.eyJz.c2ln"));
+        for credential in [
+            format!("hodor_at_{}", "a".repeat(64)),
+            format!("hodor_ak_{}", "a".repeat(64)),
+            "eyJh.eyJz".to_owned(),
+            "a.b.c.d".to_owned(),
+        ] {
+            assert!(
+                !is_access_token_of_the_token_endpoint(&credential),
+                "{credential}"
+            );
+        }
+    }
 }
