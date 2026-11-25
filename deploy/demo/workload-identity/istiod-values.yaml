@@ -1,0 +1,22 @@
+# Istio's control plane for the demonstration of Milestone 10, on a kind cluster of one node: small, and
+# with Kubernetes's own sidecar containers, so that the sidecar starts before Hodor's containers, the job
+# that migrates the database included, and stops after them. Its trust domain is the default,
+# cluster.local, whose identities are spiffe://cluster.local/ns/<namespace>/sa/<service account>.
+#
+#   python3 deploy/demo/workload_identity.py installs it; see docs/operations/quick-start.md.
+
+pilot:
+  autoscaleEnabled: false
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+  env:
+    ENABLE_NATIVE_SIDECARS: "true"
+
+global:
+  proxy:
+    resources:
+      requests:
+        cpu: 10m
+        memory: 64Mi

@@ -4614,6 +4614,12 @@ impl SvidAuthority {
 
     /// A JWT-SVID of `subject` for `audience`, made distinct by `nonce`.
     fn svid(&self, subject: &str, audience: &str, nonce: &str) -> String {
+        self.svid_for(subject, &serde_json::json!(audience), nonce)
+    }
+
+    /// A JWT-SVID of `subject` whose `aud` is `audience` as given: one
+    /// text, or an array.
+    fn svid_for(&self, subject: &str, audience: &serde_json::Value, nonce: &str) -> String {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("after 1970")
@@ -5347,4 +5353,518 @@ async fn a_bound_token_of_one_tenant_is_refused_by_another_even_with_its_certifi
     )
     .await;
     assert_eq!(answer, serde_json::json!({ "active": false }));
+}
+
+/// A bundle of one `jwt-svid` key named `key_id`, at `sequence`.
+fn bundle_numbered(key_id: &str, sequence: u64) -> serde_json::Value {
+    let mut bundle = bundle_naming(key_id);
+    bundle["spiffe_sequence"] = serde_json::json!(sequence);
+    bundle
+}
+
+/// SPIFFE bundle endpoints on this machine, one a path: each answers the
+/// bundle it was last given, and every path asked for is kept.
+#[derive(Clone, Default)]
+struct BundleEndpoints {
+    bundles: Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
+    asked: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl BundleEndpoints {
+    /// Starts answering, and answers the host and port they are at.
+    async fn start(&self) -> String {
+        use axum::extract::State;
+        use axum::http::Uri;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener");
+        let address = listener.local_addr().expect("address").to_string();
+        let app = axum::Router::new()
+            .fallback(axum::routing::get(
+                |State(endpoints): State<Self>, uri: Uri| async move {
+                    let path = uri.path().to_owned();
+                    endpoints
+                        .asked
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .push(path.clone());
+                    endpoints
+                        .bundles
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .get(&path)
+                        .cloned()
+                        .map_or((StatusCode::NOT_FOUND, String::new()), |bundle| {
+                            (StatusCode::OK, bundle)
+                        })
+                },
+            ))
+            .with_state(self.clone());
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        address
+    }
+
+    fn serve(&self, path: &str, bundle: &serde_json::Value) {
+        self.bundles
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(path.to_owned(), bundle.to_string());
+    }
+
+    /// The paths asked for since the last time, and forgets them.
+    fn asked(&self) -> Vec<String> {
+        std::mem::take(&mut *self.asked.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+}
+
+#[tokio::test]
+async fn one_tenants_bundle_endpoint_is_fetched_and_refreshed_for_that_tenant_alone() {
+    use hodor_adapters_http::{GuardedHttpClient, OutboundPolicy};
+    use hodor_adapters_postgres::{PgDueRefreshes, PgTrustDomainStore};
+    use hodor_keys::api::{BundleRefresher, TrustDomainPorts, TrustDomainService};
+    const NAME: &str = "spire.example.org";
+    let endpoints = BundleEndpoints::default();
+    let address = endpoints.start().await;
+    endpoints.serve("/acme", &bundle_numbered("acme-key", 1));
+    endpoints.serve("/globex", &bundle_numbered("globex-key", 1));
+    let world = world_with(&[("HODOR_OUTBOUND_DEVELOPMENT_HOSTS", address.as_str())]).await;
+    let (acme, globex) = (&world.acme, &world.globex);
+
+    // Each tenant trusts a SPIRE of the same name, through its own bundle
+    // endpoint, fetched when it is saved.
+    for tenant in [acme, globex] {
+        let (status, added) = world
+            .admin(
+                tenant,
+                &tenant.administrator_token,
+                Method::POST,
+                "/trust-domains",
+                Some(serde_json::json!({
+                    "name": NAME,
+                    "source": "bundle_endpoint",
+                    "bundle_endpoint_url": format!("http://{address}/{}", tenant.slug),
+                })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{added}");
+        assert_eq!(
+            added["bundle"]["keys"][0]["kid"],
+            format!("{}-key", tenant.slug)
+        );
+    }
+    assert_eq!(endpoints.asked(), ["/acme", "/globex"]);
+
+    // Acme's SPIRE rotates its authority. Both are due, and the worker's
+    // refresher, which finds due trust domains across tenants, fetches
+    // each from its own tenant's endpoint and records it in that tenant.
+    endpoints.serve("/acme", &bundle_numbered("acme-key-2", 2));
+    sqlx::query("UPDATE keys.trust_domain SET next_refresh_at = now() - interval '1 second'")
+        .execute(world.database.owner())
+        .await
+        .expect("due");
+    let guarded = || {
+        Arc::new(
+            GuardedHttpClient::new(OutboundPolicy {
+                development_hosts: vec![address.clone()],
+                ..OutboundPolicy::default()
+            })
+            .expect("client"),
+        )
+    };
+    let refresher = BundleRefresher::new(
+        TrustDomainService::new(TrustDomainPorts {
+            units_of_work: Arc::new(world.database.app().clone()),
+            store: Arc::new(PgTrustDomainStore),
+            destinations: guarded(),
+            http: guarded(),
+            digest: Arc::new(Sha256Digest),
+            clock: Arc::new(SystemClock),
+        }),
+        Arc::new(PgDueRefreshes::new(world.database.platform().clone())),
+    );
+    let leases = refresher.lease_due(10).await.expect("leases");
+    assert_eq!(leases.len(), 2);
+    for lease in leases {
+        refresher.refresh(lease).await.expect("a refresh");
+    }
+    let mut asked = endpoints.asked();
+    asked.sort();
+    assert_eq!(asked, ["/acme", "/globex"]);
+
+    // Acme's bundle changed, Globex's did not, and neither holds the
+    // other's keys.
+    for (tenant, key, other) in [
+        (acme, "acme-key-2", "globex-key"),
+        (globex, "globex-key", "acme-key"),
+    ] {
+        let (_, listed) = world
+            .admin(
+                tenant,
+                &tenant.administrator_token,
+                Method::GET,
+                "/trust-domains",
+                None,
+            )
+            .await;
+        let items = listed["items"].as_array().expect("items");
+        assert_eq!(items.len(), 1, "{listed}");
+        assert_eq!(items[0]["bundle"]["keys"][0]["kid"], key, "{listed}");
+        assert!(items[0]["refresh"]["failing_since"].is_null(), "{listed}");
+        assert!(!listed.to_string().contains(other), "{listed}");
+    }
+
+    // The refresh is in Acme's audit log alone.
+    world.record_events().await;
+    for (tenant, refreshed) in [(acme, true), (globex, false)] {
+        let (_, log) = world
+            .admin(
+                tenant,
+                &tenant.administrator_token,
+                Method::GET,
+                "/audit-records?limit=200",
+                None,
+            )
+            .await;
+        let log = log.to_string();
+        assert!(log.contains("keys.trust_domain_added"), "{}", tenant.slug);
+        assert_eq!(
+            log.contains("keys.trust_bundle_refreshed"),
+            refreshed,
+            "{}",
+            tenant.slug
+        );
+    }
+
+    // When Acme's endpoint stops answering, Acme's fetch fails and keeps
+    // its bundle; Globex's, due at the same time, reads.
+    endpoints
+        .bundles
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove("/acme");
+    sqlx::query("UPDATE keys.trust_domain SET next_refresh_at = now() - interval '1 second'")
+        .execute(world.database.owner())
+        .await
+        .expect("due");
+    for lease in refresher.lease_due(10).await.expect("leases") {
+        refresher.refresh(lease).await.expect("a refresh");
+    }
+    for (tenant, failing) in [(acme, true), (globex, false)] {
+        let (_, listed) = world
+            .admin(
+                tenant,
+                &tenant.administrator_token,
+                Method::GET,
+                "/trust-domains",
+                None,
+            )
+            .await;
+        let item = &listed["items"][0];
+        assert_eq!(
+            item["refresh"]["failing_since"].is_string(),
+            failing,
+            "{listed}"
+        );
+        assert!(item["bundle"]["keys"][0]["kid"].is_string(), "{listed}");
+    }
+}
+
+#[tokio::test]
+async fn one_authority_two_tenants_trust_proves_a_workload_to_the_tenant_its_jwt_svid_names_alone()
+{
+    const EXPORT: &str = "spiffe://cluster.local/ns/payroll/sa/export";
+    let world = world_with(&[("HODOR_SECRET_KEYS", ROOT_KEY)]).await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    // One SPIRE, trusted by both tenants with the same bundle, and the
+    // same identifier bound in each: only the audience tells them apart.
+    let authority = SvidAuthority::new();
+    let (acme_client, acme_issuer) = workload_bound_to(&world, acme, &authority, EXPORT).await;
+    let (globex_client, globex_issuer) =
+        workload_bound_to(&world, globex, &authority, EXPORT).await;
+
+    // A JWT-SVID for Globex is refused by Acme, and that refusal does not
+    // use it up: Globex then takes it.
+    let for_globex = authority.svid(EXPORT, &globex_issuer, "one");
+    let (status, body) = token_with_svid(&world, acme, &acme_client, &for_globex).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert_eq!(body["error"], "invalid_client");
+    let (status, body) = token_with_svid(&world, globex, &globex_client, &for_globex).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // The other way round.
+    let for_acme = authority.svid(EXPORT, &acme_issuer, "two");
+    let (status, _) = token_with_svid(&world, globex, &globex_client, &for_acme).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, body) = token_with_svid(&world, acme, &acme_client, &for_acme).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // Used once, at its own tenant; and still refused by the other.
+    let (status, _) = token_with_svid(&world, acme, &acme_client, &for_acme).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _) = token_with_svid(&world, globex, &globex_client, &for_acme).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // A JWT-SVID for both issuers is for neither.
+    let for_both = authority.svid_for(
+        EXPORT,
+        &serde_json::json!([acme_issuer, globex_issuer]),
+        "three",
+    );
+    for (tenant, client) in [(acme, &acme_client), (globex, &globex_client)] {
+        let (status, _) = token_with_svid(&world, tenant, client, &for_both).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{}", tenant.slug);
+    }
+}
+
+/// A tenant's client of `spiffe_x509` bound to `identity`, asking for
+/// certificate-bound tokens for the Authorization API, which the tenant
+/// opens; its `cluster.local` is given by `trust`. Answers the client's
+/// identifier.
+async fn mesh_client(
+    world: &World,
+    tenant: &Tenant,
+    identity: &str,
+    trust: serde_json::Value,
+) -> String {
+    let token = &tenant.administrator_token;
+    let (status, _) = world
+        .admin(tenant, token, Method::POST, "/keys/sig:rotate", None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, added) = world
+        .admin(tenant, token, Method::POST, "/trust-domains", Some(trust))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{added}");
+    let (_, application) = world
+        .admin(
+            tenant,
+            token,
+            Method::POST,
+            "/applications",
+            Some(serde_json::json!({ "name": "Authorization API", "first_party": true })),
+        )
+        .await;
+    let (status, _) = world
+        .admin(
+            tenant,
+            token,
+            Method::POST,
+            "/resource-servers",
+            Some(serde_json::json!({
+                "application_id": application["id"],
+                "audience": "urn:hodor:authorization",
+                "name": "Authorization API",
+                "scopes": [{ "name": "authz:evaluate", "description": "Asks for decisions" }]
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, account) = world
+        .admin(
+            tenant,
+            token,
+            Method::POST,
+            "/service-accounts",
+            Some(serde_json::json!({ "name": "Shop web", "owners": [tenant.ana] })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{account}");
+    let (status, client) = world
+        .admin(
+            tenant,
+            token,
+            Method::POST,
+            &format!(
+                "/applications/{}/clients",
+                application["id"].as_str().expect("id")
+            ),
+            Some(serde_json::json!({
+                "name": "Web",
+                "type": "confidential",
+                "authentication_method": "spiffe_x509",
+                "spiffe_id": identity,
+                "principal": account["id"],
+                "grant_types": ["client_credentials"],
+                "allowed_scopes": ["authz:evaluate"],
+                "tls_client_certificate_bound_access_tokens": true,
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{client}");
+    client["id"].as_str().expect("id").to_owned()
+}
+
+/// What Istio's sidecar writes in front of Hodor for a caller whose
+/// certificate names `identity` and has the SHA-256 `hash`: its names and
+/// `Hash`, without the certificate.
+fn sidecar_header(identity: &str, hash: &str) -> String {
+    format!("By=spiffe://cluster.local/ns/hodor/sa/hodor;Hash={hash};Subject=\"\";URI={identity}")
+}
+
+/// A token request of `client` at `tenant` with its identifier alone and
+/// the header a sidecar wrote.
+async fn token_through_the_mesh(
+    world: &World,
+    tenant: &Tenant,
+    client: &str,
+    header: &str,
+) -> (StatusCode, serde_json::Value) {
+    let response = Client::new()
+        .post(format!(
+            "{}/t/{}/oauth2/token",
+            world.server.base, tenant.slug
+        ))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .header("x-forwarded-client-cert", header)
+        .body(
+            form_urlencoded::Serializer::new(String::new())
+                .extend_pairs([
+                    ("grant_type", "client_credentials"),
+                    ("client_id", client),
+                    ("resource", "urn:hodor:authorization"),
+                    ("scope", "authz:evaluate"),
+                ])
+                .finish(),
+        )
+        .send()
+        .await
+        .expect("response");
+    let status = response.status();
+    (
+        status,
+        response.json().await.unwrap_or(serde_json::Value::Null),
+    )
+}
+
+/// Asks a tenant's Authorization API with `token` and the header a sidecar
+/// wrote.
+async fn evaluated_through_the_mesh(
+    world: &World,
+    tenant: &Tenant,
+    token: &str,
+    header: &str,
+) -> StatusCode {
+    Client::new()
+        .post(format!(
+            "{}/t/{}/api/v1/authorization/evaluate",
+            world.server.base, tenant.slug
+        ))
+        .bearer_auth(token)
+        .header("x-forwarded-client-cert", header)
+        .json(&serde_json::json!({
+            "subject": { "type": "user", "id": tenant.ana.to_string() },
+            "resource": { "type": "order", "id": "order-1" },
+            "action": "read",
+        }))
+        .send()
+        .await
+        .expect("response")
+        .status()
+}
+
+#[tokio::test]
+async fn a_mesh_one_tenant_trusts_forwards_identities_and_binds_tokens_for_that_tenant_alone() {
+    use base64::Engine as _;
+    const WEB: &str = "spiffe://cluster.local/ns/shop/sa/web";
+    const HASH: &str = "8f434346648f6b96df89dda901c5176b10a6d83961dd3c1ac88b59b2dc327aa4";
+    const OTHER_HASH: &str = "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae";
+    let world = world_with(&[
+        ("HODOR_SECRET_KEYS", ROOT_KEY),
+        ("HODOR_TRUSTED_PROXIES", "127.0.0.1"),
+        ("HODOR_FORWARDED_HEADER", "none"),
+        ("HODOR_CLIENT_IDENTITY_HEADER", "x-forwarded-client-cert"),
+    ])
+    .await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    // Acme trusts its mesh to check certificates; Globex trusts a
+    // `cluster.local` of the same name by a bundle, and binds the same
+    // identifier.
+    let acme_client = mesh_client(
+        &world,
+        acme,
+        WEB,
+        serde_json::json!({ "name": "cluster.local", "source": "mesh" }),
+    )
+    .await;
+    let globex_client = mesh_client(
+        &world,
+        globex,
+        WEB,
+        serde_json::json!({
+            "name": "cluster.local", "source": "uploaded", "bundle": bundle_naming("globex-key"),
+        }),
+    )
+    .await;
+    let header = sidecar_header(WEB, HASH);
+
+    // Acme takes the names its mesh forwards, and binds the token to the
+    // certificate's hash.
+    let (status, issued) = token_through_the_mesh(&world, acme, &acme_client, &header).await;
+    assert_eq!(status, StatusCode::OK, "{issued}");
+    let token = issued["access_token"].as_str().expect("a token");
+    let thumbprint = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+        (0..HASH.len())
+            .step_by(2)
+            .map(|at| u8::from_str_radix(&HASH[at..at + 2], 16).expect("hexadecimal"))
+            .collect::<Vec<_>>(),
+    );
+    assert_eq!(claims_of(token)["cnf"]["x5t#S256"], thumbprint);
+
+    // Globex does not: its own `cluster.local` is not checked by a mesh,
+    // so names forwarded without a certificate prove nothing there; and
+    // Acme's client is unknown to it.
+    for client in [&globex_client, &acme_client] {
+        let (status, body) = token_through_the_mesh(&world, globex, client, &header).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+        assert_eq!(body["error"], "invalid_client");
+    }
+
+    // Acme's bound token is taken by Acme with the certificate it is bound
+    // to, and refused by Acme with another; Globex refuses it with either.
+    assert_ne!(
+        evaluated_through_the_mesh(&world, acme, token, &header).await,
+        StatusCode::UNAUTHORIZED
+    );
+    let other = sidecar_header(WEB, OTHER_HASH);
+    assert_eq!(
+        evaluated_through_the_mesh(&world, acme, token, &other).await,
+        StatusCode::UNAUTHORIZED
+    );
+    for forwarded in [&header, &other] {
+        assert_eq!(
+            evaluated_through_the_mesh(&world, globex, token, forwarded).await,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    // Once Globex trusts its own mesh too, it takes its own client's
+    // identity, and Acme's token is still refused there.
+    let (_, listed) = world
+        .admin(
+            globex,
+            &globex.administrator_token,
+            Method::GET,
+            "/trust-domains",
+            None,
+        )
+        .await;
+    let id = listed["items"][0]["id"].as_str().expect("id").to_owned();
+    let (status, _) = world
+        .admin(
+            globex,
+            &globex.administrator_token,
+            Method::PUT,
+            &format!("/trust-domains/{id}"),
+            Some(serde_json::json!({ "source": "mesh" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body) = token_through_the_mesh(&world, globex, &globex_client, &header).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        evaluated_through_the_mesh(&world, globex, token, &header).await,
+        StatusCode::UNAUTHORIZED
+    );
 }
