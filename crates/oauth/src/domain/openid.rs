@@ -222,6 +222,8 @@ pub struct CheckedAccessToken {
     pub token_id: String,
     /// The client it was issued to, as its `client_id` says.
     pub client_id: String,
+    /// The organization of the sign-in, as its `org_id` says.
+    pub organization: Option<OrganizationId>,
 }
 
 /// What a signed access token of the tenant says, once its shape, header,
@@ -257,6 +259,8 @@ pub struct ReadAccessToken {
     pub acr: Option<String>,
     /// Its `amr`.
     pub amr: Option<Vec<String>>,
+    /// Its `org_id`.
+    pub organization: Option<OrganizationId>,
 }
 
 /// Reads an access token of the tenant: checks its shape, header, key,
@@ -355,6 +359,7 @@ pub fn read_access_token(
                 .map(str::to_owned)
                 .collect()
         }),
+        organization: text("org_id").and_then(|organization| organization.parse().ok()),
     })
 }
 
@@ -399,6 +404,7 @@ pub fn check_access_token(
         scopes: read.scopes,
         token_id: read.token_id,
         client_id: read.client_id,
+        organization: read.organization,
     })
 }
 

@@ -116,6 +116,14 @@ fn world() -> World {
         access_tokens: Arc::new(records.clone()),
         standing: Arc::new(standing.clone()),
         memberships: Arc::new(MembershipsOf::default()),
+        mapping: hodor_oauth::api::ClaimMapping::new(
+            Arc::new(units.clone()),
+            Arc::new(hodor_oauth::testing::InMemoryClaimMappers::new(
+                &stores.clients,
+            )),
+            Arc::new(MembershipsOf::default()),
+            Arc::new(hodor_oauth::testing::ClaimSourcesOf::default()),
+        ),
         secrets: Arc::new(FakeSecretBox),
         codes: codes.clone(),
         keys: keys.clone(),

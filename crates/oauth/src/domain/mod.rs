@@ -3,6 +3,7 @@
 pub(crate) mod application;
 pub(crate) mod authorization;
 pub(crate) mod backchannel;
+pub(crate) mod claim_mapper;
 pub(crate) mod client;
 pub(crate) mod consent;
 pub(crate) mod event;

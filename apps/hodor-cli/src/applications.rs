@@ -10,15 +10,16 @@ use clap::Subcommand;
 use hodor_adapters_crypto::{OsRandom, Sha256Digest};
 use hodor_adapters_http::{GuardedHttpClient, OutboundPolicy};
 use hodor_adapters_postgres::{
-    Database, PgApplicationStore, PgClientStore, PgResourceServerStore, PgTenantDirectory,
-    PgTenantRepository,
+    Database, PgApplicationStore, PgClaimMapperStore, PgClientStore, PgResourceServerStore,
+    PgTenantDirectory, PgTenantRepository,
 };
-use hodor_kernel::{DomainError, SystemClock, TenantContext, UserId};
+use hodor_kernel::{DomainError, ErrorKind, SystemClock, TenantContext, UserId};
 use hodor_oauth::api::{
     Application, ApplicationId, ApplicationPorts, ApplicationService, ApplicationSettings,
-    AuthenticationMethod, Client, ClientId, ClientSettings, ClientType, CreateClient,
-    CreateResourceServer, ExchangeRule, GrantType, IdTokenAlgorithm, ResourceServerSettings,
-    RotateSecret, ScopeDefinition, Status, SubjectType,
+    AuthenticationMethod, ClaimMapper, ClaimMapperId, ClaimMapperPorts, ClaimMapperService,
+    ClaimMapperSettings, ClaimSource, ClaimTarget, Client, ClientId, ClientSettings, ClientType,
+    CreateClient, CreateResourceServer, ExchangeRule, GrantType, IdTokenAlgorithm,
+    ResourceServerSettings, RotateSecret, ScopeDefinition, Status, SubjectType,
 };
 use hodor_tenant::api::TenantService;
 use std::fmt::Write as _;
@@ -184,6 +185,66 @@ pub(crate) enum ClientCommand {
         #[arg(long)]
         tenant: String,
         /// The `client_id`.
+        #[arg(long)]
+        id: String,
+    },
+    /// Manage the claim mappers of a client.
+    #[command(subcommand)]
+    Mapper(MapperCommand),
+}
+
+#[derive(Subcommand)]
+pub(crate) enum MapperCommand {
+    /// Add a claim mapper to a client.
+    Add {
+        /// Slug of the tenant.
+        #[arg(long)]
+        tenant: String,
+        /// The `client_id`.
+        #[arg(long)]
+        client: String,
+        /// The name of the claim.
+        #[arg(long)]
+        claim: String,
+        /// A token it writes into: `id_token`, `access_token` or
+        /// `userinfo`; given once per target.
+        #[arg(long = "target", required = true)]
+        targets: Vec<String>,
+        /// Where the value comes from: `attribute`, `groups`,
+        /// `group_member`, `organization` or `constant`.
+        #[arg(long)]
+        source: String,
+        /// The attribute of an `attribute` or `organization` source.
+        #[arg(long)]
+        attribute: Option<String>,
+        /// The group of a `group_member` source.
+        #[arg(long)]
+        group: Option<String>,
+        /// The value of a `constant` source, written as JSON.
+        #[arg(long)]
+        value: Option<String>,
+        /// The scope a token must hold for the claim to be added.
+        #[arg(long)]
+        scope: Option<String>,
+    },
+    /// List a client's claim mappers, by claim name.
+    List {
+        /// Slug of the tenant.
+        #[arg(long)]
+        tenant: String,
+        /// The `client_id`.
+        #[arg(long)]
+        client: String,
+    },
+    /// Delete a claim mapper.
+    Remove {
+        /// Slug of the tenant.
+        #[arg(long)]
+        tenant: String,
+        /// The `client_id`.
+        #[arg(long)]
+        client: String,
+        /// The mapper's identifier.
         #[arg(long)]
         id: String,
     },
@@ -531,6 +592,155 @@ pub(crate) async fn run_client(
         }
         ClientCommand::Enable { tenant, id } => {
             set_client(database, &tenant, &id, Status::Enabled).await
+        }
+        ClientCommand::Mapper(command) => run_mapper(database, command).await,
+    }
+}
+
+fn mapper_service(database: &Database) -> ClaimMapperService {
+    ClaimMapperService::new(ClaimMapperPorts {
+        units_of_work: Arc::new(database.clone()),
+        clients: Arc::new(PgClientStore),
+        mappers: Arc::new(PgClaimMapperStore),
+        clock: Arc::new(SystemClock),
+    })
+}
+
+fn source_invalid() -> DomainError {
+    DomainError::invalid(
+        "oauth.claim_mapper_source_invalid",
+        "a constant is written as JSON",
+    )
+}
+
+/// The source the options of `mapper add` give, written as the
+/// administration interface takes it.
+fn source_of(
+    kind: &str,
+    attribute: Option<String>,
+    group: Option<String>,
+    value: Option<String>,
+) -> Result<ClaimSource, DomainError> {
+    let mut written = serde_json::Map::new();
+    written.insert("kind".to_owned(), serde_json::json!(kind));
+    if let Some(attribute) = attribute {
+        written.insert("attribute".to_owned(), serde_json::json!(attribute));
+    }
+    if let Some(group) = group {
+        written.insert("group_id".to_owned(), serde_json::json!(group));
+    }
+    if let Some(value) = value {
+        let value: serde_json::Value =
+            serde_json::from_str(&value).map_err(|_| source_invalid())?;
+        written.insert("value".to_owned(), value);
+    }
+    ClaimSource::from_json(&serde_json::Value::Object(written))
+}
+
+fn source_line(source: &ClaimSource) -> String {
+    let written = source.to_json();
+    match source {
+        ClaimSource::Attribute(_) | ClaimSource::Organization(_) => format!(
+            "{}:{}",
+            source.kind(),
+            written["attribute"].as_str().unwrap_or_default()
+        ),
+        ClaimSource::GroupMember(group) => format!("{}:{group}", source.kind()),
+        ClaimSource::Groups | ClaimSource::Constant(_) => source.kind().to_owned(),
+    }
+}
+
+fn mapper_line(mapper: &ClaimMapper) -> String {
+    let settings = mapper.settings();
+    let targets: Vec<&str> = settings
+        .targets
+        .iter()
+        .map(|target| target.as_str())
+        .collect();
+    format!(
+        "{} {} {} {} {}",
+        mapper.id(),
+        settings.claim,
+        targets.join(","),
+        source_line(&settings.source),
+        settings.scope.as_deref().unwrap_or("-"),
+    )
+}
+
+/// Runs a claim mapper command.
+async fn run_mapper(database: &Database, command: MapperCommand) -> Result<String, DomainError> {
+    match command {
+        MapperCommand::Add {
+            tenant,
+            client,
+            claim,
+            targets,
+            source,
+            attribute,
+            group,
+            value,
+            scope,
+        } => {
+            let (tenant, _) = open(database, &tenant).await?;
+            let targets = targets
+                .iter()
+                .map(|target| ClaimTarget::parse(target))
+                .collect::<Result<Vec<_>, _>>()?;
+            let source = source_of(&source, attribute, group, value)?;
+            // The group must be one of the tenant's, as the administration
+            // interface asks.
+            if let ClaimSource::GroupMember(group) = &source {
+                match crate::memberships::groups(database)
+                    .get(&tenant, *group)
+                    .await
+                {
+                    Ok(_) => {}
+                    Err(error) if error.kind() == ErrorKind::NotFound => {
+                        return Err(DomainError::invalid(
+                            "oauth.claim_mapper_group_unknown",
+                            "a mapper names a group of the tenant",
+                        ));
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            let mapper = mapper_service(database)
+                .create(
+                    &tenant,
+                    client_id(&client)?,
+                    ClaimMapperSettings {
+                        claim,
+                        targets,
+                        scope,
+                        source,
+                    },
+                    caller(),
+                )
+                .await?;
+            Ok(format!("mapper {}", mapper.id()))
+        }
+        MapperCommand::List { tenant, client } => {
+            let (tenant, _) = open(database, &tenant).await?;
+            Ok(mapper_service(database)
+                .mappers(&tenant, client_id(&client)?)
+                .await?
+                .iter()
+                .map(mapper_line)
+                .collect::<Vec<_>>()
+                .join("\n"))
+        }
+        MapperCommand::Remove { tenant, client, id } => {
+            let (tenant, _) = open(database, &tenant).await?;
+            let id: ClaimMapperId = id.parse().map_err(|_| {
+                DomainError::not_found(
+                    "oauth.claim_mapper_not_found",
+                    "the client has no such claim mapper",
+                )
+            })?;
+            mapper_service(database)
+                .delete(&tenant, client_id(&client)?, id, caller())
+                .await?;
+            Ok(format!("removed {id}"))
         }
     }
 }

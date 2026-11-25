@@ -103,8 +103,18 @@ fn applications(
 ) -> (
     hodor_oauth::api::ApplicationService,
     hodor_oauth::api::ConsentService,
+    hodor_oauth::api::ClaimMapperService,
 ) {
     let stores = hodor_oauth::testing::InMemoryStores::default();
+    let claim_mappers =
+        hodor_oauth::api::ClaimMapperService::new(hodor_oauth::api::ClaimMapperPorts {
+            units_of_work: Arc::new(units_of_work.clone()),
+            clients: Arc::new(stores.clients.clone()),
+            mappers: Arc::new(hodor_oauth::testing::InMemoryClaimMappers::new(
+                &stores.clients,
+            )),
+            clock: clock.clone(),
+        });
     let consents = hodor_oauth::testing::consent_service(
         Arc::new(units_of_work.clone()),
         &stores,
@@ -122,7 +132,7 @@ fn applications(
         })
         .with_destinations(Arc::new(hodor_oauth::testing::FakeDestinations))
         .with_sector_documents(Arc::new(sector_documents()));
-    (applications, consents)
+    (applications, consents, claim_mappers)
 }
 
 /// The use cases of roles, bindings and policy versions on in-memory
@@ -360,6 +370,7 @@ async fn world_with_keys(with_keys: bool) -> World {
         keys,
         key_rotation: RotationPolicy::DEFAULT,
         applications: oauth.0,
+        claim_mappers: oauth.2.clone(),
         consents: oauth.1.clone(),
         tenants: tenants.clone(),
         factors: factor_service,
@@ -604,6 +615,7 @@ impl Operation {
                 .replace("{version_id}", &UserId::generate().to_string())
                 .replace("{application_id}", &UserId::generate().to_string())
                 .replace("{client_id}", &UserId::generate().to_string())
+                .replace("{claim_mapper_id}", &UserId::generate().to_string())
                 .replace("{secret_id}", &UserId::generate().to_string())
                 .replace("{key_id}", "a-key")
                 .replace("{resource_server_id}", &UserId::generate().to_string())
@@ -660,7 +672,7 @@ fn the_document_and_the_routes_list_the_same_operations_and_permissions() {
         })
         .collect();
     assert_eq!(documented, served);
-    assert_eq!(served.len(), 136);
+    assert_eq!(served.len(), 141);
 
     // Every operation says how it refuses.
     let document: serde_json::Value = serde_json::from_str(ADMIN_OPENAPI).expect("valid JSON");
@@ -5401,4 +5413,225 @@ async fn an_administrator_grants_lists_and_removes_entries_of_access_control_lis
         said.matches("authorization.access_entry_removed").count(),
         1
     );
+}
+
+#[tokio::test]
+async fn an_administrator_manages_the_claim_mappers_of_a_client() {
+    let world = world().await;
+    let application = new_application(&world, "Billing", true).await;
+    let created = world
+        .as_administrator(
+            Method::POST,
+            &format!("/applications/{application}/clients"),
+            Some(web_client()),
+        )
+        .await;
+    let client = created.body["id"].as_str().expect("client").to_owned();
+    let group = world
+        .as_administrator(
+            Method::POST,
+            "/groups",
+            Some(serde_json::json!({ "name": "finance" })),
+        )
+        .await
+        .body["id"]
+        .as_str()
+        .expect("a group")
+        .to_owned();
+    let mappers = format!("/clients/{client}/claim-mappers");
+
+    let member = world
+        .as_administrator(
+            Method::POST,
+            &mappers,
+            Some(serde_json::json!({
+                "claim": "in_finance",
+                "targets": ["access_token", "id_token"],
+                "source": { "kind": "group_member", "group_id": group },
+            })),
+        )
+        .await;
+    assert_eq!(member.status, StatusCode::CREATED, "{}", member.body);
+    assert_eq!(member.body["client_id"], client.as_str());
+    assert_eq!(
+        member.body["targets"],
+        serde_json::json!(["id_token", "access_token"])
+    );
+    assert_eq!(member.body["scope"], serde_json::Value::Null);
+    assert_eq!(member.body["source"]["group_id"], group.as_str());
+    let member_id = member.body["id"].as_str().expect("id").to_owned();
+
+    // A mapper that names a claim Hodor sets is refused.
+    for name in ["sub", "iss", "acr"] {
+        let refused = world
+            .as_administrator(
+                Method::POST,
+                &mappers,
+                Some(serde_json::json!({
+                    "claim": name,
+                    "targets": ["id_token"],
+                    "source": { "kind": "constant", "value": "x" },
+                })),
+            )
+            .await;
+        assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY, "{name}");
+        assert_eq!(refused.code(), "oauth.claim_mapper_name_reserved", "{name}");
+    }
+    // A token past the bound is refused when the mapper is saved.
+    let teams = world
+        .as_administrator(
+            Method::POST,
+            &mappers,
+            Some(serde_json::json!({
+                "claim": "teams",
+                "targets": ["id_token"],
+                "source": { "kind": "groups" },
+            })),
+        )
+        .await;
+    assert_eq!(teams.status, StatusCode::CREATED, "{}", teams.body);
+    let too_large = world
+        .as_administrator(
+            Method::POST,
+            &mappers,
+            Some(serde_json::json!({
+                "claim": "full_name",
+                "targets": ["id_token"],
+                "source": { "kind": "attribute", "attribute": "display_name" },
+            })),
+        )
+        .await;
+    assert_eq!(too_large.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(too_large.code(), "oauth.claim_mapper_token_too_large");
+
+    for (case, body, status, code) in [
+        (
+            "a group of no tenant",
+            serde_json::json!({
+                "claim": "in_payables",
+                "targets": ["id_token"],
+                "source": { "kind": "group_member", "group_id": UserId::generate().to_string() },
+            }),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "oauth.claim_mapper_group_unknown",
+        ),
+        (
+            "an unknown target",
+            serde_json::json!({
+                "claim": "plan",
+                "targets": ["logout_token"],
+                "source": { "kind": "groups" },
+            }),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "oauth.claim_mapper_targets_invalid",
+        ),
+        (
+            "an unknown source",
+            serde_json::json!({
+                "claim": "plan",
+                "targets": ["userinfo"],
+                "source": { "kind": "roles" },
+            }),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "oauth.claim_mapper_source_invalid",
+        ),
+        (
+            "a scope the client may not ask for",
+            serde_json::json!({
+                "claim": "plan",
+                "targets": ["userinfo"],
+                "scope": "invoices:read",
+                "source": { "kind": "groups" },
+            }),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "oauth.claim_mapper_scope_not_allowed",
+        ),
+        (
+            "a claim taken without regard to case",
+            serde_json::json!({
+                "claim": "TEAMS",
+                "targets": ["userinfo"],
+                "source": { "kind": "groups" },
+            }),
+            StatusCode::CONFLICT,
+            "oauth.claim_mapper_name_taken",
+        ),
+    ] {
+        let refused = world
+            .as_administrator(Method::POST, &mappers, Some(body))
+            .await;
+        assert_eq!(refused.status, status, "{case}: {}", refused.body);
+        assert_eq!(refused.code(), code, "{case}");
+    }
+
+    let listed = world.as_administrator(Method::GET, &mappers, None).await;
+    assert_eq!(listed.status, StatusCode::OK);
+    let claims: Vec<&str> = listed.body["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .filter_map(|item| item["claim"].as_str())
+        .collect();
+    assert_eq!(claims, ["in_finance", "teams"], "only what was accepted");
+
+    let one = format!("{mappers}/{member_id}");
+    let replaced = world
+        .as_administrator(
+            Method::PUT,
+            &one,
+            Some(serde_json::json!({
+                "claim": "plan",
+                "targets": ["userinfo"],
+                "scope": "email",
+                "source": { "kind": "constant", "value": { "tier": "gold" } },
+            })),
+        )
+        .await;
+    assert_eq!(replaced.status, StatusCode::OK, "{}", replaced.body);
+    let read = world.as_administrator(Method::GET, &one, None).await;
+    assert_eq!(read.status, StatusCode::OK);
+    assert_eq!(read.body["claim"], "plan");
+    assert_eq!(read.body["source"]["value"]["tier"], "gold");
+
+    let deleted = world.as_administrator(Method::DELETE, &one, None).await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT);
+    let gone = world.as_administrator(Method::GET, &one, None).await;
+    assert_eq!(gone.status, StatusCode::NOT_FOUND);
+    assert_eq!(gone.code(), "oauth.claim_mapper_not_found");
+    let unknown = world
+        .as_administrator(
+            Method::GET,
+            &format!("/clients/{}/claim-mappers", UserId::generate()),
+            None,
+        )
+        .await;
+    assert_eq!(unknown.code(), "oauth.client_not_found");
+
+    // Another tenant's administrator reads and changes nothing of it.
+    let (_, globex_token) = world
+        .person(
+            &world.globex,
+            "root@globex.example",
+            &[Role::TenantAdministrator],
+        )
+        .await;
+    let teams_id = teams.body["id"].as_str().expect("id");
+    for (method, path) in [
+        (Method::GET, mappers.clone()),
+        (Method::GET, format!("{mappers}/{teams_id}")),
+        (Method::DELETE, format!("{mappers}/{teams_id}")),
+    ] {
+        let reply = world
+            .send(
+                method.clone(),
+                &format!("/t/globex/api/v1/admin{path}"),
+                Some(&format!("Bearer {globex_token}")),
+                None,
+            )
+            .await;
+        assert_eq!(reply.status, StatusCode::NOT_FOUND, "{method} {path}");
+        assert_eq!(reply.code(), "oauth.client_not_found", "{method} {path}");
+    }
+    let still = world.as_administrator(Method::GET, &mappers, None).await;
+    assert_eq!(still.body["items"].as_array().map(Vec::len), Some(1));
 }

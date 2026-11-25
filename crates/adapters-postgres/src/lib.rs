@@ -25,6 +25,7 @@ mod notification;
 mod oauth;
 mod oauth_access_token;
 mod oauth_authorization;
+mod oauth_claim_mapper;
 mod oauth_consent;
 mod oauth_logout;
 mod oauth_pairwise;
@@ -73,6 +74,7 @@ pub use oauth_access_token::PgAccessTokenRecordStore;
 pub use oauth_authorization::{
     PgAuthorizationCodeStore, PgAuthorizationRequestStore, PgGrantStore,
 };
+pub use oauth_claim_mapper::PgClaimMapperStore;
 pub use oauth_consent::PgConsentStore;
 pub use oauth_logout::{PgDueLogoutDeliveries, PgLogoutDeliveryStore, PgSessionClients};
 pub use oauth_pairwise::PgPairwiseSecretStore;

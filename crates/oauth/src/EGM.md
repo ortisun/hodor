@@ -12,7 +12,8 @@ follows is `docs/architecture/contexts/oauth.md`.
   - Ports: `ApplicationStore`, `ClientStore`, `ResourceServerStore`,
     `AuthorizationRequestStore`, `GrantStore`, `AuthorizationCodeStore`,
     `ClientAssertionStore`, `RefreshTokenStore`, `AccessTokenRecordStore`,
-    `PersonStanding`, `PersonMemberships`, `ConsentStore`, and those of
+    `PersonStanding`, `PersonMemberships`, `ConsentStore`, `ClaimMapperStore`,
+    `PersonClaimSources`, and those of
     back-channel logout: `SessionClients`, `LogoutDeliveryStore`,
     `DueLogoutDeliveries`, `TenantIssuer`; `PairwiseSecretStore`, and
     `HmacSha256`, implemented by the crypto adapter.
@@ -42,6 +43,15 @@ follows is `docs/architecture/contexts/oauth.md`.
     `check_backchannel_logout_uri`, and `BACKCHANNEL_LOGOUT_EVENT`,
     `LOGOUT_TOKEN_TYPE`, `LOGOUT_TOKEN_LIFETIME`, `SESSION_REVOKED`,
     `MAX_BACKCHANNEL_LOGOUT_URI_LENGTH`, `MAX_LOGOUT_ERROR_LENGTH`.
+    `ClaimMapperService`, `ClaimMapperPorts`, `ClaimMapping` (read by
+    `TokenPorts::mapping` and `UserInfoPorts::mapping`), `MappedToken`,
+    `MappedClaims`.
+  - Claim mappers: `ClaimMapper`, `ClaimMapperId`, `ClaimMapperSettings`,
+    `ClaimMapperSnapshot`, `ClaimSource`, `ClaimTarget`, `PersonAttribute`,
+    `OrganizationAttribute`, `PersonAttributes`, `PersonFacts`,
+    `check_together`, `mapped_claims`, `add_mapped_claims`, `is_reserved`,
+    and `RESERVED_CLAIMS`, `MAX_CLAIM_MAPPERS`, `MOST_MAPPED_BYTES`,
+    `MAX_CONSTANT_BYTES`, `LONGEST_LOCALE`.
   - The end-session endpoint's domain: `LogoutParameters`,
     `check_id_token_hint`, `IdTokenHint` (its `sub` and `sid` as text),
     `LogoutRequest` (with `decide`), `LogoutDecision`, `CurrentSession`,

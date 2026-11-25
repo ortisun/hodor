@@ -16,6 +16,7 @@ use time::Duration;
 
 mod authorization;
 mod backchannel;
+mod claim_mapper;
 mod consent;
 mod pairwise;
 mod refresh;
@@ -28,6 +29,9 @@ pub use authorization::{
 pub use backchannel::{
     ClientAnswer, FakeDestinations, FixedIssuer, InMemoryLogoutDeliveries, InMemorySessionClients,
     LogoutDeliveryStorePorts, RecordingClients, run_logout_delivery_contract,
+};
+pub use claim_mapper::{
+    ClaimMapperStorePorts, ClaimSourcesOf, InMemoryClaimMappers, run_claim_mapper_contract,
 };
 pub use consent::{ConsentStorePorts, InMemoryConsents, consent_service, run_consent_contract};
 pub use pairwise::{

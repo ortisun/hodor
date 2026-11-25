@@ -166,7 +166,23 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   `LONGEST_CONSENT_LIFETIME` (1 and 730 days). `TokenPolicy::consent` is
   the client's lifetime, checked against those bounds. Its cases are in
   `consent/tests.rs`.
-- `event.rs`: `OauthEvent`, twenty-five variants, each named `oauth.*`.
+- `event.rs`: `OauthEvent`, twenty-nine variants, each named `oauth.*`.
+- `claim_mapper.rs`: claim mappers (Decision 0041). `ClaimMapperSettings`
+  (`checked`: the claim written as a scope and not `is_reserved`, compared
+  without regard to case against `RESERVED_CLAIMS`; one to three distinct
+  `ClaimTarget`s, put in their order; a scope the client may ask for; a
+  constant but `null` of at most `MAX_CONSTANT_BYTES`) and its
+  `worst_case`; `check_together` (at most `MAX_CLAIM_MAPPERS`, one per
+  claim without regard to case, at most `MOST_MAPPED_BYTES` per target in
+  the worst case: `oauth.claim_mappers_too_many`,
+  `oauth.claim_mapper_name_taken`, `oauth.claim_mapper_token_too_large`);
+  `ClaimMapper` (`create`, `replace`, `deleted`, with their events);
+  `ClaimSource` (`to_json`, `from_json`, each kind's largest value);
+  `needs`, `mapped_claims` (by claim name, a value larger than its bound
+  or more than 100 groups leaving the claim out) and `add_mapped_claims`,
+  the one hook the token endpoint and UserInfo call after Hodor's own
+  claims, which never replaces one. Its cases, including one that every
+  claim Hodor writes is reserved, are in `claim_mapper/tests.rs`.
 - `text.rs`: the rules of names and of scopes (`is_scope`).
 - `exchange.rs`: token exchange. `MAX_ACTORS` (3), `chain_length` (counts
   `act` links as far as one past the bound), `actors` (the `sub` of each,

@@ -1516,7 +1516,7 @@ Administrators reach them through [the administration interface](../../api/admin
 | Command | What it does |
 |---|---|
 | `hodor-cli client mapper add --tenant acme --client … --claim department --target id_token --target userinfo --source groups` | Creates a mapper and prints `mapper <id>`. `--target` is given once per target; `--source` is `attribute` with `--attribute`, `groups`, `group_member` with `--group`, `organization` with `--attribute id` or `name`, or `constant` with `--value`, written as JSON; `--scope` names its scope |
-| `hodor-cli client mapper list --tenant acme --client …` | One line per mapper: identifier, claim, targets, source, scope |
+| `hodor-cli client mapper list --tenant acme --client …` | One line per mapper: identifier, claim, targets separated by commas, source (`attribute:display_name`, `groups`, `group_member:<group>`, `organization:name`, `constant`), and scope, or `-` |
 | `hodor-cli client mapper remove --tenant acme --client … --id …` | Deletes a mapper and prints `removed <id>` |
 
 | Refusal | Code |
@@ -1550,7 +1550,7 @@ Administrators reach them through [the administration interface](../../api/admin
 
 ### Storage
 
-`oauth.claim_mapper` holds `tenant_id`, `id` (the key, with the tenant), `client_id`, referenced with the tenant so that mappers go with their client, `claim`, `claim_normalized` (its lowercase form, unique per client), `targets` (`text[]`), `scope`, `source` (`jsonb`), `created_at`, `updated_at` and `version`. Check constraints keep the claim's length, the targets to the three, the source an object with a known `kind`, and a constant to 1024 bytes. It is a tenant table under row-level security (migration 0072). The lock of a client is a `SELECT … FOR UPDATE` of its row of `oauth.client`.
+`oauth.claim_mapper` holds `tenant_id`, `id` (the key, with the tenant), `client_id`, referenced with the tenant so that mappers go with their client, `claim`, `claim_normalized` (its lowercase form, unique per client), `targets` (`text[]`), `scope`, `source` (`jsonb`), `created_at`, `updated_at` and `version`. Check constraints keep the claim's length, the targets to the three, the source an object with a known `kind`, and a constant to 2048 bytes as PostgreSQL writes it, which holds every constant of 1024 bytes as Hodor writes it. It is a tenant table under row-level security (migration 0072). The lock of a client is a `SELECT … FOR UPDATE` of its row of `oauth.client`.
 
 ## Not built yet
 

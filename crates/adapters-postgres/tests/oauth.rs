@@ -2,7 +2,7 @@
 
 use hodor_adapters_postgres::testing::TestDatabase;
 use hodor_adapters_postgres::{
-    PgApplicationStore, PgAuthorizationCodeStore, PgAuthorizationRequestStore,
+    PgApplicationStore, PgAuthorizationCodeStore, PgAuthorizationRequestStore, PgClaimMapperStore,
     PgClientAssertionStore, PgClientStore, PgConsentStore, PgGrantStore, PgRefreshTokenStore,
     PgResourceServerStore,
 };
@@ -15,9 +15,10 @@ use hodor_oauth::api::{
     CreateClient, GrantType, RotateSecret,
 };
 use hodor_oauth::testing::{
-    AssertionStorePorts, AuthorizationStorePorts, ConsentStorePorts, DistinctRandom, MembershipsOf,
-    Ports, RefreshStorePorts, run_assertion_contract, run_authorization_contract,
-    run_consent_contract, run_contract, run_refresh_token_contract,
+    AssertionStorePorts, AuthorizationStorePorts, ClaimMapperStorePorts, ConsentStorePorts,
+    DistinctRandom, MembershipsOf, Ports, RefreshStorePorts, run_assertion_contract,
+    run_authorization_contract, run_claim_mapper_contract, run_consent_contract, run_contract,
+    run_refresh_token_contract,
 };
 use std::sync::Arc;
 use time::Duration;
@@ -32,6 +33,116 @@ async fn the_postgres_stores_pass_the_contract() {
         resource_servers: &PgResourceServerStore,
     })
     .await;
+}
+
+#[tokio::test]
+async fn the_postgres_claim_mapper_store_passes_the_contract() {
+    let database = TestDatabase::start().await;
+    run_claim_mapper_contract(ClaimMapperStorePorts {
+        units_of_work: database.app(),
+        applications: &PgApplicationStore,
+        clients: &PgClientStore,
+        mappers: &PgClaimMapperStore,
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn the_database_keeps_claim_mappers_to_their_shape() {
+    let database = TestDatabase::start().await;
+    let tenant = sqlx::types::Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO oauth.application VALUES ($1, $1, 'Billing', false, 'enabled', now(), now(), 0)",
+    )
+    .bind(tenant)
+    .execute(database.owner())
+    .await
+    .expect("application");
+    sqlx::query(
+        "INSERT INTO oauth.client VALUES ($1, $1, $1, 'Web', 'public', 'none',
+             ARRAY['authorization_code'], ARRAY['https://billing.example.com/callback'],
+             ARRAY[]::text[], true, 300, 300, 2592000, 604800, 'enabled', now(), now(), 0)",
+    )
+    .bind(tenant)
+    .execute(database.owner())
+    .await
+    .expect("client");
+    let insert = "INSERT INTO oauth.claim_mapper
+                      (tenant_id, id, client_id, claim, claim_normalized, targets, scope, source,
+                       created_at, updated_at)
+                  VALUES ($1, gen_random_uuid(), $1, $2, $3, $4, NULL, $5::jsonb, now(), now())";
+    sqlx::query(insert)
+        .bind(tenant)
+        .bind("Team")
+        .bind("team")
+        .bind(vec!["id_token"])
+        .bind(r#"{"kind": "groups"}"#)
+        .execute(database.owner())
+        .await
+        .expect("a mapper that keeps every rule");
+    let long = format!(r#"{{"kind": "constant", "value": "{}"}}"#, "x".repeat(2100));
+    for (case, claim, normalized, targets, source) in [
+        (
+            "one mapper per claim, without regard to case",
+            "TEAM",
+            "team",
+            vec!["userinfo"],
+            r#"{"kind": "groups"}"#,
+        ),
+        (
+            "the normalized claim is the lowercase",
+            "Plan",
+            "Plan",
+            vec!["userinfo"],
+            r#"{"kind": "groups"}"#,
+        ),
+        (
+            "an empty claim",
+            "",
+            "",
+            vec!["userinfo"],
+            r#"{"kind": "groups"}"#,
+        ),
+        ("no target", "plan", "plan", vec![], r#"{"kind": "groups"}"#),
+        (
+            "an unknown target",
+            "plan",
+            "plan",
+            vec!["logout_token"],
+            r#"{"kind": "groups"}"#,
+        ),
+        (
+            "an unknown kind",
+            "plan",
+            "plan",
+            vec!["userinfo"],
+            r#"{"kind": "roles"}"#,
+        ),
+        (
+            "a constant that is null",
+            "plan",
+            "plan",
+            vec!["userinfo"],
+            r#"{"kind": "constant", "value": null}"#,
+        ),
+        (
+            "a constant too large",
+            "plan",
+            "plan",
+            vec!["userinfo"],
+            long.as_str(),
+        ),
+    ] {
+        let refused = sqlx::query(insert)
+            .bind(tenant)
+            .bind(claim)
+            .bind(normalized)
+            .bind(targets)
+            .bind(source)
+            .execute(database.owner())
+            .await;
+        assert!(refused.is_err(), "{case}");
+    }
 }
 
 #[tokio::test]

@@ -55,6 +55,7 @@ use time::format_description::well_known::Rfc3339;
 mod access_lists;
 mod applications;
 mod authorization;
+mod claim_mappers;
 mod decisions;
 mod factors;
 mod groups;
@@ -215,6 +216,31 @@ pub const ADMIN_OPERATIONS: &[(&str, &str, Permission)] = &[
     (
         "DELETE",
         "/clients/{client_id}/keys/{key_id}",
+        Permission::ApplicationsWrite,
+    ),
+    (
+        "GET",
+        "/clients/{client_id}/claim-mappers",
+        Permission::ApplicationsRead,
+    ),
+    (
+        "POST",
+        "/clients/{client_id}/claim-mappers",
+        Permission::ApplicationsWrite,
+    ),
+    (
+        "GET",
+        "/clients/{client_id}/claim-mappers/{claim_mapper_id}",
+        Permission::ApplicationsRead,
+    ),
+    (
+        "PUT",
+        "/clients/{client_id}/claim-mappers/{claim_mapper_id}",
+        Permission::ApplicationsWrite,
+    ),
+    (
+        "DELETE",
+        "/clients/{client_id}/claim-mappers/{claim_mapper_id}",
         Permission::ApplicationsWrite,
     ),
     ("GET", "/resource-servers", Permission::ApplicationsRead),
@@ -571,6 +597,8 @@ pub struct AdminState {
     pub key_rotation: RotationPolicy,
     /// The applications, their clients and resource servers.
     pub applications: ApplicationService,
+    /// The claim mappers of clients.
+    pub claim_mappers: hodor_oauth::api::ClaimMapperService,
     /// The tenant, for its assurance levels.
     pub tenants: TenantService,
     /// The users' second factors, which an administrator sees and removes.
@@ -708,6 +736,7 @@ fn shared_routes() -> Router<Shared> {
             get(read_email_sign_in).put(set_email_sign_in),
         )
         .merge(applications::routes())
+        .merge(claim_mappers::routes())
         .merge(factors::routes())
         .merge(decisions::routes())
         .merge(authorization::routes())

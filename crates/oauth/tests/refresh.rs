@@ -97,6 +97,14 @@ fn world_with_window(window: Duration) -> World {
         access_tokens: Arc::new(InMemoryAccessTokenRecords::new(&stores.clients)),
         standing: Arc::new(standing.clone()),
         memberships: Arc::new(memberships.clone()),
+        mapping: hodor_oauth::api::ClaimMapping::new(
+            Arc::new(units.clone()),
+            Arc::new(hodor_oauth::testing::InMemoryClaimMappers::new(
+                &stores.clients,
+            )),
+            Arc::new(memberships.clone()),
+            Arc::new(hodor_oauth::testing::ClaimSourcesOf::default()),
+        ),
         secrets: Arc::new(FakeSecretBox),
         codes: codes.clone(),
         keys: keys.clone(),
