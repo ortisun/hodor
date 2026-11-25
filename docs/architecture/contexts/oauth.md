@@ -4,7 +4,7 @@ The `oauth` context makes Hodor an OAuth 2.x authorization server and an OpenID 
 
 It does not sign anyone in. When a request needs a person, it hands the request to the `authentication` context and takes the session that comes back. The two contexts do not depend on each other: the HTTP layer joins them ([crates.md](../crates.md)).
 
-This page specifies what Issue-53 builds: applications, clients and resource servers, and the rules they keep; what Issue-55 builds: the authorization endpoint, grants and authorization codes; what Issue-56 builds: the token endpoint, client authentication and access tokens; what Issue-59 builds: the OpenID Provider; what Issue-60 builds: logout initiated by the relying party; what Issue-62 builds: [consent](#consent); what Issue-93 builds: [clients that act as a workload](#clients-that-act-as-a-workload); what Issue-95 builds: [token exchange](#token-exchange); what Issue-100 builds: [back-channel logout](#back-channel-logout); what Issue-98 builds: [pairwise subject identifiers](#pairwise-subject-identifiers); and what Issue-99 builds: [claim mappers](#claim-mappers). The other endpoints and tokens are added by Issue-57 and Issue-58, under the headings at the end of this page.
+This page specifies what Issue-53 builds: applications, clients and resource servers, and the rules they keep; what Issue-55 builds: the authorization endpoint, grants and authorization codes; what Issue-56 builds: the token endpoint, client authentication and access tokens; what Issue-59 builds: the OpenID Provider; what Issue-60 builds: logout initiated by the relying party; what Issue-62 builds: [consent](#consent); what Issue-93 builds: [clients that act as a workload](#clients-that-act-as-a-workload); what Issue-106 builds: [a JWT-SVID as a client's proof](#checking-a-jwt-svid); what Issue-95 builds: [token exchange](#token-exchange); what Issue-100 builds: [back-channel logout](#back-channel-logout); what Issue-98 builds: [pairwise subject identifiers](#pairwise-subject-identifiers); and what Issue-99 builds: [claim mappers](#claim-mappers). The other endpoints and tokens are added by Issue-57 and Issue-58, under the headings at the end of this page.
 
 ## Applications
 
@@ -29,7 +29,7 @@ A client is what talks to Hodor's endpoints. Its identifier is the `client_id` o
 | Application | The application it belongs to. It never changes |
 | Name | For administrators. Same rule as an application's name |
 | Type | `confidential`: it runs where it can keep a secret, such as a server. `public`: it runs where it cannot, such as a browser or a mobile application. Chosen when the client is created and never changed |
-| Authentication method | How it proves who it is at the token endpoint: `client_secret_basic`, `client_secret_post`, `private_key_jwt` or `none` |
+| Authentication method | How it proves who it is at the token endpoint: `client_secret_basic`, `client_secret_post`, `private_key_jwt`, `spiffe_jwt` or `none` |
 | Grants | What it may ask for: `authorization_code`, `refresh_token`, `client_credentials`, and `urn:ietf:params:oauth:grant-type:token-exchange` for [token exchange](#token-exchange) |
 | Exchange rules | For a client with the token exchange grant: which tokens it may exchange for which audience. At most 20 |
 | Redirect addresses | Where the authorization endpoint may send a person back to. At most 10 |
@@ -43,6 +43,7 @@ A client is what talks to Hodor's endpoints. Its identifier is the `client_id` o
 | Sector identifier address | Optional, for a pairwise client: an address that lists its redirect addresses and whose host is its sector, its `sector_identifier_uri`. See [the sector identifier address](#the-sector-identifier-address) |
 | Token policy | How long its tokens live |
 | Principal | Optional: the [service account or agent](identity.md#service-accounts-and-agents) the client acts as. See [clients that act as a workload](#clients-that-act-as-a-workload) |
+| SPIFFE identifier | For a client using `spiffe_jwt` only: the one SPIFFE identifier of the workload whose JWT-SVIDs prove who the client is, its `spiffe_id` of the draft. See [the SPIFFE identifier of a client](#the-spiffe-identifier-of-a-client) |
 | Secrets | Its secrets, kept only as hashes. Only with `client_secret_basic` or `client_secret_post` |
 | Keys | Its public keys, for `private_key_jwt`. Only with that method |
 | Status | `enabled` or `disabled`. A disabled client gets no tokens |
@@ -54,7 +55,7 @@ An application has at most 20 clients.
 Every change to a client is checked against all of these at once; a change that breaks one changes nothing.
 
 - **A public client has no secret and cannot be given one.** Its authentication method is `none`, it has no keys, and it always uses PKCE.
-- **A confidential client proves who it is.** Its method is `client_secret_basic`, `client_secret_post` or `private_key_jwt`, never `none`.
+- **A confidential client proves who it is.** Its method is `client_secret_basic`, `client_secret_post`, `private_key_jwt` or `spiffe_jwt`, never `none`.
 - **`client_credentials` is for confidential clients only**, since that grant is the client acting as itself.
 - **`refresh_token` comes with `authorization_code`.** A refresh token is only ever issued with tokens from a code.
 - **A client with `authorization_code` has at least one redirect address, and one without it has none.**
@@ -64,7 +65,8 @@ Every change to a client is checked against all of these at once; a change that 
 - **A client has at least one grant.**
 - **A client with a principal has the `client_credentials` grant**, and may have the token exchange grant besides; no other. It is the workload's credential.
 - **The token exchange grant needs a principal, which must be an agent, and at least one exchange rule; exchange rules need the grant.** Only an agent acts on a person's behalf ([Decision 0031](../../decisions/0031-workloads-are-users.md)). Each rule is a pair of audiences, the one a subject token must hold and the one the new token is for, each at most 255 printable characters, each pair once.
-- **Switching the authentication method drops what the old one used.** A client that moves away from a secret method loses its secrets, and one that moves away from `private_key_jwt` loses its keys.
+- **A client using `spiffe_jwt` has a principal and a SPIFFE identifier, and only such a client has a SPIFFE identifier** ([Decision 0055](../../decisions/0055-spiffe-jwt-client-authentication.md)). Its principal must be a service account.
+- **Switching the authentication method drops what the old one used.** A client that moves away from a secret method loses its secrets, and one that moves away from `private_key_jwt` loses its keys. A client that moves away from `spiffe_jwt` must leave its SPIFFE identifier with it.
 
 ### Redirect addresses
 
@@ -131,7 +133,7 @@ How an assertion is checked against these keys is in [checking a client assertio
 
 ### Clients that act as a workload
 
-A confidential client of the client credentials grant may be bound to one **principal**: a [service account or an agent](identity.md#service-accounts-and-agents) of the tenant ([Decision 0031](../../decisions/0031-workloads-are-users.md)). The client is then the workload's credential: it proves who it is with its secret or its key, as any client does, and what it gets is about the workload.
+A confidential client of the client credentials grant may be bound to one **principal**: a [service account or an agent](identity.md#service-accounts-and-agents) of the tenant ([Decision 0031](../../decisions/0031-workloads-are-users.md)). The client is then the workload's credential: it proves who it is with its secret or its key, as any client does, or, for a service account's client, with the workload's JWT-SVID ([the SPIFFE identifier of a client](#the-spiffe-identifier-of-a-client)), and what it gets is about the workload.
 
 - **Its access tokens are the workload's.** `sub` is the principal's identifier, and `principal_kind` says its kind, `service_account` or `agent`. `client_id` is still the client. The roles assigned to the principal are the ones a resource server finds when it asks [the Authorization API](authorization.md#the-authorization-api) about the token's `sub`, as a subject of kind `user`.
 - **It gets tokens only while the workload may act**: while the principal is a service account or an agent of the tenant that is Active. Otherwise the token endpoint answers `invalid_client`, as for a disabled client.
@@ -149,6 +151,18 @@ How a resource server that reads tokens by itself tells the subjects apart:
 | Otherwise | A person, named by `sub` |
 
 The OAuth context keeps the principal as a user identifier and does not know what it is; whether it may act is asked of the `PersonStanding` port of [the token endpoint](#token-endpoint-and-client-authentication). The administration interface and the command-line tool check, through the identity context, that a principal is a service account or an agent of the tenant that is not deleted, and refuse anything else with `oauth.client_principal_invalid`.
+
+### The SPIFFE identifier of a client
+
+Issue-106. A client of a service account may prove who it is with a JWT-SVID, the token its service mesh or SPIRE gives the workload ([Decision 0029](../../decisions/0029-hodor-in-a-service-mesh.md#a-workload-proves-who-it-is-in-one-of-three-ways)), instead of a secret or a key of its own. It is then bound to the one SPIFFE identifier that names the workload, and uses the method `spiffe_jwt` ([Decision 0055](../../decisions/0055-spiffe-jwt-client-authentication.md)).
+
+- **One identifier, written exactly** as the SPIFFE identifier specification writes it: `spiffe://`, the trust domain's name by [the rule of the keys context](keys.md#what-a-trust-domain-is), and a path of one or more segments, each `/` followed by 1 or more letters, digits, `.`, `-` and `_`, never `.` or `..` alone; no `/` at the end, no query, no fragment, no percent-encoding, at most 2048 characters. For example `spiffe://cluster.local/ns/payroll/sa/nightly-export`. It is compared byte for byte. **A prefix match is not accepted**: `*` is not a character of a path, so an identifier ending in `/*`, which the draft allows, is refused. Otherwise `oauth.client_spiffe_id_invalid`.
+- **Only with `spiffe_jwt`, and always with it**; and only for a client with a principal. The administration interface checks that the principal is a service account of the tenant, `oauth.client_principal_invalid` otherwise: an agent proves who it is with its own credentials.
+- **Unique in the tenant.** Two clients of one tenant are never bound to the same identifier, `oauth.client_spiffe_id_taken` otherwise. Two tenants may each bind the same identifier: each trusts a trust domain of that name of its own, which the other never reads.
+- **The trust domain is found when the client proves who it is**, in the client's tenant, by the name in the identifier. Binding a client does not need the tenant to trust that trust domain yet. Until it does, or while the trust domain is checked by the mesh and has no bundle, every JWT-SVID of the client is refused.
+- **Changing the identifier** takes effect from the next request: a JWT-SVID of the former identifier is refused from then on. Tokens already issued stay in force, as for a change of principal.
+
+How the JWT-SVID is checked is in [checking a JWT-SVID](#checking-a-jwt-svid).
 
 ## Resource servers
 
@@ -247,10 +261,11 @@ Every table is a tenant table under row-level security, in the schema `oauth`. R
 |---|---|---|
 | `tenant_id`, `id` | `uuid` | Primary key |
 | `application_id` | `uuid` | References `oauth.application` |
-| `name`, `client_type`, `authentication_method`, `status` | `text` | A check constraint keeps a public client on `none` |
+| `name`, `client_type`, `authentication_method`, `status` | `text` | A check constraint keeps a public client on `none`, and another (`client_method_known`) the method among the five |
 | `grant_types`, `redirect_uris`, `post_logout_redirect_uris`, `allowed_scopes` | `text[]` | Redirect addresses of both kinds are compared byte for byte (`COLLATE "C"`) |
 | `require_pkce` | `boolean` | A check constraint keeps it true for a public client |
 | `principal_id` | `uuid` | The workload the client acts as, or null. Not a reference: contexts do not reference each other's tables. Check constraints allow it only with `client_credentials` and, besides, `urn:ietf:params:oauth:grant-type:token-exchange`, and require it with the latter |
+| `spiffe_id` | `text` | The [SPIFFE identifier](#the-spiffe-identifier-of-a-client), or null, compared byte for byte (`COLLATE "C"`). Check constraints keep its shape (`client_spiffe_id_shape`), require it exactly with `spiffe_jwt` (`client_spiffe_id_with_spiffe_jwt`) and require a principal with it (`client_spiffe_id_needs_principal`); the partial unique index `client_spiffe_id_unique` keeps it once per tenant |
 | `exchange_rules` | `jsonb` | The exchange rules, a list of `{"subject_audience": …, "audience": …}`; empty unless the client has the token exchange grant |
 | `id_token_algorithm` | `text` | `ES256` or `RS256`, by a check constraint; `ES256` for a client made before it existed |
 | `backchannel_logout_uri` | `text` | The [back-channel logout address](#the-back-channel-logout-address), or null. At most 2000 characters, `https://` or `http://`, compared byte for byte (`COLLATE "C"`); a check constraint allows it only with the `authorization_code` grant |
@@ -481,23 +496,25 @@ Issue-56 builds the token endpoint, the four ways a client proves who it is ther
 
 ### How a client proves who it is
 
-A client proves who it is in exactly one of four ways, and it must be the one it was registered with:
+A client proves who it is in exactly one of five ways, and it must be the one it was registered with:
 
 | Method | What the request carries |
 |---|---|
 | `client_secret_basic` | `Authorization: Basic` with the client identifier and the secret, each form-encoded before the pair is base64-encoded ([RFC 6749, section 2.3.1](https://www.rfc-editor.org/rfc/rfc6749#section-2.3.1)) |
 | `client_secret_post` | `client_id` and `client_secret` in the form |
 | `private_key_jwt` | `client_assertion_type` `urn:ietf:params:oauth:client-assertion-type:jwt-bearer` and `client_assertion`, a JSON Web Token the client signed with its private key ([RFC 7523](https://www.rfc-editor.org/rfc/rfc7523)); `client_id` may be added and must then name the same client |
+| `spiffe_jwt` | `client_assertion_type` `urn:ietf:params:oauth:client-assertion-type:jwt-spiffe`, `client_assertion`, a JWT-SVID of the workload the client is bound to, and `client_id` (draft-ietf-oauth-spiffe-client-auth-03, section 3.2); see [checking a JWT-SVID](#checking-a-jwt-svid) |
 | `none` | `client_id` alone, for a public client, which proves nothing and is held to PKCE instead |
 
 The checks, in order:
 
-1. **One method only.** A request that carries more than one is `invalid_request`: for example, both a `Basic` header and a `client_secret`, or both a secret and an assertion. `Authorization` with a scheme other than `Basic` is `invalid_request` too.
+1. **One method only.** A request that carries more than one is `invalid_request`: for example, both a `Basic` header and a `client_secret`, or both a secret and an assertion. A `client_assertion_type` other than the two above is `invalid_request`, and so is `Authorization` with a scheme other than `Basic`.
 2. **The client exists and may get tokens.** It must be a client of this tenant, enabled, with its application enabled. Otherwise the answer is `invalid_client`.
 3. **The method is the client's.** A client registered with `client_secret_basic` that sends its secret in the form is refused, and so is a confidential client that sends only its identifier. The answer is `invalid_client`.
 4. **The proof holds.**
    - A secret is checked as [secrets](#secrets) says.
    - An assertion is checked as the next section says.
+   - A JWT-SVID is checked as [checking a JWT-SVID](#checking-a-jwt-svid) says.
 
 An `invalid_client` is answered with status `401`. When the client used `Basic`, the answer also carries `WWW-Authenticate: Basic realm="{issuer}"`, as RFC 6749 requires. Every other error is answered with status `400`. The client is told only the error, never which check failed; the reason is in Hodor's logs.
 
@@ -520,6 +537,33 @@ An assertion is a compact JSON Web Signature of at most 8 kibibytes. When the fo
 **An assertion is used once.** As soon as it has been checked, and before anything else is done with the request, its `jti` is remembered with the client until the assertion expires. A second request with the same `jti` is refused, even when the first one failed afterwards, for example on a wrong code: an assertion that was sent once may have been seen by someone else.
 
 A client key on P-384 or Ed25519 can be registered but cannot yet sign an assertion that Hodor accepts. Hodor's signature checking covers `ES256`, `RS256` and `PS256` today.
+
+### Checking a JWT-SVID
+
+Issue-106. A client using `spiffe_jwt` proves who it is with a JWT-SVID, as [draft-ietf-oauth-spiffe-client-auth-03](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-spiffe-client-auth-03), section 3.2, writes it, with the choices of [Decision 0055](../../decisions/0055-spiffe-jwt-client-authentication.md). A JWT-SVID is a JSON Web Token that the workload's trust domain signed: SPIRE, or a mesh, gives it to the workload, and the client holds no secret and no key of its own.
+
+**The client is the one `client_id` names.** The draft makes `client_id` optional and, without it, makes the SPIFFE identifier the client identifier; no client of Hodor has such an identifier, so a request without `client_id` is `invalid_client`. The client must use `spiffe_jwt`, as for every method.
+
+**The keys are the bundle's of the client's trust domain**: the trust domain of the tenant named in the client's [SPIFFE identifier](#the-spiffe-identifier-of-a-client), found through the keys context, and its bundle's `jwt-svid` elements ([trust domains](keys.md#trust-domains)). A tenant that does not trust that trust domain, or trusts it through the mesh with no bundle, refuses every JWT-SVID of the client. Nothing the JWT-SVID says chooses where the keys come from: `iss` is not read.
+
+It is then checked as follows, and nothing it says is used before its signature has been checked:
+
+| Check | Refused when |
+|---|---|
+| Shape | It is larger than 8 kibibytes, is not three base64url parts, or its header or claims are not JSON objects |
+| Header | `alg` is not `ES256`, `RS256` or `PS256`; `kid` is missing or not text, which the JWT-SVID specification requires; `typ`, when present, is neither `JWT` nor `JOSE` |
+| Key | The bundle has no `jwt-svid` element of that `kid`, or the element does not fit the algorithm: a P-256 key for `ES256`, an RSA key for `RS256` and `PS256`, and the element's own `alg` when it has one |
+| Signature | It does not verify over the first two parts, exactly as they arrived |
+| `sub` | It is not, byte for byte, the client's SPIFFE identifier: a JWT-SVID of another workload, even of the same trust domain, is refused |
+| `aud` | It is not exactly one value, the tenant's issuer, written as one text or as an array of one. The draft names the issuer as the sole value, so neither the address of an endpoint nor another tenant's issuer is accepted |
+| `exp` | Missing, in the past (allowing 60 seconds for clocks), or more than 1 hour ahead, so that what is remembered of it is kept for an hour at most |
+| `nbf`, `iat` | In the future, allowing 60 seconds |
+
+`jti` is neither needed nor read: SPIFFE does not require it.
+
+**A JWT-SVID is used once.** As soon as it has been checked, and before anything else is done with the request, the SHA-256 of its first two parts, as they arrived, is remembered with the client until it expires, in the register of client assertions, `oauth.client_assertion`, marked as a JWT-SVID's. A second request with the same JWT-SVID is refused, even when the first one failed afterwards. The signature is left out of the hash, so that a JWT-SVID whose ECDSA signature was rewritten into another that verifies is still the same JWT-SVID. A workload therefore sends a fresh JWT-SVID with each request; one that SPIRE's cache hands it a second time is refused, and keeping the access token until it expires avoids asking.
+
+Every refusal is `invalid_client`, as for any other method; the reason is in Hodor's logs. The same checks hold at [the revocation and introspection endpoints](#the-requests).
 
 ### Redeeming a code for tokens
 
@@ -695,7 +739,8 @@ No event carries a token or its hash.
 
 | Port | Purpose |
 |---|---|
-| `ClientAssertionStore` | Remember a client assertion's `jti` until it expires. It answers whether this was the first time, so that of two requests with the same assertion at the same moment exactly one goes on |
+| `ClientAssertionStore` | Remember a client assertion's `jti`, or the hash of a JWT-SVID, until it expires. It answers whether this was the first time, so that of two requests with the same assertion at the same moment exactly one goes on |
+| `TrustDomainService` | Finds the tenant's trust domain of a name, with its bundle, to check a JWT-SVID; from the keys context |
 | `RefreshTokenStore` | Start a family with its first token; find a token's family and generation by the token's hash; move a family one generation only from the generation named, with the next token; revoke a family |
 | `PersonStanding` | Whether a session of the person is still active, whether the person may still sign in, and whether a principal is a service account or an agent that may act. The server implements it over the session and identity contexts |
 | `SecretBox` | Seals and opens a family's secret, from the kernel |
@@ -704,7 +749,7 @@ No event carries a token or its hash.
 
 ### Storage
 
-`oauth.client_assertion` holds `tenant_id`, `client_id`, `jti` and `expires_at`, with the tenant, the client and the `jti` as primary key. It is a tenant table under row-level security, and its client is referenced with the tenant, so its rows go when the client goes.
+`oauth.client_assertion` holds `tenant_id`, `client_id`, `jti` and `expires_at`, with the tenant, the client and the `jti` as primary key. For a JWT-SVID, `jti` holds `jwt-svid:` followed by the SHA-256 of its first two parts in base64url, so that it can never be taken for the `jti` of an assertion. It is a tenant table under row-level security, and its client is referenced with the tenant, so its rows go when the client goes.
 
 | Table | Holds |
 |---|---|
@@ -749,7 +794,7 @@ Both endpoints answer `POST` with a form only, at `{issuer}/oauth2/revoke` and `
 The rules of the request:
 
 - **Reading the form:** a parameter given twice is `invalid_request`, and so is a body that is not a form.
-- **The client:** it proves who it is exactly as at the token endpoint: one method only, its registered method, the same checks, and `invalid_client` with status `401`. An assertion's `aud` may also be the address of the endpoint it is sent to, besides the issuer and the token endpoint.
+- **The client:** it proves who it is exactly as at the token endpoint: one method only, its registered method, the same checks, and `invalid_client` with status `401`. An assertion's `aud` may also be the address of the endpoint it is sent to, besides the issuer and the token endpoint; a JWT-SVID's is the issuer alone, as at the token endpoint.
 - **Errors:** they are JSON with `error` and `error_description`. No answer is kept by a cache: they carry `Cache-Control: no-store` and `Pragma: no-cache`.
 
 ### Revocation
@@ -969,10 +1014,10 @@ It names only what is built:
 | `response_modes_supported` | `query` |
 | `grant_types_supported` | The grants the token endpoint answers: `authorization_code`, `refresh_token`, `client_credentials` and `urn:ietf:params:oauth:grant-type:token-exchange` |
 | `code_challenge_methods_supported` | `S256` |
-| `token_endpoint_auth_methods_supported` | `client_secret_basic`, `client_secret_post`, `private_key_jwt`, `none` |
+| `token_endpoint_auth_methods_supported` | `client_secret_basic`, `client_secret_post`, `private_key_jwt`, `spiffe_jwt`, `none` |
 | `token_endpoint_auth_signing_alg_values_supported` | `ES256`, `RS256`, `PS256` |
-| `revocation_endpoint_auth_methods_supported` | The four of the token endpoint: a public client may revoke its own tokens |
-| `introspection_endpoint_auth_methods_supported` | `client_secret_basic`, `client_secret_post`, `private_key_jwt`: a public client may not introspect |
+| `revocation_endpoint_auth_methods_supported` | The five of the token endpoint: a public client may revoke its own tokens |
+| `introspection_endpoint_auth_methods_supported` | `client_secret_basic`, `client_secret_post`, `private_key_jwt`, `spiffe_jwt`: a public client may not introspect |
 | `revocation_endpoint_auth_signing_alg_values_supported`, `introspection_endpoint_auth_signing_alg_values_supported` | `ES256`, `RS256`, `PS256` |
 | `id_token_signing_alg_values_supported` | `ES256`, `RS256` |
 | `subject_types_supported` | `public`, `pairwise` |
@@ -984,6 +1029,8 @@ It names only what is built:
 | `authorization_response_iss_parameter_supported` | `true` |
 | `request_parameter_supported`, `request_uri_parameter_supported`, `claims_parameter_supported` | `false` |
 | `backchannel_logout_supported`, `backchannel_logout_session_supported` | `true`: [back-channel logout](#back-channel-logout) is offered, and every logout token carries `sid` |
+
+**`spiffe_jwt` follows draft-ietf-oauth-spiffe-client-auth-03**, the version of the Internet-Draft Hodor implements ([checking a JWT-SVID](#checking-a-jwt-svid)). The draft is not yet a standard and may change; a change of the version Hodor follows is a change to Hodor, written in the changelog ([Decision 0029](../../decisions/0029-hodor-in-a-service-mesh.md#consequences)). The draft's other methods, `spiffe_x509` and `spiffe_wit`, are not offered; `spiffe_x509` is Issue-107.
 
 The document may be kept by caches for five minutes and carries `Access-Control-Allow-Origin: *`, as the key set does: it is public.
 
@@ -1584,3 +1631,11 @@ Administrators reach them through [the administration interface](../../api/admin
 | A page where a person chooses which of their organizations to sign in for, when the client names none | When a client needs it; the client names the organization |
 | The organization's name on the consent page | With the organization's branding |
 | Accepting any port for a loopback redirect address, which RFC 8252 suggests | Not planned: exact equality is kept |
+| Prefix matches of SPIFFE identifiers, `spiffe://…/*`, which the draft allows | Not planned for 0.4.0 ([Decision 0029](../../decisions/0029-hodor-in-a-service-mesh.md#alternatives-considered)) |
+| A JWT-SVID without `client_id`, its SPIFFE identifier taken as the client identifier | Not planned: Hodor's client identifiers are never SPIFFE identifiers ([Decision 0055](../../decisions/0055-spiffe-jwt-client-authentication.md)) |
+| JWT-SVIDs signed with `ES384`, `ES512`, `RS384`, `RS512`, `PS384` or `PS512`, which a bundle may hold keys for | When the kernel's signature checking covers them |
+| The client metadata `spiffe_id` and `spiffe_bundle_endpoint` of a client that registers itself or publishes a Client ID Metadata Document, and a bundle a client brings | With dynamic client registration |
+| A client of an agent proving who it is with a JWT-SVID | When an agent needs it ([Decision 0055](../../decisions/0055-spiffe-jwt-client-authentication.md)) |
+| Binding a client to a SPIFFE identifier from the command-line tool and the console: the administration interface does it | Issue-109 |
+| `spiffe_x509`, `tls_client_auth` and `linkerd_identity`: the identity a proxy forwards | Issue-107 |
+| `spiffe_wit`, the draft's workload identity tokens | Not scheduled |

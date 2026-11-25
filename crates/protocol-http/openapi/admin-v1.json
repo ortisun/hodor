@@ -2864,7 +2864,7 @@
             }
           },
           "409": {
-            "description": "The application already has 20 clients.",
+            "description": "The application already has 20 clients, or the SPIFFE identifier is bound to another client of the tenant.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3026,7 +3026,7 @@
             }
           },
           "409": {
-            "description": "Someone else changed the client at the same moment.",
+            "description": "Someone else changed the client at the same moment, or the SPIFFE identifier is bound to another client of the tenant.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -12649,7 +12649,8 @@
           "created_at",
           "updated_at",
           "principal",
-          "exchange_rules"
+          "exchange_rules",
+          "spiffe_id"
         ],
         "properties": {
           "id": {
@@ -12677,6 +12678,7 @@
               "client_secret_basic",
               "client_secret_post",
               "private_key_jwt",
+              "spiffe_jwt",
               "none"
             ]
           },
@@ -12832,6 +12834,14 @@
               "$ref": "#/components/schemas/ExchangeRule"
             },
             "description": "What an agent's client with the token exchange grant may exchange for which audience; empty otherwise."
+          },
+          "spiffe_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 2048,
+            "description": "The one SPIFFE identifier of a client using `spiffe_jwt`, whose JWT-SVIDs prove who it is; `null` for any other method."
           }
         }
       },
@@ -12878,6 +12888,7 @@
               "client_secret_basic",
               "client_secret_post",
               "private_key_jwt",
+              "spiffe_jwt",
               "none"
             ]
           },
@@ -12966,6 +12977,11 @@
               "$ref": "#/components/schemas/ExchangeRule"
             },
             "description": "What an agent's client with the token exchange grant may exchange for which audience; empty otherwise."
+          },
+          "spiffe_id": {
+            "type": "string",
+            "maxLength": 2048,
+            "description": "Required with `spiffe_jwt` and refused with any other method: the one SPIFFE identifier, `spiffe://<trust domain>/<path>`, whose JWT-SVIDs prove who the client is. Exact; `/*` is refused. The principal must be a service account. Unique in the tenant."
           }
         }
       },
@@ -12984,6 +13000,7 @@
               "client_secret_basic",
               "client_secret_post",
               "private_key_jwt",
+              "spiffe_jwt",
               "none"
             ]
           },
@@ -13074,6 +13091,14 @@
               "$ref": "#/components/schemas/ExchangeRule"
             },
             "description": "What an agent's client with the token exchange grant may exchange for which audience; empty otherwise. Replaces the list."
+          },
+          "spiffe_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 2048,
+            "description": "Binds a client using `spiffe_jwt` to one SPIFFE identifier; `null` removes it, as moving away from `spiffe_jwt` requires."
           }
         }
       },
