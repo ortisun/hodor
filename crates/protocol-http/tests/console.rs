@@ -291,6 +291,7 @@ fn world() -> World {
         keys: None,
         key_rotation: hodor_keys::api::RotationPolicy::DEFAULT,
         // Trust domains are tested in `admin.rs`; here none is fetched.
+        authority: None,
         trust_domains: hodor_keys::api::TrustDomainService::new(
             hodor_keys::api::TrustDomainPorts {
                 units_of_work: units(),
@@ -547,6 +548,12 @@ async fn every_operation_is_refused_without_a_session() {
         let reply = world
             .send(method.clone(), &console(&concrete(path)), With::default())
             .await;
+        // The certificate authority is off in this world: its operations
+        // are not routed at all.
+        if path.starts_with("/certificate-authority") {
+            assert_eq!(reply.status, StatusCode::NOT_FOUND, "{method} {path}");
+            continue;
+        }
         assert_eq!(reply.status, StatusCode::UNAUTHORIZED, "{method} {path}");
         assert_eq!(reply.code(), "console.not_authenticated", "{method} {path}");
     }
@@ -585,6 +592,11 @@ async fn me_says_who_the_person_is_and_what_they_may_do() {
         .collect();
     assert!(permissions.contains(&"audit:read"), "{permissions:?}");
     assert!(!permissions.contains(&"users:write"), "{permissions:?}");
+    // The auditor holds it, but the authority is off in this world.
+    assert!(
+        !permissions.contains(&"certificate-authority:read"),
+        "{permissions:?}"
+    );
     assert_eq!(me.body["signed_in_at"], "1970-01-01T00:00:00Z");
     // The tenant lets the session live for a day; the console does not.
     assert_eq!(me.body["console_until"], "1970-01-01T12:00:00Z");

@@ -23,7 +23,13 @@ kernel traits.
   `FirstFormatSecrets`, by `SecretKeys` in
   `crates/adapters-crypto/src/sealing.rs`; `TrustDomainStore` and
   `DueRefreshes`, by `PgTrustDomainStore` and `PgDueRefreshes` in
-  `crates/adapters-postgres/src/trust_domain.rs`.
+  `crates/adapters-postgres/src/trust_domain.rs`; `AuthorityStore`, by
+  `PgAuthorityStore` in `crates/adapters-postgres/src/certificate_authority.rs`;
+  `CertificateWriter`, by `X509Certificates` in
+  `crates/adapters-crypto/src/certificates.rs`.
+- `AuthorityService` is the certificate authority of a tenant (Decision
+  0062); `apps/hodor-server` builds it only when `HODOR_CERTIFICATE_AUTHORITY`
+  is `on` or `development`.
 - `TenantSecretBox` implements the kernel's `SecretBox` over the tenant's
   data keys; the binaries give it to every context that keeps secrets.
 - Workspace dependencies: `hodor-kernel` (`crates/kernel`), plus
@@ -57,7 +63,9 @@ kernel traits.
   and `keys.version_revoked`; and for trust domains
   `keys.trust_domain_added`, `keys.trust_domain_replaced`,
   `keys.trust_domain_removed`, `keys.trust_bundle_refreshed` and
-  `keys.trust_bundle_refresh_failed`.
+  `keys.trust_bundle_refresh_failed`; and for the certificate authority
+  `keys.authority_created`, `keys.authority_signed` (every signature of its
+  key), `keys.authority_activated` and `keys.authority_removed`.
 - Through `HttpClient`: `GET` of bundle endpoints, when a trust domain is
   saved and when `BundleRefresher` (scheduled by `apps/hodor-worker`)
   refreshes it. Through `DestinationCheck`: the check of a bundle endpoint

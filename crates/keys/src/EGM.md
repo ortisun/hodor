@@ -27,6 +27,21 @@ surface through `pub mod api`.
     `DEFAULT_REFRESH` (5 minutes), `SHORTEST_REFRESH` (1 minute),
     `LONGEST_REFRESH` (1 day), `LONGEST_RETRY` (5 minutes).
   - Several providers as one: `KeyProviders`.
+  - The certificate authority: `AuthorityService`, `AuthorityPorts`,
+    `NewAuthority`, the ports `AuthorityStore` and `CertificateWriter` with
+    `ToBeSigned`; `CertificateAuthority`, `CertificateAuthoritySnapshot`,
+    `AuthorityId`, `AuthorityKey`, `AuthorityKind`, `AuthorityState`,
+    `AuthorityRequest`, `AuthorityProfile`, `AuthoritySetting`,
+    `NameConstraints`, `IssuedCertificate`, `CertificateFacts`,
+    `FactsConstraints`, `AuthorityEvent`, `authority_trust_domain`,
+    `to_pem`, `hexadecimal`, and the bounds and defaults
+    `MAX_AUTHORITY_TRUST_DOMAINS` (10), `MAX_COMMON_NAME_LENGTH` (64),
+    `DEFAULT_COMMON_NAME`, `DEVELOPMENT_SUFFIX`, `DEFAULT_ROOT_LIFETIME_DAYS`
+    (1826), `MAX_ROOT_LIFETIME_DAYS` (3650),
+    `DEFAULT_INTERMEDIATE_LIFETIME_DAYS` (30),
+    `MAX_INTERMEDIATE_LIFETIME_DAYS` (365), `MAX_CHAIN_LENGTH` (5),
+    `PATH_LENGTH` (1), `EXCLUDED_IP_RANGES`, `BUNDLE_REFRESH_HINT_SECONDS`
+    (300), `BACKDATING` (1 minute).
   - Service: `KeyService`, `RotationReport`, `Signature`.
   - Secrets at rest: `TenantSecretBox`, `SEALED_FORMAT` (2), `LOST_RACE`.
   - Event: `KeyEvent`.
@@ -48,6 +63,12 @@ surface through `pub mod api`.
     fake provider would.
   - `Ports<'a> { units_of_work, keys }` and `run_contract(ports)`: the store
     contract every implementation must pass; it panics on a broken rule.
+  - `InMemoryAuthorities`: an `AuthorityStore` in memory, and
+    `run_authority_contract(units_of_work, store)`, the contract of
+    authority stores: one per tenant (`keys.authority_exists`), read back
+    unchanged within its tenant only, an update that needs the version it
+    read (`keys.authority_changed`), a removal that reaches its tenant
+    only.
   - `InMemoryTrustDomains`: a `TrustDomainStore` and `DueRefreshes` in
     memory; its `update` checks and increments the version.
   - `FakeBundleEndpoints`: an `HttpClient` and `DestinationCheck` whose

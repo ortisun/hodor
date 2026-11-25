@@ -7,8 +7,8 @@ use crate::application::ports::{DueRefreshes, TrustDomainStore};
 use crate::domain::event::{BundleSummary, TrustDomainEvent};
 use crate::domain::trust_domain::{
     CheckedSource, FETCH_TIME_LIMIT, FetchOutcome, LEASE_MARGIN, MAX_BUNDLE_BYTES,
-    MAX_TRUST_DOMAINS, SvidKind, TrustBundle, TrustDomain, TrustDomainId, check_bundle_endpoint,
-    source_invalid,
+    MAX_TRUST_DOMAINS, SvidKind, TrustBundle, TrustDomain, TrustDomainId, TrustSource,
+    check_bundle_endpoint, source_invalid,
 };
 use hodor_kernel::{
     Caller, Clock, Cursor, DestinationCheck, Digest, DomainError, EventEnvelope, EventMetadata,
@@ -155,17 +155,7 @@ impl TrustDomainService {
 
     /// What an event says of a bundle.
     fn summary(&self, bundle: &TrustBundle) -> BundleSummary {
-        let digest = self.ports.digest.sha256(bundle.document().as_bytes());
-        let mut written = String::with_capacity(64);
-        for byte in digest {
-            let _ = write!(written, "{byte:02x}");
-        }
-        BundleSummary {
-            bundle_sha256: written,
-            sequence: bundle.sequence(),
-            x509_authorities: bundle.authorities(SvidKind::X509),
-            jwt_authorities: bundle.authorities(SvidKind::Jwt),
-        }
+        bundle_summary(self.ports.digest.as_ref(), bundle)
     }
 
     fn record(
@@ -345,7 +335,9 @@ impl TrustDomainService {
         caller: Caller,
     ) -> Result<TrustDomain, DomainError> {
         // Said at once, before anything is fetched.
-        self.get(tenant, id).await?;
+        if self.get(tenant, id).await?.source() == TrustSource::Authority {
+            return Err(of_authority());
+        }
         let checked = self.check(source).await?;
 
         let mut uow = self.ports.units_of_work.begin(tenant).await?;
@@ -403,7 +395,31 @@ impl TrustDomainService {
     }
 }
 
-fn name_taken() -> DomainError {
+fn of_authority() -> DomainError {
+    DomainError::conflict(
+        "keys.trust_domain_of_authority",
+        "the tenant's certificate authority added this trust domain: it can be removed, not \
+         replaced",
+    )
+}
+
+/// What an event says of a bundle: its SHA-256 and how many authorities it
+/// holds, never its keys.
+pub(crate) fn bundle_summary(digest: &dyn Digest, bundle: &TrustBundle) -> BundleSummary {
+    let digest = digest.sha256(bundle.document().as_bytes());
+    let mut written = String::with_capacity(64);
+    for byte in digest {
+        let _ = write!(written, "{byte:02x}");
+    }
+    BundleSummary {
+        bundle_sha256: written,
+        sequence: bundle.sequence(),
+        x509_authorities: bundle.authorities(SvidKind::X509),
+        jwt_authorities: bundle.authorities(SvidKind::Jwt),
+    }
+}
+
+pub(crate) fn name_taken() -> DomainError {
     DomainError::conflict(
         "keys.trust_domain_name_taken",
         "the tenant already has a trust domain of that name",

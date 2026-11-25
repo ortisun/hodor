@@ -422,7 +422,13 @@ async fn a_sign_in_started_in_one_tenant_cannot_be_continued_in_another() {
 
 #[tokio::test]
 async fn an_administrators_token_is_refused_by_every_operation_of_another_tenant() {
-    let world = world().await;
+    // With keys and the certificate authority on, so that every operation
+    // the interface has is routed.
+    let world = world_with(&[
+        ("HODOR_SECRET_KEYS", ROOT_KEY),
+        ("HODOR_CERTIFICATE_AUTHORITY", "development"),
+    ])
+    .await;
     let (acme, globex) = (&world.acme, &world.globex);
     let (status, document) = world
         .admin(acme, "", Method::GET, "/openapi.json", None)
@@ -479,7 +485,7 @@ async fn an_administrators_token_is_refused_by_every_operation_of_another_tenant
             tried += 1;
         }
     }
-    assert_eq!(tried, 146, "every documented operation was tried");
+    assert_eq!(tried, 150, "every documented operation was tried");
 
     // The token is good where it belongs, and nothing happened in Globex:
     // it has its two users, both active.
@@ -5867,4 +5873,124 @@ async fn a_mesh_one_tenant_trusts_forwards_identities_and_binds_tokens_for_that_
         evaluated_through_the_mesh(&world, globex, token, &header).await,
         StatusCode::UNAUTHORIZED
     );
+}
+
+#[tokio::test]
+async fn one_tenants_certificate_authority_is_never_read_published_or_used_for_another() {
+    let world = world_with(&[
+        ("HODOR_SECRET_KEYS", ROOT_KEY),
+        ("HODOR_CERTIFICATE_AUTHORITY", "development"),
+    ])
+    .await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    let request = serde_json::json!({ "kind": "root", "trust_domains": ["cluster.local"] });
+    let (status, created) = world
+        .admin(
+            acme,
+            &acme.administrator_token,
+            Method::POST,
+            "/certificate-authority",
+            Some(request.clone()),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let bundle = |tenant: &Tenant| {
+        let url = format!(
+            "{}/t/{}/certificate-authority/bundle",
+            world.server.base, tenant.slug
+        );
+        async move {
+            let response = Client::new().get(url).send().await.expect("response");
+            let status = response.status();
+            (
+                status,
+                response
+                    .json::<serde_json::Value>()
+                    .await
+                    .unwrap_or_default(),
+            )
+        }
+    };
+
+    // Globex has none: not to read, publish, install or remove, with its
+    // own administrator's token.
+    let token = &globex.administrator_token;
+    for (method, path) in [
+        (Method::GET, "/certificate-authority"),
+        (Method::DELETE, "/certificate-authority"),
+    ] {
+        let (status, body) = world.admin(globex, token, method.clone(), path, None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{method} {path}");
+        assert_eq!(body["code"], "keys.authority_not_found", "{method} {path}");
+    }
+    let (status, body) = world
+        .admin(
+            globex,
+            token,
+            Method::POST,
+            "/certificate-authority:install",
+            Some(serde_json::json!({ "certificate": created["certificate"] })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["code"], "keys.authority_not_found");
+    let (status, _) = bundle(globex).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (_, domains) = world
+        .admin(globex, token, Method::GET, "/trust-domains", None)
+        .await;
+    assert_eq!(domains["items"], serde_json::json!([]));
+
+    // Globex makes its own for a trust domain of the same name: another
+    // key, another certificate, another bundle, and Acme's stays.
+    let (status, theirs) = world
+        .admin(
+            globex,
+            token,
+            Method::POST,
+            "/certificate-authority",
+            Some(request),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{theirs}");
+    assert_ne!(theirs["key"]["id"], created["key"]["id"]);
+    assert_ne!(theirs["certificate"], created["certificate"]);
+    let ((_, acme_bundle), (_, globex_bundle)) = (bundle(acme).await, bundle(globex).await);
+    assert_ne!(acme_bundle, globex_bundle);
+    let (_, read) = world
+        .admin(
+            acme,
+            &acme.administrator_token,
+            Method::GET,
+            "/certificate-authority",
+            None,
+        )
+        .await;
+    assert_eq!(read, created);
+
+    // Globex removes its own; Acme's is untouched.
+    let (status, _) = world
+        .admin(
+            globex,
+            token,
+            Method::DELETE,
+            "/certificate-authority",
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, kept) = bundle(acme).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(kept, acme_bundle);
+    let (_, domains) = world
+        .admin(
+            acme,
+            &acme.administrator_token,
+            Method::GET,
+            "/trust-domains",
+            None,
+        )
+        .await;
+    assert_eq!(domains["items"][0]["name"], "cluster.local");
+    assert_eq!(domains["items"][0]["bundle"], acme_bundle);
 }

@@ -1,11 +1,12 @@
 //! What the keys context needs from storage and from a key provider.
 
+use crate::domain::authority::{AuthorityProfile, CertificateAuthority, CertificateFacts};
 use crate::domain::key::{
     GeneratedKey, KeyAlgorithm, KeyUse, KeyVersion, KeyVersionId, SignatureEncoding,
 };
 use crate::domain::trust_domain::{TrustDomain, TrustDomainId};
 use hodor_kernel::{
-    DomainError, SealedSecret, Secret, TenantContext, TenantId, Timestamp, UnitOfWork,
+    DomainError, PublicKey, SealedSecret, Secret, TenantContext, TenantId, Timestamp, UnitOfWork,
 };
 
 /// Stores and loads key versions. Every method works inside the tenant
@@ -79,6 +80,15 @@ pub trait KeyProvider: Send + Sync {
     fn name_for(&self, algorithm: KeyAlgorithm) -> &'static str {
         let _ = algorithm;
         self.name()
+    }
+
+    /// Whether the keys this provider makes are made and used inside it,
+    /// where Hodor cannot read them, so that whoever holds Hodor's
+    /// database and configuration still cannot sign with them. A
+    /// certificate authority is created only on such a provider, outside
+    /// development.
+    fn signs_inside(&self) -> bool {
+        false
     }
 
     /// Makes a new key for `version` of `algorithm` in `tenant`.
@@ -312,4 +322,113 @@ pub trait DueRefreshes: Send + Sync {
         now: Timestamp,
         limit: u32,
     ) -> Result<Vec<(TenantId, TrustDomainId)>, DomainError>;
+}
+
+/// Stores the tenant's certificate authority. Every method works inside
+/// the tenant the unit of work is bound to; a tenant has at most one.
+#[async_trait::async_trait]
+pub trait AuthorityStore: Send + Sync {
+    /// Stores a new authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns `keys.authority_exists` if the tenant has one.
+    async fn insert(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        authority: &CertificateAuthority,
+    ) -> Result<(), DomainError>;
+
+    /// The tenant's authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn get(
+        &self,
+        uow: &mut dyn UnitOfWork,
+    ) -> Result<Option<CertificateAuthority>, DomainError>;
+
+    /// The tenant's authority, held until the unit of work ends.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn lock(
+        &self,
+        uow: &mut dyn UnitOfWork,
+    ) -> Result<Option<CertificateAuthority>, DomainError>;
+
+    /// Stores a changed authority if it still has the version it was read
+    /// at, and increments its version.
+    ///
+    /// # Errors
+    ///
+    /// Returns `keys.authority_changed` if it changed meanwhile, and
+    /// `keys.authority_not_found` if the tenant has none.
+    async fn update(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        authority: &CertificateAuthority,
+    ) -> Result<(), DomainError>;
+
+    /// Removes the tenant's authority. Answers whether there was one.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn remove(&self, uow: &mut dyn UnitOfWork) -> Result<bool, DomainError>;
+}
+
+/// The part to be signed of an authority's certificate, and its serial
+/// number.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToBeSigned {
+    /// The `TBSCertificate`, in DER.
+    pub bytes: Vec<u8>,
+    /// The serial number it holds, in lowercase hexadecimal.
+    pub serial_number: String,
+}
+
+/// Writes and reads the certificates of an authority. It signs nothing:
+/// the key provider signs what it writes.
+pub trait CertificateWriter: Send + Sync {
+    /// The part to be signed of a root's certificate: its subject as its
+    /// issuer, `public_key`, a new serial number, the validity given, an
+    /// authority's basic constraints and key usage, and the name
+    /// constraints of `profile`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an internal error if it cannot be written.
+    fn root_to_be_signed(
+        &self,
+        profile: &AuthorityProfile,
+        public_key: &PublicKey,
+        not_before: Timestamp,
+        not_after: Timestamp,
+    ) -> Result<ToBeSigned, DomainError>;
+
+    /// The part to be signed of an intermediate's certificate signing
+    /// request (PKCS#10), asking for the same as a root's certificate.
+    ///
+    /// # Errors
+    ///
+    /// Returns an internal error if it cannot be written.
+    fn request_to_be_signed(
+        &self,
+        profile: &AuthorityProfile,
+        public_key: &PublicKey,
+    ) -> Result<Vec<u8>, DomainError>;
+
+    /// The certificate or request made of a part to be signed and its
+    /// ECDSA signature with SHA-256, in DER.
+    fn signed(&self, to_be_signed: &[u8], signature: &[u8]) -> Vec<u8>;
+
+    /// Reads a certificate in PEM.
+    ///
+    /// # Errors
+    ///
+    /// Returns `keys.authority_certificate_unsuitable` if it does not read.
+    fn read(&self, pem: &str) -> Result<CertificateFacts, DomainError>;
 }

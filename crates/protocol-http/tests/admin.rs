@@ -363,10 +363,35 @@ async fn world_with_keys(with_keys: bool) -> World {
         )
     });
     let bundle_endpoints = hodor_keys::testing::FakeBundleEndpoints::default();
+    let trust_domain_rows = hodor_keys::testing::InMemoryTrustDomains::default();
+    // The certificate authority is on, for development, wherever the
+    // installation has keys: its key is made by the local provider.
+    let authority = with_keys.then(|| {
+        let root = hodor_adapters_crypto::SecretKeys::generate(&hodor_adapters_crypto::OsRandom);
+        let root = hodor_adapters_crypto::SecretKeys::parse(&hodor_kernel::Secret::new(format!(
+            "root:{}",
+            root.expose()
+        )))
+        .expect("root keys");
+        let provider = Arc::new(hodor_adapters_crypto::LocalKeyProvider::new(Arc::new(root)));
+        hodor_keys::api::AuthorityService::new(
+            hodor_keys::api::AuthorityPorts {
+                units_of_work: units(),
+                store: Arc::new(hodor_keys::testing::InMemoryAuthorities::default()),
+                trust_domains: Arc::new(trust_domain_rows.clone()),
+                maker: provider.clone(),
+                signer: provider,
+                certificates: Arc::new(hodor_adapters_crypto::X509Certificates),
+                digest: Arc::new(FakeDigest),
+                clock: clock.clone(),
+            },
+            true,
+        )
+    });
     let trust_domains =
         hodor_keys::api::TrustDomainService::new(hodor_keys::api::TrustDomainPorts {
             units_of_work: units(),
-            store: Arc::new(hodor_keys::testing::InMemoryTrustDomains::default()),
+            store: Arc::new(trust_domain_rows),
             destinations: Arc::new(bundle_endpoints.clone()),
             http: Arc::new(bundle_endpoints.clone()),
             digest: Arc::new(FakeDigest),
@@ -382,6 +407,7 @@ async fn world_with_keys(with_keys: bool) -> World {
         keys,
         key_rotation: RotationPolicy::DEFAULT,
         trust_domains,
+        authority,
         applications: oauth.0,
         claim_mappers: oauth.2.clone(),
         consents: oauth.1.clone(),
@@ -687,7 +713,7 @@ fn the_document_and_the_routes_list_the_same_operations_and_permissions() {
         })
         .collect();
     assert_eq!(documented, served);
-    assert_eq!(served.len(), 146);
+    assert_eq!(served.len(), 150);
 
     // Every operation says how it refuses.
     let document: serde_json::Value = serde_json::from_str(ADMIN_OPENAPI).expect("valid JSON");
@@ -710,11 +736,72 @@ async fn the_document_is_served_without_a_token() {
         .send(Method::GET, "/t/acme/api/v1/admin/openapi.json", None, None)
         .await;
     assert_eq!(reply.status, StatusCode::OK);
-    assert_eq!(reply.body["openapi"], "3.1.0");
     assert_eq!(
         reply.body,
         serde_json::from_str::<serde_json::Value>(ADMIN_OPENAPI).expect("valid JSON")
     );
+}
+
+#[tokio::test]
+async fn with_the_authority_off_the_document_does_not_name_it() {
+    // Without keys there is no authority.
+    let world = world_with_keys(false).await;
+    let reply = world
+        .send(Method::GET, "/t/acme/api/v1/admin/openapi.json", None, None)
+        .await;
+    assert_eq!(reply.status, StatusCode::OK);
+    assert_eq!(reply.body["openapi"], "3.1.0");
+    // The certificate authority is off in this world: the document is the
+    // whole one without its operations and the schemas only they use.
+    let mut whole: serde_json::Value = serde_json::from_str(ADMIN_OPENAPI).expect("valid JSON");
+    let paths = whole["paths"].as_object_mut().expect("paths");
+    assert!(paths.remove("/certificate-authority").is_some());
+    assert!(paths.remove("/certificate-authority:install").is_some());
+    let schemas = whole["components"]["schemas"]
+        .as_object_mut()
+        .expect("schemas");
+    for schema in [
+        "CertificateAuthority",
+        "NewCertificateAuthority",
+        "CertificateAuthorityCertificate",
+    ] {
+        assert!(schemas.remove(schema).is_some(), "{schema}");
+    }
+    assert_eq!(reply.body, whole);
+    assert!(
+        !reply.body["paths"]
+            .to_string()
+            .contains("certificate-authority")
+    );
+}
+
+#[tokio::test]
+async fn with_the_authority_off_its_operations_are_not_routed() {
+    let world = world_with_keys(false).await;
+    let (_, token) = world
+        .person(
+            &world.acme,
+            "root@acme.example",
+            &[Role::TenantAdministrator],
+        )
+        .await;
+    let bearer = format!("Bearer {token}");
+    for (method, path) in [
+        (Method::GET, "/certificate-authority"),
+        (Method::POST, "/certificate-authority"),
+        (Method::POST, "/certificate-authority:install"),
+        (Method::DELETE, "/certificate-authority"),
+    ] {
+        let reply = world
+            .send(
+                method.clone(),
+                &format!("/t/acme/api/v1/admin{path}"),
+                Some(&bearer),
+                Some(serde_json::json!({ "kind": "root", "trust_domains": ["a.example"] })),
+            )
+            .await;
+        assert_eq!(reply.status, StatusCode::NOT_FOUND, "{method} {path}");
+    }
 }
 
 #[tokio::test]

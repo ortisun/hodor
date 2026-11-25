@@ -55,6 +55,7 @@ use time::format_description::well_known::Rfc3339;
 mod access_lists;
 mod applications;
 mod authorization;
+mod certificate_authority;
 mod claim_mappers;
 mod decisions;
 mod factors;
@@ -167,6 +168,26 @@ pub const ADMIN_OPERATIONS: &[(&str, &str, Permission)] = &[
         "DELETE",
         "/trust-domains/{trust_domain_id}",
         Permission::KeysWrite,
+    ),
+    (
+        "GET",
+        "/certificate-authority",
+        Permission::CertificateAuthorityRead,
+    ),
+    (
+        "POST",
+        "/certificate-authority",
+        Permission::CertificateAuthorityWrite,
+    ),
+    (
+        "POST",
+        "/certificate-authority:install",
+        Permission::CertificateAuthorityWrite,
+    ),
+    (
+        "DELETE",
+        "/certificate-authority",
+        Permission::CertificateAuthorityWrite,
     ),
     ("GET", "/applications", Permission::ApplicationsRead),
     ("POST", "/applications", Permission::ApplicationsWrite),
@@ -615,6 +636,10 @@ pub struct AdminState {
     pub key_rotation: RotationPolicy,
     /// The SPIFFE trust domains of the tenant and their bundles.
     pub trust_domains: hodor_keys::api::TrustDomainService,
+    /// The tenant's certificate authority. `None` unless the installation
+    /// turns the authority on: its operations are then not routed, not in
+    /// the OpenAPI document, and its permissions not listed.
+    pub authority: Option<hodor_keys::api::AuthorityService>,
     /// The applications, their clients and resource servers.
     pub applications: ApplicationService,
     /// The claim mappers of clients.
@@ -972,7 +997,7 @@ async fn set_email_sign_in(
 /// The routes of the administration interface, to be mounted under a
 /// tenant at `/api/v1/admin`.
 pub fn admin_routes(state: AdminState) -> Router {
-    shared_routes()
+    with_authority(shared_routes(), &state)
         .route("/openapi.json", get(openapi))
         .with_state(Shared {
             administration: state,
@@ -983,7 +1008,7 @@ pub fn admin_routes(state: AdminState) -> Router {
 /// The routes of the console interface, to be mounted under a tenant at
 /// `/console/api`: those of the administration interface, and `/me`.
 pub fn console_routes(state: ConsoleState) -> Router {
-    shared_routes()
+    with_authority(shared_routes(), &state.administration)
         .route("/me", get(me))
         // Cookies are sent by the browser whoever asks, so a request that
         // changes something must come from this origin.
@@ -997,13 +1022,59 @@ pub fn console_routes(state: ConsoleState) -> Router {
         })
 }
 
-async fn openapi() -> Response {
+/// The operations of the certificate authority, routed only when the
+/// installation turns it on.
+fn with_authority(routes: Router<Shared>, state: &AdminState) -> Router<Shared> {
+    if state.authority.is_some() {
+        routes.merge(certificate_authority::routes())
+    } else {
+        routes
+    }
+}
+
+/// Whether an operation or a permission belongs to the certificate
+/// authority, which an installation that does not turn it on never
+/// mentions.
+fn of_the_authority(name: &str) -> bool {
+    name.starts_with("/certificate-authority") || name.starts_with("certificate-authority:")
+}
+
+/// The OpenAPI document without the certificate authority: its operations
+/// and the schemas only they use.
+fn document_without_authority() -> &'static str {
+    static DOCUMENT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    DOCUMENT.get_or_init(|| {
+        let Ok(mut document) = serde_json::from_str::<serde_json::Value>(ADMIN_OPENAPI) else {
+            return ADMIN_OPENAPI.to_owned();
+        };
+        if let Some(paths) = document["paths"].as_object_mut() {
+            paths.retain(|path, _| !of_the_authority(path));
+        }
+        if let Some(schemas) = document["components"]["schemas"].as_object_mut() {
+            for schema in [
+                "CertificateAuthority",
+                "NewCertificateAuthority",
+                "CertificateAuthorityCertificate",
+            ] {
+                schemas.remove(schema);
+            }
+        }
+        serde_json::to_string_pretty(&document).unwrap_or_else(|_| ADMIN_OPENAPI.to_owned())
+    })
+}
+
+async fn openapi(State(state): State<Shared>) -> Response {
+    let document = if state.authority.is_some() {
+        ADMIN_OPENAPI
+    } else {
+        document_without_authority()
+    };
     (
         [(
             header::CONTENT_TYPE,
             HeaderValue::from_static("application/json"),
         )],
-        ADMIN_OPENAPI,
+        document,
     )
         .into_response()
 }
@@ -1430,6 +1501,7 @@ async fn me(
                 .into_iter()
                 .filter(|permission| roles.iter().any(|role| role.allows(*permission)))
                 .map(Permission::as_str)
+                .filter(|name| state.authority.is_some() || !of_the_authority(name))
                 .collect();
             Ok(Json(MeBody {
                 user: UserBody::from(&person.user),

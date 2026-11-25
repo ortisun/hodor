@@ -7,7 +7,9 @@ use hodor_adapters_crypto::{AwsLcVerifier, LocalKeyProvider, OsRandom, SecretKey
 use hodor_adapters_http::{OutboundPolicy, ServiceHttpClient};
 use hodor_adapters_kms::{OpenBaoKeyProvider, OpenBaoLogin, OpenBaoSettings};
 use hodor_kernel::uow::testing::InMemoryUnitOfWorkFactory;
-use hodor_kernel::{Caller, Secret, SignatureVerifier as _, SystemClock, TenantContext, TenantId};
+use hodor_kernel::{
+    Caller, Clock as _, Secret, SignatureVerifier as _, SystemClock, TenantContext, TenantId,
+};
 use hodor_keys::api::{
     KeyAlgorithm, KeyProvider, KeyProviders, KeyService, KeyUse, KeyVersionId, SignatureEncoding,
 };
@@ -19,6 +21,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use testcontainers::core::{IntoContainerPort as _, WaitFor};
 use testcontainers::{ContainerAsync, GenericImage, ImageExt as _};
+use x509_parser::prelude::FromDer as _;
 
 /// Pinned, like every image a test starts.
 const IMAGE: (&str, &str) = ("openbao/openbao", "2.7.2");
@@ -577,4 +580,132 @@ async fn openbao_is_reached_over_https_with_an_authority_of_the_operators_own() 
         .await
         .expect_err("an unknown authority");
     assert_eq!(error.code(), "keys.provider_unavailable");
+}
+
+/// The certificate authority of a tenant on OpenBao, as an installation
+/// with the authority `on` builds it: the key made by OpenBao for the
+/// authority's own identifier, and signed there.
+fn authority_on(bao: &OpenBao) -> (hodor_keys::api::AuthorityService, InMemoryUnitOfWorkFactory) {
+    let openbao: Arc<dyn KeyProvider> = Arc::new(bao.provider());
+    let providers = KeyProviders::new(local(), local()).with_authorities(openbao);
+    let units_of_work = InMemoryUnitOfWorkFactory::default();
+    let service = hodor_keys::api::AuthorityService::new(
+        hodor_keys::api::AuthorityPorts {
+            units_of_work: Arc::new(units_of_work.clone()),
+            store: Arc::new(hodor_keys::testing::InMemoryAuthorities::default()),
+            trust_domains: Arc::new(hodor_keys::testing::InMemoryTrustDomains::default()),
+            maker: providers.authorities(),
+            signer: Arc::new(providers),
+            certificates: Arc::new(hodor_adapters_crypto::X509Certificates),
+            digest: Arc::new(hodor_adapters_crypto::Sha256Digest),
+            clock: Arc::new(SystemClock),
+        },
+        false,
+    );
+    (service, units_of_work)
+}
+
+#[tokio::test]
+async fn an_authoritys_root_is_made_and_signed_in_openbao_and_its_key_never_comes_out() {
+    let bao = OpenBao::start(false).await;
+    let (service, units_of_work) = authority_on(&bao);
+    let tenant = tenant();
+    let authority = service
+        .create(
+            &tenant,
+            hodor_keys::api::NewAuthority {
+                kind: "root".to_owned(),
+                trust_domains: vec!["prod.example.com".to_owned()],
+                ..hodor_keys::api::NewAuthority::default()
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("a root, on a provider that signs inside itself");
+    let key = authority.key();
+    assert_eq!(key.provider, "openbao");
+    assert!(!authority.snapshot().for_development);
+    let name = OpenBaoKeyProvider::key_name(&tenant, key.id);
+
+    // The key is OpenBao's, made not exportable, and its certificate is
+    // signed by it: the signature checks with the public key OpenBao
+    // answers, independently of Hodor.
+    let (status, read) = bao.root_read(&format!("hodor-transit/keys/{name}")).await;
+    assert_eq!(status, 200);
+    assert_eq!(read["data"]["type"], "ecdsa-p256");
+    assert_eq!(read["data"]["exportable"], false);
+    assert_eq!(read["data"]["allow_plaintext_backup"], false);
+    let certificate = &authority.certificate().expect("a certificate").der;
+    let (_, parsed) =
+        x509_parser::certificate::X509Certificate::from_der(certificate).expect("reads");
+    let jose = der_to_jose(&parsed.signature_value.data, 32).expect("an ECDSA signature");
+    assert!(AwsLcVerifier.verify(
+        hodor_kernel::SignatureAlgorithm::Es256,
+        &key.public_key,
+        parsed.tbs_certificate.as_ref(),
+        &jose,
+    ));
+    let pem = read["data"]["keys"]["1"]["public_key"]
+        .as_str()
+        .expect("OpenBao's public key");
+    let (_, block) = x509_parser::pem::parse_x509_pem(pem.as_bytes()).expect("PEM");
+    let (_, spki) =
+        x509_parser::x509::SubjectPublicKeyInfo::from_der(&block.contents).expect("a public key");
+    assert_eq!(
+        spki.subject_public_key.data.as_ref(),
+        parsed.public_key().subject_public_key.data.as_ref()
+    );
+
+    // Hodor's own token cannot take the private key out, in any way its
+    // policy might be asked.
+    let token = bao.hodor_token().await;
+    let (status, answer) = bao
+        .request(&token, "GET", &format!("hodor-transit/keys/{name}"), None)
+        .await;
+    assert_eq!(status, 200);
+    assert!(!answer.to_string().contains("PRIVATE"), "{answer}");
+    for (method, path, body) in [
+        (
+            "GET",
+            format!("hodor-transit/export/signing-key/{name}"),
+            None,
+        ),
+        (
+            "GET",
+            format!("hodor-transit/export/signing-key/{name}/1"),
+            None,
+        ),
+        ("GET", format!("hodor-transit/backup/{name}"), None),
+        (
+            "POST",
+            format!("hodor-transit/keys/{name}/config"),
+            Some(json!({"exportable": true, "allow_plaintext_backup": true})),
+        ),
+        ("DELETE", format!("hodor-transit/keys/{name}"), None),
+    ] {
+        let (status, answer) = bao.request(&token, method, &path, body).await;
+        assert_eq!(status, 403, "{method} {path}: {answer}");
+    }
+
+    // The key signs for its tenant alone.
+    let other = TenantContext::assume(TenantId::generate());
+    let refused = bao
+        .provider()
+        .sign(
+            &other,
+            &key.version(SystemClock.now()),
+            b"anything",
+            SignatureEncoding::Der,
+        )
+        .await
+        .expect_err("refused for another tenant");
+    assert_eq!(refused.code(), "keys.unusable");
+    assert_eq!(
+        units_of_work.committed_event_types()[..3],
+        [
+            "keys.authority_created",
+            "keys.authority_signed",
+            "keys.authority_activated",
+        ]
+    );
 }

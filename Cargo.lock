@@ -1639,6 +1639,7 @@ dependencies = [
  "testcontainers",
  "tokio",
  "tracing",
+ "x509-parser",
 ]
 
 [[package]]

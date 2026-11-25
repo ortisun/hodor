@@ -351,6 +351,12 @@ impl KeyProvider for OpenBaoKeyProvider {
         NAME
     }
 
+    /// Keys are made in Transit, not exportable, and every signature is
+    /// made there.
+    fn signs_inside(&self) -> bool {
+        true
+    }
+
     async fn generate(
         &self,
         tenant: &TenantContext,

@@ -39,7 +39,9 @@ const LINKERD_WEB: &str = "web.shop.serviceaccount.identity.linkerd.cluster.loca
 struct World {
     server: Server,
     /// Kept alive for as long as the server runs.
-    _database: TestDatabase,
+    database: TestDatabase,
+    /// The tenant, `acme`.
+    tenant: TenantContext,
     administrator: String,
     /// The administrator, who owns the service accounts.
     owner: String,
@@ -115,7 +117,8 @@ async fn world(settings: &[(&str, &str)]) -> World {
     let server = start_server_with(&database, &all).await;
     let mut world = World {
         server,
-        _database: database,
+        database,
+        tenant,
         administrator: secret.expose().to_owned(),
         owner: root.id().to_string(),
         application: String::new(),
@@ -830,5 +833,131 @@ async fn the_administration_interface_binds_a_client_to_one_identity() {
             .as_array()
             .expect("an array")
             .contains(&json!("none"))
+    );
+}
+
+/// Trusts 127.0.0.1 for `Client-Cert`, with the certificate authority of
+/// the tenants on for development.
+async fn behind_proxy_with_an_authority() -> World {
+    world(&[
+        ("HODOR_TRUSTED_PROXIES", "127.0.0.1"),
+        ("HODOR_FORWARDED_HEADER", "none"),
+        ("HODOR_CLIENT_IDENTITY_HEADER", "client-cert"),
+        ("HODOR_CERTIFICATE_AUTHORITY", "development"),
+    ])
+    .await
+}
+
+#[tokio::test]
+async fn a_workload_certificate_under_the_tenants_authority_proves_a_client_within_its_trust_domains()
+ {
+    use hodor_adapters_crypto::testing::certificates::issue_under_authority;
+    use hodor_adapters_crypto::{LocalKeyProvider, SecretKeys};
+    use hodor_adapters_postgres::PgAuthorityStore;
+    use hodor_kernel::{Secret, UnitOfWorkFactory};
+    use hodor_keys::api::AuthorityStore as _;
+    const PROD_WEB: &str = "spiffe://prod.example.com/ns/shop/sa/web";
+    const PROD_BATCH: &str = "spiffe://prod.example.com/ns/shop/sa/batch";
+    const OTHER_WEB: &str = "spiffe://other.example.com/ns/shop/sa/web";
+    const OTHER_BATCH: &str = "spiffe://other.example.com/ns/shop/sa/batch";
+    let world = behind_proxy_with_an_authority().await;
+
+    // The tenant's authority, for `prod.example.com` alone: Hodor trusts
+    // that trust domain through it at once.
+    world
+        .admin(
+            Method::POST,
+            "/certificate-authority",
+            Some(json!({ "kind": "root", "trust_domains": ["prod.example.com"] })),
+        )
+        .await;
+    // An administrator also trusts `other.example.com` with the same
+    // bundle, so that only the authority's name constraints stand between
+    // a certificate for it and a token.
+    let published: Value = Client::new()
+        .get(format!(
+            "{}/t/acme/certificate-authority/bundle",
+            world.server.base
+        ))
+        .send()
+        .await
+        .expect("response")
+        .json()
+        .await
+        .expect("a bundle");
+    world
+        .admin(
+            Method::POST,
+            "/trust-domains",
+            Some(json!({ "name": "other.example.com", "source": "uploaded", "bundle": published })),
+        )
+        .await;
+
+    // The workloads' certificates, signed by the authority's key as a mesh
+    // under it would have them: the key is the local provider's, under the
+    // installation's root key, since the authority is for development.
+    let authority = {
+        let mut uow = UnitOfWorkFactory::begin(world.database.app(), &world.tenant)
+            .await
+            .expect("uow");
+        PgAuthorityStore
+            .get(uow.as_mut())
+            .await
+            .expect("read")
+            .expect("the authority")
+    };
+    let provider = LocalKeyProvider::new(Arc::new(
+        SecretKeys::parse(&Secret::new(ROOT_KEY.to_owned())).expect("root keys"),
+    ));
+    let certificate = |identity: &'static str| {
+        let (provider, tenant, authority) = (&provider, &world.tenant, &authority);
+        async move {
+            byte_sequence(
+                &issue_under_authority(provider, tenant, authority, &Leaf::uri(identity)).await,
+            )
+        }
+    };
+
+    // Within its trust domains: accepted for both methods.
+    let x509 = world
+        .client("spiffe_x509", json!({ "spiffe_id": PROD_WEB }))
+        .await;
+    let tls = world
+        .client("tls_client_auth", json!({ "spiffe_id": PROD_BATCH }))
+        .await;
+    issued(
+        &world
+            .token(&x509, &[("client-cert", certificate(PROD_WEB).await)])
+            .await,
+    );
+    issued(
+        &world
+            .token(&tls, &[("client-cert", certificate(PROD_BATCH).await)])
+            .await,
+    );
+
+    // Outside them: refused, though the trust domain is trusted with the
+    // same bundle and the certificate names the client's identity exactly.
+    let x509_outside = world
+        .client("spiffe_x509", json!({ "spiffe_id": OTHER_WEB }))
+        .await;
+    let tls_outside = world
+        .client("tls_client_auth", json!({ "spiffe_id": OTHER_BATCH }))
+        .await;
+    refused(
+        &world
+            .token(
+                &x509_outside,
+                &[("client-cert", certificate(OTHER_WEB).await)],
+            )
+            .await,
+    );
+    refused(
+        &world
+            .token(
+                &tls_outside,
+                &[("client-cert", certificate(OTHER_BATCH).await)],
+            )
+            .await,
     );
 }

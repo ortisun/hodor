@@ -18,6 +18,7 @@ use std::sync::Arc;
 pub struct KeyProviders {
     signing: Arc<dyn KeyProvider>,
     data: Arc<dyn KeyProvider>,
+    authorities: Arc<dyn KeyProvider>,
     known: Vec<Arc<dyn KeyProvider>>,
 }
 
@@ -27,6 +28,7 @@ impl std::fmt::Debug for KeyProviders {
         f.debug_struct("KeyProviders")
             .field("signing", &self.signing.name())
             .field("data", &self.data.name())
+            .field("authorities", &self.authorities.name())
             .field("known", &names)
             .finish()
     }
@@ -39,10 +41,26 @@ impl KeyProviders {
     pub fn new(signing: Arc<dyn KeyProvider>, data: Arc<dyn KeyProvider>) -> Self {
         let providers = Self {
             known: vec![signing.clone()],
+            authorities: signing.clone(),
             signing,
             data: data.clone(),
         };
         providers.also(data)
+    }
+
+    /// Makes the keys of certificate authorities with `provider`, which
+    /// also uses the versions it made. Until this is called, they are made
+    /// by the provider of signing keys.
+    #[must_use]
+    pub fn with_authorities(mut self, provider: Arc<dyn KeyProvider>) -> Self {
+        self.authorities = provider.clone();
+        self.also(provider)
+    }
+
+    /// The provider that makes the keys of certificate authorities.
+    #[must_use]
+    pub fn authorities(&self) -> Arc<dyn KeyProvider> {
+        self.authorities.clone()
     }
 
     /// Also uses the versions `provider` made, without making new keys

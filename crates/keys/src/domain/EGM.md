@@ -81,6 +81,34 @@ through `crate::api`.
   `SHORTEST_REFRESH`, `LONGEST_REFRESH`, `LONGEST_RETRY`; crate-private
   `LEASE_MARGIN` (1 minute), `check_bundle_endpoint`.
 
+### `authority.rs`
+
+- `AuthorityId`; `AuthoritySetting { Off, On, Development }` with
+  `parse(Option<&str>)` (`keys.authority_setting_invalid`);
+  `AuthorityKind { Root, Intermediate }` and `AuthorityState {
+  AwaitingCertificate, Active }`, each with `as_str` and `parse`.
+- `authority_trust_domain(name)`: a trust domain's name that is also a DNS
+  name (`keys.authority_trust_domain_invalid`).
+- `AuthorityRequest::new(kind, trust_domains, common_name, lifetime_days,
+  intermediate_lifetime_days, for_development)`: 1 to 10 distinct trust
+  domains, a common name of 1 to 64 characters (` (development)` added for
+  development), a root's lifetime of 1 to 3650 days (1826 by default, none
+  for an intermediate), a bound of 1 to 365 days (30 by default) shorter
+  than the root (`keys.authority_request_invalid`); `profile()`.
+- `NameConstraints::for_trust_domains`: each trust domain permitted as a
+  URI host and a DNS name, `0.0.0.0/0` and `::/0` excluded.
+- `AuthorityKey { id, provider, material, public_key }`, `new` (a P-256
+  key or an internal error), `version(now)`: the ES256 `KeyVersion` a
+  provider is given to sign, never stored as one.
+- `CertificateAuthority`: `root`, `intermediate`, `from_snapshot`,
+  `install(facts, sha256, chain, now)` (`keys.authority_not_awaiting_certificate`,
+  `keys.authority_certificate_unsuitable` with the reason), `bundle()` (a
+  SPIFFE bundle with its certificate, `spiffe_sequence` the activation time
+  in seconds, refresh hint 300), `name_constraints()`.
+- `to_pem(label, der)`, `hexadecimal(bytes)`.
+- `trust_domain.rs` gains `TrustSource::Authority` (`authority`) and
+  `CheckedSource::Authority(TrustBundle)`.
+
 ### `event.rs`
 
 `KeyEvent` (`Serialize`, untagged) implements `DomainEvent`:
@@ -101,6 +129,15 @@ through `crate::api`.
 | `BundleRefreshed` | `trust_domain_id`, `name`, a `BundleSummary`, `previous_sequence` | `keys.trust_bundle_refreshed` |
 | `RefreshFailed` | `trust_domain_id`, `name`, `reason` | `keys.trust_bundle_refresh_failed` |
 | `Removed` | `trust_domain_id`, `name` | `keys.trust_domain_removed` |
+
+`AuthorityEvent` (`Serialize`, untagged) implements `DomainEvent`:
+
+| Variant | Fields | `event_type()` |
+| --- | --- | --- |
+| `Created` | `authority_id`, `kind`, `trust_domains`, `key_id`, `provider`, `for_development` | `keys.authority_created` |
+| `Signed` | `authority_id`, `signed` (`certificate` or `certificate_signing_request`), `signed_sha256`, `serial_number` for a certificate, `trust_domains` | `keys.authority_signed` |
+| `Activated` | `authority_id`, `serial_number`, `certificate_sha256`, `not_after` (RFC 3339) | `keys.authority_activated` |
+| `Removed` | `authority_id`, `key_id` | `keys.authority_removed` |
 
 `BundleSummary` is `bundle_sha256`, `sequence`, `x509_authorities` and
 `jwt_authorities`, flattened into the event.

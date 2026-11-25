@@ -1427,3 +1427,231 @@ async fn a_data_key_decrypts_only_what_it_encrypted_with_its_associated_data(
             .is_err()
     );
 }
+
+/// The tenants' certificate authorities kept in memory.
+#[derive(Debug, Clone, Default)]
+pub struct InMemoryAuthorities {
+    rows: Arc<Mutex<BTreeMap<TenantId, crate::api::CertificateAuthority>>>,
+}
+
+impl InMemoryAuthorities {
+    fn rows(
+        &self,
+    ) -> std::sync::MutexGuard<'_, BTreeMap<TenantId, crate::api::CertificateAuthority>> {
+        self.rows.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::api::AuthorityStore for InMemoryAuthorities {
+    async fn insert(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        authority: &crate::api::CertificateAuthority,
+    ) -> Result<(), DomainError> {
+        let mut rows = self.rows();
+        let tenant = uow.tenant().tenant_id();
+        if rows.contains_key(&tenant) {
+            return Err(DomainError::conflict(
+                "keys.authority_exists",
+                "the tenant has a certificate authority already",
+            ));
+        }
+        rows.insert(tenant, authority.clone());
+        Ok(())
+    }
+
+    async fn get(
+        &self,
+        uow: &mut dyn UnitOfWork,
+    ) -> Result<Option<crate::api::CertificateAuthority>, DomainError> {
+        Ok(self.rows().get(&uow.tenant().tenant_id()).cloned())
+    }
+
+    async fn lock(
+        &self,
+        uow: &mut dyn UnitOfWork,
+    ) -> Result<Option<crate::api::CertificateAuthority>, DomainError> {
+        self.get(uow).await
+    }
+
+    async fn update(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        authority: &crate::api::CertificateAuthority,
+    ) -> Result<(), DomainError> {
+        let mut rows = self.rows();
+        let tenant = uow.tenant().tenant_id();
+        let Some(kept) = rows.get(&tenant) else {
+            return Err(DomainError::not_found(
+                "keys.authority_not_found",
+                "the tenant has no certificate authority",
+            ));
+        };
+        if kept.version() != authority.version() || kept.id() != authority.id() {
+            return Err(DomainError::conflict(
+                "keys.authority_changed",
+                "the certificate authority changed meanwhile; read it again",
+            ));
+        }
+        let mut changed = authority.snapshot().clone();
+        changed.version += 1;
+        rows.insert(
+            tenant,
+            crate::api::CertificateAuthority::from_snapshot(changed),
+        );
+        Ok(())
+    }
+
+    async fn remove(&self, uow: &mut dyn UnitOfWork) -> Result<bool, DomainError> {
+        Ok(self.rows().remove(&uow.tenant().tenant_id()).is_some())
+    }
+}
+
+/// A root and an intermediate of the same tenant's shape, for the
+/// contract of authority stores: made in memory, never signed.
+fn sample_authority(kind: &str) -> crate::api::CertificateAuthority {
+    use crate::api::{
+        AuthorityId, AuthorityKey, AuthorityRequest, CertificateAuthority, IssuedCertificate,
+    };
+    let names = vec!["prod.example.com".to_owned(), "edge.example.com".to_owned()];
+    let request = AuthorityRequest::new(kind, &names, None, None, None, false).expect("request");
+    let key = AuthorityKey {
+        id: KeyVersionId::generate(),
+        provider: "openbao".to_owned(),
+        material: KeyMaterial::from_stored(b"openbao:1:a-key:ES256".to_vec()),
+        public_key: PublicKey::P256 {
+            x: vec![7; 32],
+            y: vec![9; 32],
+        },
+    };
+    let now = Timestamp::from_unix_timestamp(1_800_000_000).expect("time");
+    if kind == "root" {
+        CertificateAuthority::root(
+            AuthorityId::generate(),
+            &request,
+            key,
+            IssuedCertificate {
+                der: vec![0x30, 0x03, 0x02, 0x01, 0x01],
+                serial_number: "0a1b".to_owned(),
+                not_before: now - Duration::minutes(1),
+                not_after: now + Duration::days(1826),
+                sha256: "ab".repeat(32),
+            },
+            now,
+        )
+    } else {
+        CertificateAuthority::intermediate(
+            AuthorityId::generate(),
+            &request,
+            key,
+            vec![0x30, 0x00],
+            now,
+        )
+    }
+}
+
+/// Runs the contract every authority store passes.
+///
+/// # Panics
+///
+/// When the store breaks a rule.
+pub async fn run_authority_contract(
+    units_of_work: &dyn UnitOfWorkFactory,
+    store: &dyn crate::api::AuthorityStore,
+) {
+    use crate::api::{AuthorityState, CertificateFacts, FactsConstraints};
+    let acme = tenant();
+    let globex = tenant();
+    let root = sample_authority("root");
+    let intermediate = sample_authority("intermediate");
+
+    let mut uow = units_of_work.begin(&acme).await.expect("uow");
+    store.insert(uow.as_mut(), &root).await.expect("insert");
+    uow.commit().await.expect("commit");
+    let mut uow = units_of_work.begin(&acme).await.expect("uow");
+    let again = store.insert(uow.as_mut(), &intermediate).await;
+    assert_eq!(
+        again.expect_err("one per tenant").code(),
+        "keys.authority_exists"
+    );
+    drop(uow);
+
+    let mut uow = units_of_work.begin(&globex).await.expect("uow");
+    assert_eq!(store.get(uow.as_mut()).await.expect("get"), None);
+    store
+        .insert(uow.as_mut(), &intermediate)
+        .await
+        .expect("insert");
+    uow.commit().await.expect("commit");
+
+    // Each tenant reads its own, as it was stored.
+    let mut uow = units_of_work.begin(&acme).await.expect("uow");
+    assert_eq!(
+        store.get(uow.as_mut()).await.expect("get"),
+        Some(root.clone())
+    );
+    drop(uow);
+    let mut uow = units_of_work.begin(&globex).await.expect("uow");
+    let kept = store.lock(uow.as_mut()).await.expect("lock").expect("kept");
+    assert_eq!(kept, intermediate);
+
+    // Installing changes it once; a second change from the same reading
+    // is refused.
+    let mut installed = kept.clone();
+    let facts = CertificateFacts {
+        der: vec![0x30, 0x01, 0x00],
+        serial_number: "0c".to_owned(),
+        not_before: Timestamp::from_unix_timestamp(1_799_000_000).expect("time"),
+        not_after: Timestamp::from_unix_timestamp(1_900_000_000).expect("time"),
+        public_key: Some(kept.key().public_key.clone()),
+        is_authority: true,
+        signs_certificates: true,
+        name_constraints: Some(FactsConstraints {
+            permitted_uris: vec!["prod.example.com".to_owned()],
+            permitted_dns_names: Vec::new(),
+            permitted_other: 0,
+        }),
+    };
+    installed
+        .install(
+            facts,
+            "cd".repeat(32),
+            vec![vec![0x30, 0x00]],
+            Timestamp::from_unix_timestamp(1_800_000_100).expect("time"),
+        )
+        .expect("installed");
+    store
+        .update(uow.as_mut(), &installed)
+        .await
+        .expect("update");
+    uow.commit().await.expect("commit");
+    let mut uow = units_of_work.begin(&globex).await.expect("uow");
+    let stale = store.update(uow.as_mut(), &installed).await;
+    assert_eq!(stale.expect_err("stale").code(), "keys.authority_changed");
+    drop(uow);
+    let mut uow = units_of_work.begin(&globex).await.expect("uow");
+    let read = store.get(uow.as_mut()).await.expect("get").expect("kept");
+    assert_eq!(read.state(), AuthorityState::Active);
+    assert_eq!(read.version(), installed.version() + 1);
+    let mut expected = installed.snapshot().clone();
+    expected.version += 1;
+    assert_eq!(read.snapshot(), &expected);
+    drop(uow);
+
+    // A removal reaches its tenant only.
+    let mut uow = units_of_work.begin(&acme).await.expect("uow");
+    assert!(store.remove(uow.as_mut()).await.expect("remove"));
+    assert!(!store.remove(uow.as_mut()).await.expect("remove"));
+    uow.commit().await.expect("commit");
+    let mut uow = units_of_work.begin(&globex).await.expect("uow");
+    assert!(store.get(uow.as_mut()).await.expect("get").is_some());
+    let missing = {
+        let mut uow = units_of_work.begin(&acme).await.expect("uow");
+        store.update(uow.as_mut(), &root).await
+    };
+    assert_eq!(
+        missing.expect_err("gone").code(),
+        "keys.authority_not_found"
+    );
+}

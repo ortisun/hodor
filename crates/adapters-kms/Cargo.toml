@@ -27,6 +27,7 @@ reqwest = { workspace = true, features = ["rustls"] }
 hodor-test-containers.workspace = true
 testcontainers.workspace = true
 tokio.workspace = true
+x509-parser.workspace = true
 
 [lints]
 workspace = true
