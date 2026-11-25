@@ -310,6 +310,20 @@ impl ResourceServerStore for InMemoryResourceServers {
             .map(|(_, server)| server.clone()))
     }
 
+    async fn find_by_application(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        application_id: ApplicationId,
+    ) -> Result<Option<ResourceServer>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        Ok(lock(&self.rows)
+            .iter()
+            .find(|((owner, _), server)| {
+                *owner == tenant && server.snapshot().application_id == application_id
+            })
+            .map(|(_, server)| server.clone()))
+    }
+
     async fn list(&self, uow: &mut dyn UnitOfWork) -> Result<Vec<ResourceServer>, DomainError> {
         let tenant = uow.tenant().tenant_id();
         let mut found: Vec<ResourceServer> = lock(&self.rows)
@@ -758,6 +772,8 @@ async fn resource_servers_are_found_by_exact_audience(ports: Ports<'_>) {
     let tenant = tenant();
     let owner = application("Payroll", MOMENT);
     store_application(ports, &tenant, &owner).await;
+    let without = application("Expenses", MOMENT);
+    store_application(ports, &tenant, &without).await;
     let audience = format!("https://api-{}.example.com/payroll", owner.id());
     let payroll = server(owner.id(), &audience);
     let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
@@ -785,6 +801,24 @@ async fn resource_servers_are_found_by_exact_audience(ports: Ports<'_>) {
             .await
             .expect("find"),
         Some(payroll.clone())
+    );
+    assert_eq!(
+        ports
+            .resource_servers
+            .find_by_application(uow.as_mut(), owner.id())
+            .await
+            .expect("find"),
+        Some(payroll.clone()),
+        "found by its application, with its scopes"
+    );
+    assert_eq!(
+        ports
+            .resource_servers
+            .find_by_application(uow.as_mut(), without.id())
+            .await
+            .expect("find"),
+        None,
+        "an application without a resource server"
     );
     for near in [
         format!("{audience}/"),
@@ -856,6 +890,14 @@ async fn resource_servers_are_found_by_exact_audience(ports: Ports<'_>) {
         ports
             .resource_servers
             .find_by_audience(uow.as_mut(), payroll.audience())
+            .await
+            .expect("find"),
+        None
+    );
+    assert_eq!(
+        ports
+            .resource_servers
+            .find_by_application(uow.as_mut(), owner.id())
             .await
             .expect("find"),
         None

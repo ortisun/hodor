@@ -157,6 +157,18 @@ pub trait ResourceServerStore: Send + Sync {
         audience: &Audience,
     ) -> Result<Option<ResourceServer>, DomainError>;
 
+    /// The resource server of this application, if it has one: an
+    /// application has at most one.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn find_by_application(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        application_id: ApplicationId,
+    ) -> Result<Option<ResourceServer>, DomainError>;
+
     /// The tenant's resource servers, oldest first.
     ///
     /// # Errors

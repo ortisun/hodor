@@ -48,7 +48,8 @@ pub mod api {
         ResourceAccessPorts, ResourceAccessService, ResourceCaller,
     };
     pub use crate::application::service::{
-        ApplicationPorts, ApplicationService, CreateClient, CreateResourceServer, RotateSecret,
+        ApplicationPorts, ApplicationService, ClientWithApplication, CreateClient,
+        CreateResourceServer, RotateSecret,
     };
     pub use crate::application::token::{IssuedTokens, Issuer, TokenPorts, TokenService};
     pub use crate::application::userinfo::{UserInfoPorts, UserInfoService};

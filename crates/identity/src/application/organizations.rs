@@ -697,6 +697,20 @@ impl OrganizationService {
         self.organizations.memberships_of(uow.as_mut(), user).await
     }
 
+    /// As [`OrganizationService::organizations_of`], in the caller's unit of
+    /// work.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if storage fails.
+    pub async fn organizations_of_in(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        user: UserId,
+    ) -> Result<Vec<Membership>, DomainError> {
+        self.organizations.memberships_of(uow, user).await
+    }
+
     async fn load(
         &self,
         uow: &mut dyn UnitOfWork,

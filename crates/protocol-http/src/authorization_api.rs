@@ -233,22 +233,18 @@ async fn by_key(
     else {
         return Ok(Err(InvalidToken("the key names no application")));
     };
-    match access
+    let resource_server = match access
         .applications
-        .application(tenant, application_id)
+        .application_with_resource_server(tenant, application_id)
         .await
     {
-        Ok(application) if application.is_enabled() => {}
+        Ok((application, resource_server)) if application.is_enabled() => resource_server,
         Ok(_) => return Ok(Err(InvalidToken("the key's application is disabled"))),
         Err(error) if error.kind() == ErrorKind::NotFound => {
             return Ok(Err(InvalidToken("the key's application does not exist")));
         }
         Err(error) => return Err(error),
-    }
-    let resource_server = access
-        .applications
-        .resource_server_of(tenant, application_id)
-        .await?;
+    };
     Ok(Ok(Presented {
         scopes: key.scopes().to_vec(),
         application_id,

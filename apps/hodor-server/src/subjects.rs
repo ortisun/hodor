@@ -7,13 +7,17 @@
 
 use hodor_authorization::api::{Attributes, Subject, SubjectAttributeSource, SubjectKind};
 use hodor_identity::api::{GroupService, IdentityService, OrganizationService};
-use hodor_kernel::{DomainError, ErrorKind, TenantContext, UserId};
+use hodor_kernel::{DomainError, ErrorKind, TenantContext, UnitOfWorkFactory, UserId};
 use hodor_oauth::api::{ApplicationService, ClientId};
 use serde_json::{Value, json};
+use std::sync::Arc;
 
 /// [`SubjectAttributeSource`] over the identity and OAuth contexts.
 #[derive(Clone)]
 pub(crate) struct ServerSubjects {
+    /// The transaction a user, their groups and their organizations are
+    /// read in.
+    pub(crate) units_of_work: Arc<dyn UnitOfWorkFactory>,
     /// The users.
     pub(crate) identity: IdentityService,
     /// The clients.
@@ -52,7 +56,10 @@ impl SubjectAttributeSource for ServerSubjects {
                 let Ok(id) = subject.id().parse::<UserId>() else {
                     return Ok(Attributes::none());
                 };
-                match self.identity.get(tenant, id).await {
+                // The person, their groups and their organizations, in one
+                // transaction.
+                let mut uow = self.units_of_work.begin(tenant).await?;
+                match self.identity.get_in(uow.as_mut(), id).await {
                     Ok(user) => {
                         let snapshot = user.snapshot();
                         // Read at every decision, so that a person taken
@@ -60,14 +67,14 @@ impl SubjectAttributeSource for ServerSubjects {
                         // through it on the next one.
                         let groups: Vec<String> = self
                             .groups
-                            .effective_groups(tenant, id)
+                            .effective_groups_in(uow.as_mut(), id)
                             .await?
                             .iter()
                             .map(ToString::to_string)
                             .collect();
                         let organizations: Vec<String> = self
                             .organizations
-                            .organizations_of(tenant, id)
+                            .organizations_of_in(uow.as_mut(), id)
                             .await?
                             .iter()
                             .map(|membership| membership.organization.to_string())

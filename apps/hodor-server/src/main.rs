@@ -904,6 +904,7 @@ fn authorization_api(
             Arc::new(PgRoleAssignmentStore),
             Arc::new(PgEngineBindingStore),
             Arc::new(subjects::ServerSubjects {
+                units_of_work: units(),
                 identity: IdentityService::new(units(), Arc::new(PgUserRepository), clock.clone())
                     .with_groups(Arc::new(PgGroupRepository))
                     .with_organizations(Arc::new(PgOrganizationRepository)),
@@ -1505,6 +1506,7 @@ fn administration(
             Arc::new(PgRoleAssignmentStore),
             Arc::new(PgEngineBindingStore),
             Arc::new(subjects::ServerSubjects {
+                units_of_work: units(),
                 identity: IdentityService::new(units(), Arc::new(PgUserRepository), clock.clone())
                     .with_groups(Arc::new(PgGroupRepository))
                     .with_organizations(Arc::new(PgOrganizationRepository)),

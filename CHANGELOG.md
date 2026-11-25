@@ -14,6 +14,7 @@ Every release of Hodor, newest first. The rules for versions and releases are in
 
 ### Fixed
 
+- A decision of the Authorization API took twice the time it needs: every transaction checked its connection and started in two more round trips to the database, and a decision opened eleven of them. A transaction now starts in one round trip, a connection used less than a second before is not checked again, and a decision reads the token's client, its application and its resource server together, and a person with their groups and organizations together, in seven transactions. Nothing more is kept between decisions than before. A request may now fail on a connection used less than a second before the database restarted ([the cost of a decision](docs/architecture/contexts/authorization.md#the-cost-of-a-decision)).
 - A webhook endpoint could receive an event that happened before it was registered or given the event's type, when the event was dispatched just after. Each subscription now keeps when it began, and an endpoint receives only the events that happened since.
 
 ## [0.3.0] - 2026-11-25
