@@ -12,18 +12,19 @@ use hodor_adapters_crypto::{
 use hodor_adapters_http::{GuardedHttpClient, OutboundPolicy, ServiceHttpClient};
 use hodor_adapters_ldap::LdapDirectoryClient;
 use hodor_adapters_postgres::{
-    Database, PgAccessTokenRecordStore, PgAccessTokenStore, PgApiKeyStore, PgApplicationStore,
-    PgAttemptStore, PgAuditLog, PgAuthorizationCodeStore, PgAuthorizationRequestStore,
-    PgBundleStore, PgClientAssertionStore, PgClientStore, PgConsentStore, PgDecisionLogStore,
-    PgDeliveryStore, PgDeprovisioningPolicy, PgEndpointStore, PgEngineBindingStore, PgGrantStore,
-    PgGroupPolicy, PgGroupRepository, PgInstanceStatusStore, PgInstanceStore,
-    PgInvitationRepository, PgKeyStore, PgLinkStore, PgMessageQueue, PgNativeRoleStore,
-    PgOrganizationRepository, PgPasswordStore, PgPendingAuthorizationStore, PgPolicyVersionStore,
-    PgProviderStore, PgProvisionedGroupRepository, PgProvisionedUserRepository, PgPublicationStore,
-    PgRecoveryCodeStore, PgRefreshTokenStore, PgResourceServerStore, PgRoleAssignmentStore,
-    PgSealingStateStore, PgSessionStore, PgSimulationStore, PgTenantDirectory, PgTenantRepository,
-    PgTotpStore, PgTransactionStore, PgUploadedDecisionStore, PgUserRepository,
-    PgVerificationTokenStore, PgWebAuthnStore, PgWorkloadRepository,
+    Database, PgAccessListStore, PgAccessTokenRecordStore, PgAccessTokenStore, PgApiKeyStore,
+    PgApplicationStore, PgAttemptStore, PgAuditLog, PgAuthorizationCodeStore,
+    PgAuthorizationRequestStore, PgBundleStore, PgClientAssertionStore, PgClientStore,
+    PgConsentStore, PgDecisionLogStore, PgDeliveryStore, PgDeprovisioningPolicy, PgEndpointStore,
+    PgEngineBindingStore, PgGrantStore, PgGroupPolicy, PgGroupRepository, PgInstanceStatusStore,
+    PgInstanceStore, PgInvitationRepository, PgKeyStore, PgLinkStore, PgMessageQueue,
+    PgNativeRoleStore, PgOrganizationRepository, PgPasswordStore, PgPendingAuthorizationStore,
+    PgPolicyVersionStore, PgProviderStore, PgProvisionedGroupRepository,
+    PgProvisionedUserRepository, PgPublicationStore, PgRecoveryCodeStore, PgRefreshTokenStore,
+    PgResourceServerStore, PgRoleAssignmentStore, PgSealingStateStore, PgSessionStore,
+    PgSimulationStore, PgTenantDirectory, PgTenantRepository, PgTotpStore, PgTransactionStore,
+    PgUploadedDecisionStore, PgUserRepository, PgVerificationTokenStore, PgWebAuthnStore,
+    PgWorkloadRepository,
 };
 use hodor_audit::api::AuditService;
 use hodor_authentication::api::{
@@ -33,7 +34,8 @@ use hodor_authentication::api::{
     TotpAuthenticator, WebAuthnAuthenticator,
 };
 use hodor_authorization::api::{
-    AuthorizationService, DecisionLog, EngineRegistry, EvaluationService, NativeEngine, RoleService,
+    AccessListService, AuthorizationService, DecisionLog, EngineRegistry, EvaluationService,
+    NativeEngine, RoleService,
 };
 use hodor_authorization_native::CelConditionLanguage;
 use hodor_authorization_opa::api::{
@@ -1028,7 +1030,8 @@ fn authorization_engines(
             Arc::new(PgNativeRoleStore),
             Arc::new(SystemClock),
         )
-        .with_condition_language(Arc::new(CelConditionLanguage::new())),
+        .with_condition_language(Arc::new(CelConditionLanguage::new()))
+        .with_access_lists(Arc::new(PgAccessListStore)),
     );
     registry.register_with_simulator(native.clone(), native)?;
     registry.register(Arc::new(engine))?;
@@ -1405,6 +1408,12 @@ fn administration(
         decisions: decision_log(database),
         roles: RoleService::new(units(), Arc::new(PgNativeRoleStore), clock.clone())
             .with_condition_language(Arc::new(CelConditionLanguage::new())),
+        access_lists: AccessListService::new(
+            units(),
+            Arc::new(PgAccessListStore),
+            Arc::new(PgNativeRoleStore),
+            clock.clone(),
+        ),
         evaluation: EvaluationService::new(
             units(),
             Arc::new(PgRoleAssignmentStore),

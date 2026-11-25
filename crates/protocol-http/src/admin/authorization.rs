@@ -88,7 +88,7 @@ fn not_found(code: &'static str, detail: &'static str) -> Box<Response> {
 }
 
 /// The namespace of the resource server the path names.
-async fn namespace_of(
+pub(super) async fn namespace_of(
     state: &Shared,
     tenant: &TenantContext,
     parameters: &RawPathParams,
@@ -454,9 +454,9 @@ async fn remove_role(
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct PrincipalBody {
-    kind: String,
-    id: String,
+pub(super) struct PrincipalBody {
+    pub(super) kind: String,
+    pub(super) id: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -538,7 +538,7 @@ fn moment(value: Option<&str>) -> Result<Option<OffsetDateTime>, Box<Response>> 
 }
 
 /// The principal, checked to be a user, a client or a group of the tenant.
-async fn principal(
+pub(super) async fn principal(
     state: &Shared,
     tenant: &TenantContext,
     given: &PrincipalBody,

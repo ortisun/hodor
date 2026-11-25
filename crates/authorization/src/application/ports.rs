@@ -1,6 +1,7 @@
 //! What the authorization context needs from storage and from the other
 //! contexts.
 
+use crate::domain::access_list::{AccessEntry, AccessEntryFilter, AccessEntryId};
 use crate::domain::binding::EngineBinding;
 use crate::domain::condition::{Condition, ConditionInput};
 use crate::domain::decision_log::{DecisionFilter, DecisionLogSettings, DecisionRecord};
@@ -248,6 +249,89 @@ pub trait NativeRoleStore: Send + Sync {
         uow: &mut dyn UnitOfWork,
         principal: &Subject,
     ) -> Result<Vec<RoleAssignment>, DomainError>;
+}
+
+/// Stores a tenant's entries of access control lists. Every method works
+/// inside the tenant the unit of work is bound to.
+#[async_trait::async_trait]
+pub trait AccessListStore: Send + Sync {
+    /// Stores a new entry. Returns `false`, and stores nothing, when an
+    /// entry for the same principal, permission and resource exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails, or the permission is not
+    /// declared for the entry's resource server.
+    async fn insert(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        entry: &AccessEntry,
+    ) -> Result<bool, DomainError>;
+
+    /// The entry that gives what `entry` gives: the same principal,
+    /// permission, resource and resource server, whatever its identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails or what is stored is not valid.
+    async fn same_as(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        entry: &AccessEntry,
+    ) -> Result<Option<AccessEntry>, DomainError>;
+
+    /// One entry, by its identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails or what is stored is not valid.
+    async fn get(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: AccessEntryId,
+    ) -> Result<Option<AccessEntry>, DomainError>;
+
+    /// Removes an entry, and answers it, or nothing if there was none.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails or what is stored is not valid.
+    async fn remove(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: AccessEntryId,
+    ) -> Result<Option<AccessEntry>, DomainError>;
+
+    /// One page of the entries that pass `filter`, oldest first. The
+    /// cursor is the identifier of the last entry of the page before.
+    ///
+    /// # Errors
+    ///
+    /// `request.query_invalid` for a cursor this store did not make, and
+    /// storage errors.
+    async fn list(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        filter: &AccessEntryFilter,
+        page: &PageRequest,
+    ) -> Result<Page<AccessEntry>, DomainError>;
+
+    /// The entries that let one of `principals` do `permission` to the
+    /// resource `resource_id` of `namespace`, oldest first, at most
+    /// `limit`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails or what is stored is not valid.
+    async fn allowing(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        namespace: &Namespace,
+        permission: &PermissionName,
+        resource_id: &str,
+        principals: &[Subject],
+        limit: usize,
+    ) -> Result<Vec<AccessEntry>, DomainError>;
 }
 
 /// Checks and compiles conditions. The native engine and `RoleService`

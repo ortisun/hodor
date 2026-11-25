@@ -51,6 +51,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use time::format_description::well_known::Rfc3339;
 
+mod access_lists;
 mod applications;
 mod authorization;
 mod decisions;
@@ -282,6 +283,26 @@ pub const ADMIN_OPERATIONS: &[(&str, &str, Permission)] = &[
     ),
     ("POST", "/role-assignments", Permission::RolesWrite),
     ("POST", "/role-assignments:revoke", Permission::RolesWrite),
+    (
+        "GET",
+        "/resource-servers/{resource_server_id}/access-entries",
+        Permission::AccessEntriesRead,
+    ),
+    (
+        "POST",
+        "/resource-servers/{resource_server_id}/access-entries",
+        Permission::AccessEntriesWrite,
+    ),
+    (
+        "GET",
+        "/access-entries/{entry_id}",
+        Permission::AccessEntriesRead,
+    ),
+    (
+        "DELETE",
+        "/access-entries/{entry_id}",
+        Permission::AccessEntriesWrite,
+    ),
     ("GET", "/bindings", Permission::BindingsRead),
     (
         "GET",
@@ -557,6 +578,8 @@ pub struct AdminState {
     pub decisions: DecisionLog,
     /// The tenant's permissions, roles and who holds them.
     pub roles: hodor_authorization::api::RoleService,
+    /// The entries of the tenant's access control lists.
+    pub access_lists: hodor_authorization::api::AccessListService,
     /// The bindings of resource servers to engines.
     pub evaluation: hodor_authorization::api::EvaluationService,
     /// The tenant's policy versions for Open Policy Agent. `None` when the
@@ -681,6 +704,7 @@ fn shared_routes() -> Router<Shared> {
         .merge(factors::routes())
         .merge(decisions::routes())
         .merge(authorization::routes())
+        .merge(access_lists::routes())
         .merge(groups::routes())
         .merge(organizations::routes())
         .merge(workloads::routes())

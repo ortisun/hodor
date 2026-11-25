@@ -76,11 +76,15 @@ pub enum Permission {
     /// Registering and removing webhook endpoints, replacing their
     /// subscriptions, rotating their secrets, and delivering again.
     WebhooksWrite,
+    /// Seeing the entries of the access control lists of resource servers.
+    AccessEntriesRead,
+    /// Granting and removing entries of access control lists.
+    AccessEntriesWrite,
 }
 
 impl Permission {
     /// Every permission.
-    pub const ALL: [Self; 31] = [
+    pub const ALL: [Self; 33] = [
         Self::UsersRead,
         Self::UsersWrite,
         Self::SessionsRead,
@@ -112,6 +116,8 @@ impl Permission {
         Self::WorkloadsWrite,
         Self::WebhooksRead,
         Self::WebhooksWrite,
+        Self::AccessEntriesRead,
+        Self::AccessEntriesWrite,
     ];
 
     /// The permission written as `resource:action`.
@@ -149,6 +155,8 @@ impl Permission {
             Self::WorkloadsWrite => "workloads:write",
             Self::WebhooksRead => "webhooks:read",
             Self::WebhooksWrite => "webhooks:write",
+            Self::AccessEntriesRead => "access-entries:read",
+            Self::AccessEntriesWrite => "access-entries:write",
         }
     }
 
@@ -264,6 +272,7 @@ impl Role {
                 Permission::OrganizationsRead,
                 Permission::WorkloadsRead,
                 Permission::WebhooksRead,
+                Permission::AccessEntriesRead,
             ],
         }
     }

@@ -455,7 +455,8 @@ async fn an_administrators_token_is_refused_by_every_operation_of_another_tenant
                 .replace("{agent_id}", &globex.ana.to_string())
                 .replace("{endpoint_id}", &globex.ana.to_string())
                 .replace("{delivery_id}", &globex.ana.to_string())
-                .replace("{api_key_id}", &globex.ana.to_string());
+                .replace("{api_key_id}", &globex.ana.to_string())
+                .replace("{entry_id}", &globex.ana.to_string());
             let method: Method = method.to_uppercase().parse().expect("method");
             let (status, body) = world
                 .admin(
@@ -474,7 +475,7 @@ async fn an_administrators_token_is_refused_by_every_operation_of_another_tenant
             tried += 1;
         }
     }
-    assert_eq!(tried, 130, "every documented operation was tried");
+    assert_eq!(tried, 134, "every documented operation was tried");
 
     // The token is good where it belongs, and nothing happened in Globex:
     // it has its two users, both active.
@@ -3103,4 +3104,230 @@ async fn a_token_of_one_tenant_is_refused_by_another_as_subject_and_as_actor_of_
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+/// The documents of a tenant, answered by the native engine, the same in
+/// both tenants: a resource server with the permission `document:read`,
+/// and a client allowed to ask the tenant's Authorization API. Answers
+/// the resource server and the client's identifier and secret.
+async fn shared_documents(world: &World, tenant: &Tenant) -> (String, (String, String)) {
+    let api = created(
+        world,
+        tenant,
+        "/applications",
+        serde_json::json!({ "name": "Authorization API", "first_party": true }),
+    )
+    .await;
+    created(
+        world,
+        tenant,
+        "/resource-servers",
+        serde_json::json!({
+            "application_id": api, "audience": "urn:hodor:authorization",
+            "name": "Authorization API",
+            "scopes": [{ "name": "authz:evaluate", "description": "Ask" }]
+        }),
+    )
+    .await;
+    let application = created(
+        world,
+        tenant,
+        "/applications",
+        serde_json::json!({ "name": "Documents", "first_party": true }),
+    )
+    .await;
+    let server = created(
+        world,
+        tenant,
+        "/resource-servers",
+        serde_json::json!({
+            "application_id": application, "audience": "urn:example:documents",
+            "name": "Documents"
+        }),
+    )
+    .await;
+    for (path, body) in [
+        (
+            format!("/resource-servers/{server}/permissions/document:read"),
+            serde_json::json!({ "description": "Read" }),
+        ),
+        (
+            format!("/resource-servers/{server}/binding"),
+            serde_json::json!({ "engine": "native" }),
+        ),
+    ] {
+        let (status, body) = call(world, tenant, Method::PUT, path.clone(), Some(body)).await;
+        assert!(status.is_success(), "{path}: {status} {body}");
+    }
+    let (status, client) = call(
+        world,
+        tenant,
+        Method::POST,
+        format!("/applications/{application}/clients"),
+        Some(serde_json::json!({
+            "name": "Documents back end", "type": "confidential",
+            "grant_types": ["client_credentials"], "allowed_scopes": ["authz:evaluate"]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{client}");
+    (
+        server,
+        (
+            client["id"].as_str().expect("id").to_owned(),
+            client["client_secret"].as_str().expect("secret").to_owned(),
+        ),
+    )
+}
+
+/// Whether the tenant's Authorization API lets `subject` read `document`,
+/// asked with a token of the tenant's own client.
+async fn reads_document(
+    world: &World,
+    tenant: &Tenant,
+    client: &(String, String),
+    subject: &str,
+    document: &str,
+) -> String {
+    let (status, issued) = oauth_form(
+        world,
+        tenant,
+        "token",
+        (&client.0, &client.1),
+        &[
+            ("grant_type", "client_credentials"),
+            ("resource", "urn:hodor:authorization"),
+            ("scope", "authz:evaluate"),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{issued}");
+    let response = Client::new()
+        .post(format!(
+            "{}/t/{}/api/v1/authorization/evaluate",
+            world.server.base, tenant.slug
+        ))
+        .bearer_auth(issued["access_token"].as_str().expect("a token"))
+        .json(&serde_json::json!({
+            "subject": { "type": "user", "id": subject },
+            "resource": { "type": "document", "id": document },
+            "action": "read"
+        }))
+        .send()
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let answer: serde_json::Value = response.json().await.expect("JSON");
+    answer["decision"].as_str().unwrap_or_default().to_owned()
+}
+
+#[tokio::test]
+async fn one_tenants_access_control_lists_are_never_read_or_reached_from_another() {
+    let world = world_with(&[("HODOR_SECRET_KEYS", ROOT_KEY)]).await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    let (acme_server, acme_client) = shared_documents(&world, acme).await;
+    let (globex_server, globex_client) = shared_documents(&world, globex).await;
+    let ana = acme.ana.to_string();
+    let entry = created(
+        &world,
+        acme,
+        &format!("/resource-servers/{acme_server}/access-entries"),
+        serde_json::json!({
+            "permission": "document:read", "resource_id": "d-42",
+            "principal": { "kind": "user", "id": ana }
+        }),
+    )
+    .await;
+    let finance = created(
+        &world,
+        acme,
+        "/groups",
+        serde_json::json!({ "name": "finance" }),
+    )
+    .await;
+    assert_eq!(
+        reads_document(&world, acme, &acme_client, &ana, "d-42").await,
+        "ALLOW"
+    );
+
+    // Globex asks about the same resource server, permission, resource
+    // and principal: Acme's entry is never read there.
+    assert_eq!(
+        reads_document(&world, globex, &globex_client, &ana, "d-42").await,
+        "DENY"
+    );
+
+    // Globex's administrator names Acme's entry: no such entry.
+    for method in [Method::GET, Method::DELETE] {
+        let (status, body) = call(
+            &world,
+            globex,
+            method.clone(),
+            format!("/access-entries/{entry}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{method}");
+        assert_eq!(body["code"], "authorization.access_entry_not_found");
+    }
+    // Nor Acme's resource server, nor Acme's person or group as the
+    // principal of an entry of its own.
+    let (status, body) = call(
+        &world,
+        globex,
+        Method::GET,
+        format!("/resource-servers/{acme_server}/access-entries"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    for (principal, code) in [
+        (
+            serde_json::json!({ "kind": "user", "id": ana }),
+            "identity.user_not_found",
+        ),
+        (
+            serde_json::json!({ "kind": "group", "id": finance }),
+            "identity.group_not_found",
+        ),
+    ] {
+        let (status, body) = call(
+            &world,
+            globex,
+            Method::POST,
+            format!("/resource-servers/{globex_server}/access-entries"),
+            Some(serde_json::json!({
+                "permission": "document:read", "resource_id": "d-42", "principal": principal
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+        assert_eq!(body["code"], code);
+    }
+    let (status, theirs) = call(
+        &world,
+        globex,
+        Method::GET,
+        format!("/resource-servers/{globex_server}/access-entries"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(theirs["items"], serde_json::json!([]));
+
+    // Everything still stands where it belongs.
+    let (status, kept) = call(
+        &world,
+        acme,
+        Method::GET,
+        format!("/access-entries/{entry}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(kept["resource_id"], "d-42");
+    assert_eq!(
+        reads_document(&world, acme, &acme_client, &ana, "d-42").await,
+        "ALLOW"
+    );
 }

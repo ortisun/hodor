@@ -1,7 +1,8 @@
-//! The commands for permissions, roles, assignments and bindings.
+//! The commands for permissions, roles, assignments, entries of access
+//! control lists and bindings.
 //!
 //! Specified in `docs/architecture/contexts/authorization.md`, "Native
-//! role-based access control" and "Bindings". The rules are the
+//! role-based access control", "Access control lists" and "Bindings". The rules are the
 //! authorization context's, so a value the administration interface
 //! refuses is refused here with the same code. A resource server is named
 //! by its audience, which is the namespace of its permissions and roles.
@@ -9,18 +10,18 @@
 use crate::{caller, existing};
 use clap::{Subcommand, ValueEnum};
 use hodor_adapters_postgres::{
-    Database, PgEngineBindingStore, PgNativeRoleStore, PgRoleAssignmentStore, PgTenantDirectory,
-    PgTenantRepository,
+    Database, PgAccessListStore, PgEngineBindingStore, PgNativeRoleStore, PgRoleAssignmentStore,
+    PgTenantDirectory, PgTenantRepository,
 };
 use hodor_authorization::api::{
-    Action, ApplicationReference, AssignmentScope, Attributes, AuthorizationEngine,
-    BindingSettings, Condition, EngineAnswer, EngineCapabilities, EngineId, EngineRegistry,
-    EvaluationInput, EvaluationService, Namespace, NativeEngine, OrganizationReference,
-    PermissionName, RoleContents, RoleKey, RoleName, RoleService, Subject, SubjectAttributeSource,
-    SubjectKind, Validity,
+    AccessEntryFilter, AccessEntryId, AccessListService, Action, ApplicationReference,
+    AssignmentScope, Attributes, AuthorizationEngine, BindingSettings, Condition, EngineAnswer,
+    EngineCapabilities, EngineId, EngineRegistry, EvaluationInput, EvaluationService, Namespace,
+    NativeEngine, OrganizationReference, PermissionName, RoleContents, RoleKey, RoleName,
+    RoleService, Subject, SubjectAttributeSource, SubjectKind, Validity,
 };
 use hodor_authorization_native::CelConditionLanguage;
-use hodor_kernel::{DomainError, SystemClock, TenantContext};
+use hodor_kernel::{DomainError, PageRequest, SystemClock, TenantContext};
 use hodor_tenant::api::TenantService;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -39,6 +40,11 @@ pub(crate) enum ManageCommand {
     Role {
         #[command(subcommand)]
         command: RoleCommand,
+    },
+    /// Grant, list or remove entries of access control lists.
+    AccessEntry {
+        #[command(subcommand)]
+        command: AccessEntryCommand,
     },
     /// Give a role to a user or a client.
     Assign {
@@ -205,6 +211,79 @@ pub(crate) enum RoleCommand {
     },
 }
 
+#[derive(Subcommand)]
+pub(crate) enum AccessEntryCommand {
+    /// Let a principal do what a permission says to one resource.
+    Grant {
+        /// Slug of the tenant.
+        #[arg(long)]
+        tenant: String,
+        /// The resource server's audience.
+        #[arg(long)]
+        namespace: String,
+        /// The permission, written `resource:action`.
+        #[arg(long)]
+        permission: String,
+        /// The resource's identifier.
+        #[arg(long)]
+        resource: String,
+        #[command(flatten)]
+        principal: PrincipalArgs,
+    },
+    /// Print the entries of a resource server, oldest first, one per line.
+    List {
+        /// Slug of the tenant.
+        #[arg(long)]
+        tenant: String,
+        /// The resource server's audience.
+        #[arg(long)]
+        namespace: String,
+        /// Only entries on resources of this kind.
+        #[arg(long)]
+        resource_kind: Option<String>,
+        /// Only entries on the resource of this identifier.
+        #[arg(long)]
+        resource: Option<String>,
+        #[command(flatten)]
+        principal: OptionalPrincipalArgs,
+    },
+    /// Remove an entry.
+    Remove {
+        /// Slug of the tenant.
+        #[arg(long)]
+        tenant: String,
+        /// The entry's identifier.
+        #[arg(long)]
+        id: String,
+    },
+}
+
+/// At most one principal, to narrow a listing.
+#[derive(clap::Args)]
+#[group(required = false, multiple = false)]
+pub(crate) struct OptionalPrincipalArgs {
+    /// Only entries of this user.
+    #[arg(long)]
+    user: Option<String>,
+    /// Only entries of this client.
+    #[arg(long)]
+    client: Option<String>,
+    /// Only entries of this group.
+    #[arg(long)]
+    group: Option<String>,
+}
+
+impl OptionalPrincipalArgs {
+    fn subject(&self) -> Result<Option<Subject>, DomainError> {
+        Ok(match (&self.user, &self.client, &self.group) {
+            (Some(user), _, _) => Some(Subject::new(SubjectKind::User, user)?),
+            (_, Some(client), _) => Some(Subject::new(SubjectKind::Client, client)?),
+            (_, _, Some(group)) => Some(Subject::new(SubjectKind::Group, group)?),
+            _ => None,
+        })
+    }
+}
+
 #[derive(clap::Args)]
 #[group(required = true, multiple = false)]
 pub(crate) struct PrincipalArgs {
@@ -282,6 +361,7 @@ impl SubjectAttributeSource for NoSubjects {
 struct Services {
     tenant: TenantContext,
     roles: RoleService,
+    access_lists: AccessListService,
     evaluation: EvaluationService,
 }
 
@@ -306,6 +386,12 @@ async fn services(database: &Database, slug: &str) -> Result<Services, DomainErr
         tenant: TenantContext::assume(entry.tenant_id),
         roles: RoleService::new(units(), Arc::new(PgNativeRoleStore), Arc::new(SystemClock))
             .with_condition_language(Arc::new(CelConditionLanguage::new())),
+        access_lists: AccessListService::new(
+            units(),
+            Arc::new(PgAccessListStore),
+            Arc::new(PgNativeRoleStore),
+            Arc::new(SystemClock),
+        ),
         evaluation: EvaluationService::new(
             units(),
             Arc::new(PgRoleAssignmentStore),
@@ -493,6 +579,7 @@ pub(crate) async fn run_manage(
                 Ok(out.trim_end().to_owned())
             }
         },
+        ManageCommand::AccessEntry { command } => run_access_entry(database, command).await,
         ManageCommand::Assign {
             tenant,
             principal,
@@ -599,6 +686,82 @@ pub(crate) async fn run_manage(
                 })
                 .collect::<Vec<_>>()
                 .join("\n"))
+        }
+    }
+}
+
+/// Runs a command on entries of access control lists.
+async fn run_access_entry(
+    database: &Database,
+    command: AccessEntryCommand,
+) -> Result<String, DomainError> {
+    match command {
+        AccessEntryCommand::Grant {
+            tenant,
+            namespace,
+            permission,
+            resource,
+            principal,
+        } => {
+            let s = services(database, &tenant).await?;
+            let granted = s
+                .access_lists
+                .grant(
+                    &s.tenant,
+                    Namespace::parse(&namespace)?,
+                    PermissionName::parse(&permission)?,
+                    &resource,
+                    principal.subject()?,
+                    caller(),
+                )
+                .await?;
+            Ok(format!("granted {}", granted.entry.id()))
+        }
+        AccessEntryCommand::List {
+            tenant,
+            namespace,
+            resource_kind,
+            resource,
+            principal,
+        } => {
+            let s = services(database, &tenant).await?;
+            let filter = AccessEntryFilter {
+                resource_kind,
+                resource_id: resource,
+                principal: principal.subject()?,
+                ..AccessEntryFilter::of(Namespace::parse(&namespace)?)
+            };
+            let mut out = String::new();
+            let mut page = PageRequest::new(Some(PageRequest::MAX_LIMIT), None);
+            loop {
+                let found = s.access_lists.entries(&s.tenant, &filter, &page).await?;
+                for entry in &found.items {
+                    let _ = writeln!(
+                        out,
+                        "{}\t{}\t{}\t{}:{}",
+                        entry.id(),
+                        entry.permission().as_str(),
+                        entry.resource_id(),
+                        entry.principal().kind().as_str(),
+                        entry.principal().id()
+                    );
+                }
+                match found.next_cursor {
+                    Some(cursor) => {
+                        page = PageRequest::new(Some(PageRequest::MAX_LIMIT), Some(cursor))
+                    }
+                    None => break,
+                }
+            }
+            Ok(out.trim_end().to_owned())
+        }
+        AccessEntryCommand::Remove { tenant, id } => {
+            let s = services(database, &tenant).await?;
+            let removed = match id.parse::<AccessEntryId>() {
+                Ok(id) => s.access_lists.remove(&s.tenant, id, caller()).await?,
+                Err(_) => false,
+            };
+            Ok(if removed { "removed" } else { "no such entry" }.to_owned())
         }
     }
 }

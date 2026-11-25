@@ -2,12 +2,13 @@
 //! contracts every store passes.
 
 use crate::api::{
-    Action, ApplicationReference, AssignmentScope, Attributes, AuthorizationEngine,
-    BindingSettings, CompiledCondition, Condition, ConditionInput, ConditionLanguage, EngineAnswer,
-    EngineBinding, EngineBindingStore, EngineCapabilities, EngineId, EvaluationInput, Namespace,
-    NativeRoleStore, PermissionDefinition, PermissionName, PolicySelection, PolicySimulator, Role,
-    RoleAssignment, RoleAssignmentStore, RoleContents, RoleDefinition, RoleKey, RoleName,
-    SimulationAnswer, Subject, SubjectAttributeSource, SubjectKind,
+    AccessEntry, AccessEntryFilter, AccessEntryId, AccessListStore, Action, ApplicationReference,
+    AssignmentScope, Attributes, AuthorizationEngine, BindingSettings, CompiledCondition,
+    Condition, ConditionInput, ConditionLanguage, EngineAnswer, EngineBinding, EngineBindingStore,
+    EngineCapabilities, EngineId, EvaluationInput, Namespace, NativeRoleStore,
+    PermissionDefinition, PermissionName, PolicySelection, PolicySimulator, Role, RoleAssignment,
+    RoleAssignmentStore, RoleContents, RoleDefinition, RoleKey, RoleName, SimulationAnswer,
+    Subject, SubjectAttributeSource, SubjectKind,
 };
 use hodor_kernel::clock::testing::FixedClock;
 use hodor_kernel::{
@@ -584,11 +585,14 @@ struct NativeRows {
     permissions: BTreeMap<(TenantId, Namespace, PermissionName), PermissionDefinition>,
     roles: BTreeMap<(TenantId, RoleKey), RoleDefinition>,
     assignments: BTreeMap<(TenantId, Subject, RoleKey, AssignmentScope), RoleAssignment>,
+    entries: BTreeMap<(TenantId, AccessEntryId), AccessEntry>,
 }
 
-/// Permissions, roles and assignments kept in memory. Like the database,
-/// it refuses a role that names a permission or a role that does not
-/// exist, and the removal of a role another role includes.
+/// Permissions, roles, assignments and entries of access control lists
+/// kept in memory. Like the database, it refuses a role that names a
+/// permission or a role that does not exist, an entry that names a
+/// permission that is not declared, and the removal of a role another role
+/// includes; removing a permission removes the entries that name it.
 #[derive(Debug, Clone, Default)]
 pub struct InMemoryNativeRoles {
     rows: Arc<Mutex<NativeRows>>,
@@ -651,6 +655,11 @@ impl NativeRoleStore for InMemoryNativeRoles {
             .permissions
             .remove(&(tenant, namespace.clone(), permission.clone()))
             .is_some();
+        rows.entries.retain(|(owner, _), entry| {
+            !(*owner == tenant
+                && entry.namespace() == namespace
+                && entry.permission() == permission)
+        });
         for ((owner, key), role) in &mut rows.roles {
             if *owner == tenant
                 && &key.namespace == namespace
@@ -798,6 +807,469 @@ impl NativeRoleStore for InMemoryNativeRoles {
             .map(|(_, assignment)| assignment.clone())
             .collect())
     }
+}
+
+#[async_trait::async_trait]
+impl AccessListStore for InMemoryNativeRoles {
+    async fn insert(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        entry: &AccessEntry,
+    ) -> Result<bool, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let mut rows = self.rows();
+        if !rows.permissions.contains_key(&(
+            tenant,
+            entry.namespace().clone(),
+            entry.permission().clone(),
+        )) {
+            return Err(missing_reference());
+        }
+        if rows
+            .entries
+            .iter()
+            .any(|((owner, _), kept)| *owner == tenant && kept.same_grant(entry))
+        {
+            return Ok(false);
+        }
+        rows.entries.insert((tenant, entry.id()), entry.clone());
+        Ok(true)
+    }
+
+    async fn same_as(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        entry: &AccessEntry,
+    ) -> Result<Option<AccessEntry>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        Ok(self
+            .rows()
+            .entries
+            .iter()
+            .find(|((owner, _), kept)| *owner == tenant && kept.same_grant(entry))
+            .map(|(_, kept)| kept.clone()))
+    }
+
+    async fn get(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: AccessEntryId,
+    ) -> Result<Option<AccessEntry>, DomainError> {
+        Ok(self
+            .rows()
+            .entries
+            .get(&(uow.tenant().tenant_id(), id))
+            .cloned())
+    }
+
+    async fn remove(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: AccessEntryId,
+    ) -> Result<Option<AccessEntry>, DomainError> {
+        Ok(self.rows().entries.remove(&(uow.tenant().tenant_id(), id)))
+    }
+
+    async fn list(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        filter: &AccessEntryFilter,
+        page: &hodor_kernel::PageRequest,
+    ) -> Result<hodor_kernel::Page<AccessEntry>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let after = page
+            .cursor()
+            .map(|cursor| {
+                cursor.as_str().parse::<AccessEntryId>().map_err(|_| {
+                    DomainError::invalid(
+                        "request.query_invalid",
+                        "the cursor is not one of this list",
+                    )
+                })
+            })
+            .transpose()?;
+        let limit = usize::try_from(page.limit()).unwrap_or(usize::MAX);
+        let mut found: Vec<AccessEntry> = self
+            .rows()
+            .entries
+            .iter()
+            .filter(|((owner, id), entry)| {
+                *owner == tenant && after.is_none_or(|after| *id > after) && filter.passes(entry)
+            })
+            .map(|(_, entry)| entry.clone())
+            .take(limit + 1)
+            .collect();
+        let more = found.len() > limit;
+        found.truncate(limit);
+        Ok(hodor_kernel::Page {
+            next_cursor: more
+                .then(|| {
+                    found
+                        .last()
+                        .map(|last| hodor_kernel::Cursor::new(last.id().to_string()))
+                })
+                .flatten(),
+            items: found,
+        })
+    }
+
+    async fn allowing(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        namespace: &Namespace,
+        permission: &PermissionName,
+        resource_id: &str,
+        principals: &[Subject],
+        limit: usize,
+    ) -> Result<Vec<AccessEntry>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        Ok(self
+            .rows()
+            .entries
+            .iter()
+            .filter(|((owner, _), entry)| {
+                *owner == tenant && entry.allows(namespace, permission, resource_id, principals)
+            })
+            .map(|(_, entry)| entry.clone())
+            .take(limit)
+            .collect())
+    }
+}
+
+/// The ports under test.
+#[derive(Clone)]
+pub struct AccessListPorts<'a> {
+    /// Starts units of work.
+    pub units_of_work: &'a dyn UnitOfWorkFactory,
+    /// The store of permissions, which entries name.
+    pub roles: &'a dyn NativeRoleStore,
+    /// The store under test.
+    pub entries: &'a dyn AccessListStore,
+}
+
+impl std::fmt::Debug for AccessListPorts<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AccessListPorts").finish_non_exhaustive()
+    }
+}
+
+/// Runs `work` in a unit of work of `tenant` and commits it.
+async fn with_entries<T>(
+    ports: &AccessListPorts<'_>,
+    tenant: &TenantContext,
+    work: impl for<'u> FnOnce(
+        &'u dyn AccessListStore,
+        &'u mut dyn UnitOfWork,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<T, DomainError>> + Send + 'u>,
+    >,
+) -> Result<T, DomainError> {
+    let mut uow = ports.units_of_work.begin(tenant).await.expect("begin");
+    let result = work(ports.entries, uow.as_mut()).await;
+    if result.is_ok() {
+        uow.commit().await.expect("commit");
+    }
+    result
+}
+
+/// Runs every rule a store of access control lists must obey. Each run
+/// uses tenants of its own, so runs can share one database.
+///
+/// # Panics
+///
+/// Panics if the implementation breaks a rule.
+#[allow(clippy::too_many_lines)]
+pub async fn run_access_list_contract(ports: AccessListPorts<'_>) {
+    let tenant = TenantContext::assume(TenantId::generate());
+    let elsewhere = TenantContext::assume(TenantId::generate());
+    let documents = Namespace::parse("urn:example:documents").expect("namespace");
+    let billing = Namespace::parse("https://billing.example.com").expect("namespace");
+    let read = contract_permission("document:read");
+    let write = contract_permission("document:write");
+    // Times with whole microseconds, as storage keeps them.
+    let at = Timestamp::UNIX_EPOCH + time::Duration::days(20_000);
+    for (owner, namespace, permission) in [
+        (&tenant, &documents, &read),
+        (&tenant, &documents, &write),
+        (&tenant, &billing, &read),
+        (&elsewhere, &documents, &read),
+    ] {
+        let declared = PermissionDefinition::new(namespace.clone(), permission.clone(), "")
+            .expect("permission");
+        let mut uow = ports.units_of_work.begin(owner).await.expect("begin");
+        ports
+            .roles
+            .put_permission(uow.as_mut(), &declared)
+            .await
+            .expect("permission");
+        uow.commit().await.expect("commit");
+    }
+    let finance =
+        Subject::new(SubjectKind::Group, "0190f5b2-6a3e-7c1d-9b2a-1f2e3d4c5b60").expect("group");
+    let ana =
+        Subject::new(SubjectKind::User, "0190f5b2-6a3e-7c1d-9b2a-1f2e3d4c5b6a").expect("user");
+    let billing_client = Subject::new(SubjectKind::Client, "billing-service").expect("client");
+    let entry =
+        |namespace: &Namespace, permission: &PermissionName, resource: &str, who: &Subject| {
+            AccessEntry::new(
+                AccessEntryId::generate(),
+                namespace.clone(),
+                permission.clone(),
+                resource,
+                who.clone(),
+                at,
+            )
+            .expect("entry")
+        };
+
+    // Entries are stored and read back as they were.
+    let shared = entry(&documents, &read, "d-42", &finance);
+    let for_ana = entry(&documents, &write, "d-42", &ana);
+    let other_document = entry(&documents, &read, "d-43", &billing_client);
+    let other_server = entry(&billing, &read, "d-42", &finance);
+    for kept in [&shared, &for_ana, &other_document, &other_server] {
+        let kept = kept.clone();
+        let inserted = with_entries(&ports, &tenant, |s, u| {
+            Box::pin(async move { s.insert(u, &kept).await })
+        })
+        .await;
+        assert_eq!(inserted.ok(), Some(true));
+    }
+    let id = shared.id();
+    let read_back = with_entries(&ports, &tenant, |s, u| {
+        Box::pin(async move { s.get(u, id).await })
+    })
+    .await
+    .expect("get");
+    assert_eq!(read_back.as_ref(), Some(&shared));
+
+    // The same grant again is not stored twice, and is found.
+    let again = entry(&documents, &read, "d-42", &finance);
+    let probe = again.clone();
+    let inserted = with_entries(&ports, &tenant, |s, u| {
+        Box::pin(async move { s.insert(u, &probe).await })
+    })
+    .await;
+    assert_eq!(inserted.ok(), Some(false));
+    let found = with_entries(&ports, &tenant, |s, u| {
+        Box::pin(async move { s.same_as(u, &again).await })
+    })
+    .await
+    .expect("same");
+    assert_eq!(found.as_ref(), Some(&shared));
+
+    // An entry that names a permission the resource server does not
+    // declare is refused.
+    let undeclared = entry(&billing, &write, "d-42", &finance);
+    assert!(
+        with_entries(&ports, &tenant, |s, u| Box::pin(async move {
+            s.insert(u, &undeclared).await
+        }))
+        .await
+        .is_err()
+    );
+
+    // An entry allows only on its own resource, to its own principals.
+    let (space, permission) = (documents.clone(), read.clone());
+    let principals = vec![ana.clone(), finance.clone()];
+    let allowing = with_entries(&ports, &tenant, |s, u| {
+        Box::pin(async move {
+            s.allowing(u, &space, &permission, "d-42", &principals, 64)
+                .await
+        })
+    })
+    .await
+    .expect("allowing");
+    assert_eq!(allowing, std::slice::from_ref(&shared));
+    for (resource, principals) in [
+        ("d-43", vec![ana.clone(), finance.clone()]),
+        ("d-42", vec![ana.clone()]),
+        ("d-42", vec![billing_client.clone()]),
+    ] {
+        let (space, permission) = (documents.clone(), read.clone());
+        let allowing = with_entries(&ports, &tenant, |s, u| {
+            Box::pin(async move {
+                s.allowing(u, &space, &permission, resource, &principals, 64)
+                    .await
+            })
+        })
+        .await
+        .expect("allowing");
+        assert!(allowing.is_empty(), "{resource} {allowing:?}");
+    }
+    let (space, permission) = (documents.clone(), read.clone());
+    let principals = vec![billing_client.clone()];
+    let allowing = with_entries(&ports, &tenant, |s, u| {
+        Box::pin(async move {
+            s.allowing(u, &space, &permission, "d-43", &principals, 64)
+                .await
+        })
+    })
+    .await
+    .expect("allowing");
+    assert_eq!(allowing, std::slice::from_ref(&other_document));
+
+    // An entry of another tenant is never read.
+    let theirs = entry(&documents, &read, "d-42", &ana);
+    let kept = theirs.clone();
+    with_entries(&ports, &elsewhere, |s, u| {
+        Box::pin(async move { s.insert(u, &kept).await })
+    })
+    .await
+    .expect("their entry");
+    let (space, permission) = (documents.clone(), read.clone());
+    let principals = vec![ana.clone()];
+    let allowing = with_entries(&ports, &tenant, |s, u| {
+        Box::pin(async move {
+            s.allowing(u, &space, &permission, "d-42", &principals, 64)
+                .await
+        })
+    })
+    .await
+    .expect("allowing");
+    assert!(allowing.is_empty(), "{allowing:?}");
+    let id = theirs.id();
+    let reached = with_entries(&ports, &tenant, |s, u| {
+        Box::pin(async move { s.get(u, id).await })
+    })
+    .await
+    .expect("get");
+    assert_eq!(reached, None);
+    let removed = with_entries(&ports, &tenant, |s, u| {
+        Box::pin(async move { s.remove(u, id).await })
+    })
+    .await
+    .expect("remove");
+    assert_eq!(removed, None);
+    let filter = AccessEntryFilter::of(documents.clone());
+    let listed = with_entries(&ports, &elsewhere, |s, u| {
+        Box::pin(async move {
+            s.list(u, &filter, &hodor_kernel::PageRequest::default())
+                .await
+        })
+    })
+    .await
+    .expect("list");
+    assert_eq!(listed.items, std::slice::from_ref(&theirs));
+
+    // Listing: one resource server, oldest first, a page at a time,
+    // narrowed by kind, resource and principal.
+    let filter = AccessEntryFilter::of(documents.clone());
+    let first = with_entries(&ports, &tenant, |s, u| {
+        Box::pin(async move {
+            s.list(u, &filter, &hodor_kernel::PageRequest::new(Some(2), None))
+                .await
+        })
+    })
+    .await
+    .expect("list");
+    assert_eq!(first.items, [shared.clone(), for_ana.clone()]);
+    let cursor = first.next_cursor.clone().expect("more");
+    let filter = AccessEntryFilter::of(documents.clone());
+    let second = with_entries(&ports, &tenant, |s, u| {
+        Box::pin(async move {
+            s.list(
+                u,
+                &filter,
+                &hodor_kernel::PageRequest::new(Some(2), Some(cursor)),
+            )
+            .await
+        })
+    })
+    .await
+    .expect("list");
+    assert_eq!(second.items, std::slice::from_ref(&other_document));
+    assert_eq!(second.next_cursor, None);
+    let narrowed = AccessEntryFilter {
+        resource_kind: Some("document".to_owned()),
+        resource_id: Some("d-42".to_owned()),
+        principal: Some(finance.clone()),
+        ..AccessEntryFilter::of(documents.clone())
+    };
+    let listed = with_entries(&ports, &tenant, |s, u| {
+        Box::pin(async move {
+            s.list(u, &narrowed, &hodor_kernel::PageRequest::default())
+                .await
+        })
+    })
+    .await
+    .expect("list");
+    assert_eq!(listed.items, std::slice::from_ref(&shared));
+    let filter = AccessEntryFilter::of(documents.clone());
+    let refused = with_entries(&ports, &tenant, |s, u| {
+        Box::pin(async move {
+            s.list(
+                u,
+                &filter,
+                &hodor_kernel::PageRequest::new(None, Some(hodor_kernel::Cursor::new("nonsense"))),
+            )
+            .await
+        })
+    })
+    .await;
+    assert_eq!(
+        refused
+            .map(|page| page.items.len())
+            .map_err(|e| e.code().to_owned()),
+        Err("request.query_invalid".to_owned())
+    );
+
+    // Removing answers what was removed, once.
+    let id = for_ana.id();
+    let removed = with_entries(&ports, &tenant, |s, u| {
+        Box::pin(async move { s.remove(u, id).await })
+    })
+    .await
+    .expect("remove");
+    assert_eq!(removed, Some(for_ana.clone()));
+    let removed = with_entries(&ports, &tenant, |s, u| {
+        Box::pin(async move { s.remove(u, id).await })
+    })
+    .await
+    .expect("remove");
+    assert_eq!(removed, None);
+
+    // Removing a permission removes the entries that name it, and only in
+    // its tenant.
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    assert!(
+        ports
+            .roles
+            .remove_permission(uow.as_mut(), &documents, &read)
+            .await
+            .expect("remove permission")
+    );
+    uow.commit().await.expect("commit");
+    let filter = AccessEntryFilter::of(documents.clone());
+    let listed = with_entries(&ports, &tenant, |s, u| {
+        Box::pin(async move {
+            s.list(u, &filter, &hodor_kernel::PageRequest::default())
+                .await
+        })
+    })
+    .await
+    .expect("list");
+    assert!(listed.items.is_empty(), "{:?}", listed.items);
+    let filter = AccessEntryFilter::of(billing.clone());
+    let listed = with_entries(&ports, &tenant, |s, u| {
+        Box::pin(async move {
+            s.list(u, &filter, &hodor_kernel::PageRequest::default())
+                .await
+        })
+    })
+    .await
+    .expect("list");
+    assert_eq!(listed.items, [other_server]);
+    let filter = AccessEntryFilter::of(documents.clone());
+    let listed = with_entries(&ports, &elsewhere, |s, u| {
+        Box::pin(async move {
+            s.list(u, &filter, &hodor_kernel::PageRequest::default())
+                .await
+        })
+    })
+    .await
+    .expect("list");
+    assert_eq!(listed.items, [theirs]);
 }
 
 /// The ports under test.
