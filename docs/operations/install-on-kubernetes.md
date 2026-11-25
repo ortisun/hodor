@@ -183,6 +183,8 @@ kubectl exec --namespace hodor deployment/hodor-server -- /usr/local/bin/hodor-c
 | `outboundAuthorities.configMap`, `outboundAuthorities.key` | Empty; `authorities.pem` | A ConfigMap of yours whose key holds the certificates, in PEM, of the authorities Hodor's outbound requests trust in place of the image's, for an identity provider or a bundle endpoint served under an authority of your own. It replaces them all: [the authorities it trusts](../security/outbound-http.md#the-authorities-it-trusts) |
 | `extAuthz.enabled` | `false` | Installs `hodor-ext-authz`. See [Envoy's external authorization](#envoys-external-authorization) |
 | `certManagerIssuer.enabled` | `false` | Installs `hodor-cert-manager-issuer`. See [cert-manager's issuer](#cert-managers-issuer) |
+| `gatewayIdentities` | Empty | The identities of the ingress gateways of a service mesh. When set, a forwarded address is read only from them. See [inside a service mesh](#inside-a-service-mesh) |
+| `mesh.provider` | Empty | `istio` or `linkerd`: Hodor's pods run with that mesh's proxy beside them. See [inside a service mesh](#inside-a-service-mesh) |
 
 Changing the Secret does not restart anything. After changing it, restart the pods so that they read it again:
 
@@ -218,21 +220,119 @@ networkPolicy:
 - **Turn on the network policy so that only the ingress controller can connect.** The pod range also holds every other pod of the cluster, and any of them could otherwise write the header.
 - **The ingress controller must see the client's own address.** Behind a cloud load balancer, that takes the load balancer's PROXY protocol or a service with `externalTrafficPolicy: Local`, as your ingress controller's documentation describes. Otherwise it forwards the address of a node.
 
-#### Inside a service mesh
+### Inside a service mesh
 
-A service mesh that puts a sidecar in Hodor's pods, as Istio does in its sidecar mode and as Linkerd does, changes what Hodor sees. Every connection then comes from the sidecar in Hodor's own pod: from `127.0.0.6` with Istio, from the pod itself with Linkerd. The sidecar passes `X-Forwarded-For` on as the caller wrote it, without checking it.
+Hodor runs with Istio's sidecar or Linkerd's proxy beside it, and each person behind the ingress gateway still has a limit of their own on sign-in attempts. Two values do it: `mesh.provider`, which does what each mesh needs, and `gatewayIdentities`, which names the ingress gateways whose forwarded address is believed ([behind the proxy of a service mesh](../api/api-spec.md#behind-the-proxy-of-a-service-mesh), [Decision 0061](../decisions/0061-gateway-identities.md)).
 
-**Never name the sidecar's address in `trustedProxies`.** Every request reaches Hodor through the sidecar, so every workload that can reach Hodor would choose its own address, and the limits on sign-in attempts would count whatever it wrote.
+With Istio's own ingress gateway, and the workloads of the namespace `shop` getting tokens from Hodor with their own identity:
 
-Telling the ingress controller from other callers by their identity in the mesh is planned, as [Hodor runs inside a mesh too](../decisions/0029-hodor-in-a-service-mesh.md#hodor-runs-inside-a-mesh-too) says (Issue-112), and not built yet. Until it is, choose one of these:
+```yaml
+mesh:
+  provider: istio
+gatewayIdentities:
+  - spiffe://cluster.local/ns/istio-system/sa/istio-ingressgateway-service-account
+networkPolicy:
+  enabled: true
+  ingressFrom:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: istio-system
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: shop
+```
 
-| Choice | What it takes | What it gives |
+With Linkerd, and a gateway of your own in the namespace `edge`, meshed, running as the service account `gateway`:
+
+```yaml
+mesh:
+  provider: linkerd
+  skipOutboundPorts: [25, 587]
+gatewayIdentities:
+  - gateway.edge.serviceaccount.identity.linkerd.cluster.local
+networkPolicy:
+  enabled: true
+  ingressFrom:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: edge
+```
+
+**Never name the proxy's address in `trustedProxies` yourself.** Every request reaches Hodor through it, so every workload that can reach Hodor would choose its own address. `mesh.provider` names it, and reads a forwarded address only from the gateways of `gatewayIdentities`. With no gateway named, it reads none, and everyone shares one limit.
+
+#### What `mesh.provider` does
+
+| | `istio` | `linkerd` |
 |---|---|---|
-| Keep Hodor's pods out of the mesh | Install Hodor in a namespace the mesh does not inject. With Istio, no `istio-injection` or `istio.io/rev` label on it; with Linkerd, no `linkerd.io/inject` annotation | The rules above hold as written. Connections to Hodor are not mutual TLS of the mesh; the network policy is what limits who connects |
-| Istio's ambient mode instead of sidecars | Hodor's namespace in ambient mode, with no waypoint in front of Hodor | ztunnel keeps the caller's own address, so the ingress controller's pod range is named as above |
-| Leave `trustedProxies` empty | Nothing | Safe, but everyone shares one limit on sign-in attempts, as with no proxy named |
+| The server's and the worker's pods join the mesh | Label `sidecar.istio.io/inject: "true"` | Annotation `linkerd.io/inject: enabled` |
+| The migration job joins it too, unless `mesh.injectMigration` is `false` | The same label | The same annotation |
+| The health checks stay on the operations port, which the proxy leaves alone, so the kubelet reaches them directly | `traffic.sidecar.istio.io/excludeInboundPorts: "9090"` | `config.linkerd.io/skip-inbound-ports: "9090"` |
+| Hodor starts after its proxy | `holdApplicationUntilProxyStarts`, in `proxy.istio.io/config`, for a cluster without native sidecars | Linkerd's own `config.linkerd.io/proxy-await`, on by default |
+| The proxy is a trusted proxy, beside `trustedProxies` | `127.0.0.6` and `::6`, where Istio's sidecar connects from | The pod's own addresses, read from the pod, where Linkerd's proxy connects from |
+| The header of the caller's identity, unless `clientIdentityHeader` names one | `x-forwarded-client-cert` | `l5d-client-id` |
+| The forwarded address | Read from the gateways of `gatewayIdentities` only, in the header `forwardedHeader` names. With no gateway named, `none`: never read | The same |
+| The network policy admits, from `networkPolicy.ingressFrom` | The public port | The public port and 4143, the proxy's own port, where every connection between two of Linkerd's proxies arrives |
+| Ports in `mesh.skipOutboundPorts` bypass the proxy on the way out | `traffic.sidecar.istio.io/excludeOutboundPorts` | `config.linkerd.io/skip-outbound-ports` |
+| With `networkPolicy.egress.enabled`, the pods may also reach | The namespace `istio-system`, where the proxy gets its configuration and certificate | The namespace `linkerd` |
 
-Behind a waypoint of Istio's ambient mode, what address Hodor sees has not been checked. Treat a waypoint as a sidecar until it has.
+Both meshes inject their proxy as a native sidecar on Kubernetes 1.33 and newer: it starts before Hodor and stops after it, and the migration job completes. On a cluster where the proxy is a classic container, the job's proxy never stops, so the job never completes: set `mesh.injectMigration` to `false`, if the database can be reached from outside the mesh.
+
+#### The gateways
+
+- **Name each gateway by the identity its pods run as.** For Istio, `spiffe://<trust domain>/ns/<namespace>/sa/<service account>`. The ingress gateway `istioctl install` makes runs as `istio-ingressgateway-service-account` in `istio-system`; one made from the Gateway API runs as `<gateway>-istio` in the gateway's namespace. For Linkerd, `<service account>.<namespace>.serviceaccount.identity.linkerd.<trust domain>`. `kubectl get pod --namespace <namespace> <pod> --output jsonpath='{.spec.serviceAccountName}'` says which service account a pod runs as.
+- **The gateway must be in the mesh**, so that its identity reaches Hodor. Linkerd has no ingress of its own: mesh the one you put in front.
+- **The gateway must add the address it received the request from** at the end of `X-Forwarded-For`. Istio's ingress gateway does. A load balancer in front of the gateway is named in `trustedProxies` by its address range, so that the address it adds is passed over.
+- **Admit the gateway in the network policy**, and the workloads that call Hodor themselves. Their forwarded address is ignored, and they share the proxy's address.
+
+#### Going out
+
+The worker and the server connect to the database, the mail server and the collector, and, for the tenants, to identity providers, directories, webhooks, bundle endpoints and back-channel logout addresses. For those, Hodor resolves the name itself, refuses private addresses, and connects to the address it found.
+
+- **Istio** lets these connections out while the mesh's `outboundTrafficPolicy` is `ALLOW_ANY`, its default. With `REGISTRY_ONLY`, a connection to an address no `ServiceEntry` names is refused, and a tenant's webhooks cannot be listed in advance: give Hodor's namespace a `Sidecar` that allows them.
+
+```yaml
+apiVersion: networking.istio.io/v1
+kind: Sidecar
+metadata:
+  name: default
+  namespace: hodor
+spec:
+  outboundTrafficPolicy:
+    mode: ALLOW_ANY
+```
+
+- **Linkerd** lets them out as plain connections. A mail server that speaks first, on port 25 or 587, waits about ten seconds for each connection while the proxy tries to recognize the protocol: list those ports in `mesh.skipOutboundPorts`. Port 465 is not affected.
+- **With `networkPolicy.egress.enabled`**, a destination in Linkerd's mesh is reached on port 4143, not on its own port: name 4143 in the rule for a database or a collector that is meshed.
+
+#### Istio's ambient mode
+
+Ambient mode puts no proxy in Hodor's pods, so leave `mesh.provider` empty. ztunnel keeps the caller's own address, so the gateway is named by its address range in `trustedProxies`, as an ingress controller outside a mesh is ([the address of each client](#the-address-of-each-client)). No identity reaches Hodor, so `gatewayIdentities` cannot be used.
+
+- **Admit only the gateway in the network policy**, on port 15008 as well, the port ztunnel's tunnel arrives on, and the kubelet's probes from `169.254.7.127/32`, the address ztunnel gives them. A workload the policy admits would otherwise choose its own address, since it comes from the pod range. If workloads must call Hodor themselves, leave `trustedProxies` empty, or give Hodor's pods a sidecar with `mesh.provider: istio`, which Istio allows beside ambient workloads.
+- **No waypoint in front of Hodor.** Every caller that goes through it arrives from the waypoint's address, with `X-Forwarded-For` as it wrote it and no identity. A waypoint is never a trusted proxy.
+
+```yaml
+trustedProxies:
+  - 10.244.0.0/16
+networkPolicy:
+  enabled: true
+  ingressFrom:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: istio-system
+```
+
+The chart opens the public port to `ingressFrom`. Port 15008 and the probes' address are not values of the chart: add a second network policy of your own for them.
+
+#### What was tried
+
+On kind, with Kubernetes 1.37, Istio 1.31.4 and Linkerd edge-26.11.1:
+
+- **The chart, with each `mesh.provider`,** installed an image of Hodor built for the purpose, with the stand-ins of [trying the chart](#trying-the-chart-on-a-cluster-of-your-own) and the network policy on. The migration job completed with its proxy, and the server and the worker became ready, their probes rewritten by Istio and left alone by Linkerd. With Linkerd, the policy also restricted the way out, to the control plane and the database.
+- **The limits.** Behind Istio's ingress gateway, two clients outside the mesh were each limited on their own, whatever `X-Forwarded-For` they wrote. A workload of the mesh that wrote a new address on every request was limited as one client, and so was a caller outside the mesh that reached Hodor's sidecar directly. With Linkerd, the same, with a meshed pod writing `X-Forwarded-For` in the gateway's place.
+- **What each proxy hands an application**: the address and the headers, the gateway's identity among them, with sidecars, ztunnel and a waypoint. The network policy with Linkerd's port 4143 and ambient mode's port 15008. Going out with Istio's `ALLOW_ANY` and `REGISTRY_ONLY`, and Linkerd's delay on port 587.
+
+Not tried: a cluster of several nodes, a network plugin other than kind's, a real ingress in front of Linkerd such as Envoy Gateway, Istio's gateways made from the Gateway API, Istio with the way out restricted by the network policy, classic sidecars, and the probes' address in ambient mode under a network plugin that enforces it. The service mesh guide (Issue-113) tries the rest.
 
 ### The identity of a workload
 
@@ -245,8 +345,8 @@ forwardedHeader: none
 clientIdentityHeader: x-forwarded-client-cert
 ```
 
-- **Name only the proxy that ends the workload's mutual TLS**, here Istio's sidecar, which connects to Hodor from `127.0.0.6`, and only if it replaces or appends to the header a caller sends. Linkerd's proxy connects from inside the pod as well, and removes any `l5d-client-id` a caller sent: name the address it connects from. The service mesh guide will say which address each mesh uses, as tried (Issue-113).
-- **Set `forwardedHeader` to `none` when the sidecar is named.** A sidecar passes `X-Forwarded-For` as the caller wrote it, so any workload could choose its own address. With `none`, every caller is known by the sidecar's address and shares one limit on sign-in attempts, until the forwarded address can be read from named gateways only (Issue-112).
+- **Name only the proxy that ends the workload's mutual TLS**, here Istio's sidecar, which connects to Hodor from `127.0.0.6`, and only if it replaces or appends to the header a caller sends. Linkerd's proxy connects from the pod's own address, and removes any `l5d-client-id` a caller sent: name that address, which `mesh.provider` does for you.
+- **Set `forwardedHeader` to `none` when the sidecar is named, or name the ingress gateways.** A sidecar passes `X-Forwarded-For` as the caller wrote it, so any workload could choose its own address. With `none`, every caller is known by the sidecar's address and shares one limit on sign-in attempts. With `gatewayIdentities`, the gateways' forwarded address is read and nobody else's: [inside a service mesh](#inside-a-service-mesh) says how, and `mesh.provider` sets all of this for Istio and Linkerd.
 - **Give the tenant the workload's trust domain**: by its bundle, so that the forwarded certificate is checked against it, or as checked by the mesh, which is needed when the proxy forwards only the names of the certificate, as Istio does by default, or the Linkerd identity.
 
 [The demonstration of Milestone 10](quick-start.md#the-demonstration-of-milestone-10) installs the chart this way on a kind cluster with Istio and SPIRE, and checks it: Istio's sidecar does connect to Hodor from `127.0.0.6`, takes away an `X-Forwarded-Client-Cert` sent by a caller outside the mesh, and forwards the names and the `Hash` of the certificate of a caller inside it. Its settings are in `deploy/demo/workload-identity/hodor-values.yaml`.
@@ -433,7 +533,7 @@ kind delete cluster --name hodor
 
 | Missing | Until then |
 |---|---|
-| Trusting a forwarded address behind a mesh's sidecar | Hodor's pods stay out of the mesh, or Istio's ambient mode is used, as [inside a service mesh](#inside-a-service-mesh) says |
+| Istio's ambient mode as a value of the chart | `trustedProxies` and a network policy of your own, as [inside a service mesh](#inside-a-service-mesh) says |
 | Autoscaling on request concurrency | The autoscaler follows processor use only |
 | Dashboards and alerts | Metrics and traces are sent where `telemetry` says; what is drawn and alerted from them is yours |
 | The Open Policy Agent sidecar and Redis | Neither is used by Hodor yet: both belong to later phases of the [roadmap](../product/roadmap.md) |

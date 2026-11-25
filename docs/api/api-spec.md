@@ -93,10 +93,44 @@ The client address is set once, as the request arrives, before the tenant is res
 |---|---|---|
 | `HODOR_TRUSTED_PROXIES` | empty | Address ranges of trusted proxies, such as `10.0.0.0/8,fd00::/8`, separated by commas. Empty: forwarded headers are never read |
 | `HODOR_FORWARDED_HEADER` | `x-forwarded-for` | Which header a trusted proxy writes: `x-forwarded-for` or `forwarded`; or `none`, when trusted proxies are named only for [the caller's identity](#the-callers-identity-from-a-proxy) and no address they forward is read |
+| `HODOR_GATEWAY_IDENTITIES` | empty | The identities of the ingress gateways of a service mesh, separated by commas: SPIFFE identifiers or Linkerd identities. When set, the forwarded header is read only from a request whose caller is one of them: [behind the proxy of a service mesh](#behind-the-proxy-of-a-service-mesh) |
 
 The server refuses to start if a range cannot be read. It also refuses a range that holds every address, `0.0.0.0/0` or `::/0`, because that range would let every client choose its own address.
 
 Name only the proxies that add the address they received the request from and that cannot be reached any other way. A range that also holds machines that are not proxies lets those machines choose their address. [Installing with Docker](../operations/install-with-docker.md) and [installing on Kubernetes](../operations/install-on-kubernetes.md) say what to name in each.
+
+### Behind the proxy of a service mesh
+
+A service mesh that puts a proxy beside Hodor, in its own pod, changes what Hodor sees. Every connection comes from that proxy: from `127.0.0.6` with Istio's sidecar, from the pod's own address with Linkerd's proxy. The proxy passes `X-Forwarded-For` on as the caller wrote it. Naming the proxy's address as a trusted proxy would then let every workload of the mesh choose its own address.
+
+What tells the callers apart is their identity in the mesh, which the proxy forwards in [the header of the caller's identity](#the-callers-identity-from-a-proxy). The operator names the identities of the ingress gateways in `HODOR_GATEWAY_IDENTITIES` ([Decision 0061](../decisions/0061-gateway-identities.md)):
+
+- a SPIFFE identifier, such as `spiffe://cluster.local/ns/istio-system/sa/istio-ingressgateway-service-account`, matches a URI of the forwarded certificate, or a URI the proxy forwarded without the certificate, as Istio does;
+- a Linkerd identity, such as `gateway.edge.serviceaccount.identity.linkerd.cluster.local` for the service account `gateway` of the namespace `edge`, matches `l5d-client-id`, or a DNS name of the forwarded certificate.
+
+Each is read by the rule of a client's identity, and matched exactly: no prefix, no wildcard. With gateways named, the client address of a request from a trusted proxy is:
+
+| The caller's identity | Client address |
+|---|---|
+| One of the gateways | Read from the forwarded header, as above |
+| Another workload | The connection's address. The forwarded header is ignored, whatever it says |
+| None: no identity header, or one that does not read | The connection's address. The forwarded header is ignored |
+
+Every workload that reaches Hodor without a gateway, to get a token with its own identity for instance, is then known by the proxy's address, and they share one limit. The counter `hodor.http.forwarded_address.ignored` counts, by `reason`, `not_a_gateway` or `no_identity`, the requests whose forwarded header was there and was ignored for that reason.
+
+```mermaid
+flowchart LR
+    Person["Person 203.0.113.7"] --> Gateway["Ingress gateway"]
+    Gateway -->|"X-Forwarded-For: 203.0.113.7<br/>mutual TLS as the gateway"| Sidecar["Hodor's sidecar 127.0.0.6"]
+    Workload["Workload shop/web"] -->|"X-Forwarded-For: 198.51.100.1 (forged)<br/>mutual TLS as shop/web"| Sidecar
+    Sidecar -->|"X-Forwarded-Client-Cert: …;URI=(the caller)"| Hodor["Hodor"]
+```
+
+With `HODOR_TRUSTED_PROXIES=127.0.0.6`, `HODOR_CLIENT_IDENTITY_HEADER=x-forwarded-client-cert` and `HODOR_GATEWAY_IDENTITIES=spiffe://cluster.local/ns/istio-system/sa/istio-ingressgateway-service-account`, the person is known as 203.0.113.7, and the workload as 127.0.0.6, whatever it wrote.
+
+The server refuses to start when the gateways can never be recognized: an identity that does not read, or gateways named with no trusted proxy, with no `HODOR_CLIENT_IDENTITY_HEADER`, or with `HODOR_FORWARDED_HEADER=none`. When it starts, it says which gateways it reads the forwarded address from.
+
+A load balancer in front of the gateway is named in `HODOR_TRUSTED_PROXIES` by its address range, as outside a mesh, so that the address it adds is passed over. Behind a waypoint of Istio's ambient mode, no identity reaches Hodor and every caller arrives from the waypoint: a waypoint is never a trusted proxy. [Installing on Kubernetes](../operations/install-on-kubernetes.md#inside-a-service-mesh) gives the settings for each mesh.
 
 ### The caller's identity from a proxy
 
@@ -125,7 +159,7 @@ flowchart LR
     Sidecar -->|"X-Forwarded-Client-Cert: (forged element), By=…;URI=spiffe://cluster.local/ns/shop/sa/web"| Hodor["Hodor"]
 ```
 
-With `HODOR_TRUSTED_PROXIES=127.0.0.6`, `HODOR_FORWARDED_HEADER=none` and `HODOR_CLIENT_IDENTITY_HEADER=x-forwarded-client-cert`, Hodor reads the last element, which the sidecar wrote, and never the forged one before it. It reads no forwarded address: a sidecar passes `X-Forwarded-For` as the caller wrote it, so every caller is known by the sidecar's address ([Threat-Mesh-08](../security/threat-model.md#service-meshes-and-certificates)).
+With `HODOR_TRUSTED_PROXIES=127.0.0.6`, `HODOR_FORWARDED_HEADER=none` and `HODOR_CLIENT_IDENTITY_HEADER=x-forwarded-client-cert`, Hodor reads the last element, which the sidecar wrote, and never the forged one before it. It reads no forwarded address: a sidecar passes `X-Forwarded-For` as the caller wrote it, so every caller is known by the sidecar's address ([Threat-Mesh-08](../security/threat-model.md#service-meshes-and-certificates)). To read the forwarded address of the ingress gateway alone, name the gateway's identity instead of `none`: [behind the proxy of a service mesh](#behind-the-proxy-of-a-service-mesh).
 
 | Variable | Default | Meaning |
 |---|---|---|
