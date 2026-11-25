@@ -4,7 +4,7 @@ The `authentication` context decides whether someone has proved who they are. It
 
 It owns no users, credentials or sessions. It asks the `identity` context who a login identifier belongs to, asks the `credential` context whether a secret is right, and asks the `session` context to start a session. What it owns is the procedure: which steps, in which order, with which protections.
 
-This page specifies signing in with a login identifier and a password (Milestone 1), with an external identity (Milestone 2), the steps a flow may require only sometimes, which carry the second factors of Milestone 4, and signing in with a passkey alone. The same mechanism carries every later method.
+This page specifies signing in with a login identifier and a password (Milestone 1), with an external identity (Milestone 2), the steps a flow may require only sometimes, which carry the second factors of Milestone 4, signing in with a passkey alone, and signing in with a code or a link sent by email (Milestone 9). The same mechanism carries every later method.
 
 ## Flows
 
@@ -29,6 +29,8 @@ An **authenticator** performs one step. It receives what the person submitted an
 | `webauthn` | Checks the answer of a security key or a platform authenticator to a challenge, with the [credential context](credential.md#checking-a-credential). The person has the means when they registered at least one credential | One factor: something the person has, and one that resists phishing | Milestone 4 |
 | `recovery_code` | Checks one of the candidate's [recovery codes](credential.md#recovery-codes). Used only as a [substitute](#substitutes) for a second factor | One factor: something the person has, written down | Milestone 4 |
 | `passkey` | Checks the answer of a [passkey](credential.md#passkeys) to a challenge that names no credential, and answers who the person is from the credential that answered. Used as an alternative | Who is signing in, and two factors in one step: something the person has, unlocked by something they know or are. It resists phishing | Milestone 4 |
+| `email_code` | Sends a code to the email address the person gives, and checks the code they type; answers who the person is from the address. Used as an alternative | Who is signing in and one factor, the mailbox, counted as something the person knows ([why](#signing-in-with-a-code-or-a-link-by-email)) | Milestone 9 |
+| `email_link` | Sends a link to the email address the person gives; the link, opened in the browser that asked for it, signs the person in. Used as an alternative | The same as `email_code` | Milestone 9 |
 | Others | — | — | Later issues |
 
 Each step has a requirement:
@@ -68,7 +70,7 @@ A sign-in must reach an **assurance**. There are three, each stronger than the o
 |---|---|
 | Single factor | Prove one kind of factor |
 | Multi-factor | Prove two kinds of factor |
-| Phishing-resistant | Prove two kinds of factor, and one of the steps resists phishing: a key held by the person answered a challenge bound to this tenant's address. The `webauthn` step and the `passkey` alternative resist phishing; a password, a code of an application and a recovery code do not, since whoever tricked the person into typing them can type them too |
+| Phishing-resistant | Prove two kinds of factor, and one of the steps resists phishing: a key held by the person answered a challenge bound to this tenant's address. The `webauthn` step and the `passkey` alternative resist phishing; a password, a code of an application, a recovery code and a code or a link by email do not, since whoever tricked the person into typing them, or into handing them over, can use them too |
 
 Two factors of the same kind, such as two passwords, are still one. One step may prove two kinds at once: a passkey is something the person has, and the authenticator verified something they know or are before it answered. Hodor cannot tell a PIN from a fingerprint, and counts the verification as the second kind either way. A passkey alone is therefore phishing-resistant, and so are a password and a security key together.
 
@@ -115,8 +117,10 @@ What a person submits to an alternative is a set of named values that only its a
 
 Some authenticators can check an answer only to a question they asked: a WebAuthn authenticator signs a challenge Hodor chose. Such a step takes two requests.
 
-1. **Asking for the challenge.** The current step's authenticator makes a challenge and the options the browser needs. The challenge is kept in the transaction; asking again replaces it.
+1. **Asking for the challenge.** The current step's authenticator makes a challenge and the options the browser needs. The challenge is kept in the transaction; asking again replaces it. Asking may carry named values that only the authenticator understands, like the input of an alternative: the [email alternatives](#signing-in-with-a-code-or-a-link-by-email) read the address to send to from them.
 2. **Submitting.** The answer is checked against the challenge kept in the transaction.
+
+An authenticator may also keep nothing in the transaction, when what it asked for lives elsewhere under rules of its own: a code or a link sent by email is [kept apart](#what-is-kept), so that a mistyped code does not spend it. The rules below are those of a challenge kept in the transaction; the rule on what may be asked for, and when, holds for every challenge.
 
 | Rule | Why |
 |---|---|
@@ -139,13 +143,15 @@ What a person submits to such a step is a set of named values, like the input of
 | Alternative | Authenticator |
 |---|---|
 | `passkey` | `passkey` |
+| `email_code`, when the tenant [turned it on](tenant.md#email-sign-in-policy) | `email_code` |
+| `email_link`, when the tenant turned it on | `email_link` |
 | `external`, when the installation has identity providers | The federation context's |
 
 Minimum assurance: single factor.
 
 A person who registered a security key is always asked for it after the password, and a person who put an authenticator application in use for a code, whether or not the tenant requires a second factor: they chose a second factor, and a stolen password alone must not let anyone in. A person with both is asked for the first one only: once the key has answered, the sign-in is multi-factor and phishing-resistant, and the code would add nothing. In a [step-up](#step-up) that asks for a phishing-resistant sign-in, a person who proved a code earlier is asked for their key, and never for the code again. A person without one signs in with the password, unless the tenant requires a second factor, in which case the sign-in fails at completion.
 
-A person who signs in with a passkey is asked for nothing more: the passkey alone is multi-factor, so the third and fourth steps are passed over, and it satisfies a tenant's policy that requires a second factor. A person who signs in through an identity provider has one factor, and is asked for their second factor after it.
+A person who signs in with a passkey is asked for nothing more: the passkey alone is multi-factor, so the third and fourth steps are passed over, and it satisfies a tenant's policy that requires a second factor. A person who signs in through an identity provider, or with a code or a link by email, has one factor, and is asked for their second factor after it.
 
 The fourth step needs a place to keep secrets. An installation without `HODOR_SECRET_KEYS` runs the flow without it, and nobody there can have an authenticator application.
 
@@ -161,6 +167,71 @@ A person asked for their security key or for the code of their application can g
 | Every answer, right or wrong, is counted against the address it comes from, before it is checked, with the tenant's lockout rules: the address's limit, [ten times the identifier's](#protection-against-guessing) | There is no identifier to count against. Guessing a signature is hopeless, but each answer costs a lookup and a check |
 | A user who may not sign in is rejected like a wrong answer | The answer tells nothing about the account |
 | The method recorded is `passkey` | The `amr` of a token will say a key held by the person was used, the person was verified, and that this is multi-factor: `pop`, `user` and `mfa` of RFC 8176, once tokens carry it (Issue-69) |
+
+### Signing in with a code or a link by email
+
+Two alternatives prove who the person is through their mailbox, as registration and password recovery do: `email_code`, a code the person types, and `email_link`, a link they open. Each is offered only when the tenant [turns it on](tenant.md#email-sign-in-policy); both are off for a new tenant.
+
+```mermaid
+sequenceDiagram
+    actor Person
+    participant Browser as The browser that asked
+    participant Hodor
+    participant Mailbox as The person's mailbox
+
+    Person->>Browser: types an address, asks for a code or a link
+    Browser->>Hodor: ask, within its sign-in, giving the address
+    Hodor-->>Browser: accepted, whoever the address belongs to
+    Hodor->>Mailbox: the code, or the link, if the address is someone's
+    alt a code
+        Person->>Browser: types the code
+        Browser->>Hodor: the code, within its sign-in
+    else a link
+        Person->>Mailbox: opens the link, in the same browser
+        Browser->>Hodor: the token from the link, within its sign-in
+    end
+    Hodor-->>Browser: completed, or the next step
+```
+
+**Asking.** While the sign-in waits for its first step, the person gives an email address and asks for a code or for a link. Asking is [asking for the challenge](#steps-that-need-a-challenge) of the alternative, with the address among its values.
+
+| The address | What is kept | Message sent |
+|---|---|---|
+| Is a login identifier of a person who may sign in | A code or a link for this sign-in, in place of anything sent for it before, belonging to the person | `sign_in_code`, with the code, or `sign_in_link`, with the link, in the person's language |
+| Anything else: no account, a person who may not sign in, something that is not an address | The same, belonging to nobody, so that nothing it is presented with is ever accepted | None |
+
+**Using it.** The person types the code, or opens the link, which presents its token. Either is submitted to the alternative within the same sign-in.
+
+| Rule | Why |
+|---|---|
+| The answer to asking is the same whatever the address: accepted. The same rows are written in every case; only the message differs, and it goes to the mailbox | Asking must not tell whether an address belongs to someone |
+| A code or a link belongs to the sign-in that asked for it, and is good only within it. A sign-in is continued only by the browser that holds its secret | A link opened in another browser finds no sign-in there, or another one, and signs nothing in. Someone who asks for a link with another person's address is never signed in by that person opening it |
+| Asking is accepted only while no step of the sign-in has been satisfied, like every alternative, and only when the tenant turned the method on. Asking for a method that is off is refused, `authentication.method_not_offered`, and so is submitting to it | A person who typed an identifier goes on with the password; a tenant decides how its people sign in |
+| Asking again, for a code or for a link, replaces what was sent before. Only the newest is good | The person who asked twice uses the message that came last |
+| A code or a link lives ten minutes, and never longer than the sign-in it was asked for | A message read later than that is no use to anyone |
+| Asking is limited like asking for a recovery link: counted against the address asked about and the address the request comes from, with the tenant's [lockout policy](tenant.md#lockout-policy), in counts of its own | Nobody fills a mailbox with messages, and asking never locks anyone out of signing in |
+| Each code or link presented is counted when it is admitted, before it is looked at, against the address asked about, as the [identifier step](#protection-against-guessing) counts what is typed, and against the address of the request, with the tenant's lockout rules: the counts of the password | Six digits are guessed by repetition; the lockout stops that. A lockout reached with codes also stops the password for that identifier, and the other way round |
+| An accepted code or link clears the identifier's count, as a right password does | The person proved who they are |
+| A code or a link is used once. Of any number of requests presenting it at the same moment, one signs in. A request that finds the right one just used by another is answered as a change made by another request (`authentication.transaction_modified_concurrently`), and stores nothing | One message, one sign-in; and the loser must not overwrite the sign-in the winner is completing |
+| A rejection looks the same whatever the reason: a wrong code, a code used, expired or replaced, a code sent to nobody, a token for a code or a code for a link, nothing asked for, something that is not six digits | Nothing in the answer helps someone guessing |
+| A rejected code is not spent: the person may type it again. Five rejections end the sign-in, as for every step | A typo does not mean another message; guesses stay bounded |
+| A person who may no longer sign in when the code is presented is rejected like a wrong code | The answer tells nothing about the account |
+| The method recorded is `email_code` or `email_link` | The session, the audit log and the `amr` of a token say how the person signed in |
+
+**What it proves.** That the person reads the mailbox, whose owner signed in to it in a way Hodor did not see. Hodor counts this as it counts an identity provider: one factor, of the kind of something the person knows ([Decision 0036](../../decisions/0036-codes-and-links-by-email.md)). The steps of the flow that are not required apply after it as after any alternative: a person who registered a security key or has an authenticator application in use is asked for it, and a tenant that requires a second factor is satisfied once they gave it. Neither alternative resists phishing.
+
+#### What is kept
+
+| | The code | The link |
+|---|---|---|
+| What it is | Six digits, each chosen uniformly | `{public address}/t/{slug}/account/sign-in-link#token={token}`, the token 32 random bytes written as 64 hexadecimal characters, in the fragment, which a browser never sends to a server |
+| What is stored | The SHA-256 of the code | The SHA-256 of the token |
+
+What was sent is stored with the identifier of its sign-in, the method, a digest of the address asked about, made as the identifier step makes it, the person it signs in, or nobody, and when it was made, expires and was used. Storing it and putting its message in the [message queue](notification.md) happen in one transaction.
+
+A six-digit code is easy to work out from its hash. What keeps it is that it is good only within its sign-in, which is continued only with the browser's secret, of which the database holds a hash of 256 bits of randomness, and only for ten minutes. The message waiting in the queue holds the code or the link readable until it is sent or expires, [as it does for a recovery link](notification.md#what-is-kept-and-for-how-long).
+
+The page the link opens is described in [the hosted pages](../hosted-pages.md#signing-in-with-a-code-or-a-link-by-email).
 
 ### The authenticator application step
 
@@ -255,7 +326,7 @@ Failed password attempts are counted, per tenant, against two things: the identi
 - **While locked out, no password is checked.** The attempt is refused with "too many attempts" and the time to wait. Not checking is the point: guesses made during a lockout teach the attacker nothing.
 - **A successful sign-in clears the identifier's count and its lockout history.**
 - **Counting is by a digest of the normalized identifier.** The identifier itself is not stored with the counts.
-- **After an alternative, counting is by the person.** A sign-in through an identity provider or a passkey types no identifier. When it goes on to a second factor, an authenticator application's code or a recovery code, those attempts are counted against a key made from the person's identifier in Hodor, with the same limits; without one, a second factor after an alternative could never be accepted.
+- **After an alternative, counting is by the person.** A sign-in through an identity provider or a passkey types no identifier; neither does one by email, whose code or link is counted against the address asked about. When it goes on to a second factor, an authenticator application's code or a recovery code, those attempts are counted against a key made from the person's identifier in Hodor, with the same limits; without one, a second factor after an alternative could never be accepted.
 - **An attempt is counted when it is admitted, before the password is checked**, and the identifier's count is cleared if the attempt succeeds. Counting first is what makes the limit exact: when many attempts arrive at the same moment, only as many as the limit reach the password check. The price is that an attempt cut short by an outage still counts.
 - **The same sign-in submitted many times at once** counts once per submission until one of them succeeds. If more arrive together than the limit allows, the surplus is answered with "too many attempts"; one submission completes the sign-in, exactly one session starts, and the success clears the count, so nothing remains locked.
 - **Addresses keep their count after a success.** Signing in to one's own account does not buy an address more guesses.
@@ -285,9 +356,10 @@ Marking the transaction completed and starting the session are two separate writ
 | `authentication.locked_out` | An identifier or an address reached its limit; carries which kind and until when |
 | `authentication.registration_completed` | A person finished registering; carries the user |
 | `authentication.recovery_requested` | A recovery link was sent; carries the user. Not recorded when the address belongs to nobody |
+| `authentication.email_sign_in_sent` | A code or a link to sign in was sent; carries the user and the method, `email_code` or `email_link`. Not recorded when the address belongs to nobody |
 | `authentication.password_reset` | A person chose a new password with a recovery link; carries the user |
 
-No event carries an email address, a token or a link.
+No event carries an email address, a token, a code or a link.
 
 ## Step-up
 
@@ -525,7 +597,8 @@ Every change, by the person or by an administrator, is recorded through the even
 | Assurance of methods | Says which assurance a list of methods amounts to, for the OAuth context |
 | Submit step | Runs the current step's authenticator with what was submitted. Returns the next step, a rejection, or completion with a session token |
 | Describe sign-in | Returns the current step of a transaction, so that a page can be shown again after a reload |
-| Challenge for a step | Asks the current step's authenticator for a challenge, keeps it in the transaction and returns the options for the browser |
+| Challenge for a step | Asks the current step's authenticator, or an alternative's while no step has been satisfied, for a challenge, with the values the person gave; keeps it in the transaction when it is kept there, and returns the options for the browser. For the email alternatives, sends the code or the link |
+| Offered alternatives | The alternatives a sign-in of the tenant may take at its start, for the pages to offer |
 | Begin WebAuthn registration | For a signed-in person: asks the credential context for a pending registration, naming the person by their primary login identifier and display name |
 | Finish WebAuthn registration | For a signed-in person: hands what the authenticator answered to the credential context, and generates recovery codes with the first second factor |
 | List factors | A person's authenticator application, security keys and passkeys, how many unused recovery codes they have, and whether their tenant requires a second factor |
@@ -547,9 +620,10 @@ Every change, by the person or by an administrator, is recorded through the even
 | `TransactionStore` | Store and load transactions; complete one exactly once |
 | `AttemptStore` | Keep the counts and lockouts for identifiers and addresses |
 | `VerificationTokenStore` | Store tokens; replace the earlier ones of an address or user; find a good one; use one up exactly once |
+| `EmailSignInStore` | Keep what was sent for a sign-in by email, in place of what was sent for it before; load it; use it up exactly once |
 | `Authenticator` | Perform one step, say whether the person has the means for it, and make a challenge when the step needs one. The built-in ones live in this context; other contexts and plugins add theirs |
 
-This context calls the `identity`, `credential`, `session`, `tenant` and `notification` contexts through their public interfaces.
+This context calls the `identity`, `credential`, `session`, `tenant` and `notification` contexts through their public interfaces. An authenticator may say that a tenant does not offer it; the email alternatives do so when the tenant has not turned them on.
 
 ## Storage
 
@@ -603,7 +677,19 @@ Primary key: `tenant_id`, `subject_kind`, `subject_key`.
 | `used_at` | `timestamptz` | Null until the token is used up |
 | `replaced_at` | `timestamptz` | Null until a newer token takes its place |
 
-All three are tenant tables under row-level security.
+### `authentication.email_sign_in`
+
+| Column | Type | Notes |
+|---|---|---|
+| `tenant_id`, `transaction_id` | `uuid` | Primary key: one row per sign-in, replaced when the person asks again. The transaction is not a database foreign key |
+| `method` | `text` | `email_code` or `email_link` |
+| `secret_hash` | `bytea` | SHA-256 of the code or of the link's token |
+| `identifier_key` | `bytea` | SHA-256 of the normalized address asked about, as the identifier step makes it; what attempts are counted by |
+| `user_id` | `uuid` | The person it signs in; null when the address belongs to nobody who may sign in |
+| `created_at`, `expires_at` | `timestamptz` | |
+| `used_at` | `timestamptz` | Null until it is used |
+
+All four are tenant tables under row-level security. The worker removes the rows of `email_sign_in` a day after they expired ([cleanup](../../operations/deployment.md#cleanup)).
 
 ## Not built yet
 
@@ -617,6 +703,8 @@ All three are tenant tables under row-level security.
 | Ending the session a browser held when it signs in again to prove the person again. Today the earlier session stays until it expires or the person ends it from their list of sessions | With the account console |
 | A reason in `authentication.failed` that tells a missing second factor, or a step-up that did not reach what was asked, from a rejected step | With the audit views of Phase 5 |
 | Further authenticators, risk signals, recognizing a user's own device | Phases 3 and 4 |
+| Signing in the browser that asked from a link opened on another device, such as a phone. Today a link signs in only the browser that asked for it, opened there | Not planned |
+| Marking an address verified when a code or a link sent to it is used, as password recovery does | Not planned |
 | Making a user choose a new password when the current one is marked as temporary. The mark is stored and returned by the credential context, but sign-in does not act on it yet | With the administration interface, Issue-29, which is what sets the mark |
 | Signing the person in at the end of registration or recovery. Today the person signs in with the password just chosen | With the account console, Phase 2 |
 | Changing or adding an email address on an existing account, with verification | Phase 2, account self-service |

@@ -18,6 +18,11 @@ All paths are relative to the tenant: `https://{host}/t/{slug}`. Requests and re
 | `POST /interaction/sign-in/steps/recovery_code` | Submit one of the person's recovery codes, while the sign-in waits for the `webauthn` or the `totp` step |
 | `POST /interaction/sign-in/steps/passkey/options` | Ask for the challenge of signing in with a passkey |
 | `POST /interaction/sign-in/steps/passkey` | Submit what the passkey answered, in place of the identifier and the password |
+| `GET /interaction/sign-in/alternatives` | The ways to sign in, other than the identifier and the password, that the tenant offers |
+| `POST /interaction/sign-in/steps/email_code/send` | Ask for a code by email, in place of the identifier and the password |
+| `POST /interaction/sign-in/steps/email_code` | Submit the code |
+| `POST /interaction/sign-in/steps/email_link/send` | Ask for a link by email, in place of the identifier and the password |
+| `POST /interaction/sign-in/steps/email_link` | Submit the token of the link |
 | `DELETE /interaction/sign-in` | Abandon the sign-in |
 | `GET /interaction/session` | Say who is signed in |
 
@@ -66,6 +71,8 @@ While the sign-in waits for `webauthn` or for `totp`, a recovery code can be sub
 | `webauthn` | `{ "credential_id": "…", "client_data": "…", "authenticator_data": "…", "signature": "…", "user_handle": "…" }`, each the bytes the authenticator gave, in base64url without padding. `user_handle` may be left out or `null` |
 | `recovery_code` | `{ "code": "7K2M-QX9D-4HVN-R8TA" }` |
 | `passkey` | The same as `webauthn`, and `user_handle` is needed: an answer without it is a rejection |
+| `email_code` | `{ "code": "123456" }` |
+| `email_link` | `{ "token": "…" }`, the 64 hexadecimal characters after `#token=` in the link |
 
 Submitting a step other than the one the sign-in is waiting for, or than one of its substitutes, is an error (`422`, `authentication.unexpected_step`), and changes nothing.
 
@@ -120,6 +127,40 @@ The pages pass them to `navigator.credentials.get`, either when the person press
 
 A wrong answer, an answer without a user handle or without user verification, a passkey of another tenant or of a user who may not sign in is a rejection: `200` with `"status": "rejected"`, and the sign-in goes on waiting for the identifier.
 
+### Signing in with a code or a link by email
+
+A tenant may let people sign in with [a code or a link sent to their address](../architecture/contexts/authentication.md#signing-in-with-a-code-or-a-link-by-email), each turned on by [its policy](../architecture/contexts/tenant.md#email-sign-in-policy). Like a passkey, they take the place of the identifier and the password, only while the sign-in is waiting for the `identifier` step.
+
+`GET /interaction/sign-in/alternatives` needs no sign-in and answers with the alternatives the tenant offers, in the order of the flow:
+
+```json
+{ "alternatives": ["passkey", "email_code", "email_link"] }
+```
+
+`email_code` and `email_link` are in the list only when the tenant turned them on; `passkey` always is; `external` is when the installation has identity providers, and [the list of providers](#signing-in-through-an-identity-provider) says which.
+
+**Asking.** `POST /interaction/sign-in/steps/email_code/send`, or `/email_link/send`, with the sign-in cookie, the CSRF token and the address:
+
+```json
+{ "email": "ana@example.com", "locale": "pt-BR" }
+```
+
+`locale` is optional: the language of the message when the person has none of their own. The answer is `202` with `{ "status": "accepted" }`, the same whether the address has an account, has one that may not sign in, or is not an address at all. Asking again replaces what was sent before.
+
+**A code.** The page asks for the code and sends it to `POST /interaction/sign-in/steps/email_code`. The answer has [the shape of every sign-in response](#what-a-sign-in-response-looks-like): `completed`, or `pending` with the next step when the person has a second factor, or `rejected`, which leaves the code good for another try.
+
+**A link.** The link opens the page `/t/{slug}/account/sign-in-link#token={token}`. The page sends the token to `POST /interaction/sign-in/steps/email_link`, with the sign-in cookie and the CSRF token of the browser it opened in, which it reads first with `GET /interaction/sign-in`. Only the browser that asked has the sign-in the link belongs to: in any other, `GET /interaction/sign-in` answers `404` and nothing is sent, or the token is rejected by the other sign-in.
+
+| Situation | Status | Code |
+|---|---|---|
+| The tenant has not turned the method on | `403` | `authentication.method_not_offered` |
+| The sign-in has gone past the `identifier` step | `422` | `authentication.unexpected_step` |
+| Too much was asked about this address or from this address, or attempts on it are being limited | `429`, with `Retry-After` | `authentication.too_many_attempts` |
+| The same code or link was accepted for this sign-in by another request at the same moment | `409` | `authentication.transaction_modified_concurrently` |
+| The body is not of the expected shape | `400`, `415` or `422` | — |
+
+A wrong code, a code that was used, expired or replaced, a code for an address that belongs to nobody, a token for a code or a code for a link, and a code or a link presented before anything was asked for are all a rejection: `200` with `"status": "rejected"`, and the sign-in goes on waiting for the identifier. Five rejections end the sign-in.
+
 ### Errors
 
 | Situation | Status | Code |
@@ -128,7 +169,8 @@ A wrong answer, an answer without a user handle or without user verification, a 
 | The sign-in has ended | `409` | `authentication.transaction_not_active` |
 | Another request advanced the sign-in at the same moment | `409` | `authentication.transaction_modified_concurrently` |
 | The wrong step was submitted | `422` | `authentication.unexpected_step` |
-| Attempts are being limited, on the password or the code | `429`, with `Retry-After` | `authentication.too_many_attempts` |
+| Attempts are being limited, on the password or a code | `429`, with `Retry-After` | `authentication.too_many_attempts` |
+| The tenant has not turned this way of signing in on | `403` | `authentication.method_not_offered` |
 | The server is too busy to check a password | `503`, with `Retry-After` when known | `credential.hashing_overloaded` |
 | The CSRF token is missing or wrong | `403` | `request.csrf_token_invalid` |
 | The request comes from another site | `403` | `request.cross_origin` |

@@ -21,6 +21,7 @@ All paths are relative to the tenant: `https://{host}/t/{slug}`.
 | `/account/consent` | Is asked whether an application may have the access it asks for | [`GET` and `POST /interaction/consent`](../api/interaction-api.md#consent) |
 | `/account/accept-invitation` | Arrives from the link of an invitation, and joins the organization | [`POST /interaction/invitations/describe` and `/accept`](../api/interaction-api.md#accepting-an-invitation), and `GET /interaction/session` |
 | `/account/providers/{alias}/callback` | Arrives back from an identity provider | The sign-in routes, to [finish](../api/interaction-api.md#signing-in-through-an-identity-provider) |
+| `/account/sign-in-link` | Arrives from the link of a message to sign in, in the browser that asked for it | `GET /interaction/sign-in` and [`POST /interaction/sign-in/steps/email_link`](../api/interaction-api.md#signing-in-with-a-code-or-a-link-by-email) |
 
 `/account` and `/account/security` send a person who is not signed in to `/account/sign-in`, and `/account/sign-in` sends a person who is already signed in to `/account`.
 
@@ -59,7 +60,24 @@ The page is a renderer for the answer of the interaction interface:
 - The `totp` form and the `webauthn` step also offer "use a recovery code instead". It changes the form, in place, to one field for a recovery code, with no numeric keyboard and no automatic capitals or corrections, submitted to the `recovery_code` substitute; a way back to the code of the application, or to the security key, is offered too. A rejected recovery code shows the generic "that did not work" message on the recovery code form.
 - A `rejected` answer shows the same form again with one message, "that did not work", whatever the reason. The page has no way of knowing the reason and does not try.
 - "Use another address" on the password step abandons the sign-in and starts a new one.
+- The `identifier` step also offers a code or a link by email when the tenant [offers them](../api/interaction-api.md#signing-in-with-a-code-or-a-link-by-email), as [the next section](#signing-in-with-a-code-or-a-link-by-email) says.
 - A sign-in that expired while the person was typing is started again, and the page says so.
+
+### Signing in with a code or a link by email
+
+When the tenant offers them, read from `GET /interaction/sign-in/alternatives` when the page opens, the `identifier` step shows two more buttons under the identifier field, "Email me a code" and "Email me a link". They are shown only while the sign-in is at its first step, like the identity providers. Each uses the address typed in the identifier field; with nothing typed, the page asks for the address first and sends nothing.
+
+- **A code.** The page asks for it, then shows one field for the code, with `autocomplete="one-time-code"` and a numeric keyboard on phones, and one message whatever the address: "if this address has an account here, we sent it a code". The person can ask for another code, which replaces the first, or use another address, which starts a new sign-in. A rejected code shows "that did not work" on the same form.
+- **A link.** The page asks for it and says, whatever the address: "if this address has an account here, we sent it a link; open it in this browser within ten minutes". It offers to send another link, or to use another address.
+
+The page sends the language it is being shown in as `locale`, so the message arrives in that language when the person has none of their own.
+
+`/account/sign-in-link`, the page the link opens:
+
+- reads the token from after `#` once and takes it out of the address at the same moment, so that it does not stay in the browser's history;
+- asks where the sign-in of this browser stands. When this browser has no sign-in in progress, it says the link works only in the browser where it was asked for, within ten minutes, and offers to sign in; it sends nothing;
+- otherwise presents the token, and goes on as a sign-in does: to `continue` or the account page when the person is signed in, and to `/account/sign-in` when a second factor is asked for next, which shows it;
+- says "that link did not work", with a way to sign in, when the token is rejected or the sign-in has moved on, in the same words whatever the reason.
 
 ### Signing in through an identity provider
 
@@ -135,6 +153,7 @@ The pages show their own words, chosen by the `code` of the [problem document](.
 | `authentication.too_many_attempts` | Too many attempts; when to try again, from `Retry-After` |
 | `authentication.registration_closed` | This organization does not accept registrations |
 | `authentication.verification_token_invalid` | The link was already used or has expired; how to ask for a new one |
+| `authentication.method_not_offered` | This way of signing in is not offered here |
 | `credential.password_too_short`, `credential.password_too_long`, `credential.password_is_own_name`, `credential.password_reused` | What is wrong with the password, next to the field |
 | `identity.display_name_invalid` | The name cannot be used, next to the field |
 | `credential.hashing_overloaded` | The server is busy; try again in a moment |
