@@ -2,7 +2,7 @@
 
 ## Overview
 
-The container images of Hodor and the local development stack that runs it. `ext-authz.Dockerfile` builds the image of `hodor-ext-authz` alone. `Dockerfile` builds one image holding the three binaries (`hodor-server`, `hodor-worker`, `hodor-cli`), the hosted pages and the administration console. `compose.yaml` runs that image beside PostgreSQL, a mail server that delivers nothing, VictoriaMetrics, VictoriaTraces, OpenBao and three development identity providers. `postgres-init.sql` creates the database roles the migrations expect.
+The container images of Hodor and the local development stack that runs it. `ext-authz.Dockerfile` builds the image of `hodor-ext-authz` alone. `cert-manager-issuer.Dockerfile` builds the image of `hodor-cert-manager-issuer` alone. `Dockerfile` builds one image holding the three binaries (`hodor-server`, `hodor-worker`, `hodor-cli`), the hosted pages and the administration console. `compose.yaml` runs that image beside PostgreSQL, a mail server that delivers nothing, VictoriaMetrics, VictoriaTraces, OpenBao and three development identity providers. `postgres-init.sql` creates the database roles the migrations expect.
 
 The header comment of `compose.yaml` states the scope: "Not for production: credentials are placeholders and nothing is persisted outside named volumes."
 
@@ -23,6 +23,10 @@ The final image runs as `nonroot:nonroot`, exposes `8080` and `9090`, sets `HODO
 ### `ext-authz.Dockerfile`
 
 The image of `hodor-ext-authz` alone (Issue-110, Decision 0058). Two stages: `build` (`rust:1.98-bookworm`, `cargo build --release --locked --package hodor-ext-authz --bin hodor-ext-authz`, with the same cache mounts and touch as `Dockerfile`) and the final `gcr.io/distroless/cc-debian12:nonroot` with the binary in `/usr/local/bin/`. It runs as `nonroot:nonroot`, exposes `9191` (gRPC) and `9090` (operations), sets `HODOR_EXT_AUTHZ_LISTEN_ADDR=0.0.0.0:9191`, `HODOR_OPS_ADDR=0.0.0.0:9090` and `HODOR_EXT_AUTHZ_CONFIG=/etc/hodor-ext-authz/config.json`, and has `ENTRYPOINT ["/usr/local/bin/hodor-ext-authz"]`. The release workflow builds, joins and signs it beside the image of Hodor, as `ghcr.io/<owner>/hodor-ext-authz`.
+
+### `cert-manager-issuer.Dockerfile`
+
+The image of `hodor-cert-manager-issuer` alone (Issue-118, Decision 0074). Two stages: `build` (`rust:1.98-bookworm`, `cargo build --release --locked --package hodor-cert-manager-issuer --bin hodor-cert-manager-issuer`, with the same cache mounts and touch as `Dockerfile`) and the final `gcr.io/distroless/cc-debian12:nonroot` with the binary in `/usr/local/bin/`. It runs as `nonroot:nonroot`, exposes `9090` (operations), sets `HODOR_OPS_ADDR=0.0.0.0:9090` and `HODOR_CERT_MANAGER_ISSUER_CONFIG=/etc/hodor-cert-manager-issuer/config.json`, and has `ENTRYPOINT ["/usr/local/bin/hodor-cert-manager-issuer"]`; `jwk --key <file>` prints a key's public part instead. The release workflow builds, joins and signs it beside the image of Hodor, as `ghcr.io/<owner>/hodor-cert-manager-issuer`.
 
 ### `compose.yaml` (project `name: hodor`)
 

@@ -1,7 +1,7 @@
-{{- if .Values.networkPolicy.enabled }}
-# Applies to every pod of the release: servers, workers, the migration job and hodor-ext-authz. Only the
-# servers have the port `http`, and only hodor-ext-authz the port `grpc`, so nothing can connect to a worker
-# or to the job. The operations port is not opened to
+{{- if and .Values.networkPolicy.enabled (include "hodor.installsHodor" .) }}
+# Applies to every pod of the release: servers, workers, the migration job, hodor-ext-authz and
+# hodor-cert-manager-issuer. Only the servers have the port `http`, and only hodor-ext-authz the port `grpc`,
+# so nothing can connect to a worker, to the job or to the issuer. The operations port is not opened to
 # other pods: the kubelet, which runs the health checks from the node, is not subject to this policy.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -49,8 +49,9 @@ spec:
     {{- with .Values.networkPolicy.egress.to }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
-    {{- if .Values.extAuthz.enabled }}
-    # hodor-ext-authz asks the servers.
+    {{- if or .Values.extAuthz.enabled .Values.certManagerIssuer.enabled }}
+    # hodor-ext-authz and hodor-cert-manager-issuer ask the servers. The Kubernetes interface the issuer
+    # watches is listed in `to`.
     - ports:
         - port: http
           protocol: TCP

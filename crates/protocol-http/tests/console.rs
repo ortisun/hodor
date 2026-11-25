@@ -292,6 +292,7 @@ fn world() -> World {
         key_rotation: hodor_keys::api::RotationPolicy::DEFAULT,
         // Trust domains are tested in `admin.rs`; here none is fetched.
         authority: None,
+        certificate_signing: None,
         trust_domains: hodor_keys::api::TrustDomainService::new(
             hodor_keys::api::TrustDomainPorts {
                 units_of_work: units(),

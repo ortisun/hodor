@@ -47,6 +47,11 @@ hodor-adapters-crypto = { workspace = true, features = ["testing"] }
 base64.workspace = true
 # Envoy's types and gRPC, to ask hodor-ext-authz against the real server.
 envoy-types.workspace = true
+# The issuer's client, driven against the real server, and the Kubernetes
+# client its test on a real cluster writes cert-manager's resources with.
+hodor-cert-manager-issuer.workspace = true
+k8s-openapi.workspace = true
+kube.workspace = true
 form_urlencoded.workspace = true
 hodor-ext-authz.workspace = true
 jsonwebtoken = { workspace = true, features = ["aws_lc_rs"] }

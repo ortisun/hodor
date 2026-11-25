@@ -1,3 +1,4 @@
+{{- if include "hodor.installsHodor" . }}
 Hodor {{ .Values.image.tag | default .Chart.AppVersion }} is installed as "{{ .Release.Name }}" in the namespace "{{ .Release.Namespace }}".
 
 People reach it at {{ include "hodor.publicUrl" . }}
@@ -18,3 +19,10 @@ Create the first tenant with the command-line tool, in a server pod:
   kubectl exec --namespace {{ .Release.Namespace }} deployment/{{ include "hodor.fullname" . }}-server -- /usr/local/bin/hodor-cli tenant create --slug acme --name "Acme"
 
 What to do next: docs/operations/install-on-kubernetes.md in the repository.
+
+{{- end }}
+{{- if .Values.certManagerIssuer.enabled }}
+
+hodor-cert-manager-issuer signs, for the tenant "{{ .Values.certManagerIssuer.tenant }}", the approved requests for an
+authority of the HodorIssuer and HodorClusterIssuer of this cluster: docs/operations/hodor-cert-manager-issuer.md.
+{{- end }}

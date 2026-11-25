@@ -56,6 +56,9 @@ pub struct ResourceCaller {
     pub scopes: Vec<String>,
     /// The resource server of the client's application, if it has one.
     pub resource_server: Option<ResourceServer>,
+    /// The token's `principal_kind`, `service_account` or `agent`, when
+    /// its client acts as a workload: `subject` then names that workload.
+    pub principal_kind: Option<String>,
 }
 
 impl ResourceCaller {
@@ -170,6 +173,7 @@ impl ResourceAccessService {
             subject: read.subject,
             scopes: read.scopes,
             resource_server,
+            principal_kind: read.principal_kind,
         }))
     }
 }

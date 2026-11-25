@@ -1,3 +1,4 @@
+{{- if include "hodor.installsHodor" . }}
 {{- if .Values.ingress.enabled }}
 {{- $host := include "hodor.publicUrl" . | trimPrefix "https://" | trimPrefix "http://" | splitList ":" | first }}
 apiVersion: networking.k8s.io/v1
@@ -31,4 +32,6 @@ spec:
                 name: {{ include "hodor.fullname" . }}
                 port:
                   name: http
+{{- end }}
+
 {{- end }}

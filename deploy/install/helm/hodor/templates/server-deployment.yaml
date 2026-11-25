@@ -1,3 +1,4 @@
+{{- if include "hodor.installsHodor" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -110,3 +111,5 @@ spec:
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+
+{{- end }}

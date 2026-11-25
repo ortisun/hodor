@@ -409,6 +409,7 @@ async fn world_with_keys(with_keys: bool) -> World {
         key_rotation: RotationPolicy::DEFAULT,
         trust_domains,
         authority,
+        certificate_signing: None,
         applications: oauth.0,
         claim_mappers: oauth.2.clone(),
         consents: oauth.1.clone(),
