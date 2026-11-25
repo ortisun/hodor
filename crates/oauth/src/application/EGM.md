@@ -22,6 +22,8 @@ tenant and records its events in it.
 | `AuthorizationCodeStore` | `insert` (`oauth.grant_not_found`), `find` (by hash), `redeem` (only if not redeemed; answers whether this call redeemed it) |
 | `ClientAssertionStore` | `remember(client, jti, expires_at)` (`oauth.client_not_found`; answers whether this call was the first) |
 | `ClaimMapperStore` | `lock_client` (locks the client's row in the unit of work; answers whether there is one), `insert` (`oauth.client_not_found`, `oauth.claim_mapper_name_taken`), `update` (version checked, `oauth.claim_mapper_modified_concurrently`), `delete` (answers whether there was one), `get(client, id)`, `list_for_client` (by claim name) |
+| `ClientRegistrationStore` | `get`, `lock` (the tenant's row locked in the unit of work), `insert` (`oauth.client_registration_modified_concurrently` for a second row, `oauth.client_registration_application_invalid` for an application not of the tenant), `update` (version checked) |
+| `InitialAccessTokenStore` | `insert`, `get(id)`, `lock_by_hash` (the token's row locked in the unit of work), `list` (newest first), `count_active(now)`, `record_use` (registrations and last use only), `revoke(id, at)` (answers whether this call revoked it) |
 | `PersonClaimSources` | `attributes(tenant, user)` (none for an unknown user; the person's standard claims among them), `organization_name(tenant, organization)` |
 
 ### Service (`service.rs`)
@@ -107,6 +109,31 @@ memberships, verifier, digest, random, clock })`:
   grant of a person, for every client, in the caller's unit of work, with
   `oauth.grant_revoked` for each; answers how many. Their families and
   access tokens stop being in force with them. SCIM deprovisioning uses it.
+
+### Client registration (`registration.rs`)
+
+`ClientRegistrationService::new(ClientRegistrationPorts { units_of_work,
+registrations, tokens, applications, digest, random, clock })`, specified
+in "Client registration" of the OAuth context and Decision 0075.
+`settings` answers `RegistrationInForce` (the defaults, off, when the
+tenant set none); `replace` checks `RegistrationSettings::checked`, then
+that the application is the tenant's and third party
+(`oauth.client_registration_application_invalid`), and stores and records
+`oauth.client_registration_changed` unless nothing changed.
+`issue_token` locks the settings' row, refuses while off
+(`oauth.client_registration_off`, `Conflict`), without the way of tokens
+(`oauth.initial_access_tokens_not_allowed`) and past
+`MAX_ACTIVE_INITIAL_ACCESS_TOKENS` (`oauth.too_many_initial_access_tokens`),
+and records `oauth.initial_access_token_issued`; `revoke_token` records
+`oauth.initial_access_token_revoked` once; `token` and `tokens` read.
+`admit(uow, presented, caller)` is the registration endpoint's (Issue-133):
+inside the caller's unit of work, off is `oauth.client_registration_off`
+(`NotFound`); a presented token is hashed only if it has the shape, found
+with `lock_by_hash`, spent with `InitialAccessToken::spend` and stored with
+`record_use`, recording `oauth.initial_access_token_used`; any refusal of
+a token is `oauth.initial_access_token_invalid`, and no token where open
+registration is not allowed `oauth.initial_access_token_required`. It
+answers `Admission { settings, allowed_by }`; nothing is committed.
 
 ### Claim mappers (`claim_mapper.rs`)
 

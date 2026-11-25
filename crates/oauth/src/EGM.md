@@ -13,7 +13,8 @@ follows is `docs/architecture/contexts/oauth.md`.
     `AuthorizationRequestStore`, `GrantStore`, `AuthorizationCodeStore`,
     `ClientAssertionStore`, `RefreshTokenStore`, `AccessTokenRecordStore`,
     `PersonStanding`, `PersonMemberships`, `ConsentStore`, `ClaimMapperStore`,
-    `PersonClaimSources`, and those of
+    `PersonClaimSources`, `ClientRegistrationStore`,
+    `InitialAccessTokenStore`, and those of
     back-channel logout: `SessionClients`, `LogoutDeliveryStore`,
     `DueLogoutDeliveries`, `TenantIssuer`; `PairwiseSecretStore`, and
     `HmacSha256`, implemented by the crypto adapter.
@@ -46,6 +47,20 @@ follows is `docs/architecture/contexts/oauth.md`.
     `ClaimMapperService`, `ClaimMapperPorts`, `ClaimMapping` (read by
     `TokenPorts::mapping` and `UserInfoPorts::mapping`), `MappedToken`,
     `MappedClaims`.
+  - Client registration: `ClientRegistrationService`,
+    `ClientRegistrationPorts`, `RegistrationInForce`, `Admission`,
+    `AllowedBy`; `RegistrationSettings`, `RegistrationPolicy`,
+    `RegistrationWay`, `RegistrationRequest`, `check_registration`,
+    `ClientRegistration`, `ClientRegistrationSnapshot`,
+    `is_policy_host`, `ways_from_stored`, `REGISTERABLE_METHODS`,
+    `MOST_REGISTERED_CLIENTS`, `DEFAULT_MOST_REGISTERED_CLIENTS`,
+    `MAX_POLICY_SCOPES`, `MAX_POLICY_HOSTS`; `InitialAccessToken`,
+    `InitialAccessTokenId`, `InitialAccessTokenHash`,
+    `InitialAccessTokenValue`, `InitialAccessTokenSnapshot`,
+    `InitialAccessTokenStatus`, `NewInitialAccessToken`,
+    `looks_like_initial_access_token`, `INITIAL_ACCESS_TOKEN_PREFIX`, and
+    the bounds of a token's lifetime, registrations and how many are
+    active.
   - Claim mappers: `ClaimMapper`, `ClaimMapperId`, `ClaimMapperSettings`,
     `ClaimMapperSnapshot`, `ClaimSource`, `ClaimTarget`, `PersonAttribute`,
     `OrganizationAttribute`, `PersonAttributes`, `PersonFacts`,

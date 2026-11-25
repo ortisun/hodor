@@ -8,6 +8,7 @@ mod decisions;
 mod memberships;
 mod mesh;
 mod policies;
+mod registration;
 mod roles;
 mod trust_domains;
 mod users;
@@ -299,6 +300,21 @@ enum Command {
         development_hosts: Vec<String>,
         #[command(subcommand)]
         command: applications::ClientCommand,
+    },
+
+    /// Turn client registration on or off in a tenant, and make, list and
+    /// revoke its initial access tokens.
+    ClientRegistration {
+        /// Connection URL of the application role.
+        #[arg(
+            long,
+            env = "HODOR_DATABASE_URL",
+            hide_env_values = true,
+            global = true
+        )]
+        database_url: Option<String>,
+        #[command(subcommand)]
+        command: registration::RegistrationCommand,
     },
 
     /// Manage a tenant's resource servers.
@@ -2306,6 +2322,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         } => {
             let database = connect(database_url).await?;
             print(applications::run_client(&database, command, &development_hosts).await)?;
+        }
+        Command::ClientRegistration {
+            database_url,
+            command,
+        } => {
+            let database = connect(database_url).await?;
+            print(registration::run(&database, command).await)?;
         }
         Command::ResourceServer {
             database_url,

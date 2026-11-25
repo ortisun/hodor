@@ -264,6 +264,9 @@ Administration and console handlers, shared by both routers
 | DELETE | `/clients/{client}/keys/{key}` | `remove_key` (the `kid`, percent-decoded) |
 | GET, POST | `/clients/{client}/claim-mappers` | `list_mappers`, `create_mapper` (`admin/claim_mappers.rs`) |
 | GET, PUT, DELETE | `/clients/{client}/claim-mappers/{mapper}` | `get_mapper`, `replace_mapper`, `delete_mapper` |
+| GET, PUT | `/client-registration` | `read_settings`, `replace_settings` (`admin/client_registration.rs`) |
+| GET, POST | `/client-registration/initial-access-tokens` | `list_tokens`, `create_token` |
+| GET, DELETE | `/client-registration/initial-access-tokens/{token}` | `get_token`, `revoke_token` |
 | GET, POST | `/resource-servers` | `list_resource_servers`, `create_resource_server` |
 | GET, PATCH | `/resource-servers/{resource_server}` | `get_resource_server`, `change_resource_server` |
 
@@ -294,6 +297,16 @@ The claim mapper routes live in `admin/claim_mappers.rs`, merged into
 `ClaimMapperService` in `AdminState.claim_mappers`. A `group_member`
 source's group is checked through `AdminState.groups`; another tenant's
 group, or none, is `422` `oauth.claim_mapper_group_unknown`.
+
+Client registration lives in `admin/client_registration.rs`, merged into
+`shared_routes`, under `applications:read` and `applications:write`, and
+needs `ClientRegistrationService` in `AdminState.client_registration`.
+`PUT /client-registration` takes `enabled` and, each at its default when
+left out, `application_id`, `ways`, `max_clients` and `policy` (read by
+`RegistrationPolicy::from_json`); a token is answered with its hint after
+an ellipsis and its status at `ClientRegistrationService::now`, and
+`initial_access_token` only in the `201` that made it; `lifetime_hours` is
+held far from overflow before the domain refuses it.
 
 Service accounts and agents live in `admin/workloads.rs`, merged into
 `shared_routes`, and need `WorkloadService` in `AdminState.workloads`. One

@@ -16,17 +16,17 @@ use hodor_adapters_postgres::{
     Database, PgAccessListStore, PgAccessTokenRecordStore, PgAccessTokenStore, PgApiKeyStore,
     PgApplicationStore, PgAttemptStore, PgAuditLog, PgAuthorityStore, PgAuthorizationCodeStore,
     PgAuthorizationRequestStore, PgBundleStore, PgClaimMapperStore, PgClientAssertionStore,
-    PgClientStore, PgConsentStore, PgDecisionLogStore, PgDeliveryStore, PgDeprovisioningPolicy,
-    PgEmailSignInStore, PgEndpointStore, PgEngineBindingStore, PgGrantStore, PgGroupPolicy,
-    PgGroupRepository, PgInstanceStatusStore, PgInstanceStore, PgIntermediateStore,
-    PgInvitationRepository, PgKeyStore, PgLinkStore, PgMessageQueue, PgNativeRoleStore,
-    PgOrganizationRepository, PgPairwiseSecretStore, PgPasswordStore, PgPendingAuthorizationStore,
-    PgPolicyVersionStore, PgProviderStore, PgProvisionedGroupRepository,
-    PgProvisionedUserRepository, PgPublicationStore, PgRecoveryCodeStore, PgRefreshTokenStore,
-    PgResourceServerStore, PgRoleAssignmentStore, PgSealingStateStore, PgSessionStore,
-    PgSimulationStore, PgTenantDirectory, PgTenantRepository, PgTotpStore, PgTransactionStore,
-    PgTrustDomainStore, PgUploadedDecisionStore, PgUserRepository, PgVerificationTokenStore,
-    PgWebAuthnStore, PgWorkloadRepository,
+    PgClientRegistrationStore, PgClientStore, PgConsentStore, PgDecisionLogStore, PgDeliveryStore,
+    PgDeprovisioningPolicy, PgEmailSignInStore, PgEndpointStore, PgEngineBindingStore,
+    PgGrantStore, PgGroupPolicy, PgGroupRepository, PgInitialAccessTokenStore,
+    PgInstanceStatusStore, PgInstanceStore, PgIntermediateStore, PgInvitationRepository,
+    PgKeyStore, PgLinkStore, PgMessageQueue, PgNativeRoleStore, PgOrganizationRepository,
+    PgPairwiseSecretStore, PgPasswordStore, PgPendingAuthorizationStore, PgPolicyVersionStore,
+    PgProviderStore, PgProvisionedGroupRepository, PgProvisionedUserRepository, PgPublicationStore,
+    PgRecoveryCodeStore, PgRefreshTokenStore, PgResourceServerStore, PgRoleAssignmentStore,
+    PgSealingStateStore, PgSessionStore, PgSimulationStore, PgTenantDirectory, PgTenantRepository,
+    PgTotpStore, PgTransactionStore, PgTrustDomainStore, PgUploadedDecisionStore, PgUserRepository,
+    PgVerificationTokenStore, PgWebAuthnStore, PgWorkloadRepository,
 };
 use hodor_audit::api::AuditService;
 use hodor_authentication::api::{
@@ -61,10 +61,10 @@ use hodor_keys::api::{
 use hodor_notification::api::Notifier;
 use hodor_oauth::api::{
     AccessTokenRegister, ApplicationPorts, ApplicationService, AuthorizationCodePorts,
-    AuthorizationCodeService, ClaimMapperPorts, ClaimMapperService, ClaimMapping, ConsentPorts,
-    ConsentService, LogoutPorts, LogoutService, PairwisePorts, PairwiseSubjects,
-    ResourceAccessPorts, ResourceAccessService, TokenPorts, TokenService, UserInfoPorts,
-    UserInfoService, WorkloadIdentity, WorkloadTokens,
+    AuthorizationCodeService, ClaimMapperPorts, ClaimMapperService, ClaimMapping,
+    ClientRegistrationPorts, ClientRegistrationService, ConsentPorts, ConsentService, LogoutPorts,
+    LogoutService, PairwisePorts, PairwiseSubjects, ResourceAccessPorts, ResourceAccessService,
+    TokenPorts, TokenService, UserInfoPorts, UserInfoService, WorkloadIdentity, WorkloadTokens,
 };
 use hodor_observability::{LogFormat, Telemetry};
 use hodor_protocol_http::{
@@ -1633,6 +1633,15 @@ fn administration(
             units_of_work: units(),
             clients: Arc::new(PgClientStore),
             mappers: Arc::new(PgClaimMapperStore),
+            clock: clock.clone(),
+        }),
+        client_registration: ClientRegistrationService::new(ClientRegistrationPorts {
+            units_of_work: units(),
+            registrations: Arc::new(PgClientRegistrationStore),
+            tokens: Arc::new(PgInitialAccessTokenStore),
+            applications: Arc::new(PgApplicationStore),
+            digest: digest.clone(),
+            random: random.clone(),
             clock: clock.clone(),
         }),
         tokens: AccessTokenService::new(

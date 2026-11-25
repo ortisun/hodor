@@ -106,8 +106,14 @@ fn applications(
     hodor_oauth::api::ApplicationService,
     hodor_oauth::api::ConsentService,
     hodor_oauth::api::ClaimMapperService,
+    hodor_oauth::api::ClientRegistrationService,
 ) {
     let stores = hodor_oauth::testing::InMemoryStores::default();
+    let client_registration = hodor_oauth::testing::client_registration_service(
+        Arc::new(units_of_work.clone()),
+        &stores,
+        clock.clone(),
+    );
     let claim_mappers =
         hodor_oauth::api::ClaimMapperService::new(hodor_oauth::api::ClaimMapperPorts {
             units_of_work: Arc::new(units_of_work.clone()),
@@ -134,7 +140,7 @@ fn applications(
         })
         .with_destinations(Arc::new(hodor_oauth::testing::FakeDestinations))
         .with_sector_documents(Arc::new(sector_documents()));
-    (applications, consents, claim_mappers)
+    (applications, consents, claim_mappers, client_registration)
 }
 
 /// The use cases of roles, bindings and policy versions on in-memory
@@ -412,6 +418,7 @@ async fn world_with_keys(with_keys: bool) -> World {
         certificate_signing: None,
         applications: oauth.0,
         claim_mappers: oauth.2.clone(),
+        client_registration: oauth.3.clone(),
         consents: oauth.1.clone(),
         tenants: tenants.clone(),
         factors: factor_service,
@@ -670,6 +677,7 @@ impl Operation {
                 .replace("{entry_id}", &UserId::generate().to_string())
                 .replace("{trust_domain_id}", &UserId::generate().to_string())
                 .replace("{intermediate_id}", &UserId::generate().to_string())
+                .replace("{token_id}", &UserId::generate().to_string())
         )
     }
 }
@@ -716,7 +724,7 @@ fn the_document_and_the_routes_list_the_same_operations_and_permissions() {
         })
         .collect();
     assert_eq!(documented, served);
-    assert_eq!(served.len(), 155);
+    assert_eq!(served.len(), 161);
 
     // Every operation says how it refuses.
     let document: serde_json::Value = serde_json::from_str(ADMIN_OPENAPI).expect("valid JSON");
@@ -6497,4 +6505,273 @@ async fn each_refusal_of_a_trust_domain_has_its_code() {
         )
         .await;
     assert_eq!(write.status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn an_administrator_turns_client_registration_on_and_hands_out_initial_access_tokens() {
+    let world = world().await;
+    // Off until turned on: the defaults, and no token can be made.
+    let read = world
+        .as_administrator(Method::GET, "/client-registration", None)
+        .await;
+    assert_eq!(read.status, StatusCode::OK, "{}", read.body);
+    assert_eq!(
+        read.body,
+        serde_json::json!({
+            "enabled": false,
+            "application_id": null,
+            "ways": ["initial_access_token"],
+            "max_clients": 100,
+            "policy": {
+                "grant_types": ["authorization_code"],
+                "response_types": ["code"],
+                "scopes": ["openid", "profile", "email"],
+                "token_endpoint_auth_methods": ["client_secret_basic", "private_key_jwt"],
+                "subject_types": ["public"],
+                "hosts": null,
+            },
+            "updated_at": null,
+        })
+    );
+    let tokens = "/client-registration/initial-access-tokens";
+    let refused = world
+        .as_administrator(
+            Method::POST,
+            tokens,
+            Some(serde_json::json!({ "name": "Too early" })),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
+    assert_eq!(refused.code(), "oauth.client_registration_off");
+
+    // A first-party application cannot hold registered clients.
+    let first_party = new_application(&world, "Console", true).await;
+    let refused = world
+        .as_administrator(
+            Method::PUT,
+            "/client-registration",
+            Some(serde_json::json!({ "enabled": true, "application_id": first_party })),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        refused.code(),
+        "oauth.client_registration_application_invalid"
+    );
+    for (body, code) in [
+        (
+            serde_json::json!({ "enabled": true }),
+            "oauth.client_registration_application_invalid",
+        ),
+        (
+            serde_json::json!({ "enabled": true, "application_id": "not-an-identifier" }),
+            "oauth.client_registration_application_invalid",
+        ),
+        (
+            serde_json::json!({ "enabled": false, "ways": ["anyone"] }),
+            "oauth.client_registration_ways_invalid",
+        ),
+        (
+            serde_json::json!({ "enabled": false, "max_clients": 1001 }),
+            "oauth.client_registration_most_clients_invalid",
+        ),
+        (
+            serde_json::json!({ "enabled": false, "policy": { "grant_types": ["client_credentials"] } }),
+            "oauth.client_registration_policy_invalid",
+        ),
+        (
+            serde_json::json!({ "enabled": false, "policy": { "token_endpoint_auth_methods": ["spiffe_jwt"] } }),
+            "oauth.client_registration_policy_invalid",
+        ),
+        (
+            serde_json::json!({ "enabled": false, "policy": { "hosts": ["Example.com:443"] } }),
+            "oauth.client_registration_policy_invalid",
+        ),
+        (
+            serde_json::json!({ "enabled": false, "policy": { "colors": ["red"] } }),
+            "oauth.client_registration_policy_invalid",
+        ),
+        (serde_json::json!({ "on": true }), "request.body_invalid"),
+    ] {
+        let refused = world
+            .as_administrator(Method::PUT, "/client-registration", Some(body.clone()))
+            .await;
+        assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert_eq!(refused.code(), code, "{body}");
+    }
+
+    let partners = new_application(&world, "Partners", false).await;
+    let on = world
+        .as_administrator(
+            Method::PUT,
+            "/client-registration",
+            Some(serde_json::json!({
+                "enabled": true,
+                "application_id": partners,
+                "ways": ["initial_access_token", "open"],
+                "max_clients": 250,
+                "policy": {
+                    "grant_types": ["authorization_code", "refresh_token"],
+                    "scopes": ["openid", "offline_access"],
+                    "hosts": ["partner.example.com"],
+                },
+            })),
+        )
+        .await;
+    assert_eq!(on.status, StatusCode::OK, "{}", on.body);
+    assert_eq!(on.body["enabled"], true);
+    assert_eq!(on.body["application_id"], partners.as_str());
+    assert_eq!(
+        on.body["ways"],
+        serde_json::json!(["initial_access_token", "open"])
+    );
+    assert_eq!(on.body["max_clients"], 250);
+    assert_eq!(
+        on.body["policy"]["grant_types"],
+        serde_json::json!(["authorization_code", "refresh_token"])
+    );
+    assert_eq!(
+        on.body["policy"]["response_types"],
+        serde_json::json!(["code"])
+    );
+    assert_eq!(
+        on.body["policy"]["hosts"],
+        serde_json::json!(["partner.example.com"])
+    );
+    assert!(on.body["updated_at"].is_string());
+    let read = world
+        .as_administrator(Method::GET, "/client-registration", None)
+        .await;
+    assert_eq!(read.body, on.body);
+
+    // A token is shown once, with its hint, and listed without it.
+    let made = world
+        .as_administrator(
+            Method::POST,
+            tokens,
+            Some(serde_json::json!({
+                "name": "Partner portal team",
+                "lifetime_hours": 24,
+                "max_registrations": 3,
+            })),
+        )
+        .await;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.body);
+    let value = made.body["initial_access_token"]
+        .as_str()
+        .expect("the token")
+        .to_owned();
+    assert!(
+        value.starts_with("hodor_iat_") && value.len() == 74,
+        "{value}"
+    );
+    assert_eq!(made.body["hint"], format!("…{}", &value[70..]));
+    assert_eq!(made.body["status"], "active");
+    assert_eq!(made.body["max_registrations"], 3);
+    assert_eq!(made.body["registrations"], 0);
+    assert_eq!(made.body["created_at"], "1970-01-01T00:00:00Z");
+    assert_eq!(made.body["expires_at"], "1970-01-02T00:00:00Z");
+    let id = made.body["id"].as_str().expect("id").to_owned();
+    let listed = world.as_administrator(Method::GET, tokens, None).await;
+    assert_eq!(listed.status, StatusCode::OK);
+    assert_eq!(listed.body["items"].as_array().map(Vec::len), Some(1));
+    assert!(
+        !listed.body.to_string().contains(&value),
+        "never shown again"
+    );
+    let one = world
+        .as_administrator(Method::GET, &format!("{tokens}/{id}"), None)
+        .await;
+    assert_eq!(one.status, StatusCode::OK);
+    assert_eq!(one.body, listed.body["items"][0]);
+
+    for (body, code) in [
+        (
+            serde_json::json!({ "name": "" }),
+            "oauth.initial_access_token_name_invalid",
+        ),
+        (
+            serde_json::json!({ "name": "Team", "lifetime_hours": 2161 }),
+            "oauth.initial_access_token_lifetime_invalid",
+        ),
+        (
+            serde_json::json!({ "name": "Team", "lifetime_hours": 0 }),
+            "oauth.initial_access_token_lifetime_invalid",
+        ),
+        (
+            serde_json::json!({ "name": "Team", "lifetime_hours": i64::MAX }),
+            "oauth.initial_access_token_lifetime_invalid",
+        ),
+        (
+            serde_json::json!({ "name": "Team", "max_registrations": 0 }),
+            "oauth.initial_access_token_registrations_invalid",
+        ),
+        (
+            serde_json::json!({ "name": "Team", "uses": 2 }),
+            "request.body_invalid",
+        ),
+    ] {
+        let refused = world
+            .as_administrator(Method::POST, tokens, Some(body.clone()))
+            .await;
+        assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert_eq!(refused.code(), code, "{body}");
+    }
+
+    // Revoked, it says so; revoking again changes nothing.
+    for _ in 0..2 {
+        let revoked = world
+            .as_administrator(Method::DELETE, &format!("{tokens}/{id}"), None)
+            .await;
+        assert_eq!(revoked.status, StatusCode::NO_CONTENT);
+    }
+    let one = world
+        .as_administrator(Method::GET, &format!("{tokens}/{id}"), None)
+        .await;
+    assert_eq!(one.body["status"], "revoked");
+    assert_eq!(one.body["revoked_at"], "1970-01-01T00:00:00Z");
+    let unknown = format!("{tokens}/{}", UserId::generate());
+    for method in [Method::GET, Method::DELETE] {
+        let missing = world.as_administrator(method.clone(), &unknown, None).await;
+        assert_eq!(missing.status, StatusCode::NOT_FOUND, "{method}");
+        assert_eq!(missing.code(), "oauth.initial_access_token_not_found");
+    }
+    let malformed = world
+        .as_administrator(Method::GET, &format!("{tokens}/not-an-identifier"), None)
+        .await;
+    assert_eq!(malformed.status, StatusCode::NOT_FOUND);
+
+    // Without the way of tokens, none is made.
+    let open_only = world
+        .as_administrator(
+            Method::PUT,
+            "/client-registration",
+            Some(serde_json::json!({
+                "enabled": true,
+                "application_id": partners,
+                "ways": ["open"],
+            })),
+        )
+        .await;
+    assert_eq!(open_only.status, StatusCode::OK);
+    let refused = world
+        .as_administrator(
+            Method::POST,
+            tokens,
+            Some(serde_json::json!({ "name": "Not now" })),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::CONFLICT);
+    assert_eq!(refused.code(), "oauth.initial_access_tokens_not_allowed");
+
+    // Globex is as it was.
+    let globex = world
+        .send(
+            Method::GET,
+            "/t/globex/api/v1/admin/client-registration",
+            Some(&format!("Bearer {}", world.administrator_token)),
+            None,
+        )
+        .await;
+    assert_eq!(globex.status, StatusCode::UNAUTHORIZED);
 }

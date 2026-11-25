@@ -6,6 +6,7 @@ use crate::domain::authorization::GrantId;
 use crate::domain::backchannel::LogoutDeliveryId;
 use crate::domain::claim_mapper::ClaimMapperId;
 use crate::domain::client::ClientId;
+use crate::domain::initial_access_token::InitialAccessTokenId;
 use crate::domain::refresh::RefreshFamilyId;
 use crate::domain::resource_server::ResourceServerId;
 use crate::domain::secret::ClientSecretId;
@@ -287,6 +288,45 @@ pub enum OauthEvent {
         /// `workload_deleted` when its workload was.
         reason: &'static str,
     },
+    /// The client registration settings of the tenant were replaced.
+    ClientRegistrationChanged {
+        /// Whether clients may register themselves.
+        enabled: bool,
+        /// The application registered clients belong to.
+        application_id: Option<ApplicationId>,
+        /// The ways a registration may be allowed.
+        ways: Vec<&'static str>,
+        /// How many clients the application of registered clients may hold.
+        max_clients: u32,
+        /// The registration policy, as the administration interface writes
+        /// it.
+        policy: serde_json::Value,
+    },
+    /// An initial access token was made. Never carries the token or its
+    /// hash.
+    InitialAccessTokenIssued {
+        /// The token.
+        token_id: InitialAccessTokenId,
+        /// Its name.
+        name: String,
+        /// How many registrations it allows.
+        max_registrations: u32,
+        /// When it stops working.
+        #[serde(with = "time::serde::rfc3339")]
+        expires_at: Timestamp,
+    },
+    /// An initial access token was revoked.
+    InitialAccessTokenRevoked {
+        /// The token.
+        token_id: InitialAccessTokenId,
+    },
+    /// An initial access token allowed a registration.
+    InitialAccessTokenUsed {
+        /// The token.
+        token_id: InitialAccessTokenId,
+        /// How many registrations it has allowed, this one included.
+        registrations: u32,
+    },
     /// A logout token was not delivered: every attempt failed, or its
     /// client could no longer be sent to. Never carries the address or the
     /// token.
@@ -335,6 +375,10 @@ impl DomainEvent for OauthEvent {
             Self::AccessTokenRevoked { .. } => "oauth.access_token_revoked",
             Self::TokenExchanged { .. } => "oauth.token_exchanged",
             Self::BackchannelLogoutSetAside { .. } => "oauth.backchannel_logout_set_aside",
+            Self::ClientRegistrationChanged { .. } => "oauth.client_registration_changed",
+            Self::InitialAccessTokenIssued { .. } => "oauth.initial_access_token_issued",
+            Self::InitialAccessTokenRevoked { .. } => "oauth.initial_access_token_revoked",
+            Self::InitialAccessTokenUsed { .. } => "oauth.initial_access_token_used",
         }
     }
 }

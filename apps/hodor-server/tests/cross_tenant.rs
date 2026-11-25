@@ -467,7 +467,8 @@ async fn an_administrators_token_is_refused_by_every_operation_of_another_tenant
                 .replace("{api_key_id}", &globex.ana.to_string())
                 .replace("{entry_id}", &globex.ana.to_string())
                 .replace("{trust_domain_id}", &globex.ana.to_string())
-                .replace("{intermediate_id}", &globex.ana.to_string());
+                .replace("{intermediate_id}", &globex.ana.to_string())
+                .replace("{token_id}", &globex.ana.to_string());
             let method: Method = method.to_uppercase().parse().expect("method");
             let (status, body) = world
                 .admin(
@@ -486,7 +487,7 @@ async fn an_administrators_token_is_refused_by_every_operation_of_another_tenant
             tried += 1;
         }
     }
-    assert_eq!(tried, 155, "every documented operation was tried");
+    assert_eq!(tried, 161, "every documented operation was tried");
 
     // The token is good where it belongs, and nothing happened in Globex:
     // it has its two users, both active.
@@ -6636,4 +6637,201 @@ async fn a_signed_userinfo_answer_of_one_tenant_verifies_with_no_key_of_another(
             "{name}"
         );
     }
+}
+
+/// What a tenant's discovery document says of registration, and what its
+/// registration address answers.
+async fn registration_reachable(world: &World, tenant: &Tenant) -> (serde_json::Value, StatusCode) {
+    let document: serde_json::Value = Client::new()
+        .get(format!(
+            "{}/t/{}/.well-known/openid-configuration",
+            world.server.base, tenant.slug
+        ))
+        .send()
+        .await
+        .expect("response")
+        .json()
+        .await
+        .expect("JSON");
+    let status = Client::new()
+        .post(format!(
+            "{}/t/{}/oauth2/register",
+            world.server.base, tenant.slug
+        ))
+        .json(&serde_json::json!({ "redirect_uris": ["https://partner.example.com/cb"] }))
+        .send()
+        .await
+        .expect("response")
+        .status();
+    (document["registration_endpoint"].clone(), status)
+}
+
+/// A third-party application of a tenant, for registered clients.
+async fn partners_application(world: &World, tenant: &Tenant) -> String {
+    let (status, body) = world
+        .admin(
+            tenant,
+            &tenant.administrator_token,
+            Method::POST,
+            "/applications",
+            Some(serde_json::json!({ "name": "Partners", "first_party": false })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    body["id"].as_str().expect("id").to_owned()
+}
+
+/// Turns registration on in a tenant, by its administrator, naming
+/// `application`.
+async fn registration_on(
+    world: &World,
+    tenant: &Tenant,
+    application: &str,
+) -> (StatusCode, serde_json::Value) {
+    world
+        .admin(
+            tenant,
+            &tenant.administrator_token,
+            Method::PUT,
+            "/client-registration",
+            Some(serde_json::json!({ "enabled": true, "application_id": application })),
+        )
+        .await
+}
+
+/// Asks for a registration in a tenant with `token`, as the registration
+/// endpoint will, and commits what it spent.
+async fn admit(
+    world: &World,
+    registration: &hodor_oauth::api::ClientRegistrationService,
+    tenant: &Tenant,
+    token: &str,
+) -> Result<hodor_oauth::api::Admission, hodor_kernel::DomainError> {
+    let units = world.database.app().clone();
+    let mut uow = hodor_kernel::UnitOfWorkFactory::begin(&units, &tenant.context)
+        .await
+        .expect("begin");
+    let answer = registration
+        .admit(uow.as_mut(), Some(token), Caller::system())
+        .await;
+    if answer.is_ok() {
+        uow.commit().await.expect("commit");
+    }
+    answer
+}
+
+#[tokio::test]
+async fn one_tenants_registration_settings_and_initial_access_tokens_mean_nothing_in_another() {
+    use hodor_adapters_postgres::{
+        PgApplicationStore, PgClientRegistrationStore, PgInitialAccessTokenStore,
+    };
+    use hodor_oauth::api::{ClientRegistrationPorts, ClientRegistrationService};
+
+    let world = world().await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    // Off in both: discovery names no endpoint, and the address is none.
+    for tenant in [acme, globex] {
+        let (endpoint, status) = registration_reachable(&world, tenant).await;
+        assert_eq!(endpoint, serde_json::Value::Null, "{}", tenant.slug);
+        assert_eq!(status, StatusCode::NOT_FOUND, "{}", tenant.slug);
+    }
+
+    let acme_partners = partners_application(&world, acme).await;
+    let globex_partners = partners_application(&world, globex).await;
+    // Globex cannot name Acme's application.
+    let (status, body) = registration_on(&world, globex, &acme_partners).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(
+        body["code"],
+        "oauth.client_registration_application_invalid"
+    );
+
+    let (status, body) = registration_on(&world, acme, &acme_partners).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, made) = world
+        .admin(
+            acme,
+            &acme.administrator_token,
+            Method::POST,
+            "/client-registration/initial-access-tokens",
+            Some(serde_json::json!({ "name": "Partner portal team" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{made}");
+    let token = made["initial_access_token"]
+        .as_str()
+        .expect("token")
+        .to_owned();
+    let token_id = made["id"].as_str().expect("id").to_owned();
+
+    // Turning registration on in Acme leaves Globex off, and Globex's
+    // administrator sees and reaches none of Acme's tokens.
+    let (_, settings) = world
+        .admin(
+            globex,
+            &globex.administrator_token,
+            Method::GET,
+            "/client-registration",
+            None,
+        )
+        .await;
+    assert_eq!(settings["enabled"], false);
+    let (_, listed) = world
+        .admin(
+            globex,
+            &globex.administrator_token,
+            Method::GET,
+            "/client-registration/initial-access-tokens",
+            None,
+        )
+        .await;
+    assert_eq!(listed["items"], serde_json::json!([]));
+    for method in [Method::GET, Method::DELETE] {
+        let (status, body) = world
+            .admin(
+                globex,
+                &globex.administrator_token,
+                method.clone(),
+                &format!("/client-registration/initial-access-tokens/{token_id}"),
+                None,
+            )
+            .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{method}");
+        assert_eq!(body["code"], "oauth.initial_access_token_not_found");
+    }
+    let (endpoint, _) = registration_reachable(&world, globex).await;
+    assert_eq!(endpoint, serde_json::Value::Null);
+
+    // Presented to Globex, once registration is on there too, Acme's token
+    // is unknown, and not spent: it still allows its registration where it
+    // belongs.
+    let (status, _) = registration_on(&world, globex, &globex_partners).await;
+    assert_eq!(status, StatusCode::OK);
+    let registration = ClientRegistrationService::new(ClientRegistrationPorts {
+        units_of_work: Arc::new(world.database.app().clone()),
+        registrations: Arc::new(PgClientRegistrationStore),
+        tokens: Arc::new(PgInitialAccessTokenStore),
+        applications: Arc::new(PgApplicationStore),
+        digest: Arc::new(Sha256Digest),
+        random: Arc::new(OsRandom),
+        clock: Arc::new(SystemClock),
+    });
+    let error = admit(&world, &registration, globex, &token)
+        .await
+        .expect_err("unknown in Globex");
+    assert_eq!(error.code(), "oauth.initial_access_token_invalid");
+    admit(&world, &registration, acme, &token)
+        .await
+        .expect("allowed where it belongs");
+    let (_, one) = world
+        .admin(
+            acme,
+            &acme.administrator_token,
+            Method::GET,
+            &format!("/client-registration/initial-access-tokens/{token_id}"),
+            None,
+        )
+        .await;
+    assert_eq!(one["registrations"], 1);
+    assert_eq!(one["status"], "used_up");
 }
