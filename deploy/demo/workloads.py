@@ -312,9 +312,14 @@ def a_webhook_endpoint(admin, tenant_id, address):
     check(body.get("type") == "session.started" and body.get("tenant_id") == tenant_id
           and body.get("id") == delivery["headers"]["webhook-id"] and "session_id" in body.get("data", {}),
           "the body is the event of the sign-in, in this tenant, with its session")
-    listed = admin.call("GET", f"/webhook-deliveries?endpoint_id={endpoint}")["items"]
-    check([(item["status"], item["event_id"]) for item in listed] == [("delivered", body["id"])],
-          "the administration interface says it was delivered")
+    # The endpoint answers before the worker records the delivery: wait for
+    # the record rather than read it at once.
+    def recorded():
+        listed = admin.call("GET", f"/webhook-deliveries?endpoint_id={endpoint}")["items"]
+        pairs = [(item["status"], item["event_id"]) for item in listed]
+        return pairs if pairs == [("delivered", body["id"])] else None
+    until("the delivery to be recorded as delivered", recorded)
+    check(True, "the administration interface says it was delivered")
     return endpoint, secret, path
 
 
