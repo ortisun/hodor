@@ -8,6 +8,7 @@ The whole design, with policies, several engines and Open Policy Agent, is in [a
 - the engine contract of [Decision 0009](../../decisions/0009-authorization-engine-contract.md), from Milestone 5 (Issue-72): the request, the decision, engines and the binding that says which engine answers for a resource server;
 - native role-based access control, from Milestone 5 (Issue-73): permissions and roles a tenant defines for its resource servers, who holds them, and the native engine that answers from them. The fixed roles above are its built-in roles for Hodor's administration;
 - per-resource access control lists, from Milestone 9 (Issue-102): entries that let one user, client or group do what one permission says to one resource, read by the native engine beside the roles.
+- Linkerd policies written from the roles, from Milestone 11 (Issue-111): the identities of the service accounts that hold a role on an application's resource server, written for Linkerd and applied by the operator.
 
 ## Permissions
 
@@ -494,6 +495,7 @@ The native engine keeps, per tenant and principal, what the principal's assignme
 | Assign | Gives a role to a principal, for the tenant or an application, with an optional start and end |
 | Revoke | Takes it away |
 | Assignments of a principal | Lists a principal's assignments |
+| Assignments on a resource server | Of the assignments of some principals, those in force now that give a role on a resource server and apply to requests made for one application, as [Linkerd policies](#linkerd-policies-from-roles) count them |
 
 They are not reachable through the administration interface, the command-line tool or the console yet; that is Issue-80.
 
@@ -617,6 +619,108 @@ What an administrator does through [the administration interface](../../api/admi
 | `hodor-cli authorization access-entry grant --tenant <slug> --namespace <audience> --permission <resource:action> --resource <id> (--user <id> \| --client <id> \| --group <id>)` | Grants an entry, or finds the one that exists, and prints `granted <entry id>` |
 | `hodor-cli authorization access-entry list --tenant <slug> --namespace <audience> [--resource-kind <kind>] [--resource <id>] [--user <id> \| --client <id> \| --group <id>]` | Prints `<entry id> <permission> <resource> <principal kind>:<principal id>` for every entry that matches, oldest first |
 | `hodor-cli authorization access-entry remove --tenant <slug> --id <entry id>` | Removes an entry, and prints `removed`, or `no such entry` |
+
+## Linkerd policies from roles
+
+Linkerd checks no token and asks no outside decision. What it offers is its own policy: a `Server` names a port of some pods, an `AuthorizationPolicy` says who may reach it, and a `MeshTLSAuthentication` lists the identities of the workloads it lets in. [Decision 0029](../../decisions/0029-hodor-in-a-service-mesh.md#linkerd-gets-three-paths-since-it-can-ask-no-outside-decision) gives Linkerd a coarse path between workloads: policies written from Hodor's roles. `hodor-cli mesh linkerd-policy` writes them for one application (Issue-111). How the command chose what it writes is [Decision 0059](../../decisions/0059-linkerd-policies-from-roles.md).
+
+### Who is let in
+
+The command lets in the Linkerd identity of every service account that holds a role on the application's resource server. For each client of the tenant bound to a Linkerd identity ([an identity forwarded by a proxy](oauth.md#an-identity-forwarded-by-a-proxy)), the identity is written when all of these hold:
+
+- the client is enabled, its application is enabled, and the client acts as a principal;
+- the principal is a service account of the tenant, active: not disabled, not deleted;
+- the service account, or a group it is in, directly or through other groups, has an assignment in force at the moment of the run whose role is of the resource server's namespace, or includes such a role as far as inclusion goes;
+- that assignment is for the whole tenant, for this application, or for an organization the service account is a member of.
+
+Several clients may be bound to the same Linkerd identity, one in each application, when they all act as the same service account, as `hodor-ext-authz` needs ([Decision 0058](../../decisions/0058-hodor-ext-authz.md#an-identity-binds-the-clients-of-one-service-account)). The identity is then written once, when any one of those clients meets these conditions: disabling one of them, or its application, leaves the identity let in as long as another is enabled, since the workload still gets tokens through it. A client of another service account cannot be bound to an identity a client already holds (`oauth.client_linkerd_identity_taken`), so an identity names one service account of the tenant, and a role held by one service account never lets in another's workload.
+
+What the role allows is not looked at: any role on the resource server lets the workload reach it, and what it may do there is still decided by the application, which can ask [the Authorization API](#the-authorization-api) with the caller's identity. A condition on a permission is not run. An assignment to the client itself is not read, since a client bound to a Linkerd identity acts as its service account. Everything is read in the named tenant alone, under row-level security, so a service account of another tenant never appears, even when it is bound to the same Linkerd identity.
+
+The roles are read whichever engine the resource server is bound to. For a resource server bound to Open Policy Agent, they are what the policy reads, if it reads them at all.
+
+### What is written
+
+One file, holding two resources of `policy.linkerd.io/v1alpha1`, both named `hodor-<application identifier>` unless `--name` gives another name, in the Kubernetes namespace `--namespace` names, and labelled `app.kubernetes.io/managed-by: hodor-cli` and `app.kubernetes.io/part-of: hodor`:
+
+- a `MeshTLSAuthentication` whose `identities` are the Linkerd identities let in, exactly, in order, each once;
+- an `AuthorizationPolicy` whose `targetRef` is the `Server` named by `--server`, and whose `requiredAuthenticationRefs` names that `MeshTLSAuthentication`.
+
+The `Server` is the operator's: it says which pods and which port the application listens on, which Hodor does not know.
+
+The file is YAML whose two documents are written in JSON, which is YAML too, and which every YAML reader reads the same way. It starts with a comment naming the application, and holds nothing that changes from one run to the next unless the identities, the names or the target change, so a file under version control changes only when the policy does.
+
+```yaml
+# Written by hodor-cli mesh linkerd-policy for the application 0193f1c4-0000-7000-8000-00000000000a of the tenant acme.
+# Apply it as it is and do not edit it: the next run reads it back to say what changed.
+---
+{
+  "apiVersion": "policy.linkerd.io/v1alpha1",
+  "kind": "MeshTLSAuthentication",
+  "metadata": {
+    "labels": {
+      "app.kubernetes.io/managed-by": "hodor-cli",
+      "app.kubernetes.io/part-of": "hodor"
+    },
+    "name": "hodor-0193f1c4-0000-7000-8000-00000000000a",
+    "namespace": "billing"
+  },
+  "spec": {
+    "identities": [
+      "invoicer.billing.serviceaccount.identity.linkerd.cluster.local"
+    ]
+  }
+}
+---
+{
+  "apiVersion": "policy.linkerd.io/v1alpha1",
+  "kind": "AuthorizationPolicy",
+  ...
+}
+```
+
+**When no service account holds a role**, the `MeshTLSAuthentication` names one identity, `nobody.hodor.serviceaccount.identity.linkerd.invalid`, which no workload can have: `invalid` is a name reserved by RFC 6761 that no trust domain uses. Linkerd refuses an empty list, and leaving the two resources out would leave in the cluster the ones an earlier run wrote, with every identity they let in.
+
+### Written, never applied
+
+The command reads the database and writes a file. It talks to no cluster and needs no right in any. The operator applies the file, with `kubectl apply` or through the tool that deploys their cluster, as Decision 0029 chose: a controller that applies policies as roles change would need rights over every cluster's policies, and is not built.
+
+So **the policy trails the roles until the command is run again and its file applied**. A role given is not let in by Linkerd before that; a role taken away still lets the workload through Linkerd until then, though the application, if it asks the Authorization API, refuses it at once. An operator who runs the command on a schedule, or after each change of roles, keeps the trail short.
+
+### What changed since the last run
+
+The last run is remembered by its own file. Before writing, the command reads the file `--output` names, if there is one, and compares what it holds with what it is about to write. It prints, one per line:
+
+| Line | When |
+|---|---|
+| `added <identity>` | An identity is let in that the last run did not let in. On a first run, every identity |
+| `removed <identity>` | An identity the last run let in is not let in any more |
+| `changed namespace <before> <after>`, `changed name <before> <after>`, `changed server <before> <after>` | The resources move or target another `Server`. Those the last run wrote stay in the cluster until the operator deletes them |
+| `no service account holds a role on <audience>` | Nobody is let in |
+| `wrote <file>` | Last, when the file was new or changed |
+| `unchanged <file>` | Last, when the file already held exactly this; it is not written again |
+
+Identities come in order, added before removed. The identity that lets nobody in is never reported as added or removed.
+
+The file is replaced whole, through a file beside it renamed over it, so a run that fails leaves the last one as it was. A file that does not read as one this command wrote, or that was written for another application, is not replaced: it may be something else, and the command refuses rather than overwrite it.
+
+### The command
+
+| Command | Does |
+|---|---|
+| `hodor-cli mesh linkerd-policy --tenant <slug> --application <application identifier> --namespace <Kubernetes namespace> --server <Server name> --output <file> [--name <name>]` | Writes the two resources for the application to the file, and prints what changed since the file was last written |
+
+It takes `--database-url` or `HODOR_DATABASE_URL`, the application role, as the other commands do. It refuses, with a status that is not zero and nothing written:
+
+| Code | When |
+|---|---|
+| `tenant.not_found` | No tenant has the slug |
+| `oauth.application_not_found` | The tenant has no such application |
+| `oauth.resource_server_not_found` | The application has no resource server: there is no role on it to hold |
+| `authorization.linkerd_name_invalid` | The namespace is not a Kubernetes label: 1 to 63 lower-case letters, digits and `-`, starting and ending with a letter or a digit. Or the name or the `Server` is not a Kubernetes name: such labels separated by `.`, 253 characters at most. A name made from the application's identifier always is |
+| `authorization.linkerd_policy_unreadable` | The file exists but cannot be read, or is not a policy this command wrote |
+| `authorization.linkerd_policy_of_another_application` | The file was written for another application |
+| `authorization.linkerd_policy_unwritable` | The file cannot be written |
 
 ## Open Policy Agent as an engine
 
@@ -986,3 +1090,4 @@ All three are tenant tables under row-level security. The files and the reports 
 | Relationships between resources (relationship-based access control) | Later phase ([Decision 0023](../../decisions/0023-what-0.2.0-holds.md)) |
 | Entries of an access control list that deny, and entries with a scope, a start, an end or a condition | When asked for ([Decision 0035](../../decisions/0035-access-control-lists.md)) |
 | Managing access control lists from the console | With the console pages of authorization |
+| A controller that applies Linkerd policies as roles change, and Linkerd policies that target an `HTTPRoute` instead of a whole `Server` | Not in 0.4.0 ([Decision 0029](../../decisions/0029-hodor-in-a-service-mesh.md#alternatives-considered)) |
