@@ -381,6 +381,11 @@ fn family_of(grant: &Grant, client: ClientId) -> (RefreshFamily, RefreshTokenHas
         &super::DistinctRandom,
         &FakeDigest,
     );
+    // A public client's family, bound to its certificate: stored and read
+    // back with it.
+    let family = family.bound_to(Some(
+        crate::domain::binding::CertificateThumbprint::from_bytes([6; 32]),
+    ));
     let hash = family.current_hash;
     (family, hash)
 }

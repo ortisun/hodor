@@ -131,6 +131,18 @@ certificates; without them every JWT-SVID, and every client of
 - `token(tenant, Issuer { issuer, token_endpoint }, request,
   correlation_id)`: the outer `Result` is storage, sealing or signing; the
   inner one a `TokenError` to answer with.
+  - Certificate-bound tokens: after authentication, the thumbprint of the
+    certificate `request.forwarded` holds (`presented_thumbprint`); a
+    client with `certificate_bound_access_tokens` and none is
+    `invalid_request` before any grant is looked at. Every access token
+    of such a client is signed with `cnf` (`sign` and `sign_living` take
+    the thumbprint, inserted before the mapped claims). A public client's
+    family starts bound to it (`RefreshFamily::bound_to`), and `decide`
+    refuses a refresh whose certificate the family does not accept
+    (`accepts_certificate`) with `invalid_grant` before deciding, so it
+    revokes nothing. Token exchange refuses a subject or actor token whose
+    `cnf` the request's certificate does not match
+    (`ReadAccessToken::check_certificate`), with `invalid_request`.
   - Authentication: the client named by `client_id`, the `Basic`
     credentials or, without either, the assertion's `iss`; it and its
     application must be enabled; the request's method must be the one it
@@ -255,8 +267,9 @@ in the caller's unit of work, with one `oauth.access_token_revoked` each.
   it is the newest of a standing family, its grant is active and the
   person's standing holds; an access token when `read_access_token` accepts
   it, it is this client's or its audience holds the resource server of the
-  client's application, and the register says it is in force. Otherwise
-  `inactive()`. Nothing is changed.
+  client's application, and the register says it is in force; a bound one
+  is answered with its `cnf`, never compared with the certificate of the
+  introspection request. Otherwise `inactive()`. Nothing is changed.
 
 ### Consent (`consent.rs`)
 
@@ -295,12 +308,15 @@ whom a request waited for and their answer.
 ### UserInfo (`userinfo.rs`)
 
 `UserInfoService::new(UserInfoPorts { keys, verifier, identity, register,
-memberships, clock })`:
+memberships, mapping, digest, clock })`:
 
-- `claims(tenant, issuer, token)`: the outer `Result` is storage; the
-  inner one a `BearerRefusal` (`Missing`, `InvalidToken(reason)`,
-  `InsufficientScope`). Checks the token with `check_access_token` against
-  the tenant's published `ES256` keys, then asks the register: a token not
+- `claims(tenant, issuer, token, forwarded)`: the outer `Result` is
+  storage; the inner one a `BearerRefusal` (`Missing`,
+  `InvalidToken(reason)`, `InsufficientScope`). Checks the token with
+  `check_access_token` against the tenant's published `ES256` keys and the
+  thumbprint of the certificate in `forwarded` (`presented_thumbprint`,
+  with `digest`), so that a bound token without its certificate is
+  `InvalidToken`, then asks the register: a token not
   in force is `InvalidToken`. Then it reads the person through
   `IdentityService::get`: an unknown user, or one who may not sign in (not
   `Active`, or a service account or an agent), is `InvalidToken`. The
@@ -314,17 +330,20 @@ memberships, clock })`:
 ### Callers of Hodor's own resource servers (`resource_access.rs`)
 
 `ResourceAccessService::new(ResourceAccessPorts { keys, verifier, register,
-applications, clock })`:
+applications, digest, clock })`:
 
-- `caller(tenant, issuer, audience, token)`: the outer `Result` is storage;
-  the inner one a `BearerRefusal`. Reads the token with `read_access_token`
-  against the tenant's published keys, then requires `audience` among its
+- `caller(tenant, issuer, audience, token, forwarded)`: the outer `Result`
+  is storage; the inner one a `BearerRefusal`. Reads the token with
+  `read_access_token` against the tenant's published keys, then requires
+  the certificate a bound token names in `forwarded`
+  (`ReadAccessToken::check_certificate`), `audience` among its
   audiences, the register's `in_force`, an enabled client of the tenant and
   an enabled application, the last two read with their resource server by
   `client_with_application`; each failure is `InvalidToken`. Answers a
   `ResourceCaller` (client, application, subject, scopes, the
   application's resource server). Checks no scope: `has_scope` is for the
-  resource server. The Authorization API is its caller.
+  resource server. The Authorization API and the SCIM server are its
+  callers.
 
 ### Logout (`logout.rs`)
 

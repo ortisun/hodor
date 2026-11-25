@@ -468,6 +468,11 @@ const NOT_SEALED_SECRETS: &[(&str, &str, &str)] = &[
         "token_hash",
         "the SHA-256 of an invitation's secret, never the secret",
     ),
+    (
+        "oauth.refresh_token_family",
+        "certificate_thumbprint",
+        "the SHA-256 of the certificate a family is bound to, which is public",
+    ),
 ];
 
 #[tokio::test]

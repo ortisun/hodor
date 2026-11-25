@@ -424,6 +424,8 @@ struct ClientBody {
     /// The Linkerd identity of a client using `linkerd_identity`, or of
     /// one using `tls_client_auth`, or `null`.
     linkerd_identity: Option<String>,
+    /// Whether its access tokens are bound to its certificate (RFC 8705).
+    tls_client_certificate_bound_access_tokens: bool,
     token_policy: TokenPolicyBody,
     /// What identifies each secret and when it expires: never the secret
     /// or its hash.
@@ -475,6 +477,7 @@ impl From<&Client> for ClientBody {
                 .linkerd_identity
                 .as_ref()
                 .map(|identity| identity.as_str().to_owned()),
+            tls_client_certificate_bound_access_tokens: settings.certificate_bound_access_tokens,
             token_policy: TokenPolicyBody {
                 access_token_seconds: policy.access_token.whole_seconds(),
                 id_token_seconds: policy.id_token.whole_seconds(),
@@ -542,6 +545,7 @@ struct NewClientBody {
     exchange_rules: Option<Vec<ExchangeRuleBody>>,
     spiffe_id: Option<String>,
     linkerd_identity: Option<String>,
+    tls_client_certificate_bound_access_tokens: Option<bool>,
 }
 
 /// One exchange rule, as the interface writes it.
@@ -599,6 +603,7 @@ struct ClientChangesBody {
     /// identity: replaced.
     #[serde(default, deserialize_with = "present")]
     linkerd_identity: Option<Option<String>>,
+    tls_client_certificate_bound_access_tokens: Option<bool>,
 }
 
 /// The identities a change leaves a client bound to. A field left out keeps
@@ -798,6 +803,9 @@ async fn create_client(
                 settings.linkerd_identity =
                     Some(LinkerdIdentity::parse(linkerd_identity).map_err(failed)?);
             }
+            settings.certificate_bound_access_tokens = new
+                .tls_client_certificate_bound_access_tokens
+                .unwrap_or_default();
             if let Some(principal) = &new.principal {
                 settings.principal = Some(
                     principal_of(
@@ -948,6 +956,9 @@ async fn change_client(
                     .map_or(now.exchange_rules, exchange_rules),
                 spiffe_id,
                 linkerd_identity,
+                certificate_bound_access_tokens: changes
+                    .tls_client_certificate_bound_access_tokens
+                    .unwrap_or(now.certificate_bound_access_tokens),
             };
             let client = state
                 .applications

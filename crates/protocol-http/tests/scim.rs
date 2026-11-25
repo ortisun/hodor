@@ -320,6 +320,7 @@ async fn world() -> World {
             Arc::new(hodor_oauth::testing::StandingOf::default()),
         ),
         applications: applications.clone(),
+        digest: Arc::new(FakeDigest),
         clock: clock.clone(),
     });
     let users = InMemoryUsers::default();

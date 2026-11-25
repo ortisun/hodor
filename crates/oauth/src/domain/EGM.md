@@ -28,14 +28,23 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   `remove_key`, `set_status`, `accepts_redirect_uri` (exact equality) and
   `accepts_secret` (hash compared in constant time with every secret that
   has not expired). Changes return their `OauthEvent`s.
+- `binding.rs`: certificate-bound access tokens (RFC 8705).
+  `CertificateThumbprint` (`of_certificate` through a `Digest`,
+  `from_hex` for Envoy's `Hash`, `from_x5t`, `as_x5t`, `confirmation`, the
+  `cnf` claim), `CONFIRMATION_CLAIM`, `CERTIFICATE_THUMBPRINT_MEMBER`, and
+  `check_confirmation(cnf, presented)`: a token bound to nothing passes, a
+  bound one only with the same thumbprint, and a `cnf` that does not read
+  never passes.
 - `forwarded.rs`: `LinkerdIdentity` (`parse`, `as_str`, `trust_domain`,
   what follows the control plane's namespace;
   `oauth.client_linkerd_identity_invalid` otherwise); `WorkloadIdentity`
   (`Spiffe` with `spiffe.rs`'s `SpiffeId`, or `Linkerd`), what
   `ClientSettings::workload_identity` answers; `ForwardedIdentity`
-  (`Certificate { certificate, chain }`, `Names { uris, dns_names }`,
-  `Linkerd`); `CertificateNames`; `names_match(method, identity, names)`;
-  `advertise_forwarded_methods(document, methods)`; the bounds
+  (`Certificate { certificate, chain }`, `Names { uris, dns_names, hash }`,
+  `Linkerd`) and its `thumbprint(digest)`, with `presented_thumbprint`;
+  `CertificateNames`; `names_match(method, identity, names)`;
+  `advertise_forwarded_methods(document, methods)` and
+  `advertise_certificate_bound_tokens(document)`; the bounds
   `MAX_FORWARDED_CERTIFICATE_BYTES`, `MAX_FORWARDED_CHAIN`,
   `MAX_LINKERD_IDENTITY_LENGTH`.
 - `secret.rs`: `ClientSecretId`; `ClientSecretValue` (`hodor_cs_` and 64
@@ -87,7 +96,10 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   `AuthorizationCode` (`issue`, `check_redemption`); `CodeHash`
   (`of_presented` answers `None` for a value without the shape of a code);
   `s256_challenge`. Its cases are in `authorization/tests.rs`.
-- `token.rs`: the token endpoint. `TokenRequest::parse(basic, pairs)`
+- `token.rs`: the token endpoint. `TokenRequest::parse(basic, pairs)`,
+  then `with_forwarded(identity)`, which keeps what a trusted proxy
+  forwarded in `forwarded`, for binding tokens, besides giving it to the
+  client (`PresentedClient::with_forwarded`)
   (a parameter given twice, more than one way of proving who the client
   is, or a missing `grant_type`, `code` or `redirect_uri` is
   `invalid_request`; no client named is `invalid_client`; unknown grants
@@ -135,8 +147,10 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   the code's `acr` when it has one,
   `is_multi_factor`, `access_token_hash` (`at_hash`), `id_token_claims`,
   `read_access_token` (shape, header, a published key, signature, issuer
-  and expiry, in order, against `PublishedKey`s; `ReadAccessToken`),
-  `check_access_token` (that, then the audience, a person as `sub` and the
+  and expiry, in order, against `PublishedKey`s; `ReadAccessToken`, with
+  its `cnf` as `confirmation` and `check_certificate(presented)`),
+  `check_access_token` (that, then the certificate of a bound token, the
+  audience, a person as `sub` and the
   `openid` scope, for UserInfo; `BearerRefusal`, `CheckedAccessToken`
   with the `jti` and `client_id` the register is asked with), `PersonClaims`
   and `userinfo_claims` (the claims of `profile` and `email`), and
@@ -147,13 +161,15 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   the client is `invalid_request`, no client named `invalid_client`),
   `TokenTypeHint` (an unknown hint is ignored), `AccessTokenRecord` (with
   `issued`, `for_principal` and `exchanged_from`), the answers `inactive`,
-  `active_access_token` (with `principal_kind` and `act` when the token has
-  them) and
+  `active_access_token` (with `principal_kind`, `act` and `cnf` when the
+  token has them) and
   `active_refresh_token` (`ActiveRefreshToken`), and `REVOKED_BY_CLIENT`.
   Its cases are at the bottom of the file.
 - `refresh.rs`: refresh tokens. `RefreshFamily` (`start` from a redeemed
   code and the client's `TokenPolicy`, `decide`, `is_newest`, `revoke`,
-  `started_event`, `first_record`), `RefreshFamilyId`, `RefreshTokenHash`
+  `started_event`, `first_record`, and `certificate`, the thumbprint a
+  public client's family is bound to, with `bound_to` and
+  `accepts_certificate`), `RefreshFamilyId`, `RefreshTokenHash`
   (`of_presented` answers `None` for a value without the shape of a token),
   `RefreshTokenValue`, `RefreshTokenRecord`, `FamilySecret` (`next_after`:
   the SHA-256 of the secret and the presented token, so the same token
@@ -189,7 +205,9 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   `tls_client_auth` has exactly one of the two, every other method neither,
   and either needs a principal (`check_identities`:
   `oauth.client_spiffe_id_invalid` or
-  `oauth.client_linkerd_identity_invalid`).
+  `oauth.client_linkerd_identity_invalid`). And
+  `certificate_bound_access_tokens`, refused with `linkerd_identity`
+  (`oauth.client_certificate_bound_access_tokens_invalid`).
 - `pairwise.rs`: pairwise subject identifiers. `SubjectType` (`public`,
   `pairwise`), `host_of` (lowercase, without the port; none for a
   private-use scheme), `sector_of(sector_identifier_uri, redirect_uris)`,

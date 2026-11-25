@@ -10,9 +10,13 @@ use crate::application::ports::{
     GrantStore, PersonMemberships, PersonStanding, RefreshTokenStore, ResourceServerStore,
 };
 use crate::domain::authorization::{CodePresentation, GrantStatus};
+use crate::domain::binding::{CONFIRMATION_CLAIM, CertificateThumbprint};
 use crate::domain::claim_mapper::{ClaimTarget, add_mapped_claims};
-use crate::domain::client::{AuthenticationMethod, Client, ClientId, GrantType, TokenPolicy};
+use crate::domain::client::{
+    AuthenticationMethod, Client, ClientId, ClientType, GrantType, TokenPolicy,
+};
 use crate::domain::event::OauthEvent;
+use crate::domain::forwarded::presented_thumbprint;
 use crate::domain::introspection::AccessTokenRecord;
 use crate::domain::openid::{IdTokenNames, asks_for_openid, id_token_claims, id_token_header};
 use crate::domain::refresh::{
@@ -247,6 +251,22 @@ impl TokenService {
             Ok(client) => client,
             Err(refusal) => return Ok(Err(refusal)),
         };
+        // The certificate the request came with, and the one the client's
+        // tokens are bound to when it asks for bound tokens: then there
+        // must be one, before anything is redeemed or used.
+        let presented =
+            presented_thumbprint(request.forwarded.as_ref(), self.ports.digest.as_ref());
+        let bound = if client.snapshot().settings.certificate_bound_access_tokens {
+            let Some(presented) = presented else {
+                return Ok(Err(TokenError::invalid_request(
+                    "the client's tokens are bound to its certificate, and the request came \
+                     with none",
+                )));
+            };
+            Some(presented)
+        } else {
+            None
+        };
         match request.grant {
             GrantRequest::AuthorizationCode {
                 code,
@@ -260,6 +280,7 @@ impl TokenService {
                     &code,
                     &redirect_uri,
                     verifier.as_deref(),
+                    bound,
                     correlation_id,
                 )
                 .await
@@ -276,6 +297,8 @@ impl TokenService {
                     &refresh_token,
                     scope.as_deref(),
                     resource.as_deref(),
+                    presented,
+                    bound,
                     correlation_id,
                 )
                 .await
@@ -287,6 +310,7 @@ impl TokenService {
                     &client,
                     scope.as_deref(),
                     resource.as_deref(),
+                    bound,
                     correlation_id,
                 )
                 .await
@@ -306,6 +330,8 @@ impl TokenService {
                         actor_token: actor_token.expose(),
                         audience: &audience,
                         scope: scope.as_deref(),
+                        presented: presented.as_ref(),
+                        bound,
                     },
                     correlation_id,
                 )
@@ -478,23 +504,29 @@ impl TokenService {
         ))
     }
 
-    /// Signs an access token about `subject` for `client`, with the claims
-    /// its mappers add.
+    /// Signs an access token about `subject` for `client`, bound to the
+    /// certificate of `bound` if any, with the claims its mappers add.
     async fn sign(
         &self,
         tenant: &TenantContext,
         issuer: Issuer<'_>,
         client: &Client,
         subject: &TokenSubject,
+        bound: Option<CertificateThumbprint>,
         mapped: &Map<String, Value>,
     ) -> Result<Result<SignedAccessToken, TokenError>, DomainError> {
         let lifetime = client.snapshot().settings.token_policy.access_token;
-        self.sign_living(tenant, issuer, client, subject, lifetime, mapped)
+        self.sign_living(tenant, issuer, client, subject, lifetime, bound, mapped)
             .await
     }
 
     /// Signs an access token about `subject` for `client`, living
-    /// `lifetime`, with the claims its mappers add after Hodor's own.
+    /// `lifetime`, bound to the certificate of `bound` if any, with the
+    /// claims its mappers add after Hodor's own.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each is one part of the token; grouping them would only rename them"
+    )]
     pub(crate) async fn sign_living(
         &self,
         tenant: &TenantContext,
@@ -502,6 +534,7 @@ impl TokenService {
         client: &Client,
         subject: &TokenSubject,
         lifetime: time::Duration,
+        bound: Option<CertificateThumbprint>,
         mapped: &Map<String, Value>,
     ) -> Result<Result<SignedAccessToken, TokenError>, DomainError> {
         if lifetime > TokenPolicy::LONGEST_SIGNED_LIFETIME {
@@ -519,6 +552,9 @@ impl TokenService {
             now,
             self.ports.random.as_ref(),
         );
+        if let (Some(bound), Some(object)) = (bound, claims.claims.as_object_mut()) {
+            object.insert(CONFIRMATION_CLAIM.to_owned(), bound.confirmation());
+        }
         add_mapped_claims(&mut claims.claims, mapped);
         let algorithm = KeyAlgorithm::DEFAULT_SIGNING;
         let Some((message, signature)) = self
@@ -657,6 +693,7 @@ impl TokenService {
         code: &str,
         redirect_uri: &str,
         verifier: Option<&str>,
+        bound: Option<CertificateThumbprint>,
         correlation_id: CorrelationId,
     ) -> Result<Result<IssuedTokens, TokenError>, DomainError> {
         let settings = &client.snapshot().settings;
@@ -731,6 +768,7 @@ impl TokenService {
                 issuer,
                 client,
                 &subject,
+                bound,
                 &mapped.of(ClaimTarget::AccessToken),
             )
             .await?
@@ -768,14 +806,23 @@ impl TokenService {
                 .secrets
                 .seal(tenant, FAMILY_SECRET_PURPOSE, secret.as_secret())
                 .await?;
-            Some(RefreshFamily::start(
+            let (family, first) = RefreshFamily::start(
                 &redeemed,
                 &settings.token_policy,
                 sealed,
                 self.ports.clock.now(),
                 self.ports.random.as_ref(),
                 self.ports.digest.as_ref(),
-            ))
+            );
+            // A public client's refresh tokens are bound to its certificate
+            // too (RFC 8705, section 4); a confidential client's are bound
+            // to its authentication already.
+            let family = if client.client_type() == ClientType::Public {
+                family.bound_to(bound)
+            } else {
+                family
+            };
+            Some((family, first))
         } else {
             None
         };
@@ -864,6 +911,7 @@ impl TokenService {
         client: ClientId,
         scope: Option<&str>,
         resource: Option<&str>,
+        presented: Option<&CertificateThumbprint>,
         caller: Caller,
     ) -> Result<Result<(RefreshFamily, RefreshDecision), TokenError>, DomainError> {
         let mut uow = self.ports.units_of_work.begin(tenant).await?;
@@ -873,6 +921,13 @@ impl TokenService {
                 "the refresh token is unknown",
             )));
         };
+        // Before anything else, so that whoever holds the token without the
+        // certificate can neither use the family nor end it.
+        if !family.accepts_certificate(presented) {
+            return Ok(Err(TokenError::invalid_grant(
+                "the refresh token is bound to a certificate the request did not come with",
+            )));
+        }
         let now = self.ports.clock.now();
         match family.decide(
             record.generation,
@@ -975,6 +1030,8 @@ impl TokenService {
         presented: &Secret<String>,
         scope: Option<&str>,
         resource: Option<&str>,
+        certificate: Option<CertificateThumbprint>,
+        bound: Option<CertificateThumbprint>,
         correlation_id: CorrelationId,
     ) -> Result<Result<IssuedTokens, TokenError>, DomainError> {
         if !client
@@ -999,7 +1056,15 @@ impl TokenService {
         };
         for _ in 0..REFRESH_ATTEMPTS {
             let (mut family, decision) = match self
-                .decide(tenant, &hash, client.id(), scope, resource, anonymous)
+                .decide(
+                    tenant,
+                    &hash,
+                    client.id(),
+                    scope,
+                    resource,
+                    certificate.as_ref(),
+                    anonymous,
+                )
                 .await?
             {
                 Ok(decided) => decided,
@@ -1108,6 +1173,7 @@ impl TokenService {
                     issuer,
                     client,
                     &subject,
+                    bound,
                     &mapped.of(ClaimTarget::AccessToken),
                 )
                 .await?
@@ -1154,6 +1220,10 @@ impl TokenService {
         )))
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each is one part of the request; grouping them would only rename them"
+    )]
     async fn client_credentials(
         &self,
         tenant: &TenantContext,
@@ -1161,6 +1231,7 @@ impl TokenService {
         client: &Client,
         scope: Option<&str>,
         resource: Option<&str>,
+        bound: Option<CertificateThumbprint>,
         correlation_id: CorrelationId,
     ) -> Result<Result<IssuedTokens, TokenError>, DomainError> {
         let settings = &client.snapshot().settings;
@@ -1265,7 +1336,7 @@ impl TokenService {
         };
         // Nobody signed in: no mapper applies.
         let signed = match self
-            .sign(tenant, issuer, client, &subject, &Map::new())
+            .sign(tenant, issuer, client, &subject, bound, &Map::new())
             .await?
         {
             Ok(signed) => signed,

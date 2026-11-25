@@ -249,7 +249,7 @@ Applications ask through [the Authorization API](../../api/api-spec.md#authoriza
 
 ### Who may ask
 
-The caller presents an **access token of the tenant**, issued by [Hodor's token endpoint](oauth.md#token-endpoint-and-client-authentication) and checked as UserInfo checks one: signed by a published key of the tenant, from the tenant's issuer, not expired, and still in force in [the register of access tokens](oauth.md#revocation-introspection-and-metadata), so a revoked token is refused at once.
+The caller presents an **access token of the tenant**, issued by [Hodor's token endpoint](oauth.md#token-endpoint-and-client-authentication) and checked as UserInfo checks one: signed by a published key of the tenant, from the tenant's issuer, not expired, presented with its certificate when it is [bound to one](oauth.md#certificate-bound-access-tokens), and still in force in [the register of access tokens](oauth.md#revocation-introspection-and-metadata), so a revoked token is refused at once.
 
 - **Its audience must include `urn:hodor:authorization`**, the Authorization API's audience. A tenant opens the API by registering, once, a resource server with this audience and the scopes `authz:evaluate`, `authz:simulate` and `authz:explain`, on an application of its own (for example one named for the API), with [the administration interface](../../api/admin-api.md) or `hodor-cli resource-server add`. A client asks for a token with `resource=urn:hodor:authorization` and the scopes it needs; most callers use client credentials.
 - **`authz:evaluate`** opens `evaluate` and `batch`; **`authz:simulate`** opens `simulate`.

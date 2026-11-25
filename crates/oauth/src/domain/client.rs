@@ -344,6 +344,16 @@ fn check_identities(
     }
 }
 
+/// Refuses a client that asks for certificate-bound access tokens while
+/// no certificate can ever come with its requests.
+fn certificate_bound_invalid() -> DomainError {
+    DomainError::invalid(
+        "oauth.client_certificate_bound_access_tokens_invalid",
+        "a client using `linkerd_identity` does not ask for certificate-bound access tokens: \
+         Linkerd forwards no certificate to bind them to",
+    )
+}
+
 fn method_invalid() -> DomainError {
     DomainError::invalid(
         "oauth.client_authentication_method_invalid",
@@ -549,6 +559,10 @@ pub struct ClientSettings {
     /// forwards, must name, for a client using `linkerd_identity`, or
     /// `tls_client_auth` without a SPIFFE identifier.
     pub linkerd_identity: Option<LinkerdIdentity>,
+    /// Whether its access tokens, and a public client's refresh tokens, are
+    /// bound to the certificate its requests come with: its
+    /// `tls_client_certificate_bound_access_tokens` of RFC 8705.
+    pub certificate_bound_access_tokens: bool,
 }
 
 fn redirect_invalid(reason: &'static str) -> DomainError {
@@ -713,6 +727,7 @@ impl ClientSettings {
             exchange_rules: Vec::new(),
             spiffe_id: None,
             linkerd_identity: None,
+            certificate_bound_access_tokens: false,
         }
     }
 
@@ -876,6 +891,11 @@ impl ClientSettings {
             self.linkerd_identity.is_some(),
             self.principal.is_some(),
         )?;
+        if self.certificate_bound_access_tokens
+            && self.authentication_method == AuthenticationMethod::LinkerdIdentity
+        {
+            return Err(certificate_bound_invalid());
+        }
         let allowed_scopes = without_repeats(self.allowed_scopes);
         if allowed_scopes.len() > MAX_SCOPES || !allowed_scopes.iter().all(|s| text::is_scope(s)) {
             return Err(DomainError::invalid(
@@ -903,6 +923,7 @@ impl ClientSettings {
             exchange_rules,
             spiffe_id: self.spiffe_id,
             linkerd_identity: self.linkerd_identity,
+            certificate_bound_access_tokens: self.certificate_bound_access_tokens,
         })
     }
 }
@@ -2137,6 +2158,38 @@ mod tests {
             "oauth.client_key_not_found"
         );
         assert_eq!(client.snapshot().keys.len(), 4);
+    }
+
+    #[test]
+    fn any_client_but_a_linkerd_one_may_ask_for_certificate_bound_tokens() {
+        let mut public = spa();
+        public.certificate_bound_access_tokens = true;
+        let (client, _) = create(ClientType::Public, public).expect("a public client may");
+        assert!(client.snapshot().settings.certificate_bound_access_tokens);
+        let mut secret = web();
+        secret.certificate_bound_access_tokens = true;
+        create(ClientType::Confidential, secret).expect("a client of a secret may");
+
+        let mut linkerd = ClientSettings::new(
+            "Linkerd workload",
+            ClientType::Confidential,
+            vec![GrantType::ClientCredentials],
+            Vec::new(),
+        );
+        linkerd.authentication_method = AuthenticationMethod::LinkerdIdentity;
+        linkerd.linkerd_identity = Some(
+            LinkerdIdentity::parse("web.shop.serviceaccount.identity.linkerd.cluster.local")
+                .expect("an identity"),
+        );
+        linkerd.principal = Some(UserId::generate());
+        create(ClientType::Confidential, linkerd.clone()).expect("unbound");
+        linkerd.certificate_bound_access_tokens = true;
+        assert_eq!(
+            create(ClientType::Confidential, linkerd)
+                .expect_err("no certificate to bind to")
+                .code(),
+            "oauth.client_certificate_bound_access_tokens_invalid"
+        );
     }
 
     #[test]

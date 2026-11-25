@@ -5,13 +5,14 @@ use crate::application::introspection::AccessTokenRegister;
 use crate::application::ports::PersonMemberships;
 use crate::domain::claim_mapper::{ClaimTarget, add_mapped_claims};
 use crate::domain::client::ClientId;
+use crate::domain::forwarded::{ForwardedIdentity, presented_thumbprint};
 use crate::domain::openid::{
     BearerRefusal, PersonClaims, PublishedKey, check_access_token, userinfo_claims,
 };
 use crate::domain::resource_server::GROUPS_SCOPE;
 use hodor_identity::api::{IdentifierKind, IdentityService};
 use hodor_kernel::{
-    Clock, DomainError, ErrorKind, SignatureAlgorithm, SignatureVerifier, TenantContext,
+    Clock, Digest, DomainError, ErrorKind, SignatureAlgorithm, SignatureVerifier, TenantContext,
 };
 use hodor_keys::api::KeyService;
 use serde_json::Value;
@@ -58,6 +59,8 @@ pub struct UserInfoPorts {
     pub memberships: Arc<dyn PersonMemberships>,
     /// The claims the mappers of the token's client add.
     pub mapping: ClaimMapping,
+    /// SHA-256, for the thumbprint of a forwarded certificate.
+    pub digest: Arc<dyn Digest>,
     /// The time.
     pub clock: Arc<dyn Clock>,
 }
@@ -87,7 +90,9 @@ impl UserInfoService {
         Self { ports }
     }
 
-    /// The claims of the person `token` was issued for, by its scopes.
+    /// The claims of the person `token` was issued for, by its scopes. A
+    /// token bound to a certificate must come with the one a trusted
+    /// proxy `forwarded`.
     ///
     /// # Errors
     ///
@@ -98,6 +103,7 @@ impl UserInfoService {
         tenant: &TenantContext,
         issuer: &str,
         token: Option<&str>,
+        forwarded: Option<&ForwardedIdentity>,
     ) -> Result<Result<Value, BearerRefusal>, DomainError> {
         let Some(token) = token else {
             return Ok(Err(BearerRefusal::Missing));
@@ -109,6 +115,7 @@ impl UserInfoService {
             &keys,
             self.ports.clock.now(),
             self.ports.verifier.as_ref(),
+            presented_thumbprint(forwarded, self.ports.digest.as_ref()).as_ref(),
         ) {
             Ok(checked) => checked,
             Err(refusal) => return Ok(Err(refusal)),

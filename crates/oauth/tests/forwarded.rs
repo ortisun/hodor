@@ -390,6 +390,7 @@ fn names(uris: &[&str], dns: &[&str]) -> Option<ForwardedIdentity> {
     Some(ForwardedIdentity::Names {
         uris: uris.iter().map(|&uri| uri.to_owned()).collect(),
         dns_names: dns.iter().map(|&name| name.to_owned()).collect(),
+        hash: None,
     })
 }
 

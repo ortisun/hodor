@@ -10,9 +10,10 @@ use crate::application::service::ApplicationService;
 use crate::application::userinfo::published_keys;
 use crate::domain::application::ApplicationId;
 use crate::domain::client::ClientId;
+use crate::domain::forwarded::{ForwardedIdentity, presented_thumbprint};
 use crate::domain::openid::{BearerRefusal, read_access_token};
 use crate::domain::resource_server::ResourceServer;
-use hodor_kernel::{Clock, DomainError, ErrorKind, SignatureVerifier, TenantContext};
+use hodor_kernel::{Clock, Digest, DomainError, ErrorKind, SignatureVerifier, TenantContext};
 use hodor_keys::api::KeyService;
 use std::fmt;
 use std::sync::Arc;
@@ -28,6 +29,8 @@ pub struct ResourceAccessPorts {
     pub register: AccessTokenRegister,
     /// Reads the token's client, its application and its resource server.
     pub applications: ApplicationService,
+    /// SHA-256, for the thumbprint of a forwarded certificate.
+    pub digest: Arc<dyn Digest>,
     /// The time.
     pub clock: Arc<dyn Clock>,
 }
@@ -85,8 +88,9 @@ impl ResourceAccessService {
     }
 
     /// The caller `token` names, if it is a token of the tenant whose
-    /// issuer is `issuer`, for `audience`, still in force, issued to an
-    /// enabled client of an enabled application.
+    /// issuer is `issuer`, for `audience`, presented with its certificate
+    /// when it is bound to one, as a trusted proxy `forwarded` it, still in
+    /// force, issued to an enabled client of an enabled application.
     ///
     /// # Errors
     ///
@@ -98,6 +102,7 @@ impl ResourceAccessService {
         issuer: &str,
         audience: &str,
         token: Option<&str>,
+        forwarded: Option<&ForwardedIdentity>,
     ) -> Result<Result<ResourceCaller, BearerRefusal>, DomainError> {
         use BearerRefusal::InvalidToken;
         let Some(token) = token else {
@@ -114,6 +119,10 @@ impl ResourceAccessService {
             Ok(read) => read,
             Err(reason) => return Ok(Err(InvalidToken(reason))),
         };
+        let presented = presented_thumbprint(forwarded, self.ports.digest.as_ref());
+        if let Err(reason) = read.check_certificate(presented.as_ref()) {
+            return Ok(Err(InvalidToken(reason)));
+        }
         if !read.audiences.iter().any(|given| given == audience) {
             return Ok(Err(InvalidToken(
                 "the token is not for this resource server",

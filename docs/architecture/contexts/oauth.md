@@ -46,6 +46,7 @@ A client is what talks to Hodor's endpoints. Its identifier is the `client_id` o
 | Principal | Optional: the [service account or agent](identity.md#service-accounts-and-agents) the client acts as. See [clients that act as a workload](#clients-that-act-as-a-workload) |
 | SPIFFE identifier | For a client using `spiffe_jwt` or `spiffe_x509`, and for one using `tls_client_auth` without a Linkerd identity: the one SPIFFE identifier of the workload whose JWT-SVIDs or forwarded certificates prove who the client is, its `spiffe_id` of the draft. See [the SPIFFE identifier of a client](#the-spiffe-identifier-of-a-client) |
 | Linkerd identity | For a client using `linkerd_identity`, and for one using `tls_client_auth` without a SPIFFE identifier: the workload's Linkerd identity, such as `web.shop.serviceaccount.identity.linkerd.cluster.local`. See [an identity forwarded by a proxy](#an-identity-forwarded-by-a-proxy) |
+| Certificate-bound access tokens | Whether its access tokens are bound to the certificate its requests come with, its `tls_client_certificate_bound_access_tokens` of RFC 8705. `false` unless chosen. See [certificate-bound access tokens](#certificate-bound-access-tokens) |
 | Secrets | Its secrets, kept only as hashes. Only with `client_secret_basic` or `client_secret_post` |
 | Keys | Its public keys, for `private_key_jwt`. Only with that method |
 | Status | `enabled` or `disabled`. A disabled client gets no tokens |
@@ -68,6 +69,7 @@ Every change to a client is checked against all of these at once; a change that 
 - **A client with a principal has the `client_credentials` grant**, and may have the token exchange grant besides; no other. It is the workload's credential.
 - **The token exchange grant needs a principal, which must be an agent, and at least one exchange rule; exchange rules need the grant.** Only an agent acts on a person's behalf ([Decision 0031](../../decisions/0031-workloads-are-users.md)). Each rule is a pair of audiences, the one a subject token must hold and the one the new token is for, each at most 255 printable characters, each pair once.
 - **A client using `spiffe_jwt` has a principal and a SPIFFE identifier** ([Decision 0055](../../decisions/0055-spiffe-jwt-client-authentication.md)), **and so does one using `spiffe_x509`; one using `linkerd_identity` has a principal and a Linkerd identity; one using `tls_client_auth` a principal and exactly one of the two** ([Decision 0056](../../decisions/0056-forwarded-client-identity.md)). A client of any other method has neither. Its principal must be a service account. Refused with `oauth.client_spiffe_id_invalid`, or `oauth.client_linkerd_identity_invalid` for a Linkerd identity that does not read or does not fit the method.
+- **A client using `linkerd_identity` does not ask for certificate-bound access tokens**: Linkerd forwards no certificate to bind them to ([Decision 0057](../../decisions/0057-certificate-bound-access-tokens.md)). Any other client may, a public one included. Refused with `oauth.client_certificate_bound_access_tokens_invalid`.
 - **Switching the authentication method drops what the old one used.** A client that moves away from a secret method loses its secrets, and one that moves away from `private_key_jwt` loses its keys. A client is given its identity in the change that moves it to a method that takes one, and the administration interface drops an identity the new method does not take.
 
 ### Redirect addresses
@@ -182,7 +184,7 @@ A resource server is an interface that accepts Hodor's access tokens. Its identi
 
 A scope name follows the rule of [scopes a client may ask for](#scopes-a-client-may-ask-for), is unique within the resource server and is none of the names OpenID Connect defines, `openid`, `profile`, `email`, `address`, `phone` and `offline_access`, nor `groups`, which Hodor answers itself ([the `groups` claim](#the-groups-claim)).
 
-Two of Hodor's own interfaces are resource servers a tenant registers like any other, by their audience: [the Authorization API](authorization.md#who-may-ask), `urn:hodor:authorization`, and [the SCIM server](provisioning.md#who-may-call), `urn:hodor:scim`. Both check the tokens presented to them in one way, through the resource access use case: the signature by a published key of the tenant, the tenant's issuer, the expiry, the audience, the register of access tokens, and an enabled client of an enabled application. Which scope opens what is each interface's own rule.
+Two of Hodor's own interfaces are resource servers a tenant registers like any other, by their audience: [the Authorization API](authorization.md#who-may-ask), `urn:hodor:authorization`, and [the SCIM server](provisioning.md#who-may-call), `urn:hodor:scim`. Both check the tokens presented to them in one way, through the resource access use case: the signature by a published key of the tenant, the tenant's issuer, the expiry, the certificate of a [bound token](#certificate-bound-access-tokens), the audience, the register of access tokens, and an enabled client of an enabled application. Which scope opens what is each interface's own rule.
 
 ## Operations
 
@@ -271,6 +273,7 @@ Every table is a tenant table under row-level security, in the schema `oauth`. R
 | `principal_id` | `uuid` | The workload the client acts as, or null. Not a reference: contexts do not reference each other's tables. Check constraints allow it only with `client_credentials` and, besides, `urn:ietf:params:oauth:grant-type:token-exchange`, and require it with the latter |
 | `spiffe_id` | `text` | The [SPIFFE identifier](#the-spiffe-identifier-of-a-client), or null, compared byte for byte (`COLLATE "C"`). Check constraints keep its shape (`client_spiffe_id_shape`), hold each method to its identity (`client_identity_of_its_method`, migration 0080: `spiffe_jwt` and `spiffe_x509` a SPIFFE identifier, `tls_client_auth` one of the two identities) and require a principal with it (`client_spiffe_id_needs_principal`); the partial unique index `client_spiffe_id_unique` keeps it once per tenant |
 | `linkerd_identity` | `text` | The [Linkerd identity](#the-spiffe-identifier-of-a-client) of a client using `linkerd_identity` or `tls_client_auth`, or null, compared byte for byte (`COLLATE "C"`). Check constraints keep its shape (`client_linkerd_identity_shape`), its method (`client_identity_of_its_method`) and a principal with it (`client_linkerd_identity_needs_principal`); the partial unique index `client_linkerd_identity_unique` keeps it unique in the tenant |
+| `certificate_bound_access_tokens` | `boolean` | Whether the client asks for [certificate-bound access tokens](#certificate-bound-access-tokens); `false` for a client made before it existed (migration 0082). A check constraint (`client_certificate_bound_not_linkerd`) refuses it with `linkerd_identity` |
 | `exchange_rules` | `jsonb` | The exchange rules, a list of `{"subject_audience": …, "audience": …}`; empty unless the client has the token exchange grant |
 | `id_token_algorithm` | `text` | `ES256` or `RS256`, by a check constraint; `ES256` for a client made before it existed |
 | `request_object_signing_alg` | `text` | `ES256`, `RS256`, `PS256` or `none`, by a check constraint, or null when none is chosen, as for every client made before it existed |
@@ -649,7 +652,36 @@ The checks, in order, after those of every method; each refusal is `invalid_clie
 - **Every certificate of the path** is within its validity at the time of the request. Each one between the certificate and the authority is an authority itself, and the name constraints of each are kept; an authority that constrains URIs refuses every certificate, since the library does not read such constraints yet.
 - **The certificate itself** is not an authority and, when it names extended key usages, holds `clientAuth`.
 
-A certificate the proxy forwards is never stored, and nothing about it is in the token yet. Binding a token to it is Issue-108.
+A certificate the proxy forwards is never stored. Only its thumbprint goes into a token, when the client asks for [certificate-bound access tokens](#certificate-bound-access-tokens).
+
+### Certificate-bound access tokens
+
+Issue-108. A client may ask for access tokens bound to the certificate its requests come with, as [RFC 8705](https://www.rfc-editor.org/rfc/rfc8705), sections 3 and 4, writes it, with the choices of [Decision 0057](../../decisions/0057-certificate-bound-access-tokens.md). A bound token is worth nothing without the certificate: whoever accepts it checks that the request presenting it came with the same one.
+
+**Which clients.** A client with `tls_client_certificate_bound_access_tokens` set, the client metadata of RFC 8705, section 3.4: any client but one using `linkerd_identity`, a public one included, whatever its method. The binding does not depend on how the client proved who it is.
+
+**The certificate** is the one the proxy in front of Hodor forwarded with the request, read as [the caller's identity from a proxy](../../api/api-spec.md#the-callers-identity-from-a-proxy) says. Its **thumbprint** is the SHA-256 of its DER encoding, `x5t#S256` written in base64url without padding:
+
+| Forwarded | Thumbprint |
+|---|---|
+| A certificate: `Client-Cert`, or `Cert` of `X-Forwarded-Client-Cert` | The SHA-256 of the certificate. `Hash` is then not read |
+| The names of a certificate with Envoy's `Hash`, as Istio forwards them by default | `Hash`, the SHA-256 of the same certificate in hexadecimal. One that is not 64 hexadecimal digits gives none |
+| The names alone, or a Linkerd identity | None |
+
+**Issuing.** Every access token issued to such a client carries `cnf`, `{"x5t#S256": "<thumbprint>"}` (RFC 8705, section 3.1): with a code, at a refresh, with client credentials and by token exchange. A request of such a client that came with no thumbprint is refused with `invalid_request`, before the code is redeemed or the refresh token used: the client asked for its tokens to be bound, and a token that is not would be accepted without the certificate. A client that does not ask gets tokens without `cnf`, whatever its request came with. The answer's `token_type` stays `Bearer`.
+
+**Refresh tokens of a public client** are bound too (RFC 8705, section 4). The family a code starts for a public client that asks for bound tokens keeps the thumbprint of the request that redeemed the code, and a refresh of that family must come with the same certificate. One that comes with none, or with another, is refused with `invalid_grant`, before anything else is done with the token, and the family is not revoked: whoever presents the token without the certificate may not end the client's family. A confidential client's refresh tokens are bound to its authentication already; its family keeps no thumbprint, so that a workload whose certificate is renewed goes on refreshing, and each access token is bound to the certificate of its own request.
+
+**Where a bound token is checked.** Wherever Hodor accepts an access token as a credential, once the token's signature, issuer and expiry have been checked: a token with `cnf` must come with a certificate whose thumbprint is its `x5t#S256`, byte for byte. A token whose `cnf` holds no `x5t#S256` that reads is refused too.
+
+| Where | Refused as |
+|---|---|
+| [UserInfo](#userinfo) | `401` with `invalid_token` |
+| The Authorization API and the SCIM server, through the resource access use case ([resource servers](#resource-servers)) | `401` with `invalid_token` |
+| The subject token and the actor token of a [token exchange](#token-exchange) | `invalid_request`, as any token it refuses. A subject token bound to the certificate of the person's client is refused, since the agent presenting it is not its holder |
+| The administration interface | It accepts no OAuth access token, only the [credential context's](credential.md#access-tokens) access tokens and API keys ([who may call it](../../api/admin-api.md#who-may-call-it)): a bound token is refused there with or without its certificate |
+
+**Introspection answers `cnf`** and does not compare it: its caller is a resource server asking about a token it was given, and the certificate of the introspection request is the resource server's own. The resource server compares the `cnf` it is answered with the certificate its own caller presented (RFC 8705, section 3.2). **Revocation** does not compare either: only the client the token was issued to may revoke it, after proving who it is. A resource server that checks tokens by itself must read `cnf` and compare it; one that ignores it accepts a bound token without its certificate.
 
 ### Redeeming a code for tokens
 
@@ -680,6 +712,7 @@ The access token is a JSON Web Token per [RFC 9068](https://www.rfc-editor.org/r
 | `groups` | With the scope `groups`, the person's [effective groups](#the-groups-claim) when the token is issued. Left out without it, for a person in more than 100 groups, and for client credentials |
 | `principal_kind` | `service_account` or `agent`, for the token of a [client that acts as a workload](#clients-that-act-as-a-workload). Left out otherwise |
 | `act` | For a token made by [token exchange](#token-exchange): who acts for the subject, the newest actor outermost. Left out otherwise |
+| `cnf` | `{"x5t#S256": "…"}`, the thumbprint of the certificate the request came with, for a client that asks for [certificate-bound access tokens](#certificate-bound-access-tokens). Left out otherwise |
 
 A client's [claim mappers](#claim-mappers) that name the access token add their claims after these, never in place of one.
 
@@ -711,12 +744,13 @@ Either way the person must still be allowed to sign in: a suspended, deactivated
 
 1. The client must be allowed the `refresh_token` grant; otherwise `unauthorized_client`.
 2. The token is found by the hash of what was presented. An unknown token, a token of another tenant and a malformed one are all `invalid_grant`.
-3. The family must still stand: not revoked, before its absolute lifetime and used within its idle time, both from the client's [token policy](#token-policy) when the family started. Otherwise `invalid_grant`.
-4. **The client must be the one the family was issued to.** A token presented by another client has leaked: the family is revoked, and the answer is `invalid_grant`.
-5. **A token that is not the newest of its family has been used before.** Within the retry window it may be [a retry](#a-retry-of-the-same-request). Otherwise this is reuse: the family and its grant are revoked, and everything issued from them with them, and the answer is `invalid_grant`.
-6. The grant must still be active, the person allowed to sign in, a member of the grant's [organization](#the-organization-of-a-sign-in) if it has one and, without `offline_access`, the session still active; otherwise `invalid_grant`.
-7. `scope`, when given, must hold only scopes of the family; otherwise `invalid_scope`. A refresh can narrow the scopes of its access token and never widen them. The family keeps its own scopes, so a later refresh can ask for all of them again ([RFC 6749, section 6](https://www.rfc-editor.org/rfc/rfc6749#section-6)).
-8. `resource`, when given, must be one of the family's audiences; the access token is then for it alone. Otherwise `invalid_target`.
+3. **A family bound to a certificate** ([refresh tokens of a public client](#certificate-bound-access-tokens)) must be refreshed with that certificate. Otherwise `invalid_grant`, and nothing is revoked.
+4. The family must still stand: not revoked, before its absolute lifetime and used within its idle time, both from the client's [token policy](#token-policy) when the family started. Otherwise `invalid_grant`.
+5. **The client must be the one the family was issued to.** A token presented by another client has leaked: the family is revoked, and the answer is `invalid_grant`.
+6. **A token that is not the newest of its family has been used before.** Within the retry window it may be [a retry](#a-retry-of-the-same-request). Otherwise this is reuse: the family and its grant are revoked, and everything issued from them with them, and the answer is `invalid_grant`.
+7. The grant must still be active, the person allowed to sign in, a member of the grant's [organization](#the-organization-of-a-sign-in) if it has one and, without `offline_access`, the session still active; otherwise `invalid_grant`.
+8. `scope`, when given, must hold only scopes of the family; otherwise `invalid_scope`. A refresh can narrow the scopes of its access token and never widen them. The family keeps its own scopes, so a later refresh can ask for all of them again ([RFC 6749, section 6](https://www.rfc-editor.org/rfc/rfc6749#section-6)).
+9. `resource`, when given, must be one of the family's audiences; the access token is then for it alone. Otherwise `invalid_target`.
 
 Then the family moves one generation, the presented token stops being the newest, and the answer carries a new access token and the next refresh token. It carries no ID token: nobody signed in again. With `openid` among the scopes the access token asks for, the issuer is one of its audiences, as with a code. Moving is one conditional change in storage that names the generation it moves from. Of two refreshes with the same token at the same moment, exactly one moves the family; the other finds the token one generation old and is answered as a retry.
 
@@ -774,8 +808,8 @@ The checks, in order:
 
 1. **The client** must be allowed the grant: a confidential client bound to an agent ([clients that act as a workload](#clients-that-act-as-a-workload)). Otherwise `unauthorized_client`; a client whose agent may not act is `invalid_client`, as for client credentials.
 2. **The request** must name the two tokens with their types, and one audience: otherwise `invalid_request`, or `invalid_target` without an audience. Another token type than an access token is `invalid_request`.
-3. **The actor token** must pass the checks of [UserInfo](#userinfo) up to `exp`, be [in force](#the-register-of-access-tokens), be issued to the client asking, name its agent in `sub` with `principal_kind` `agent`, and carry no `act`. Otherwise `invalid_request`.
-4. **The subject token** must pass the same checks, be in force, and be about a person: no `principal_kind`, a `sub` that is not a client, a record in the register that names a grant, whose person may still sign in and, when the grant names an [organization](#the-organization-of-a-sign-in), is still a member of it. Otherwise `invalid_request`. The person is the grant's, never read from the `sub`, which for a token of a [pairwise client](#pairwise-subject-identifiers) is no user identifier.
+3. **The actor token** must pass the checks of [UserInfo](#userinfo) up to `exp`, come with its certificate when it is [bound to one](#certificate-bound-access-tokens), be [in force](#the-register-of-access-tokens), be issued to the client asking, name its agent in `sub` with `principal_kind` `agent`, and carry no `act`. Otherwise `invalid_request`.
+4. **The subject token** must pass the same checks, its certificate included, be in force, and be about a person: no `principal_kind`, a `sub` that is not a client, a record in the register that names a grant, whose person may still sign in and, when the grant names an [organization](#the-organization-of-a-sign-in), is still a member of it. Otherwise `invalid_request`. The person is the grant's, never read from the `sub`, which for a token of a [pairwise client](#pairwise-subject-identifiers) is no user identifier.
 5. **The chain**: the subject token's `act`, read as far as the bound and no further, holds at most two actors, so that the new chain holds at most three. Otherwise `invalid_request`.
 6. **The policy**: one of the client's exchange rules pairs one of the subject token's audiences with the audience asked. Otherwise `invalid_target`, and so is an audience that is no resource server of the tenant.
 7. **The scopes** asked must each be held by the subject token, allowed to the client and defined by the audience's resource server; without `scope`, the token carries every scope that meets all three. A scope that is not, or none left, is `invalid_scope`. OpenID Connect's scopes are never exchanged.
@@ -787,6 +821,7 @@ The new access token:
 - `auth_time`, `acr` and `amr` are the subject token's, when it has them: they say how the person signed in;
 - `org_id` is the organization of the subject token's grant, when it names one; `groups` never appears, since the `groups` scope is one of OpenID Connect's and is not exchanged, and neither does any [mapped claim](#what-mappers-apply-to);
 - it lives the client's access token lifetime, or until the subject token expires if that comes first;
+- it carries `cnf` when the agent's client asks for [certificate-bound access tokens](#certificate-bound-access-tokens), with the certificate of the exchange request;
 - its record in the register names the subject token as its **parent**, the parent's grant and refresh token family, and the agent as its principal. It is in force only while all of them stand: revoking the person's token, ending their grant, deprovisioning them or disabling the agent stops it at once.
 
 The answer is as for any token, with `issued_token_type` `urn:ietf:params:oauth:token-type:access_token`, and never a refresh token or an ID token.
@@ -840,7 +875,7 @@ No event carries a token or its hash.
 
 | Table | Holds |
 |---|---|
-| `oauth.refresh_token_family` | `tenant_id`, `id`, `grant_id`, `client_id`, `user_id`, `session_id`, `scopes`, `audiences`, `offline`, `signed_in_at`, `methods`, the sealed family secret as `sealed_secret`, `generation`, `current_hash` (32 bytes), when the last move happened as `moved_at`, the scopes and resource that move asked for, `status` (`active` or `revoked`), `created_at`, `expires_at`, `idle_seconds`, `last_used_at`, `revoked_at`, `revocation_reason` |
+| `oauth.refresh_token_family` | `tenant_id`, `id`, `grant_id`, `client_id`, `user_id`, `session_id`, `scopes`, `audiences`, `offline`, `signed_in_at`, `methods`, the sealed family secret as `sealed_secret`, `generation`, `current_hash` (32 bytes), when the last move happened as `moved_at`, the scopes and resource that move asked for, `status` (`active` or `revoked`), `created_at`, `expires_at`, `idle_seconds`, `last_used_at`, `revoked_at`, `revocation_reason`, and `certificate_thumbprint` (32 bytes, or null), the certificate a [public client's family is bound to](#certificate-bound-access-tokens) (migration 0082) |
 | `oauth.refresh_token` | `tenant_id`, `token_hash` (32 bytes, the key with the tenant), `family_id`, `generation`, `issued_at`: every token a family has had, so that any earlier one is known as reuse |
 
 Both are tenant tables under row-level security. A family references its grant and its client with the tenant, and a token its family. They hold hashes and a sealed secret, never a token.
@@ -939,6 +974,7 @@ Any other token is answered as not active.
 | `token_type` | `Bearer` | `refresh_token` |
 | `principal_kind` | Its `principal_kind`, when it has one | Never |
 | `act` | Its `act`, when it has one | Never |
+| `cnf` | Its `cnf`, when it is [bound to a certificate](#certificate-bound-access-tokens), for the resource server to compare with the certificate its caller presented. Introspection does not compare it with the certificate of its own request | Never: only a public client's refresh tokens are bound, and a public client may not introspect |
 
 No [mapped claim](#what-mappers-apply-to) is answered: a resource server that wants one reads it from the token.
 
@@ -1038,6 +1074,7 @@ The token is checked before anything is read:
 | `iss` | It is not this tenant's issuer |
 | `aud` | It does not hold the issuer |
 | `exp` | It has passed |
+| Certificate | It carries `cnf`, and the request came with no certificate, or with one of another thumbprint ([certificate-bound access tokens](#certificate-bound-access-tokens)) |
 | Scope | `scope` does not hold `openid` |
 | Person | The token's record names no grant, or the grant's person does not exist, is not a person, or is not active. The person is the grant's, not read from `sub`, which for a [pairwise client](#pairwise-subject-identifiers) is no user identifier. A workload's token never reads UserInfo: client credentials never carry `openid` |
 
@@ -1118,6 +1155,7 @@ It names only what is built:
 | `request_object_signing_alg_values_supported` | `ES256`, `RS256`, `PS256` and `none`: `none` only for a client whose administrator chose it |
 | `request_uri_parameter_supported`, `claims_parameter_supported` | `false` |
 | `backchannel_logout_supported`, `backchannel_logout_session_supported` | `true`: [back-channel logout](#back-channel-logout) is offered, and every logout token carries `sid` |
+| `tls_client_certificate_bound_access_tokens` | `true` when the operator names a header that forwards certificates, `client-cert` or `x-forwarded-client-cert`: [certificate-bound access tokens](#certificate-bound-access-tokens) are offered (RFC 8705, section 3.3). Left out otherwise |
 
 **`spiffe_jwt` follows draft-ietf-oauth-spiffe-client-auth-03**, the version of the Internet-Draft Hodor implements ([checking a JWT-SVID](#checking-a-jwt-svid)). The draft is not yet a standard and may change; a change of the version Hodor follows is a change to Hodor, written in the changelog ([Decision 0029](../../decisions/0029-hodor-in-a-service-mesh.md#consequences)). `spiffe_x509` follows the same version, section 3.3 ([an identity forwarded by a proxy](#an-identity-forwarded-by-a-proxy)); the draft's `spiffe_wit` is not offered.
 
@@ -1128,6 +1166,7 @@ The document may be kept by caches for five minutes and carries `Access-Control-
 | Port | Purpose |
 |---|---|
 | `KeyService` | Lists the tenant's published keys, to check an access token at UserInfo |
+| `Digest` | The SHA-256 of a forwarded certificate, compared with a bound token's `cnf` at UserInfo, from the kernel |
 | `SignatureVerifier` | Checks the access token's signature, from the kernel |
 | `IdentityService` | Reads the person, for UserInfo, from the identity context |
 | `PersonMemberships` | The person's effective groups, for the `groups` claim |
@@ -1732,7 +1771,7 @@ Administrators reach them through [the administration interface](../../api/admin
 | Binding a client to a SPIFFE identifier from the command-line tool and the console: the administration interface does it | Issue-109 |
 | `tls_client_auth` bound to a subject's distinguished name, an IP address or an email address, which RFC 8705 also names | When a client needs one |
 | Authorities that constrain URIs, such as the one a tenant's authority will sign | Before [Milestone 12](../../product/epics.md#milestone-12-an-optional-certificate-authority-per-tenant) signs one |
-| Certificate-bound access tokens (`cnf`, RFC 8705, section 3) | Issue-108 |
+| Binding a token to a certificate whose names Envoy forwards without `Hash`, or to a Linkerd identity: there is no certificate to bind it to | Not planned |
 | `spiffe_wit`, the draft's workload identity tokens | Not scheduled |
 | Every other response type than `code`, and the response modes `fragment`, `form_post` and JWT Secured Authorization Response Mode | 0.5.0, [Milestone 14](../../product/epics.md#milestone-14-answers-through-the-browser), and 0.6.0, [Milestone 18](../../product/epics.md#milestone-18-fapi-20-message-signing-and-fapi-10-advanced) ([Decision 0046](../../decisions/0046-responses-through-the-browser.md)) |
 | DPoP, security profiles for FAPI, JWT introspection responses, encryption, and client-initiated backchannel authentication | 0.6.0, [Milestones 17 to 19](../../product/epics.md#milestone-17-fapi-20-security-profile) ([Decision 0044](../../decisions/0044-what-0.5.0-and-0.6.0-hold.md)) |

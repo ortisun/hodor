@@ -12652,7 +12652,8 @@
           "principal",
           "exchange_rules",
           "spiffe_id",
-          "linkerd_identity"
+          "linkerd_identity",
+          "tls_client_certificate_bound_access_tokens"
         ],
         "properties": {
           "id": {
@@ -12869,6 +12870,10 @@
             ],
             "maxLength": 253,
             "description": "The Linkerd identity of a client using `linkerd_identity`, such as `web.shop.serviceaccount.identity.linkerd.cluster.local`, which Linkerd's proxy forwards; a client using `tls_client_auth` has it or `spiffe_id`, and any other method neither. The client's principal must then be a service account. Unique in the tenant."
+          },
+          "tls_client_certificate_bound_access_tokens": {
+            "type": "boolean",
+            "description": "Whether every access token of the client is bound to the certificate the proxy in front of Hodor forwards with its request (`cnf` with `x5t#S256`, RFC 8705), and for a public client its refresh tokens too. `false` unless set; never with `linkerd_identity`."
           }
         }
       },
@@ -13027,6 +13032,10 @@
             "type": "string",
             "maxLength": 253,
             "description": "The Linkerd identity of a client using `linkerd_identity`, such as `web.shop.serviceaccount.identity.linkerd.cluster.local`, which Linkerd's proxy forwards; a client using `tls_client_auth` has it or `spiffe_id`, and any other method neither. The client's principal must then be a service account. Unique in the tenant."
+          },
+          "tls_client_certificate_bound_access_tokens": {
+            "type": "boolean",
+            "description": "`true` asks for every access token of the client, and for a public client its refresh tokens, to be bound to the certificate the proxy in front of Hodor forwards with its request; the client is then refused a token when its request comes with none. `false` unless given. Refused with `linkerd_identity`: `oauth.client_certificate_bound_access_tokens_invalid`."
           }
         }
       },
@@ -13169,6 +13178,10 @@
             ],
             "maxLength": 253,
             "description": "The Linkerd identity of a client using `linkerd_identity`, such as `web.shop.serviceaccount.identity.linkerd.cluster.local`, which Linkerd's proxy forwards; a client using `tls_client_auth` has it or `spiffe_id`, and any other method neither. The client's principal must then be a service account. Unique in the tenant. `null` removes it; giving it removes `spiffe_id`."
+          },
+          "tls_client_certificate_bound_access_tokens": {
+            "type": "boolean",
+            "description": "Whether every access token of the client, and for a public client its refresh tokens, is bound to the certificate its request comes with. Refused with `linkerd_identity`: `oauth.client_certificate_bound_access_tokens_invalid`."
           }
         }
       },

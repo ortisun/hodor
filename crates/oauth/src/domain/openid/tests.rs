@@ -243,7 +243,50 @@ fn good_claims(user: UserId) -> Value {
 }
 
 fn check(token: &str) -> Result<CheckedAccessToken, BearerRefusal> {
-    check_access_token(token, ISSUER, &published(), now(), &FakeVerifier)
+    check_access_token(token, ISSUER, &published(), now(), &FakeVerifier, None)
+}
+
+#[test]
+fn a_bound_access_token_is_accepted_only_with_its_certificate() {
+    use crate::domain::binding::CertificateThumbprint;
+    let mine = CertificateThumbprint::from_bytes([1; 32]);
+    let other = CertificateThumbprint::from_bytes([2; 32]);
+    let mut claims = good_claims(UserId::generate());
+    claims["cnf"] = mine.confirmation();
+    let token = sign(&good_header(), &claims);
+    let with = |presented: Option<&CertificateThumbprint>| {
+        check_access_token(
+            &token,
+            ISSUER,
+            &published(),
+            now(),
+            &FakeVerifier,
+            presented,
+        )
+    };
+    with(Some(&mine)).expect("with its certificate");
+    assert!(matches!(with(None), Err(BearerRefusal::InvalidToken(_))));
+    assert!(matches!(
+        with(Some(&other)),
+        Err(BearerRefusal::InvalidToken(_))
+    ));
+    let read = read_access_token(&token, ISSUER, &published(), now(), &FakeVerifier).expect("read");
+    assert_eq!(read.confirmation, Some(mine.confirmation()));
+
+    // A `cnf` that cannot be read is never taken for no binding.
+    claims["cnf"] = json!("x5t#S256");
+    let token = sign(&good_header(), &claims);
+    assert!(matches!(
+        check_access_token(
+            &token,
+            ISSUER,
+            &published(),
+            now(),
+            &FakeVerifier,
+            Some(&mine)
+        ),
+        Err(BearerRefusal::InvalidToken(_))
+    ));
 }
 
 #[test]

@@ -27,8 +27,8 @@ use hodor_credential::api::{ApiKeyService, looks_like_api_key};
 use hodor_identity::api::IdentityService;
 use hodor_kernel::{DomainError, ErrorKind, TenantContext};
 use hodor_oauth::api::{
-    ApplicationId, ApplicationService, BearerRefusal, ResourceAccessService, ResourceCaller,
-    ResourceServer,
+    ApplicationId, ApplicationService, BearerRefusal, ForwardedIdentity, ResourceAccessService,
+    ResourceCaller, ResourceServer,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -257,11 +257,14 @@ fn issuer(public_url: &str, slug: &str) -> String {
 }
 
 /// The caller of a route that needs `scope`, or the response refusing it.
+/// A bound token must come with the certificate a trusted proxy
+/// `forwarded`.
 async fn asker(
     state: &AuthorizationApiState,
     tenant: &TenantContext,
     slug: &str,
     headers: &HeaderMap,
+    forwarded: Option<&Extension<ForwardedIdentity>>,
     scope: &str,
 ) -> Result<Asker, Box<Response>> {
     let Ok(token) = bearer(headers) else {
@@ -280,6 +283,7 @@ async fn asker(
                 &issuer(&state.public_url, slug),
                 AUTHORIZATION_API_AUDIENCE,
                 token,
+                forwarded.map(|Extension(found)| found),
             )
             .await
             .map(|found| found.map(Presented::from)),
@@ -408,10 +412,20 @@ async fn evaluate(
     State(state): State<AuthorizationApiState>,
     Extension(tenant): Extension<TenantContext>,
     Extension(TenantSlug(slug)): Extension<TenantSlug>,
+    forwarded: Option<Extension<ForwardedIdentity>>,
     headers: HeaderMap,
     bytes: Bytes,
 ) -> Response {
-    let asker = match asker(&state, &tenant, &slug, &headers, EVALUATE_SCOPE).await {
+    let asker = match asker(
+        &state,
+        &tenant,
+        &slug,
+        &headers,
+        forwarded.as_ref(),
+        EVALUATE_SCOPE,
+    )
+    .await
+    {
         Ok(asker) => asker,
         Err(response) => return *response,
     };
@@ -430,10 +444,20 @@ async fn batch(
     State(state): State<AuthorizationApiState>,
     Extension(tenant): Extension<TenantContext>,
     Extension(TenantSlug(slug)): Extension<TenantSlug>,
+    forwarded: Option<Extension<ForwardedIdentity>>,
     headers: HeaderMap,
     bytes: Bytes,
 ) -> Response {
-    let asker = match asker(&state, &tenant, &slug, &headers, EVALUATE_SCOPE).await {
+    let asker = match asker(
+        &state,
+        &tenant,
+        &slug,
+        &headers,
+        forwarded.as_ref(),
+        EVALUATE_SCOPE,
+    )
+    .await
+    {
         Ok(asker) => asker,
         Err(response) => return *response,
     };
@@ -500,10 +524,20 @@ async fn simulate(
     State(state): State<AuthorizationApiState>,
     Extension(tenant): Extension<TenantContext>,
     Extension(TenantSlug(slug)): Extension<TenantSlug>,
+    forwarded: Option<Extension<ForwardedIdentity>>,
     headers: HeaderMap,
     bytes: Bytes,
 ) -> Response {
-    let asker = match asker(&state, &tenant, &slug, &headers, SIMULATE_SCOPE).await {
+    let asker = match asker(
+        &state,
+        &tenant,
+        &slug,
+        &headers,
+        forwarded.as_ref(),
+        SIMULATE_SCOPE,
+    )
+    .await
+    {
         Ok(asker) => asker,
         Err(response) => return *response,
     };

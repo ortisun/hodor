@@ -252,13 +252,10 @@ async fn token(
         Ok(form) => form,
         Err((error, used_basic)) => return refused(error, used_basic, &issuer),
     };
-    let mut request = match TokenRequest::parse(basic, form_urlencoded::parse(&body).into_owned()) {
-        Ok(request) => request,
+    let request = match TokenRequest::parse(basic, form_urlencoded::parse(&body).into_owned()) {
+        Ok(request) => request.with_forwarded(forwarded.map(|Extension(found)| found)),
         Err(error) => return refused(error, used_basic, &issuer),
     };
-    request.client = request
-        .client
-        .with_forwarded(forwarded.map(|Extension(found)| found));
     let correlation_id = CorrelationId::generate();
     let answer = state
         .tokens

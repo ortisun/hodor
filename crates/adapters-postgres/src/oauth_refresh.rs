@@ -6,8 +6,8 @@
 use crate::uow::{connection, database_error};
 use hodor_kernel::{DomainError, SealedSecret, Timestamp, UnitOfWork, UserId};
 use hodor_oauth::api::{
-    ClientId, FamilyStatus, GrantId, RefreshAsk, RefreshFamily, RefreshFamilyId, RefreshTokenHash,
-    RefreshTokenRecord, RefreshTokenStore,
+    CertificateThumbprint, ClientId, FamilyStatus, GrantId, RefreshAsk, RefreshFamily,
+    RefreshFamilyId, RefreshTokenHash, RefreshTokenRecord, RefreshTokenStore,
 };
 use hodor_session::api::SessionId;
 use sqlx::Row as _;
@@ -67,6 +67,15 @@ fn family_from(row: &PgRow) -> Result<RefreshFamily, DomainError> {
         last_used_at: row.try_get("last_used_at").map_err(get)?,
         revoked_at: row.try_get("revoked_at").map_err(get)?,
         revocation_reason: row.try_get("revocation_reason").map_err(get)?,
+        certificate: row
+            .try_get::<Option<Vec<u8>>, _>("certificate_thumbprint")
+            .map_err(get)?
+            .map(|bytes| {
+                <[u8; 32]>::try_from(bytes)
+                    .map(CertificateThumbprint::from_bytes)
+                    .map_err(|_| corrupted("a certificate thumbprint is not 32 bytes"))
+            })
+            .transpose()?,
     })
 }
 
@@ -110,9 +119,10 @@ impl RefreshTokenStore for PgRefreshTokenStore {
                  (tenant_id, id, grant_id, client_id, user_id, session_id, scopes, audiences,
                   offline, signed_in_at, methods, sealed_secret, generation, current_hash,
                   moved_at, moved_scopes, moved_resource, status, created_at, expires_at,
-                  idle_seconds, last_used_at, revoked_at, revocation_reason, acr)
+                  idle_seconds, last_used_at, revoked_at, revocation_reason, acr,
+                  certificate_thumbprint)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
-                     $18, $19, $20, $21, $22, $23, $24, $25)",
+                     $18, $19, $20, $21, $22, $23, $24, $25, $26)",
         )
         .bind(tenant.as_uuid())
         .bind(family.id.as_uuid())
@@ -139,6 +149,12 @@ impl RefreshTokenStore for PgRefreshTokenStore {
         .bind(family.revoked_at)
         .bind(family.revocation_reason.as_deref())
         .bind(family.acr.as_deref())
+        .bind(
+            family
+                .certificate
+                .as_ref()
+                .map(|thumbprint| thumbprint.as_bytes().as_slice()),
+        )
         .execute(connection(uow)?)
         .await
         .map_err(|error| match &error {
@@ -168,7 +184,7 @@ impl RefreshTokenStore for PgRefreshTokenStore {
                     family.current_hash, family.moved_at, family.moved_scopes,
                     family.moved_resource, family.status, family.created_at, family.expires_at,
                     family.idle_seconds, family.last_used_at, family.revoked_at,
-                    family.revocation_reason, family.acr,
+                    family.revocation_reason, family.acr, family.certificate_thumbprint,
                     token.generation AS token_generation, token.issued_at AS token_issued_at
              FROM oauth.refresh_token AS token
              JOIN oauth.refresh_token_family AS family
@@ -277,7 +293,7 @@ impl RefreshTokenStore for PgRefreshTokenStore {
             "SELECT id, grant_id, client_id, user_id, session_id, scopes, audiences, offline,
                     signed_in_at, methods, sealed_secret, generation, current_hash, moved_at,
                     moved_scopes, moved_resource, status, created_at, expires_at, idle_seconds,
-                    last_used_at, revoked_at, revocation_reason, acr
+                    last_used_at, revoked_at, revocation_reason, acr, certificate_thumbprint
              FROM oauth.refresh_token_family
              WHERE tenant_id = $1 AND id = $2",
         )

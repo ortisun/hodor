@@ -869,6 +869,7 @@ fn userinfo(config: &Config, database: &Database, keys: KeyService) -> UserInfoS
             ),
             memberships: Arc::new(ServerMemberships::over(database, clock.clone())),
             mapping: claim_mapping(database, clock.clone()),
+            digest: Arc::new(Sha256Digest),
             clock,
         }),
         public_url: config.public_url.clone(),
@@ -966,6 +967,7 @@ fn resource_access(
             Arc::new(standing(database)),
         ),
         applications,
+        digest: Arc::new(Sha256Digest),
         clock: Arc::new(SystemClock),
     })
 }

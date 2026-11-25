@@ -5,6 +5,7 @@
 //! Specified in `docs/architecture/contexts/oauth.md`, "OpenID Provider".
 
 use crate::domain::authorization::AuthorizationCode;
+use crate::domain::binding::{CONFIRMATION_CLAIM, CertificateThumbprint, check_confirmation};
 use crate::domain::client::{ClientId, IdTokenAlgorithm, RequestObjectAlgorithm};
 use crate::domain::resource_server::GROUPS_SCOPE;
 use crate::domain::token::decode_json;
@@ -261,6 +262,25 @@ pub struct ReadAccessToken {
     pub amr: Option<Vec<String>>,
     /// Its `org_id`.
     pub organization: Option<OrganizationId>,
+    /// Its `cnf`, for a token bound to a certificate. Any value that is
+    /// not an object is kept too, so that it is refused rather than taken
+    /// for no binding.
+    pub confirmation: Option<Value>,
+}
+
+impl ReadAccessToken {
+    /// Whether the token may be used by a request that came with the
+    /// certificate of `presented`: always for a token bound to nothing.
+    ///
+    /// # Errors
+    ///
+    /// The reason it may not, for Hodor's log.
+    pub fn check_certificate(
+        &self,
+        presented: Option<&CertificateThumbprint>,
+    ) -> Result<(), &'static str> {
+        check_confirmation(self.confirmation.as_ref(), presented)
+    }
 }
 
 /// Reads an access token of the tenant: checks its shape, header, key,
@@ -360,6 +380,7 @@ pub fn read_access_token(
                 .collect()
         }),
         organization: text("org_id").and_then(|organization| organization.parse().ok()),
+        confirmation: claims.get(CONFIRMATION_CLAIM).cloned(),
     })
 }
 
@@ -374,9 +395,9 @@ pub struct PublishedKey {
     pub key: PublicKey,
 }
 
-/// Checks an access token presented at UserInfo, in the order the OAuth
-/// context gives. Nothing it says is used before its signature has been
-/// checked.
+/// Checks an access token presented at UserInfo, by a request that came
+/// with the certificate of `presented`, in the order the OAuth context
+/// gives. Nothing it says is used before its signature has been checked.
 ///
 /// # Errors
 ///
@@ -387,9 +408,11 @@ pub fn check_access_token(
     keys: &[PublishedKey],
     now: Timestamp,
     verifier: &dyn SignatureVerifier,
+    presented: Option<&CertificateThumbprint>,
 ) -> Result<CheckedAccessToken, BearerRefusal> {
     use BearerRefusal::InvalidToken;
     let read = read_access_token(token, issuer, keys, now, verifier).map_err(InvalidToken)?;
+    read.check_certificate(presented).map_err(InvalidToken)?;
     if !read.audiences.iter().any(|audience| audience == issuer) {
         return Err(InvalidToken("the token is not for this server"));
     }
