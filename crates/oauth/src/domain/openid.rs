@@ -120,13 +120,28 @@ pub fn authentication_methods(methods: &[String]) -> Vec<&'static str> {
         .collect()
 }
 
-/// `at_hash`: the base64url of the left half of the SHA-256 of the access
-/// token, for an ID token signed with ES256 (OpenID Connect Core, section
+/// `at_hash`: the base64url of the left half of the hash of the access
+/// token that the ID token's `algorithm` uses (OpenID Connect Core, section
 /// 3.1.3.6).
 #[must_use]
-pub fn access_token_hash(access_token: &str, digest: &dyn Digest) -> String {
-    let hash = digest.sha256(access_token.as_bytes());
-    URL_SAFE_NO_PAD.encode(&hash[..16])
+pub fn access_token_hash(
+    access_token: &str,
+    algorithm: IdTokenAlgorithm,
+    digest: &dyn Digest,
+) -> String {
+    // The hash of the ID token's `alg`: SHA-256 for the algorithms named
+    // ...256, and SHA-512 for EdDSA on Ed25519, as OpenID Connect Core
+    // (errata set 2) says.
+    match algorithm {
+        IdTokenAlgorithm::EdDsa => {
+            let hash = digest.sha512(access_token.as_bytes());
+            URL_SAFE_NO_PAD.encode(&hash[..32])
+        }
+        IdTokenAlgorithm::Es256 | IdTokenAlgorithm::Rs256 | IdTokenAlgorithm::Ps256 => {
+            let hash = digest.sha256(access_token.as_bytes());
+            URL_SAFE_NO_PAD.encode(&hash[..16])
+        }
+    }
 }
 
 /// Whether `scopes` make an OpenID Connect request.
@@ -166,6 +181,7 @@ pub fn id_token_claims(
     lifetime: Duration,
     now: Timestamp,
     access_token: &str,
+    algorithm: IdTokenAlgorithm,
     digest: &dyn Digest,
 ) -> Value {
     let mut claims = Map::new();
@@ -193,7 +209,7 @@ pub fn id_token_claims(
     }
     claims.insert(
         "at_hash".to_owned(),
-        json!(access_token_hash(access_token, digest)),
+        json!(access_token_hash(access_token, algorithm, digest)),
     );
     // The session, never its token: logout needs to know whether an ID
     // token names the browser's current session.

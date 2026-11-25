@@ -633,6 +633,7 @@ impl TokenService {
             )));
         }
         let session = session_for(self.pairwise.as_ref(), tenant, client, code.session_id).await?;
+        let id_token_algorithm = client.snapshot().settings.id_token_algorithm;
         let mut claims = id_token_claims(
             issuer.issuer,
             code,
@@ -645,14 +646,11 @@ impl TokenService {
             lifetime,
             self.ports.clock.now(),
             access_token,
+            id_token_algorithm,
             self.ports.digest.as_ref(),
         );
         add_mapped_claims(&mut claims, mapped);
-        let algorithm = client
-            .snapshot()
-            .settings
-            .id_token_algorithm
-            .key_algorithm();
+        let algorithm = id_token_algorithm.key_algorithm();
         let signed = self
             .signed(tenant, algorithm, |key_id| {
                 let header = id_token_header(algorithm.as_str(), &key_id.to_string());

@@ -1115,7 +1115,7 @@ OpenID Connect Registration makes `RS256` the default for a client that names no
 | `nonce` | The `nonce` of the authorization request, exactly as it was sent. Left out when the request had none |
 | `acr` | The level the sign-in reached, as the code says ([assurance and step-up](#assurance-and-step-up)). Left out when it reached no level of the tenant |
 | `amr` | The methods of the sign-in, as the next section says. Left out when none of them has a name in RFC 8176 |
-| `at_hash` | The base64url of the left half of the SHA-256 of the access token, so that the client can tell the two belong together |
+| `at_hash` | The base64url of the left half of the hash of the access token, so that the client can tell the two belong together. The hash is the one the ID token's algorithm names: SHA-256 for `ES256`, `RS256` and `PS256`, and SHA-512 for `EdDSA` on Ed25519, as OpenID Connect Core's second set of errata says and the conformance suite checks |
 | `org_id` | The [organization of the sign-in](#the-organization-of-a-sign-in), as in the access token. Left out when the request named none |
 | `sid` | The identifier of the session the person signed in with: a UUID that names the session, never its token, or for a [pairwise client](#pairwise-subject-identifiers) the pairwise identifier of the session for its sector. [Logout](#logout-initiated-by-the-relying-party) uses it to know whether an ID token names the browser's current session, and the [logout token](#the-logout-token) carries the same value when the session ends |
 

@@ -125,6 +125,7 @@ fn the_id_token_says_who_signed_in_for_which_client() {
         Duration::minutes(5),
         now(),
         "the-access-token",
+        IdTokenAlgorithm::Es256,
         &FakeDigest,
     );
     assert_eq!(claims["iss"], ISSUER);
@@ -141,7 +142,7 @@ fn the_id_token_says_who_signed_in_for_which_client() {
     assert_eq!(claims["amr"], json!(["pwd", "otp", "mfa"]));
     assert_eq!(
         claims["at_hash"],
-        access_token_hash("the-access-token", &FakeDigest)
+        access_token_hash("the-access-token", IdTokenAlgorithm::Es256, &FakeDigest)
     );
     assert_eq!(
         claims["at_hash"].as_str().map(str::len),
@@ -171,6 +172,7 @@ fn an_id_token_leaves_out_what_the_sign_in_did_not_have() {
         Duration::minutes(5),
         now(),
         "token",
+        IdTokenAlgorithm::Es256,
         &FakeDigest,
     );
     assert!(claims.get("nonce").is_none());
@@ -190,10 +192,26 @@ fn at_hash_is_the_left_half_of_the_digest() {
         fn sha256(&self, _data: &[u8]) -> [u8; 32] {
             std::array::from_fn(|index| u8::try_from(index).unwrap_or(u8::MAX))
         }
+        fn sha512(&self, _data: &[u8]) -> [u8; 64] {
+            std::array::from_fn(|index| u8::try_from(100 + index).unwrap_or(u8::MAX))
+        }
     }
+    // The hash of the ID token's algorithm: SHA-256 for the three named
+    // ...256, SHA-512 for EdDSA on Ed25519, and its left half each time.
     let left: Vec<u8> = (0_u8..16).collect();
+    for algorithm in [
+        IdTokenAlgorithm::Es256,
+        IdTokenAlgorithm::Rs256,
+        IdTokenAlgorithm::Ps256,
+    ] {
+        assert_eq!(
+            access_token_hash("any token", algorithm, &Positions),
+            URL_SAFE_NO_PAD.encode(&left)
+        );
+    }
+    let left: Vec<u8> = (100_u8..132).collect();
     assert_eq!(
-        access_token_hash("any token", &Positions),
+        access_token_hash("any token", IdTokenAlgorithm::EdDsa, &Positions),
         URL_SAFE_NO_PAD.encode(left)
     );
 }
@@ -552,6 +570,7 @@ fn the_id_token_names_the_organization_of_the_sign_in() {
         Duration::minutes(5),
         now(),
         "token",
+        IdTokenAlgorithm::Es256,
         &FakeDigest,
     );
     assert_eq!(claims["org_id"], organization.to_string());

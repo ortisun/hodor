@@ -60,6 +60,10 @@ mod tests {
             }
             out
         }
+
+        fn sha512(&self, _data: &[u8]) -> [u8; 64] {
+            unreachable!("a path is named by SHA-256")
+        }
     }
 
     fn namespace(value: &str) -> Namespace {

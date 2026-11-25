@@ -1565,10 +1565,23 @@ async fn every_algorithm_signs_id_tokens_and_userinfo_answers_that_check_with_th
         .unwrap_or_else(|error| panic!("{name}: the ID token checks: {error}"))
         .claims;
         assert_eq!(id_claims["nonce"], NONCE);
+        // `at_hash` is the left half of the hash the algorithm names:
+        // SHA-512 for EdDSA on Ed25519, SHA-256 for the others.
+        let access = tokens["access_token"].as_str().expect("access token");
+        let (hash, half) = if algorithm == IdTokenAlgorithm::EdDsa {
+            (&aws_lc_rs::digest::SHA512, 32)
+        } else {
+            (&aws_lc_rs::digest::SHA256, 16)
+        };
+        let digest = aws_lc_rs::digest::digest(hash, access.as_bytes());
+        assert_eq!(
+            id_claims["at_hash"],
+            URL_SAFE_NO_PAD.encode(&digest.as_ref()[..half]),
+            "{name}"
+        );
 
         // UserInfo answers a JSON Web Token, signed with the same
         // algorithm by the same key.
-        let access = tokens["access_token"].as_str().expect("access token");
         let (status, kind, cache, body) = userinfo_as_sent(&server, slug, access).await;
         assert_eq!(status, StatusCode::OK, "{name}: {body}");
         assert_eq!(kind, "application/jwt", "{name}");

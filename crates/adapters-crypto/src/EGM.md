@@ -25,7 +25,7 @@ The cryptography adapter. Hodor implements no cryptography of its own: this crat
 
 ### Public items
 
-- `Sha256Digest`: computes SHA-256 with `sha2` (`digest.rs:Sha256Digest`).
+- `Sha256Digest`: computes SHA-256 and SHA-512 with `sha2` (`digest.rs:Sha256Digest`).
 - `OsRandom`: fills buffers through `getrandom::fill` (`random.rs:OsRandom`).
 - `Argon2Parameters { memory_kibibytes, passes, lanes }`. `Default` gives 19 × 1024 kibibytes, 2 passes and 1 lane, which the documentation calls the OWASP baseline (`password.rs:Argon2Parameters`).
 - `HashingLimits { concurrent, queued }` and `HashingLimits::for_this_machine()`, which takes `concurrent` from `std::thread::available_parallelism()` (1 if that fails) and sets `queued` to four times that (`password.rs:HashingLimits`).

@@ -17,6 +17,10 @@ pub trait RandomSource: Send + Sync {
 pub trait Digest: Send + Sync {
     /// The SHA-256 digest of `data`.
     fn sha256(&self, data: &[u8]) -> [u8; 32];
+
+    /// The SHA-512 digest of `data`: what the `at_hash` of an ID token
+    /// signed with EdDSA on Ed25519 is taken from.
+    fn sha512(&self, data: &[u8]) -> [u8; 64];
 }
 
 /// Deterministic random source for tests.
@@ -42,6 +46,15 @@ pub mod testing {
                 }
                 chunk.copy_from_slice(&hash.to_be_bytes());
             }
+            output
+        }
+
+        fn sha512(&self, data: &[u8]) -> [u8; 64] {
+            // Two stand-ins for SHA-256, of the data and of the data
+            // marked, one after the other.
+            let mut output = [0_u8; 64];
+            output[..32].copy_from_slice(&self.sha256(data));
+            output[32..].copy_from_slice(&self.sha256(&[data, b"512"].concat()));
             output
         }
     }

@@ -1,6 +1,7 @@
 use super::*;
 use crate::domain::authorization::{AuthorizationCode, CodeHash, GrantId};
 use crate::domain::backchannel::{LogoutTokenSubject, logout_token_claims};
+use crate::domain::client::IdTokenAlgorithm;
 use crate::domain::openid::{IdTokenNames, PersonClaims, id_token_claims, userinfo_claims};
 use crate::domain::token::{TokenSubject, claims_for};
 use crate::testing::DistinctRandom;
@@ -108,6 +109,7 @@ fn every_claim_hodor_writes_is_reserved() {
         Duration::minutes(5),
         now(),
         "token",
+        IdTokenAlgorithm::Es256,
         &FakeDigest,
     );
     let mut subject = TokenSubject::of_code(&code);

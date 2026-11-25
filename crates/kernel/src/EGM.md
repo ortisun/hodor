@@ -14,7 +14,7 @@ All twelve modules are public (`lib.rs`: `pub mod clock` through `pub mod uow`).
 | --- | --- | --- | --- |
 | `Clock` | `now(&self) -> Timestamp` | `clock.rs:Clock` | `SystemClock` (`clock.rs`); test double `FixedClock` |
 | `RandomSource` | `fill(&self, buffer: &mut [u8])` | `random.rs:RandomSource` | `OsRandom` in `crates/adapters-crypto`; test double `CountingRandom` |
-| `Digest` | `sha256(&self, data: &[u8]) -> [u8; 32]` | `random.rs:Digest` | `Sha256Digest` in `crates/adapters-crypto`; test double `FakeDigest` |
+| `Digest` | `sha256(&self, data: &[u8]) -> [u8; 32]`; `sha512(&self, data: &[u8]) -> [u8; 64]`, for the `at_hash` of an EdDSA ID token | `random.rs:Digest` | `Sha256Digest` in `crates/adapters-crypto`; test double `FakeDigest` |
 | `SecretBox` (asynchronous: `#[async_trait]`) | `seal`, `open`, `needs_resealing -> Result<bool>` | `sealing.rs:SecretBox` | `TenantSecretBox` in `crates/keys`; test double `FakeSecretBox` |
 | `SignatureVerifier` | `verify(&self, algorithm, key, message, signature) -> bool` | `signature.rs:SignatureVerifier` | `AwsLcVerifier` in `crates/adapters-crypto` |
 | `HttpClient` (asynchronous) | `send(&self, request: HttpRequest) -> Result<HttpResponse, DomainError>` | `http.rs:HttpClient` | `GuardedHttpClient` and `ServiceHttpClient` in `crates/adapters-http`; test double `TestProvider` in `crates/adapters-crypto` |

@@ -175,7 +175,7 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   `enrollment`, a factor set up during the sign-in, names nothing and counts
   as something held),
   the code's `acr` when it has one,
-  `is_multi_factor`, `access_token_hash` (`at_hash`), `id_token_claims`,
+  `is_multi_factor`, `access_token_hash` (`at_hash`, the left half of SHA-256, or of SHA-512 for EdDSA), `id_token_claims`,
   `read_access_token` (shape, header, a published key, signature, issuer
   and expiry, in order, against `PublishedKey`s; `ReadAccessToken`, with
   its `cnf` as `confirmation` and `check_certificate(presented)`),
