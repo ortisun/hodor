@@ -266,6 +266,7 @@ nav:
       - decisions/0065-where-the-standard-claims-come-from.md
       - decisions/0068-claims-of-every-consented-scope.md
       - decisions/0071-signing-intermediates.md
+      - decisions/0072-the-state-hash-and-the-response-types-of-a-client.md
       - decisions/0074-hodor-cert-manager-issuer.md
       - decisions/0075-the-registration-settings-of-a-tenant.md
       - decisions/0076-names-an-authority-leaves-to-its-meshes.md
