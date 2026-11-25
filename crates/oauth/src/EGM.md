@@ -91,7 +91,8 @@ follows is `docs/architecture/contexts/oauth.md`.
     `PendingAuthorization`, `PendingAuthorizationId`, `BrowserSecret`,
     `Grant`, `GrantId`, `GrantStatus`, `AuthorizationCode`, `CodeHash`,
     `CodeValue`, `CodePresentation`, `CodeRefusal`, `s256_challenge`, and
-    `CODE_LIFETIME`, `PENDING_LIFETIME`, `MAX_RESOURCES`.
+    `CODE_LIFETIME`, `PENDING_LIFETIME`, `MAX_RESOURCES`; `ResponseType`,
+    `ResponseMode` and `error_mode`.
   - Refresh tokens: `RefreshFamily`, `RefreshFamilyId`, `RefreshTokenHash`,
     `RefreshTokenValue`, `RefreshTokenRecord`, `FamilySecret`,
     `FamilyStatus`, `RefreshAsk`, `RefreshDecision`, `RefreshRefusal`, and

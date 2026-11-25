@@ -18,6 +18,7 @@ pub(crate) mod pairwise;
 pub(crate) mod refresh;
 pub(crate) mod request_object;
 pub(crate) mod resource_server;
+pub(crate) mod response;
 pub(crate) mod secret;
 pub(crate) mod spiffe;
 pub(crate) mod text;

@@ -218,6 +218,7 @@ fn asked(client: ClientId) -> AuthorizationRequest {
         acr_values: None,
         first_party: false,
         organization: None,
+        response_mode: crate::domain::response::ResponseMode::Query,
     }
 }
 

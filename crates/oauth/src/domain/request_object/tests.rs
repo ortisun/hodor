@@ -762,6 +762,67 @@ fn a_refused_object_is_answered_only_at_one_of_the_client_s_addresses() {
 }
 
 #[test]
+fn a_refused_object_is_answered_in_the_mode_named_beside_its_address() {
+    use crate::domain::response::ResponseMode;
+    let setting = setting(None);
+    let mut inside = claims(&setting.client);
+    inside["redirect_uri"] = json!(OTHER_REDIRECT);
+    inside["response_mode"] = json!("form_post");
+    inside["iss"] = json!("someone else");
+    let bad = unsigned(&inside);
+    let mode_of = |parameters: &AuthorizationParameters| match check(&setting, parameters) {
+        Err(AuthorizationRefusal::Redirect(error)) => (error.redirect_uri, error.mode),
+        other => panic!("expected an error at the redirect address, got {other:?}"),
+    };
+
+    // Outside: the mode outside, whatever the object says.
+    assert_eq!(
+        mode_of(&outside(
+            &setting.client,
+            &bad,
+            &[("redirect_uri", REDIRECT), ("response_type", "code")],
+        )),
+        (REDIRECT.to_owned(), ResponseMode::Query)
+    );
+    assert_eq!(
+        mode_of(&outside(
+            &setting.client,
+            &bad,
+            &[
+                ("redirect_uri", REDIRECT),
+                ("response_type", "code"),
+                ("response_mode", "form_post"),
+            ],
+        )),
+        (REDIRECT.to_owned(), ResponseMode::FormPost)
+    );
+    // Inside: the object's own mode, read without trusting it.
+    assert_eq!(
+        mode_of(&outside(&setting.client, &bad, &[])),
+        (OTHER_REDIRECT.to_owned(), ResponseMode::FormPost)
+    );
+}
+
+#[test]
+fn the_mode_inside_an_object_is_the_request_s() {
+    use crate::domain::response::ResponseMode;
+    let setting = setting(Some(RequestObjectAlgorithm::None));
+    let mut inside = claims(&setting.client);
+    inside["response_mode"] = json!("form_post");
+    // Outside, only `client_id` is read: the mode inside wins.
+    let request = check(
+        &setting,
+        &outside(
+            &setting.client,
+            &unsigned(&inside),
+            &[("response_mode", "query")],
+        ),
+    )
+    .expect("accepted");
+    assert_eq!(request.response_mode, ResponseMode::FormPost);
+}
+
+#[test]
 fn an_object_for_an_unknown_client_is_never_checked() {
     let setting = setting(None);
     let object = signed(
@@ -801,6 +862,7 @@ fn an_object_for_an_unknown_client_is_never_checked() {
                 error: "invalid_request_object",
                 description: "the request object's signature does not verify",
                 state: None,
+                mode: crate::domain::response::ResponseMode::Query,
             }
         ))
     );

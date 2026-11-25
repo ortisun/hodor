@@ -354,6 +354,8 @@ fn request_for(client_id: ClientId) -> AuthorizationRequest {
         acr_values: Some("urn:hodor:mfa".to_owned()),
         first_party: true,
         organization: None,
+        // Kept and read back: the mode the answer goes in.
+        response_mode: crate::domain::response::ResponseMode::FormPost,
     }
 }
 

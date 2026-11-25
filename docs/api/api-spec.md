@@ -145,7 +145,7 @@ The paths are relative to the tenant, `https://{host}/t/{slug}`, whose issuer is
 | `GET /.well-known/oauth-authorization-server` | Authorization server metadata, the same document (built) | RFC 8414 |
 | `GET /oauth2/jwks` | Public signing keys (built: [the published key set](../architecture/contexts/keys.md#the-published-key-set)) | RFC 7517 |
 | `GET /certificate-authority/bundle` | The bundle of the tenant's certificate authority, served only when the installation turns the authority on (built: [its bundle](../architecture/contexts/keys.md#its-bundle)) | SPIFFE Federation, `https_web` profile |
-| `GET, POST /oauth2/authorize` | Authorization endpoint, with [request objects](../architecture/contexts/oauth.md#request-objects) by value | RFC 6749, OpenID Connect Core, RFC 9101 |
+| `GET, POST /oauth2/authorize` | Authorization endpoint, with [request objects](../architecture/contexts/oauth.md#request-objects) by value, answering in the [response modes](../architecture/contexts/oauth.md#response-modes) `query` and `form_post` | RFC 6749, OpenID Connect Core, RFC 9101, OAuth 2.0 Form Post Response Mode |
 | `GET /oauth2/authorize/resume` | Where the hosted pages send the browser after a sign-in, to go on with the pending authorization request ([the OAuth context](../architecture/contexts/oauth.md#signing-in-and-coming-back)) | — |
 | `POST /oauth2/par` | Pushed authorization request | RFC 9126 |
 | `POST /oauth2/token` | Token endpoint: `authorization_code`, `refresh_token` and `client_credentials` (built: [the token endpoint](../architecture/contexts/oauth.md#token-endpoint-and-client-authentication)), `urn:ietf:params:oauth:grant-type:device_code`, `…:token-exchange`, `…:jwt-bearer` | RFC 6749, 8628, 8693, 7523 |

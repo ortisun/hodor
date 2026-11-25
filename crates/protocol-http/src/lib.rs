@@ -16,6 +16,7 @@ mod authorize;
 mod bearer;
 mod client_address;
 mod consent;
+mod form_post;
 mod forwarded_identity;
 mod health;
 mod interaction;

@@ -340,6 +340,12 @@ async fn the_discovery_document_names_what_answers() {
     // Back-channel logout is offered, and every logout token carries `sid`.
     assert_eq!(document["backchannel_logout_supported"], true);
     assert_eq!(document["backchannel_logout_session_supported"], true);
+    // The authorization endpoint answers in the query and with the page of
+    // `form_post`.
+    assert_eq!(
+        document["response_modes_supported"],
+        serde_json::json!(["query", "form_post"])
+    );
     assert!(
         document["scopes_supported"]
             .as_array()
