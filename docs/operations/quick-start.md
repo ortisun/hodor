@@ -251,7 +251,7 @@ python3 deploy/demo/operations.py
 
 The second worker keeps nothing for any tenant of the stack: it removes every ended session and every delivered message, of the other demonstrations too, and it is stopped at the end. The published image and chart are not part of this script; they are tried by hand at the tag of 0.3.0, as the [release steps](../development/conventions.md#releases) say.
 
-It ends with `The demonstration of Milestone 6 passed.` It can be run again and again, and runs in continuous integration after the other six. The variables of [the first demonstration](#the-demonstration) tell it where the stack is, and `HODOR_EDGE_URL` where the web server in front is, `http://localhost:8081` unless set.
+It ends with `The demonstration of Milestone 6 passed.` It can be run again and again, and runs in continuous integration after the other eight. The variables of [the first demonstration](#the-demonstration) tell it where the stack is, and `HODOR_EDGE_URL` where the web server in front is, `http://localhost:8081` unless set.
 
 ## The demonstration of Milestone 7
 
@@ -300,6 +300,31 @@ python3 deploy/demo/workloads.py
 The development stack has what this needs: `webhook-receiver`, a receiver of webhooks that keeps what it gets and shows it on its own port, named in `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` of the server and the worker so that it may be called over plain HTTP; and a worker that waits one second after a first failed attempt and sets a delivery aside after three, so that the retries take seconds rather than hours. Nowhere real has either.
 
 It ends with `The demonstration of Milestone 8 passed.` It can be run again and again, and runs in continuous integration after the demonstration of Milestone 7 and before that of Milestone 6, whose second worker removes the delivered messages this one reads. The variables of [the first demonstration](#the-demonstration) tell it where the stack is, and `HODOR_WEBHOOK_RECEIVER_URL` where the receiver is, `http://localhost:9600` unless given.
+
+## The demonstration of Milestone 9
+
+[Milestone 9](../product/epics.md#milestone-9-what-020-left-out) builds what 0.2.0 left out: applications of different sectors know a person by different identifiers, a client gets the claims it is configured for, applications are told when a person signs out, a person signs in with a code or a link sent by email or sets up a second factor while signing in, and an application grants access to one resource at a time. Its demonstration plays an administrator, an operator, two applications, two people and the applications' receiver of logout tokens:
+
+```bash
+python3 deploy/demo/what_was_left_out.py
+```
+
+| Step | What it shows |
+|---|---|
+| Two tenants, and their administrators | Two tenants, each with a signing key and a first administrator made with the command-line tool |
+| Two applications of two sectors | Through the administration interface, Travel and Payroll, each with a pairwise client whose redirect address names a host of its own, its sector, and a back-channel logout address at the stack's receiver, `webhook-receiver` |
+| One person, two sectors, two subjects | A person signs in once and gets a code from each application at once. The two ID tokens, checked against the tenant's key set, name her by two different `sub` and her session by two different `sid`, neither of them her user identifier. Signed in again, Travel is given the same `sub`, and UserInfo answers Travel with it |
+| A claim mapper | The person is put in the group `finance`. A mapper that would name `sub` is refused, `oauth.claim_mapper_name_reserved`. A mapper of Travel writes her groups as `teams`, and her next ID token carries the identifier of `finance` there, as UserInfo does |
+| Signed out at Hodor | She signs out as the account page does. The receiver gets a logout token for each application, posted as a form: of type `logout+jwt`, checked against the tenant's key set, for that application, with the back-channel logout event, and naming her and her session by the `sub` and `sid` of that application's ID token |
+| A code, then a link, by email | `hodor-cli tenant email-sign-in` turns both on. She asks for a code, reads it from the mail server, and is signed in with `email_code`; the same code, presented again in a new sign-in, is refused. She asks for a link: opened in another browser it signs nothing in, in the browser that asked it signs her in with `email_link`, and presented again it is refused |
+| A second factor set up during the sign-in | `hodor-cli tenant second-factor --policy required`, and a second person who has no second factor. The password leaves the sign-in waiting at the step `enrollment`, and leaving it there signs nobody in. In another sign-in, the person begins an authenticator application and is given the `otpauth://` address its QR code shows; the script reads the secret from that address, computes the code as the application would, and the code finishes the sign-in with ten recovery codes. The session holds a password and the enrollment, at the multi-factor level, and Travel's ID token says `pwd` and `mfa`. The next sign-in asks for the application's code |
+| A document shared with a group | A Documents resource server answered by the native engine, with the permission `document:read`. Before anything is shared, the member of `finance` may not read `budget-2027`; an entry of its access control list lets `finance` read it. The Authorization API then allows the member, with `matching_entry`, and denies the second person and another document |
+| Tenants apart | The second tenant's administrator finds neither Travel's mapper nor the entry |
+| The audit log | The log of the first tenant holds the mapper made, a code sent by email, the second factor set up and the entry granted |
+
+The applications are played by the script, as in [the demonstration of Milestone 4](#the-demonstration-of-milestone-4): they register redirect addresses nobody listens on, and read where the browser is sent. Their back-channel logout addresses are paths of `webhook-receiver`, which keeps the logout tokens the worker posts as it keeps webhooks.
+
+It ends with `The demonstration of Milestone 9 passed.` It can be run again and again, and runs in continuous integration after the demonstration of Milestone 8 and before that of Milestone 6, whose second worker removes the delivered messages this one reads. The variables of [the first demonstration](#the-demonstration) tell it where the stack is, and `HODOR_WEBHOOK_RECEIVER_URL` where the receiver is, `http://localhost:9600` unless given.
 
 ## Stop
 

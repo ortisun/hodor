@@ -59,7 +59,7 @@ npx playwright install chromium
 npm run browser-tests
 ```
 
-`HODOR_URL`, `HODOR_MAIL_URL`, `HODOR_TENANT` and `HODOR_PROVIDER` point the tests at a stack on other ports, at another tenant or at a provider under another alias; they default to `http://localhost:8080`, `http://localhost:8025`, `acme` and `development`. The tests create new people on every run and remove nothing.
+`HODOR_URL`, `HODOR_MAIL_URL`, `HODOR_TENANT` and `HODOR_PROVIDER` point the tests at a stack on other ports, at another tenant or at a provider under another alias; they default to `http://localhost:8080`, `http://localhost:8025`, `acme` and `development`. The tests create new people on every run and remove nothing. The tests of signing in by email and of setting up a second factor during a sign-in each make a tenant of their own with `hodor-cli`, `browser-` and eight characters, so that the policy they turn on touches no other test; those tenants are not removed either.
 
 Every run asks for about ten links, and a tenant limits how many may be asked for from one address: fifty in fifteen minutes by default, with waits that grow. After several runs in a row the tests stop before they start and say so. Wait, or create another tenant with open registration and name it in `HODOR_TENANT`.
 
@@ -271,7 +271,7 @@ The sign-in page then offers "Continue with Development SAML provider". The Comp
 
 ### The development receiver of webhooks
 
-The stack has a receiver of webhooks, `deploy/dev-webhook-receiver/receiver.mjs`, one file for Node.js with no dependencies. It answers every `POST` with `204` and keeps the last 500 it got, with their headers and bodies, and `GET /received` shows them as JSON, the oldest first; `?path=<path>` keeps those sent to one path, and `?webhook-id=<id>` those of one event. It checks nothing: checking the signature is the receiver's part that [the demonstration of Milestone 8](../operations/quick-start.md#the-demonstration-of-milestone-8) plays. Hodor reaches it as `webhook-receiver:9600`, which the Compose file names in `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` of the server and the worker; a browser or a script on this machine reaches it as `localhost:9600`, or the port in `HODOR_WEBHOOK_RECEIVER_PORT`.
+The stack has a receiver of webhooks, `deploy/dev-webhook-receiver/receiver.mjs`, one file for Node.js with no dependencies. It answers every `POST` with `204` and keeps the last 500 it got, with their headers and bodies, and `GET /received` shows them as JSON, the oldest first; `?path=<path>` keeps those sent to one path, and `?webhook-id=<id>` those of one event. It checks nothing: checking the signature is the receiver's part that [the demonstration of Milestone 8](../operations/quick-start.md#the-demonstration-of-milestone-8) plays. It keeps the logout tokens the worker posts to an application's back-channel logout address in the same way, a form rather than JSON: [the demonstration of Milestone 9](../operations/quick-start.md#the-demonstration-of-milestone-9) gives its two applications addresses there, `http://webhook-receiver:9600/<tenant>/<application>`, and checks the tokens itself. Hodor reaches it as `webhook-receiver:9600`, which the Compose file names in `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` of the server and the worker; a browser or a script on this machine reaches it as `localhost:9600`, or the port in `HODOR_WEBHOOK_RECEIVER_PORT`.
 
 Register it for a tenant:
 
