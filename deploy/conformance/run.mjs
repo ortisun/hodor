@@ -1,6 +1,7 @@
-// Runs the Basic OpenID Provider and Config OpenID Provider plans of the
-// OpenID conformance suite against Hodor, in the stack of compose.yaml, and
-// fails unless every test ends as docs/operations/conformance.md expects.
+// Runs the Basic OpenID Provider, Config OpenID Provider and Back-Channel
+// OpenID Provider plans of the OpenID conformance suite against Hodor, in
+// the stack of compose.yaml, and fails unless every test ends as
+// docs/operations/conformance.md expects.
 //
 // NOT FOR ANYTHING REAL: the person, the clients and their secrets are made
 // here for the run and written to the console.
@@ -38,6 +39,10 @@ const PASSWORD = "conformance-suite-password";
 const ISSUER = `${HODOR}/t/${TENANT}`;
 const CALLBACK = `${SUITE}test/a/${ALIAS}/callback`;
 const POST_LOGOUT = `${SUITE}test/a/${ALIAS}/post_logout_redirect`;
+// The suite's back-channel logout address, `test/a/{alias}/backchannel_logout`,
+// as the worker reaches it: through the relay of compose.yaml.
+const RELAY = "suite-relay:8080";
+const BACKCHANNEL_LOGOUT = `http://${RELAY}/test/a/${ALIAS}/backchannel_logout`;
 const ONLY = (process.env.CONFORMANCE_ONLY ?? "").split(",").filter((name) => name !== "");
 
 // Both servers show certificates of their own making.
@@ -55,6 +60,9 @@ function cli(...args) {
       "compose", "-f", COMPOSE_FILE, "run", "--rm", "--no-deps", "-T",
       "--entrypoint", "/usr/local/bin/hodor-cli",
       "-e", "HODOR_DATABASE_URL=postgres://hodor_server:dev-server@postgres:5432/hodor",
+      // The back-channel logout address is checked when the client is made,
+      // as the server checks it: the relay is the one exception.
+      "-e", `HODOR_OUTBOUND_DEVELOPMENT_HOSTS=${RELAY}`,
       "hodor", ...args,
     ],
     { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] },
@@ -110,7 +118,7 @@ async function waitForState(module, states, seconds) {
 // ---------------------------------------------------------------------------
 
 function seedHodor() {
-  step("A tenant, an application and three clients in Hodor");
+  step("A tenant, an application and four clients in Hodor");
   if (!cli("tenant", "list").split("\n").some((line) => line.includes(` ${TENANT} `) || line.startsWith(`${TENANT} `))) {
     cli("tenant", "create", "--slug", TENANT, "--name", "Conformance", "--open-registration");
   }
@@ -119,13 +127,14 @@ function seedHodor() {
     cli("application", "add", "--tenant", TENANT, "--name", "OpenID conformance suite", "--first-party"),
     "application",
   );
-  const client = (name, method) => {
+  const client = (name, method, more = []) => {
     const output = cli(
       "client", "add", "--tenant", TENANT, "--application", application, "--name", name,
       "--type", "confidential", "--method", method, "--without-pkce",
       "--grant", "authorization_code", "--grant", "refresh_token",
       "--redirect-uri", CALLBACK, "--post-logout-redirect-uri", POST_LOGOUT,
       "--scope", "openid", "--scope", "profile", "--scope", "email", "--scope", "offline_access",
+      ...more,
     );
     return { client_id: printed(output, "client"), client_secret: printed(output, "secret") };
   };
@@ -133,6 +142,11 @@ function seedHodor() {
     first: client("First client", "client_secret_basic"),
     second: client("Second client", "client_secret_basic"),
     post: client("Client that sends its secret in the form", "client_secret_post"),
+    // The back-channel plan's alone: a test of another plan that signs out
+    // never gets a logout token it does not wait for.
+    backchannel: client("Client told when the session ends", "client_secret_basic", [
+      "--backchannel-logout-uri", BACKCHANNEL_LOGOUT, "--backchannel-logout-session-required",
+    ]),
   };
 }
 
@@ -329,6 +343,11 @@ async function main() {
         { server_metadata: "discovery", client_registration: "static_client" }, browser)),
       // This plan sets its own variants.
       ...(await runPlan("oidcc-config-certification-test-plan", config, undefined, browser)),
+      // The client of this plan is the one with a back-channel logout
+      // address; the plan sets the rest of its variants.
+      ...(await runPlan("oidcc-backchannel-rp-initiated-logout-certification-test-plan",
+        { ...config, client: clients.backchannel, client2: undefined, client_secret_post: undefined },
+        { client_registration: "static_client", response_type: "code" }, browser)),
     ];
     if (process.env.CONFORMANCE_REPORT) {
       writeFileSync(process.env.CONFORMANCE_REPORT, JSON.stringify(results, null, 2));

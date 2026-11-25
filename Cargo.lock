@@ -2085,6 +2085,7 @@ name = "hodor-worker"
 version = "0.2.0"
 dependencies = [
  "async-trait",
+ "axum",
  "clap",
  "hodor-adapters-crypto",
  "hodor-adapters-http",
@@ -2096,11 +2097,14 @@ dependencies = [
  "hodor-kernel",
  "hodor-keys",
  "hodor-notification",
+ "hodor-oauth",
  "hodor-observability",
  "hodor-protocol-http",
+ "hodor-session",
  "hodor-tenant",
  "hodor-webhooks",
  "http",
+ "jsonwebtoken",
  "opentelemetry",
  "reqwest",
  "serde",
@@ -2110,6 +2114,7 @@ dependencies = [
  "testcontainers",
  "time",
  "tokio",
+ "tower",
  "tracing",
 ]
 

@@ -26,6 +26,7 @@ mod oauth;
 mod oauth_access_token;
 mod oauth_authorization;
 mod oauth_consent;
+mod oauth_logout;
 mod oauth_refresh;
 mod oauth_token;
 mod organization;
@@ -72,6 +73,7 @@ pub use oauth_authorization::{
     PgAuthorizationCodeStore, PgAuthorizationRequestStore, PgGrantStore,
 };
 pub use oauth_consent::PgConsentStore;
+pub use oauth_logout::{PgDueLogoutDeliveries, PgLogoutDeliveryStore, PgSessionClients};
 pub use oauth_refresh::PgRefreshTokenStore;
 pub use oauth_token::PgClientAssertionStore;
 pub use organization::PgOrganizationRepository;

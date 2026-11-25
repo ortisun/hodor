@@ -1375,7 +1375,13 @@ fn administration(
         digest: digest.clone(),
         random: random.clone(),
         clock: clock.clone(),
-    });
+    })
+    // Back-channel logout addresses are checked as webhook endpoints are,
+    // with this installation's development exception.
+    .with_destinations(Arc::new(GuardedHttpClient::new(OutboundPolicy {
+        development_hosts: development_hosts(config),
+        ..OutboundPolicy::default()
+    })?));
     let applications_for_subjects = applications.clone();
     Ok(AdminState {
         tokens: AccessTokenService::new(

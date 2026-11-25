@@ -16,7 +16,10 @@ and the discovery document; Issue-60: logout initiated by the relying
 party, with post-logout redirect addresses on clients; Issue-58:
 revocation, introspection and the register of access tokens they and
 UserInfo ask; and Issue-62: consent, with the question asked of a person,
-their answer, their consents and withdrawing one. Storage,
+their answer, their consents and withdrawing one; and Issue-100:
+back-channel logout, with the back-channel logout address of clients, the
+deliveries made when a session ends and the logout tokens the worker signs
+and sends. Storage,
 randomness, hashing, signature checking and time are reached through ports
 and kernel traits.
 
@@ -37,7 +40,13 @@ and kernel traits.
   `crates/adapters-postgres/src/oauth_access_token.rs`;
   `ConsentStore`, by `PgConsentStore` in
   `crates/adapters-postgres/src/oauth_consent.rs`;
-  `PersonStanding`, by `ServerStanding` in `apps/hodor-server/src/standing.rs`.
+  `PersonStanding`, by `ServerStanding` in `apps/hodor-server/src/standing.rs`;
+  `SessionClients`, `LogoutDeliveryStore` and `DueLogoutDeliveries`, by
+  `PgSessionClients`, `PgLogoutDeliveryStore` and `PgDueLogoutDeliveries`
+  in `crates/adapters-postgres/src/oauth_logout.rs`; `TenantIssuer`, by
+  `TenantIssuers` in `apps/hodor-worker/src/main.rs`.
+- Used by `apps/hodor-worker/src/main.rs`: `BackChannelLogoutFanOut` among
+  the outbox handlers, and `BackChannelLogoutSender` in a sending loop.
 - Used by `crates/protocol-http/src/authorize.rs`,
   `crates/protocol-http/src/consent.rs` (the consent routes of the
   interaction interface), `crates/protocol-http/src/admin.rs` (a user's
@@ -87,6 +96,10 @@ and kernel traits.
   the request (`must_ask`); `offline_access` is asked every time and never
   kept. Withdrawing a consent revokes every active grant of the person for
   the client.
+- A logout token leaves the crate only in the request
+  `BackChannelLogoutSender::send` makes to a client's back-channel logout
+  address; it is signed anew for every attempt and stored nowhere, and
+  `oauth.backchannel_logout_set_aside` carries neither it nor the address.
 - Every store call is scoped to the tenant of the unit of work (see
   [application](./src/application/EGM.md)).
 
@@ -95,7 +108,9 @@ and kernel traits.
 - Through the stores: reads and writes applications, clients, resource
   servers, pending authorization requests, grants, codes, the `jti`s of
   client assertions, refresh token families with their tokens' hashes,
-  the records of access tokens by `jti`, and consents with their history. Through `KeyService`: signs access and ID tokens, and lists the
+  the records of access tokens by `jti`, consents with their history, and
+  logout deliveries. Through `HttpClient`: posts logout tokens. Through
+  `KeyService`: signs access, ID and logout tokens, and lists the
   published keys. Through `SecretBox`: seals and opens the secrets of
   refresh token families. Through `IdentityService`: reads people. Through
   `UnitOfWork::record_event`: records the `oauth.*` events.
@@ -108,4 +123,7 @@ and kernel traits.
   `cargo test -p hodor-server --test token` and
   `cargo test -p hodor-server --test openid` and
   `cargo test -p hodor-server --test consent` for the endpoints on the real
-  binary.
+  binary; `cargo test -p hodor-adapters-postgres --test backchannel_logout`,
+  `cargo test -p hodor-server --test logout` and
+  `cargo test -p hodor-worker --test backchannel_logout` for back-channel
+  logout.

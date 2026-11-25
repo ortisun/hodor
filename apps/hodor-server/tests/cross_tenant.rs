@@ -3815,3 +3815,152 @@ async fn an_enrollment_begun_in_one_tenant_cannot_be_finished_in_another() {
     let (_, body) = waiting_after_password(&world, globex).await;
     assert_eq!(body["step"], "totp", "{body}");
 }
+
+/// A first-party client of a new application of `tenant` that is told
+/// when a session it signed a person in with ends.
+async fn client_told_of_sign_outs(world: &World, tenant: &Tenant, address: &str) -> String {
+    use hodor_adapters_postgres::{PgApplicationStore, PgClientStore, PgResourceServerStore};
+    use hodor_oauth::api::{
+        ApplicationPorts, ApplicationService, ApplicationSettings, ClientSettings, ClientType,
+        CreateClient, GrantType,
+    };
+    let applications = ApplicationService::new(ApplicationPorts {
+        units_of_work: Arc::new(world.database.app().clone()),
+        applications: Arc::new(PgApplicationStore),
+        clients: Arc::new(PgClientStore),
+        resource_servers: Arc::new(PgResourceServerStore),
+        digest: Arc::new(Sha256Digest),
+        random: Arc::new(OsRandom),
+        clock: Arc::new(SystemClock),
+    })
+    .with_destinations(Arc::new(hodor_oauth::testing::FakeDestinations));
+    let application = applications
+        .create_application(
+            &tenant.context,
+            ApplicationSettings {
+                name: "Billing".to_owned(),
+                first_party: true,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("application");
+    let mut settings = ClientSettings::new(
+        "Billing web",
+        ClientType::Confidential,
+        vec![GrantType::AuthorizationCode],
+        vec![REDIRECT.to_owned()],
+    );
+    settings.allowed_scopes = vec!["openid".to_owned()];
+    settings.backchannel_logout_uri = Some(address.to_owned());
+    applications
+        .create_client(
+            &tenant.context,
+            CreateClient {
+                application_id: application.id(),
+                client_type: ClientType::Confidential,
+                settings,
+                secret_lifetime: None,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("client")
+        .0
+        .id()
+        .to_string()
+}
+
+/// The person signs in to `tenant` and is sent back to `client` with a
+/// code; answers the browser, still signed in.
+async fn signed_in_to(world: &World, tenant: &Tenant, client: &str) -> Browser {
+    let mut browser = Browser::not_following(&world.server);
+    let (_, body) = browser.sign_in(tenant.slug, EMAIL, PASSWORD).await;
+    assert_eq!(body["status"], "completed", "{body}");
+    let challenge = hodor_oauth::api::s256_challenge(VERIFIER, &Sha256Digest);
+    let path = format!(
+        "/t/{}/oauth2/authorize?{}",
+        tenant.slug,
+        form_urlencoded::Serializer::new(String::new())
+            .extend_pairs([
+                ("response_type", "code"),
+                ("client_id", client),
+                ("redirect_uri", REDIRECT),
+                ("scope", "openid"),
+                ("code_challenge", challenge.as_str()),
+                ("code_challenge_method", "S256"),
+            ])
+            .finish()
+    );
+    let (status, location, _) = browser.navigate(Method::GET, &path, None).await;
+    assert_eq!(status, StatusCode::FOUND);
+    assert!(
+        location
+            .as_deref()
+            .is_some_and(|location| location.starts_with(REDIRECT) && location.contains("code=")),
+        "{location:?}"
+    );
+    browser
+}
+
+#[tokio::test]
+async fn a_sign_out_in_one_tenant_tells_none_of_another_tenants_clients() {
+    let world = world().await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    let acme_client =
+        client_told_of_sign_outs(&world, acme, "https://billing.acme.example/logout").await;
+    let globex_client =
+        client_told_of_sign_outs(&world, globex, "https://billing.globex.example/logout").await;
+    let mut in_acme = signed_in_to(&world, acme, &acme_client).await;
+    let _in_globex = signed_in_to(&world, globex, &globex_client).await;
+
+    // Signing out, as the account page does: with the session's CSRF
+    // token.
+    let (status, _) = in_acme
+        .send(Method::GET, "/t/acme/interaction/session", None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = in_acme
+        .send(Method::DELETE, "/t/acme/interaction/session", None)
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // The worker's part: the outbox hands the end of the session to the
+    // OAuth context, in the session's tenant.
+    let dispatcher = OutboxDispatcher::new(
+        world.database.platform().clone(),
+        world.database.app().clone(),
+        vec![Arc::new(hodor_oauth::api::BackChannelLogoutFanOut::new(
+            Arc::new(hodor_adapters_postgres::PgSessionClients),
+            Arc::new(hodor_adapters_postgres::PgClientStore),
+            Arc::new(hodor_adapters_postgres::PgApplicationStore),
+            Arc::new(hodor_adapters_postgres::PgLogoutDeliveryStore),
+            Arc::new(SystemClock),
+        ))],
+    );
+    while dispatcher
+        .dispatch_batch(100)
+        .await
+        .expect("dispatch")
+        .delivered
+        > 0
+    {}
+    let made: Vec<(String, String)> =
+        sqlx::query_as("SELECT tenant_id::text, client_id::text FROM oauth.logout_delivery")
+            .fetch_all(world.database.owner())
+            .await
+            .expect("deliveries");
+    assert_eq!(
+        made,
+        [(acme.context.tenant_id().to_string(), acme_client)],
+        "Acme's client alone is told; Globex's session goes on"
+    );
+    let ended_in_globex: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM session.session WHERE tenant_id = $1 AND revoked_at IS NOT NULL",
+    )
+    .bind(globex.context.tenant_id().as_uuid())
+    .fetch_one(world.database.owner())
+    .await
+    .expect("sessions");
+    assert_eq!(ended_in_globex, 0);
+}

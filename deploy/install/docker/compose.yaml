@@ -130,6 +130,8 @@ services:
       HODOR_PLATFORM_DATABASE_URL: *worker-platform-url
       # The server's keys: the worker makes the tenants' signing keys under them.
       HODOR_SECRET_KEYS: ${HODOR_SECRET_KEYS:?Set HODOR_SECRET_KEYS in .env, as identifier:key}
+      # The server's address: the issuer of the logout tokens the worker sends starts with it.
+      HODOR_PUBLIC_URL: ${HODOR_PUBLIC_URL:?Set HODOR_PUBLIC_URL in .env}
       # Optional settings, as for the server. Without HODOR_SMTP_URL no message is delivered: they wait.
       HODOR_SMTP_URL:
       HODOR_MAIL_FROM:

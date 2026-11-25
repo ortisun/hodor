@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use time::Duration;
 
 mod authorization;
+mod backchannel;
 mod consent;
 mod refresh;
 mod register;
@@ -22,6 +23,10 @@ mod token;
 pub use authorization::{
     AuthorizationStorePorts, InMemoryAuthorizationCodes, InMemoryAuthorizationRequests,
     InMemoryGrants, run_authorization_contract,
+};
+pub use backchannel::{
+    ClientAnswer, FakeDestinations, FixedIssuer, InMemoryLogoutDeliveries, InMemorySessionClients,
+    LogoutDeliveryStorePorts, RecordingClients, run_logout_delivery_contract,
 };
 pub use consent::{ConsentStorePorts, InMemoryConsents, consent_service, run_consent_contract};
 pub use refresh::{
@@ -396,6 +401,8 @@ fn client(application_id: ApplicationId, at: Timestamp) -> Client {
         ],
     );
     settings.post_logout_redirect_uris = vec!["https://payroll.example.com/signed-out".to_owned()];
+    settings.backchannel_logout_uri = Some("https://payroll.example.com/backchannel".to_owned());
+    settings.backchannel_logout_session_required = true;
     settings.allowed_scopes = vec!["openid".to_owned(), "payroll:read".to_owned()];
     Client::create(
         application_id,

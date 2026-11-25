@@ -12,7 +12,9 @@ follows is `docs/architecture/contexts/oauth.md`.
   - Ports: `ApplicationStore`, `ClientStore`, `ResourceServerStore`,
     `AuthorizationRequestStore`, `GrantStore`, `AuthorizationCodeStore`,
     `ClientAssertionStore`, `RefreshTokenStore`, `AccessTokenRecordStore`,
-    `PersonStanding`, `PersonMemberships`, `ConsentStore`.
+    `PersonStanding`, `PersonMemberships`, `ConsentStore`, and those of
+    back-channel logout: `SessionClients`, `LogoutDeliveryStore`,
+    `DueLogoutDeliveries`, `TenantIssuer`.
   - Services: `ApplicationService`, `ApplicationPorts`, `CreateClient`,
     `RotateSecret`, `CreateResourceServer`; `AuthorizationCodeService`,
     `AuthorizationCodePorts`, `ResumedRequest`, `RedeemedCode`;
@@ -20,7 +22,16 @@ follows is `docs/architecture/contexts/oauth.md`.
     `TokenService::revoke`, `introspect`, `register` and `workload_tokens`;
     `AccessTokenRegister`; `WorkloadTokens`; `UserInfoService`, `UserInfoPorts`;
     `LogoutService`, `LogoutPorts`, `LogoutRefusal`; `ConsentService`,
-    `ConsentPorts`, `ConsentQuestion`, `AskedScope`, `ListedConsent`.
+    `ConsentPorts`, `ConsentQuestion`, `AskedScope`, `ListedConsent`;
+    `BackChannelLogoutFanOut`, `BackChannelLogoutSender`,
+    `LogoutSenderPorts`, `LogoutDeliverySettings`, `LogoutLease`,
+    `LogoutOutcome`.
+  - Back-channel logout's domain: `LogoutDelivery`, `LogoutDeliveryId`,
+    `LogoutDeliverySnapshot`, `LogoutDeliveryStatus`, `LogoutRetryPolicy`,
+    `LogoutTokenSubject`, `logout_token_claims`, `logout_token_header`,
+    `check_backchannel_logout_uri`, and `BACKCHANNEL_LOGOUT_EVENT`,
+    `LOGOUT_TOKEN_TYPE`, `LOGOUT_TOKEN_LIFETIME`, `SESSION_REVOKED`,
+    `MAX_BACKCHANNEL_LOGOUT_URI_LENGTH`, `MAX_LOGOUT_ERROR_LENGTH`.
   - The end-session endpoint's domain: `LogoutParameters`,
     `check_id_token_hint`, `IdTokenHint`, `LogoutRequest` (with `decide`),
     `LogoutDecision`, `CurrentSession`, `ReturnAddress`, `logout_refusal`
@@ -107,6 +118,14 @@ follows is `docs/architecture/contexts/oauth.md`.
     with `history(tenant)`; `consent_service(units, &stores, clock)`, a
     `ConsentService` on in-memory stores for the layers above;
     `ConsentStorePorts` and `run_consent_contract(ports)`.
+  - `testing/backchannel.rs`: `InMemorySessionClients::new(&grants)`;
+    `InMemoryLogoutDeliveries::new(&clients)`, which implements both
+    `LogoutDeliveryStore` and `DueLogoutDeliveries` and refuses a delivery
+    whose client the tenant does not have, with `all(tenant)`;
+    `FixedIssuer` (`of(tenant)`); `FakeDestinations`, a destination check
+    without a resolver; `RecordingClients` with `ClientAnswer`, an outbound
+    client that keeps the requests (`tokens_to(url)`); and
+    `LogoutDeliveryStorePorts` with `run_logout_delivery_contract(ports)`.
 - Subdirectories:
   - [application](./application/EGM.md): the ports and the use cases.
   - [domain](./domain/EGM.md): the aggregates and their rules.

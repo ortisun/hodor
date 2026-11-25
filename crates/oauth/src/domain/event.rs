@@ -3,11 +3,13 @@
 
 use crate::domain::application::ApplicationId;
 use crate::domain::authorization::GrantId;
+use crate::domain::backchannel::LogoutDeliveryId;
 use crate::domain::client::ClientId;
 use crate::domain::refresh::RefreshFamilyId;
 use crate::domain::resource_server::ResourceServerId;
 use crate::domain::secret::ClientSecretId;
 use hodor_kernel::{DomainEvent, Timestamp, UserId};
+use hodor_session::api::SessionId;
 use serde::Serialize;
 
 /// An event of the OAuth context.
@@ -249,6 +251,19 @@ pub enum OauthEvent {
         /// `workload_deleted` when its workload was.
         reason: &'static str,
     },
+    /// A logout token was not delivered: every attempt failed, or its
+    /// client could no longer be sent to. Never carries the address or the
+    /// token.
+    BackchannelLogoutSetAside {
+        /// The delivery.
+        delivery_id: LogoutDeliveryId,
+        /// The client it was for.
+        client_id: ClientId,
+        /// The session that ended.
+        session_id: SessionId,
+        /// How many attempts were made.
+        attempts: u32,
+    },
 }
 
 impl DomainEvent for OauthEvent {
@@ -280,6 +295,7 @@ impl DomainEvent for OauthEvent {
             Self::RefreshTokenFamilyRevoked { .. } => "oauth.refresh_token_family_revoked",
             Self::AccessTokenRevoked { .. } => "oauth.access_token_revoked",
             Self::TokenExchanged { .. } => "oauth.token_exchanged",
+            Self::BackchannelLogoutSetAside { .. } => "oauth.backchannel_logout_set_aside",
         }
     }
 }

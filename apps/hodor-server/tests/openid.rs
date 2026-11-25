@@ -336,6 +336,9 @@ async fn the_discovery_document_names_what_answers() {
     assert_eq!(documents[0], documents[1], "one document at both addresses");
     let document = &documents[0];
     assert_eq!(document["issuer"], issuer("acme"));
+    // Back-channel logout is offered, and every logout token carries `sid`.
+    assert_eq!(document["backchannel_logout_supported"], true);
+    assert_eq!(document["backchannel_logout_session_supported"], true);
     assert!(
         document["scopes_supported"]
             .as_array()

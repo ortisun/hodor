@@ -205,9 +205,11 @@ jobs:
           path: frontend/auth-ui/playwright-report
           retention-days: 7
 
-  # The Basic OpenID Provider and Config OpenID Provider plans of the OpenID
-  # conformance suite, against the image. docs/operations/conformance.md says
-  # what runs and which results are expected.
+  # The Basic OpenID Provider, Config OpenID Provider and Back-Channel OpenID
+  # Provider plans of the OpenID conformance suite, against the image; the
+  # last is the back-channel logout plan, the acceptance of Issue-100.
+  # docs/operations/conformance.md says what runs and which results are
+  # expected.
   conformance:
     name: OpenID conformance
     runs-on: ubuntu-latest
@@ -238,7 +240,7 @@ jobs:
           CONFORMANCE_REPORT: conformance-results.json
       - name: Show what Hodor logged
         if: failure()
-        run: docker compose -f compose.yaml logs --no-color --tail 300 hodor worker
+        run: docker compose -f compose.yaml logs --no-color --tail 300 hodor worker suite-relay
         env:
           HODOR_IMAGE: hodor:conformance
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

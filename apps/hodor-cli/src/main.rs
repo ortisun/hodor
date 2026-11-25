@@ -267,6 +267,16 @@ enum Command {
             global = true
         )]
         database_url: Option<String>,
+        /// Hosts with their ports that a back-channel logout address may
+        /// name over plain HTTP, separated by commas, as the server has
+        /// them. For a development stack; never set it anywhere real.
+        #[arg(
+            long,
+            env = "HODOR_OUTBOUND_DEVELOPMENT_HOSTS",
+            value_delimiter = ',',
+            global = true
+        )]
+        development_hosts: Vec<String>,
         #[command(subcommand)]
         command: applications::ClientCommand,
     },
@@ -2179,10 +2189,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
         Command::Client {
             database_url,
+            development_hosts,
             command,
         } => {
             let database = connect(database_url).await?;
-            print(applications::run_client(&database, command).await)?;
+            print(applications::run_client(&database, command, &development_hosts).await)?;
         }
         Command::ResourceServer {
             database_url,

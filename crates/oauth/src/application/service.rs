@@ -12,8 +12,8 @@ use crate::domain::resource_server::{
 };
 use crate::domain::secret::{ClientSecret, ClientSecretId, ClientSecretValue};
 use hodor_kernel::{
-    Caller, Clock, Digest, DomainError, EventEnvelope, EventMetadata, RandomSource, TenantContext,
-    UnitOfWork, UnitOfWorkFactory,
+    Caller, Clock, DestinationCheck, Digest, DomainError, EventEnvelope, EventMetadata,
+    RandomSource, TenantContext, UnitOfWork, UnitOfWorkFactory,
 };
 use std::sync::Arc;
 use time::Duration;
@@ -59,6 +59,27 @@ fn application_not_found() -> DomainError {
     )
 }
 
+/// What the guarded client said of a back-channel logout address, in the
+/// OAuth context's words.
+fn refused_address(error: DomainError) -> DomainError {
+    match error.code() {
+        "http.url_invalid" => DomainError::invalid(
+            "oauth.client_backchannel_logout_uri_invalid",
+            "a back-channel logout address is an HTTPS address of at most 2000 characters, with \
+             a host and without a name and password or a fragment",
+        ),
+        "http.destination_forbidden" => DomainError::invalid(
+            "oauth.client_backchannel_logout_uri_forbidden",
+            "the address leads somewhere Hodor may not call: it must be public",
+        ),
+        "http.unreachable" => DomainError::invalid(
+            "oauth.client_backchannel_logout_uri_unresolvable",
+            "the address's name does not resolve to any address",
+        ),
+        _ => error,
+    }
+}
+
 fn client_not_found() -> DomainError {
     DomainError::not_found("oauth.client_not_found", "there is no such client")
 }
@@ -80,6 +101,7 @@ pub struct ApplicationService {
     digest: Arc<dyn Digest>,
     random: Arc<dyn RandomSource>,
     clock: Arc<dyn Clock>,
+    destinations: Option<Arc<dyn DestinationCheck>>,
 }
 
 impl std::fmt::Debug for ApplicationService {
@@ -125,7 +147,30 @@ impl ApplicationService {
             digest: ports.digest,
             random: ports.random,
             clock: ports.clock,
+            destinations: None,
         }
+    }
+
+    /// Checks back-channel logout addresses through `destinations`, the
+    /// guarded outbound client, when they are set. Without it, no client
+    /// can be given one.
+    #[must_use]
+    pub fn with_destinations(mut self, destinations: Arc<dyn DestinationCheck>) -> Self {
+        self.destinations = Some(destinations);
+        self
+    }
+
+    /// Whether a back-channel logout address could be called now. See
+    /// `docs/architecture/contexts/oauth.md`, "The back-channel logout
+    /// address".
+    async fn check_backchannel_address(&self, url: &str) -> Result<(), DomainError> {
+        let Some(destinations) = &self.destinations else {
+            return Err(DomainError::invalid(
+                "oauth.client_backchannel_logout_uri_forbidden",
+                "this installation cannot check a back-channel logout address, so it accepts none",
+            ));
+        };
+        destinations.check(url).await.map_err(refused_address)
     }
 
     fn record(
@@ -306,6 +351,9 @@ impl ApplicationService {
             self.random.as_ref(),
             self.digest.as_ref(),
         )?;
+        if let Some(url) = client.backchannel_logout_uri() {
+            self.check_backchannel_address(url).await?;
+        }
         let mut uow = self.units_of_work.begin(tenant).await?;
         if self
             .applications
@@ -367,6 +415,15 @@ impl ApplicationService {
         settings: ClientSettings,
         caller: Caller,
     ) -> Result<Client, DomainError> {
+        // Only a new or changed back-channel logout address is checked: a
+        // name that leads elsewhere since does not stop other changes.
+        let current = self.client(tenant, id).await?;
+        let settings = settings.checked(current.client_type())?;
+        if let Some(url) = settings.backchannel_logout_uri.as_deref()
+            && current.backchannel_logout_uri() != Some(url)
+        {
+            self.check_backchannel_address(url).await?;
+        }
         let now = self.clock.now();
         self.change_client_with(tenant, id, caller, |client| {
             Ok(((), client.change(settings, now)?))

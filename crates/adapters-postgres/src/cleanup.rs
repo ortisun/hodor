@@ -182,6 +182,8 @@ pub enum ExpiredKind {
     /// API keys of service accounts and agents that expired or were
     /// revoked.
     ApiKeys,
+    /// Logout deliveries that were delivered or set aside.
+    LogoutDeliveries,
 }
 
 /// The query that finds tenants with rows to remove (`$1` the moment
@@ -214,7 +216,7 @@ macro_rules! expired_rows {
 
 impl ExpiredKind {
     /// Every kind, in the order the worker starts their jobs.
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 16] = [
         Self::Sessions,
         Self::SignIns,
         Self::VerificationTokens,
@@ -230,6 +232,7 @@ impl ExpiredKind {
         Self::AdministrationAccessTokens,
         Self::WebhookDeliveries,
         Self::ApiKeys,
+        Self::LogoutDeliveries,
     ];
 
     /// The kind's name, in settings, metrics and logs.
@@ -251,6 +254,7 @@ impl ExpiredKind {
             Self::AdministrationAccessTokens => "administration_access_tokens",
             Self::WebhookDeliveries => "webhook_deliveries",
             Self::ApiKeys => "api_keys",
+            Self::LogoutDeliveries => "logout_deliveries",
         }
     }
 
@@ -268,7 +272,8 @@ impl ExpiredKind {
             | Self::Consents
             | Self::AdministrationAccessTokens
             | Self::WebhookDeliveries
-            | Self::ApiKeys => 30,
+            | Self::ApiKeys
+            | Self::LogoutDeliveries => 30,
         }
     }
 
@@ -325,6 +330,10 @@ impl ExpiredKind {
             Self::ApiKeys => expired_rows!(
                 "credential.api_key",
                 "(expires_at <= $1 OR revoked_at <= $1)"
+            ),
+            Self::LogoutDeliveries => expired_rows!(
+                "oauth.logout_delivery",
+                "status <> 'pending' AND finished_at <= $1"
             ),
         }
     }

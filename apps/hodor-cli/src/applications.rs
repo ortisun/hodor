@@ -8,6 +8,7 @@
 use crate::{caller, existing};
 use clap::Subcommand;
 use hodor_adapters_crypto::{OsRandom, Sha256Digest};
+use hodor_adapters_http::{GuardedHttpClient, OutboundPolicy};
 use hodor_adapters_postgres::{
     Database, PgApplicationStore, PgClientStore, PgResourceServerStore, PgTenantDirectory,
     PgTenantRepository,
@@ -116,6 +117,15 @@ pub(crate) enum ClientCommand {
         /// How its ID tokens are signed: `ES256` unless given, or `RS256`.
         #[arg(long)]
         id_token_algorithm: Option<String>,
+        /// Where its logout tokens are sent when a session it signed a
+        /// person in with ends. Checked as the server checks it: the name
+        /// must lead to public addresses only.
+        #[arg(long)]
+        backchannel_logout_uri: Option<String>,
+        /// Record that it needs `sid` in its logout tokens; only with a
+        /// back-channel logout address.
+        #[arg(long)]
+        backchannel_logout_session_required: bool,
         /// The service account or agent it acts as; only with the
         /// `client_credentials` grant alone.
         #[arg(long)]
@@ -366,6 +376,7 @@ fn client_type(value: &str) -> Result<ClientType, DomainError> {
 pub(crate) async fn run_client(
     database: &Database,
     command: ClientCommand,
+    development_hosts: &[String],
 ) -> Result<String, DomainError> {
     match command {
         ClientCommand::Add {
@@ -381,10 +392,23 @@ pub(crate) async fn run_client(
             secret_days,
             without_pkce,
             id_token_algorithm,
+            backchannel_logout_uri,
+            backchannel_logout_session_required,
             principal,
             exchange_rules,
         } => {
             let (tenant, service) = open(database, &tenant).await?;
+            // The address is checked by the guarded outbound client, with
+            // the development exception the server has.
+            let service =
+                service.with_destinations(Arc::new(GuardedHttpClient::new(OutboundPolicy {
+                    development_hosts: development_hosts
+                        .iter()
+                        .map(|host| host.trim().to_owned())
+                        .filter(|host| !host.is_empty())
+                        .collect(),
+                    ..OutboundPolicy::default()
+                })?));
             let kind = client_type(&kind)?;
             let grants = grants
                 .iter()
@@ -404,6 +428,8 @@ pub(crate) async fn run_client(
                 .iter()
                 .map(|rule| exchange_rule(rule))
                 .collect::<Result<_, _>>()?;
+            settings.backchannel_logout_uri = backchannel_logout_uri;
+            settings.backchannel_logout_session_required = backchannel_logout_session_required;
             if let Some(principal) = principal {
                 let agent_only = settings.grant_types.contains(&GrantType::TokenExchange);
                 settings.principal = Some(
