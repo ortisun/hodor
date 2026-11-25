@@ -160,3 +160,4 @@ Each one is evaluated (maintenance, audits, open advisories, license) before it 
 | LDAP | `ldap3` | Phase 6 |
 | SAML | `xml-sec`, behind a narrow profile of Hodor's own | [Decision 0019](../decisions/0019-saml-signature-verification.md). Only `hodor-saml` may depend on it, or on any other XML library |
 | WebAssembly | `wasmtime` (component model) | Phase 8 |
+| X.509 certificate paths | `rustls-webpki`, with `x509-parser` to read a certificate's names | [Decision 0056](../decisions/0056-forwarded-client-identity.md). Only `adapters-crypto` checks a path, behind the OAuth context's `CertificateCheck` port |

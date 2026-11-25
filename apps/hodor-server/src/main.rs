@@ -7,7 +7,7 @@
 use clap::{Parser, ValueEnum};
 use hodor_adapters_crypto::{
     Argon2Parameters, Argon2idHasher, AwsLcHmacSha1, AwsLcHmacSha256, AwsLcVerifier, HashingLimits,
-    LocalKeyProvider, OsRandom, SecretKeys, Sha256Digest,
+    LocalKeyProvider, OsRandom, SecretKeys, Sha256Digest, X509CertificateCheck,
 };
 use hodor_adapters_http::{GuardedHttpClient, OutboundPolicy, ServiceHttpClient};
 use hodor_adapters_kms::KeyProviderSettings;
@@ -67,10 +67,10 @@ use hodor_oauth::api::{
 use hodor_observability::{LogFormat, Telemetry};
 use hodor_protocol_http::{
     AdminState, ApiKeyAccess, AuthorizationApiState, AuthorizationState, ConsentState,
-    ConsoleState, DiscoveryState, ForwardedHeader, Health, InteractionState, InvitationState,
-    Limits, LogoutState, Pages, ReadinessCheck, ResolvedTenant, ScimState, TenantResolver,
-    TenantStatus as HttpTenantStatus, TokenState, TrustedProxies, UserInfoState, admin_routes,
-    authorization_api_routes, authorization_routes, consent_routes, console_routes,
+    ConsoleState, DiscoveryState, ForwardedHeader, Health, IdentityHeader, InteractionState,
+    InvitationState, Limits, LogoutState, Pages, ReadinessCheck, ResolvedTenant, ScimState,
+    TenantResolver, TenantStatus as HttpTenantStatus, TokenState, TrustedProxies, UserInfoState,
+    admin_routes, authorization_api_routes, authorization_routes, consent_routes, console_routes,
     discovery_routes, interaction_routes, invitation_routes, key_set_routes, logout_routes,
     ops_router, parse_ranges, policy_agent_routes, public_router_behind, scim_routes, serve,
     token_routes, userinfo_routes,
@@ -217,13 +217,20 @@ struct Config {
     trusted_proxies: String,
 
     /// The header trusted proxies write the client address into:
-    /// `x-forwarded-for` or `forwarded`.
+    /// `x-forwarded-for` or `forwarded`; or `none`, to read no forwarded
+    /// address.
     #[arg(
         long,
         env = "HODOR_FORWARDED_HEADER",
         default_value = "x-forwarded-for"
     )]
     forwarded_header: String,
+
+    /// The header trusted proxies write the caller's identity into:
+    /// `client-cert`, `x-forwarded-client-cert` or `l5d-client-id`. Empty:
+    /// no identity is read.
+    #[arg(long, env = "HODOR_CLIENT_IDENTITY_HEADER", default_value = "")]
+    client_identity_header: String,
 
     /// The LDAP directories identity providers may name, as `host:port`
     /// separated by commas. Empty: no directory can be used.
@@ -414,6 +421,7 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
                 .merge(discovery_routes(DiscoveryState {
                     public_url: config.public_url.clone(),
                     tenants: tenant_service(&database),
+                    identity_header: proxies.identity_header(),
                 }));
         }
         None => tracing::warn!(
@@ -813,9 +821,10 @@ fn token(
     })
     .with_retry_window(time::Duration::seconds(config.refresh_retry_seconds))?
     .with_pairwise_subjects(pairwise)
-    // JWT-SVIDs are checked against the bundles of the tenants' trust
-    // domains.
-    .with_trust_domains(trust_domains(config, database)?);
+    // JWT-SVIDs, and the certificates and identities trusted proxies
+    // forward, are checked against the tenants' trust domains.
+    .with_trust_domains(trust_domains(config, database)?)
+    .with_certificate_check(Arc::new(X509CertificateCheck));
     Ok(TokenState {
         tokens,
         public_url: config.public_url.clone(),
@@ -1121,17 +1130,42 @@ fn trusted_proxies(config: &Config) -> Result<TrustedProxies, Box<dyn Error>> {
         .forwarded_header
         .parse()
         .map_err(|invalid| format!("HODOR_FORWARDED_HEADER: {invalid}"))?;
+    let identity = match config.client_identity_header.trim() {
+        "" => None,
+        named => Some(
+            named
+                .parse::<IdentityHeader>()
+                .map_err(|invalid| format!("HODOR_CLIENT_IDENTITY_HEADER: {invalid}"))?,
+        ),
+    };
+    let named: Vec<String> = ranges.iter().map(ToString::to_string).collect();
     if ranges.is_empty() {
         tracing::info!("no proxy is trusted: the client address is the connection's");
+    } else if header == ForwardedHeader::None {
+        tracing::info!(
+            ranges = %named.join(","),
+            "no forwarded address is read: the client address is the connection's"
+        );
     } else {
-        let named: Vec<String> = ranges.iter().map(ToString::to_string).collect();
         tracing::info!(
             ranges = %named.join(","),
             header = %config.forwarded_header.to_ascii_lowercase(),
             "the client address is read from the forwarded header of trusted proxies"
         );
     }
-    Ok(TrustedProxies::new(ranges, header))
+    match identity {
+        None => tracing::info!("no header of the caller's identity is read"),
+        Some(identity) if ranges.is_empty() => tracing::warn!(
+            header = identity.as_str(),
+            "HODOR_CLIENT_IDENTITY_HEADER is named, but no proxy is trusted: it is never read"
+        ),
+        Some(identity) => tracing::info!(
+            ranges = %named.join(","),
+            header = identity.as_str(),
+            "the caller's identity is read from the header of trusted proxies"
+        ),
+    }
+    Ok(TrustedProxies::new(ranges, header).with_identity_header(identity))
 }
 
 fn directory_hosts(config: &Config) -> Vec<String> {

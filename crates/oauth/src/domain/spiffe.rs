@@ -37,8 +37,8 @@ const SCHEME: &str = "spiffe://";
 fn spiffe_id_invalid(reason: &'static str) -> DomainError {
     DomainError::invalid(
         "oauth.client_spiffe_id_invalid",
-        "a client using `spiffe_jwt` is bound to one SPIFFE identifier, \
-         `spiffe://<trust domain>/<path>` with a path of segments of letters, digits, `.`, `-` \
+        "a client using `spiffe_jwt` or `spiffe_x509`, or `tls_client_auth` without a Linkerd \
+         identity, is bound to one SPIFFE identifier, `spiffe://<trust domain>/<path>` with a path of segments of letters, digits, `.`, `-` \
          and `_`, at most 2048 characters, without `*`; only such a client has one, and it has a \
          principal",
     )

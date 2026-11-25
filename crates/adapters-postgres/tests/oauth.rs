@@ -1184,3 +1184,228 @@ async fn the_database_keeps_spiffe_identifiers_to_their_rules() {
     .await
     .expect("the same identifier in another tenant");
 }
+
+#[tokio::test]
+async fn a_client_of_a_forwarded_identity_keeps_its_identity_on_postgres() {
+    use hodor_kernel::UserId;
+    use hodor_oauth::api::{AuthenticationMethod, LinkerdIdentity, SpiffeId};
+
+    let database = TestDatabase::start().await;
+    let now = Timestamp::UNIX_EPOCH + Duration::days(20_000);
+    let applications = ApplicationService::new(ApplicationPorts {
+        units_of_work: Arc::new(database.app().clone()),
+        applications: Arc::new(PgApplicationStore),
+        clients: Arc::new(PgClientStore),
+        resource_servers: Arc::new(PgResourceServerStore),
+        digest: Arc::new(FakeDigest),
+        random: Arc::new(DistinctRandom),
+        clock: Arc::new(FixedClock::at(now)),
+    });
+    let tenant = TenantContext::assume(TenantId::generate());
+    let application = applications
+        .create_application(
+            &tenant,
+            ApplicationSettings {
+                name: "Shop".to_owned(),
+                first_party: true,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("application");
+    let spiffe = |id: &str| (Some(SpiffeId::parse(id).expect("identifier")), None);
+    let linkerd = |id: &str| (None, Some(LinkerdIdentity::parse(id).expect("identity")));
+    for (method, identity) in [
+        (
+            AuthenticationMethod::SpiffeX509,
+            spiffe("spiffe://cluster.local/ns/shop/sa/web"),
+        ),
+        (
+            AuthenticationMethod::LinkerdIdentity,
+            linkerd("web.shop.serviceaccount.identity.linkerd.cluster.local"),
+        ),
+        (
+            AuthenticationMethod::TlsClientAuth,
+            linkerd("api.shop.serviceaccount.identity.linkerd.cluster.local"),
+        ),
+    ] {
+        let mut settings = ClientSettings::new(
+            "Web",
+            ClientType::Confidential,
+            vec![GrantType::ClientCredentials],
+            Vec::new(),
+        );
+        settings.authentication_method = method;
+        settings.principal = Some(UserId::generate());
+        (settings.spiffe_id, settings.linkerd_identity) = identity;
+        let (client, secret) = applications
+            .create_client(
+                &tenant,
+                CreateClient {
+                    application_id: application.id(),
+                    client_type: ClientType::Confidential,
+                    settings: settings.clone(),
+                    secret_lifetime: None,
+                },
+                Caller::system(),
+            )
+            .await
+            .expect("client");
+        assert!(secret.is_none());
+        let read = applications
+            .client(&tenant, client.id())
+            .await
+            .expect("read back");
+        assert_eq!(read.snapshot().settings, client.snapshot().settings);
+        assert_eq!(read.snapshot().settings.spiffe_id, settings.spiffe_id);
+        assert_eq!(
+            read.snapshot().settings.linkerd_identity,
+            settings.linkerd_identity
+        );
+    }
+    // Changed from one method to another, and back to a secret.
+    let mut settings = ClientSettings::new(
+        "Api",
+        ClientType::Confidential,
+        vec![GrantType::ClientCredentials],
+        Vec::new(),
+    );
+    settings.authentication_method = AuthenticationMethod::TlsClientAuth;
+    settings.principal = Some(UserId::generate());
+    (settings.spiffe_id, settings.linkerd_identity) =
+        spiffe("spiffe://cluster.local/ns/shop/sa/api");
+    let (client, _) = applications
+        .create_client(
+            &tenant,
+            CreateClient {
+                application_id: application.id(),
+                client_type: ClientType::Confidential,
+                settings: settings.clone(),
+                secret_lifetime: None,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("client");
+    settings.authentication_method = AuthenticationMethod::LinkerdIdentity;
+    (settings.spiffe_id, settings.linkerd_identity) =
+        linkerd("api2.shop.serviceaccount.identity.linkerd.cluster.local");
+    applications
+        .change_client(&tenant, client.id(), settings.clone(), Caller::system())
+        .await
+        .expect("changed");
+    settings.authentication_method = AuthenticationMethod::PrivateKeyJwt;
+    (settings.spiffe_id, settings.linkerd_identity) = (None, None);
+    applications
+        .change_client(&tenant, client.id(), settings, Caller::system())
+        .await
+        .expect("changed again");
+    let read = applications
+        .client(&tenant, client.id())
+        .await
+        .expect("read back");
+    assert_eq!(read.snapshot().settings.spiffe_id, None);
+    assert_eq!(read.snapshot().settings.linkerd_identity, None);
+}
+
+#[tokio::test]
+async fn the_database_holds_each_method_to_its_identity() {
+    let database = TestDatabase::start().await;
+    let tenant = sqlx::types::Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO oauth.application VALUES ($1, $1, 'Shop', false, 'enabled', now(), now(), 0)",
+    )
+    .bind(tenant)
+    .execute(database.owner())
+    .await
+    .expect("application");
+    let insert = |method: &'static str,
+                  spiffe: Option<&'static str>,
+                  linkerd: Option<&'static str>,
+                  principal: bool| {
+        sqlx::query(
+            "INSERT INTO oauth.client
+                 (tenant_id, id, application_id, name, client_type, authentication_method,
+                  grant_types, redirect_uris, allowed_scopes, require_pkce,
+                  access_token_seconds, id_token_seconds, refresh_token_seconds,
+                  refresh_idle_seconds, status, created_at, updated_at, spiffe_id,
+                  linkerd_identity, principal_id)
+             VALUES ($1, gen_random_uuid(), $1, 'Web', 'confidential', $2,
+                     ARRAY['client_credentials'], ARRAY[]::text[], ARRAY[]::text[], true,
+                     300, 300, 2592000, 604800, 'enabled', now(), now(), $3, $4,
+                     CASE WHEN $5 THEN gen_random_uuid() END)",
+        )
+        .bind(tenant)
+        .bind(method)
+        .bind(spiffe)
+        .bind(linkerd)
+        .bind(principal)
+        .execute(database.owner())
+    };
+    let spiffe = |path: &'static str| -> Option<&'static str> { Some(path) };
+    for (method, spiffe_id, linkerd_identity) in [
+        (
+            "spiffe_jwt",
+            spiffe("spiffe://cluster.local/ns/shop/sa/jwt"),
+            None,
+        ),
+        (
+            "spiffe_x509",
+            spiffe("spiffe://cluster.local/ns/shop/sa/web"),
+            None,
+        ),
+        (
+            "linkerd_identity",
+            None,
+            Some("web.shop.serviceaccount.identity.linkerd.cluster.local"),
+        ),
+        (
+            "tls_client_auth",
+            spiffe("spiffe://cluster.local/ns/shop/sa/api"),
+            None,
+        ),
+        (
+            "tls_client_auth",
+            None,
+            Some("api.shop.serviceaccount.identity.linkerd.cluster.local"),
+        ),
+    ] {
+        let kept = insert(method, spiffe_id, linkerd_identity, true).await;
+        assert!(kept.is_ok(), "{method}: {kept:?}");
+    }
+    let kept = insert("client_secret_basic", None, None, false).await;
+    assert!(kept.is_ok(), "{kept:?}");
+    let fresh_spiffe = spiffe("spiffe://cluster.local/ns/shop/sa/fresh");
+    let fresh_linkerd = Some("fresh.shop.serviceaccount.identity.linkerd.cluster.local");
+    for (method, spiffe_id, linkerd_identity, principal) in [
+        ("spiffe_x509", None, None, true),
+        ("spiffe_x509", None, fresh_linkerd, true),
+        ("spiffe_x509", fresh_spiffe, fresh_linkerd, true),
+        ("linkerd_identity", fresh_spiffe, None, true),
+        ("tls_client_auth", None, None, true),
+        ("tls_client_auth", fresh_spiffe, fresh_linkerd, true),
+        ("client_secret_basic", fresh_spiffe, None, true),
+        ("private_key_jwt", None, fresh_linkerd, true),
+        ("spiffe_x509", Some("https://cluster.local/web"), None, true),
+        (
+            "linkerd_identity",
+            None,
+            Some("web.shop.svc.cluster.local"),
+            true,
+        ),
+        ("linkerd_identity", None, fresh_linkerd, false),
+        (
+            "linkerd_identity",
+            None,
+            Some("web.shop.serviceaccount.identity.linkerd.cluster.local"),
+            true,
+        ),
+        ("unknown", None, None, false),
+    ] {
+        let refused = insert(method, spiffe_id, linkerd_identity, principal).await;
+        assert!(
+            refused.is_err(),
+            "{method} {spiffe_id:?} {linkerd_identity:?} {principal}"
+        );
+    }
+}

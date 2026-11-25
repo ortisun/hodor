@@ -259,7 +259,7 @@ The kernel's `SecretBox` port, which every context that keeps a secret uses, is 
 
 ## Trust domains
 
-A workload in a service mesh, or under SPIRE, is named by a SPIFFE identifier, `spiffe://<trust domain>/<path>`, and proves it with a certificate or a JWT-SVID that its trust domain's authorities signed. A tenant says which trust domains it trusts, and with which authorities, by giving each one a **trust bundle**: the certificates of its authorities for X.509-SVIDs and the public keys that sign its JWT-SVIDs ([Decision 0029](../../decisions/0029-hodor-in-a-service-mesh.md#a-workload-proves-who-it-is-in-one-of-three-ways)). This section specifies what a trust domain is, how its bundle is read and kept current, and who may change it. The OAuth context checks a workload's credential against it: a JWT-SVID as [checking a JWT-SVID](oauth.md#checking-a-jwt-svid) says (Issue-106), and a certificate in Issue-107. Why the keys context holds them is [Decision 0042](../../decisions/0042-trust-domains.md).
+A workload in a service mesh, or under SPIRE, is named by a SPIFFE identifier, `spiffe://<trust domain>/<path>`, and proves it with a certificate or a JWT-SVID that its trust domain's authorities signed. A tenant says which trust domains it trusts, and with which authorities, by giving each one a **trust bundle**: the certificates of its authorities for X.509-SVIDs and the public keys that sign its JWT-SVIDs ([Decision 0029](../../decisions/0029-hodor-in-a-service-mesh.md#a-workload-proves-who-it-is-in-one-of-three-ways)). This section specifies what a trust domain is, how its bundle is read and kept current, and who may change it. The OAuth context checks a workload's credential against it: a JWT-SVID as [checking a JWT-SVID](oauth.md#checking-a-jwt-svid) says (Issue-106), and a certificate as [an identity forwarded by a proxy](oauth.md#an-identity-forwarded-by-a-proxy) says (Issue-107). Why the keys context holds them is [Decision 0042](../../decisions/0042-trust-domains.md).
 
 ### What a trust domain is
 
@@ -280,7 +280,7 @@ A workload in a service mesh, or under SPIRE, is named by a SPIFFE identifier, `
 |---|---|---|
 | `uploaded` | Given by an administrator, and replaced only by an administrator | The administrator keeps it current, by hand, when the trust domain's authorities change |
 | `bundle_endpoint` | Fetched from the trust domain's SPIFFE bundle endpoint (the `https_web` profile of SPIFFE Federation) when the trust domain is saved, and fetched again by the worker | The bundle follows the authorities' rotation without anyone acting |
-| `mesh` | None | The mesh in front of Hodor checked the workload's certificate itself. Only the identity a trusted proxy forwards can name such a trust domain (Issue-107); no JWT-SVID or certificate can be checked against it, since it has no bundle, and a JWT-SVID of it is refused |
+| `mesh` | None | The mesh in front of Hodor checked the workload's certificate itself. Only the identity a trusted proxy forwards can name such a trust domain ([an identity forwarded by a proxy](oauth.md#an-identity-forwarded-by-a-proxy)); no JWT-SVID or certificate can be checked against it, since it has no bundle, and a JWT-SVID of it is refused |
 
 Rules:
 
@@ -312,7 +312,7 @@ Each element of `keys` is **ignored** or **kept**, or the whole bundle is **refu
   - a `jwt-svid` element has a `kid` of 1 to 128 printable ASCII characters, which no other `jwt-svid` element of the bundle has.
 - **Refused**, with `keys.trust_bundle_invalid` and the first reason as its detail: a document that is not JSON, not an object, too large, without `keys` or with too many; a sequence or a refresh hint that is not such a number; an element that is not an object; and an element of a known `use` and type that breaks a rule above. A bundle is refused rather than kept in part, so that what an administrator reads back is what the trust domain trusts.
 
-Whether the certificate of an `x509-svid` element is an authority, and whether it holds the key the element names, is checked when certificates are checked against the bundle (Issue-107): a certificate that is not such an authority then fails, and nothing else does.
+Whether the certificate of an `x509-svid` element is an authority, and whether it holds the key the element names, is checked when a forwarded certificate is checked against the bundle ([an identity forwarded by a proxy](oauth.md#an-identity-forwarded-by-a-proxy)): an element whose certificate is not such an authority is passed over and trusts nothing, and the rest of the bundle trusts what it did.
 
 A bundle is kept as it was read: the sequence, the refresh hint, and the kept elements in their order, each written as compact JSON with its members in order. Two bundles are the same when they are written the same. This is what the administration interface answers, and what the [events](#events-of-trust-domains) name by its SHA-256.
 
@@ -457,7 +457,6 @@ A tenant table under row-level security. A partial index on `next_refresh_at` of
 | EdDSA | Optional, not scheduled |
 | A rotation policy per tenant | When a tenant asks for one |
 | Managing trust domains from the command-line tool and the console | Issue-109 |
-| Checking certificates against a trust domain's bundle | Issue-107 |
 | Following a temporary redirect of a bundle endpoint; the `https_spiffe` profile, where the endpoint proves itself with an SVID of its own trust domain | Not scheduled |
 | Asking for a bundle to be fetched again at once | Not scheduled: replacing the trust domain with the same address fetches it |
 | The cloud's key management services: Amazon Web Services, Google Cloud, Azure Key Vault (Requirement-Key-03) | Phase 9, on the same port and the same contract |

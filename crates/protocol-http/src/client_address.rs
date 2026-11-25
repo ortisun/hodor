@@ -11,6 +11,7 @@
 //! - anything that cannot be read falls back to the connection's address,
 //!   which a client cannot choose.
 
+use crate::forwarded_identity::{self, IdentityHeader, Read};
 use axum::http::{HeaderMap, HeaderName};
 use std::fmt;
 use std::net::IpAddr;
@@ -175,13 +176,17 @@ pub enum ForwardedHeader {
     /// `Forwarded` (RFC 7239): elements separated by commas, each with a
     /// `for` parameter.
     Forwarded,
+    /// None: the proxies are trusted for the caller's identity alone, and
+    /// the client address is always the connection's.
+    None,
 }
 
 impl ForwardedHeader {
-    fn name(self) -> HeaderName {
+    fn name(self) -> Option<HeaderName> {
         match self {
-            Self::XForwardedFor => HeaderName::from_static("x-forwarded-for"),
-            Self::Forwarded => HeaderName::from_static("forwarded"),
+            Self::XForwardedFor => Some(HeaderName::from_static("x-forwarded-for")),
+            Self::Forwarded => Some(HeaderName::from_static("forwarded")),
+            Self::None => None,
         }
     }
 }
@@ -193,19 +198,23 @@ impl FromStr for ForwardedHeader {
         match given.trim().to_ascii_lowercase().as_str() {
             "x-forwarded-for" => Ok(Self::XForwardedFor),
             "forwarded" => Ok(Self::Forwarded),
+            "none" => Ok(Self::None),
             _ => Err(format!(
-                "`{given}` is not a forwarded header Hodor reads: `x-forwarded-for` or `forwarded`"
+                "`{given}` is not a forwarded header Hodor reads: `x-forwarded-for`, `forwarded` \
+                 or `none`"
             )),
         }
     }
 }
 
-/// The proxies whose forwarded header is believed, and which header that
-/// is. With no range, which is the default, no header is ever read.
+/// The proxies whose forwarded header is believed, which header that is,
+/// and which header of the caller's identity they write, if any. With no
+/// range, which is the default, no header is ever read.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TrustedProxies {
     ranges: Vec<AddressRange>,
     header: ForwardedHeader,
+    identity: Option<IdentityHeader>,
 }
 
 /// Why a forwarded header was given up on, and the connection's address
@@ -243,7 +252,37 @@ impl TrustedProxies {
     /// Trusts the proxies in `ranges`, whose header is `header`.
     #[must_use]
     pub const fn new(ranges: Vec<AddressRange>, header: ForwardedHeader) -> Self {
-        Self { ranges, header }
+        Self {
+            ranges,
+            header,
+            identity: None,
+        }
+    }
+
+    /// The same proxies, whose header of the caller's identity is
+    /// `identity`; none is read when it is `None`, the default.
+    #[must_use]
+    pub const fn with_identity_header(mut self, identity: Option<IdentityHeader>) -> Self {
+        self.identity = identity;
+        self
+    }
+
+    /// The header of the caller's identity that is read, if any.
+    #[must_use]
+    pub const fn identity_header(&self) -> Option<IdentityHeader> {
+        self.identity
+    }
+
+    /// What the header of the caller's identity says, for a request whose
+    /// connection came from `peer`: nothing unless a header is named and
+    /// `peer` is a trusted proxy.
+    pub(crate) fn forwarded_identity(&self, peer: Option<IpAddr>, headers: &HeaderMap) -> Read {
+        match (self.identity, peer) {
+            (Some(header), Some(peer)) if self.trusts(peer.to_canonical()) => {
+                forwarded_identity::read(header, headers)
+            }
+            _ => Read::Absent,
+        }
     }
 
     /// Trusts no proxy: the client address is always the connection's.
@@ -272,11 +311,14 @@ impl TrustedProxies {
         if !self.trusts(peer) {
             return direct(None);
         }
+        let Some(name) = self.header.name() else {
+            return direct(None);
+        };
 
         // Every line of the header, read as one list in the order the
         // lines arrived. A line that is not text cannot be read.
         let mut lines = Vec::new();
-        for value in headers.get_all(self.header.name()) {
+        for value in headers.get_all(name) {
             match value.to_str() {
                 Ok(line) => lines.push(line),
                 Err(_) => return direct(Some(Unreadable::Unreadable)),
@@ -287,7 +329,7 @@ impl TrustedProxies {
         }
         let mut entries = Vec::new();
         for line in &lines {
-            entries.extend(split_outside_quotes(line));
+            entries.extend(split_outside(line, ','));
         }
 
         let mut farthest = peer;
@@ -298,6 +340,7 @@ impl TrustedProxies {
             let address = match self.header {
                 ForwardedHeader::XForwardedFor => parse_node(entry.trim()),
                 ForwardedHeader::Forwarded => forwarded_for(entry),
+                ForwardedHeader::None => None,
             };
             let Some(address) = address.map(|address| address.to_canonical()) else {
                 return direct(Some(Unreadable::Unreadable));
@@ -318,8 +361,9 @@ impl TrustedProxies {
     }
 }
 
-/// Splits a header line on commas that are not inside a quoted string.
-fn split_outside_quotes(line: &str) -> Vec<&str> {
+/// Splits a header line on `separator` where it is not inside a quoted
+/// string.
+pub(crate) fn split_outside(line: &str, separator: char) -> Vec<&str> {
     let mut parts = Vec::new();
     let mut start = 0;
     let mut quoted = false;
@@ -332,7 +376,7 @@ fn split_outside_quotes(line: &str) -> Vec<&str> {
         match character {
             '\\' if quoted => escaped = true,
             '"' => quoted = !quoted,
-            ',' if !quoted => {
+            found if found == separator && !quoted => {
                 parts.push(&line[start..index]);
                 start = index + 1;
             }
@@ -687,6 +731,61 @@ mod tests {
             Ok(ForwardedHeader::XForwardedFor)
         );
         assert_eq!(" forwarded ".parse(), Ok(ForwardedHeader::Forwarded));
+        assert_eq!("None".parse(), Ok(ForwardedHeader::None));
         assert!("x-real-ip".parse::<ForwardedHeader>().is_err());
+    }
+
+    #[test]
+    fn with_no_forwarded_header_the_connection_is_the_client() {
+        let proxies = proxies("10.0.0.0/8", ForwardedHeader::None);
+        let sent = headers("x-forwarded-for", &["203.0.113.7"]);
+        assert_eq!(
+            resolve(&proxies, "10.0.0.1", &sent),
+            Resolved {
+                address: Some(address("10.0.0.1")),
+                unreadable: None
+            }
+        );
+    }
+
+    #[test]
+    fn the_callers_identity_is_read_only_from_a_trusted_proxy_and_only_when_named() {
+        let identity = "web.shop.serviceaccount.identity.linkerd.td";
+        let sent = headers("l5d-client-id", &[identity]);
+        let named = proxies("10.0.0.0/8", ForwardedHeader::None)
+            .with_identity_header(Some(IdentityHeader::LinkerdClientId));
+        assert_eq!(
+            named.forwarded_identity(Some(address("10.0.0.1")), &sent),
+            Read::Identity(hodor_oauth::api::ForwardedIdentity::Linkerd(
+                identity.to_owned()
+            ))
+        );
+        assert_eq!(
+            named.forwarded_identity(Some(address("::ffff:10.0.0.1")), &sent),
+            Read::Identity(hodor_oauth::api::ForwardedIdentity::Linkerd(
+                identity.to_owned()
+            )),
+            "a proxy connecting over IPv6 with its IPv4 address is still trusted"
+        );
+        assert_eq!(
+            named.forwarded_identity(Some(address("203.0.113.7")), &sent),
+            Read::Absent,
+            "from a peer that is not a trusted proxy"
+        );
+        assert_eq!(named.forwarded_identity(None, &sent), Read::Absent);
+        let unnamed = proxies("10.0.0.0/8", ForwardedHeader::None);
+        assert_eq!(unnamed.identity_header(), None);
+        assert_eq!(
+            unnamed.forwarded_identity(Some(address("10.0.0.1")), &sent),
+            Read::Absent,
+            "no header is read when none is named"
+        );
+        let nobody =
+            TrustedProxies::none().with_identity_header(Some(IdentityHeader::LinkerdClientId));
+        assert_eq!(
+            nobody.forwarded_identity(Some(address("10.0.0.1")), &sent),
+            Read::Absent,
+            "a header named with no trusted proxy is never read"
+        );
     }
 }

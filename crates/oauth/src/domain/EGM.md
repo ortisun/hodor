@@ -12,7 +12,11 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   `ApplicationSettings { name, first_party }`; `Application` with
   `create`, `change` (returns whether anything changed), `set_status`.
 - `client.rs`: `ClientId` (the `client_id` of OAuth); `ClientType`;
-  `AuthenticationMethod` (`uses_secret`); `GrantType`; `IdTokenAlgorithm`
+  `AuthenticationMethod` (`uses_secret`; `uses_spiffe_id` for `SpiffeJwt`
+  and `SpiffeX509`; `uses_forwarded_identity` for `TlsClientAuth`,
+  `SpiffeX509` and `LinkerdIdentity`; `uses_workload_identity`, either);
+  `ClientSettings::workload_identity()`; `GrantType`;
+  `IdTokenAlgorithm`
   (`Es256` by default or `Rs256`, `key_algorithm`, listed by `ALL` in
   discovery); `TokenPolicy` with
   its default and `LONGEST_SIGNED_LIFETIME`, the keys context's bound on
@@ -21,6 +25,16 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   `remove_key`, `set_status`, `accepts_redirect_uri` (exact equality) and
   `accepts_secret` (hash compared in constant time with every secret that
   has not expired). Changes return their `OauthEvent`s.
+- `forwarded.rs`: `LinkerdIdentity` (`parse`, `as_str`, `trust_domain`,
+  what follows the control plane's namespace;
+  `oauth.client_linkerd_identity_invalid` otherwise); `WorkloadIdentity`
+  (`Spiffe` with `spiffe.rs`'s `SpiffeId`, or `Linkerd`), what
+  `ClientSettings::workload_identity` answers; `ForwardedIdentity`
+  (`Certificate { certificate, chain }`, `Names { uris, dns_names }`,
+  `Linkerd`); `CertificateNames`; `names_match(method, identity, names)`;
+  `advertise_forwarded_methods(document, methods)`; the bounds
+  `MAX_FORWARDED_CERTIFICATE_BYTES`, `MAX_FORWARDED_CHAIN`,
+  `MAX_LINKERD_IDENTITY_LENGTH`.
 - `secret.rs`: `ClientSecretId`; `ClientSecretValue` (`hodor_cs_` and 64
   hexadecimal characters, redacted in `Debug`); `ClientSecretHash` with
   `of_presented`, `from_stored`, `matches`; `ClientSecret` with its
@@ -74,7 +88,9 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   `RefreshToken` with the token as a `Secret` and `ClientCredentials`, each
   with the optional `scope` and `resource` where they apply);
   `PresentedClient` and its `method` (`Svid` for the `client_assertion_type`
-  of a JWT-SVID, `SpiffeJwt`); `TokenError` with `error`,
+  of a JWT-SVID, `SpiffeJwt`), `may_be(registered)`, `with_forwarded(identity)`
+  (only a request with its identifier alone becomes `Forwarded`) and
+  `forwarded()`; `TokenError` with `error`,
   `description` and a `reason` for logs only; `check_assertion`, the checks
   of RFC 7523 in the specification's order; `assertion_issuer`, the `iss`
   read before the signature only to find the client;
@@ -141,9 +157,13 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   sector from `sector_of` or `oauth.client_sector_identifier_uri_required`,
   and `sector_identifier_uri`, only for a pairwise client, its form checked
   by `check_sector_identifier_uri`; `Client::subject_type` and
-  `Client::sector`. And `spiffe_id`, a `SpiffeId`, exactly with the method
-  `spiffe_jwt` (`AuthenticationMethod::uses_spiffe_id`) and only with a
-  principal (`oauth.client_spiffe_id_invalid`).
+  `Client::sector`. And `spiffe_id`, a `SpiffeId`, with `spiffe_jwt` and
+  `spiffe_x509` (`AuthenticationMethod::uses_spiffe_id`), and
+  `linkerd_identity`, a `LinkerdIdentity`, with `linkerd_identity`;
+  `tls_client_auth` has exactly one of the two, every other method neither,
+  and either needs a principal (`check_identities`:
+  `oauth.client_spiffe_id_invalid` or
+  `oauth.client_linkerd_identity_invalid`).
 - `pairwise.rs`: pairwise subject identifiers. `SubjectType` (`public`,
   `pairwise`), `host_of` (lowercase, without the port; none for a
   private-use scheme), `sector_of(sector_identifier_uri, redirect_uris)`,

@@ -59,6 +59,9 @@ follows is `docs/architecture/contexts/oauth.md`.
     `ReturnAddress`, `logout_refusal`
     (the codes of the page), `MAX_LOGOUT_STATE_LENGTH`,
     `MAX_LOGOUT_LOCALES_LENGTH`.
+  - Forwarded identities: `CertificateCheck`, `ForwardedIdentity`,
+    `CertificateNames`, `WorkloadIdentity`, `LinkerdIdentity`, `names_match`,
+    `advertise_forwarded_methods` and their bounds.
   - The token endpoint's domain: `TokenRequest` (with `parse`),
     `PresentedClient`, `BasicCredentials`, `GrantRequest`, `TokenError`,
     `check_assertion`, `assertion_issuer`, `AssertionAudience`,

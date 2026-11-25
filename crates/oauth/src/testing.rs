@@ -168,6 +168,30 @@ fn spiffe_id_taken(
     })
 }
 
+/// Whether another client of `tenant` than `client` is bound to its
+/// Linkerd identity, as the database's unique index finds it.
+fn linkerd_identity_taken(
+    rows: &BTreeMap<(TenantId, ClientId), Client>,
+    tenant: TenantId,
+    client: &Client,
+) -> bool {
+    let Some(bound) = &client.snapshot().settings.linkerd_identity else {
+        return false;
+    };
+    rows.iter().any(|((owner, id), other)| {
+        *owner == tenant
+            && *id != client.id()
+            && other.snapshot().settings.linkerd_identity.as_ref() == Some(bound)
+    })
+}
+
+fn linkerd_identity_conflict() -> DomainError {
+    DomainError::conflict(
+        "oauth.client_linkerd_identity_taken",
+        "another client of the tenant is bound to this Linkerd identity",
+    )
+}
+
 fn spiffe_id_conflict() -> DomainError {
     DomainError::conflict(
         "oauth.client_spiffe_id_taken",
@@ -189,6 +213,9 @@ impl ClientStore for InMemoryClients {
         if spiffe_id_taken(&rows, tenant, client) {
             return Err(spiffe_id_conflict());
         }
+        if linkerd_identity_taken(&rows, tenant, client) {
+            return Err(linkerd_identity_conflict());
+        }
         rows.insert((tenant, client.id()), client.clone());
         Ok(())
     }
@@ -201,6 +228,9 @@ impl ClientStore for InMemoryClients {
             Some(stored) if stored.snapshot().version == version => {
                 if spiffe_id_taken(&rows, key.0, client) {
                     return Err(spiffe_id_conflict());
+                }
+                if linkerd_identity_taken(&rows, key.0, client) {
+                    return Err(linkerd_identity_conflict());
                 }
                 rows.insert(
                     key,
@@ -529,6 +559,7 @@ pub async fn run_contract(ports: Ports<'_>) {
     a_client_belongs_to_an_application_of_its_tenant(ports).await;
     a_stale_client_is_not_stored(ports).await;
     a_spiffe_identifier_is_bound_to_one_client_of_its_tenant(ports).await;
+    a_linkerd_identity_is_bound_to_one_client_of_its_tenant(ports).await;
     resource_servers_are_found_by_exact_audience(ports).await;
     an_audience_and_an_application_have_one_resource_server(ports).await;
 }
@@ -915,6 +946,108 @@ async fn a_spiffe_identifier_is_bound_to_one_client_of_its_tenant(ports: Ports<'
             .spiffe_id,
         same.snapshot().settings.spiffe_id
     );
+}
+
+/// A client of a service account using `method`, bound to `spiffe_id` or
+/// `linkerd_identity`, of `application_id`.
+fn forwarded_client(
+    application_id: ApplicationId,
+    method: crate::api::AuthenticationMethod,
+    spiffe_id: Option<&str>,
+    linkerd_identity: Option<&str>,
+) -> Client {
+    use crate::api::{LinkerdIdentity, SpiffeId};
+    use hodor_kernel::UserId;
+    use hodor_kernel::random::testing::FakeDigest;
+    let mut settings = ClientSettings::new(
+        "Shop web",
+        ClientType::Confidential,
+        vec![GrantType::ClientCredentials],
+        Vec::new(),
+    );
+    settings.authentication_method = method;
+    settings.principal = Some(UserId::generate());
+    settings.spiffe_id = spiffe_id.map(|id| SpiffeId::parse(id).expect("identifier"));
+    settings.linkerd_identity =
+        linkerd_identity.map(|id| LinkerdIdentity::parse(id).expect("identity"));
+    Client::create(
+        application_id,
+        ClientType::Confidential,
+        settings,
+        ClientSecret::DEFAULT_LIFETIME,
+        MOMENT,
+        &DistinctRandom,
+        &FakeDigest,
+    )
+    .expect("valid client")
+    .0
+}
+
+async fn a_linkerd_identity_is_bound_to_one_client_of_its_tenant(ports: Ports<'_>) {
+    use crate::api::AuthenticationMethod;
+    const WEB: &str = "web.shop.serviceaccount.identity.linkerd.cluster.local";
+    let tenant = tenant();
+    let owner = application("Shop", MOMENT);
+    store_application(ports, &tenant, &owner).await;
+    // Each method of a forwarded identity is kept with its identity.
+    for client in [
+        forwarded_client(
+            owner.id(),
+            AuthenticationMethod::LinkerdIdentity,
+            None,
+            Some(WEB),
+        ),
+        forwarded_client(
+            owner.id(),
+            AuthenticationMethod::SpiffeX509,
+            Some("spiffe://cluster.local/ns/shop/sa/web"),
+            None,
+        ),
+        forwarded_client(
+            owner.id(),
+            AuthenticationMethod::TlsClientAuth,
+            Some("spiffe://cluster.local/ns/shop/sa/api"),
+            None,
+        ),
+    ] {
+        store_client(ports, &tenant, &client).await;
+        assert_eq!(
+            load_client(ports, &tenant, client.id())
+                .await
+                .expect("stored"),
+            client,
+            "kept with its identity"
+        );
+    }
+    // A second client of the tenant may not take the Linkerd identity.
+    let twin = forwarded_client(
+        owner.id(),
+        AuthenticationMethod::TlsClientAuth,
+        None,
+        Some(WEB),
+    );
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    assert_eq!(
+        ports
+            .clients
+            .insert(uow.as_mut(), &twin)
+            .await
+            .expect_err("taken")
+            .code(),
+        "oauth.client_linkerd_identity_taken"
+    );
+    drop(uow);
+    // Another tenant binds the same identity to a client of its own.
+    let elsewhere = self::tenant();
+    let theirs = application("Shop", MOMENT);
+    store_application(ports, &elsewhere, &theirs).await;
+    let same = forwarded_client(
+        theirs.id(),
+        AuthenticationMethod::LinkerdIdentity,
+        None,
+        Some(WEB),
+    );
+    store_client(ports, &elsewhere, &same).await;
 }
 
 async fn resource_servers_are_found_by_exact_audience(ports: Ports<'_>) {

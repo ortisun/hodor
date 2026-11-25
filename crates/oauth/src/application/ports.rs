@@ -736,3 +736,26 @@ pub trait PersonClaimSources: Send + Sync {
         organization: OrganizationId,
     ) -> Result<Option<String>, DomainError>;
 }
+
+/// Reads the certificates a proxy forwards, and checks one against the
+/// authorities of a trust domain's bundle. The cryptography adapter
+/// implements it; the OAuth context holds no X.509 library.
+pub trait CertificateCheck: Send + Sync {
+    /// The URIs and DNS names of `certificate`, in DER, from its subject
+    /// alternative names; `None` when it does not read as a certificate.
+    fn names(&self, certificate: &[u8]) -> Option<crate::domain::forwarded::CertificateNames>;
+
+    /// Whether `certificate`, in DER, has a path to one of `authorities`
+    /// at `now`, through any of `chain`, for a TLS client. `authorities`
+    /// are the `x509-svid` elements of a bundle, each a JSON Web Key with
+    /// its certificate in `x5c`; an element whose certificate is not an
+    /// authority holding the element's key is passed over. Anything that
+    /// does not read is `false`.
+    fn chains_to(
+        &self,
+        certificate: &[u8],
+        chain: &[Vec<u8>],
+        authorities: &[&str],
+        now: Timestamp,
+    ) -> bool;
+}

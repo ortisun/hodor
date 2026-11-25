@@ -6,6 +6,7 @@ use crate::domain::consent::{
     DEFAULT_CONSENT_LIFETIME, LONGEST_CONSENT_LIFETIME, SHORTEST_CONSENT_LIFETIME,
 };
 use crate::domain::event::OauthEvent;
+use crate::domain::forwarded::{LinkerdIdentity, WorkloadIdentity, linkerd_identity_invalid};
 use crate::domain::key::{ClientKey, MAX_KEYS};
 use crate::domain::pairwise::{
     SubjectType, check_sector_identifier_uri, sector_of, sector_required, sector_uri_invalid,
@@ -132,6 +133,15 @@ pub enum AuthenticationMethod {
     /// checked against its trust domain's bundle
     /// (draft-ietf-oauth-spiffe-client-auth-03).
     SpiffeJwt,
+    /// The certificate it presented to the proxy in front of Hodor, as the
+    /// proxy forwards it (RFC 8705, section 2.1).
+    TlsClientAuth,
+    /// Its X509-SVID, as the proxy in front of Hodor forwards it
+    /// (draft-ietf-oauth-spiffe-client-auth-03, section 3.3).
+    SpiffeX509,
+    /// The identity Linkerd's proxy asserts in `l5d-client-id`. Hodor's
+    /// own name, registered nowhere.
+    LinkerdIdentity,
     /// Nothing: a public client.
     None,
 }
@@ -145,6 +155,9 @@ impl AuthenticationMethod {
             Self::ClientSecretPost => "client_secret_post",
             Self::PrivateKeyJwt => "private_key_jwt",
             Self::SpiffeJwt => "spiffe_jwt",
+            Self::TlsClientAuth => "tls_client_auth",
+            Self::SpiffeX509 => "spiffe_x509",
+            Self::LinkerdIdentity => "linkerd_identity",
             Self::None => "none",
         }
     }
@@ -161,6 +174,9 @@ impl AuthenticationMethod {
             "client_secret_post" => Ok(Self::ClientSecretPost),
             "private_key_jwt" => Ok(Self::PrivateKeyJwt),
             "spiffe_jwt" => Ok(Self::SpiffeJwt),
+            "tls_client_auth" => Ok(Self::TlsClientAuth),
+            "spiffe_x509" => Ok(Self::SpiffeX509),
+            "linkerd_identity" => Ok(Self::LinkerdIdentity),
             "none" => Ok(Self::None),
             _ => Err(method_invalid()),
         }
@@ -173,27 +189,104 @@ impl AuthenticationMethod {
     }
 
     /// Whether the method proves who the client is with the credential of
-    /// the one SPIFFE identifier it is bound to.
+    /// the one SPIFFE identifier it is bound to: a JWT-SVID, or an
+    /// X509-SVID a proxy forwards.
     #[must_use]
     pub const fn uses_spiffe_id(self) -> bool {
-        matches!(self, Self::SpiffeJwt)
+        matches!(self, Self::SpiffeJwt | Self::SpiffeX509)
+    }
+
+    /// Whether the method proves who the client is with an identity the
+    /// proxy in front of Hodor forwards.
+    #[must_use]
+    pub const fn uses_forwarded_identity(self) -> bool {
+        matches!(
+            self,
+            Self::TlsClientAuth | Self::SpiffeX509 | Self::LinkerdIdentity
+        )
+    }
+
+    /// Whether the method binds the client to a workload's identity, a
+    /// SPIFFE identifier or a Linkerd identity, so that it acts as a
+    /// service account.
+    #[must_use]
+    pub const fn uses_workload_identity(self) -> bool {
+        self.uses_spiffe_id() || self.uses_forwarded_identity()
     }
 }
 
 fn spiffe_id_required(reason: &'static str) -> DomainError {
     DomainError::invalid(
         "oauth.client_spiffe_id_invalid",
-        "a client using `spiffe_jwt` is bound to one SPIFFE identifier and acts as a service \
-         account; only such a client has one",
+        "a client using `spiffe_jwt` or `spiffe_x509` is bound to one SPIFFE identifier, one \
+         using `tls_client_auth` to one SPIFFE identifier or one Linkerd identity, and each \
+         acts as a service account; only such a client has one",
     )
     .with_detail(reason)
+}
+
+/// Checks that a client of `method` is bound to the identity its method
+/// takes, and only then, and that a bound client acts as a workload.
+fn check_identities(
+    method: AuthenticationMethod,
+    spiffe: bool,
+    linkerd: bool,
+    principal: bool,
+) -> Result<(), DomainError> {
+    const NO_SPIFFE_ID: &str = "only a client using `spiffe_jwt`, `spiffe_x509` or `tls_client_auth` has a SPIFFE \
+         identifier";
+    const NO_LINKERD_IDENTITY: &str =
+        "only a client using `linkerd_identity` or `tls_client_auth` has a Linkerd identity";
+    match method {
+        AuthenticationMethod::SpiffeJwt if !spiffe => Err(spiffe_id_required(
+            "a client using `spiffe_jwt` has a SPIFFE identifier",
+        )),
+        AuthenticationMethod::SpiffeX509 if !spiffe => Err(spiffe_id_required(
+            "a client using `spiffe_x509` has a SPIFFE identifier",
+        )),
+        AuthenticationMethod::SpiffeJwt | AuthenticationMethod::SpiffeX509 if linkerd => {
+            Err(linkerd_identity_invalid(NO_LINKERD_IDENTITY))
+        }
+        AuthenticationMethod::LinkerdIdentity if !linkerd => Err(linkerd_identity_invalid(
+            "a client using `linkerd_identity` has a Linkerd identity",
+        )),
+        AuthenticationMethod::LinkerdIdentity if spiffe => Err(spiffe_id_required(NO_SPIFFE_ID)),
+        AuthenticationMethod::TlsClientAuth if spiffe == linkerd => Err(spiffe_id_required(
+            "a client using `tls_client_auth` has a SPIFFE identifier or a Linkerd identity, \
+             not both",
+        )),
+        AuthenticationMethod::ClientSecretBasic
+        | AuthenticationMethod::ClientSecretPost
+        | AuthenticationMethod::PrivateKeyJwt
+        | AuthenticationMethod::None
+            if spiffe =>
+        {
+            Err(spiffe_id_required(NO_SPIFFE_ID))
+        }
+        AuthenticationMethod::ClientSecretBasic
+        | AuthenticationMethod::ClientSecretPost
+        | AuthenticationMethod::PrivateKeyJwt
+        | AuthenticationMethod::None
+            if linkerd =>
+        {
+            Err(linkerd_identity_invalid(NO_LINKERD_IDENTITY))
+        }
+        _ if spiffe && !principal => Err(spiffe_id_required(
+            "a client bound to a SPIFFE identifier acts as a service account",
+        )),
+        _ if linkerd && !principal => Err(linkerd_identity_invalid(
+            "a client bound to a Linkerd identity acts as a service account",
+        )),
+        _ => Ok(()),
+    }
 }
 
 fn method_invalid() -> DomainError {
     DomainError::invalid(
         "oauth.client_authentication_method_invalid",
         "a confidential client proves who it is with `client_secret_basic`, \
-         `client_secret_post`, `private_key_jwt` or `spiffe_jwt`; a public client with `none`",
+         `client_secret_post`, `private_key_jwt`, `spiffe_jwt`, `tls_client_auth`, \
+         `spiffe_x509` or `linkerd_identity`; a public client with `none`",
     )
 }
 
@@ -387,6 +480,10 @@ pub struct ClientSettings {
     /// service account is checked by whoever binds it, through the
     /// identity context.
     pub spiffe_id: Option<SpiffeId>,
+    /// The one Linkerd identity Linkerd's proxy, or a certificate a proxy
+    /// forwards, must name, for a client using `linkerd_identity`, or
+    /// `tls_client_auth` without a SPIFFE identifier.
+    pub linkerd_identity: Option<LinkerdIdentity>,
 }
 
 fn redirect_invalid(reason: &'static str) -> DomainError {
@@ -510,6 +607,16 @@ fn without_repeats<T: PartialEq>(values: Vec<T>) -> Vec<T> {
 }
 
 impl ClientSettings {
+    /// The workload's identity the client is bound to, if any.
+    #[must_use]
+    pub fn workload_identity(&self) -> Option<WorkloadIdentity> {
+        match (&self.spiffe_id, &self.linkerd_identity) {
+            (Some(id), _) => Some(WorkloadIdentity::Spiffe(id.clone())),
+            (None, Some(id)) => Some(WorkloadIdentity::Linkerd(id.clone())),
+            (None, None) => None,
+        }
+    }
+
     /// Settings for a client of `client_type` with these grants and
     /// redirect addresses, and everything else at its default.
     #[must_use]
@@ -539,6 +646,7 @@ impl ClientSettings {
             principal: None,
             exchange_rules: Vec::new(),
             spiffe_id: None,
+            linkerd_identity: None,
         }
     }
 
@@ -696,27 +804,12 @@ impl ClientSettings {
                 }
             }
         }
-        match (
-            self.authentication_method.uses_spiffe_id(),
+        check_identities(
+            self.authentication_method,
             self.spiffe_id.is_some(),
-        ) {
-            (true, false) => {
-                return Err(spiffe_id_required(
-                    "a client using `spiffe_jwt` has a SPIFFE identifier",
-                ));
-            }
-            (false, true) => {
-                return Err(spiffe_id_required(
-                    "only a client using `spiffe_jwt` has a SPIFFE identifier",
-                ));
-            }
-            _ => {}
-        }
-        if self.spiffe_id.is_some() && self.principal.is_none() {
-            return Err(spiffe_id_required(
-                "a client bound to a SPIFFE identifier acts as a service account",
-            ));
-        }
+            self.linkerd_identity.is_some(),
+            self.principal.is_some(),
+        )?;
         let allowed_scopes = without_repeats(self.allowed_scopes);
         if allowed_scopes.len() > MAX_SCOPES || !allowed_scopes.iter().all(|s| text::is_scope(s)) {
             return Err(DomainError::invalid(
@@ -742,6 +835,7 @@ impl ClientSettings {
             principal: self.principal,
             exchange_rules,
             spiffe_id: self.spiffe_id,
+            linkerd_identity: self.linkerd_identity,
         })
     }
 }

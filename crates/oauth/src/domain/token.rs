@@ -6,6 +6,7 @@
 
 use crate::domain::authorization::AuthorizationCode;
 use crate::domain::client::{AuthenticationMethod, Client, ClientId};
+use crate::domain::forwarded::ForwardedIdentity;
 use crate::domain::spiffe::SPIFFE_ASSERTION_TYPE;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -162,6 +163,15 @@ pub enum PresentedClient {
         /// The `client_id` it names.
         client_id: String,
     },
+    /// Only its identifier, with the identity a trusted proxy forwarded:
+    /// a client of a forwarded identity, or a public client behind such a
+    /// proxy.
+    Forwarded {
+        /// The `client_id` it names.
+        client_id: String,
+        /// What the proxy forwarded.
+        identity: ForwardedIdentity,
+    },
 }
 
 impl fmt::Debug for PresentedClient {
@@ -186,19 +196,66 @@ impl fmt::Debug for PresentedClient {
                 .debug_struct("Public")
                 .field("client_id", client_id)
                 .finish(),
+            Self::Forwarded {
+                client_id,
+                identity,
+            } => f
+                .debug_struct("Forwarded")
+                .field("client_id", client_id)
+                .field("identity", identity)
+                .finish(),
         }
     }
 }
 
 impl PresentedClient {
-    /// The method the request used.
+    /// The method the request used. A request with only its identifier
+    /// is read as `none`, whether or not a proxy forwarded an identity:
+    /// see [`Self::may_be`].
     #[must_use]
     pub const fn method(&self) -> AuthenticationMethod {
         match self {
             Self::Secret { method, .. } => *method,
             Self::Assertion { .. } => AuthenticationMethod::PrivateKeyJwt,
             Self::Svid { .. } => AuthenticationMethod::SpiffeJwt,
-            Self::Public { .. } => AuthenticationMethod::None,
+            Self::Public { .. } | Self::Forwarded { .. } => AuthenticationMethod::None,
+        }
+    }
+
+    /// Whether the request may be one of a client registered with
+    /// `registered`. A request with only its identifier may be a public
+    /// client's, or one of a client of a forwarded identity, which is then
+    /// checked by what the proxy forwarded.
+    #[must_use]
+    pub fn may_be(&self, registered: AuthenticationMethod) -> bool {
+        match self {
+            Self::Public { .. } | Self::Forwarded { .. } => {
+                registered == AuthenticationMethod::None || registered.uses_forwarded_identity()
+            }
+            _ => self.method() == registered,
+        }
+    }
+
+    /// The same request, with the identity a trusted proxy forwarded. Only
+    /// a request with its identifier alone takes it: one that carries a
+    /// secret or an assertion is answered by that.
+    #[must_use]
+    pub fn with_forwarded(self, identity: Option<ForwardedIdentity>) -> Self {
+        match (self, identity) {
+            (Self::Public { client_id }, Some(identity)) => Self::Forwarded {
+                client_id,
+                identity,
+            },
+            (presented, _) => presented,
+        }
+    }
+
+    /// The identity a trusted proxy forwarded with the request, if any.
+    #[must_use]
+    pub const fn forwarded(&self) -> Option<&ForwardedIdentity> {
+        match self {
+            Self::Forwarded { identity, .. } => Some(identity),
+            _ => None,
         }
     }
 }

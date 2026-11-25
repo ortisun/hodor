@@ -92,11 +92,48 @@ The client address is set once, as the request arrives, before the tenant is res
 | Variable | Default | Meaning |
 |---|---|---|
 | `HODOR_TRUSTED_PROXIES` | empty | Address ranges of trusted proxies, such as `10.0.0.0/8,fd00::/8`, separated by commas. Empty: forwarded headers are never read |
-| `HODOR_FORWARDED_HEADER` | `x-forwarded-for` | Which header a trusted proxy writes: `x-forwarded-for` or `forwarded` |
+| `HODOR_FORWARDED_HEADER` | `x-forwarded-for` | Which header a trusted proxy writes: `x-forwarded-for` or `forwarded`; or `none`, when trusted proxies are named only for [the caller's identity](#the-callers-identity-from-a-proxy) and no address they forward is read |
 
 The server refuses to start if a range cannot be read. It also refuses a range that holds every address, `0.0.0.0/0` or `::/0`, because that range would let every client choose its own address.
 
 Name only the proxies that add the address they received the request from and that cannot be reached any other way. A range that also holds machines that are not proxies lets those machines choose their address. [Installing with Docker](../operations/install-with-docker.md) and [installing on Kubernetes](../operations/install-on-kubernetes.md) say what to name in each.
+
+### The caller's identity from a proxy
+
+A workload in a service mesh proves who it is to the proxy in front of Hodor, over mutual TLS. The proxy ends that connection and can forward what it learned in a header. Hodor reads that header to authenticate a client with `tls_client_auth`, `spiffe_x509` or `linkerd_identity` ([the OAuth context](../architecture/contexts/oauth.md#an-identity-forwarded-by-a-proxy), [Decision 0056](../decisions/0056-forwarded-client-identity.md)).
+
+The operator names the one header Hodor reads in `HODOR_CLIENT_IDENTITY_HEADER`:
+
+| Value | Written by | What it holds |
+|---|---|---|
+| `client-cert` | A proxy that follows [RFC 9440](https://www.rfc-editor.org/rfc/rfc9440) | `Client-Cert`: the caller's certificate, its DER encoding in base64 between colons. `Client-Cert-Chain`, when present: the certificates between it and its authority, each the same way, separated by commas |
+| `x-forwarded-client-cert` | Envoy, and the meshes built on it: Istio and Consul | `X-Forwarded-Client-Cert`: elements separated by commas, each of pairs `key=value` separated by semicolons. Hodor reads `Cert`, the certificate in PEM, percent-encoded; `Chain`, the chain the same way; `URI` and `DNS`, the names of the certificate, each given once per name; values may be in double quotes. Other keys, `By`, `Hash` and `Subject` among them, are not used |
+| `l5d-client-id` | Linkerd's proxy | The caller's Linkerd identity, such as `web.shop.serviceaccount.identity.linkerd.cluster.local` |
+
+The rules:
+
+- **No header is read unless one is named.** The setting is empty by default. A header a client invents is then never believed, whatever it is called.
+- **Only the named header is read.** A proxy writes one of them, and a client can send the others.
+- **Only from a trusted proxy.** The header is read only when the connection comes from an address in `HODOR_TRUSTED_PROXIES`, the same proxies as for the client address. From any other connection it is ignored, whatever it says.
+- **Only its nearest element.** When the header holds several elements, or arrives in several lines, only the last is read: the one the proxy Hodor is connected to added. Envoy and Istio add their element after whatever the caller sent, so an element a caller wrote is always before it and never read. For `client-cert` the nearest element of `Client-Cert` is the certificate; every element of `Client-Cert-Chain` may be used to build a path, since a path must still end at an authority of the trust domain, whoever wrote the certificates in between.
+- **What cannot be read is no identity.** A nearest element that does not read, a certificate larger than 16 kibibytes, or a chain of more than 10 certificates, leaves the request with no forwarded identity, and the client is then refused if its method needs one. A certificate that is not one is refused when it is checked. The counter `hodor.http.forwarded_identity.unreadable` counts such headers by `header`.
+- **The identity is found once**, as the request arrives, with the client address, and only the token, revocation and introspection endpoints use it.
+
+```mermaid
+flowchart LR
+    Workload["Workload with its certificate"] -->|"mutual TLS"| Sidecar["Hodor's sidecar 127.0.0.6"]
+    Sidecar -->|"X-Forwarded-Client-Cert: (forged element), By=…;URI=spiffe://cluster.local/ns/shop/sa/web"| Hodor["Hodor"]
+```
+
+With `HODOR_TRUSTED_PROXIES=127.0.0.6`, `HODOR_FORWARDED_HEADER=none` and `HODOR_CLIENT_IDENTITY_HEADER=x-forwarded-client-cert`, Hodor reads the last element, which the sidecar wrote, and never the forged one before it. It reads no forwarded address: a sidecar passes `X-Forwarded-For` as the caller wrote it, so every caller is known by the sidecar's address ([Threat-Mesh-08](../security/threat-model.md#service-meshes-and-certificates)).
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `HODOR_CLIENT_IDENTITY_HEADER` | empty | The header a trusted proxy writes the caller's identity into: `client-cert`, `x-forwarded-client-cert` or `l5d-client-id`. Empty: no identity is read |
+
+The server refuses to start with another value. It also says, when it starts, which header it reads and from which proxies; a header named with no trusted proxy is never read, and the server says so.
+
+Name the proxy that ends the caller's mutual TLS and removes or replaces the header a caller sends, and nothing else: Linkerd's proxy removes any `l5d-client-id` a caller sent; Envoy does the same for `X-Forwarded-Client-Cert` with `forward_client_cert_details` set to `SANITIZE_SET`, and adds its element after the caller's with `APPEND_FORWARD`, which Istio's sidecars use. A proxy that passes the header through unchanged must not be named.
 
 ## OAuth 2.x and OpenID Connect
 

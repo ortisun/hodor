@@ -6,6 +6,7 @@
 //! are the context's.
 
 use crate::bearer::{bearer, not_cached, refused};
+use crate::forwarded_identity::IdentityHeader;
 use crate::tenant::TenantSlug;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -14,7 +15,9 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Extension, Json, Router};
 use hodor_kernel::TenantContext;
-use hodor_oauth::api::{BearerRefusal, OPENID_SCOPE, UserInfoService, discovery_document};
+use hodor_oauth::api::{
+    BearerRefusal, OPENID_SCOPE, UserInfoService, advertise_forwarded_methods, discovery_document,
+};
 use hodor_tenant::api::TenantService;
 
 /// What UserInfo needs.
@@ -50,6 +53,10 @@ pub struct DiscoveryState {
     pub public_url: String,
     /// The tenant's assurance levels, which the document names.
     pub tenants: TenantService,
+    /// The header of the caller's identity trusted proxies write, if the
+    /// operator named one: the document then names the methods it makes
+    /// usable.
+    pub identity_header: Option<IdentityHeader>,
 }
 
 impl std::fmt::Debug for DiscoveryState {
@@ -85,11 +92,11 @@ async fn discovery(
         .iter()
         .map(|level| level.acr.as_str())
         .collect();
-    let mut response = Json(discovery_document(
-        &issuer(&state.public_url, &slug),
-        &names,
-    ))
-    .into_response();
+    let mut document = discovery_document(&issuer(&state.public_url, &slug), &names);
+    if let Some(header) = state.identity_header {
+        advertise_forwarded_methods(&mut document, header.methods());
+    }
+    let mut response = Json(document).into_response();
     let headers = response.headers_mut();
     headers.insert(
         header::CACHE_CONTROL,

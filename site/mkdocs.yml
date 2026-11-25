@@ -253,6 +253,7 @@ nav:
       - decisions/0053-dpop.md
       - decisions/0054-backchannel-authentication.md
       - decisions/0055-spiffe-jwt-client-authentication.md
+      - decisions/0056-forwarded-client-identity.md
   - Contributing:
       - development/conventions.md
       - development/documentation-site.md

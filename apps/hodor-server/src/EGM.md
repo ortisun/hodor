@@ -35,6 +35,9 @@ Configuration (`Config`, clap, command name `hodor-server`):
 | `--open-policy-agent-tenant-addresses` | `HODOR_OPEN_POLICY_AGENT_TENANT_ADDRESSES` | empty, comma separated `tenant-identifier=origin` |
 | `--open-policy-agent-token` | `HODOR_OPEN_POLICY_AGENT_TOKEN` | unset; its value is hidden from the help text |
 | `--open-policy-agent-revision-lag-seconds` | `HODOR_OPEN_POLICY_AGENT_REVISION_LAG_SECONDS` | 300; the engine refuses decisions of an older revision after that (`StoredRevisions` over `PgBundleStore`) |
+| `--trusted-proxies` | `HODOR_TRUSTED_PROXIES` | empty, comma separated address ranges; `trusted_proxies` refuses one that does not read or holds every address |
+| `--forwarded-header` | `HODOR_FORWARDED_HEADER` | `x-forwarded-for`, or `forwarded`, or `none` |
+| `--client-identity-header` | `HODOR_CLIENT_IDENTITY_HEADER` | empty: no header of the caller's identity is read; or `client-cert`, `x-forwarded-client-cert`, `l5d-client-id`, given to `TrustedProxies::with_identity_header`. Another value stops the server; a header named without a trusted proxy is logged as never read |
 | `--directory-hosts` | `HODOR_DIRECTORY_HOSTS` | empty, comma separated `host:port` |
 | `--password-hash-memory-kibibytes` | `HODOR_PASSWORD_HASH_MEMORY_KIBIBYTES` | `19 * 1024` |
 | `--password-hash-passes` | `HODOR_PASSWORD_HASH_PASSES` | 2 |
@@ -88,6 +91,13 @@ Routers, as assembled in `run`:
   into the tenant routes when `keys` built a `KeyService` (`PgKeyStore`,
   `LocalKeyProvider` over `HODOR_SECRET_KEYS`); otherwise a warning is logged
   and the address is not served.
+- The token, revocation and introspection endpoints share the
+  `TokenService` built by `token`, given `with_trust_domains` (the
+  `TrustDomainService` of `trust_domains`) and `with_certificate_check`
+  (`X509CertificateCheck`), so that JWT-SVIDs and clients of
+  `tls_client_auth`, `spiffe_x509` and `linkerd_identity` are checked
+  against the tenant's trust domains; the discovery document names those
+  methods from `TrustedProxies::identity_header`.
 - `/opa/…`: `hodor_protocol_http::policy_agent_routes(BundleService)` is
   merged into the site routes, with `PgInstanceStore`, `PgBundleStore`,
   `PgInstanceStatusStore` and `PgUploadedDecisionStore`. The server never

@@ -19,7 +19,8 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use hodor_kernel::{CorrelationId, Secret, TenantContext};
 use hodor_oauth::api::{
-    BasicCredentials, IssuedTokens, Issuer, TokenError, TokenQuery, TokenRequest, TokenService,
+    BasicCredentials, ForwardedIdentity, IssuedTokens, Issuer, TokenError, TokenQuery,
+    TokenRequest, TokenService,
 };
 use serde::Serialize;
 
@@ -241,6 +242,7 @@ async fn token(
     State(state): State<TokenState>,
     Extension(tenant): Extension<TenantContext>,
     Extension(TenantSlug(slug)): Extension<TenantSlug>,
+    forwarded: Option<Extension<ForwardedIdentity>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
@@ -250,10 +252,13 @@ async fn token(
         Ok(form) => form,
         Err((error, used_basic)) => return refused(error, used_basic, &issuer),
     };
-    let request = match TokenRequest::parse(basic, form_urlencoded::parse(&body).into_owned()) {
+    let mut request = match TokenRequest::parse(basic, form_urlencoded::parse(&body).into_owned()) {
         Ok(request) => request,
         Err(error) => return refused(error, used_basic, &issuer),
     };
+    request.client = request
+        .client
+        .with_forwarded(forwarded.map(|Extension(found)| found));
     let correlation_id = CorrelationId::generate();
     let answer = state
         .tokens
@@ -285,6 +290,7 @@ async fn revoke(
     State(state): State<TokenState>,
     Extension(tenant): Extension<TenantContext>,
     Extension(TenantSlug(slug)): Extension<TenantSlug>,
+    forwarded: Option<Extension<ForwardedIdentity>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
@@ -295,10 +301,13 @@ async fn revoke(
         Ok(form) => form,
         Err((error, used_basic)) => return refused(error, used_basic, &issuer),
     };
-    let query = match TokenQuery::parse(basic, form_urlencoded::parse(&body).into_owned()) {
+    let mut query = match TokenQuery::parse(basic, form_urlencoded::parse(&body).into_owned()) {
         Ok(query) => query,
         Err(error) => return refused(error, used_basic, &issuer),
     };
+    query.client = query
+        .client
+        .with_forwarded(forwarded.map(|Extension(found)| found));
     let answer = state
         .tokens
         .revoke(
@@ -332,6 +341,7 @@ async fn introspect(
     State(state): State<TokenState>,
     Extension(tenant): Extension<TenantContext>,
     Extension(TenantSlug(slug)): Extension<TenantSlug>,
+    forwarded: Option<Extension<ForwardedIdentity>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
@@ -342,10 +352,13 @@ async fn introspect(
         Ok(form) => form,
         Err((error, used_basic)) => return refused(error, used_basic, &issuer),
     };
-    let query = match TokenQuery::parse(basic, form_urlencoded::parse(&body).into_owned()) {
+    let mut query = match TokenQuery::parse(basic, form_urlencoded::parse(&body).into_owned()) {
         Ok(query) => query,
         Err(error) => return refused(error, used_basic, &issuer),
     };
+    query.client = query
+        .client
+        .with_forwarded(forwarded.map(|Extension(found)| found));
     let answer = state
         .tokens
         .introspect(

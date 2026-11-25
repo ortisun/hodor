@@ -12650,7 +12650,8 @@
           "updated_at",
           "principal",
           "exchange_rules",
-          "spiffe_id"
+          "spiffe_id",
+          "linkerd_identity"
         ],
         "properties": {
           "id": {
@@ -12679,6 +12680,9 @@
               "client_secret_post",
               "private_key_jwt",
               "spiffe_jwt",
+              "tls_client_auth",
+              "spiffe_x509",
+              "linkerd_identity",
               "none"
             ]
           },
@@ -12841,7 +12845,15 @@
               "null"
             ],
             "maxLength": 2048,
-            "description": "The one SPIFFE identifier of a client using `spiffe_jwt`, whose JWT-SVIDs prove who it is; `null` for any other method."
+            "description": "The one SPIFFE identifier of a client using `spiffe_jwt`, whose JWT-SVIDs prove who it is, or `spiffe_x509`, whose X509-SVID a trusted proxy forwards; a client using `tls_client_auth` has it or `linkerd_identity`; `null` for any other method."
+          },
+          "linkerd_identity": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 253,
+            "description": "The Linkerd identity of a client using `linkerd_identity`, such as `web.shop.serviceaccount.identity.linkerd.cluster.local`, which Linkerd's proxy forwards; a client using `tls_client_auth` has it or `spiffe_id`, and any other method neither. The client's principal must then be a service account. Unique in the tenant."
           }
         }
       },
@@ -12889,6 +12901,9 @@
               "client_secret_post",
               "private_key_jwt",
               "spiffe_jwt",
+              "tls_client_auth",
+              "spiffe_x509",
+              "linkerd_identity",
               "none"
             ]
           },
@@ -12981,7 +12996,12 @@
           "spiffe_id": {
             "type": "string",
             "maxLength": 2048,
-            "description": "Required with `spiffe_jwt` and refused with any other method: the one SPIFFE identifier, `spiffe://<trust domain>/<path>`, whose JWT-SVIDs prove who the client is. Exact; `/*` is refused. The principal must be a service account. Unique in the tenant."
+            "description": "Required with `spiffe_jwt` and `spiffe_x509`, allowed with `tls_client_auth` instead of `linkerd_identity`, and refused with any other method: the one SPIFFE identifier, `spiffe://<trust domain>/<path>`, whose JWT-SVIDs or forwarded certificates prove who the client is. Exact; `/*` is refused. The principal must be a service account. Unique in the tenant."
+          },
+          "linkerd_identity": {
+            "type": "string",
+            "maxLength": 253,
+            "description": "The Linkerd identity of a client using `linkerd_identity`, such as `web.shop.serviceaccount.identity.linkerd.cluster.local`, which Linkerd's proxy forwards; a client using `tls_client_auth` has it or `spiffe_id`, and any other method neither. The client's principal must then be a service account. Unique in the tenant."
           }
         }
       },
@@ -13001,6 +13021,9 @@
               "client_secret_post",
               "private_key_jwt",
               "spiffe_jwt",
+              "tls_client_auth",
+              "spiffe_x509",
+              "linkerd_identity",
               "none"
             ]
           },
@@ -13098,7 +13121,15 @@
               "null"
             ],
             "maxLength": 2048,
-            "description": "Binds a client using `spiffe_jwt` to one SPIFFE identifier; `null` removes it, as moving away from `spiffe_jwt` requires."
+            "description": "Binds a client using `spiffe_jwt`, `spiffe_x509` or `tls_client_auth` to one SPIFFE identifier; `null` removes it; giving it removes `linkerd_identity`. Moving to a method that does not take it removes it."
+          },
+          "linkerd_identity": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 253,
+            "description": "The Linkerd identity of a client using `linkerd_identity`, such as `web.shop.serviceaccount.identity.linkerd.cluster.local`, which Linkerd's proxy forwards; a client using `tls_client_auth` has it or `spiffe_id`, and any other method neither. The client's principal must then be a service account. Unique in the tenant. `null` removes it; giving it removes `spiffe_id`."
           }
         }
       },
@@ -13371,7 +13402,7 @@
               "type": "string",
               "maxLength": 200
             },
-            "description": "Paths erased from the input before a record is stored: `subject.attributes.\u2026`, `asserted.\u2026`, `resource.attributes.\u2026` or `context.attributes.\u2026`, with `*` alone as the last segment."
+            "description": "Paths erased from the input before a record is stored: `subject.attributes.…`, `asserted.…`, `resource.attributes.…` or `context.attributes.…`, with `*` alone as the last segment."
           },
           "retention_days": {
             "type": "integer",

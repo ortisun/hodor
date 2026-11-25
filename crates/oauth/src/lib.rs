@@ -40,9 +40,9 @@ pub mod api {
     pub use crate::application::pairwise::{PairwisePorts, PairwiseSubjects};
     pub use crate::application::ports::{
         AccessTokenRecordStore, ApplicationStore, AuthorizationCodeStore,
-        AuthorizationRequestStore, ClaimMapperStore, ClientAssertionStore, ClientStore,
-        ConsentStore, GrantStore, PairwiseSecretStore, PersonClaimSources, PersonMemberships,
-        PersonStanding, RefreshTokenStore, ResourceServerStore,
+        AuthorizationRequestStore, CertificateCheck, ClaimMapperStore, ClientAssertionStore,
+        ClientStore, ConsentStore, GrantStore, PairwiseSecretStore, PersonClaimSources,
+        PersonMemberships, PersonStanding, RefreshTokenStore, ResourceServerStore,
     };
     pub use crate::application::resource_access::{
         ResourceAccessPorts, ResourceAccessService, ResourceCaller,
@@ -88,6 +88,11 @@ pub mod api {
     pub use crate::domain::event::OauthEvent;
     pub use crate::domain::exchange::{
         MAX_ACTORS, act_claim, actors, chain_length, exchanged_scopes,
+    };
+    pub use crate::domain::forwarded::{
+        CertificateNames, ForwardedIdentity, LinkerdIdentity, MAX_FORWARDED_CERTIFICATE_BYTES,
+        MAX_FORWARDED_CHAIN, MAX_LINKERD_IDENTITY_LENGTH, WorkloadIdentity,
+        advertise_forwarded_methods, names_match,
     };
     pub use crate::domain::introspection::{
         AccessTokenRecord, ActiveRefreshToken, REVOKED_BY_CLIENT, TokenQuery, TokenTypeHint,

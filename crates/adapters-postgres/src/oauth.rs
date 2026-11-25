@@ -8,9 +8,9 @@ use hodor_oauth::api::{
     Application, ApplicationId, ApplicationSettings, ApplicationSnapshot, ApplicationStore,
     Audience, AuthenticationMethod, Client, ClientId, ClientKey, ClientSecret, ClientSecretHash,
     ClientSecretId, ClientSettings, ClientSnapshot, ClientStore, ClientType, ExchangeRule,
-    GrantType, IdTokenAlgorithm, ResourceServer, ResourceServerId, ResourceServerSettings,
-    ResourceServerSnapshot, ResourceServerStore, ScopeDefinition, SpiffeId, Status, SubjectType,
-    TokenPolicy,
+    GrantType, IdTokenAlgorithm, LinkerdIdentity, ResourceServer, ResourceServerId,
+    ResourceServerSettings, ResourceServerSnapshot, ResourceServerStore, ScopeDefinition, SpiffeId,
+    Status, SubjectType, TokenPolicy,
 };
 use sqlx::PgConnection;
 use sqlx::Row as _;
@@ -23,6 +23,14 @@ const SERVER_APPLICATION_CONSTRAINT: &str = "resource_server_application_fk";
 const AUDIENCE_CONSTRAINT: &str = "resource_server_audience_unique";
 const ONE_SERVER_CONSTRAINT: &str = "resource_server_application_unique";
 const SPIFFE_ID_CONSTRAINT: &str = "client_spiffe_id_unique";
+const LINKERD_IDENTITY_CONSTRAINT: &str = "client_linkerd_identity_unique";
+
+fn linkerd_identity_taken() -> DomainError {
+    DomainError::conflict(
+        "oauth.client_linkerd_identity_taken",
+        "another client of the tenant is bound to this Linkerd identity",
+    )
+}
 
 fn spiffe_id_taken() -> DomainError {
     DomainError::conflict(
@@ -228,7 +236,7 @@ const CLIENT_COLUMNS: &str = "id, application_id, name, client_type, authenticat
      id_token_algorithm, access_token_seconds, id_token_seconds, refresh_token_seconds, \
      refresh_idle_seconds, consent_seconds, status, created_at, updated_at, version, principal_id, \
      exchange_rules, backchannel_logout_uri, backchannel_logout_session_required, subject_type, \
-     sector_identifier_uri, spiffe_id";
+     sector_identifier_uri, spiffe_id, linkerd_identity";
 
 async fn load_client(
     connection: &mut PgConnection,
@@ -335,6 +343,13 @@ async fn load_client(
                 .map_err(get)?
                 .map(|text| SpiffeId::parse(&text).map_err(|_| corrupted("SPIFFE identifier")))
                 .transpose()?,
+            linkerd_identity: row
+                .try_get::<Option<String>, _>("linkerd_identity")
+                .map_err(get)?
+                .map(|text| {
+                    LinkerdIdentity::parse(&text).map_err(|_| corrupted("Linkerd identity"))
+                })
+                .transpose()?,
         },
         secrets,
         keys,
@@ -413,9 +428,9 @@ impl ClientStore for PgClientStore {
                   refresh_idle_seconds, consent_seconds, status, created_at, updated_at,
                   id_token_algorithm, principal_id, exchange_rules, backchannel_logout_uri,
                   backchannel_logout_session_required, subject_type, sector_identifier_uri,
-                  spiffe_id, version)
+                  spiffe_id, linkerd_identity, version)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-                     $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, 0)",
+                     $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, 0)",
         )
         .bind(tenant)
         .bind(state.id.as_uuid())
@@ -444,6 +459,12 @@ impl ClientStore for PgClientStore {
         .bind(settings.subject_type.as_str())
         .bind(settings.sector_identifier_uri.as_deref())
         .bind(settings.spiffe_id.as_ref().map(SpiffeId::as_str))
+        .bind(
+            settings
+                .linkerd_identity
+                .as_ref()
+                .map(LinkerdIdentity::as_str),
+        )
         .execute(&mut *connection)
         .await;
         match inserted {
@@ -457,6 +478,11 @@ impl ClientStore for PgClientStore {
                 if error.constraint() == Some(SPIFFE_ID_CONSTRAINT) =>
             {
                 return Err(spiffe_id_taken());
+            }
+            Err(sqlx::Error::Database(error))
+                if error.constraint() == Some(LINKERD_IDENTITY_CONSTRAINT) =>
+            {
+                return Err(linkerd_identity_taken());
             }
             Err(error) => return Err(database_error(&error)),
         }
@@ -481,7 +507,7 @@ impl ClientStore for PgClientStore {
                  id_token_algorithm = $18, principal_id = $19, exchange_rules = $20,
                  backchannel_logout_uri = $21, backchannel_logout_session_required = $22,
                  subject_type = $23, sector_identifier_uri = $24, spiffe_id = $25,
-                 version = version + 1
+                 linkerd_identity = $26, version = version + 1
              WHERE tenant_id = $1 AND id = $2 AND version = $17",
         )
         .bind(tenant)
@@ -509,6 +535,12 @@ impl ClientStore for PgClientStore {
         .bind(settings.subject_type.as_str())
         .bind(settings.sector_identifier_uri.as_deref())
         .bind(settings.spiffe_id.as_ref().map(SpiffeId::as_str))
+        .bind(
+            settings
+                .linkerd_identity
+                .as_ref()
+                .map(LinkerdIdentity::as_str),
+        )
         .execute(&mut *connection)
         .await
         .map_err(|error| match &error {
@@ -516,6 +548,11 @@ impl ClientStore for PgClientStore {
                 if failure.constraint() == Some(SPIFFE_ID_CONSTRAINT) =>
             {
                 spiffe_id_taken()
+            }
+            sqlx::Error::Database(failure)
+                if failure.constraint() == Some(LINKERD_IDENTITY_CONSTRAINT) =>
+            {
+                linkerd_identity_taken()
             }
             _ => get(error),
         })?;

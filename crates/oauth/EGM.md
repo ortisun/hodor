@@ -32,7 +32,8 @@ and kernel traits.
 ## Interface
 
 - Source and public surface: [src](./src/EGM.md).
-- Ports implemented elsewhere: `ApplicationStore`, `ClientStore` and
+- Ports implemented elsewhere: `CertificateCheck`, by
+  `X509CertificateCheck` in `crates/adapters-crypto/src/certificate.rs`; `ApplicationStore`, `ClientStore` and
   `ResourceServerStore`, by `PgApplicationStore`, `PgClientStore` and
   `PgResourceServerStore` in `crates/adapters-postgres/src/oauth.rs`;
   `AuthorizationRequestStore`, `GrantStore` and `AuthorizationCodeStore`,

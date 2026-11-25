@@ -10,7 +10,7 @@ license.workspace = true
 
 [features]
 # A provider that signs real tokens, for tests of code that checks them.
-testing = ["dep:form_urlencoded", "dep:serde_json"]
+testing = ["dep:form_urlencoded", "dep:rcgen", "dep:time"]
 
 [dependencies]
 argon2.workspace = true
@@ -25,9 +25,14 @@ hodor-kernel.workspace = true
 hodor-keys.workspace = true
 hodor-oauth.workspace = true
 hodor-webhooks.workspace = true
-serde_json = { workspace = true, optional = true }
+rcgen = { workspace = true, optional = true }
+rustls-pki-types.workspace = true
+rustls-webpki.workspace = true
+serde_json.workspace = true
 sha2.workspace = true
+time = { workspace = true, optional = true }
 tokio.workspace = true
+x509-parser.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
@@ -44,3 +49,7 @@ time.workspace = true
 
 [lints]
 workspace = true
+
+[package.metadata.cargo-machete]
+# Imported under its library name, `webpki`.
+ignored = ["rustls-webpki"]

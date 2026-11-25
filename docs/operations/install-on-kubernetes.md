@@ -172,7 +172,8 @@ kubectl exec --namespace hodor deployment/hodor-server -- /usr/local/bin/hodor-c
 | `telemetry.metricsEndpoint`, `telemetry.tracesEndpoint` | Empty | Where metrics and traces are sent over OTLP/HTTP. [Deployment](deployment.md#observability) says what is sent |
 | `ingress.enabled`, `ingress.className`, `ingress.annotations`, `ingress.tls` | `false` | The Ingress for the name in `publicUrl`. The certificate is read from the Secret `ingress.tls.secretName`, `<release>-tls` when empty, which a certificate manager can fill |
 | `networkPolicy.enabled` | `false` | See [network policy](#network-policy) |
-| `trustedProxies`, `forwardedHeader` | Empty; `x-forwarded-for` | The address ranges of the ingress controller and of any load balancer in front of it, and the header they write. See [the address of each client](#the-address-of-each-client) |
+| `trustedProxies`, `forwardedHeader` | Empty; `x-forwarded-for` | The address ranges of the ingress controller and of any load balancer in front of it, and the header they write, or `none`. See [the address of each client](#the-address-of-each-client) |
+| `clientIdentityHeader` | Empty | The header a trusted proxy writes the caller's identity into: `client-cert`, `x-forwarded-client-cert` or `l5d-client-id`. See [the identity of a workload](#the-identity-of-a-workload) |
 | `keyProvider.signingKeys` | `local` | Where new signing keys are made: `local`, or `openbao`, which needs `keyProvider.openbao.enabled`. See [keys in OpenBao](keys-in-openbao.md) |
 | `keyProvider.openbao.enabled`, `address`, `transitMount` | `false`; none; `hodor-transit` | Whether the servers and workers use OpenBao, its address, and Hodor's Transit mount. Keep it enabled while a key made there may sign |
 | `keyProvider.openbao.authMethod` | `kubernetes` | `kubernetes`: the pods present a token of the release's service account made for the audience `keyProvider.openbao.tokenAudience` alone, mounted for that purpose, under the role `kubernetesRole`. `approle`: the identifiers in the Secret |
@@ -227,6 +228,21 @@ Telling the ingress controller from other callers by their identity in the mesh 
 | Leave `trustedProxies` empty | Nothing | Safe, but everyone shares one limit on sign-in attempts, as with no proxy named |
 
 Behind a waypoint of Istio's ambient mode, what address Hodor sees has not been checked. Treat a waypoint as a sidecar until it has.
+
+### The identity of a workload
+
+A workload of a service mesh can get a token with no secret, with the certificate its sidecar presents or the identity Linkerd asserts ([an identity forwarded by a proxy](../architecture/contexts/oauth.md#an-identity-forwarded-by-a-proxy)). Hodor reads it from a header the proxy in front of it writes, only when `clientIdentityHeader` names that header and only from the proxies of `trustedProxies` ([the caller's identity from a proxy](../api/api-spec.md#the-callers-identity-from-a-proxy)).
+
+```yaml
+trustedProxies:
+  - 127.0.0.6
+forwardedHeader: none
+clientIdentityHeader: x-forwarded-client-cert
+```
+
+- **Name only the proxy that ends the workload's mutual TLS**, here Istio's sidecar, which connects to Hodor from `127.0.0.6`, and only if it replaces or appends to the header a caller sends. Linkerd's proxy connects from inside the pod as well, and removes any `l5d-client-id` a caller sent: name the address it connects from. The service mesh guide will say which address each mesh uses, as tried (Issue-113).
+- **Set `forwardedHeader` to `none` when the sidecar is named.** A sidecar passes `X-Forwarded-For` as the caller wrote it, so any workload could choose its own address. With `none`, every caller is known by the sidecar's address and shares one limit on sign-in attempts, until the forwarded address can be read from named gateways only (Issue-112).
+- **Give the tenant the workload's trust domain**: by its bundle, so that the forwarded certificate is checked against it, or as checked by the mesh, which is needed when the proxy forwards only the names of the certificate, as Istio does by default, or the Linkerd identity.
 
 ## Upgrading
 

@@ -578,22 +578,15 @@ async fn a_client_is_bound_to_one_exact_identifier_of_a_service_account() {
     assert_eq!(status, StatusCode::CONFLICT, "{answer}");
     assert_eq!(answer["code"], "oauth.client_spiffe_id_taken");
 
-    // Leaving `spiffe_jwt` takes the identifier away with it.
+    // Leaving `spiffe_jwt` takes the identifier away with it (Issue-107:
+    // the administration interface drops an identity the new method does
+    // not take, as it drops secrets and keys).
     let first = first["id"].as_str().expect("id").to_owned();
     let (status, answer) = world
         .admin(
             Method::PATCH,
             &format!("/clients/{first}"),
             Some(json!({ "authentication_method": "client_secret_basic" })),
-        )
-        .await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{answer}");
-    assert_eq!(answer["code"], "oauth.client_spiffe_id_invalid");
-    let (status, answer) = world
-        .admin(
-            Method::PATCH,
-            &format!("/clients/{first}"),
-            Some(json!({ "authentication_method": "client_secret_basic", "spiffe_id": null })),
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{answer}");

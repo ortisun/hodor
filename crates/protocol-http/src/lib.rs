@@ -15,6 +15,7 @@ mod authorize;
 mod bearer;
 mod client_address;
 mod consent;
+mod forwarded_identity;
 mod health;
 mod interaction;
 mod invitations;
@@ -43,6 +44,7 @@ pub use client_address::{
     AddressRange, ForwardedHeader, InvalidRange, MAX_FORWARDED_HOPS, TrustedProxies, parse_ranges,
 };
 pub use consent::{ConsentState, consent_routes};
+pub use forwarded_identity::IdentityHeader;
 pub use health::{Health, ReadinessCheck, ops_router};
 pub use interaction::{InteractionState, interaction_routes};
 pub use invitations::{InvitationState, invitation_routes};

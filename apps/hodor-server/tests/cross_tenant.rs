@@ -4766,3 +4766,178 @@ async fn a_jwt_svid_for_one_tenant_is_refused_by_another_under_the_same_trust_do
     let (status, body) = token_with_svid(&world, globex, &globex_client, &for_globex).await;
     assert_eq!(status, StatusCode::OK, "{body}");
 }
+
+/// A tenant's application with the scope `read`, a trust domain
+/// `cluster.local` trusting `authority`, and a client of `spiffe_x509`
+/// bound to `identity`. Answers the client's identifier.
+async fn workload_client_trusting(
+    world: &World,
+    tenant: &Tenant,
+    authority: &hodor_adapters_crypto::testing::certificates::TestAuthority,
+    identity: &str,
+) -> String {
+    use hodor_adapters_crypto::testing::certificates::bundle;
+    let token = &tenant.administrator_token;
+    let (status, _) = world
+        .admin(tenant, token, Method::POST, "/keys/sig:rotate", None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, application) = world
+        .admin(
+            tenant,
+            token,
+            Method::POST,
+            "/applications",
+            Some(serde_json::json!({ "name": "Shop", "first_party": true })),
+        )
+        .await;
+    let (status, _) = world
+        .admin(
+            tenant,
+            token,
+            Method::POST,
+            "/resource-servers",
+            Some(serde_json::json!({
+                "application_id": application["id"],
+                "audience": "https://api.shop.example",
+                "name": "Shop interface",
+                "scopes": [{ "name": "read", "description": "Reads orders" }]
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, added) = world
+        .admin(
+            tenant,
+            token,
+            Method::POST,
+            "/trust-domains",
+            Some(serde_json::json!({
+                "name": "cluster.local",
+                "source": "uploaded",
+                "bundle": bundle(&[authority.bundle_element()]),
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{added}");
+    let (status, account) = world
+        .admin(
+            tenant,
+            token,
+            Method::POST,
+            "/service-accounts",
+            Some(serde_json::json!({ "name": "Shop web", "owners": [tenant.ana] })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{account}");
+    let (status, client) = world
+        .admin(
+            tenant,
+            token,
+            Method::POST,
+            &format!(
+                "/applications/{}/clients",
+                application["id"].as_str().expect("id")
+            ),
+            Some(serde_json::json!({
+                "name": "Web",
+                "type": "confidential",
+                "authentication_method": "spiffe_x509",
+                "spiffe_id": identity,
+                "principal": account["id"],
+                "grant_types": ["client_credentials"],
+                "allowed_scopes": ["read"],
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{client}");
+    client["id"].as_str().expect("id").to_owned()
+}
+
+/// Asks a tenant's token endpoint for client credentials with the client's
+/// identifier alone and a certificate in `Client-Cert`, as the trusted
+/// proxy in front of Hodor would forward it.
+async fn token_with_certificate(
+    world: &World,
+    tenant: &Tenant,
+    client: &str,
+    certificate: &[u8],
+) -> StatusCode {
+    use base64::Engine as _;
+    Client::new()
+        .post(format!(
+            "{}/t/{}/oauth2/token",
+            world.server.base, tenant.slug
+        ))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .header(
+            "client-cert",
+            format!(
+                ":{}:",
+                base64::engine::general_purpose::STANDARD.encode(certificate)
+            ),
+        )
+        .body(
+            form_urlencoded::Serializer::new(String::new())
+                .extend_pairs([
+                    ("grant_type", "client_credentials"),
+                    ("client_id", client),
+                    ("scope", "read"),
+                ])
+                .finish(),
+        )
+        .send()
+        .await
+        .expect("response")
+        .status()
+}
+
+#[tokio::test]
+async fn a_certificate_of_one_tenants_trust_domain_is_refused_by_another_under_the_same_name() {
+    use hodor_adapters_crypto::testing::certificates::{Leaf, TestAuthority};
+    let world = world_with(&[
+        ("HODOR_SECRET_KEYS", ROOT_KEY),
+        ("HODOR_TRUSTED_PROXIES", "127.0.0.1"),
+        ("HODOR_FORWARDED_HEADER", "none"),
+        ("HODOR_CLIENT_IDENTITY_HEADER", "client-cert"),
+    ])
+    .await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    let identity = "spiffe://cluster.local/ns/shop/sa/web";
+    // Two meshes, each named `cluster.local`, each with an authority of its
+    // own, and a client in each bound to the same identifier.
+    let (acme_mesh, globex_mesh) = (TestAuthority::root("mesh"), TestAuthority::root("mesh"));
+    let acme_client = workload_client_trusting(&world, acme, &acme_mesh, identity).await;
+    let globex_client = workload_client_trusting(&world, globex, &globex_mesh, identity).await;
+    let acme_certificate = acme_mesh.issue(&Leaf::uri(identity));
+    let globex_certificate = globex_mesh.issue(&Leaf::uri(identity));
+
+    // Each certificate proves its own tenant's client.
+    for (tenant, client, certificate) in [
+        (acme, &acme_client, &acme_certificate),
+        (globex, &globex_client, &globex_certificate),
+    ] {
+        assert_eq!(
+            token_with_certificate(&world, tenant, client, certificate).await,
+            StatusCode::OK
+        );
+    }
+    // Acme's certificate is refused by Globex's client of the same
+    // identifier, under Globex's trust domain of the same name, and the
+    // other way round.
+    assert_eq!(
+        token_with_certificate(&world, globex, &globex_client, &acme_certificate).await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        token_with_certificate(&world, acme, &acme_client, &globex_certificate).await,
+        StatusCode::UNAUTHORIZED
+    );
+    // Acme's client is unknown at Globex, whatever certificate comes with it.
+    for certificate in [&acme_certificate, &globex_certificate] {
+        assert_eq!(
+            token_with_certificate(&world, globex, &acme_client, certificate).await,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+}

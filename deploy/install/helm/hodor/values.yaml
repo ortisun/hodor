@@ -90,8 +90,12 @@ directoryHosts: []
 # one limit on sign-in attempts. Name the range the ingress controller's pods get their addresses from, and
 # turn on networkPolicy so that nothing else in that range can connect.
 trustedProxies: []
-# The header they write: x-forwarded-for or forwarded.
+# The header they write: x-forwarded-for or forwarded; or none, when they are named only for the caller's
+# identity below.
 forwardedHeader: x-forwarded-for
+# The header the proxy in front of Hodor writes the caller's identity into, for workloads of a service mesh:
+# client-cert, x-forwarded-client-cert or l5d-client-id. Read only from trustedProxies. Empty: none is read.
+clientIdentityHeader: ""
 
 log:
   # json or pretty.

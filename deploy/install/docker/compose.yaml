@@ -110,6 +110,7 @@ services:
       HODOR_TRUSTED_PROXIES: ${HODOR_TRUSTED_PROXIES:-10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}
       # Optional settings: passed on when `.env` sets them, left to Hodor's defaults otherwise.
       HODOR_FORWARDED_HEADER:
+      HODOR_CLIENT_IDENTITY_HEADER:
       HODOR_DIRECTORY_HOSTS:
       HODOR_KEY_OVERLAP_HOURS:
       HODOR_REFRESH_RETRY_SECONDS:

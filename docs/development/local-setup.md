@@ -133,7 +133,8 @@ Every setting is a command-line flag with an environment variable of the same me
 | `HODOR_OTLP_METRICS_ENDPOINT` | unset | Full URL of the OTLP/HTTP metrics endpoint. For VictoriaMetrics: `http://<host>:8428/opentelemetry/v1/metrics` |
 | `HODOR_SHUTDOWN_DRAIN_SECONDS` | `5` | How long to keep serving after a stop signal while readiness fails |
 | `HODOR_TRUSTED_PROXIES` | empty | Address ranges of the load balancers and web servers whose forwarded header is read, separated by commas. Empty: the client address is always the connection's. See [the client address](../api/api-spec.md#the-client-address) |
-| `HODOR_FORWARDED_HEADER` | `x-forwarded-for` | The header trusted proxies write: `x-forwarded-for` or `forwarded` |
+| `HODOR_FORWARDED_HEADER` | `x-forwarded-for` | The header trusted proxies write: `x-forwarded-for` or `forwarded`; `none` reads no forwarded address |
+| `HODOR_CLIENT_IDENTITY_HEADER` | empty | The header trusted proxies write the caller's identity into: `client-cert`, `x-forwarded-client-cert` or `l5d-client-id`. Empty: none is read. See [the caller's identity from a proxy](../api/api-spec.md#the-callers-identity-from-a-proxy) |
 | `HODOR_PUBLIC_URL` | `http://localhost:8080` | The address people reach this installation at, without a path. Links in messages start with it |
 | `HODOR_SECRET_KEYS` | unset | The keys that keep secrets [encrypted at rest](../security/secrets-at-rest.md#root-keys) and wrap the tenants' [signing keys](../architecture/contexts/keys.md#the-local-provider). Unset: no identity provider can be used, and none is offered; the key set is not published and keys cannot be managed |
 | `HODOR_KEY_OVERLAP_HOURS` | `24` | How long a replaced signing key stays published when an administrator rotates by hand. See [the rotation policy](../architecture/contexts/keys.md#the-rotation-policy) |

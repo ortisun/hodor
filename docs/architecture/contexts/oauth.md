@@ -4,7 +4,7 @@ The `oauth` context makes Hodor an OAuth 2.x authorization server and an OpenID 
 
 It does not sign anyone in. When a request needs a person, it hands the request to the `authentication` context and takes the session that comes back. The two contexts do not depend on each other: the HTTP layer joins them ([crates.md](../crates.md)).
 
-This page specifies what Issue-53 builds: applications, clients and resource servers, and the rules they keep; what Issue-55 builds: the authorization endpoint, grants and authorization codes; what Issue-56 builds: the token endpoint, client authentication and access tokens; what Issue-59 builds: the OpenID Provider; what Issue-60 builds: logout initiated by the relying party; what Issue-62 builds: [consent](#consent); what Issue-93 builds: [clients that act as a workload](#clients-that-act-as-a-workload); what Issue-106 builds: [a JWT-SVID as a client's proof](#checking-a-jwt-svid); what Issue-95 builds: [token exchange](#token-exchange); what Issue-100 builds: [back-channel logout](#back-channel-logout); what Issue-98 builds: [pairwise subject identifiers](#pairwise-subject-identifiers); and what Issue-99 builds: [claim mappers](#claim-mappers). The other endpoints and tokens are added by Issue-57 and Issue-58, under the headings at the end of this page.
+This page specifies what Issue-53 builds: applications, clients and resource servers, and the rules they keep; what Issue-55 builds: the authorization endpoint, grants and authorization codes; what Issue-56 builds: the token endpoint, client authentication and access tokens; what Issue-59 builds: the OpenID Provider; what Issue-60 builds: logout initiated by the relying party; what Issue-62 builds: [consent](#consent); what Issue-93 builds: [clients that act as a workload](#clients-that-act-as-a-workload); what Issue-106 builds: [a JWT-SVID as a client's proof](#checking-a-jwt-svid); what Issue-107 builds: [an identity forwarded by a proxy](#an-identity-forwarded-by-a-proxy) as a client's proof; what Issue-95 builds: [token exchange](#token-exchange); what Issue-100 builds: [back-channel logout](#back-channel-logout); what Issue-98 builds: [pairwise subject identifiers](#pairwise-subject-identifiers); and what Issue-99 builds: [claim mappers](#claim-mappers). The other endpoints and tokens are added by Issue-57 and Issue-58, under the headings at the end of this page.
 
 ## Applications
 
@@ -29,7 +29,7 @@ A client is what talks to Hodor's endpoints. Its identifier is the `client_id` o
 | Application | The application it belongs to. It never changes |
 | Name | For administrators. Same rule as an application's name |
 | Type | `confidential`: it runs where it can keep a secret, such as a server. `public`: it runs where it cannot, such as a browser or a mobile application. Chosen when the client is created and never changed |
-| Authentication method | How it proves who it is at the token endpoint: `client_secret_basic`, `client_secret_post`, `private_key_jwt`, `spiffe_jwt` or `none` |
+| Authentication method | How it proves who it is at the token endpoint: `client_secret_basic`, `client_secret_post`, `private_key_jwt`, `spiffe_jwt`, `tls_client_auth`, `spiffe_x509`, `linkerd_identity` or `none` |
 | Grants | What it may ask for: `authorization_code`, `refresh_token`, `client_credentials`, and `urn:ietf:params:oauth:grant-type:token-exchange` for [token exchange](#token-exchange) |
 | Exchange rules | For a client with the token exchange grant: which tokens it may exchange for which audience. At most 20 |
 | Redirect addresses | Where the authorization endpoint may send a person back to. At most 10 |
@@ -43,7 +43,8 @@ A client is what talks to Hodor's endpoints. Its identifier is the `client_id` o
 | Sector identifier address | Optional, for a pairwise client: an address that lists its redirect addresses and whose host is its sector, its `sector_identifier_uri`. See [the sector identifier address](#the-sector-identifier-address) |
 | Token policy | How long its tokens live |
 | Principal | Optional: the [service account or agent](identity.md#service-accounts-and-agents) the client acts as. See [clients that act as a workload](#clients-that-act-as-a-workload) |
-| SPIFFE identifier | For a client using `spiffe_jwt` only: the one SPIFFE identifier of the workload whose JWT-SVIDs prove who the client is, its `spiffe_id` of the draft. See [the SPIFFE identifier of a client](#the-spiffe-identifier-of-a-client) |
+| SPIFFE identifier | For a client using `spiffe_jwt` or `spiffe_x509`, and for one using `tls_client_auth` without a Linkerd identity: the one SPIFFE identifier of the workload whose JWT-SVIDs or forwarded certificates prove who the client is, its `spiffe_id` of the draft. See [the SPIFFE identifier of a client](#the-spiffe-identifier-of-a-client) |
+| Linkerd identity | For a client using `linkerd_identity`, and for one using `tls_client_auth` without a SPIFFE identifier: the workload's Linkerd identity, such as `web.shop.serviceaccount.identity.linkerd.cluster.local`. See [an identity forwarded by a proxy](#an-identity-forwarded-by-a-proxy) |
 | Secrets | Its secrets, kept only as hashes. Only with `client_secret_basic` or `client_secret_post` |
 | Keys | Its public keys, for `private_key_jwt`. Only with that method |
 | Status | `enabled` or `disabled`. A disabled client gets no tokens |
@@ -55,7 +56,7 @@ An application has at most 20 clients.
 Every change to a client is checked against all of these at once; a change that breaks one changes nothing.
 
 - **A public client has no secret and cannot be given one.** Its authentication method is `none`, it has no keys, and it always uses PKCE.
-- **A confidential client proves who it is.** Its method is `client_secret_basic`, `client_secret_post`, `private_key_jwt` or `spiffe_jwt`, never `none`.
+- **A confidential client proves who it is.** Its method is `client_secret_basic`, `client_secret_post`, `private_key_jwt`, `spiffe_jwt`, `tls_client_auth`, `spiffe_x509` or `linkerd_identity`, never `none`.
 - **`client_credentials` is for confidential clients only**, since that grant is the client acting as itself.
 - **`refresh_token` comes with `authorization_code`.** A refresh token is only ever issued with tokens from a code.
 - **A client with `authorization_code` has at least one redirect address, and one without it has none.**
@@ -65,8 +66,8 @@ Every change to a client is checked against all of these at once; a change that 
 - **A client has at least one grant.**
 - **A client with a principal has the `client_credentials` grant**, and may have the token exchange grant besides; no other. It is the workload's credential.
 - **The token exchange grant needs a principal, which must be an agent, and at least one exchange rule; exchange rules need the grant.** Only an agent acts on a person's behalf ([Decision 0031](../../decisions/0031-workloads-are-users.md)). Each rule is a pair of audiences, the one a subject token must hold and the one the new token is for, each at most 255 printable characters, each pair once.
-- **A client using `spiffe_jwt` has a principal and a SPIFFE identifier, and only such a client has a SPIFFE identifier** ([Decision 0055](../../decisions/0055-spiffe-jwt-client-authentication.md)). Its principal must be a service account.
-- **Switching the authentication method drops what the old one used.** A client that moves away from a secret method loses its secrets, and one that moves away from `private_key_jwt` loses its keys. A client that moves away from `spiffe_jwt` must leave its SPIFFE identifier with it.
+- **A client using `spiffe_jwt` has a principal and a SPIFFE identifier** ([Decision 0055](../../decisions/0055-spiffe-jwt-client-authentication.md)), **and so does one using `spiffe_x509`; one using `linkerd_identity` has a principal and a Linkerd identity; one using `tls_client_auth` a principal and exactly one of the two** ([Decision 0056](../../decisions/0056-forwarded-client-identity.md)). A client of any other method has neither. Its principal must be a service account. Refused with `oauth.client_spiffe_id_invalid`, or `oauth.client_linkerd_identity_invalid` for a Linkerd identity that does not read or does not fit the method.
+- **Switching the authentication method drops what the old one used.** A client that moves away from a secret method loses its secrets, and one that moves away from `private_key_jwt` loses its keys. A client is given its identity in the change that moves it to a method that takes one, and the administration interface drops an identity the new method does not take.
 
 ### Redirect addresses
 
@@ -157,12 +158,14 @@ The OAuth context keeps the principal as a user identifier and does not know wha
 Issue-106. A client of a service account may prove who it is with a JWT-SVID, the token its service mesh or SPIRE gives the workload ([Decision 0029](../../decisions/0029-hodor-in-a-service-mesh.md#a-workload-proves-who-it-is-in-one-of-three-ways)), instead of a secret or a key of its own. It is then bound to the one SPIFFE identifier that names the workload, and uses the method `spiffe_jwt` ([Decision 0055](../../decisions/0055-spiffe-jwt-client-authentication.md)).
 
 - **One identifier, written exactly** as the SPIFFE identifier specification writes it: `spiffe://`, the trust domain's name by [the rule of the keys context](keys.md#what-a-trust-domain-is), and a path of one or more segments, each `/` followed by 1 or more letters, digits, `.`, `-` and `_`, never `.` or `..` alone; no `/` at the end, no query, no fragment, no percent-encoding, at most 2048 characters. For example `spiffe://cluster.local/ns/payroll/sa/nightly-export`. It is compared byte for byte. **A prefix match is not accepted**: `*` is not a character of a path, so an identifier ending in `/*`, which the draft allows, is refused. Otherwise `oauth.client_spiffe_id_invalid`.
-- **Only with `spiffe_jwt`, and always with it**; and only for a client with a principal. The administration interface checks that the principal is a service account of the tenant, `oauth.client_principal_invalid` otherwise: an agent proves who it is with its own credentials.
+- **Always with `spiffe_jwt` and `spiffe_x509`, possibly with `tls_client_auth`, and with no other method** (Issue-107 added the last two); and only for a client with a principal. The administration interface checks that the principal is a service account of the tenant, `oauth.client_principal_invalid` otherwise: an agent proves who it is with its own credentials.
 - **Unique in the tenant.** Two clients of one tenant are never bound to the same identifier, `oauth.client_spiffe_id_taken` otherwise. Two tenants may each bind the same identifier: each trusts a trust domain of that name of its own, which the other never reads.
 - **The trust domain is found when the client proves who it is**, in the client's tenant, by the name in the identifier. Binding a client does not need the tenant to trust that trust domain yet. Until it does, or while the trust domain is checked by the mesh and has no bundle, every JWT-SVID of the client is refused.
 - **Changing the identifier** takes effect from the next request: a JWT-SVID of the former identifier is refused from then on. Tokens already issued stay in force, as for a change of principal.
 
-How the JWT-SVID is checked is in [checking a JWT-SVID](#checking-a-jwt-svid).
+How the JWT-SVID is checked is in [checking a JWT-SVID](#checking-a-jwt-svid), and a certificate a proxy forwards in [an identity forwarded by a proxy](#an-identity-forwarded-by-a-proxy).
+
+**A Linkerd identity** (Issue-107) binds a client using `linkerd_identity`, or `tls_client_auth` without a SPIFFE identifier, by the same rules: one identity, written exactly, with a service account as principal, unique in the tenant (`oauth.client_linkerd_identity_taken`), its trust domain found when the client proves who it is. It is a DNS name in lowercase, at most 253 characters, of labels of letters, digits and `-`, holding `.serviceaccount.identity.` followed by the namespace of Linkerd's control plane and the trust domain, as Linkerd names a workload: `<service account>.<namespace>.serviceaccount.identity.<control plane namespace>.<trust domain>`. Its trust domain is what follows the control plane's namespace. Anything else is refused with `oauth.client_linkerd_identity_invalid`.
 
 ## Resource servers
 
@@ -261,11 +264,12 @@ Every table is a tenant table under row-level security, in the schema `oauth`. R
 |---|---|---|
 | `tenant_id`, `id` | `uuid` | Primary key |
 | `application_id` | `uuid` | References `oauth.application` |
-| `name`, `client_type`, `authentication_method`, `status` | `text` | A check constraint keeps a public client on `none`, and another (`client_method_known`) the method among the five |
+| `name`, `client_type`, `authentication_method`, `status` | `text` | A check constraint keeps a public client on `none`, and another (`client_method_known`) the method among the eight |
 | `grant_types`, `redirect_uris`, `post_logout_redirect_uris`, `allowed_scopes` | `text[]` | Redirect addresses of both kinds are compared byte for byte (`COLLATE "C"`) |
 | `require_pkce` | `boolean` | A check constraint keeps it true for a public client |
 | `principal_id` | `uuid` | The workload the client acts as, or null. Not a reference: contexts do not reference each other's tables. Check constraints allow it only with `client_credentials` and, besides, `urn:ietf:params:oauth:grant-type:token-exchange`, and require it with the latter |
-| `spiffe_id` | `text` | The [SPIFFE identifier](#the-spiffe-identifier-of-a-client), or null, compared byte for byte (`COLLATE "C"`). Check constraints keep its shape (`client_spiffe_id_shape`), require it exactly with `spiffe_jwt` (`client_spiffe_id_with_spiffe_jwt`) and require a principal with it (`client_spiffe_id_needs_principal`); the partial unique index `client_spiffe_id_unique` keeps it once per tenant |
+| `spiffe_id` | `text` | The [SPIFFE identifier](#the-spiffe-identifier-of-a-client), or null, compared byte for byte (`COLLATE "C"`). Check constraints keep its shape (`client_spiffe_id_shape`), hold each method to its identity (`client_identity_of_its_method`, migration 0080: `spiffe_jwt` and `spiffe_x509` a SPIFFE identifier, `tls_client_auth` one of the two identities) and require a principal with it (`client_spiffe_id_needs_principal`); the partial unique index `client_spiffe_id_unique` keeps it once per tenant |
+| `linkerd_identity` | `text` | The [Linkerd identity](#the-spiffe-identifier-of-a-client) of a client using `linkerd_identity` or `tls_client_auth`, or null, compared byte for byte (`COLLATE "C"`). Check constraints keep its shape (`client_linkerd_identity_shape`), its method (`client_identity_of_its_method`) and a principal with it (`client_linkerd_identity_needs_principal`); the partial unique index `client_linkerd_identity_unique` keeps it unique in the tenant |
 | `exchange_rules` | `jsonb` | The exchange rules, a list of `{"subject_audience": …, "audience": …}`; empty unless the client has the token exchange grant |
 | `id_token_algorithm` | `text` | `ES256` or `RS256`, by a check constraint; `ES256` for a client made before it existed |
 | `backchannel_logout_uri` | `text` | The [back-channel logout address](#the-back-channel-logout-address), or null. At most 2000 characters, `https://` or `http://`, compared byte for byte (`COLLATE "C"`); a check constraint allows it only with the `authorization_code` grant |
@@ -496,7 +500,7 @@ Issue-56 builds the token endpoint, the four ways a client proves who it is ther
 
 ### How a client proves who it is
 
-A client proves who it is in exactly one of five ways, and it must be the one it was registered with:
+A client proves who it is in exactly one of eight ways, and it must be the one it was registered with:
 
 | Method | What the request carries |
 |---|---|
@@ -504,6 +508,9 @@ A client proves who it is in exactly one of five ways, and it must be the one it
 | `client_secret_post` | `client_id` and `client_secret` in the form |
 | `private_key_jwt` | `client_assertion_type` `urn:ietf:params:oauth:client-assertion-type:jwt-bearer` and `client_assertion`, a JSON Web Token the client signed with its private key ([RFC 7523](https://www.rfc-editor.org/rfc/rfc7523)); `client_id` may be added and must then name the same client |
 | `spiffe_jwt` | `client_assertion_type` `urn:ietf:params:oauth:client-assertion-type:jwt-spiffe`, `client_assertion`, a JWT-SVID of the workload the client is bound to, and `client_id` (draft-ietf-oauth-spiffe-client-auth-03, section 3.2); see [checking a JWT-SVID](#checking-a-jwt-svid) |
+| `tls_client_auth` | `client_id` alone; the proxy in front of Hodor forwards the certificate the client presented in mutual TLS ([RFC 8705, section 2.1](https://www.rfc-editor.org/rfc/rfc8705#section-2.1)), or the names it holds |
+| `spiffe_x509` | `client_id` alone; the proxy forwards the client's X509-SVID, or its SPIFFE identifier (draft-ietf-oauth-spiffe-client-auth-03, section 3.3) |
+| `linkerd_identity` | `client_id` alone; Linkerd's proxy forwards the client's Linkerd identity. Hodor's own method, registered nowhere |
 | `none` | `client_id` alone, for a public client, which proves nothing and is held to PKCE instead |
 
 The checks, in order:
@@ -515,6 +522,7 @@ The checks, in order:
    - A secret is checked as [secrets](#secrets) says.
    - An assertion is checked as the next section says.
    - A JWT-SVID is checked as [checking a JWT-SVID](#checking-a-jwt-svid) says.
+   - A forwarded identity is checked as [an identity forwarded by a proxy](#an-identity-forwarded-by-a-proxy) says.
 
 An `invalid_client` is answered with status `401`. When the client used `Basic`, the answer also carries `WWW-Authenticate: Basic realm="{issuer}"`, as RFC 6749 requires. Every other error is answered with status `400`. The client is told only the error, never which check failed; the reason is in Hodor's logs.
 
@@ -564,6 +572,43 @@ It is then checked as follows, and nothing it says is used before its signature 
 **A JWT-SVID is used once.** As soon as it has been checked, and before anything else is done with the request, the SHA-256 of its first two parts, as they arrived, is remembered with the client until it expires, in the register of client assertions, `oauth.client_assertion`, marked as a JWT-SVID's. A second request with the same JWT-SVID is refused, even when the first one failed afterwards. The signature is left out of the hash, so that a JWT-SVID whose ECDSA signature was rewritten into another that verifies is still the same JWT-SVID. A workload therefore sends a fresh JWT-SVID with each request; one that SPIRE's cache hands it a second time is refused, and keeping the access token until it expires avoids asking.
 
 Every refusal is `invalid_client`, as for any other method; the reason is in Hodor's logs. The same checks hold at [the revocation and introspection endpoints](#the-requests).
+
+### An identity forwarded by a proxy
+
+Issue-107 lets a workload prove who it is with the identity its service mesh gave it, with no secret: the certificate it presented to the proxy in front of Hodor, or the identity Linkerd's proxy asserts ([Decision 0029](../../decisions/0029-hodor-in-a-service-mesh.md#a-workload-proves-who-it-is-in-one-of-three-ways), [Decision 0056](../../decisions/0056-forwarded-client-identity.md)). Which header the proxy writes, and when Hodor believes it, is [the caller's identity from a proxy](../../api/api-spec.md#the-callers-identity-from-a-proxy): only the header the operator names, only from a trusted proxy, only its nearest element. What reaches the OAuth context is one of three:
+
+| Forwarded | From |
+|---|---|
+| A certificate, with the certificates the proxy gave as its chain | `Client-Cert` and `Client-Cert-Chain`; or `Cert` and `Chain` of `X-Forwarded-Client-Cert` |
+| The names of a certificate, without the certificate | `URI` and `DNS` of `X-Forwarded-Client-Cert` when it has no `Cert`, as Istio forwards it by default |
+| A Linkerd identity | `l5d-client-id` |
+
+The request names its client with `client_id` in the form and carries no other credential. RFC 8705 requires `client_id`; the SPIFFE draft lets it be left out, and Hodor requires it, as for a JWT-SVID ([Decision 0055](../../decisions/0055-spiffe-jwt-client-authentication.md)). A request that also carries a secret or an assertion uses more than one method, and a client of these methods that sends them is refused as using another method. A client of `none` is answered as before, whatever a proxy forwards.
+
+The checks, in order, after those of every method; each refusal is `invalid_client`, and Hodor's log says which one failed:
+
+1. **An identity was forwarded.** None reaches Hodor when no header is named, when the connection is not from a trusted proxy, or when the nearest element does not read.
+2. **It is of the kind the method takes.** A certificate or its names for `tls_client_auth` and `spiffe_x509`; a Linkerd identity for `linkerd_identity`.
+3. **The trust domain of the client's identity is one of the tenant's.** It is found by its name, read from the client's identity, the host of a SPIFFE identifier or what follows the control plane's namespace in a Linkerd identity, in the tenant alone, through the keys context's `TrustDomainService`: a trust domain of another tenant is never read, even under the same name. One that was removed trusts nothing from the next request.
+4. **The names match the client's identity, exactly.**
+   - `spiffe_x509`: the certificate is an X509-SVID, with exactly one URI, which is the client's SPIFFE identifier. Forwarded names hold exactly one `URI`, the same.
+   - `tls_client_auth`: one of the certificate's URIs is the client's SPIFFE identifier, or one of its DNS names is the client's Linkerd identity, as `tls_client_auth_san_uri` and `tls_client_auth_san_dns` of RFC 8705 match. Forwarded names the same way.
+   - `linkerd_identity`: the forwarded identity is the client's Linkerd identity.
+5. **The identity is trusted**, by the trust domain's source:
+
+| Source of the trust domain | A certificate | Names or a Linkerd identity, without a certificate |
+|---|---|---|
+| `uploaded` or `bundle_endpoint` | Checked against the bundle, below | Refused: there is nothing to check against the bundle |
+| `mesh` | Its names are believed: the mesh checked it, and the trust domain has no bundle | Believed, for the same reason |
+
+**Checking a certificate against a bundle.** The certificate must have a path to an authority of the trust domain's bundle, checked as a TLS client's certificate is, by the cryptography adapter:
+
+- **The authorities** are the bundle's `x509-svid` elements whose certificate is an authority, with the basic constraint `cA`, and holds the element's key: its public key is the element's, the same curve and point or the same modulus and exponent. An element that is not such an authority is passed over and trusts nothing. Only the bundle of the identity's own trust domain is used, never another trust domain's nor the system's, as the SPIFFE draft requires.
+- **The path** runs from the certificate to an authority through any of the certificates of the forwarded chain, at most 10 of them, in whatever order they came; a certificate missing from the chain is never fetched. Every signature on it is checked: ECDSA on P-256, P-384 and P-521, RSA of 2048 bits or more with PKCS #1 v1.5 or PSS, and Ed25519.
+- **Every certificate of the path** is within its validity at the time of the request. Each one between the certificate and the authority is an authority itself, and the name constraints of each are kept; an authority that constrains URIs refuses every certificate, since the library does not read such constraints yet.
+- **The certificate itself** is not an authority and, when it names extended key usages, holds `clientAuth`.
+
+A certificate the proxy forwards is never stored, and nothing about it is in the token yet. Binding a token to it is Issue-108.
 
 ### Redeeming a code for tokens
 
@@ -740,7 +785,8 @@ No event carries a token or its hash.
 | Port | Purpose |
 |---|---|
 | `ClientAssertionStore` | Remember a client assertion's `jti`, or the hash of a JWT-SVID, until it expires. It answers whether this was the first time, so that of two requests with the same assertion at the same moment exactly one goes on |
-| `TrustDomainService` | Finds the tenant's trust domain of a name, with its bundle, to check a JWT-SVID; from the keys context |
+| `TrustDomainService` | Finds the tenant's trust domain of a name, with its bundle, to check a JWT-SVID or a forwarded identity; from the keys context |
+| `CertificateCheck` | Reads the URIs and DNS names of a forwarded certificate, and says whether it has a path to an authority of a bundle at a given time. The cryptography adapter implements it with `rustls-webpki` and `x509-parser` |
 | `RefreshTokenStore` | Start a family with its first token; find a token's family and generation by the token's hash; move a family one generation only from the generation named, with the next token; revoke a family |
 | `PersonStanding` | Whether a session of the person is still active, whether the person may still sign in, and whether a principal is a service account or an agent that may act. The server implements it over the session and identity contexts |
 | `SecretBox` | Seals and opens a family's secret, from the kernel |
@@ -813,7 +859,7 @@ The rules of the request:
 
 ### Introspection
 
-**Who may introspect.** A confidential client: one that proves who it is with a secret or an assertion. A public client is answered `invalid_client` with status `401`. It proves nothing, and introspection tells about tokens.
+**Who may introspect.** A confidential client: one that proves who it is with a secret, an assertion or [an identity forwarded by a proxy](#an-identity-forwarded-by-a-proxy). A public client is answered `invalid_client` with status `401`. It proves nothing, and introspection tells about tokens.
 
 **What a caller may learn about:**
 
@@ -1014,10 +1060,10 @@ It names only what is built:
 | `response_modes_supported` | `query` |
 | `grant_types_supported` | The grants the token endpoint answers: `authorization_code`, `refresh_token`, `client_credentials` and `urn:ietf:params:oauth:grant-type:token-exchange` |
 | `code_challenge_methods_supported` | `S256` |
-| `token_endpoint_auth_methods_supported` | `client_secret_basic`, `client_secret_post`, `private_key_jwt`, `spiffe_jwt`, `none` |
+| `token_endpoint_auth_methods_supported` | `client_secret_basic`, `client_secret_post`, `private_key_jwt`, `spiffe_jwt`, `none`; and, when the operator names [the header of a forwarded identity](../../api/api-spec.md#the-callers-identity-from-a-proxy), `tls_client_auth` and `spiffe_x509` for `client-cert` and `x-forwarded-client-cert`, or `linkerd_identity` for `l5d-client-id` |
 | `token_endpoint_auth_signing_alg_values_supported` | `ES256`, `RS256`, `PS256` |
-| `revocation_endpoint_auth_methods_supported` | The five of the token endpoint: a public client may revoke its own tokens |
-| `introspection_endpoint_auth_methods_supported` | `client_secret_basic`, `client_secret_post`, `private_key_jwt`, `spiffe_jwt`: a public client may not introspect |
+| `revocation_endpoint_auth_methods_supported` | Those of the token endpoint: a public client may revoke its own tokens |
+| `introspection_endpoint_auth_methods_supported` | Those of the token endpoint but `none`: a public client may not introspect |
 | `revocation_endpoint_auth_signing_alg_values_supported`, `introspection_endpoint_auth_signing_alg_values_supported` | `ES256`, `RS256`, `PS256` |
 | `id_token_signing_alg_values_supported` | `ES256`, `RS256` |
 | `subject_types_supported` | `public`, `pairwise` |
@@ -1030,7 +1076,7 @@ It names only what is built:
 | `request_parameter_supported`, `request_uri_parameter_supported`, `claims_parameter_supported` | `false` |
 | `backchannel_logout_supported`, `backchannel_logout_session_supported` | `true`: [back-channel logout](#back-channel-logout) is offered, and every logout token carries `sid` |
 
-**`spiffe_jwt` follows draft-ietf-oauth-spiffe-client-auth-03**, the version of the Internet-Draft Hodor implements ([checking a JWT-SVID](#checking-a-jwt-svid)). The draft is not yet a standard and may change; a change of the version Hodor follows is a change to Hodor, written in the changelog ([Decision 0029](../../decisions/0029-hodor-in-a-service-mesh.md#consequences)). The draft's other methods, `spiffe_x509` and `spiffe_wit`, are not offered; `spiffe_x509` is Issue-107.
+**`spiffe_jwt` follows draft-ietf-oauth-spiffe-client-auth-03**, the version of the Internet-Draft Hodor implements ([checking a JWT-SVID](#checking-a-jwt-svid)). The draft is not yet a standard and may change; a change of the version Hodor follows is a change to Hodor, written in the changelog ([Decision 0029](../../decisions/0029-hodor-in-a-service-mesh.md#consequences)). `spiffe_x509` follows the same version, section 3.3 ([an identity forwarded by a proxy](#an-identity-forwarded-by-a-proxy)); the draft's `spiffe_wit` is not offered.
 
 The document may be kept by caches for five minutes and carries `Access-Control-Allow-Origin: *`, as the key set does: it is public.
 
@@ -1632,12 +1678,14 @@ Administrators reach them through [the administration interface](../../api/admin
 | The organization's name on the consent page | With the organization's branding |
 | Accepting any port for a loopback redirect address, which RFC 8252 suggests | Not planned: exact equality is kept |
 | Prefix matches of SPIFFE identifiers, `spiffe://…/*`, which the draft allows | Not planned for 0.4.0 ([Decision 0029](../../decisions/0029-hodor-in-a-service-mesh.md#alternatives-considered)) |
-| A JWT-SVID without `client_id`, its SPIFFE identifier taken as the client identifier | Not planned: Hodor's client identifiers are never SPIFFE identifiers ([Decision 0055](../../decisions/0055-spiffe-jwt-client-authentication.md)) |
+| A JWT-SVID or a forwarded identity without `client_id`, its SPIFFE identifier taken as the client identifier | Not planned: Hodor's client identifiers are never SPIFFE identifiers ([Decision 0055](../../decisions/0055-spiffe-jwt-client-authentication.md)) |
 | JWT-SVIDs signed with `ES384`, `ES512`, `RS384`, `RS512`, `PS384` or `PS512`, which a bundle may hold keys for | When the kernel's signature checking covers them |
 | The client metadata `spiffe_id` and `spiffe_bundle_endpoint` of a client that registers itself or publishes a Client ID Metadata Document, and a bundle a client brings | With dynamic client registration |
 | A client of an agent proving who it is with a JWT-SVID | When an agent needs it ([Decision 0055](../../decisions/0055-spiffe-jwt-client-authentication.md)) |
 | Binding a client to a SPIFFE identifier from the command-line tool and the console: the administration interface does it | Issue-109 |
-| `spiffe_x509`, `tls_client_auth` and `linkerd_identity`: the identity a proxy forwards | Issue-107 |
+| `tls_client_auth` bound to a subject's distinguished name, an IP address or an email address, which RFC 8705 also names | When a client needs one |
+| Authorities that constrain URIs, such as the one a tenant's authority will sign | Before [Milestone 12](../../product/epics.md#milestone-12-an-optional-certificate-authority-per-tenant) signs one |
+| Certificate-bound access tokens (`cnf`, RFC 8705, section 3) | Issue-108 |
 | `spiffe_wit`, the draft's workload identity tokens | Not scheduled |
 | Every other response type than `code`, and the response modes `fragment`, `form_post` and JWT Secured Authorization Response Mode | 0.5.0, [Milestone 14](../../product/epics.md#milestone-14-answers-through-the-browser), and 0.6.0, [Milestone 18](../../product/epics.md#milestone-18-fapi-20-message-signing-and-fapi-10-advanced) ([Decision 0046](../../decisions/0046-responses-through-the-browser.md)) |
 | DPoP, security profiles for FAPI, JWT introspection responses, encryption, and client-initiated backchannel authentication | 0.6.0, [Milestones 17 to 19](../../product/epics.md#milestone-17-fapi-20-security-profile) ([Decision 0044](../../decisions/0044-what-0.5.0-and-0.6.0-hold.md)) |

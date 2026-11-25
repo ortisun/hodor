@@ -6,8 +6,8 @@ use crate::application::authorization::AuthorizationCodeService;
 use crate::application::claim_mapper::{ClaimMapping, MappedToken};
 use crate::application::pairwise::{PairwiseSubjects, session_for, subject_for};
 use crate::application::ports::{
-    AccessTokenRecordStore, ApplicationStore, ClientAssertionStore, ClientStore, GrantStore,
-    PersonMemberships, PersonStanding, RefreshTokenStore, ResourceServerStore,
+    AccessTokenRecordStore, ApplicationStore, CertificateCheck, ClientAssertionStore, ClientStore,
+    GrantStore, PersonMemberships, PersonStanding, RefreshTokenStore, ResourceServerStore,
 };
 use crate::domain::authorization::{CodePresentation, GrantStatus};
 use crate::domain::claim_mapper::{ClaimTarget, add_mapped_claims};
@@ -135,7 +135,8 @@ pub struct TokenService {
     pub(crate) ports: TokenPorts,
     retry_window: Duration,
     pub(crate) pairwise: Option<PairwiseSubjects>,
-    trust_domains: Option<TrustDomainService>,
+    pub(crate) trust_domains: Option<TrustDomainService>,
+    pub(crate) certificates: Option<Arc<dyn CertificateCheck>>,
 }
 
 impl fmt::Debug for TokenService {
@@ -176,12 +177,25 @@ impl TokenService {
             retry_window: DEFAULT_RETRY_WINDOW,
             pairwise: None,
             trust_domains: None,
+            certificates: None,
         }
     }
 
-    /// Checks the JWT-SVIDs of clients using `spiffe_jwt` against the
-    /// bundles of the tenants' trust domains, found through `trust_domains`.
-    /// Without it, every JWT-SVID is refused.
+    /// Checks the certificates trusted proxies forward for clients of
+    /// `tls_client_auth` and `spiffe_x509` through `certificates`, against
+    /// the bundles of the trust domains given to
+    /// [`Self::with_trust_domains`]. Without both, every client of a
+    /// forwarded identity is refused.
+    #[must_use]
+    pub fn with_certificate_check(mut self, certificates: Arc<dyn CertificateCheck>) -> Self {
+        self.certificates = Some(certificates);
+        self
+    }
+
+    /// Checks the JWT-SVIDs of clients using `spiffe_jwt`, and the
+    /// identities trusted proxies forward, against the tenants' trust
+    /// domains, found through `trust_domains`. Without it, every JWT-SVID
+    /// and every forwarded identity is refused.
     #[must_use]
     pub fn with_trust_domains(mut self, trust_domains: TrustDomainService) -> Self {
         self.trust_domains = Some(trust_domains);
@@ -310,9 +324,9 @@ impl TokenService {
         presented: &PresentedClient,
     ) -> Result<Result<Client, TokenError>, DomainError> {
         let named = match presented {
-            PresentedClient::Secret { client_id, .. } | PresentedClient::Public { client_id } => {
-                Some(client_id.clone())
-            }
+            PresentedClient::Secret { client_id, .. }
+            | PresentedClient::Public { client_id }
+            | PresentedClient::Forwarded { client_id, .. } => Some(client_id.clone()),
             PresentedClient::Assertion {
                 assertion,
                 client_id,
@@ -342,7 +356,7 @@ impl TokenService {
             )));
         }
         let registered = client.snapshot().settings.authentication_method;
-        if presented.method() != registered {
+        if !presented.may_be(registered) {
             return Ok(Err(TokenError::invalid_client(
                 "the client used another method than its own",
             )));
@@ -353,7 +367,19 @@ impl TokenService {
                     return Ok(Err(TokenError::invalid_client("the secret is wrong")));
                 }
             }
-            PresentedClient::Public { .. } => {
+            PresentedClient::Public { .. } | PresentedClient::Forwarded { .. }
+                if registered.uses_forwarded_identity() =>
+            {
+                // The trust domain is read in a unit of work of its own.
+                drop(uow);
+                if let Err(reason) = self
+                    .check_forwarded(tenant, &client, presented.forwarded(), now)
+                    .await?
+                {
+                    return Ok(Err(TokenError::invalid_client(reason)));
+                }
+            }
+            PresentedClient::Public { .. } | PresentedClient::Forwarded { .. } => {
                 // A public client proves nothing; PKCE holds it instead.
                 debug_assert_eq!(registered, AuthenticationMethod::None);
             }

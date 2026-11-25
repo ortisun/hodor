@@ -60,3 +60,4 @@ All records below are **Proposed** unless marked otherwise: they become Accepted
 | [0053](0053-dpop.md) | DPoP nonces are derived from a secret of the tenant, proofs are remembered by their `jti`, and access tokens and public clients' refresh tokens are bound |
 | [0054](0054-backchannel-authentication.md) | A backchannel authentication request reaches the person on the account page, by email, and through the tenant's own authentication device service; poll, ping, and push outside FAPI |
 | [0055](0055-spiffe-jwt-client-authentication.md) | A client of a service account is bound to one SPIFFE identifier, and its JWT-SVID is used once, remembered by the hash of what it signs (Accepted) |
+| [0056](0056-forwarded-client-identity.md) | A forwarded identity is read from the one header the operator names, bound to a client by its SPIFFE identifier or its Linkerd identity, and checked with `rustls-webpki` in the cryptography adapter (Accepted) |

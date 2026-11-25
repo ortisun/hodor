@@ -21,7 +21,7 @@ use hodor_kernel::{DomainError, ErrorKind, TenantContext, UserId};
 use hodor_oauth::api::{
     Application, ApplicationId, ApplicationSettings, AuthenticationMethod, Client, ClientId,
     ClientSecret, ClientSecretId, ClientSettings, ClientType, CreateClient, CreateResourceServer,
-    ExchangeRule, GrantType, IdTokenAlgorithm, ResourceServer, ResourceServerId,
+    ExchangeRule, GrantType, IdTokenAlgorithm, LinkerdIdentity, ResourceServer, ResourceServerId,
     ResourceServerSettings, RotateSecret, ScopeDefinition, SpiffeId, Status, SubjectType,
     TokenPolicy,
 };
@@ -416,8 +416,12 @@ struct ClientBody {
     /// The service account or agent it acts as, or `null`.
     principal: Option<String>,
     exchange_rules: Vec<ExchangeRuleBody>,
-    /// The SPIFFE identifier of a client using `spiffe_jwt`, or `null`.
+    /// The SPIFFE identifier of a client using `spiffe_jwt` or
+    /// `spiffe_x509`, or of one using `tls_client_auth`, or `null`.
     spiffe_id: Option<String>,
+    /// The Linkerd identity of a client using `linkerd_identity`, or of
+    /// one using `tls_client_auth`, or `null`.
+    linkerd_identity: Option<String>,
     token_policy: TokenPolicyBody,
     /// What identifies each secret and when it expires: never the secret
     /// or its hash.
@@ -462,6 +466,10 @@ impl From<&Client> for ClientBody {
                 .spiffe_id
                 .as_ref()
                 .map(|spiffe_id| spiffe_id.as_str().to_owned()),
+            linkerd_identity: settings
+                .linkerd_identity
+                .as_ref()
+                .map(|identity| identity.as_str().to_owned()),
             token_policy: TokenPolicyBody {
                 access_token_seconds: policy.access_token.whole_seconds(),
                 id_token_seconds: policy.id_token.whole_seconds(),
@@ -527,6 +535,7 @@ struct NewClientBody {
     principal: Option<String>,
     exchange_rules: Option<Vec<ExchangeRuleBody>>,
     spiffe_id: Option<String>,
+    linkerd_identity: Option<String>,
 }
 
 /// One exchange rule, as the interface writes it.
@@ -571,9 +580,45 @@ struct ClientChangesBody {
     #[serde(default, deserialize_with = "present")]
     principal: Option<Option<String>>,
     exchange_rules: Option<Vec<ExchangeRuleBody>>,
-    /// Left out: unchanged; `null`: removed; an identifier: replaced.
+    /// Left out: unchanged, unless the change gives the client the other
+    /// identity or a method that takes none; `null`: removed; an
+    /// identifier: replaced.
     #[serde(default, deserialize_with = "present")]
     spiffe_id: Option<Option<String>>,
+    /// Left out: unchanged, unless the change gives the client the other
+    /// identity or a method that takes none; `null`: removed; an
+    /// identity: replaced.
+    #[serde(default, deserialize_with = "present")]
+    linkerd_identity: Option<Option<String>>,
+}
+
+/// The identities a change leaves a client bound to. A field left out keeps
+/// what the client had, unless the change gives the other identity, since
+/// a client has one, or a method that does not take it, as a client that
+/// moves away from a method loses its secrets or its keys.
+fn changed_identities(
+    changes: &ClientChangesBody,
+    now: &ClientSettings,
+    method: AuthenticationMethod,
+) -> Result<(Option<SpiffeId>, Option<LinkerdIdentity>), Box<Response>> {
+    let takes_spiffe_id = method.uses_spiffe_id() || method == AuthenticationMethod::TlsClientAuth;
+    let takes_linkerd_identity = matches!(
+        method,
+        AuthenticationMethod::LinkerdIdentity | AuthenticationMethod::TlsClientAuth
+    );
+    let spiffe_id = match &changes.spiffe_id {
+        Some(Some(given)) => Some(SpiffeId::parse(given).map_err(failed)?),
+        Some(None) => None,
+        None if !takes_spiffe_id || matches!(changes.linkerd_identity, Some(Some(_))) => None,
+        None => now.spiffe_id.clone(),
+    };
+    let linkerd_identity = match &changes.linkerd_identity {
+        Some(Some(given)) => Some(LinkerdIdentity::parse(given).map_err(failed)?),
+        Some(None) => None,
+        None if !takes_linkerd_identity || matches!(changes.spiffe_id, Some(Some(_))) => None,
+        None => now.linkerd_identity.clone(),
+    };
+    Ok((spiffe_id, linkerd_identity))
 }
 
 /// A field that may be given as `null`, told apart from one left out.
@@ -595,14 +640,15 @@ async fn principal_of(
     method: AuthenticationMethod,
 ) -> Result<UserId, Box<Response>> {
     // Only an agent acts on a person's behalf, and only a service account
-    // proves who it is with its SPIFFE identifier.
+    // proves who it is with its SPIFFE identifier or its Linkerd identity.
     let exchanges = grants.contains(&GrantType::TokenExchange);
-    let spiffe = method.uses_spiffe_id();
+    let spiffe = method.uses_workload_identity();
     let refused = || {
         failed(DomainError::invalid(
             "oauth.client_principal_invalid",
             "a client's principal is a service account or an agent of the tenant; an agent \
-             with the token exchange grant, a service account with `spiffe_jwt`",
+             with the token exchange grant, a service account with `spiffe_jwt`, \
+             `tls_client_auth`, `spiffe_x509` or `linkerd_identity`",
         ))
     };
     let id: UserId = given.parse().map_err(|_| refused())?;
@@ -735,6 +781,10 @@ async fn create_client(
             if let Some(spiffe_id) = &new.spiffe_id {
                 settings.spiffe_id = Some(SpiffeId::parse(spiffe_id).map_err(failed)?);
             }
+            if let Some(linkerd_identity) = &new.linkerd_identity {
+                settings.linkerd_identity =
+                    Some(LinkerdIdentity::parse(linkerd_identity).map_err(failed)?);
+            }
             if let Some(principal) = &new.principal {
                 settings.principal = Some(
                     principal_of(
@@ -814,18 +864,14 @@ async fn change_client(
                 .await
                 .map_err(failed)?;
             let now = current.snapshot().settings.clone();
+            let method = match &changes.authentication_method {
+                Some(method) => AuthenticationMethod::parse(method).map_err(failed)?,
+                None => now.authentication_method,
+            };
+            let (spiffe_id, linkerd_identity) = changed_identities(&changes, &now, method)?;
             let grants = match changes.grant_types {
                 Some(given) => grant_types(&given)?,
                 None => now.grant_types.clone(),
-            };
-            let method = match changes.authentication_method {
-                Some(method) => AuthenticationMethod::parse(&method).map_err(failed)?,
-                None => now.authentication_method,
-            };
-            let spiffe_id = match changes.spiffe_id {
-                None => now.spiffe_id.clone(),
-                Some(None) => None,
-                Some(Some(given)) => Some(SpiffeId::parse(&given).map_err(failed)?),
             };
             let settings = ClientSettings {
                 name: changes.name.unwrap_or(now.name),
@@ -863,7 +909,7 @@ async fn change_client(
                     None => match now.principal {
                         Some(kept)
                             if grants.contains(&GrantType::TokenExchange)
-                                || method.uses_spiffe_id() =>
+                                || method.uses_workload_identity() =>
                         {
                             Some(
                                 principal_of(&state, &tenant, &kept.to_string(), &grants, method)
@@ -881,6 +927,7 @@ async fn change_client(
                     .exchange_rules
                     .map_or(now.exchange_rules, exchange_rules),
                 spiffe_id,
+                linkerd_identity,
             };
             let client = state
                 .applications

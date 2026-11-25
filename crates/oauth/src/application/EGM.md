@@ -122,7 +122,10 @@ register and `secrets` the kernel `SecretBox`. The retry window of
 refresh tokens is `DEFAULT_RETRY_WINDOW`, 10 seconds;
 `with_retry_window(window)` sets another, 0 to 60 seconds, or answers
 `oauth.retry_window_invalid`. `with_trust_domains(TrustDomainService)`
-lets it check JWT-SVIDs; without it every JWT-SVID is refused.
+lets it check JWT-SVIDs and forwarded identities, and
+`with_certificate_check(Arc<dyn CertificateCheck>)` forwarded
+certificates; without them every JWT-SVID, and every client of
+`tls_client_auth`, `spiffe_x509` and `linkerd_identity`, is refused.
 
 - `token(tenant, Issuer { issuer, token_endpoint }, request,
   correlation_id)`: the outer `Result` is storage, sealing or signing; the
@@ -137,7 +140,17 @@ lets it check JWT-SVIDs; without it every JWT-SVID is refused.
     the `TrustDomainService` (in a unit of work of its own) and its bundle,
     `check_svid` against it and the tenant's issuer, and its `mark`
     remembered through the `ClientAssertionStore` until it expires and
-    committed at once. Every failure is `invalid_client`.
+    committed at once; or the forwarded identity (`check_forwarded`,
+    `forwarded.rs`): a request with its identifier alone may be a public
+    client's or one of a forwarded identity (`PresentedClient::may_be`);
+    the identity must have been forwarded, be of the kind the method
+    takes, name a trust domain the tenant has (found by name through the
+    `TrustDomainService`, in a unit of work of its own), and match the
+    client's identity by `names_match`; a certificate is checked against
+    the `x509-svid` elements of the trust domain's bundle by
+    `CertificateCheck::chains_to`, and only a trust domain of source
+    `mesh` believes names or a Linkerd identity without one. Every failure
+    is `invalid_client`.
   - `authorization_code`: `unauthorized_client` without that grant;
     `AuthorizationCodeService::redeem_code` (any `oauth.code_refused` is
     `invalid_grant`); the grant must still be `active`. With the
