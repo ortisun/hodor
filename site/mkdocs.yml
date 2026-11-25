@@ -238,6 +238,7 @@ nav:
       - decisions/0039-enrolling-during-a-sign-in.md
       - decisions/0040-pairwise-subjects.md
       - decisions/0041-claim-mappers.md
+      - decisions/0042-trust-domains.md
   - Contributing:
       - development/conventions.md
       - development/documentation-site.md

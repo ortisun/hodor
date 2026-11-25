@@ -22,8 +22,8 @@ A permission names something that can be done: a kind of resource and an action 
 | `audit:read` | Reading the audit log |
 | `identity-providers:read` | Seeing the tenant's identity providers, without their secrets |
 | `identity-providers:write` | Adding, changing, enabling and disabling identity providers, and replacing their secrets |
-| `keys:read` | Listing a tenant's key versions |
-| `keys:write` | Rotating a tenant's signing key and revoking key versions |
+| `keys:read` | Listing a tenant's key versions, and its trust domains with their bundles |
+| `keys:write` | Rotating a tenant's signing key and revoking key versions; adding, replacing and removing trust domains |
 | `applications:read` | Seeing the tenant's applications, their clients and resource servers, without any secret |
 | `applications:write` | Registering and changing applications, clients and resource servers, giving clients secrets and keys, and enabling and disabling them |
 | `assurance-levels:read` | Seeing the tenant's assurance levels |

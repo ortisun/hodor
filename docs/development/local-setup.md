@@ -186,11 +186,12 @@ The worker connects to the database twice, with different roles: as a member of 
 | `HODOR_WEBHOOK_IN_FLIGHT_PER_ENDPOINT` | `4` | Deliveries leased at once to one endpoint, across every worker, 1 to 32 |
 | `HODOR_WEBHOOK_CONCURRENCY` | `32` | Deliveries this worker sends at once, 1 to 256 |
 | `HODOR_WEBHOOK_POLL_INTERVAL_MS` | `1000` | Pause between passes when no delivery is due |
+| `HODOR_TRUST_BUNDLE_POLL_INTERVAL_MS` | `5000` | Pause between passes when no [trust bundle](../architecture/contexts/keys.md#keeping-a-fetched-bundle-current) is due to be fetched |
 | `HODOR_BACKCHANNEL_LOGOUT_MAX_ATTEMPTS` | `8` | [Attempts](../architecture/contexts/oauth.md#deliveries-and-retries) before a logout delivery is set aside, 1 to 20 |
 | `HODOR_BACKCHANNEL_LOGOUT_FIRST_RETRY_MS` | `30000` | The wait after a logout delivery's first failed attempt; each next wait is twice as long, up to one hour |
 | `HODOR_BACKCHANNEL_LOGOUT_TIME_LIMIT_SECONDS` | `10` | The longest one attempt may take, 1 to 30 |
 | `HODOR_BACKCHANNEL_LOGOUT_POLL_INTERVAL_MS` | `1000` | Pause between passes when no logout delivery is due |
-| `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` | empty | As for the server: hosts with their ports that webhooks and logout tokens may reach over plain HTTP without the address check. Never set anywhere real |
+| `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` | empty | As for the server: hosts with their ports that webhooks, logout tokens and bundle endpoints may reach over plain HTTP without the address check. Never set anywhere real |
 | `HODOR_LOG_FORMAT`, `HODOR_LOG_FILTER`, `HODOR_OTLP_TRACES_ENDPOINT`, `HODOR_OTLP_METRICS_ENDPOINT` | as for the server | Telemetry |
 
 ### `hodor-cli`
