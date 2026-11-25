@@ -802,6 +802,25 @@ enum SecondFactorArg {
 }
 
 #[derive(Clone, Copy, ValueEnum)]
+enum OnOffArg {
+    /// Offered.
+    On,
+    /// Not offered.
+    Off,
+}
+
+impl OnOffArg {
+    const fn is_on(self) -> bool {
+        matches!(self, Self::On)
+    }
+}
+
+/// `on` or `off`, as the command-line tool writes a setting.
+const fn on_off(value: bool) -> &'static str {
+    if value { "on" } else { "off" }
+}
+
+#[derive(Clone, Copy, ValueEnum)]
 enum DeprovisioningArg {
     /// Deactivate the person: they can be restored.
     Deactivate,
@@ -863,6 +882,19 @@ enum TenantCommand {
         /// The deepest a group may be.
         #[arg(long)]
         depth: u8,
+    },
+    /// Say whether people of the tenant may sign in with a code, or with a
+    /// link, sent to their address. What is not given stays as it was.
+    EmailSignIn {
+        /// The tenant's slug.
+        #[arg(long)]
+        slug: String,
+        /// Signing in with a code by email.
+        #[arg(long, value_enum)]
+        code: Option<OnOffArg>,
+        /// Signing in with a link by email.
+        #[arg(long, value_enum)]
+        link: Option<OnOffArg>,
     },
     /// Set what deprovisioning a person through SCIM does: `DELETE` of a
     /// user or `active: false`. Either way their sessions and grants end.
@@ -1003,6 +1035,30 @@ async fn run_tenant(
             settings.groups.max_depth = depth;
             service.change_settings(&tenant, settings, caller()).await?;
             Ok(format!("{} group-depth {depth}", entry.slug))
+        }
+        TenantCommand::EmailSignIn { slug, code, link } => {
+            let entry = existing(service, &slug).await?;
+            let tenant = TenantContext::assume(entry.tenant_id);
+            let mut settings = service.get(&tenant).await?.snapshot().settings.clone();
+            let policy = &mut settings.authentication.email_sign_in;
+            if let Some(code) = code {
+                policy.code = code.is_on();
+            }
+            if let Some(link) = link {
+                policy.link = link.is_on();
+            }
+            let now = if code.is_some() || link.is_some() {
+                service.change_settings(&tenant, settings, caller()).await?
+            } else {
+                service.get(&tenant).await?
+            };
+            let policy = now.snapshot().settings.authentication.email_sign_in;
+            Ok(format!(
+                "{} email-sign-in code {} link {}",
+                entry.slug,
+                on_off(policy.code),
+                on_off(policy.link)
+            ))
         }
         TenantCommand::ScimDeprovisioning { slug, policy } => {
             let entry = existing(service, &slug).await?;

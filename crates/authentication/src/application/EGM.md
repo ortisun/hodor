@@ -32,6 +32,8 @@ the tenant the unit of work is bound to.
   - `update(uow, transaction)`: stores changes to a transaction loaded earlier,
     guarded by its version.
 - `VerificationTokenStore` (`ports.rs:VerificationTokenStore`)
+- `EmailSignInStore` (`ports.rs:EmailSignInStore`): `replace`, `get`,
+  `use_up`, one row per transaction
   - `insert(uow, token)`: stores a new token.
   - `replace_earlier(uow, purpose, email, now)`: marks every unused token of
     the purpose for the email address as replaced.
@@ -160,9 +162,28 @@ Both implement the `Authenticator` trait from [`../domain/EGM.md`](../domain/EGM
   `recent_sign_in_required()` (`Forbidden`
   `authentication.recent_sign_in_required`), which the interaction routes
   apply to the session's `signed_in_at`.
-- `AuthenticationService::challenge(tenant, id, secret, step) -> Value`: asks
-  the current step, or an alternative at the start, for a challenge through
-  `FlowEngine::challenge` and stores the transaction.
+- `AuthenticationService::challenge(tenant, id, secret, asked: ExternalInput)
+  -> Value`: asks the current step, or an alternative at the start, for a
+  challenge through `FlowEngine::challenge`, with what the person gave, and
+  stores the transaction. `alternatives(tenant) -> Vec<String>`: the offered
+  alternatives, for the pages.
+- `EmailAuthenticator` (`email.rs:EmailAuthenticator`), built with
+  `EmailAuthenticator::code(ports)` or `::link(ports)` over `EmailSignInPorts
+  { units_of_work, sent: EmailSignInStore, identity, tenants, notifier,
+  guard, digest, random, clock, public_url }`: kinds `CODE_KIND`
+  (`"email_code"`) and `LINK_KIND` (`"email_link"`), traits `identifies:
+  true`, `factor: Some(Factor::Knowledge)`, the method its kind. `offered`
+  reads `authentication.email_sign_in` of the tenant. `challenge` admits the
+  asking against `email_sign_in:<address>` and the client address, then
+  replaces the row of the transaction whoever the address belongs to, and
+  for a person who may sign in queues `sign_in_code` or `sign_in_link`
+  (`{public_url}/t/{slug}/account/sign-in-link#token=…`) and records
+  `EmailSignInSent`, in one unit of work. `perform` admits the attempt
+  against the row's `identifier_key` (only the address when nothing was
+  asked), then `use_up`: `Accepted` answers `Authenticated` for a person who
+  may sign in and clears the identifier's count, `AlreadyUsed` is `Conflict`
+  `authentication.transaction_modified_concurrently`, anything else
+  `Rejected`.
 - `RecoveryCodeAuthenticator` (`authenticators.rs:RecoveryCodeAuthenticator`):
   `kind()` is `RecoveryCodeAuthenticator::KIND`, `"recovery_code"`; traits
   `identifies: false`, `factor: Some(Factor::Possession)`,
@@ -180,6 +201,9 @@ Both implement the `Authenticator` trait from [`../domain/EGM.md`](../domain/EGM
 - Of any number of simultaneous `use_up` calls for one token exactly one gets
   it; the others and every later call get nothing
   (`ports.rs:VerificationTokenStore::use_up`).
+- Of any number of simultaneous `EmailSignInStore::use_up` calls with the
+  right secret exactly one gets `Accepted`; the others get `AlreadyUsed`
+  (`ports.rs:EmailSignInStore::use_up`).
 - Two units of work locking the same attempt subject are served one after the
   other, which keeps the attempt limit exact (`ports.rs:AttemptStore::lock`).
 - A wrong sign-in secret is answered exactly like a missing sign-in:

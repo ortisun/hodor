@@ -50,6 +50,24 @@ fn each_method_is_named_as_rfc_8176_names_it() {
         "an external sign-in names nothing, and counts as something known, \
          as it does for the acr"
     );
+    assert_eq!(
+        authentication_methods(&methods(&["email_code"])),
+        ["otp"],
+        "a code by email is a one-time password, and one factor"
+    );
+    assert!(
+        authentication_methods(&methods(&["email_link"])).is_empty(),
+        "RFC 8176 has no name for a link"
+    );
+    assert_eq!(
+        authentication_methods(&methods(&["email_link", "webauthn"])),
+        ["pop", "mfa"],
+        "the mailbox counts as something known, as it does for the acr"
+    );
+    assert_eq!(
+        authentication_methods(&methods(&["email_code", "totp"])),
+        ["otp", "mfa"]
+    );
     assert!(authentication_methods(&methods(&["something-new"])).is_empty());
 }
 

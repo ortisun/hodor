@@ -25,6 +25,7 @@ describe("placeOf", () => {
     expect(placeOf("/t/acme/account/consent")).toEqual({ tenant: "acme", page: "consent" });
     expect(placeOf("/t/acme/account/")).toEqual({ tenant: "acme", page: "account" });
     expect(placeOf("/t/acme/account/sign-out")).toEqual({ tenant: "acme", page: "sign-out" });
+    expect(placeOf("/t/acme/account/sign-in-link")).toEqual({ tenant: "acme", page: "sign-in-link" });
   });
 
   it("knows the tenant but no page for a name it does not have", () => {

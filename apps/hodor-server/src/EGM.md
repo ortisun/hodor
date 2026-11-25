@@ -124,7 +124,9 @@ guard, sign-in flow, accounts and notification queue; the flow is the
 built-in one with a `webauthn` step after it, conditional on a stronger
 assurance being needed (`StrongerAssuranceNeeded`), a `totp` step when
 secrets can be kept, conditional on the sign-in not being multi-factor yet,
-and the alternative `passkey`), `authorization` (given the interaction's
+and the alternatives `passkey`, `email_code` and `email_link`, the last two
+`EmailAuthenticator`s over `PgEmailSignInStore` and the message queue, offered
+where the tenant turned them on), `authorization` (given the interaction's
 `AuthenticationService`, for step-ups, and `tenant_service`, for the
 assurance levels, which `administration` and the discovery document read
 too),

@@ -109,6 +109,13 @@ interface SignInPageProps extends PageProps {
 /** The steps a recovery code can stand in for. */
 const SECOND_FACTORS = ["webauthn", "totp"];
 
+/** A code or a link the person asked for by email, in place of the identifier and the password. */
+interface ByEmail {
+  method: "code" | "link";
+  /** The address it was asked for, as typed. */
+  address: string;
+}
+
 /**
  * Signing in. The page shows the form for the step the server names and
  * sends back what was typed; it decides nothing.
@@ -159,6 +166,15 @@ export function SignInPage({
   const [passkeyNoAnswer, setPasskeyNoAnswer] = useState(false);
   /** The conditional request that offers passkeys in the identifier field, while it waits. */
   const offering = useRef<AbortController | null>(null);
+  /** The ways to sign in by email the tenant offers. */
+  const [byEmailOffered, setByEmailOffered] = useState<{ code: boolean; link: boolean }>({
+    code: false,
+    link: false,
+  });
+  /** What the person asked for by email, while the sign-in waits for its first step. */
+  const [byEmail, setByEmail] = useState<ByEmail | null>(null);
+  /** The person asked for a code or a link without typing an address. */
+  const [needAddress, setNeedAddress] = useState(false);
 
   const show = useCallback(
     (answer: SignInAnswer) => {
@@ -207,6 +223,14 @@ export function SignInPage({
   useEffect(() => {
     let current = true;
     // A tenant that offers none, or a list that cannot be had, shows none.
+    client.alternatives().then(
+      (offered) => {
+        if (current) {
+          setByEmailOffered({ code: offered.includes("email_code"), link: offered.includes("email_link") });
+        }
+      },
+      () => undefined,
+    );
     client.providers().then(
       (offered) => {
         if (current) {
@@ -225,7 +249,13 @@ export function SignInPage({
     };
   }, [client, apply, signInAgain]);
 
-  const open = async (afresh: boolean) => apply(await findOut(client, afresh, signInAgain));
+  const open = async (afresh: boolean) => {
+    if (afresh) {
+      // A new sign-in never asked for anything.
+      setByEmail(null);
+    }
+    apply(await findOut(client, afresh, signInAgain));
+  };
 
   async function send(request: () => Promise<SignInAnswer>) {
     if (busy) {
@@ -269,6 +299,8 @@ export function SignInPage({
     setPassword("");
     setCode("");
     setRecovering(false);
+    setByEmail(null);
+    setNeedAddress(false);
     try {
       await client.abandonSignIn();
       await open(true);
@@ -350,7 +382,58 @@ export function SignInPage({
     });
   }
 
-  const asksIdentifier = view.kind === "step" && view.step === "identifier" && directory === null;
+  /**
+   * Asks for a code or a link to be sent to the address typed. The answer
+   * is the same whoever the address belongs to. Sent once more when the
+   * sign-in was changed at the same moment by the page's own request for
+   * the passkey challenge, which is stopped first.
+   */
+  async function askByEmail(method: "code" | "link") {
+    const address = identifier.trim();
+    if (address === "") {
+      setNeedAddress(true);
+      return;
+    }
+    if (busy) {
+      return;
+    }
+    stopOffering();
+    setNeedAddress(false);
+    setBusy(true);
+    setFailure(null);
+    setExpired(false);
+    try {
+      try {
+        await client.askByEmail(method, address, text.locale);
+      } catch (thrown) {
+        if (asFailure(thrown).code !== "authentication.transaction_modified_concurrently") {
+          throw thrown;
+        }
+        await client.askByEmail(method, address, text.locale);
+      }
+      setCode("");
+      setByEmail({ method, address });
+      // The rejection of an earlier code is not about this one.
+      setView((before) => (before.kind === "step" ? { ...before, rejected: false, shown: before.shown + 1 } : before));
+    } catch (thrown) {
+      const failed = asFailure(thrown);
+      const code = failed.code ?? "";
+      if (GONE.includes(code)) {
+        setExpired(true);
+        await open(true);
+      } else if (OUT_OF_STEP.includes(code)) {
+        await open(false);
+      } else {
+        setFailure(failed);
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const waitsByEmail = view.kind === "step" && view.step === "identifier" && byEmail !== null;
+  const asksIdentifier =
+    view.kind === "step" && view.step === "identifier" && directory === null && byEmail === null;
   const shownAt = view.kind === "step" ? view.shown : -1;
 
   // Where the browser can, the passkeys it holds are offered in the
@@ -464,7 +547,41 @@ export function SignInPage({
         </Form>
       ) : null}
 
-      {view.kind === "step" && view.step === "identifier" && directory === null ? (
+      {view.kind === "step" && waitsByEmail && byEmail.method === "code" ? (
+        <Form key={`email-code-${view.shown}`} onSubmit={(event) => submit(event, () => client.submitEmailCode(code))}>
+          <Notice kind="info">{text.emailCodeSent(byEmail.address)}</Notice>
+          <Field
+            label={text.emailCodeLabel}
+            hint={text.emailCodeHint}
+            name="email-code"
+            autoComplete="one-time-code"
+            inputMode="numeric"
+            autoFocus
+            verbatim
+            value={code}
+            onChange={setCode}
+          />
+          <Submit label={text.signIn} busy={busy} text={text} />
+          <Action variant="ghost" label={text.sendAnotherCode} busy={busy} onClick={() => void askByEmail("code")} />
+          <Action variant="ghost" label={text.useAnotherIdentifier} onClick={() => void startAgain()} />
+        </Form>
+      ) : null}
+
+      {view.kind === "step" && waitsByEmail && byEmail.method === "link" ? (
+        <>
+          <Notice kind="info">{text.emailLinkSent(byEmail.address)}</Notice>
+          <Ways>
+            <li>
+              <Action variant="ghost" label={text.sendAnotherLink} busy={busy} onClick={() => void askByEmail("link")} />
+            </li>
+            <li>
+              <Action variant="ghost" label={text.useAnotherIdentifier} onClick={() => void startAgain()} />
+            </li>
+          </Ways>
+        </>
+      ) : null}
+
+      {view.kind === "step" && view.step === "identifier" && directory === null && byEmail === null ? (
         <Form
           key={view.shown}
           onSubmit={(event) => {
@@ -482,14 +599,25 @@ export function SignInPage({
             value={identifier}
             onChange={setIdentifier}
           />
+          {needAddress ? <Notice kind="danger">{text.typeAddressFirst}</Notice> : null}
           <Submit label={text.continue} busy={busy} text={text} />
           {webAuthnAvailable() ? (
             <Action label={text.signInWithPasskey} busy={busy} onClick={() => void askPasskey()} />
           ) : null}
+          {byEmailOffered.code ? (
+            <Action label={text.emailMeACode} busy={busy} onClick={() => void askByEmail("code")} />
+          ) : null}
+          {byEmailOffered.link ? (
+            <Action label={text.emailMeALink} busy={busy} onClick={() => void askByEmail("link")} />
+          ) : null}
         </Form>
       ) : null}
 
-      {view.kind === "step" && view.step === "identifier" && directory === null && providers.length > 0 ? (
+      {view.kind === "step" &&
+      view.step === "identifier" &&
+      directory === null &&
+      byEmail === null &&
+      providers.length > 0 ? (
         <>
           <p className="auth-divider">{text.or}</p>
           <Ways>

@@ -17,6 +17,13 @@ address.
   notice?), leave(url), path(page) }`.
 - `shared.ts:asFailure(thrown): Failure` - a thrown `Failure` as is, anything
   else as `new Failure(null, 500)`.
+- `SignInLinkPage.tsx:SignInLinkPage({ ...PageProps, token })` - the page a
+  link to sign in opens. Without a token it says `text.signInLinkRefused` and
+  asks nothing. Otherwise `client.currentSignIn()`: `null` shows
+  `text.signInLinkElsewhere` and sends nothing; else
+  `client.submitEmailLink(token)`, `completed` goes to `continueTo` or
+  `account`, `pending` to `sign-in`, anything else, `404`, `409` and `422`
+  show `text.signInLinkRefused`; other failures are described.
 - `SignInPage.tsx:SignInPage({ ...PageProps, notice, signInAgain?,
   loginHint? })` - the identifier field starts with `loginHint`. On mount calls
   `client.providers()` and `findOut`: `client.session()` (someone signed in
@@ -30,7 +37,16 @@ address.
     `conditionalMediationAvailable()`, a conditional request that offers the
     browser's passkeys in the field, aborted when the step is left, the
     identifier is submitted or the button is pressed; plus one `Action` per
-    offered provider (`text.continueWith(displayName)`). A provider with
+    offered provider (`text.continueWith(displayName)`). When
+    `client.alternatives()` names `email_code` or `email_link`, an `Action`
+    `text.emailMeACode` or `text.emailMeALink` asks
+    `client.askByEmail(method, identifier, text.locale)` (nothing typed shows
+    `text.typeAddressFirst` and sends nothing; the passkey offer is stopped
+    first, and a `transaction_modified_concurrently` is asked once more);
+    then, while the step stays `identifier`, a code form
+    (`text.emailCodeLabel`, `autocomplete="one-time-code"`) that calls
+    `client.submitEmailCode`, or the notice `text.emailLinkSent`, each with a
+    way to ask again and to use another address. A provider with
     `isDirectory` shows a username and password form here that calls
     `client.signInWithDirectory(alias, identifier, password)`; any other
     calls `client.chooseProvider(alias)` and passes the answer to `leave`.

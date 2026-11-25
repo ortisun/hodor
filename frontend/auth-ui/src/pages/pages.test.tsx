@@ -11,6 +11,7 @@ import { ComingBackPage } from "./ComingBackPage";
 import { ConsentPage } from "./ConsentPage";
 import { FinishPage } from "./FinishPage";
 import { SecurityPage } from "./SecurityPage";
+import { SignInLinkPage } from "./SignInLinkPage";
 import { SignInPage } from "./SignInPage";
 import { SignOutPage } from "./SignOutPage";
 
@@ -1339,5 +1340,200 @@ describe("the page of an invitation", () => {
     cleanup();
     render(<AcceptInvitationPage {...props} token={null} />);
     expect(screen.getByText(en.linkInvalid)).toBeTruthy();
+  });
+});
+
+describe("signing in by email on the sign-in page", () => {
+  const offered = (alternatives: string[]) => () => json(200, { alternatives });
+  const accepted = () => json(202, { status: "accepted" });
+
+  it("asks for a code for the address typed, in the language of the page, and signs in with it", async () => {
+    const { props, sent, go, user } = page({
+      "GET /sign-in/alternatives": [offered(["passkey", "email_code", "email_link"])],
+      "GET /session": [nobody],
+      "GET /sign-in": [pending("identifier")],
+      "POST /sign-in/steps/email_code/send": [accepted],
+      "POST /sign-in/steps/email_code": [json(200, { status: "completed" })],
+    });
+    render(<SignInPage {...props} notice={null} />);
+    await user.type(await screen.findByLabelText(en.identifierLabel), "ana@example.com");
+    await user.click(await screen.findByRole("button", { name: en.emailMeACode }));
+
+    expect(await screen.findByText(en.emailCodeSent("ana@example.com"))).toBeTruthy();
+    const field = screen.getByLabelText(en.emailCodeLabel);
+    expect(field.getAttribute("autocomplete")).toBe("one-time-code");
+    expect(field.getAttribute("inputmode")).toBe("numeric");
+    await user.type(field, "123456{Enter}");
+
+    await waitFor(() => expect(go).toHaveBeenCalledWith("account"));
+    expect(sent.find((request) => request.path === "/sign-in/steps/email_code/send")).toMatchObject({
+      body: { email: "ana@example.com", locale: "en" },
+      csrfToken: "token",
+    });
+    expect(sent.at(-1)).toMatchObject({ path: "/sign-in/steps/email_code", body: { code: "123456" } });
+  });
+
+  it("shows a rejected code on the same form, and asks for another code when told", async () => {
+    const { props, sent, user } = page({
+      "GET /sign-in/alternatives": [offered(["email_code"])],
+      "GET /session": [nobody],
+      "GET /sign-in": [pending("identifier")],
+      "POST /sign-in/steps/email_code/send": [accepted, accepted],
+      "POST /sign-in/steps/email_code": [
+        json(200, { status: "rejected", step: "identifier", attempts_left: 4, csrf_token: "token" }),
+      ],
+    });
+    render(<SignInPage {...props} notice={null} />);
+    await user.type(await screen.findByLabelText(en.identifierLabel), "ana@example.com");
+    await user.click(await screen.findByRole("button", { name: en.emailMeACode }));
+    await user.type(await screen.findByLabelText(en.emailCodeLabel), "000000{Enter}");
+
+    expect((await alertShown()).textContent).toContain(en.rejected);
+    const field = await screen.findByLabelText(en.emailCodeLabel);
+    expect((field as HTMLInputElement).value).toBe("");
+    await user.click(screen.getByRole("button", { name: en.sendAnotherCode }));
+    await waitFor(() =>
+      expect(sent.filter((request) => request.path === "/sign-in/steps/email_code/send")).toHaveLength(2),
+    );
+    expect(screen.queryByText(en.rejected, { exact: false })).toBeNull();
+  });
+
+  it("asks for a link and says to open it in this browser", async () => {
+    const { props, sent, user } = page({
+      "GET /sign-in/alternatives": [offered(["email_link"])],
+      "GET /session": [nobody],
+      "GET /sign-in": [pending("identifier")],
+      "POST /sign-in/steps/email_link/send": [accepted],
+    });
+    render(<SignInPage {...props} notice={null} />);
+    await user.type(await screen.findByLabelText(en.identifierLabel), "ana@example.com");
+    expect(screen.queryByRole("button", { name: en.emailMeACode })).toBeNull();
+    await user.click(await screen.findByRole("button", { name: en.emailMeALink }));
+
+    expect(await screen.findByText(en.emailLinkSent("ana@example.com"))).toBeTruthy();
+    expect(screen.queryByLabelText(en.identifierLabel)).toBeNull();
+    expect(screen.queryByLabelText(en.emailCodeLabel)).toBeNull();
+    expect(sent.at(-1)).toMatchObject({ path: "/sign-in/steps/email_link/send", body: { email: "ana@example.com" } });
+  });
+
+  it("asks for the address first, and sends nothing, when none was typed", async () => {
+    const { props, sent, user } = page({
+      "GET /sign-in/alternatives": [offered(["email_code"])],
+      "GET /session": [nobody],
+      "GET /sign-in": [pending("identifier")],
+    });
+    render(<SignInPage {...props} notice={null} />);
+    await user.click(await screen.findByRole("button", { name: en.emailMeACode }));
+    expect((await alertShown()).textContent).toBe(en.typeAddressFirst);
+    expect(sent.some((request) => request.path.startsWith("/sign-in/steps/email_code"))).toBe(false);
+  });
+
+  it("offers neither when the tenant offers neither, nor once the sign-in is past its first step", async () => {
+    const none = page({
+      "GET /sign-in/alternatives": [offered(["passkey"])],
+      "GET /session": [nobody],
+      "GET /sign-in": [pending("identifier")],
+    });
+    render(<SignInPage {...none.props} notice={null} />);
+    await screen.findByLabelText(en.identifierLabel);
+    expect(screen.queryByRole("button", { name: en.emailMeACode })).toBeNull();
+    expect(screen.queryByRole("button", { name: en.emailMeALink })).toBeNull();
+    cleanup();
+
+    const past = page({
+      "GET /sign-in/alternatives": [offered(["email_code", "email_link"])],
+      "GET /session": [nobody],
+      "GET /sign-in": [pending("password")],
+    });
+    render(<SignInPage {...past.props} notice={null} />);
+    await screen.findByLabelText(en.passwordLabel);
+    expect(screen.queryByRole("button", { name: en.emailMeACode })).toBeNull();
+  });
+
+  it("says how long to wait when asking too often", async () => {
+    const { props, user } = page({
+      "GET /sign-in/alternatives": [offered(["email_code"])],
+      "GET /session": [nobody],
+      "GET /sign-in": [pending("identifier")],
+      "POST /sign-in/steps/email_code/send": [
+        problem(429, "authentication.too_many_attempts", { "Retry-After": "120" }),
+      ],
+    });
+    render(<SignInPage {...props} notice={null} />);
+    await user.type(await screen.findByLabelText(en.identifierLabel), "ana@example.com");
+    await user.click(await screen.findByRole("button", { name: en.emailMeACode }));
+    expect((await alertShown()).textContent).toBe(`${en.tooManyAttempts} ${en.tryAgainInMinutes(2)}`);
+    expect(screen.getByLabelText(en.identifierLabel)).toBeTruthy();
+  });
+});
+
+describe("the page a link to sign in opens", () => {
+  const token = "a".repeat(64);
+
+  it("presents the token within this browser's sign-in and goes on to the account", async () => {
+    const { props, sent, go } = page({
+      "GET /sign-in": [pending("identifier")],
+      "POST /sign-in/steps/email_link": [json(200, { status: "completed" })],
+    });
+    render(<SignInLinkPage {...props} token={token} />);
+    await waitFor(() => expect(go).toHaveBeenCalledWith("account"));
+    expect(sent.at(-1)).toMatchObject({ path: "/sign-in/steps/email_link", body: { token }, csrfToken: "token" });
+  });
+
+  it("goes on to the application's request, or to the sign-in page for a second factor", async () => {
+    const waiting = page({
+      "GET /sign-in": [pending("identifier")],
+      "POST /sign-in/steps/email_link": [json(200, { status: "completed", continue: "/t/acme/oauth2/authorize/resume" })],
+    });
+    render(<SignInLinkPage {...waiting.props} token={token} />);
+    await waitFor(() => expect(waiting.leave).toHaveBeenCalledWith("/t/acme/oauth2/authorize/resume"));
+    cleanup();
+
+    const more = page({
+      "GET /sign-in": [pending("identifier")],
+      "POST /sign-in/steps/email_link": [pending("totp")],
+    });
+    render(<SignInLinkPage {...more.props} token={token} />);
+    await waitFor(() => expect(more.go).toHaveBeenCalledWith("sign-in"));
+  });
+
+  it("sends nothing, and says where the link works, in a browser with no sign-in", async () => {
+    const { props, sent, go } = page({ "GET /sign-in": [noSignIn] });
+    render(<SignInLinkPage {...props} token={token} />);
+    expect(await screen.findByText(en.signInLinkElsewhere)).toBeTruthy();
+    expect(sent.map((request) => request.path)).toEqual(["/sign-in"]);
+    expect(go).not.toHaveBeenCalled();
+    expect(screen.getByRole("link", { name: en.goToSignIn }).getAttribute("href")).toBe("/t/acme/account/sign-in");
+  });
+
+  it("says the link did not work, in one way, when it is rejected or the sign-in moved on", async () => {
+    for (const refusal of [
+      () => json(200, { status: "rejected", step: "identifier", attempts_left: 4, csrf_token: "token" }),
+      () => json(200, { status: "failed" }),
+      () => problem(409, "authentication.transaction_modified_concurrently"),
+      () => problem(422, "authentication.unexpected_step"),
+    ]) {
+      const { props, go } = page({
+        "GET /sign-in": [pending("identifier")],
+        "POST /sign-in/steps/email_link": [refusal],
+      });
+      render(<SignInLinkPage {...props} token={token} />);
+      expect((await alertShown()).textContent).toBe(en.signInLinkRefused);
+      expect(go).not.toHaveBeenCalled();
+      cleanup();
+    }
+  });
+
+  it("asks the server nothing when the address carries no token", async () => {
+    const { props, sent } = page({});
+    render(<SignInLinkPage {...props} token={null} />);
+    expect((await alertShown()).textContent).toBe(en.signInLinkRefused);
+    expect(sent).toEqual([]);
+  });
+
+  it("says so when the server cannot be reached", async () => {
+    const { props } = page({ "GET /sign-in": [unreachable] });
+    render(<SignInLinkPage {...props} token={token} />);
+    expect((await alertShown()).textContent).toBe(en.unreachable);
   });
 });

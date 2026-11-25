@@ -73,6 +73,8 @@ export function describe(failure: Failure, text: Messages): string {
       return text.registrationClosed;
     case "authentication.verification_token_invalid":
       return text.linkInvalid;
+    case "authentication.method_not_offered":
+      return text.methodNotOffered;
     case "credential.hashing_overloaded":
       return text.serverBusy;
     case "authentication.recent_sign_in_required":

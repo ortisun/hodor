@@ -4,7 +4,8 @@
 
 use crate::uow::{connection, database_error};
 use hodor_authentication::api::{
-    AttemptCounter, AttemptStore, AttemptSubject, AuthTransaction, TokenPurpose, TransactionId,
+    AttemptCounter, AttemptStore, AttemptSubject, AuthTransaction, EmailMethod, EmailSecretHash,
+    EmailSignIn, EmailSignInSnapshot, EmailSignInStore, EmailUse, TokenPurpose, TransactionId,
     TransactionSnapshot, TransactionStatus, TransactionStore, VerificationToken,
     VerificationTokenHash, VerificationTokenId, VerificationTokenSnapshot, VerificationTokenStore,
 };
@@ -458,5 +459,158 @@ impl VerificationTokenStore for PgVerificationTokenStore {
         .await
         .map_err(|e| database_error(&e))?;
         row.map(to_token).transpose()
+    }
+}
+
+/// [`EmailSignInStore`] on `authentication.email_sign_in`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PgEmailSignInStore;
+
+const EMAIL_SIGN_IN_COLUMNS: &str = "transaction_id, method, secret_hash, identifier_key, \
+                                     user_id, created_at, expires_at, used_at";
+
+type EmailSignInRow = (
+    Uuid,
+    String,
+    Vec<u8>,
+    Vec<u8>,
+    Option<Uuid>,
+    Timestamp,
+    Timestamp,
+    Option<Timestamp>,
+);
+
+fn to_email_sign_in(row: EmailSignInRow) -> Result<EmailSignIn, DomainError> {
+    let (
+        transaction_id,
+        method,
+        secret_hash,
+        identifier_key,
+        user_id,
+        created_at,
+        expires_at,
+        used_at,
+    ) = row;
+    Ok(EmailSignIn::from_snapshot(EmailSignInSnapshot {
+        transaction_id: TransactionId::from_uuid(transaction_id),
+        method: EmailMethod::from_stored(&method)?,
+        secret_hash: EmailSecretHash::from_stored(bytes_32(
+            secret_hash,
+            "the hash of what was sent is not 32 bytes",
+        )?),
+        identifier_key: bytes_32(identifier_key, "the identifier key is not 32 bytes")?,
+        user_id: user_id.map(UserId::from_uuid),
+        created_at,
+        expires_at,
+        used_at,
+    }))
+}
+
+#[async_trait::async_trait]
+impl EmailSignInStore for PgEmailSignInStore {
+    async fn replace(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        sent: &EmailSignIn,
+    ) -> Result<(), DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let state = sent.snapshot();
+        sqlx::query(
+            "INSERT INTO authentication.email_sign_in
+                 (tenant_id, transaction_id, method, secret_hash, identifier_key, user_id,
+                  created_at, expires_at, used_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+             ON CONFLICT (tenant_id, transaction_id) DO UPDATE
+             SET method = EXCLUDED.method,
+                 secret_hash = EXCLUDED.secret_hash,
+                 identifier_key = EXCLUDED.identifier_key,
+                 user_id = EXCLUDED.user_id,
+                 created_at = EXCLUDED.created_at,
+                 expires_at = EXCLUDED.expires_at,
+                 used_at = EXCLUDED.used_at",
+        )
+        .bind(tenant.as_uuid())
+        .bind(state.transaction_id.as_uuid())
+        .bind(state.method.as_str())
+        .bind(state.secret_hash.as_bytes().as_slice())
+        .bind(state.identifier_key.as_slice())
+        .bind(state.user_id.map(|user| user.as_uuid()))
+        .bind(state.created_at)
+        .bind(state.expires_at)
+        .bind(state.used_at)
+        .execute(connection(uow)?)
+        .await
+        .map_err(|e| database_error(&e))?;
+        Ok(())
+    }
+
+    async fn get(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        transaction: TransactionId,
+    ) -> Result<Option<EmailSignIn>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let row: Option<EmailSignInRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT {EMAIL_SIGN_IN_COLUMNS} FROM authentication.email_sign_in
+             WHERE tenant_id = $1 AND transaction_id = $2"
+        )))
+        .bind(tenant.as_uuid())
+        .bind(transaction.as_uuid())
+        .fetch_optional(connection(uow)?)
+        .await
+        .map_err(|e| database_error(&e))?;
+        row.map(to_email_sign_in).transpose()
+    }
+
+    async fn use_up(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        transaction: TransactionId,
+        method: EmailMethod,
+        presented: &EmailSecretHash,
+        now: Timestamp,
+    ) -> Result<EmailUse, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        // One statement checks that it is good and marks it used. Of
+        // several transactions doing this at once, the first locks the
+        // row; the others wait, then see `used_at` set and change nothing.
+        let used: Option<(Option<Uuid>,)> = sqlx::query_as(
+            "UPDATE authentication.email_sign_in
+             SET used_at = $5
+             WHERE tenant_id = $1 AND transaction_id = $2 AND method = $3 AND secret_hash = $4
+               AND used_at IS NULL AND user_id IS NOT NULL AND expires_at > $5
+             RETURNING user_id",
+        )
+        .bind(tenant.as_uuid())
+        .bind(transaction.as_uuid())
+        .bind(method.as_str())
+        .bind(presented.as_bytes().as_slice())
+        .bind(now)
+        .fetch_optional(connection(uow)?)
+        .await
+        .map_err(|e| database_error(&e))?;
+        if let Some((user,)) = used {
+            let user = user.ok_or_else(|| corrupted("a used row names nobody"))?;
+            return Ok(EmailUse::Accepted(UserId::from_uuid(user)));
+        }
+        // Whether the right secret was used a moment ago by another
+        // request, which this one must not overwrite.
+        let spent: Option<(i32,)> = sqlx::query_as(
+            "SELECT 1 FROM authentication.email_sign_in
+             WHERE tenant_id = $1 AND transaction_id = $2 AND method = $3 AND secret_hash = $4
+               AND used_at IS NOT NULL",
+        )
+        .bind(tenant.as_uuid())
+        .bind(transaction.as_uuid())
+        .bind(method.as_str())
+        .bind(presented.as_bytes().as_slice())
+        .fetch_optional(connection(uow)?)
+        .await
+        .map_err(|e| database_error(&e))?;
+        Ok(if spent.is_some() {
+            EmailUse::AlreadyUsed
+        } else {
+            EmailUse::Refused
+        })
     }
 }

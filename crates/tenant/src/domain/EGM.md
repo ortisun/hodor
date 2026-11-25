@@ -43,7 +43,7 @@ about. The domain is pure; time is passed in. All modules are `pub(crate)` in
   `idle_timeout()` and `absolute_timeout()` as `time::Duration`.
 - `LockoutPolicy { max_failures, window_seconds, first_lockout_seconds, longest_lockout_seconds }`.
 - `RegistrationPolicy { Closed (default), Open }`, serialized in snake case.
-- `AuthenticationPolicy { second_factor, assurance_levels }`. `assurance_levels`
+- `AuthenticationPolicy { second_factor, assurance_levels, email_sign_in }`. `email_sign_in` is `EmailSignInPolicy { code: bool, link: bool }`, both `false` by default and when absent from stored settings (`#[serde(default)]`). `assurance_levels`
   is `AssuranceLevels` (`settings.rs:AssuranceLevels`), one to three
   `AssuranceLevel { acr, requirement }` with `AssuranceRequirement`
   `SingleFactor < MultiFactor < PhishingResistant` (snake case); `new` sorts

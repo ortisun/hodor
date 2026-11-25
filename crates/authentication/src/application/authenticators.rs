@@ -4,7 +4,8 @@
 use crate::application::guard::AttemptGuard;
 use crate::domain::attempt::LockoutRules;
 use crate::domain::authenticator::{
-    Authenticator, AuthenticatorTraits, Factor, StepChallenge, StepInput, StepOutcome,
+    Authenticator, AuthenticatorTraits, ExternalInput, Factor, StepChallenge, StepInput,
+    StepOutcome,
 };
 use crate::domain::transaction::AuthTransaction;
 use hodor_credential::api::{
@@ -19,7 +20,7 @@ use time::Duration;
 
 /// The tenant's lockout rules, which the password and the code of an
 /// authenticator application are both counted by.
-async fn lockout_rules(
+pub(crate) async fn lockout_rules(
     tenants: &TenantService,
     tenant: &TenantContext,
 ) -> Result<LockoutRules, DomainError> {
@@ -37,6 +38,18 @@ async fn lockout_rules(
         first_lockout: seconds(settings.first_lockout_seconds),
         longest_lockout: seconds(settings.longest_lockout_seconds),
     })
+}
+
+/// The key the attempts of an identifier are counted by. Attempts are
+/// counted by the normalized identifier, so that different spellings
+/// share one count. Something that is not a well-formed identifier is
+/// counted by what was typed.
+pub(crate) fn identifier_key(typed: &str, digest: &dyn Digest) -> [u8; 32] {
+    let counted = NormalizedIdentifier::from_login(typed).map_or_else(
+        || format!("malformed:{}", typed.trim().to_lowercase()),
+        |identifier| format!("{}:{}", identifier.kind().as_str(), identifier.normalized()),
+    );
+    digest.sha256(counted.as_bytes())
 }
 
 /// Takes what the person typed as their login identifier and remembers
@@ -90,13 +103,6 @@ impl Authenticator for IdentifierAuthenticator {
         let StepInput::Identifier(typed) = input else {
             return Ok(StepOutcome::Rejected);
         };
-        // Attempts are counted by the normalized identifier, so that
-        // different spellings share one count. Something that is not a
-        // well-formed identifier is counted by what was typed.
-        let counted = NormalizedIdentifier::from_login(typed).map_or_else(
-            || format!("malformed:{}", typed.trim().to_lowercase()),
-            |identifier| format!("{}:{}", identifier.kind().as_str(), identifier.normalized()),
-        );
         let candidate = self
             .identity
             .find_by_login(tenant, typed)
@@ -104,7 +110,7 @@ impl Authenticator for IdentifierAuthenticator {
             .map(|user| user.id());
         Ok(StepOutcome::Identified {
             candidate,
-            identifier_key: self.digest.sha256(counted.as_bytes()),
+            identifier_key: identifier_key(typed, self.digest.as_ref()),
         })
     }
 }
@@ -398,6 +404,7 @@ impl Authenticator for WebAuthnAuthenticator {
         &self,
         tenant: &TenantContext,
         transaction: &AuthTransaction,
+        _asked: &ExternalInput,
     ) -> Result<Option<StepChallenge>, DomainError> {
         // The step is performed only for a person who was identified and
         // has credentials; a sign-in that reaches it without one has
@@ -407,7 +414,7 @@ impl Authenticator for WebAuthnAuthenticator {
         };
         let made = self.webauthn.challenge(tenant, user).await?;
         Ok(Some(StepChallenge {
-            challenge: made.challenge.0,
+            challenge: Some(made.challenge.0),
             options: options_json(&made.options)?,
         }))
     }
@@ -527,10 +534,11 @@ impl Authenticator for PasskeyAuthenticator {
         &self,
         _tenant: &TenantContext,
         _transaction: &AuthTransaction,
+        _asked: &ExternalInput,
     ) -> Result<Option<StepChallenge>, DomainError> {
         let made = self.webauthn.passkey_challenge();
         Ok(Some(StepChallenge {
-            challenge: made.challenge.0,
+            challenge: Some(made.challenge.0),
             options: options_json(&made.options)?,
         }))
     }

@@ -17,9 +17,10 @@ The modules `application` and `domain` are private (`mod application;`,
 
 - Application: `AccountRequest`, `AccountService`, `IdentifierAuthenticator`,
   `PasswordAuthenticator`, `TotpAuthenticator`, `WebAuthnAuthenticator`,
-  `RecoveryCodeAuthenticator`, `PasskeyAuthenticator`, `FactorService`, `StepChallenge`, `AttemptGuard`, the port
+  `RecoveryCodeAuthenticator`, `PasskeyAuthenticator`, `EmailAuthenticator`,
+  `EmailSignInPorts`, `FactorService`, `StepChallenge`, `AttemptGuard`, the port
   traits `AttemptStore`,
-  `TransactionStore`, `VerificationTokenStore`, and `AuthenticationService`,
+  `TransactionStore`, `VerificationTokenStore`, `EmailSignInStore`, and `AuthenticationService`,
   `SignIn`, `StartedSignIn`.
 - Domain: `AttemptCounter`, `AttemptSubject`, `LockoutRules`, `Authenticator`,
   `AuthenticatorTraits`, `ExternalInput`, `Factor`, `StepInput`, `StepOutcome`,
@@ -27,7 +28,9 @@ The modules `application` and `domain` are private (`mod application;`,
   `Requirement`, `Condition`, `AuthTransaction`, `TransactionId`, `TransactionSnapshot`,
   `TransactionState`, `TransactionStatus`, `TokenPurpose`,
   `VerificationSecret`, `VerificationToken`, `VerificationTokenHash`,
-  `VerificationTokenId`, `VerificationTokenSnapshot`.
+  `VerificationTokenId`, `VerificationTokenSnapshot`, `EmailMethod`,
+  `EmailSecret`, `EmailSecretHash`, `EmailSignIn`, `EmailSignInSnapshot`,
+  `EmailUse`.
 
 ### `testing.rs` (public test support)
 
@@ -40,6 +43,9 @@ is, with the crate feature `testing`.
   `run_transaction_contract(ports)`.
 - `InMemoryVerificationTokens` (implements `VerificationTokenStore`),
   `VerificationTokenPorts`, `run_verification_token_contract(ports)`.
+- `InMemoryEmailSignIns` (implements `EmailSignInStore`, atomic under one
+  lock; `count()`), `EmailSignInPortsUnderTest`,
+  `run_email_sign_in_contract(ports)`.
 - `TestSecondFactor` (implements `Authenticator`): a stand-in second factor
   of kind `test-second-factor`, a possession factor whose method is
   `test-second-factor`. `enroll(user)` gives a person the means for it; it is

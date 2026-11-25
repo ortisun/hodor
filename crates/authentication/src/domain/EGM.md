@@ -43,8 +43,14 @@ reach other crates only through `hodor_authentication::api` in `../lib.rs`.
   (`demanded` is the assurance the tenant's policy asks beyond the flow's
   minimum; after a satisfied step the steps to be passed over are passed over,
   and an error leaves the transaction unchanged),
-  `challenge(tenant, flow, transaction, step, now)` (the current step's, or
-  an alternative's while `current_step` is 0),
+  `challenge(tenant, flow, transaction, asked: &ExternalInput, now)` (the
+  step named by `asked.step`: the current step's, or an alternative's while
+  `current_step` is 0; `asked.fields` go to the authenticator; the
+  challenge is kept in the transaction only when the authenticator gives
+  one), `offered_alternatives(tenant, flow)` (the keys of the alternatives
+  whose authenticator's `offered` is true), and both `submit` and
+  `challenge` refuse an alternative that is not offered with `Forbidden`
+  `authentication.method_not_offered`,
   `assurance(transaction) -> Option<Assurance>` over the carried and satisfied
   methods, `assurance_of_methods(methods)` (counts `factor` and
   `second_factor` of every method; two kinds with an authenticator whose
@@ -69,11 +75,31 @@ reach other crates only through `hodor_authentication::api` in `../lib.rs`.
   extension point: `kind() -> &'static str`, `traits() -> AuthenticatorTraits`,
   `perform(tenant, transaction, input) -> StepOutcome`, and
   `has_means(tenant, transaction) -> bool`, asked only for steps that are not
-  required; the default answers `true`; and `challenge(tenant, transaction) ->
-  Option<StepChallenge>`, for a step that checks an answer only to a question
-  it asked; the default answers `None`.
-- `StepChallenge { challenge: [u8; 32], options: serde_json::Value }`: what the
-  engine keeps in the transaction, and what the browser needs.
+  required; the default answers `true`; `challenge(tenant, transaction,
+  asked: &ExternalInput) -> Option<StepChallenge>`, for a step that checks an
+  answer only to a question it asked, or that sends something, as the email
+  alternatives do; the default answers `None`; and `offered(tenant) -> bool`,
+  asked of alternatives only; the default answers `true`.
+- `StepChallenge { challenge: Option<[u8; 32]>, options: serde_json::Value }`:
+  what the engine keeps in the transaction, if anything, and what the browser
+  needs.
+
+### What is sent by email (`email.rs`)
+
+- `EmailMethod { Code, Link }`, `as_str()` `email_code` / `email_link`,
+  `from_stored`.
+- `EmailSecret`: six digits from eight random bytes, or 32 random bytes as 64
+  hexadecimal characters; `Debug` is redacted.
+- `EmailSecretHash::of_presented(method, value, digest)`: the SHA-256 of six
+  ASCII digits (spaces around trimmed) or of 64 lowercase hexadecimal
+  characters, `None` for anything else.
+- `EmailSignIn::issue(transaction, method, identifier_key, user_id, now,
+  random, digest) -> (EmailSignIn, EmailSecret)`: lives
+  `EmailSignIn::LIFETIME` (ten minutes) and never past the transaction;
+  `accepts(method, presented, now)` is unused, unexpired, of the method,
+  belonging to someone and of that hash; `mark_used(now)`.
+- `EmailUse { Accepted(UserId), AlreadyUsed, Refused }`: what using one up led
+  to.
 - `AuthenticatorTraits { identifies, factor, second_factor, method }`;
   `second_factor` is a second kind of evidence the same step provides, as a
   passkey's user verification does.

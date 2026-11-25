@@ -17,8 +17,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Extension, Json, Router};
 use hodor_authentication::api::{
-    AccountRequest, AccountService, AuthenticationService, ExternalInput, FactorService,
-    PasskeyAuthenticator, SignIn, StepInput, TransactionId, WebAuthnAuthenticator,
+    AccountRequest, AccountService, AuthenticationService, EmailAuthenticator, ExternalInput,
+    FactorService, PasskeyAuthenticator, SignIn, StepInput, TransactionId, WebAuthnAuthenticator,
 };
 use hodor_credential::api::{RegistrationResponse, WebAuthnRegistrationId};
 use hodor_federation::api::{Alias, EXTERNAL_STEP, ExternalSignIn};
@@ -82,6 +82,11 @@ pub fn interaction_routes(state: InteractionState) -> Router {
         .route("/sign-in/steps/webauthn", post(submit_webauthn))
         .route("/sign-in/steps/passkey/options", post(passkey_options))
         .route("/sign-in/steps/passkey", post(submit_passkey))
+        .route("/sign-in/alternatives", get(offered_alternatives))
+        .route("/sign-in/steps/email_code/send", post(ask_for_code))
+        .route("/sign-in/steps/email_code", post(submit_email_code))
+        .route("/sign-in/steps/email_link/send", post(ask_for_link))
+        .route("/sign-in/steps/email_link", post(submit_email_link))
         .route("/sign-in/providers", get(offered_providers))
         .route("/sign-in/providers/{alias}", post(choose_provider))
         .route(
@@ -695,28 +700,164 @@ async fn step_options(
     headers: &HeaderMap,
     step: &str,
 ) -> Response {
-    let Some(handle) = handle(headers) else {
-        return no_sign_in();
+    let asked = ExternalInput {
+        step: step.to_owned(),
+        fields: Vec::new(),
     };
-    if !csrf_is_valid(headers, state.digest.as_ref(), &handle) {
-        return problem(
-            StatusCode::FORBIDDEN,
-            "request.csrf_token_invalid",
-            "the request is missing its CSRF token, or the token is wrong",
-        );
-    }
-    match state
-        .authentication
-        .challenge(tenant, handle.id, handle.secret.expose(), step)
-        .await
-    {
+    match challenge(state, tenant, headers, asked).await {
         Ok(options) => Json(PublicKeyBody {
             registration_id: None,
             public_key: options,
         })
         .into_response(),
+        Err(response) => *response,
+    }
+}
+
+/// Asks the sign-in of the browser that asks for a challenge, with the
+/// cookie and the CSRF token checked first.
+async fn challenge(
+    state: &InteractionState,
+    tenant: &TenantContext,
+    headers: &HeaderMap,
+    asked: ExternalInput,
+) -> Result<serde_json::Value, Box<Response>> {
+    let Some(handle) = handle(headers) else {
+        return Err(Box::new(no_sign_in()));
+    };
+    if !csrf_is_valid(headers, state.digest.as_ref(), &handle) {
+        return Err(Box::new(problem(
+            StatusCode::FORBIDDEN,
+            "request.csrf_token_invalid",
+            "the request is missing its CSRF token, or the token is wrong",
+        )));
+    }
+    state
+        .authentication
+        .challenge(tenant, handle.id, handle.secret.expose(), asked)
+        .await
+        .map_err(|error| Box::new(Problem::from(error).into_response()))
+}
+
+/// The alternatives the tenant offers, for the sign-in page.
+#[derive(Debug, Serialize)]
+struct AlternativesBody {
+    alternatives: Vec<String>,
+}
+
+async fn offered_alternatives(
+    State(state): State<InteractionState>,
+    Extension(tenant): Extension<TenantContext>,
+) -> Response {
+    match state.authentication.alternatives(&tenant).await {
+        Ok(alternatives) => Json(AlternativesBody { alternatives }).into_response(),
         Err(error) => Problem::from(error).into_response(),
     }
+}
+
+/// What a person gives when asking for a code or a link. No `Debug`: the
+/// address is personal.
+#[derive(Deserialize)]
+struct EmailAskBody {
+    email: String,
+    #[serde(default)]
+    locale: Option<String>,
+}
+
+/// No `Debug`: this holds a code until it is wrapped.
+#[derive(Deserialize)]
+struct EmailCodeBody {
+    code: String,
+}
+
+/// No `Debug`: this holds the token of a link until it is wrapped.
+#[derive(Deserialize)]
+struct EmailLinkBody {
+    token: String,
+}
+
+/// Asks for a code or a link to be sent: the same answer whoever the
+/// address belongs to.
+async fn ask_by_email(
+    state: &InteractionState,
+    tenant: &TenantContext,
+    headers: &HeaderMap,
+    step: &str,
+    body: EmailAskBody,
+) -> Response {
+    let mut fields = vec![("email".to_owned(), Secret::from(body.email))];
+    if let Some(locale) = body.locale {
+        fields.push(("locale".to_owned(), Secret::from(locale)));
+    }
+    let asked = ExternalInput {
+        step: step.to_owned(),
+        fields,
+    };
+    match challenge(state, tenant, headers, asked).await {
+        Ok(_) => accepted(Ok(())),
+        Err(response) => *response,
+    }
+}
+
+async fn ask_for_code(
+    State(state): State<InteractionState>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+    Json(body): Json<EmailAskBody>,
+) -> Response {
+    ask_by_email(
+        &state,
+        &tenant,
+        &headers,
+        EmailAuthenticator::CODE_KIND,
+        body,
+    )
+    .await
+}
+
+async fn ask_for_link(
+    State(state): State<InteractionState>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+    Json(body): Json<EmailAskBody>,
+) -> Response {
+    ask_by_email(
+        &state,
+        &tenant,
+        &headers,
+        EmailAuthenticator::LINK_KIND,
+        body,
+    )
+    .await
+}
+
+fn one_field(step: &str, name: &str, value: String) -> StepInput {
+    StepInput::External(ExternalInput {
+        step: step.to_owned(),
+        fields: vec![(name.to_owned(), Secret::from(value))],
+    })
+}
+
+async fn submit_email_code(
+    State(state): State<InteractionState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(TenantSlug(slug)): Extension<TenantSlug>,
+    headers: HeaderMap,
+    Json(body): Json<EmailCodeBody>,
+) -> Response {
+    let input = one_field(EmailAuthenticator::CODE_KIND, "code", body.code);
+    submit(&state, &tenant, &slug, &headers, input).await
+}
+
+async fn submit_email_link(
+    State(state): State<InteractionState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(TenantSlug(slug)): Extension<TenantSlug>,
+    headers: HeaderMap,
+    Json(body): Json<EmailLinkBody>,
+) -> Response {
+    let input = one_field(EmailAuthenticator::LINK_KIND, "token", body.token);
+    submit(&state, &tenant, &slug, &headers, input).await
 }
 
 async fn submit_webauthn(

@@ -5,12 +5,12 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{HeaderMap, Method, Request, StatusCode, header};
 use hodor_authentication::api::{
-    AccountService, AttemptGuard, AuthFlow, AuthenticationService, FlowEngine,
-    IdentifierAuthenticator, PasswordAuthenticator, RecoveryCodeAuthenticator, Requirement,
-    TotpAuthenticator,
+    AccountService, AttemptGuard, AuthFlow, AuthenticationService, EmailAuthenticator,
+    EmailSignInPorts, FlowEngine, IdentifierAuthenticator, PasswordAuthenticator,
+    RecoveryCodeAuthenticator, Requirement, TotpAuthenticator,
 };
 use hodor_authentication::testing::{
-    InMemoryAttempts, InMemoryTransactions, InMemoryVerificationTokens,
+    InMemoryAttempts, InMemoryEmailSignIns, InMemoryTransactions, InMemoryVerificationTokens,
 };
 use hodor_credential::api::{
     CredentialService, NewPassword, PasswordRules, RecoveryCodeService, STEP_SECONDS, TotpService,
@@ -178,6 +178,21 @@ async fn world_behind(proxies: TrustedProxies) -> World {
             guard.clone(),
         )));
     let messages = InMemoryMessages::default();
+    let by_email = EmailSignInPorts {
+        units_of_work: units(),
+        sent: Arc::new(InMemoryEmailSignIns::default()),
+        identity: identity.clone(),
+        tenants: tenants.clone(),
+        notifier: Notifier::new(Arc::new(messages.clone()), clock.clone()),
+        guard: guard.clone(),
+        digest: digest.clone(),
+        random: Arc::new(CountingRandom::default()),
+        clock: clock.clone(),
+        public_url: "https://auth.example".to_owned(),
+    };
+    let engine = engine
+        .with(Arc::new(EmailAuthenticator::code(by_email.clone())))
+        .with(Arc::new(EmailAuthenticator::link(by_email)));
     let accounts = AccountService::new(
         units(),
         Arc::new(InMemoryVerificationTokens::default()),
@@ -202,7 +217,9 @@ async fn world_behind(proxies: TrustedProxies) -> World {
                 TotpAuthenticator::KIND,
                 Requirement::Optional,
             )
-            .with_substitute(TotpAuthenticator::KIND, RecoveryCodeAuthenticator::KIND),
+            .with_substitute(TotpAuthenticator::KIND, RecoveryCodeAuthenticator::KIND)
+            .with_alternative(EmailAuthenticator::CODE_KIND, EmailAuthenticator::CODE_KIND)
+            .with_alternative(EmailAuthenticator::LINK_KIND, EmailAuthenticator::LINK_KIND),
         identity.clone(),
         sessions.clone(),
         tenants.clone(),
@@ -1804,4 +1821,266 @@ async fn under_the_policy_the_last_second_factor_cannot_be_removed_by_the_person
         browser.factors(&world).await.body["authenticator_application"]["in_use"],
         true
     );
+}
+
+impl World {
+    /// Turns signing in by email on or off for Acme.
+    async fn offer_by_email(&self, code: bool, link: bool) {
+        let mut settings = self
+            .tenants
+            .get(&self.acme)
+            .await
+            .expect("tenant")
+            .snapshot()
+            .settings
+            .clone();
+        settings.authentication.email_sign_in.code = code;
+        settings.authentication.email_sign_in.link = link;
+        self.tenants
+            .change_settings(&self.acme, settings, Caller::system())
+            .await
+            .expect("settings");
+    }
+
+    /// A variable of the message queued most recently for an address that
+    /// has it. Each test asks once per address and variable, or in order.
+    fn newest_to(&self, recipient: &str, variable: &str) -> Option<String> {
+        let mut found: Vec<_> = self
+            .messages
+            .of_tenant(self.acme.tenant_id())
+            .into_iter()
+            .filter(|message| {
+                message.snapshot().recipient == recipient
+                    && message.snapshot().variables.contains_key(variable)
+            })
+            .collect();
+        found.sort_by_key(|message| message.snapshot().id.to_string());
+        found
+            .pop()
+            .and_then(|message| message.snapshot().variables.get(variable).cloned())
+    }
+}
+
+impl Browser {
+    async fn ask_by_email(&mut self, world: &World, step: &str, email: &str) -> Reply {
+        self.send(
+            world,
+            Method::POST,
+            &format!("/t/acme/interaction/sign-in/steps/{step}/send"),
+            Some(serde_json::json!({ "email": email, "locale": "pt-BR" })),
+        )
+        .await
+    }
+
+    async fn email_code(&mut self, world: &World, typed: &str) -> Reply {
+        self.send(
+            world,
+            Method::POST,
+            "/t/acme/interaction/sign-in/steps/email_code",
+            Some(serde_json::json!({ "code": typed })),
+        )
+        .await
+    }
+
+    async fn email_link(&mut self, world: &World, token: &str) -> Reply {
+        self.send(
+            world,
+            Method::POST,
+            "/t/acme/interaction/sign-in/steps/email_link",
+            Some(serde_json::json!({ "token": token })),
+        )
+        .await
+    }
+
+    async fn alternatives(&mut self, world: &World) -> serde_json::Value {
+        let reply = self
+            .send(
+                world,
+                Method::GET,
+                "/t/acme/interaction/sign-in/alternatives",
+                None,
+            )
+            .await;
+        assert_eq!(reply.status, StatusCode::OK);
+        reply.body["alternatives"].clone()
+    }
+}
+
+#[tokio::test]
+async fn a_person_signs_in_with_a_code_and_then_with_a_link() {
+    let world = world().await;
+    let mut browser = Browser::default();
+    assert_eq!(browser.alternatives(&world).await, serde_json::json!([]));
+    world.offer_by_email(true, true).await;
+    assert_eq!(
+        browser.alternatives(&world).await,
+        serde_json::json!(["email_code", "email_link"])
+    );
+
+    browser.start(&world).await;
+    let asked = browser
+        .ask_by_email(&world, "email_code", "ana@example.com")
+        .await;
+    assert_eq!(asked.status, StatusCode::ACCEPTED);
+    assert_eq!(asked.body, serde_json::json!({ "status": "accepted" }));
+    let code = world.newest_to("ana@example.com", "code").expect("a code");
+    let signed_in = browser.email_code(&world, &code).await;
+    assert_eq!(signed_in.status, StatusCode::OK);
+    assert_eq!(signed_in.body["status"], "completed");
+    assert!(browser.cookies.contains_key("__Secure-hodor_session"));
+    assert!(!browser.cookies.contains_key("__Secure-hodor_signin"));
+    let who = browser.session(&world, "acme").await;
+    assert_eq!(who.body["methods"], serde_json::json!(["email_code"]));
+    // The second time, the browser has no sign-in the code could belong to.
+    let again = browser.email_code(&world, &code).await;
+    assert_eq!(again.status, StatusCode::NOT_FOUND);
+
+    let mut other = Browser::default();
+    other.start(&world).await;
+    other
+        .ask_by_email(&world, "email_link", "ana@example.com")
+        .await;
+    let link = world.newest_to("ana@example.com", "link").expect("a link");
+    let (page, token) = link.split_once("#token=").expect("a token");
+    assert_eq!(page, "https://auth.example/t/acme/account/sign-in-link");
+    let signed_in = other.email_link(&world, token).await;
+    assert_eq!(signed_in.body["status"], "completed");
+    let again = other.email_link(&world, token).await;
+    assert_eq!(again.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn asking_by_email_answers_the_same_whoever_the_address_belongs_to() {
+    let world = world().await;
+    world.offer_by_email(true, true).await;
+    let mut answers = Vec::new();
+    for (step, address) in [
+        ("email_code", "ana@example.com"),
+        ("email_code", "nobody@example.com"),
+        ("email_code", "not an address"),
+        ("email_link", "ana@example.com"),
+        ("email_link", "nobody@example.com"),
+    ] {
+        let mut browser = Browser::default();
+        browser.start(&world).await;
+        let asked = browser.ask_by_email(&world, step, address).await;
+        answers.push((asked.status, asked.body.to_string(), asked.set_cookies()));
+    }
+    assert!(
+        answers.windows(2).all(|pair| pair[0] == pair[1]),
+        "one answer for all: {answers:?}"
+    );
+    assert_eq!(world.templates(), ["sign_in_code", "sign_in_link"]);
+}
+
+#[tokio::test]
+async fn a_link_opened_in_another_browser_signs_that_browser_in_never() {
+    let world = world().await;
+    world.offer_by_email(false, true).await;
+    let mut asking = Browser::default();
+    asking.start(&world).await;
+    asking
+        .ask_by_email(&world, "email_link", "ana@example.com")
+        .await;
+    let link = world.newest_to("ana@example.com", "link").expect("a link");
+    let token = link.split_once("#token=").expect("a token").1.to_owned();
+
+    // A browser with no sign-in is told there is none, and gets no cookie.
+    let mut elsewhere = Browser::default();
+    let opened = elsewhere.email_link(&world, &token).await;
+    assert_eq!(opened.status, StatusCode::NOT_FOUND);
+    assert_eq!(opened.code(), "authentication.transaction_not_found");
+    // A browser with a sign-in of its own gets a rejection.
+    elsewhere.start(&world).await;
+    let opened = elsewhere.email_link(&world, &token).await;
+    assert_eq!(opened.body["status"], "rejected");
+    // Even one that asked for a link for the same address.
+    elsewhere
+        .ask_by_email(&world, "email_link", "ana@example.com")
+        .await;
+    let opened = elsewhere.email_link(&world, &token).await;
+    assert_eq!(opened.body["status"], "rejected");
+    assert!(!elsewhere.cookies.contains_key("__Secure-hodor_session"));
+
+    // The browser that asked still signs in with it.
+    let signed_in = asking.email_link(&world, &token).await;
+    assert_eq!(signed_in.body["status"], "completed");
+}
+
+#[tokio::test]
+async fn asking_by_email_is_refused_where_it_is_not_offered_too_late_or_forged() {
+    let world = world().await;
+    let mut browser = Browser::default();
+    browser.start(&world).await;
+    let refused = browser
+        .ask_by_email(&world, "email_code", "ana@example.com")
+        .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+    assert_eq!(refused.code(), "authentication.method_not_offered");
+    let refused = browser.email_code(&world, "123456").await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+
+    world.offer_by_email(true, false).await;
+    let mut forged = browser.clone();
+    forged.csrf_token = Some("0".repeat(64));
+    let refused = forged
+        .ask_by_email(&world, "email_code", "ana@example.com")
+        .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+    assert_eq!(refused.code(), "request.csrf_token_invalid");
+    let mut other_site = browser.clone();
+    other_site.origin = Some("https://evil.example");
+    let refused = other_site
+        .ask_by_email(&world, "email_code", "ana@example.com")
+        .await;
+    assert_eq!(refused.code(), "request.cross_origin");
+    let refused = browser
+        .send(
+            &world,
+            Method::POST,
+            "/t/acme/interaction/sign-in/steps/email_code/send",
+            Some(serde_json::json!({ "address": "ana@example.com" })),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(world.templates().is_empty(), "nothing was sent");
+
+    browser.identifier(&world, "ana@example.com").await;
+    let refused = browser
+        .ask_by_email(&world, "email_code", "ana@example.com")
+        .await;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(refused.code(), "authentication.unexpected_step");
+
+    // A code of another tenant's sign-in is no code here: Globex has no
+    // sign-in of this browser.
+    let refused = browser
+        .send(
+            &world,
+            Method::POST,
+            "/t/globex/interaction/sign-in/steps/email_code/send",
+            Some(serde_json::json!({ "email": "ana@example.com" })),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_wrong_code_is_a_rejection_that_leaves_the_code_good() {
+    let world = world().await;
+    world.offer_by_email(true, false).await;
+    let mut browser = Browser::default();
+    browser.start(&world).await;
+    browser
+        .ask_by_email(&world, "email_code", "ana@example.com")
+        .await;
+    let code = world.newest_to("ana@example.com", "code").expect("a code");
+    let wrong = if code == "000000" { "000001" } else { "000000" };
+    let rejected = browser.email_code(&world, wrong).await;
+    assert_eq!(rejected.status, StatusCode::OK);
+    assert_eq!(rejected.body["status"], "rejected");
+    assert_eq!(rejected.body["step"], "identifier");
+    assert_eq!(rejected.body["attempts_left"], 4);
+    let signed_in = browser.email_code(&world, &code).await;
+    assert_eq!(signed_in.body["status"], "completed");
 }

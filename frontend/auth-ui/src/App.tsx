@@ -8,6 +8,7 @@ import { AcceptInvitationPage } from "./pages/AcceptInvitationPage";
 import { ConsentPage } from "./pages/ConsentPage";
 import { FinishPage } from "./pages/FinishPage";
 import { SecurityPage } from "./pages/SecurityPage";
+import { SignInLinkPage } from "./pages/SignInLinkPage";
 import { SignInPage } from "./pages/SignInPage";
 import { SignOutPage } from "./pages/SignOutPage";
 import { Frame } from "./parts/Frame";
@@ -83,6 +84,8 @@ export function App({
       return <ConsentPage {...page} />;
     case "accept-invitation":
       return <AcceptInvitationPage {...page} token={token} />;
+    case "sign-in-link":
+      return <SignInLinkPage {...page} token={token} />;
     case "provider-callback":
       return <ComingBackPage {...page} provider={place.provider ?? ""} answer={providerAnswer} />;
     default:

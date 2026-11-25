@@ -364,6 +364,16 @@ const NOT_SEALED_SECRETS: &[(&str, &str, &str)] = &[
         "a hash of a random token",
     ),
     (
+        "authentication.email_sign_in",
+        "secret_hash",
+        "the SHA-256 of a code or a link's token, good only within its sign-in",
+    ),
+    (
+        "authentication.email_sign_in",
+        "identifier_key",
+        "a hash of an identifier",
+    ),
+    (
         "audit.record",
         "previous_hash",
         "a link of the chain of hashes",
