@@ -11,7 +11,8 @@ schema owner (`Command::Migrate` in `src/main.rs`).
 
 - src: [./src/EGM.md](./src/EGM.md) - the commands `migrate`, `tenant`,
   `admin bootstrap`, `audit verify`, `provider`, `secrets generate-key`, `secrets reseal`,
-  `policy-agent`, `policy` and `probe`, and the services each one calls.
+  `policy-agent`, `policy`, `trust-domain` and `probe`, and the services each
+  one calls.
 
 ## Dependencies
 
@@ -20,7 +21,8 @@ From `Cargo.toml`: `clap`, `serde_json`, `tokio`, `time`, and the workspace crat
 `hodor-authorization`, `hodor-credential`, `hodor-federation`,
 `hodor-identity`, `hodor-kernel` and `hodor-tenant`. The tests use
 `hodor-adapters-postgres` and `hodor-authorization-opa` with the `testing`
-feature.
+feature, and `hodor-keys` with it for the sample bundles of
+`tests/trust_domain_commands.rs`.
 
 ## Verification
 

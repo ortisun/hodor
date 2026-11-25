@@ -13,14 +13,15 @@ use hodor_adapters_postgres::{
     Database, PgApplicationStore, PgClaimMapperStore, PgClientStore, PgResourceServerStore,
     PgTenantDirectory, PgTenantRepository,
 };
+use hodor_identity::api::UserKind;
 use hodor_kernel::{DomainError, ErrorKind, SystemClock, TenantContext, UserId};
 use hodor_oauth::api::{
     Application, ApplicationId, ApplicationPorts, ApplicationService, ApplicationSettings,
     AuthenticationMethod, ClaimMapper, ClaimMapperId, ClaimMapperPorts, ClaimMapperService,
     ClaimMapperSettings, ClaimSource, ClaimTarget, Client, ClientId, ClientSettings, ClientType,
-    CreateClient, CreateResourceServer, ExchangeRule, GrantType, IdTokenAlgorithm,
-    RequestObjectAlgorithm, ResourceServerSettings, RotateSecret, ScopeDefinition, Status,
-    SubjectType,
+    CreateClient, CreateResourceServer, ExchangeRule, GrantType, IdTokenAlgorithm, LinkerdIdentity,
+    RequestObjectAlgorithm, ResourceServerSettings, RotateSecret, ScopeDefinition, SpiffeId,
+    Status, SubjectType,
 };
 use hodor_tenant::api::TenantService;
 use std::fmt::Write as _;
@@ -150,6 +151,22 @@ pub(crate) enum ClientCommand {
         /// `<subject audience>=><audience>`; given once for each.
         #[arg(long = "exchange-rule")]
         exchange_rules: Vec<String>,
+        /// The one SPIFFE identifier of a service account's client, such as
+        /// `spiffe://cluster.local/ns/payroll/sa/export`: required with the
+        /// methods `spiffe_jwt` and `spiffe_x509`, allowed with
+        /// `tls_client_auth`.
+        #[arg(long)]
+        spiffe_id: Option<String>,
+        /// The one Linkerd identity of a service account's client:
+        /// required with the method `linkerd_identity`, allowed with
+        /// `tls_client_auth`.
+        #[arg(long)]
+        linkerd_identity: Option<String>,
+        /// Bind every access token of the client to the certificate its
+        /// request comes with, and a public client's refresh tokens too:
+        /// `tls_client_certificate_bound_access_tokens` of RFC 8705.
+        #[arg(long)]
+        bound_tokens: bool,
     },
     /// List an application's clients.
     List {
@@ -475,6 +492,9 @@ pub(crate) async fn run_client(
             sector_identifier_uri,
             principal,
             exchange_rules,
+            spiffe_id,
+            linkerd_identity,
+            bound_tokens,
         } => {
             let (tenant, service) = open(database, &tenant).await?;
             // The addresses are checked, and a sector identifier address
@@ -522,12 +542,24 @@ pub(crate) async fn run_client(
                 settings.subject_type = SubjectType::parse(&subject_type)?;
             }
             settings.sector_identifier_uri = sector_identifier_uri;
+            settings.spiffe_id = spiffe_id.as_deref().map(SpiffeId::parse).transpose()?;
+            settings.linkerd_identity = linkerd_identity
+                .as_deref()
+                .map(LinkerdIdentity::parse)
+                .transpose()?;
+            settings.certificate_bound_access_tokens = bound_tokens;
             if let Some(principal) = principal {
-                let agent_only = settings.grant_types.contains(&GrantType::TokenExchange);
-                settings.principal = Some(
-                    crate::workloads::principal_of(database, &tenant, principal, agent_only)
-                        .await?,
-                );
+                // Only an agent acts on a person's behalf, and only a
+                // service account proves who it is with its identity.
+                let kind = if settings.grant_types.contains(&GrantType::TokenExchange) {
+                    Some(UserKind::Agent)
+                } else if settings.authentication_method.uses_workload_identity() {
+                    Some(UserKind::ServiceAccount)
+                } else {
+                    None
+                };
+                settings.principal =
+                    Some(crate::workloads::principal_of(database, &tenant, principal, kind).await?);
             }
             let (client, secret) = service
                 .create_client(
