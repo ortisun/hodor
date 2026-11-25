@@ -108,19 +108,27 @@ async fn write_subscriptions(
         .iter()
         .map(|event_type| event_type.as_str())
         .collect();
-    sqlx::query("DELETE FROM webhooks.subscription WHERE tenant_id = $1 AND endpoint_id = $2")
-        .bind(tenant.as_uuid())
-        .bind(endpoint.id().as_uuid())
-        .execute(connection(uow)?)
-        .await
-        .map_err(|e| database_error(&e))?;
+    // A type the endpoint keeps keeps the moment it began; a type added
+    // begins at the change.
     sqlx::query(
-        "INSERT INTO webhooks.subscription (tenant_id, endpoint_id, event_type)
-         SELECT $1, $2, unnest($3::text[])",
+        "DELETE FROM webhooks.subscription
+         WHERE tenant_id = $1 AND endpoint_id = $2 AND NOT (event_type = ANY($3::text[]))",
     )
     .bind(tenant.as_uuid())
     .bind(endpoint.id().as_uuid())
     .bind(&types)
+    .execute(connection(uow)?)
+    .await
+    .map_err(|e| database_error(&e))?;
+    sqlx::query(
+        "INSERT INTO webhooks.subscription (tenant_id, endpoint_id, event_type, since)
+         SELECT $1, $2, unnest($3::text[]), $4
+         ON CONFLICT (tenant_id, endpoint_id, event_type) DO NOTHING",
+    )
+    .bind(tenant.as_uuid())
+    .bind(endpoint.id().as_uuid())
+    .bind(&types)
+    .bind(endpoint.snapshot().updated_at)
     .execute(connection(uow)?)
     .await
     .map_err(|e| database_error(&e))?;
@@ -278,15 +286,17 @@ impl EndpointStore for PgEndpointStore {
         &self,
         uow: &mut dyn UnitOfWork,
         event_type: &str,
+        happened_at: Timestamp,
     ) -> Result<Vec<EndpointId>, DomainError> {
         let tenant = uow.tenant().tenant_id();
         let rows: Vec<(Uuid,)> = sqlx::query_as(
             "SELECT endpoint_id FROM webhooks.subscription
-             WHERE tenant_id = $1 AND event_type = $2
+             WHERE tenant_id = $1 AND event_type = $2 AND since <= $3
              ORDER BY endpoint_id",
         )
         .bind(tenant.as_uuid())
         .bind(event_type)
+        .bind(happened_at)
         .fetch_all(connection(uow)?)
         .await
         .map_err(|e| database_error(&e))?;

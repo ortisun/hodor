@@ -90,7 +90,9 @@ pub trait EndpointStore: Send + Sync {
     /// Returns an error if storage fails.
     async fn remove(&self, uow: &mut dyn UnitOfWork, id: EndpointId) -> Result<bool, DomainError>;
 
-    /// The endpoints of the tenant subscribed to `event_type`.
+    /// The endpoints of the tenant that were subscribed to `event_type`
+    /// when an event of it happened, at `happened_at`: a subscription that
+    /// began later is left out.
     ///
     /// # Errors
     ///
@@ -99,6 +101,7 @@ pub trait EndpointStore: Send + Sync {
         &self,
         uow: &mut dyn UnitOfWork,
         event_type: &str,
+        happened_at: Timestamp,
     ) -> Result<Vec<EndpointId>, DomainError>;
 
     /// Stores a new secret of an endpoint.

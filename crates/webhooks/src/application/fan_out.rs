@@ -66,7 +66,12 @@ impl EventHandler for WebhookFanOut {
                 "an event was handed over in another tenant",
             ));
         }
-        let endpoints = self.endpoints.subscribed_to(uow, &event.event_type).await?;
+        // Dispatched a little after it happened, an event goes only to the
+        // endpoints that were subscribed to it when it happened.
+        let endpoints = self
+            .endpoints
+            .subscribed_to(uow, &event.event_type, event.metadata.occurred_at)
+            .await?;
         if endpoints.is_empty() {
             return Ok(());
         }
