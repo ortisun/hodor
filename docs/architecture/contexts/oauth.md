@@ -852,6 +852,7 @@ A session records the methods of its sign-in by Hodor's own names, such as `pass
 | `external` | Nothing: Hodor did not see how the identity provider signed the person in | Something the person knows, as [the authentication context](authentication.md#what-a-sign-in-must-reach) counts it |
 | `email_code` | `otp`: a code that is good once, sent to the person's mailbox | Something the person knows, as [the authentication context](authentication.md#signing-in-with-a-code-or-a-link-by-email) counts the mailbox |
 | `email_link` | Nothing: RFC 8176 has no name for a link | The same as `email_code` |
+| `enrollment` | Nothing: RFC 8176 has no name for a factor put in use during the sign-in | Something the person has, as [the authentication context](authentication.md#enrolling-a-second-factor-during-a-sign-in) counts it |
 
 `mfa` is added when the sign-in proved two kinds of factor: something known and something held, or a passkey. The kinds are those of the authentication context's one table, which also decides the `acr` below, so that `amr` and `acr` never disagree: a sign-in through an identity provider followed by a code of an authenticator application is `otp` and `mfa`, and reaches the multi-factor level. Each value appears once, in a fixed order.
 

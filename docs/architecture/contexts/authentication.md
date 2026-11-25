@@ -4,7 +4,7 @@ The `authentication` context decides whether someone has proved who they are. It
 
 It owns no users, credentials or sessions. It asks the `identity` context who a login identifier belongs to, asks the `credential` context whether a secret is right, and asks the `session` context to start a session. What it owns is the procedure: which steps, in which order, with which protections.
 
-This page specifies signing in with a login identifier and a password (Milestone 1), with an external identity (Milestone 2), the steps a flow may require only sometimes, which carry the second factors of Milestone 4, signing in with a passkey alone, and signing in with a code or a link sent by email (Milestone 9). The same mechanism carries every later method.
+This page specifies signing in with a login identifier and a password (Milestone 1), with an external identity (Milestone 2), the steps a flow may require only sometimes, which carry the second factors of Milestone 4, signing in with a passkey alone, signing in with a code or a link sent by email, and enrolling a second factor during a sign-in (Milestone 9). The same mechanism carries every later method.
 
 ## Flows
 
@@ -31,6 +31,7 @@ An **authenticator** performs one step. It receives what the person submitted an
 | `passkey` | Checks the answer of a [passkey](credential.md#passkeys) to a challenge that names no credential, and answers who the person is from the credential that answered. Used as an alternative | Who is signing in, and two factors in one step: something the person has, unlocked by something they know or are. It resists phishing | Milestone 4 |
 | `email_code` | Sends a code to the email address the person gives, and checks the code they type; answers who the person is from the address. Used as an alternative | Who is signing in and one factor, the mailbox, counted as something the person knows ([why](#signing-in-with-a-code-or-a-link-by-email)) | Milestone 9 |
 | `email_link` | Sends a link to the email address the person gives; the link, opened in the browser that asked for it, signs the person in. Used as an alternative | The same as `email_code` | Milestone 9 |
+| `enrollment` | Puts a new second factor in use for the candidate, who has none: an authenticator application, a security key or a passkey, through the same use cases as [their own pages](#adding-a-factor). Used as the last step of a flow, [under the tenant's policy](#enrolling-a-second-factor-during-a-sign-in) | One factor: something the person has, from now on. It never resists phishing | Milestone 9 |
 | Others | — | — | Later issues |
 
 Each step has a requirement:
@@ -120,7 +121,7 @@ Some authenticators can check an answer only to a question they asked: a WebAuth
 1. **Asking for the challenge.** The current step's authenticator makes a challenge and the options the browser needs. The challenge is kept in the transaction; asking again replaces it. Asking may carry named values that only the authenticator understands, like the input of an alternative: the [email alternatives](#signing-in-with-a-code-or-a-link-by-email) read the address to send to from them.
 2. **Submitting.** The answer is checked against the challenge kept in the transaction.
 
-An authenticator may also keep nothing in the transaction, when what it asked for lives elsewhere under rules of its own: a code or a link sent by email is [kept apart](#what-is-kept), so that a mistyped code does not spend it. The rules below are those of a challenge kept in the transaction; the rule on what may be asked for, and when, holds for every challenge.
+An authenticator may also keep nothing in the transaction, when what it asked for lives elsewhere under rules of its own: a code or a link sent by email is [kept apart](#what-is-kept), so that a mistyped code does not spend it. The enrollment step keeps, instead of a challenge, which enrollment it [began](#enrolling-a-second-factor-during-a-sign-in), for the same reason. The rules below are those of a challenge kept in the transaction; the rule on what may be asked for, and when, holds for every challenge.
 
 | Rule | Why |
 |---|---|
@@ -139,6 +140,7 @@ What a person submits to such a step is a set of named values, like the input of
 | 2 | `password` | Required |
 | 3 | `webauthn` | Conditional: stronger assurance needed, with the substitute `recovery_code` |
 | 4 | `totp` | Conditional: multi-factor not reached, with the substitute `recovery_code` |
+| 5 | `enrollment` | Conditional: assurance not reached |
 
 | Alternative | Authenticator |
 |---|---|
@@ -149,9 +151,9 @@ What a person submits to such a step is a set of named values, like the input of
 
 Minimum assurance: single factor.
 
-A person who registered a security key is always asked for it after the password, and a person who put an authenticator application in use for a code, whether or not the tenant requires a second factor: they chose a second factor, and a stolen password alone must not let anyone in. A person with both is asked for the first one only: once the key has answered, the sign-in is multi-factor and phishing-resistant, and the code would add nothing. In a [step-up](#step-up) that asks for a phishing-resistant sign-in, a person who proved a code earlier is asked for their key, and never for the code again. A person without one signs in with the password, unless the tenant requires a second factor, in which case the sign-in fails at completion.
+A person who registered a security key is always asked for it after the password, and a person who put an authenticator application in use for a code, whether or not the tenant requires a second factor: they chose a second factor, and a stolen password alone must not let anyone in. A person with both is asked for the first one only: once the key has answered, the sign-in is multi-factor and phishing-resistant, and the code would add nothing. In a [step-up](#step-up) that asks for a phishing-resistant sign-in, a person who proved a code earlier is asked for their key, and never for the code again. A person without one signs in with the password, unless the tenant requires a second factor, in which case they [set one up](#enrolling-a-second-factor-during-a-sign-in) at the fifth step, and the sign-in completes with it.
 
-A person who signs in with a passkey is asked for nothing more: the passkey alone is multi-factor, so the third and fourth steps are passed over, and it satisfies a tenant's policy that requires a second factor. A person who signs in through an identity provider, or with a code or a link by email, has one factor, and is asked for their second factor after it.
+A person who signs in with a passkey is asked for nothing more: the passkey alone is multi-factor, so the third and fourth steps are passed over, and it satisfies a tenant's policy that requires a second factor. A person who signs in through an identity provider, or with a code or a link by email, has one factor, and is asked for their second factor after it, or, under the policy, sets one up.
 
 The fourth step needs a place to keep secrets. An installation without `HODOR_SECRET_KEYS` runs the flow without it, and nobody there can have an authenticator application.
 
@@ -244,6 +246,58 @@ The page the link opens is described in [the hosted pages](../hosted-pages.md#si
 
 The recovery code substitute follows the same rules: it is checked only once the attempt is admitted, against the same counts; an accepted code clears the identifier's count; a wrong code, a used code, a code of an earlier set and something that is not a code are rejected alike.
 
+### Enrolling a second factor during a sign-in
+
+Under a tenant that [requires a second factor](tenant.md#authentication-policy), a person who has none sets one up during the sign-in, after the first factor, and the sign-in completes with it ([Decision 0039](../../decisions/0039-enrolling-during-a-sign-in.md)). It is the last step of the built-in flow, `enrollment`.
+
+```mermaid
+sequenceDiagram
+    actor Person
+    participant Browser
+    participant Hodor
+
+    Person->>Browser: proves the first factor
+    Browser->>Hodor: the password, within the sign-in
+    Hodor-->>Browser: pending, the enrollment step
+    Person->>Browser: chooses an authenticator application, a security key or a passkey
+    Browser->>Hodor: begin, with the kind chosen
+    Hodor-->>Browser: the secret and its address for a QR code, or the options for the key
+    Person->>Browser: types the code the application shows, or uses the key
+    Browser->>Hodor: finish, within the sign-in
+    Hodor-->>Browser: completed, with the recovery codes, once
+```
+
+**When it is offered.** The step is performed when all of these hold as the sign-in reaches it, and passed over otherwise:
+
+| Condition | Why |
+|---|---|
+| The methods satisfied so far do not reach what the sign-in must reach | With the policy off, a password is enough and nobody is asked to enroll; with it on, a password alone is not |
+| The sign-in is not a [step-up](#step-up) | A step-up carries a factor proved earlier, and a browser left signed in must not let someone bind a factor of their own |
+| A factor was proved in this sign-in: the password, an identity provider, or a code or a link by email | Enrolling comes only after the first factor. Being the last step, after every required one, it is never reached before |
+| The person has no second factor: no authenticator application in use, no security key, no passkey | A person who has one is asked for it by the steps before; once it is given the sign-in is multi-factor and the step is passed over |
+| The installation offers something to enroll | A security key and a passkey always; an authenticator application only where the installation can keep secrets |
+
+**Beginning.** The person chooses what to set up, and the page asks for [the step's challenge](#steps-that-need-a-challenge) with the kind among its values: `authenticator_application`, `security_key` or `passkey`. The same use cases as [the security page](#adding-a-factor) begin it: a secret for an application, shown once as a QR code and as text, with the tenant's name as the issuer and the person's primary login identifier as the account; or a pending registration of a security key or a passkey, with the options for the browser. The transaction keeps the kind and the identifier of what it began, in place of anything it began before.
+
+**Finishing.** The person types the code their application shows, or their key answers, and the page submits the step. The enrollment the transaction keeps is finished: the application is put in use, or the key registered, exactly as from the security page.
+
+| Rule | Why |
+|---|---|
+| Beginning is accepted only while the sign-in waits for the step, so only after the first factor | Like any challenge, a question for another step is refused |
+| Finishing finishes only the enrollment this sign-in began. An application whose enrollment was begun again since, on the security page or in another sign-in, is refused as if none waited; a key's registration is the one whose identifier the transaction keeps, never one the browser names | What was begun in another sign-in, another browser or another tenant cannot be finished here |
+| Beginning and finishing check again that the person has no second factor, and are refused when they have one by then, `authentication.enrollment_not_needed`. Nothing is begun or put in use, and the sign-in is unchanged | Another sign-in, or an operator, may have given the person a factor meanwhile; they start again and are asked for it |
+| A wrong code, an enrollment that waited too long, nothing begun, an answer for another kind, a registration that fails [its checks](credential.md#registering-a-credential), and a person who may no longer sign in are one rejection, alike. Five rejections end the sign-in | As for every step |
+| A rejected code keeps the enrollment, and the person types the code again. A rejected registration is used up, and the page begins again | The credential context keeps an application waiting after a wrong code, and uses up a registration whatever its answer |
+| The code is not counted with the [lockout](#protection-against-guessing) | It is computed from a secret this browser was just given; guessing it gains nothing |
+| There is no way past the step but finishing it. The person can only abandon the sign-in | Whoever holds a stolen password would decline it |
+| Recovery codes are made when the factor is put in use and the person has no unused one, as from the security page, and are in the answer that satisfies the step, the one that completes the sign-in. They are shown once | Without them, losing the new factor would lock the person out |
+
+**What it proves.** The method recorded is `enrollment`, whatever was enrolled. It counts as something the person has, so a password and an enrollment are multi-factor and satisfy the policy. It never resists phishing, even for a key: the factor was bound by whoever held the first factor, and a registration checks no signature. Nor does it prove that the person, rather than someone who has their password, enrolled it: that is trust on first use, the price of letting a person who never enrolled sign in under the policy ([Decision 0039](../../decisions/0039-enrolling-during-a-sign-in.md)). Every later sign-in asks for the factor.
+
+**What an abandoned enrollment leaves.** Nothing that signs anyone in. The sign-in waits at the step until it expires, ten minutes after it started, or is ended. The secret of an application waits, sealed, in the credential context; it is never used to check a code at sign-in, cannot be confirmed after ten minutes, and is replaced by the next enrollment. A registration of a key lives five minutes, and the worker's cleanup removes it.
+
+The pages are described in [the hosted pages](../hosted-pages.md#enrolling-a-second-factor-during-a-sign-in).
+
 ### What makes a flow valid
 
 A flow is checked before it can be used. It is valid when:
@@ -276,6 +330,7 @@ Each execution of a flow is a **transaction**: the server-side record of how far
 | Demanded assurance | For a step-up only: what the application asked for. Empty for every other sign-in |
 | Session raised | For a step-up only: the session the sign-in raises instead of starting one |
 | Challenge | The challenge the current step asked for, if it needs one. Empty again once the step is submitted |
+| Enrollment begun | The kind and the identifier of the [enrollment](#enrolling-a-second-factor-during-a-sign-in) this sign-in began, if any. Kept when the step is rejected, empty again once it is satisfied |
 | Rejections | How many times a step was rejected in this transaction |
 | Expires at | Ten minutes after the start |
 | Client | The address and browser description, passed on to the session |
@@ -357,6 +412,7 @@ Marking the transaction completed and starting the session are two separate writ
 | `authentication.registration_completed` | A person finished registering; carries the user |
 | `authentication.recovery_requested` | A recovery link was sent; carries the user. Not recorded when the address belongs to nobody |
 | `authentication.email_sign_in_sent` | A code or a link to sign in was sent; carries the user and the method, `email_code` or `email_link`. Not recorded when the address belongs to nobody |
+| `authentication.second_factor_enrolled` | A person put a second factor in use during a sign-in; carries the user and the kind, `authenticator_application`, `security_key` or `passkey`. The credential context records its own events of the same change |
 | `authentication.password_reset` | A person chose a new password with a recovery link; carries the user |
 
 No event carries an email address, a token, a code or a link.
@@ -566,6 +622,7 @@ Five minutes is enough to make one change after signing in, and short enough tha
 - **An authenticator application** is enrolled in two requests, [as the credential context describes](credential.md#enrolling): the secret is shown once, as a QR code and as text, with the tenant's name as the issuer and the person's primary login identifier as the account, and the person confirms with a code. An installation that cannot keep secrets (`HODOR_SECRET_KEYS`) offers no authenticator application.
 - **A security key or a passkey** is registered in two requests, [as the credential context describes](credential.md#registering-a-credential), with a name the person chooses.
 - **Recovery codes come with the first factor.** When adding a factor leaves the person with a second factor and no unused recovery code, a set is generated and returned with the answer, once. A person who already had codes keeps them.
+- **The same use cases run during a sign-in**, for a person whose tenant requires a second factor and who has none: [enrolling during a sign-in](#enrolling-a-second-factor-during-a-sign-in) needs no recent sign-in, since it comes right after the first factor of the sign-in it belongs to.
 
 ### Changing and removing a factor
 
@@ -576,13 +633,13 @@ Five minutes is enough to make one change after signing in, and short enough tha
 
 - **Under a policy that requires a second factor**, the [tenant's](tenant.md#authentication-policy) `second_factor`, removing a person's last second factor is refused, `authentication.last_second_factor`: without it they could not sign in. They add another first and remove the old one after.
 - **When the last second factor goes**, with the policy off, the person's recovery codes go with it: they would stand in for nothing, and a set left over would be mistaken for a way in. Adding a factor later makes a new set.
-- Two removals of different factors at the same moment are not serialized against each other: each sees the other factor still there. Under the policy this can leave a person with no second factor; they then cannot sign in until an operator enrolls one for them. It locks them out; it lets nobody in.
+- Two removals of different factors at the same moment are not serialized against each other: each sees the other factor still there. Under the policy this can leave a person with no second factor; their next sign-in then asks them to [set one up](#enrolling-a-second-factor-during-a-sign-in) after the password, as for a person who never had one. It lets nobody in without the password.
 
 ### What an administrator may do
 
 An administrator sees which factors a person has and removes them, for a person who lost their phone or their key ([the administration interface](../../api/admin-api.md#a-users-factors), the console's person screen). An administrator cannot add a factor for someone, see a secret, or generate recovery codes for them.
 
-- **The policy does not hold an administrator back.** An administrator may remove a person's last second factor: that is what helping someone who lost it means. Under a policy that requires one, the person then cannot sign in until a factor is enrolled for them, today by an operator with `hodor-cli totp enroll`; enrolling one during the sign-in is [not built yet](#not-built-yet). The recovery codes go with the last factor, as above.
+- **The policy does not hold an administrator back.** An administrator may remove a person's last second factor: that is what helping someone who lost it means. Under a policy that requires one, the person then [sets up a new one](#enrolling-a-second-factor-during-a-sign-in) at their next sign-in, after the first factor; an operator can also enroll an authenticator application for them with `hodor-cli totp enroll`. The recovery codes go with the last factor, as above.
 - **Removing a factor ends no session.** A factor that is gone cannot be used again; whether the sessions made with it should end is a separate decision, which the administrator makes by ending them.
 - What an administrator removes is recorded with the administrator as the actor.
 
@@ -597,7 +654,8 @@ Every change, by the person or by an administrator, is recorded through the even
 | Assurance of methods | Says which assurance a list of methods amounts to, for the OAuth context |
 | Submit step | Runs the current step's authenticator with what was submitted. Returns the next step, a rejection, or completion with a session token |
 | Describe sign-in | Returns the current step of a transaction, so that a page can be shown again after a reload |
-| Challenge for a step | Asks the current step's authenticator, or an alternative's while no step has been satisfied, for a challenge, with the values the person gave; keeps it in the transaction when it is kept there, and returns the options for the browser. For the email alternatives, sends the code or the link |
+| Challenge for a step | Asks the current step's authenticator, or an alternative's while no step has been satisfied, for a challenge, with the values the person gave; keeps it in the transaction when it is kept there, and returns the options for the browser. For the email alternatives, sends the code or the link; for the enrollment step, begins the enrollment of the kind asked for and keeps which one in the transaction |
+| Kinds to enroll | What a person may set up at the enrollment step in this installation: an authenticator application where it can keep secrets, a security key and a passkey |
 | Offered alternatives | The alternatives a sign-in of the tenant may take at its start, for the pages to offer |
 | Begin WebAuthn registration | For a signed-in person: asks the credential context for a pending registration, naming the person by their primary login identifier and display name |
 | Finish WebAuthn registration | For a signed-in person: hands what the authenticator answered to the credential context, and generates recovery codes with the first second factor |
@@ -642,6 +700,8 @@ This context calls the `identity`, `credential`, `session`, `tenant` and `notifi
 | `demanded_assurance` | `text` | Null unless the transaction is a step-up that an application asked an assurance of |
 | `raised_session_id` | `uuid` | Null unless the transaction is a step-up. The session of the session context; not a database foreign key |
 | `challenge` | `bytea` | Null unless the current step asked for one |
+| `enrollment_kind` | `text` | `authenticator_application`, `security_key` or `passkey`; null unless the sign-in began an enrollment that is not finished |
+| `enrollment_id` | `uuid` | The enrollment of the application, or the registration of the key, in the credential context; not a database foreign key. Null exactly when `enrollment_kind` is |
 | `rejections` | `integer` | |
 | `status` | `text` | `in_progress`, `completed`, `failed`, `cancelled` |
 | `started_at`, `expires_at` | `timestamptz` | |
@@ -697,7 +757,9 @@ All four are tenant tables under row-level security. The worker removes the rows
 |---|---|
 | Editing flows and simulating them | Phase 4 |
 | Setting the tenant's second factor policy from the administration interface or the console. Today the command-line tool sets it | With the tenant settings of the administration interface, after 0.2.0 |
-| Enrolling a second factor during a sign-in, for a person whose tenant requires one and who has none. Today their sign-in fails at completion, and an operator enrolls an authenticator application for them with the command-line tool | Phase 4, outside the plan of 0.2.0 |
+| Enrolling a second factor during a sign-in for a person whose tenant does not require one, or in a step-up an application asked for. Today it is offered only under the policy, in a sign-in that proved its first factor | Not planned |
+| Telling a person by email that a second factor was put in use for their account | With the account console |
+| Serializing two enrollments of one person finishing at the same moment in two sign-ins. Today both factors may be put in use | Not planned |
 | Offering a choice between several second factors at one step. Today a person with both a security key and an authenticator application is asked for the key, which comes first, and cannot choose the code instead. A recovery code is a substitute, not a choice of factor | Phase 4, outside the plan of 0.2.0 |
 | Serializing two removals of a person's factors at the same moment, so that the policy holds even then | When a person's factors share one store |
 | Ending the session a browser held when it signs in again to prove the person again. Today the earlier session stays until it expires or the person ends it from their list of sessions | With the account console |

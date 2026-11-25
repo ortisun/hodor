@@ -146,9 +146,9 @@ HMAC-SHA-1 is what the standard and the applications use. [Decision 0008](../../
 Enrolling takes two calls, so that an application that never received the secret cannot be put in use:
 
 1. **Begin.** A new secret is made and stored as an enrollment waiting to be confirmed, replacing any earlier one that was never confirmed. The answer, given once, holds the secret in Base32 and an `otpauth://totp/` address for a QR code, naming the tenant as the issuer and the person's login identifier as the account. A user who already has an application in use keeps it until the new one is confirmed.
-2. **Confirm.** The person types a code their application shows. A right code puts the new application in use and removes the old one; that code counts as used. A wrong code leaves everything as it was. An enrollment not confirmed within ten minutes of beginning is gone: confirming it is refused, and the person begins again.
+2. **Confirm.** The person types a code their application shows. A right code puts the new application in use and removes the old one; that code counts as used. A wrong code leaves everything as it was. An enrollment not confirmed within ten minutes of beginning is gone: confirming it is refused, and the person begins again. The caller may name the enrollment it confirms, by the identifier beginning gave it: when the enrollment waiting is another, begun since, confirming is refused as if none waited.
 
-Who may enroll is decided by the caller: the person, from [their own pages](authentication.md#a-persons-own-factors) after proving themselves again, or an operator with the command-line tool.
+Who may enroll is decided by the caller: the person, from [their own pages](authentication.md#a-persons-own-factors) after proving themselves again or [during a sign-in](authentication.md#enrolling-a-second-factor-during-a-sign-in) under a policy that requires a second factor, or an operator with the command-line tool. A sign-in names the enrollment it began when it confirms it.
 
 ### Checking a code
 
@@ -341,7 +341,7 @@ Removing takes away the user's set. The credential context does not remove a set
 | Remove password | Deletes the password and its history, for example when a user is erased |
 | Has password | Says whether a user has a password; for administrators and the account pages, never for a sign-in form |
 | Begin authenticator application enrollment | Makes a secret, stores it as waiting to be confirmed, and returns it once with its `otpauth://` address |
-| Confirm authenticator application enrollment | Puts the waiting application in use when the code typed is right |
+| Confirm authenticator application enrollment | Puts the waiting application in use when the code typed is right, and, when the caller names an enrollment, only if it is the one waiting |
 | Verify authenticator application code | Answers "verified" or "rejected", and marks an accepted code as used |
 | Has authenticator application | Says whether a user has an application in use; asked by the sign-in once the person has proved a first factor |
 | Remove authenticator application | Takes away the application in use and any enrollment waiting to be confirmed |
