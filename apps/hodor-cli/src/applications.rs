@@ -134,6 +134,12 @@ pub(crate) enum ClientCommand {
         /// request endpoint first, and refuses any other.
         #[arg(long)]
         require_pushed_authorization_requests: bool,
+        /// An address where it keeps request objects; a `request_uri` is
+        /// fetched only when it starts with one. Given once per address,
+        /// and checked as the server checks it: the name must lead to
+        /// public addresses only.
+        #[arg(long = "request-uri")]
+        request_uris: Vec<String>,
         /// Where its logout tokens are sent when a session it signed a
         /// person in with ends. Checked as the server checks it: the name
         /// must lead to public addresses only.
@@ -497,6 +503,7 @@ pub(crate) async fn run_client(
             userinfo_signed_response_alg,
             request_object_signing_alg,
             require_pushed_authorization_requests,
+            request_uris,
             backchannel_logout_uri,
             backchannel_logout_session_required,
             subject_type,
@@ -537,6 +544,7 @@ pub(crate) async fn run_client(
             settings.allowed_scopes = scopes;
             settings.require_pkce = !without_pkce;
             settings.require_pushed_requests = require_pushed_authorization_requests;
+            settings.request_uris = request_uris;
             if let Some(algorithm) = id_token_algorithm {
                 settings.id_token_algorithm = IdTokenAlgorithm::parse(&algorithm)?;
             }

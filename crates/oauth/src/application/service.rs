@@ -125,6 +125,29 @@ fn refused_sector_fetch(error: DomainError) -> DomainError {
     }
 }
 
+/// What the guarded client said of a request object address, in the
+/// OAuth context's words.
+fn refused_request_address(error: DomainError) -> DomainError {
+    match error.code() {
+        "http.url_invalid" => crate::domain::request_uri::request_uri_invalid(
+            "the guarded client cannot call the address",
+        ),
+        "http.destination_forbidden" => request_address_forbidden(),
+        "http.unreachable" => DomainError::invalid(
+            "oauth.client_request_uri_unresolvable",
+            "the address's name does not resolve to any address",
+        ),
+        _ => error,
+    }
+}
+
+fn request_address_forbidden() -> DomainError {
+    DomainError::invalid(
+        "oauth.client_request_uri_forbidden",
+        "the address leads somewhere Hodor may not call: it must be public",
+    )
+}
+
 fn sector_forbidden() -> DomainError {
     DomainError::invalid(
         "oauth.client_sector_identifier_uri_forbidden",
@@ -257,6 +280,25 @@ impl ApplicationService {
             return Err(sector_unreachable());
         }
         check_sector_document(&response.body, &settings.redirect_uris)
+    }
+
+    /// Whether each of `addresses`, request object addresses new to a
+    /// client, could be called now. See `docs/architecture/contexts/oauth.md`,
+    /// "Request object addresses".
+    async fn check_request_addresses(&self, addresses: &[&String]) -> Result<(), DomainError> {
+        if addresses.is_empty() {
+            return Ok(());
+        }
+        let Some(destinations) = &self.destinations else {
+            return Err(request_address_forbidden());
+        };
+        for address in addresses {
+            destinations
+                .check(address)
+                .await
+                .map_err(refused_request_address)?;
+        }
+        Ok(())
     }
 
     /// Whether a back-channel logout address could be called now. See
@@ -477,6 +519,8 @@ impl ApplicationService {
             self.check_backchannel_address(url).await?;
         }
         let settings = &client.snapshot().settings;
+        self.check_request_addresses(&settings.request_uris.iter().collect::<Vec<_>>())
+            .await?;
         if settings.subject_type == SubjectType::Pairwise {
             self.check_sector_address(settings).await?;
         }
@@ -550,6 +594,13 @@ impl ApplicationService {
         {
             self.check_backchannel_address(url).await?;
         }
+        // Only a request object address new to the client is checked.
+        let new_addresses: Vec<&String> = settings
+            .request_uris
+            .iter()
+            .filter(|address| !current.snapshot().settings.request_uris.contains(address))
+            .collect();
+        self.check_request_addresses(&new_addresses).await?;
         // The sector identifier document is fetched again only when what it
         // vouches for changes: its address, the redirect addresses it must
         // list, or the client becoming pairwise.

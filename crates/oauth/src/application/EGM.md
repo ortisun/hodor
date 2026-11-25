@@ -46,7 +46,13 @@ clients, resource_servers, digest, random, clock })`:
   set by `create_client`, or new or changed by `change_client`, and the
   check's `http.*` codes become `oauth.client_backchannel_logout_uri_*`.
   Without it, any address is refused with
-  `oauth.client_backchannel_logout_uri_forbidden`.
+  `oauth.client_backchannel_logout_uri_forbidden`. A client's request
+  object addresses are checked through it too, every one by
+  `create_client` and those new to the client by `change_client`, its codes
+  becoming `oauth.client_request_uri_forbidden`,
+  `oauth.client_request_uri_unresolvable` and
+  `oauth.client_request_uri_invalid`; without it, a client with any is
+  refused with `oauth.client_request_uri_forbidden`.
 - `with_sector_documents(http)` gives it the guarded outbound client: a
   pairwise client's sector identifier address is checked through the
   `DestinationCheck` and fetched with `GET` (`SECTOR_DOCUMENT_TIME_LIMIT`,
@@ -83,8 +89,21 @@ memberships, verifier, digest, random, clock })`:
   servers and runs `check_request`, a request object checked against
   `issuer`, the clock and `verifier`, the kernel's `SignatureVerifier`, with
   `pushed_only` when `policy` (`PushedRequestPolicy`, the tenant's) or the
-  client requires pushed requests. The outer `Result` is storage; the inner
-  one the refusal.
+  client requires pushed requests. A `request_uri` that is an address
+  (`Reference::Address`), when the service was given
+  `with_request_object_addresses(destinations, http)`, is read instead by
+  `check_at_address`, after the resource servers are loaded and the unit
+  of work committed, so nothing is held in the database while it is
+  fetched: `address_to_fetch` (nothing fetched for `request` beside it, a
+  client that must push, or an address that does not start with one of
+  the client's `request_uris`), the `DestinationCheck`, a `GET` through the
+  `HttpClient` with `REQUEST_OBJECT_ACCEPT` within
+  `REQUEST_OBJECT_TIME_LIMIT`, `fetched_object` (2xx, 16 kibibytes, the
+  fragment's hash, text), then `check_request` on `with_fetched_object`;
+  every failure before the content is read is `invalid_request_uri`
+  (`refused_fetch`). Without the outbound client an address is answered
+  `request_uri_not_supported` by `check_reference`. The outer `Result` is
+  storage; the inner one the refusal.
 - `push(tenant, issuer, client, parameters, policy)`: for a client that
   already proved who it is, runs `check_pushed_request` against its
   application and the tenant's resource servers and `check_hint` on what

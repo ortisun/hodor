@@ -153,6 +153,11 @@ pub mod api {
     pub use crate::domain::request_object::{
         MAX_REQUEST_OBJECT_BYTES, RequestObjectCheck, RequestObjectRefusal, check_request_object,
     };
+    pub use crate::domain::request_uri::{
+        AddressToFetch, FetchRefusal, MAX_REQUEST_URI_LENGTH, MAX_REQUEST_URIS,
+        REQUEST_OBJECT_ACCEPT, REQUEST_OBJECT_TIME_LIMIT, address_to_fetch, check_request_uri,
+        fetched_object, is_registered, refused_fetch, with_fetched_object,
+    };
     pub use crate::domain::resource_server::{
         Audience, OPENID_SCOPES, ResourceServer, ResourceServerId, ResourceServerSettings,
         ResourceServerSnapshot, ScopeDefinition,

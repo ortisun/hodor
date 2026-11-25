@@ -365,7 +365,7 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
     // at startup.
     let authority = authority(&config, &database)?;
     let (interaction, invitations) = interaction(&config, &database)?;
-    let mut authorization = authorization(&config, &database, interaction.authentication.clone());
+    let mut authorization = authorization(&config, &database, interaction.authentication.clone())?;
     // An `id_token_hint` is checked against the tenants' keys, and compared
     // with a pairwise client's person through the pairwise secrets. Without
     // keys there is no ID token, and a hint is refused.
@@ -796,17 +796,27 @@ fn consents(database: &Database) -> ConsentService {
     })
 }
 
-/// Builds everything the authorization endpoint needs.
+/// Builds everything the authorization endpoint needs. Request objects at
+/// a client's address are checked and fetched by the guarded outbound
+/// client, with the development exception of this installation, and no
+/// more than 16 kibibytes are read of one.
 fn authorization(
     config: &Config,
     database: &Database,
     authentication: AuthenticationService,
-) -> AuthorizationState {
+) -> Result<AuthorizationState, DomainError> {
     let units = Arc::new(database.clone());
     let clock = Arc::new(SystemClock);
     let digest = Arc::new(Sha256Digest);
     let random = Arc::new(OsRandom);
-    AuthorizationState {
+    let guarded = || {
+        GuardedHttpClient::new(OutboundPolicy {
+            development_hosts: development_hosts(config),
+            max_response_bytes: hodor_oauth::api::MAX_REQUEST_OBJECT_BYTES + 1,
+            ..OutboundPolicy::default()
+        })
+    };
+    Ok(AuthorizationState {
         authorization: AuthorizationCodeService::new(AuthorizationCodePorts {
             units_of_work: units.clone(),
             applications: Arc::new(PgApplicationStore),
@@ -820,13 +830,14 @@ fn authorization(
             digest: digest.clone(),
             random: random.clone(),
             clock: clock.clone(),
-        }),
+        })
+        .with_request_object_addresses(Arc::new(guarded()?), Arc::new(guarded()?)),
         consents: consents(database),
         sessions: SessionService::new(units, Arc::new(PgSessionStore), digest, random, clock),
         authentication,
         tenants: tenant_service(database),
         public_url: config.public_url.clone(),
-    }
+    })
 }
 
 /// Builds everything the token endpoint needs. Tokens are signed with the

@@ -12,6 +12,7 @@ use crate::domain::pairwise::{
     SubjectType, check_sector_identifier_uri, sector_of, sector_required, sector_uri_invalid,
     subject_type_invalid,
 };
+use crate::domain::request_uri::{MAX_REQUEST_URIS, check_request_uri, request_uri_invalid};
 use crate::domain::secret::{ClientSecret, ClientSecretHash, ClientSecretId, ClientSecretValue};
 use crate::domain::spiffe::SpiffeId;
 use crate::domain::text;
@@ -585,6 +586,10 @@ pub struct ClientSettings {
     /// Whether every request of it must be pushed first, its
     /// `require_pushed_authorization_requests` of RFC 9126.
     pub require_pushed_requests: bool,
+    /// Where it keeps request objects Hodor may fetch, its `request_uris`
+    /// of OpenID Connect Registration: a `request_uri` is fetched only when
+    /// it starts with one of them.
+    pub request_uris: Vec<String>,
     /// Where its logout tokens are sent when a session it signed a person
     /// in with ends, if anywhere.
     pub backchannel_logout_uri: Option<String>,
@@ -844,6 +849,7 @@ impl ClientSettings {
             userinfo_algorithm: None,
             request_object_algorithm: None,
             require_pushed_requests: false,
+            request_uris: Vec::new(),
             backchannel_logout_uri: None,
             backchannel_logout_session_required: false,
             subject_type: SubjectType::Public,
@@ -980,6 +986,20 @@ impl ClientSettings {
                 post_logout_invalid(error.detail().unwrap_or_default().to_owned())
             })?;
         }
+        let request_uris = without_repeats(self.request_uris);
+        if request_uris.len() > MAX_REQUEST_URIS {
+            return Err(request_uri_invalid(
+                "a client has at most 10 request object addresses",
+            ));
+        }
+        if !has_code && !request_uris.is_empty() {
+            return Err(request_uri_invalid(
+                "a client without `authorization_code` has no request object address",
+            ));
+        }
+        for uri in &request_uris {
+            check_request_uri(uri)?;
+        }
         if let Some(uri) = &self.backchannel_logout_uri {
             if !has_code {
                 return Err(backchannel_invalid(
@@ -1052,6 +1072,7 @@ impl ClientSettings {
             userinfo_algorithm: self.userinfo_algorithm,
             request_object_algorithm: self.request_object_algorithm,
             require_pushed_requests: self.require_pushed_requests,
+            request_uris,
             backchannel_logout_uri: self.backchannel_logout_uri,
             backchannel_logout_session_required: self.backchannel_logout_session_required,
             subject_type: self.subject_type,

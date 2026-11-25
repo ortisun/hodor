@@ -28,7 +28,10 @@ use reqwest::{Client, Method, StatusCode};
 use std::sync::Arc;
 
 mod support;
-use support::{Browser, MEMORY_KIBIBYTES, PASSES, Server, start_server, start_server_with};
+use support::{
+    Answer, Browser, ClientWebServer, MEMORY_KIBIBYTES, PASSES, Server, start_server,
+    start_server_with,
+};
 
 const EMAIL: &str = "ana@example.com";
 const PASSWORD: &str = "correct horse battery staple";
@@ -5217,6 +5220,50 @@ async fn request_object_client(world: &World, tenant: &Tenant) -> (String, Vec<u
     (client.id().to_string(), pkcs8.as_ref().to_vec())
 }
 
+/// Gives `client` of `tenant` the request object address `address`,
+/// checked as the server checks it, with the development exception of
+/// `web`.
+async fn register_request_uri(
+    world: &World,
+    tenant: &Tenant,
+    client: &str,
+    web: &ClientWebServer,
+    address: &str,
+) {
+    use hodor_adapters_http::{GuardedHttpClient, OutboundPolicy};
+    use hodor_adapters_postgres::{PgApplicationStore, PgClientStore, PgResourceServerStore};
+    use hodor_oauth::api::{ApplicationPorts, ApplicationService, ClientId};
+    let applications = ApplicationService::new(ApplicationPorts {
+        units_of_work: Arc::new(world.database.app().clone()),
+        applications: Arc::new(PgApplicationStore),
+        clients: Arc::new(PgClientStore),
+        resource_servers: Arc::new(PgResourceServerStore),
+        digest: Arc::new(Sha256Digest),
+        random: Arc::new(OsRandom),
+        clock: Arc::new(SystemClock),
+    })
+    .with_destinations(Arc::new(
+        GuardedHttpClient::new(OutboundPolicy {
+            development_hosts: vec![web.host.clone()],
+            ..OutboundPolicy::default()
+        })
+        .expect("guarded client"),
+    ));
+    let id: ClientId = client.parse().expect("client");
+    let mut settings = applications
+        .client(&tenant.context, id)
+        .await
+        .expect("client")
+        .snapshot()
+        .settings
+        .clone();
+    settings.request_uris = vec![address.to_owned()];
+    applications
+        .change_client(&tenant.context, id, settings, Caller::system())
+        .await
+        .expect("registered");
+}
+
 /// A request object of `client` for `audience`, signed with `key`.
 fn request_object(client: &str, audience: &str, key: &[u8]) -> String {
     use aws_lc_rs::rand::SystemRandom;
@@ -7253,4 +7300,55 @@ async fn an_intermediate_authority_of_one_tenant_takes_no_certificate_signed_for
     let (status, installed) = install(&world, globex, &signed[1], &above).await;
     assert_eq!(status, StatusCode::OK, "{installed}");
     assert_eq!(bundle(&world, globex).await, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn a_request_object_address_of_one_tenants_client_is_never_fetched_for_another() {
+    let web = ClientWebServer::start();
+    let world = world_with(&[
+        ("HODOR_SECRET_KEYS", ROOT_KEY),
+        ("HODOR_OUTBOUND_DEVELOPMENT_HOSTS", &web.host),
+    ])
+    .await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    let (acme_client, acme_key) = request_object_client(&world, acme).await;
+    let (globex_client, _) = request_object_client(&world, globex).await;
+    register_request_uri(&world, acme, &acme_client, &web, &web.url("/acme/")).await;
+    let object = request_object(&acme_client, "http://localhost:8080/t/acme", &acme_key);
+    web.serve("/acme/one", Answer::content(object));
+    let reference = web.url("/acme/one");
+
+    // At Globex, Acme's client is nobody: Hodor's own page; and Globex's
+    // own client registered no address. Nothing is fetched either time.
+    let mut at_globex = Browser::not_following(&world.server);
+    let (_, signed_in) = at_globex.sign_in(globex.slug, EMAIL, PASSWORD).await;
+    assert_eq!(signed_in["status"], "completed", "{signed_in}");
+    let (status, location) = with_reference(&mut at_globex, globex, &acme_client, &reference).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(location, None);
+    let (status, location) =
+        with_reference(&mut at_globex, globex, &globex_client, &reference).await;
+    assert_eq!(status, StatusCode::FOUND);
+    let location = location.expect("a redirect");
+    assert!(
+        location.contains("error=invalid_request_uri") && !location.contains("code="),
+        "{location}"
+    );
+    assert!(
+        web.asked().is_empty(),
+        "nothing was fetched: {:?}",
+        web.asked()
+    );
+
+    // At Acme, the object at the address is the request.
+    let mut at_acme = Browser::not_following(&world.server);
+    let (_, signed_in) = at_acme.sign_in(acme.slug, EMAIL, PASSWORD).await;
+    assert_eq!(signed_in["status"], "completed", "{signed_in}");
+    let (status, location) = with_reference(&mut at_acme, acme, &acme_client, &reference).await;
+    assert_eq!(status, StatusCode::FOUND);
+    assert!(
+        location.as_deref().is_some_and(|to| to.contains("code=")),
+        "{location:?}"
+    );
+    assert_eq!(web.asked(), ["/acme/one"]);
 }

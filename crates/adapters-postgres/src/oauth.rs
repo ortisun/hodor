@@ -281,7 +281,8 @@ const CLIENT_COLUMNS: &str = "id, application_id, name, client_type, authenticat
      exchange_rules, backchannel_logout_uri, backchannel_logout_session_required, subject_type, \
      sector_identifier_uri, spiffe_id, linkerd_identity, request_object_signing_alg, \
      certificate_bound_access_tokens, default_max_age, default_acr_values, require_auth_time, \
-     userinfo_signed_response_alg, require_pushed_authorization_requests";
+     userinfo_signed_response_alg, require_pushed_authorization_requests, \
+     request_uris";
 
 /// A client's default max age, as the column holds it.
 fn default_max_age_of(settings: &ClientSettings) -> Result<Option<i32>, DomainError> {
@@ -386,6 +387,7 @@ async fn load_client(
             require_pushed_requests: row
                 .try_get("require_pushed_authorization_requests")
                 .map_err(get)?,
+            request_uris: row.try_get("request_uris").map_err(get)?,
             backchannel_logout_uri: row.try_get("backchannel_logout_uri").map_err(get)?,
             backchannel_logout_session_required: row
                 .try_get("backchannel_logout_session_required")
@@ -514,10 +516,10 @@ impl ClientStore for PgClientStore {
                   spiffe_id, linkerd_identity, request_object_signing_alg,
                   certificate_bound_access_tokens, default_max_age, default_acr_values,
                   require_auth_time, userinfo_signed_response_alg,
-                  require_pushed_authorization_requests, version)
+                  require_pushed_authorization_requests, request_uris, version)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
                      $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28,
-                     $29, $30, $31, $32, $33, $34, $35, 0)",
+                     $29, $30, $31, $32, $33, $34, $35, $36, 0)",
         )
         .bind(tenant)
         .bind(state.id.as_uuid())
@@ -563,6 +565,7 @@ impl ClientStore for PgClientStore {
         .bind(settings.require_auth_time)
         .bind(settings.userinfo_algorithm.map(IdTokenAlgorithm::as_str))
         .bind(settings.require_pushed_requests)
+        .bind(&settings.request_uris)
         .execute(&mut *connection)
         .await;
         match inserted {
@@ -600,7 +603,7 @@ impl ClientStore for PgClientStore {
                  certificate_bound_access_tokens = $28,
                  default_max_age = $29, default_acr_values = $30, require_auth_time = $31,
                  userinfo_signed_response_alg = $32,
-                 require_pushed_authorization_requests = $33,
+                 require_pushed_authorization_requests = $33, request_uris = $34,
                  version = version + 1
              WHERE tenant_id = $1 AND id = $2 AND version = $17",
         )
@@ -646,6 +649,7 @@ impl ClientStore for PgClientStore {
         .bind(settings.require_auth_time)
         .bind(settings.userinfo_algorithm.map(IdTokenAlgorithm::as_str))
         .bind(settings.require_pushed_requests)
+        .bind(&settings.request_uris)
         .execute(&mut *connection)
         .await
         .map_err(get)?;

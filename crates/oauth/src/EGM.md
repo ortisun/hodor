@@ -38,6 +38,12 @@ follows is `docs/architecture/contexts/oauth.md`.
     `MAX_PUSHED_PER_CLIENT`, `DEFAULT_PUSHED_LIFETIME`,
     `SHORTEST_PUSHED_LIFETIME`, `LONGEST_PUSHED_LIFETIME`; with
     `TokenService::push` and `AuthorizationCodeService::push`.
+  - Request objects at a client's address: `check_request_uri`,
+    `is_registered`, `address_to_fetch`, `AddressToFetch`, `fetched_object`,
+    `FetchRefusal`, `refused_fetch`, `with_fetched_object`,
+    `MAX_REQUEST_URIS`, `MAX_REQUEST_URI_LENGTH`, `REQUEST_OBJECT_ACCEPT`,
+    `REQUEST_OBJECT_TIME_LIMIT`; with
+    `AuthorizationCodeService::with_request_object_addresses`.
   - Pairwise subject identifiers' domain: `SubjectType`, `PairwiseSecret`
     (with `subject` and `session`), `host_of`, `sector_of`,
     `check_sector_identifier_uri`, `check_sector_document`,
@@ -192,6 +198,10 @@ follows is `docs/architecture/contexts/oauth.md`.
     secrets)`; `PairwiseSecretStorePorts` and
     `run_pairwise_secret_contract(ports)`, which requires one secret per
     tenant, the first stored kept.
+  - `testing/request_uri.rs`: `RequestObjectAddresses` with
+    `AddressAnswer` (`Content`, `Redirect`, `Failure` by the guarded
+    client's code), an outbound client that serves request objects at
+    clients' addresses and keeps every request made (`asked`, `fetched`).
 - Subdirectories:
   - [application](./application/EGM.md): the ports and the use cases.
   - [domain](./domain/EGM.md): the aggregates and their rules.

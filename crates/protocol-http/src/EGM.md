@@ -297,7 +297,8 @@ attribute name; left out of a change, the provider's map is kept.
 `{ "lifetime_seconds", "required" }`, both required and nothing else
 (`422` `request.body_invalid`); a life outside 10 to 600 is
 `tenant.settings_invalid`. Clients carry
-`require_pushed_authorization_requests`, `false` unless given.
+`require_pushed_authorization_requests`, `false` unless given, and
+`request_uris`, empty unless given and replaced as a list by `PATCH`.
 
 `GET` and `PUT /email-sign-in` (`read_email_sign_in`, `set_email_sign_in`
 in `admin.rs`, `users:read` and `users:write`) read and replace the
