@@ -135,6 +135,29 @@ across tenants, the longest waiting first.
   destination check's `http.unreachable` is
   `keys.bundle_endpoint_unresolvable`.
 
+### The certificate authority (`authority.rs`)
+
+- `AuthorityPorts { units_of_work, store: Arc<dyn AuthorityStore>,
+  trust_domains: Arc<dyn TrustDomainStore>, maker: Arc<dyn KeyProvider>,
+  signer: Arc<dyn KeyProvider>, certificates: Arc<dyn CertificateWriter>,
+  digest, clock }`; `AuthorityService::new(ports, for_development)`,
+  `for_development()`. `maker` makes the authority's key
+  (`KeyProviders::authorities`), `signer` signs with it (every provider).
+- `NewAuthority { kind, trust_domains, common_name, lifetime_days,
+  intermediate_lifetime_days }`, checked by `AuthorityRequest::new`.
+
+| Method | Behavior |
+| --- | --- |
+| `create(tenant, asked, caller)` | Checks the request; refuses `keys.authority_provider_unsuitable` when `maker.signs_inside()` is false outside development; refuses `keys.authority_exists` and `keys.authority_trust_domain_taken` before a key is made; has the ES256 key made for a new identifier; for a root, writes the part to be signed with `CertificateWriter::root_to_be_signed` and signs it with `SignatureEncoding::Der`; for an intermediate, the request's. Then inserts it, records `keys.authority_created` and `keys.authority_signed`, and for a root `keys.authority_activated` and a trust domain of source `authority` for each of its trust domains. |
+| `get(tenant)` | `keys.authority_not_found` if the tenant has none. |
+| `install(tenant, certificate, chain, caller)` | Reads the PEM certificate and chain, then under `lock` installs it (`CertificateAuthority::install`), updates it, records `keys.authority_activated` and adds its trust domains. |
+| `remove(tenant, caller)` | Under `lock`, removes the trust domains of its names that still have the source `authority`, then the authority; records `keys.trust_domain_removed` for each and `keys.authority_removed`. |
+| `bundle(tenant)` | The bundle of the tenant's active authority, or `None`. |
+
+- `TrustDomainService::replace` refuses a trust domain of source
+  `authority` with `keys.trust_domain_of_authority` before anything is
+  checked; `TrustSourceRequest::from_parts` never takes `authority`.
+
 ## Invariants
 
 - `create_version` asks the provider before beginning a unit of work, then
@@ -153,6 +176,11 @@ across tenants, the longest waiting first.
 
 - Nothing is stored when a source is refused; a refused replacement leaves
   the trust domain as it was.
+- Every signature of an authority's key is recorded as
+  `keys.authority_signed`, with the SHA-256 of the part signed, in the
+  unit of work that keeps what was signed (`authority.rs:create`).
+- An authority's trust domains are added only when it is active, and none
+  is added over a trust domain the tenant has from another source.
 - `BundleRefresher` records `keys.trust_bundle_refreshed` only when the
   bundle in force changed, and `keys.trust_bundle_refresh_failed` only for
   the first failure of a run; its events have the system as actor.

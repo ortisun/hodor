@@ -10,6 +10,7 @@ mod api_key;
 mod audit;
 mod authentication;
 mod authorization;
+mod certificate_authority;
 mod cleanup;
 mod credential;
 mod database;
@@ -52,6 +53,7 @@ pub use authentication::{
     PgAttemptStore, PgEmailSignInStore, PgTransactionStore, PgVerificationTokenStore,
 };
 pub use authorization::{PgEngineBindingStore, PgNativeRoleStore, PgRoleAssignmentStore};
+pub use certificate_authority::PgAuthorityStore;
 pub use cleanup::{
     AccessTokenCleanup, CleanupReport, ExpiredKind, ExpiredRowCleanup, PendingAuthorizationCleanup,
 };

@@ -10,6 +10,7 @@
 //! composition root implements.
 
 mod admin;
+mod authority_bundle;
 mod authorization_api;
 mod authorize;
 mod bearer;
@@ -35,6 +36,7 @@ pub use admin::{
     ADMIN_OPENAPI, ADMIN_OPERATIONS, AdminState, CONSOLE_SESSION_HOURS, ConsoleState, admin_routes,
     console_routes,
 };
+pub use authority_bundle::authority_bundle_routes;
 pub use authorization_api::{
     AUTHORIZATION_API_AUDIENCE, AUTHORIZATION_OPENAPI, AUTHORIZATION_OPERATIONS, ApiKeyAccess,
     AuthorizationApiState, EVALUATE_SCOPE, EXPLAIN_SCOPE, SIMULATE_SCOPE, authorization_api_routes,

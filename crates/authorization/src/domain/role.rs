@@ -80,11 +80,17 @@ pub enum Permission {
     AccessEntriesRead,
     /// Granting and removing entries of access control lists.
     AccessEntriesWrite,
+    /// Seeing the tenant's certificate authority: its certificate, its
+    /// request and its name constraints.
+    CertificateAuthorityRead,
+    /// Creating the tenant's certificate authority, installing its
+    /// certificate and removing it.
+    CertificateAuthorityWrite,
 }
 
 impl Permission {
     /// Every permission.
-    pub const ALL: [Self; 33] = [
+    pub const ALL: [Self; 35] = [
         Self::UsersRead,
         Self::UsersWrite,
         Self::SessionsRead,
@@ -118,6 +124,8 @@ impl Permission {
         Self::WebhooksWrite,
         Self::AccessEntriesRead,
         Self::AccessEntriesWrite,
+        Self::CertificateAuthorityRead,
+        Self::CertificateAuthorityWrite,
     ];
 
     /// The permission written as `resource:action`.
@@ -157,6 +165,8 @@ impl Permission {
             Self::WebhooksWrite => "webhooks:write",
             Self::AccessEntriesRead => "access-entries:read",
             Self::AccessEntriesWrite => "access-entries:write",
+            Self::CertificateAuthorityRead => "certificate-authority:read",
+            Self::CertificateAuthorityWrite => "certificate-authority:write",
         }
     }
 
@@ -273,6 +283,7 @@ impl Role {
                 Permission::WorkloadsRead,
                 Permission::WebhooksRead,
                 Permission::AccessEntriesRead,
+                Permission::CertificateAuthorityRead,
             ],
         }
     }

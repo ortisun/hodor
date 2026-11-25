@@ -87,6 +87,14 @@ Routers, as assembled in `run`:
   (`ApiKeyService::revoke_all_of_in`, `revoke_credentials`). `api_keys`
   builds the `ApiKeyService` over `PgApiKeyStore` that the administration
   interface and the Authorization API (`ApiKeyAccess`) use.
+- `HODOR_CERTIFICATE_AUTHORITY` (`certificate_authority`, read by
+  `AuthoritySetting::parse`): `off` by default; `on` or `development`
+  builds an `AuthorityService` in `authority` (over `PgAuthorityStore`,
+  `PgTrustDomainStore`, `X509Certificates` and the `KeyProviders` of
+  `key_providers`, whose `authorities()` makes its key), given to the
+  `AdminState` and merged as `authority_bundle_routes` into the tenant
+  routes. Without `HODOR_SECRET_KEYS`, or with another value, the server
+  stops at startup with `keys.authority_setting_invalid`.
 - `/oauth2/jwks`: `hodor_protocol_http::key_set_routes(KeyService)` is merged
   into the tenant routes when `keys` built a `KeyService` (`PgKeyStore`,
   `LocalKeyProvider` over `HODOR_SECRET_KEYS`); otherwise a warning is logged

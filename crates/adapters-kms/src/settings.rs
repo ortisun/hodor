@@ -212,7 +212,8 @@ impl KeyProviderSettings {
     /// inside the server, and OpenBao when its address is set, through the
     /// client `http` builds for it. New signing keys are made where
     /// [`KeyProviderSettings::signing_keys_in`] says, data keys always by
-    /// `local`, and every version is used by the provider that made it.
+    /// `local`, the keys of certificate authorities by OpenBao when it is
+    /// set, and every version is used by the provider that made it.
     ///
     /// # Errors
     ///
@@ -227,10 +228,13 @@ impl KeyProviderSettings {
         };
         let openbao: Arc<dyn KeyProvider> =
             Arc::new(OpenBaoKeyProvider::new(http(settings)?, settings));
+        // The keys of certificate authorities are made in OpenBao whenever
+        // it is configured, whatever makes the signing keys.
         Ok(match self.signing_keys_in {
-            SigningKeysIn::OpenBao => KeyProviders::new(openbao, local),
-            SigningKeysIn::Local => KeyProviders::new(local.clone(), local).also(openbao),
-        })
+            SigningKeysIn::OpenBao => KeyProviders::new(openbao.clone(), local),
+            SigningKeysIn::Local => KeyProviders::new(local.clone(), local),
+        }
+        .with_authorities(openbao))
     }
 }
 

@@ -3,6 +3,7 @@
 //! Events carry identifiers, uses, algorithms and times. They never carry
 //! key material, and the public key stays in the version's row.
 
+use crate::domain::authority::AuthorityId;
 use crate::domain::key::KeyVersionId;
 use crate::domain::trust_domain::TrustDomainId;
 use hodor_kernel::{DomainEvent, Timestamp};
@@ -88,7 +89,7 @@ pub enum TrustDomainEvent {
         trust_domain_id: TrustDomainId,
         /// Its name.
         name: String,
-        /// `uploaded`, `bundle_endpoint` or `mesh`.
+        /// `uploaded`, `bundle_endpoint`, `mesh` or `authority`.
         source: &'static str,
         /// Its bundle, unless it is checked by the mesh.
         #[serde(flatten, skip_serializing_if = "Option::is_none")]
@@ -100,7 +101,7 @@ pub enum TrustDomainEvent {
         trust_domain_id: TrustDomainId,
         /// Its name.
         name: String,
-        /// `uploaded`, `bundle_endpoint` or `mesh`.
+        /// `uploaded`, `bundle_endpoint`, `mesh` or `authority`.
         source: &'static str,
         /// Its bundle, unless it is checked by the mesh.
         #[serde(flatten, skip_serializing_if = "Option::is_none")]
@@ -146,6 +147,73 @@ impl DomainEvent for TrustDomainEvent {
             Self::BundleRefreshed { .. } => "keys.trust_bundle_refreshed",
             Self::RefreshFailed { .. } => "keys.trust_bundle_refresh_failed",
             Self::Removed { .. } => "keys.trust_domain_removed",
+        }
+    }
+}
+
+/// An event of a tenant's certificate authority. Never carries a key, a
+/// certificate or a request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+pub enum AuthorityEvent {
+    /// An authority was created.
+    Created {
+        /// The authority.
+        authority_id: AuthorityId,
+        /// `root` or `intermediate`.
+        kind: &'static str,
+        /// The trust domains it signs for.
+        trust_domains: Vec<String>,
+        /// The identifier its key was made for.
+        key_id: KeyVersionId,
+        /// The provider that made the key.
+        provider: String,
+        /// Whether it was made on an installation set to `development`.
+        for_development: bool,
+    },
+    /// The authority's key signed something.
+    Signed {
+        /// The authority.
+        authority_id: AuthorityId,
+        /// `certificate` or `certificate_signing_request`.
+        signed: &'static str,
+        /// The SHA-256 of the part signed, in hexadecimal.
+        signed_sha256: String,
+        /// The serial number of a certificate signed.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        serial_number: Option<String>,
+        /// The trust domains it was signed for.
+        trust_domains: Vec<String>,
+    },
+    /// The authority got its certificate.
+    Activated {
+        /// The authority.
+        authority_id: AuthorityId,
+        /// Its certificate's serial number.
+        serial_number: String,
+        /// Its certificate's SHA-256, in hexadecimal.
+        certificate_sha256: String,
+        /// When its certificate expires.
+        #[serde(with = "time::serde::rfc3339")]
+        not_after: Timestamp,
+    },
+    /// The authority was removed.
+    Removed {
+        /// The authority.
+        authority_id: AuthorityId,
+        /// The identifier its key was made for; the key stays in its
+        /// provider.
+        key_id: KeyVersionId,
+    },
+}
+
+impl DomainEvent for AuthorityEvent {
+    fn event_type(&self) -> &'static str {
+        match self {
+            Self::Created { .. } => "keys.authority_created",
+            Self::Signed { .. } => "keys.authority_signed",
+            Self::Activated { .. } => "keys.authority_activated",
+            Self::Removed { .. } => "keys.authority_removed",
         }
     }
 }

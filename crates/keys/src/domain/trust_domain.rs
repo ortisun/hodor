@@ -477,6 +477,9 @@ pub enum TrustSource {
     BundleEndpoint,
     /// Checked by the mesh in front of Hodor; no bundle.
     Mesh,
+    /// The bundle of the tenant's certificate authority, added and removed
+    /// by the authority alone.
+    Authority,
 }
 
 impl TrustSource {
@@ -487,6 +490,7 @@ impl TrustSource {
             Self::Uploaded => "uploaded",
             Self::BundleEndpoint => "bundle_endpoint",
             Self::Mesh => "mesh",
+            Self::Authority => "authority",
         }
     }
 
@@ -500,6 +504,7 @@ impl TrustSource {
             "uploaded" => Ok(Self::Uploaded),
             "bundle_endpoint" => Ok(Self::BundleEndpoint),
             "mesh" => Ok(Self::Mesh),
+            "authority" => Ok(Self::Authority),
             _ => Err(source_invalid()),
         }
     }
@@ -568,6 +573,8 @@ pub enum CheckedSource {
     },
     /// Checked by the mesh.
     Mesh,
+    /// The bundle of the tenant's certificate authority.
+    Authority(TrustBundle),
 }
 
 impl CheckedSource {
@@ -578,6 +585,7 @@ impl CheckedSource {
             Self::Uploaded(_) => TrustSource::Uploaded,
             Self::BundleEndpoint { .. } => TrustSource::BundleEndpoint,
             Self::Mesh => TrustSource::Mesh,
+            Self::Authority(_) => TrustSource::Authority,
         }
     }
 }
@@ -721,7 +729,7 @@ impl TrustDomain {
         state.last_error = None;
         state.updated_at = now;
         match source {
-            CheckedSource::Uploaded(bundle) => {
+            CheckedSource::Uploaded(bundle) | CheckedSource::Authority(bundle) => {
                 state.bundle = Some(bundle);
                 state.bundle_changed_at = Some(now);
                 state.bundle_endpoint_url = None;

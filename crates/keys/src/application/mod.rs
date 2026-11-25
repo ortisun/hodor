@@ -1,5 +1,6 @@
 //! Use cases of the keys context and the ports they need.
 
+pub(crate) mod authority;
 pub(crate) mod ports;
 pub(crate) mod providers;
 pub(crate) mod secret_box;

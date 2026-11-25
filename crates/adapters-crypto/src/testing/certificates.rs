@@ -129,38 +129,7 @@ impl TestAuthority {
     }
 
     fn issue_certificate(&self, leaf: &Leaf) -> rcgen::Certificate {
-        let key = KeyPair::generate().expect("a key");
-        let mut parameters = CertificateParams::default();
-        parameters
-            .distinguished_name
-            .push(DnType::CommonName, "workload");
-        parameters.subject_alt_names = leaf
-            .uris
-            .iter()
-            .map(|uri| SanType::URI(uri.as_str().try_into().expect("an ASCII URI")))
-            .chain(
-                leaf.dns_names
-                    .iter()
-                    .map(|name| SanType::DnsName(name.as_str().try_into().expect("ASCII"))),
-            )
-            .collect();
-        parameters.key_usages = vec![KeyUsagePurpose::DigitalSignature];
-        parameters.extended_key_usages = if leaf.server_only {
-            vec![ExtendedKeyUsagePurpose::ServerAuth]
-        } else {
-            vec![
-                ExtendedKeyUsagePurpose::ClientAuth,
-                ExtendedKeyUsagePurpose::ServerAuth,
-            ]
-        };
-        if leaf.authority {
-            parameters.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-        }
-        if leaf.expired {
-            let now = OffsetDateTime::now_utc();
-            parameters.not_before = now - Duration::days(30);
-            parameters.not_after = now - Duration::days(1);
-        }
+        let (parameters, key) = leaf_parameters(leaf);
         parameters
             .signed_by(&key, &self.certificate, &self.key)
             .expect("a certificate")
@@ -220,4 +189,84 @@ pub fn not_an_authority_element(name: &str) -> Value {
 #[must_use]
 pub fn bundle(elements: &[Value]) -> Value {
     json!({ "keys": elements })
+}
+
+/// What a workload certificate of `leaf` is made of: its parameters and a
+/// new key.
+fn leaf_parameters(leaf: &Leaf) -> (CertificateParams, KeyPair) {
+    let key = KeyPair::generate().expect("a key");
+    let mut parameters = CertificateParams::default();
+    parameters
+        .distinguished_name
+        .push(DnType::CommonName, "workload");
+    parameters.subject_alt_names = leaf
+        .uris
+        .iter()
+        .map(|uri| SanType::URI(uri.as_str().try_into().expect("an ASCII URI")))
+        .chain(
+            leaf.dns_names
+                .iter()
+                .map(|name| SanType::DnsName(name.as_str().try_into().expect("ASCII"))),
+        )
+        .collect();
+    parameters.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+    parameters.extended_key_usages = if leaf.server_only {
+        vec![ExtendedKeyUsagePurpose::ServerAuth]
+    } else {
+        vec![
+            ExtendedKeyUsagePurpose::ClientAuth,
+            ExtendedKeyUsagePurpose::ServerAuth,
+        ]
+    };
+    if leaf.authority {
+        parameters.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    }
+    if leaf.expired {
+        let now = OffsetDateTime::now_utc();
+        parameters.not_before = now - Duration::days(30);
+        parameters.not_after = now - Duration::days(1);
+    }
+    (parameters, key)
+}
+
+/// A workload certificate under a tenant's certificate authority, in DER,
+/// signed by the authority's key through `provider`, the provider that
+/// made it: what a mesh below the authority would present.
+///
+/// # Panics
+///
+/// If a name is not ASCII, `rcgen` cannot make it, or the provider does
+/// not sign.
+pub async fn issue_under_authority(
+    provider: &dyn hodor_keys::api::KeyProvider,
+    tenant: &hodor_kernel::TenantContext,
+    authority: &hodor_keys::api::CertificateAuthority,
+    leaf: &Leaf,
+) -> Vec<u8> {
+    use hodor_keys::api::CertificateWriter as _;
+    let (parameters, key) = leaf_parameters(leaf);
+    let public_key = &authority.key().public_key;
+    let mut issuer = CertificateParams::default();
+    issuer.distinguished_name = crate::certificates::subject(&hodor_keys::api::AuthorityProfile {
+        common_name: authority.snapshot().common_name.clone(),
+        name_constraints: authority.name_constraints(),
+    });
+    issuer.is_ca = IsCa::Ca(BasicConstraints::Constrained(1));
+    let (issuer_key, _) = crate::certificates::remembering(public_key).expect("a key");
+    let issuer = issuer.self_signed(&issuer_key).expect("the issuer");
+    let (signing, asked) = crate::certificates::remembering(public_key).expect("a key");
+    parameters
+        .signed_by(&key, &issuer, &signing)
+        .expect("a certificate");
+    let to_be_signed = crate::certificates::taken(&asked).expect("asked");
+    let signature = provider
+        .sign(
+            tenant,
+            &authority.key().version(OffsetDateTime::now_utc()),
+            &to_be_signed,
+            hodor_keys::api::SignatureEncoding::Der,
+        )
+        .await
+        .expect("signed by the authority's key");
+    crate::X509Certificates.signed(&to_be_signed, &signature)
 }

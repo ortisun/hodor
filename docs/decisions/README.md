@@ -62,3 +62,4 @@ All records below are **Proposed** unless marked otherwise: they become Accepted
 | [0055](0055-spiffe-jwt-client-authentication.md) | A client of a service account is bound to one SPIFFE identifier, and its JWT-SVID is used once, remembered by the hash of what it signs (Accepted) |
 | [0056](0056-forwarded-client-identity.md) | A forwarded identity is read from the one header the operator names, bound to a client by its SPIFFE identifier or its Linkerd identity, and checked with `rustls-webpki` in the cryptography adapter (Accepted) |
 | [0057](0057-certificate-bound-access-tokens.md) | A token is bound to the certificate the proxy forwards when its client asks, and checked wherever Hodor accepts it as a credential (Accepted) |
+| [0062](0062-the-certificate-authority-of-a-tenant.md) | The certificate authority of a tenant lives in the keys context, is switched on by one setting, and writes name constraints that Hodor's own chain checking reads (Accepted) |

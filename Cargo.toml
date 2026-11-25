@@ -58,7 +58,9 @@ opentelemetry-otlp = { version = "0.33", default-features = false, features = [
 opentelemetry_sdk = "0.33"
 rcgen = { version = "0.13", default-features = false, features = ["aws_lc_rs", "pem"] }
 reqwest = { version = "0.13", default-features = false }
-# X.509 paths of forwarded certificates (Decision 0056); only hodor-adapters-crypto.
+# X.509 paths of forwarded certificates (Decision 0056), and of the
+# certificates of a tenant's authority, whose URI name constraints Hodor
+# reads itself (Decision 0062); only hodor-adapters-crypto.
 rustls-pki-types = { version = "1", features = ["std"] }
 rustls-webpki = { version = "0.103", default-features = false, features = ["std", "aws-lc-rs"] }
 form_urlencoded = "1"

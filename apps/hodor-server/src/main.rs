@@ -7,14 +7,14 @@
 use clap::{Parser, ValueEnum};
 use hodor_adapters_crypto::{
     Argon2Parameters, Argon2idHasher, AwsLcHmacSha1, AwsLcHmacSha256, AwsLcVerifier, HashingLimits,
-    LocalKeyProvider, OsRandom, SecretKeys, Sha256Digest, X509CertificateCheck,
+    LocalKeyProvider, OsRandom, SecretKeys, Sha256Digest, X509CertificateCheck, X509Certificates,
 };
 use hodor_adapters_http::{GuardedHttpClient, OutboundPolicy, ServiceHttpClient};
 use hodor_adapters_kms::KeyProviderSettings;
 use hodor_adapters_ldap::LdapDirectoryClient;
 use hodor_adapters_postgres::{
     Database, PgAccessListStore, PgAccessTokenRecordStore, PgAccessTokenStore, PgApiKeyStore,
-    PgApplicationStore, PgAttemptStore, PgAuditLog, PgAuthorizationCodeStore,
+    PgApplicationStore, PgAttemptStore, PgAuditLog, PgAuthorityStore, PgAuthorizationCodeStore,
     PgAuthorizationRequestStore, PgBundleStore, PgClaimMapperStore, PgClientAssertionStore,
     PgClientStore, PgConsentStore, PgDecisionLogStore, PgDeliveryStore, PgDeprovisioningPolicy,
     PgEmailSignInStore, PgEndpointStore, PgEngineBindingStore, PgGrantStore, PgGroupPolicy,
@@ -54,7 +54,8 @@ use hodor_federation::api::{
 use hodor_identity::api::{GroupService, IdentityService, OrganizationService, WorkloadService};
 use hodor_kernel::{DomainError, HttpClient, Secret, SecretBox, SystemClock, TenantContext};
 use hodor_keys::api::{
-    KeyProvider, KeyService, RotationPolicy, TenantSecretBox, TrustDomainPorts, TrustDomainService,
+    AuthorityPorts, AuthorityService, AuthoritySetting, KeyProviders, KeyService, RotationPolicy,
+    TenantSecretBox, TrustDomainPorts, TrustDomainService,
 };
 use hodor_notification::api::Notifier;
 use hodor_oauth::api::{
@@ -70,10 +71,10 @@ use hodor_protocol_http::{
     ConsoleState, DiscoveryState, ForwardedHeader, Health, IdentityHeader, InteractionState,
     InvitationState, Limits, LogoutState, Pages, ReadinessCheck, ResolvedTenant, ScimState,
     TenantResolver, TenantStatus as HttpTenantStatus, TokenState, TrustedProxies, UserInfoState,
-    admin_routes, authorization_api_routes, authorization_routes, consent_routes, console_routes,
-    discovery_routes, interaction_routes, invitation_routes, key_set_routes, logout_routes,
-    ops_router, parse_ranges, policy_agent_routes, public_router_behind, scim_routes, serve,
-    token_routes, userinfo_routes,
+    admin_routes, authority_bundle_routes, authorization_api_routes, authorization_routes,
+    consent_routes, console_routes, discovery_routes, interaction_routes, invitation_routes,
+    key_set_routes, logout_routes, ops_router, parse_ranges, policy_agent_routes,
+    public_router_behind, scim_routes, serve, token_routes, userinfo_routes,
 };
 use hodor_provisioning::api::{ProvisioningPorts, ProvisioningService};
 use hodor_session::api::SessionService;
@@ -165,6 +166,12 @@ struct Config {
     /// identity provider can be used.
     #[arg(long, env = "HODOR_SECRET_KEYS", hide_env_values = true)]
     secret_keys: Option<String>,
+
+    /// The certificate authority of the tenants: `off` (the default),
+    /// `on`, or `development`, which also accepts the local key provider.
+    /// `on` and `development` need `HODOR_SECRET_KEYS`.
+    #[arg(long, env = "HODOR_CERTIFICATE_AUTHORITY")]
+    certificate_authority: Option<String>,
 
     /// How long a refresh token one generation old is answered again with
     /// the same next token, in seconds: 0 to 60. 0 turns retries off.
@@ -346,6 +353,9 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
     let engines = authorization_engines(&config, &database)?;
 
     let keys = keys(&config, &database)?;
+    // Checked now, so that a setting that cannot be used stops the server
+    // at startup.
+    let authority = authority(&config, &database)?;
     let (interaction, invitations) = interaction(&config, &database)?;
     let authorization = authorization(&config, &database, interaction.authentication.clone());
     // SCIM ends a deprovisioned person's sessions and grants with these.
@@ -441,6 +451,16 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
         Arc::new(OsRandom),
         Arc::new(SystemClock),
     )));
+    match authority {
+        Some(authority) => {
+            tracing::info!(
+                for_development = authority.for_development(),
+                "the certificate authority of the tenants is on"
+            );
+            tenant_routes = tenant_routes.merge(authority_bundle_routes(authority));
+        }
+        None => tracing::info!("HODOR_CERTIFICATE_AUTHORITY is off: no tenant has an authority"),
+    }
     match &config.pages_directory {
         Some(directory) => {
             let pages = Pages::load(directory)?;
@@ -1307,8 +1327,45 @@ fn keys(config: &Config, database: &Database) -> Result<Option<KeyService>, Doma
     Ok(Some(KeyService::new(
         Arc::new(database.clone()),
         Arc::new(PgKeyStore),
-        key_provider(root)?,
+        Arc::new(key_providers(root)?),
         Arc::new(SystemClock),
+    )))
+}
+
+/// The certificate authority of the tenants, when
+/// `HODOR_CERTIFICATE_AUTHORITY` turns it on: its key is made by the
+/// provider that makes the keys of authorities, OpenBao whenever it is
+/// configured (`docs/architecture/contexts/keys.md`, "The certificate
+/// authority of a tenant").
+fn authority(
+    config: &Config,
+    database: &Database,
+) -> Result<Option<AuthorityService>, DomainError> {
+    let setting = AuthoritySetting::parse(config.certificate_authority.as_deref())?;
+    if setting == AuthoritySetting::Off {
+        return Ok(None);
+    }
+    let Some(secret_keys) = &config.secret_keys else {
+        return Err(DomainError::invalid(
+            "keys.authority_setting_invalid",
+            "HODOR_CERTIFICATE_AUTHORITY needs HODOR_SECRET_KEYS: the authority lives in the keys \
+             context",
+        ));
+    };
+    let root = Arc::new(SecretKeys::parse(&Secret::from(secret_keys.clone()))?);
+    let providers = key_providers(root)?;
+    Ok(Some(AuthorityService::new(
+        AuthorityPorts {
+            units_of_work: Arc::new(database.clone()),
+            store: Arc::new(PgAuthorityStore),
+            trust_domains: Arc::new(PgTrustDomainStore),
+            maker: providers.authorities(),
+            signer: Arc::new(providers),
+            certificates: Arc::new(X509Certificates),
+            digest: Arc::new(Sha256Digest),
+            clock: Arc::new(SystemClock),
+        },
+        setting == AuthoritySetting::Development,
     )))
 }
 
@@ -1317,7 +1374,7 @@ fn keys(config: &Config, database: &Database) -> Result<Option<KeyService>, Doma
 /// through a client that calls its address alone. New signing keys are
 /// made where `HODOR_KEY_PROVIDER` says, and every version is used by the
 /// provider that made it (`docs/operations/keys-in-openbao.md`).
-fn key_provider(root: Arc<SecretKeys>) -> Result<Arc<dyn KeyProvider>, DomainError> {
+fn key_providers(root: Arc<SecretKeys>) -> Result<KeyProviders, DomainError> {
     let settings = KeyProviderSettings::from_lookup(|name| std::env::var(name).ok())?;
     let providers = settings.providers(Arc::new(LocalKeyProvider::new(root)), |openbao| {
         let origins = [openbao.address.clone()];
@@ -1344,7 +1401,7 @@ fn key_provider(root: Arc<SecretKeys>) -> Result<Arc<dyn KeyProvider>, DomainErr
         };
         Ok(Arc::new(client) as Arc<dyn HttpClient>)
     })?;
-    Ok(Arc::new(providers))
+    Ok(providers)
 }
 
 /// Where secrets at rest are sealed: under the tenant's data keys, with
@@ -1501,6 +1558,7 @@ fn administration(
     })?));
     let applications_for_subjects = applications.clone();
     Ok(AdminState {
+        authority: authority(config, database)?,
         claim_mappers: ClaimMapperService::new(ClaimMapperPorts {
             units_of_work: units(),
             clients: Arc::new(PgClientStore),

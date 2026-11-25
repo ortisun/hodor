@@ -414,6 +414,31 @@ const NOT_SEALED_SECRETS: &[(&str, &str, &str)] = &[
     ("keys.key_version", "public_p256_x", "a public key"),
     ("keys.key_version", "public_p256_y", "a public key"),
     (
+        "keys.certificate_authority",
+        "key_material",
+        "what the key provider handed back for the authority's key, as for a key version",
+    ),
+    (
+        "keys.certificate_authority",
+        "public_p256_x",
+        "a public key",
+    ),
+    (
+        "keys.certificate_authority",
+        "public_p256_y",
+        "a public key",
+    ),
+    (
+        "keys.certificate_authority",
+        "certificate_signing_request",
+        "a request holding a public key, made to be sent to the tenant's root",
+    ),
+    (
+        "keys.certificate_authority",
+        "certificate",
+        "a certificate, published in the authority's bundle",
+    ),
+    (
         "credential.webauthn_credential",
         "credential_id",
         "the identifier the authenticator made",

@@ -21,7 +21,7 @@ From `Cargo.toml`:
 
 - Hodor crates: `hodor-kernel`, `hodor-keys`, as the architecture test allows for this crate (`tests/architecture/src/lib.rs`, layer 4). No other adapter: the binaries give it a `ServiceHttpClient` of `hodor-adapters-http` and the `LocalKeyProvider` of `hodor-adapters-crypto`.
 - Runtime: `async-trait`, `base64`, `serde_json`, `tokio` (the token's lock, and reading the token file off the request threads), `tracing`. No HTTP library and no cryptography library: OpenBao signs, and public keys are read by `public_key.rs`.
-- Development only: `hodor-adapters-crypto` (`AwsLcVerifier`, `LocalKeyProvider`), `hodor-adapters-http` (`ServiceHttpClient`), `hodor-kernel` and `hodor-keys` with `testing`, `reqwest` (feature `rustls`, for what OpenBao's administrator does in the tests), `hodor-test-containers` (starts OpenBao), `testcontainers`, `tokio`.
+- Development only: `hodor-adapters-crypto` (`AwsLcVerifier`, `LocalKeyProvider`, `X509Certificates`, `Sha256Digest`, for a certificate authority whose root is made and signed in OpenBao), `x509-parser`, `hodor-adapters-http` (`ServiceHttpClient`), `hodor-kernel` and `hodor-keys` with `testing`, `reqwest` (feature `rustls`, for what OpenBao's administrator does in the tests), `hodor-test-containers` (starts OpenBao), `testcontainers`, `tokio`.
 
 ## Invariants
 

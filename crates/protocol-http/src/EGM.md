@@ -43,6 +43,7 @@ the set of re-exports in `lib.rs`.
 | `ADMIN_OPENAPI` | `admin.rs` | `include_str!("../openapi/admin-v1.json")`, served at `/openapi.json`. |
 | `ADMIN_OPERATIONS` | `admin.rs` | Table of `(method, path as written in the OpenAPI document, Permission)`. Every shared handler looks its permission up here; the documentation says a test holds the table and the OpenAPI document together. |
 | `CONSOLE_SESSION_HOURS` | `admin.rs` | `12`: the console stops answering this many hours after `signed_in_at`, whatever the tenant allows. |
+| `authority_bundle_routes(authority: AuthorityService)` | `authority_bundle.rs` | `GET /certificate-authority/bundle`, mounted under a tenant only when the installation turns the authority on: the bundle of the tenant's active authority as kept, `content-type: application/json` and `Cache-Control: public, max-age=300`; `404` `keys.authority_not_found` without one. |
 | `key_set_routes(keys: KeyService)` | `key_set.rs` | `GET /oauth2/jwks`, mounted under a tenant: first `KeyService::ensure_active` for each `IdTokenAlgorithm` (ES256, RS256), so that the set names the key of the next token; then the published key set as a JSON Web Key Set, with `Cache-Control: public, max-age=300` (`RotationPolicy::PUBLISHED_FOR`) and `Access-Control-Allow-Origin: *`. |
 | `policy_agent_routes(bundles: BundleService)` | `policy_agent.rs` | Mounted at the root, for Open Policy Agent instances, each by its bearer credential: `GET /opa/bundles/{name}` (`application/gzip`, `ETag`, `304` for a matching `If-None-Match`, `Cache-Control: no-store`; `404 authorization.bundle_not_found` for anything the instance may not pull), `POST /opa/status` and `POST /opa/logs` (`204`; a body with `Content-Encoding: gzip` is expanded). A missing, unknown or disabled credential is `401` with `WWW-Authenticate: Bearer`. |
 | `Pages` | `pages.rs` | A static application read from a directory: `load` (hosted pages), `load_console` (admin console), `page_routes`, `asset_routes`. |
@@ -80,6 +81,12 @@ route, since only the command line holds the key that signs bundles),
 `admin/trust_domains.rs`, `/trust-domains` and
 `/trust-domains/{trust_domain_id}`, under `keys:read` and `keys:write`; a
 bundle is taken and answered as JSON),
+`authority: Option<AuthorityService>` (`hodor_keys`; the four operations of
+`admin/certificate_authority.rs`, `/certificate-authority` and
+`/certificate-authority:install`, under `certificate-authority:read` and
+`certificate-authority:write`, merged into the routes only when it is
+`Some`; when `None`, `GET /openapi.json` answers the document without those
+operations and their schemas, and `/me` lists neither permission),
 `webhooks: Option<WebhookService>` (`hodor_webhooks`; endpoints,
 subscriptions, secrets shown once with `Cache-Control: no-store`,
 deliveries and delivering again, `admin/webhooks.rs`; `None` answers `503`

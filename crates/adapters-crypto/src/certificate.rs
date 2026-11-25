@@ -1,21 +1,22 @@
 //! Checking a forwarded certificate against the authorities of a trust
 //! domain's bundle, for the OAuth context's [`CertificateCheck`] port.
 //!
-//! The path is checked by `rustls-webpki`, the validation `rustls` uses,
-//! with the signature algorithms of `aws-lc-rs`; `x509-parser` reads a
-//! certificate's names and an authority's key. See
+//! The path is checked by `check_path`: `rustls-webpki`, the validation
+//! `rustls` uses, with the signature algorithms of `aws-lc-rs`, and the URI
+//! constraints of the authority it ends at read by Hodor itself (Decision
+//! 0062); `x509-parser` reads a certificate's names and an authority's key. See
 //! `docs/architecture/contexts/oauth.md`, "An identity forwarded by a
 //! proxy", and `docs/decisions/0056-forwarded-client-identity.md`.
 
+use crate::certificates::{check_path, trust_anchor};
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use hodor_kernel::Timestamp;
 use hodor_oauth::api::{
     CertificateCheck, CertificateNames, MAX_FORWARDED_CERTIFICATE_BYTES, MAX_FORWARDED_CHAIN,
 };
-use rustls_pki_types::{CertificateDer, TrustAnchor, UnixTime};
 use serde_json::Value;
-use webpki::{EndEntityCert, KeyUsage, anchor_from_trusted_cert, aws_lc_rs};
+use webpki::aws_lc_rs;
 use x509_parser::certificate::X509Certificate;
 use x509_parser::extensions::GeneralName;
 use x509_parser::oid_registry::{OID_EC_P256, OID_NIST_EC_P384, OID_NIST_EC_P521, Oid};
@@ -23,7 +24,7 @@ use x509_parser::prelude::FromDer as _;
 use x509_parser::public_key::PublicKey;
 
 /// The signatures a path may be made with, all made by `aws-lc-rs`.
-static ALGORITHMS: &[&dyn rustls_pki_types::SignatureVerificationAlgorithm] = &[
+pub(crate) static ALGORITHMS: &[&dyn rustls_pki_types::SignatureVerificationAlgorithm] = &[
     aws_lc_rs::ECDSA_P256_SHA256,
     aws_lc_rs::ECDSA_P256_SHA384,
     aws_lc_rs::ECDSA_P384_SHA256,
@@ -123,13 +124,6 @@ fn without_leading_zeros(bytes: &[u8]) -> &[u8] {
     &bytes[first..]
 }
 
-fn seconds_since_epoch(now: Timestamp) -> Option<UnixTime> {
-    let seconds = u64::try_from(now.unix_timestamp()).ok()?;
-    Some(UnixTime::since_unix_epoch(std::time::Duration::from_secs(
-        seconds,
-    )))
-}
-
 impl CertificateCheck for X509CertificateCheck {
     fn names(&self, certificate: &[u8]) -> Option<CertificateNames> {
         let parsed = read(certificate)?;
@@ -159,39 +153,21 @@ impl CertificateCheck for X509CertificateCheck {
         if chain.len() > MAX_FORWARDED_CHAIN || read(certificate).is_none() {
             return false;
         }
-        let Some(time) = seconds_since_epoch(now) else {
-            return false;
-        };
-        let authorities: Vec<CertificateDer<'static>> = authorities
+        // An element whose certificate does not read as an anchor trusts
+        // nothing, as one that is not an authority.
+        let anchors: Vec<Vec<u8>> = authorities
             .iter()
             .filter_map(|element| authority_of(element))
-            .map(CertificateDer::from)
-            .collect();
-        let anchors: Vec<TrustAnchor<'_>> = authorities
-            .iter()
-            .filter_map(|authority| anchor_from_trusted_cert(authority).ok())
+            .filter(|authority| trust_anchor(authority).is_ok())
             .collect();
         if anchors.is_empty() {
             return false;
         }
-        let intermediates: Vec<CertificateDer<'_>> = chain
+        let intermediates: Vec<Vec<u8>> = chain
             .iter()
             .filter(|der| der.len() <= MAX_FORWARDED_CERTIFICATE_BYTES)
-            .map(|der| CertificateDer::from(der.as_slice()))
+            .cloned()
             .collect();
-        let leaf = CertificateDer::from(certificate);
-        let Ok(leaf) = EndEntityCert::try_from(&leaf) else {
-            return false;
-        };
-        leaf.verify_for_usage(
-            ALGORITHMS,
-            &anchors,
-            &intermediates,
-            time,
-            KeyUsage::client_auth(),
-            None,
-            None,
-        )
-        .is_ok()
+        check_path(certificate, &intermediates, &anchors, now).is_ok()
     }
 }

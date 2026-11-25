@@ -93,6 +93,10 @@ It needs `HODOR_DATABASE_URL`, like the tenant commands.
 | `GET /trust-domains/{trust_domain_id}` | `keys:read` | Read one trust domain |
 | `PUT /trust-domains/{trust_domain_id}` | `keys:write` | Replace its source and bundle |
 | `DELETE /trust-domains/{trust_domain_id}` | `keys:write` | Remove it |
+| `GET /certificate-authority` | `certificate-authority:read` | Read the tenant's certificate authority. Routed only when the installation turns the authority on |
+| `POST /certificate-authority` | `certificate-authority:write` | Create it: a root, or an intermediate awaiting its certificate |
+| `POST /certificate-authority:install` | `certificate-authority:write` | Install an intermediate's certificate, signed by the tenant's own root |
+| `DELETE /certificate-authority` | `certificate-authority:write` | Remove it, with the trust domains it added |
 | `GET /applications` | `applications:read` | List the tenant's applications |
 | `POST /applications` | `applications:write` | Register an application |
 | `GET /applications/{application_id}` | `applications:read` | Read one application |
@@ -487,7 +491,7 @@ The SPIFFE trust domains a tenant trusts, specified in [the keys context](../arc
 }
 ```
 
-`bundle_endpoint_url` and `refresh` are present only for the source `bundle_endpoint`; `bundle` and `bundle_changed_at` are absent for `mesh`. The bundle is the one in force, as Hodor keeps it: only the elements it kept, with their members in order. `refresh.failing_since` and `refresh.last_error` say, while fetching fails, since when and the code of the last reason; the bundle in force is then still the last one that read.
+`bundle_endpoint_url` and `refresh` are present only for the source `bundle_endpoint`; `bundle` and `bundle_changed_at` are absent for `mesh`. A trust domain the tenant's [certificate authority](#the-certificate-authority) added has the source `authority` and the authority's bundle; it cannot be replaced, only removed. The bundle is the one in force, as Hodor keeps it: only the elements it kept, with their members in order. `refresh.failing_since` and `refresh.last_error` say, while fetching fails, since when and the code of the last reason; the bundle in force is then still the last one that read.
 
 `POST /trust-domains` takes the name and one source:
 
@@ -505,11 +509,79 @@ and answers `201` with the trust domain. A bundle endpoint is fetched before any
 | A name the tenant has already | `409` | `keys.trust_domain_name_taken` |
 | A fifty-first trust domain | `409` | `keys.too_many_trust_domains` |
 | The trust domain changed while it was being changed | `409` | `keys.trust_domain_changed` |
+| Replacing a trust domain of source `authority` | `409` | `keys.trust_domain_of_authority` |
 | A name that breaks its rule, or a source that is not one of the three or comes without what it needs | `422` | `keys.trust_domain_name_invalid`, `keys.trust_domain_source_invalid` |
 | A bundle that does not read | `422` | `keys.trust_bundle_invalid` |
 | A bundle endpoint that is not an HTTPS address of at most 1000 characters | `422` | `keys.bundle_endpoint_invalid` |
 | A bundle endpoint that leads somewhere that may not be called, or resolves to nothing | `422` | `keys.bundle_endpoint_forbidden`, `keys.bundle_endpoint_unresolvable` |
 | A bundle endpoint that did not answer a bundle: no answer in 10 seconds, a status other than 2xx, a redirect, or more than 64 kibibytes | `422` | `keys.bundle_endpoint_unreachable` |
+
+### The certificate authority
+
+The tenant's certificate authority, specified in [the keys context](../architecture/contexts/keys.md#the-certificate-authority-of-a-tenant). These four operations are routed only when the installation sets `HODOR_CERTIFICATE_AUTHORITY` to `on` or `development`; otherwise they answer `404` as any path the interface does not have, and `GET /openapi.json` does not name them. The authority is answered as:
+
+```json
+{
+  "id": "0193f3a0-…",
+  "kind": "root",
+  "state": "active",
+  "trust_domains": ["prod.example.com", "edge.example.com"],
+  "common_name": "Hodor certificate authority",
+  "lifetime_days": 1826,
+  "intermediate_lifetime_days": 30,
+  "for_development": false,
+  "key": { "id": "0193f3a0-…", "provider": "openbao", "algorithm": "ES256" },
+  "name_constraints": {
+    "permitted_uris": ["prod.example.com", "edge.example.com"],
+    "permitted_dns_names": ["prod.example.com", "edge.example.com"],
+    "excluded_ip_ranges": ["0.0.0.0/0", "::/0"]
+  },
+  "certificate": "-----BEGIN CERTIFICATE-----\n…",
+  "serial_number": "5f0c…",
+  "not_before": "…",
+  "not_after": "…",
+  "certificate_sha256": "9a1e…",
+  "chain": [],
+  "bundle_endpoint": "https://id.example.com/t/acme/certificate-authority/bundle",
+  "created_at": "…",
+  "activated_at": "…",
+  "updated_at": "…"
+}
+```
+
+`lifetime_days` is present for a root only. An intermediate awaiting its certificate has `"state": "awaiting_certificate"`, a `certificate_signing_request` in PEM, and no `certificate`, `serial_number`, `not_before`, `not_after`, `certificate_sha256`, `bundle_endpoint` or `activated_at`. The key is named by its identifier and its provider; nothing of it is ever answered.
+
+`POST /certificate-authority` takes:
+
+```json
+{ "kind": "root", "trust_domains": ["prod.example.com", "edge.example.com"], "common_name": "Example meshes", "lifetime_days": 1826, "intermediate_lifetime_days": 30 }
+{ "kind": "intermediate", "trust_domains": ["prod.example.com"] }
+```
+
+`common_name`, `lifetime_days` (a root's only) and `intermediate_lifetime_days` may be left out. It answers `201` with the authority: a root is active at once, and its trust domains are added to the tenant's with the source `authority`; an intermediate answers its certificate signing request, for the tenant's root to sign.
+
+`POST /certificate-authority:install` takes the certificate the tenant's root signed, in PEM, and the certificates above it if wished, nearest first:
+
+```json
+{ "certificate": "-----BEGIN CERTIFICATE-----\n…", "chain": ["-----BEGIN CERTIFICATE-----\n…"] }
+```
+
+and answers `200` with the authority, now active, whose trust domains are added to the tenant's. `DELETE /certificate-authority` answers `204`.
+
+| Situation | Status | Code |
+|---|---|---|
+| The tenant has no authority | `404` | `keys.authority_not_found` |
+| The tenant has an authority already | `409` | `keys.authority_exists` |
+| The key provider does not sign inside itself, on an installation not set to `development` | `409` | `keys.authority_provider_unsuitable` |
+| A trust domain the tenant already has from another source | `409` | `keys.authority_trust_domain_taken` |
+| Its trust domains would make the tenant's more than fifty | `409` | `keys.too_many_trust_domains` |
+| Installing a certificate on an authority that is not awaiting one | `409` | `keys.authority_not_awaiting_certificate` |
+| The authority changed while it was being changed | `409` | `keys.authority_changed` |
+| A kind other than `root` and `intermediate`, a lifetime out of its bounds, a common name of no characters or more than 64, a `lifetime_days` for an intermediate | `422` | `keys.authority_request_invalid` |
+| No trust domain, more than ten, the same twice, or one that is not a DNS name | `422` | `keys.authority_trust_domain_invalid` |
+| A certificate or a chain that does not read, or a certificate that does not hold the authority's key, is not an authority, is not valid now, or whose name constraints are missing or reach past the authority's trust domains | `422` | `keys.authority_certificate_unsuitable` |
+| Adding through `POST /trust-domains` a trust domain of source `authority` | `422` | `keys.trust_domain_source_invalid` |
+| Replacing through `PUT /trust-domains/{trust_domain_id}` a trust domain of source `authority` | `409` | `keys.trust_domain_of_authority` |
 
 ### Applications, clients and resource servers
 
