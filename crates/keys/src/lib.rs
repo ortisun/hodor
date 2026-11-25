@@ -20,10 +20,12 @@ pub mod testing;
 
 /// What other crates may use from this context.
 pub mod api {
-    pub use crate::application::authority::{AuthorityPorts, AuthorityService, NewAuthority};
+    pub use crate::application::authority::{
+        AuthorityPorts, AuthorityService, Intermediate, NewAuthority,
+    };
     pub use crate::application::ports::{
-        AuthorityStore, CertificateWriter, DueRefreshes, FirstFormatSecrets, KeyProvider, KeyStore,
-        SealingStateStore, ToBeSigned, TrustDomainStore,
+        AuthorityStore, CertificateWriter, DueRefreshes, FirstFormatSecrets, IntermediateStore,
+        KeyProvider, KeyStore, SealingStateStore, ToBeSigned, TrustDomainStore,
     };
     pub use crate::application::providers::KeyProviders;
     pub use crate::application::secret_box::{FORMAT as SEALED_FORMAT, LOST_RACE, TenantSecretBox};
@@ -43,6 +45,12 @@ pub mod api {
         to_pem,
     };
     pub use crate::domain::event::{AuthorityEvent, BundleSummary, KeyEvent, TrustDomainEvent};
+    pub use crate::domain::intermediate::{
+        IntermediateConstraints, IntermediateId, IntermediateSnapshot, IntermediateState,
+        MAX_CONSTRAINED_NAMES, MAX_INTERMEDIATE_NAMES, MAX_REQUEST_BYTES, MAX_RSA_BITS,
+        MAX_SUBJECT_LENGTH, MIN_RSA_BITS, RequestFacts, RequestKey, RequestedConstraints,
+        SignedIntermediate, request_invalid as intermediate_request_invalid,
+    };
     pub use crate::domain::key::{
         GeneratedKey, KeyAlgorithm, KeyMaterial, KeyState, KeyUse, KeyVersion, KeyVersionId,
         KeyVersionSnapshot, MAX_REASON_LENGTH, SignatureEncoding,

@@ -594,6 +594,7 @@ fn authority_on(bao: &OpenBao) -> (hodor_keys::api::AuthorityService, InMemoryUn
             units_of_work: Arc::new(units_of_work.clone()),
             store: Arc::new(hodor_keys::testing::InMemoryAuthorities::default()),
             trust_domains: Arc::new(hodor_keys::testing::InMemoryTrustDomains::default()),
+            intermediates: Arc::new(hodor_keys::testing::InMemoryIntermediates::default()),
             maker: providers.authorities(),
             signer: Arc::new(providers),
             certificates: Arc::new(hodor_adapters_crypto::X509Certificates),
@@ -707,5 +708,103 @@ async fn an_authoritys_root_is_made_and_signed_in_openbao_and_its_key_never_come
             "keys.authority_signed",
             "keys.authority_activated",
         ]
+    );
+}
+
+#[tokio::test]
+async fn an_intermediate_is_signed_by_the_authoritys_key_in_openbao_and_checks_with_independent_libraries()
+ {
+    use hodor_adapters_crypto::testing::certificates::{Leaf, MeshIntermediate, MeshRequest};
+    let bao = OpenBao::start(false).await;
+    let (service, units_of_work) = authority_on(&bao);
+    let tenant = tenant();
+    let authority = service
+        .create(
+            &tenant,
+            hodor_keys::api::NewAuthority {
+                kind: "root".to_owned(),
+                trust_domains: vec!["cluster.local".to_owned()],
+                ..hodor_keys::api::NewAuthority::default()
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("a root in OpenBao");
+    let anchor = authority.certificate().expect("active").der.clone();
+    let mesh = MeshIntermediate::new(&MeshRequest {
+        dns_names: vec!["identity.linkerd.cluster.local".to_owned()],
+        ..MeshRequest::authority("identity.linkerd.cluster.local")
+    });
+    let signed = service
+        .sign(&tenant, mesh.request(), Some(2), Caller::system())
+        .await
+        .expect("signed by OpenBao");
+    let intermediate = &signed.intermediate.snapshot().certificate;
+
+    // The signature checks with the authority's certificate through
+    // `x509-parser`, and with the public key OpenBao itself answers.
+    let (_, parsed) =
+        x509_parser::certificate::X509Certificate::from_der(intermediate).expect("reads");
+    let (_, issuer) = x509_parser::certificate::X509Certificate::from_der(&anchor).expect("reads");
+    parsed
+        .verify_signature(Some(issuer.public_key()))
+        .expect("the authority's key signed it");
+    let name = OpenBaoKeyProvider::key_name(&tenant, authority.key().id);
+    let (_, read) = bao.root_read(&format!("hodor-transit/keys/{name}")).await;
+    let pem = read["data"]["keys"]["1"]["public_key"]
+        .as_str()
+        .expect("OpenBao's public key");
+    let (_, block) = x509_parser::pem::parse_x509_pem(pem.as_bytes()).expect("PEM");
+    let (_, spki) =
+        x509_parser::x509::SubjectPublicKeyInfo::from_der(&block.contents).expect("a public key");
+    parsed
+        .verify_signature(Some(&spki))
+        .expect("OpenBao's key signed it");
+    let basic = parsed.basic_constraints().expect("once").expect("present");
+    assert_eq!(basic.value.path_len_constraint, Some(0));
+
+    // A workload of the mesh chains to the authority through it, for
+    // Hodor's own chain checking and for OpenSSL when it is here.
+    let workload = mesh.issue(&Leaf::uri("spiffe://cluster.local/ns/shop/sa/web"));
+    assert!(
+        hodor_adapters_crypto::check_path(
+            &workload,
+            std::slice::from_ref(intermediate),
+            std::slice::from_ref(&anchor),
+            &[],
+            SystemClock.now(),
+        )
+        .is_ok()
+    );
+    let directory = std::env::temp_dir().join(format!("hodor-openbao-{}", TenantId::generate()));
+    std::fs::create_dir_all(&directory).expect("a directory");
+    let write = |file: &str, der: &[u8]| {
+        let path = directory.join(file);
+        std::fs::write(&path, hodor_keys::api::to_pem("CERTIFICATE", der)).expect("written");
+        path
+    };
+    let (anchor_file, intermediate_file, workload_file) = (
+        write("anchor.pem", &anchor),
+        write("intermediate.pem", intermediate),
+        write("workload.pem", &workload),
+    );
+    if let Ok(output) = std::process::Command::new("openssl")
+        .arg("verify")
+        .arg("-CAfile")
+        .arg(&anchor_file)
+        .arg("-untrusted")
+        .arg(&intermediate_file)
+        .arg(&workload_file)
+        .output()
+    {
+        assert!(output.status.success(), "{output:?}");
+    }
+    let _ = std::fs::remove_dir_all(&directory);
+    assert_eq!(
+        units_of_work
+            .committed_event_types()
+            .last()
+            .map(String::as_str),
+        Some("keys.authority_signed")
     );
 }

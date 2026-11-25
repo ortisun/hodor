@@ -11949,6 +11949,359 @@
           }
         }
       }
+    },
+    "/certificate-authority/intermediates": {
+      "get": {
+        "operationId": "listIntermediates",
+        "summary": "List the intermediates the tenant's certificate authority signed, newest first",
+        "x-hodor-permission": "certificate-authority:read",
+        "description": "The intermediates of the tenant's authority, withdrawn ones included. Routed only when the installation sets `HODOR_CERTIFICATE_AUTHORITY` to `on` or `development`; otherwise this document does not name it.",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "The `next_cursor` of the page before."
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "A page of intermediates.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "items"
+                  ],
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Intermediate"
+                      }
+                    },
+                    "next_cursor": {
+                      "type": "string",
+                      "description": "Present when more results exist."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The tenant has no certificate authority: `keys.authority_not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A value breaks its rule, or the body is not of the expected shape.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "signIntermediate",
+        "summary": "Sign an intermediate of a mesh from its certificate signing request",
+        "x-hodor-permission": "certificate-authority:sign",
+        "description": "The request must prove its key, ask for an authority with no path length above zero, name nothing outside the authority's trust domains, ask for name constraints that only narrow and none on URIs, hold an ECDSA key on P-256 or P-384 or an RSA key of 3072 to 8192 bits never withdrawn, and live within the authority's bound. Hodor writes a path length of zero, `keyCertSign` and `cRLSign`, and the DNS and address constraints itself. Every refusal names its reason in `detail`. Routed only when the installation sets `HODOR_CERTIFICATE_AUTHORITY` to `on` or `development`; otherwise this document does not name it.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewIntermediate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "The intermediate, with its certificate and the chain above it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Intermediate"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The tenant has no certificate authority: `keys.authority_not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The authority awaits its certificate (`keys.authority_not_active`), the request's key was withdrawn (`keys.intermediate_key_withdrawn`), or the authority changed meanwhile (`keys.authority_changed`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The request breaks a rule: `keys.intermediate_request_invalid`, `keys.intermediate_not_an_authority`, `keys.intermediate_path_length_invalid`, `keys.intermediate_name_outside_trust_domains`, `keys.intermediate_constraints_widened`, `keys.intermediate_constraints_unsupported`, `keys.intermediate_key_unsuitable` or `keys.intermediate_lifetime_invalid`, with the reason in `detail`; or the body is not of the expected shape.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/certificate-authority/intermediates/{intermediate_id}": {
+      "get": {
+        "operationId": "getIntermediate",
+        "summary": "Read one intermediate",
+        "x-hodor-permission": "certificate-authority:read",
+        "description": "Routed only when the installation sets `HODOR_CERTIFICATE_AUTHORITY` to `on` or `development`; otherwise this document does not name it.",
+        "parameters": [
+          {
+            "name": "intermediate_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The intermediate.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Intermediate"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No intermediate of that identifier: `keys.intermediate_not_found`; or no authority: `keys.authority_not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/certificate-authority/intermediates/{intermediate_id}:withdraw": {
+      "post": {
+        "operationId": "withdrawIntermediate",
+        "summary": "Withdraw an intermediate, with every intermediate of the same key",
+        "x-hodor-permission": "certificate-authority:write",
+        "description": "Hodor refuses every certificate path through an intermediate of the key from the next request, and never signs the key again. The meshes keep it until it expires. Routed only when the installation sets `HODOR_CERTIFICATE_AUTHORITY` to `on` or `development`; otherwise this document does not name it.",
+        "parameters": [
+          {
+            "name": "intermediate_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IntermediateWithdrawal"
+              }
+            }
+          }
+        },
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The intermediate, withdrawn.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Intermediate"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No intermediate of that identifier: `keys.intermediate_not_found`; or no authority: `keys.authority_not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "It is withdrawn already (`keys.intermediate_withdrawn`), or it changed meanwhile (`keys.intermediate_changed`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A reason of no characters or more than 200: `keys.intermediate_reason_invalid`; or the body is not of the expected shape.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -13721,7 +14074,7 @@
               "type": "string",
               "maxLength": 200
             },
-            "description": "Paths erased from the input before a record is stored: `subject.attributes.…`, `asserted.…`, `resource.attributes.…` or `context.attributes.…`, with `*` alone as the last segment."
+            "description": "Paths erased from the input before a record is stored: `subject.attributes.\u2026`, `asserted.\u2026`, `resource.attributes.\u2026` or `context.attributes.\u2026`, with `*` alone as the last segment."
           },
           "retention_days": {
             "type": "integer",
@@ -15694,7 +16047,7 @@
             "minLength": 1,
             "maxLength": 255,
             "pattern": "^[a-z0-9._-]+$",
-            "description": "The trust domain's name, as in `spiffe://<name>/…`. Unique in the tenant; it never changes."
+            "description": "The trust domain's name, as in `spiffe://<name>/\u2026`. Unique in the tenant; it never changes."
           },
           "source": {
             "type": "string",
@@ -16023,6 +16376,176 @@
           "updated_at": {
             "type": "string",
             "format": "date-time"
+          }
+        }
+      },
+      "Intermediate": {
+        "type": "object",
+        "required": [
+          "id",
+          "authority_id",
+          "state",
+          "serial_number",
+          "subject",
+          "uris",
+          "dns_names",
+          "name_constraints",
+          "not_before",
+          "not_after",
+          "certificate",
+          "chain",
+          "certificate_sha256",
+          "public_key_sha256",
+          "request_sha256",
+          "signed_at",
+          "withdrawn_at",
+          "withdrawal_reason"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "authority_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "active",
+              "withdrawn"
+            ]
+          },
+          "serial_number": {
+            "type": "string",
+            "description": "Lowercase hexadecimal."
+          },
+          "subject": {
+            "type": "string",
+            "description": "Its subject, as the request named it, written for people to read."
+          },
+          "uris": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "dns_names": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "name_constraints": {
+            "type": "object",
+            "required": [
+              "permitted_dns_names",
+              "excluded_dns_names",
+              "excluded_ip_ranges"
+            ],
+            "properties": {
+              "permitted_dns_names": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "excluded_dns_names": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "excluded_ip_ranges": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "not_before": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "not_after": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "certificate": {
+            "type": "string",
+            "description": "PEM."
+          },
+          "chain": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "description": "PEM."
+            },
+            "description": "The certificates above it, nearest first: the authority's, then those above an intermediate authority."
+          },
+          "certificate_sha256": {
+            "type": "string"
+          },
+          "public_key_sha256": {
+            "type": "string",
+            "description": "The SHA-256 of its subject public key info: what withdrawal refuses."
+          },
+          "request_sha256": {
+            "type": "string",
+            "description": "The SHA-256 of the request it was signed from, in DER."
+          },
+          "signed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "withdrawn_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "withdrawal_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "NewIntermediate": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "certificate_signing_request"
+        ],
+        "properties": {
+          "certificate_signing_request": {
+            "type": "string",
+            "maxLength": 16384,
+            "description": "A PKCS#10 request in PEM, signed by the key it is for."
+          },
+          "lifetime_days": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 365,
+            "description": "At most the authority's bound on intermediates, which it is unless given, and ending no later than the authority."
+          }
+        }
+      },
+      "IntermediateWithdrawal": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "reason"
+        ],
+        "properties": {
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
           }
         }
       }

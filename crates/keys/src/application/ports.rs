@@ -1,6 +1,11 @@
 //! What the keys context needs from storage and from a key provider.
 
-use crate::domain::authority::{AuthorityProfile, CertificateAuthority, CertificateFacts};
+use crate::domain::authority::{
+    AuthorityId, AuthorityProfile, CertificateAuthority, CertificateFacts,
+};
+use crate::domain::intermediate::{
+    IntermediateConstraints, IntermediateId, RequestFacts, SignedIntermediate,
+};
 use crate::domain::key::{
     GeneratedKey, KeyAlgorithm, KeyUse, KeyVersion, KeyVersionId, SignatureEncoding,
 };
@@ -431,4 +436,112 @@ pub trait CertificateWriter: Send + Sync {
     ///
     /// Returns `keys.authority_certificate_unsuitable` if it does not read.
     fn read(&self, pem: &str) -> Result<CertificateFacts, DomainError>;
+
+    /// Reads a certificate signing request (PKCS#10) in PEM, and checks
+    /// its signature with its own public key.
+    ///
+    /// # Errors
+    ///
+    /// Returns `keys.intermediate_request_invalid`, with the reason, if it
+    /// does not read, is larger than 16 kibibytes, its signature does not
+    /// check, or its subject is empty.
+    fn read_request(&self, pem: &str) -> Result<RequestFacts, DomainError>;
+
+    /// The part to be signed of an intermediate's certificate: the
+    /// subject of `authority_certificate` (in DER) as its issuer, the
+    /// request's subject, public key and subject alternative names, a new
+    /// serial number, the validity given, basic constraints with a path
+    /// length of zero, `keyCertSign` and `cRLSign`, the key identifiers,
+    /// and `constraints`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an internal error if it cannot be written.
+    fn intermediate_to_be_signed(
+        &self,
+        authority_certificate: &[u8],
+        request: &RequestFacts,
+        constraints: &IntermediateConstraints,
+        not_before: Timestamp,
+        not_after: Timestamp,
+    ) -> Result<ToBeSigned, DomainError>;
+}
+
+/// Stores the intermediates the tenant's authority signs. Every method
+/// works inside the tenant the unit of work is bound to.
+#[async_trait::async_trait]
+pub trait IntermediateStore: Send + Sync {
+    /// Stores a new intermediate.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn insert(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        intermediate: &SignedIntermediate,
+    ) -> Result<(), DomainError>;
+
+    /// One intermediate.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn get(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: IntermediateId,
+    ) -> Result<Option<SignedIntermediate>, DomainError>;
+
+    /// The intermediates of `authority`, newest first, those older than
+    /// `before` when it is given, at most `limit`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn list(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        authority: AuthorityId,
+        before: Option<IntermediateId>,
+        limit: u32,
+    ) -> Result<Vec<SignedIntermediate>, DomainError>;
+
+    /// Every intermediate of the tenant signed for the key whose subject
+    /// public key info has this SHA-256, in hexadecimal, oldest first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn of_key(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        public_key_sha256: &str,
+    ) -> Result<Vec<SignedIntermediate>, DomainError>;
+
+    /// Stores a withdrawn intermediate if it still has the version it was
+    /// read at, and increments its version.
+    ///
+    /// # Errors
+    ///
+    /// Returns `keys.intermediate_changed` if it changed meanwhile, and
+    /// `keys.intermediate_not_found` if the tenant has no such
+    /// intermediate.
+    async fn update(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        intermediate: &SignedIntermediate,
+    ) -> Result<(), DomainError>;
+
+    /// The SHA-256 of the subject public key info of every intermediate
+    /// of the tenant withdrawn and still valid at `now`, each once.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn withdrawn_keys(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        now: Timestamp,
+    ) -> Result<Vec<String>, DomainError>;
 }

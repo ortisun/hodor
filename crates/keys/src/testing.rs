@@ -1655,3 +1655,297 @@ pub async fn run_authority_contract(
         "keys.authority_not_found"
     );
 }
+
+/// The intermediates of the tenants' authorities kept in memory.
+#[derive(Debug, Clone, Default)]
+pub struct InMemoryIntermediates {
+    rows: Arc<
+        Mutex<BTreeMap<(TenantId, crate::api::IntermediateId), crate::api::SignedIntermediate>>,
+    >,
+}
+
+impl InMemoryIntermediates {
+    fn rows(
+        &self,
+    ) -> std::sync::MutexGuard<
+        '_,
+        BTreeMap<(TenantId, crate::api::IntermediateId), crate::api::SignedIntermediate>,
+    > {
+        self.rows.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn of_tenant(&self, tenant: TenantId) -> Vec<crate::api::SignedIntermediate> {
+        self.rows()
+            .iter()
+            .filter(|((owner, _), _)| *owner == tenant)
+            .map(|(_, row)| row.clone())
+            .collect()
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::api::IntermediateStore for InMemoryIntermediates {
+    async fn insert(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        intermediate: &crate::api::SignedIntermediate,
+    ) -> Result<(), DomainError> {
+        self.rows().insert(
+            (uow.tenant().tenant_id(), intermediate.id()),
+            intermediate.clone(),
+        );
+        Ok(())
+    }
+
+    async fn get(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: crate::api::IntermediateId,
+    ) -> Result<Option<crate::api::SignedIntermediate>, DomainError> {
+        Ok(self.rows().get(&(uow.tenant().tenant_id(), id)).cloned())
+    }
+
+    async fn list(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        authority: crate::api::AuthorityId,
+        before: Option<crate::api::IntermediateId>,
+        limit: u32,
+    ) -> Result<Vec<crate::api::SignedIntermediate>, DomainError> {
+        let mut found: Vec<_> = self
+            .of_tenant(uow.tenant().tenant_id())
+            .into_iter()
+            .filter(|row| row.snapshot().authority_id == authority)
+            .filter(|row| before.is_none_or(|before| row.id() < before))
+            .collect();
+        found.sort_by_key(|row| std::cmp::Reverse(row.id()));
+        found.truncate(limit as usize);
+        Ok(found)
+    }
+
+    async fn of_key(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        public_key_sha256: &str,
+    ) -> Result<Vec<crate::api::SignedIntermediate>, DomainError> {
+        Ok(self
+            .of_tenant(uow.tenant().tenant_id())
+            .into_iter()
+            .filter(|row| row.snapshot().public_key_sha256 == public_key_sha256)
+            .collect())
+    }
+
+    async fn update(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        intermediate: &crate::api::SignedIntermediate,
+    ) -> Result<(), DomainError> {
+        let mut rows = self.rows();
+        let key = (uow.tenant().tenant_id(), intermediate.id());
+        let Some(kept) = rows.get(&key) else {
+            return Err(DomainError::not_found(
+                "keys.intermediate_not_found",
+                "the certificate authority signed no such intermediate",
+            ));
+        };
+        if kept.version() != intermediate.version() {
+            return Err(DomainError::conflict(
+                "keys.intermediate_changed",
+                "the intermediate changed meanwhile; read it again",
+            ));
+        }
+        let mut changed = intermediate.snapshot().clone();
+        changed.version += 1;
+        rows.insert(key, crate::api::SignedIntermediate::from_snapshot(changed));
+        Ok(())
+    }
+
+    async fn withdrawn_keys(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        now: Timestamp,
+    ) -> Result<Vec<String>, DomainError> {
+        let keys: BTreeSet<String> = self
+            .of_tenant(uow.tenant().tenant_id())
+            .into_iter()
+            .filter(|row| row.is_withdrawn() && row.snapshot().not_after > now)
+            .map(|row| row.snapshot().public_key_sha256.clone())
+            .collect();
+        Ok(keys.into_iter().collect())
+    }
+}
+
+/// An intermediate of `authority` for the key named `key`, signed at
+/// `signed_at` for a day, for the contract of intermediate stores: made in
+/// memory, never signed.
+///
+/// # Panics
+///
+/// Never.
+#[must_use]
+pub fn sample_intermediate(
+    authority: crate::api::AuthorityId,
+    key: &str,
+    signed_at: Timestamp,
+) -> crate::api::SignedIntermediate {
+    use crate::api::{
+        IntermediateConstraints, IntermediateId, IntermediateSnapshot, IntermediateState,
+        SignedIntermediate,
+    };
+    SignedIntermediate::signed(IntermediateSnapshot {
+        id: IntermediateId::generate(),
+        authority_id: authority,
+        state: IntermediateState::Active,
+        serial_number: hex_of(IntermediateId::generate().to_string()),
+        subject: "CN=identity.linkerd.cluster.local".to_owned(),
+        uris: vec!["spiffe://cluster.local/ns/linkerd".to_owned()],
+        dns_names: vec!["identity.linkerd.cluster.local".to_owned()],
+        constraints: IntermediateConstraints {
+            permitted_dns_names: vec!["cluster.local".to_owned()],
+            excluded_dns_names: vec!["admin.cluster.local".to_owned()],
+            excluded_ip_ranges: vec!["0.0.0.0/0".to_owned(), "::/0".to_owned()],
+        },
+        certificate: vec![0x30, 0x03, 0x02, 0x01, 0x05],
+        certificate_sha256: "a1".repeat(32),
+        public_key_sha256: key.repeat(64 / key.len().max(1)),
+        request_sha256: "c3".repeat(32),
+        not_before: signed_at - Duration::minutes(1),
+        not_after: signed_at + Duration::days(1),
+        signed_at,
+        withdrawn_at: None,
+        withdrawal_reason: None,
+        version: 0,
+    })
+}
+
+fn hex_of(text: String) -> String {
+    text.chars().filter(char::is_ascii_hexdigit).collect()
+}
+
+/// Runs the contract every intermediate store passes.
+///
+/// # Panics
+///
+/// When the store breaks a rule.
+pub async fn run_intermediate_contract(
+    units_of_work: &dyn UnitOfWorkFactory,
+    store: &dyn crate::api::IntermediateStore,
+) {
+    use crate::api::AuthorityId;
+    let acme = tenant();
+    let globex = tenant();
+    let authority = AuthorityId::generate();
+    let earlier = AuthorityId::generate();
+    let now = Timestamp::from_unix_timestamp(1_800_000_000).expect("time");
+    let first = sample_intermediate(authority, "aa", now);
+    let renewed = sample_intermediate(authority, "aa", now + Duration::hours(20));
+    let other = sample_intermediate(authority, "bb", now + Duration::hours(21));
+    let before = sample_intermediate(earlier, "cc", now - Duration::days(3));
+    let theirs = sample_intermediate(AuthorityId::generate(), "aa", now);
+
+    let mut uow = units_of_work.begin(&acme).await.expect("uow");
+    for row in [&first, &renewed, &other, &before] {
+        store.insert(uow.as_mut(), row).await.expect("insert");
+    }
+    uow.commit().await.expect("commit");
+    let mut uow = units_of_work.begin(&globex).await.expect("uow");
+    store.insert(uow.as_mut(), &theirs).await.expect("insert");
+    uow.commit().await.expect("commit");
+
+    // Read back as stored, each tenant its own.
+    let mut uow = units_of_work.begin(&acme).await.expect("uow");
+    assert_eq!(
+        store.get(uow.as_mut(), first.id()).await.expect("get"),
+        Some(first.clone())
+    );
+    assert_eq!(
+        store.get(uow.as_mut(), theirs.id()).await.expect("get"),
+        None
+    );
+    // The list is of one authority, newest first, a page at a time.
+    let page = store
+        .list(uow.as_mut(), authority, None, 2)
+        .await
+        .expect("list");
+    assert_eq!(page, [other.clone(), renewed.clone()]);
+    let rest = store
+        .list(uow.as_mut(), authority, Some(renewed.id()), 2)
+        .await
+        .expect("list");
+    assert_eq!(rest, std::slice::from_ref(&first));
+    let key = first.snapshot().public_key_sha256.clone();
+    let mut same_key = store.of_key(uow.as_mut(), &key).await.expect("of key");
+    same_key.sort_by_key(crate::api::SignedIntermediate::id);
+    assert_eq!(same_key, [first.clone(), renewed.clone()]);
+    assert!(
+        store
+            .withdrawn_keys(uow.as_mut(), now)
+            .await
+            .expect("none")
+            .is_empty()
+    );
+    drop(uow);
+
+    // Withdrawn once from a reading; a second change from the same
+    // reading is refused.
+    let mut uow = units_of_work.begin(&acme).await.expect("uow");
+    let mut withdrawn = first.clone();
+    withdrawn.withdraw("leaked", now).expect("withdrawn");
+    store
+        .update(uow.as_mut(), &withdrawn)
+        .await
+        .expect("update");
+    uow.commit().await.expect("commit");
+    let mut uow = units_of_work.begin(&acme).await.expect("uow");
+    assert_eq!(
+        store
+            .update(uow.as_mut(), &withdrawn)
+            .await
+            .expect_err("stale")
+            .code(),
+        "keys.intermediate_changed"
+    );
+    drop(uow);
+    let mut uow = units_of_work.begin(&acme).await.expect("uow");
+    let read = store
+        .get(uow.as_mut(), first.id())
+        .await
+        .expect("get")
+        .expect("kept");
+    let mut expected = withdrawn.snapshot().clone();
+    expected.version += 1;
+    assert_eq!(read.snapshot(), &expected);
+
+    // A withdrawn key is listed until its intermediate expires, once.
+    assert_eq!(
+        store.withdrawn_keys(uow.as_mut(), now).await.expect("keys"),
+        std::slice::from_ref(&key)
+    );
+    assert!(
+        store
+            .withdrawn_keys(uow.as_mut(), now + Duration::days(2))
+            .await
+            .expect("keys")
+            .is_empty()
+    );
+    assert_eq!(
+        store
+            .update(uow.as_mut(), &theirs)
+            .await
+            .expect_err("not this tenant's")
+            .code(),
+        "keys.intermediate_not_found"
+    );
+    drop(uow);
+    // Another tenant's key of the same hash is not withdrawn.
+    let mut uow = units_of_work.begin(&globex).await.expect("uow");
+    assert!(
+        store
+            .withdrawn_keys(uow.as_mut(), now)
+            .await
+            .expect("keys")
+            .is_empty()
+    );
+    let theirs_of_key = store.of_key(uow.as_mut(), &key).await.expect("of key");
+    assert_eq!(theirs_of_key, [theirs]);
+}

@@ -64,6 +64,15 @@ impl TokenService {
             ));
         };
         let checked_by_mesh = trust_domain.source() == TrustSource::Mesh;
+        // The keys of the intermediates the tenant's authority signed and
+        // an administrator withdrew: read at every request, so that a
+        // withdrawal holds from the next one.
+        let withdrawn = match forwarded {
+            ForwardedIdentity::Certificate { .. } if trust_domain.bundle().is_some() => {
+                trust_domains.withdrawn_keys(tenant).await?
+            }
+            _ => Vec::new(),
+        };
         let verdict = match forwarded {
             ForwardedIdentity::Linkerd(asserted) => match identity {
                 WorkloadIdentity::Linkerd(bound) if bound.as_str() == asserted => {
@@ -111,7 +120,13 @@ impl TokenService {
                                     .filter(|key| key.kind == SvidKind::X509)
                                     .map(|key| key.jwk.as_str())
                                     .collect();
-                                if certificates.chains_to(certificate, chain, &authorities, now) {
+                                if certificates.chains_to(
+                                    certificate,
+                                    chain,
+                                    &authorities,
+                                    &withdrawn,
+                                    now,
+                                ) {
                                     Ok(())
                                 } else {
                                     Err("the certificate does not chain to the trust domain's \

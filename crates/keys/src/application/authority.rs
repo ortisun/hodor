@@ -3,20 +3,27 @@
 //! See `docs/architecture/contexts/keys.md`, "The certificate authority of
 //! a tenant".
 
-use crate::application::ports::{AuthorityStore, CertificateWriter, KeyProvider, TrustDomainStore};
+use crate::application::ports::{
+    AuthorityStore, CertificateWriter, IntermediateStore, KeyProvider, TrustDomainStore,
+};
 use crate::application::trust_domains::{bundle_summary, name_taken};
 use crate::domain::authority::{
     AuthorityId, AuthorityKey, AuthorityKind, AuthorityRequest, AuthorityState, BACKDATING,
     CertificateAuthority, IssuedCertificate, hexadecimal,
 };
 use crate::domain::event::{AuthorityEvent, TrustDomainEvent};
+use crate::domain::intermediate::{
+    IntermediateId, IntermediateSnapshot, IntermediateState, MAX_REQUEST_BYTES, MAX_SUBJECT_LENGTH,
+    SignedIntermediate, check_active, check_request, request_invalid, trust_domains_signed_for,
+    validity,
+};
 use crate::domain::key::{KeyAlgorithm, KeyVersionId, SignatureEncoding};
 use crate::domain::trust_domain::{
     CheckedSource, MAX_TRUST_DOMAINS, TrustBundle, TrustDomain, TrustSource,
 };
 use hodor_kernel::{
-    Caller, Clock, Digest, DomainError, DomainEvent, EventEnvelope, EventMetadata, TenantContext,
-    Timestamp, UnitOfWork, UnitOfWorkFactory,
+    Caller, Clock, Cursor, Digest, DomainError, DomainEvent, EventEnvelope, EventMetadata, Page,
+    PageRequest, TenantContext, Timestamp, UnitOfWork, UnitOfWorkFactory,
 };
 use serde::Serialize;
 use std::sync::Arc;
@@ -45,6 +52,8 @@ pub struct AuthorityPorts {
     pub store: Arc<dyn AuthorityStore>,
     /// Stores the trust domains it adds.
     pub trust_domains: Arc<dyn TrustDomainStore>,
+    /// Stores the intermediates it signs.
+    pub intermediates: Arc<dyn IntermediateStore>,
     /// Makes the authority's key: the provider that makes the keys of
     /// authorities.
     pub maker: Arc<dyn KeyProvider>,
@@ -102,6 +111,29 @@ fn trust_domain_taken(name: &str) -> DomainError {
          it first",
     )
     .with_detail(format!("`{name}`"))
+}
+
+fn intermediate_not_found() -> DomainError {
+    DomainError::not_found(
+        "keys.intermediate_not_found",
+        "the certificate authority signed no such intermediate",
+    )
+}
+
+fn key_withdrawn() -> DomainError {
+    DomainError::conflict(
+        "keys.intermediate_key_withdrawn",
+        "an intermediate of this key was withdrawn: the key is never signed again",
+    )
+}
+
+/// An intermediate, with the certificates above it, nearest first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Intermediate {
+    /// The intermediate.
+    pub intermediate: SignedIntermediate,
+    /// The authority's certificate, then the certificates above it.
+    pub chain: Vec<Vec<u8>>,
 }
 
 /// Seconds are what a certificate holds: the times kept are those it says.
@@ -308,6 +340,8 @@ impl AuthorityService {
                     signed_sha256: self.sha256(&tbs.bytes),
                     serial_number: Some(tbs.serial_number),
                     trust_domains: names.clone(),
+                    intermediate_id: None,
+                    request_sha256: None,
                 };
                 (
                     CertificateAuthority::root(id, &request, key, certificate, now),
@@ -328,6 +362,8 @@ impl AuthorityService {
                     signed_sha256: self.sha256(&info),
                     serial_number: None,
                     trust_domains: names.clone(),
+                    intermediate_id: None,
+                    request_sha256: None,
                 };
                 (
                     CertificateAuthority::intermediate(id, &request, key, request_der, now),
@@ -477,6 +513,299 @@ impl AuthorityService {
             },
         )?;
         uow.commit().await
+    }
+
+    /// Signs an intermediate of a mesh from its certificate signing
+    /// request in PEM, for `lifetime_days` or the authority's bound, once
+    /// the request meets every rule of "Signing intermediates".
+    ///
+    /// # Errors
+    ///
+    /// Returns `keys.authority_not_found`, `keys.authority_not_active`,
+    /// `keys.intermediate_request_invalid`,
+    /// `keys.intermediate_not_an_authority`,
+    /// `keys.intermediate_path_length_invalid`,
+    /// `keys.intermediate_name_outside_trust_domains`,
+    /// `keys.intermediate_constraints_widened`,
+    /// `keys.intermediate_constraints_unsupported`,
+    /// `keys.intermediate_key_unsuitable`,
+    /// `keys.intermediate_key_withdrawn`,
+    /// `keys.intermediate_lifetime_invalid`, `keys.authority_changed`, and an
+    /// error if the provider cannot sign.
+    pub async fn sign(
+        &self,
+        tenant: &TenantContext,
+        request: &str,
+        lifetime_days: Option<u32>,
+        caller: Caller,
+    ) -> Result<Intermediate, DomainError> {
+        let certificates = &self.ports.certificates;
+        let authority = {
+            let mut uow = self.ports.units_of_work.begin(tenant).await?;
+            self.ports
+                .store
+                .get(uow.as_mut())
+                .await?
+                .ok_or_else(not_found)?
+        };
+        check_active(&authority)?;
+        if request.len() > MAX_REQUEST_BYTES {
+            return Err(request_invalid("it is larger than 16 kibibytes"));
+        }
+        let facts = certificates.read_request(request)?;
+        let constraints = check_request(&facts, &authority)?;
+        let public_key_sha256 = self.sha256(&facts.public_key_info);
+        self.refuse_withdrawn(tenant, &public_key_sha256).await?;
+        let now = whole_seconds(self.ports.clock.now());
+        let (not_before, not_after) = validity(lifetime_days, &authority, now)?;
+        let issuer = authority.certificate().ok_or_else(not_found)?;
+        let tbs = certificates.intermediate_to_be_signed(
+            &issuer.der,
+            &facts,
+            &constraints,
+            not_before,
+            not_after,
+        )?;
+        let signature = self
+            .ports
+            .signer
+            .sign(
+                tenant,
+                &authority.key().version(now),
+                &tbs.bytes,
+                SignatureEncoding::Der,
+            )
+            .await?;
+        let der = certificates.signed(&tbs.bytes, &signature);
+        let trust_domains = trust_domains_signed_for(&constraints, &authority);
+        let intermediate = SignedIntermediate::signed(IntermediateSnapshot {
+            id: IntermediateId::generate(),
+            authority_id: authority.id(),
+            state: IntermediateState::Active,
+            serial_number: tbs.serial_number.clone(),
+            subject: facts
+                .subject_text
+                .chars()
+                .take(MAX_SUBJECT_LENGTH)
+                .collect(),
+            uris: facts.uris.clone(),
+            dns_names: facts.dns_names.clone(),
+            constraints,
+            certificate_sha256: self.sha256(&der),
+            certificate: der,
+            public_key_sha256: public_key_sha256.clone(),
+            request_sha256: self.sha256(&facts.der),
+            not_before,
+            not_after,
+            signed_at: now,
+            withdrawn_at: None,
+            withdrawal_reason: None,
+            version: 0,
+        });
+
+        let mut uow = self.ports.units_of_work.begin(tenant).await?;
+        // Held until the end, so that a withdrawal of the same key and the
+        // removal of the authority wait for this signature, or it for them.
+        let held = self
+            .ports
+            .store
+            .lock(uow.as_mut())
+            .await?
+            .filter(|held| held.id() == authority.id())
+            .ok_or_else(not_found)?;
+        check_active(&held)?;
+        if self
+            .ports
+            .intermediates
+            .of_key(uow.as_mut(), &public_key_sha256)
+            .await?
+            .iter()
+            .any(SignedIntermediate::is_withdrawn)
+        {
+            return Err(key_withdrawn());
+        }
+        self.ports
+            .intermediates
+            .insert(uow.as_mut(), &intermediate)
+            .await?;
+        let state = intermediate.snapshot();
+        self.record(
+            uow.as_mut(),
+            caller,
+            &AuthorityEvent::Signed {
+                authority_id: authority.id(),
+                signed: "intermediate_certificate",
+                signed_sha256: self.sha256(&tbs.bytes),
+                serial_number: Some(tbs.serial_number),
+                trust_domains,
+                intermediate_id: Some(intermediate.id()),
+                request_sha256: Some(state.request_sha256.clone()),
+            },
+        )?;
+        uow.commit().await?;
+        Ok(Intermediate {
+            intermediate,
+            chain: authority.chain_above(),
+        })
+    }
+
+    async fn refuse_withdrawn(
+        &self,
+        tenant: &TenantContext,
+        public_key_sha256: &str,
+    ) -> Result<(), DomainError> {
+        let mut uow = self.ports.units_of_work.begin(tenant).await?;
+        let withdrawn = self
+            .ports
+            .intermediates
+            .of_key(uow.as_mut(), public_key_sha256)
+            .await?
+            .iter()
+            .any(SignedIntermediate::is_withdrawn);
+        if withdrawn {
+            Err(key_withdrawn())
+        } else {
+            Ok(())
+        }
+    }
+
+    /// The intermediates of the tenant's authority, newest first, a page
+    /// at a time, with the certificates above them.
+    ///
+    /// # Errors
+    ///
+    /// Returns `keys.authority_not_found` and `request.cursor_invalid`.
+    pub async fn intermediates(
+        &self,
+        tenant: &TenantContext,
+        page: &PageRequest,
+    ) -> Result<(Page<SignedIntermediate>, Vec<Vec<u8>>), DomainError> {
+        let before = page
+            .cursor()
+            .map(|cursor| {
+                cursor.as_str().parse::<IntermediateId>().map_err(|_| {
+                    DomainError::invalid("request.cursor_invalid", "the cursor is not valid")
+                })
+            })
+            .transpose()?;
+        let mut uow = self.ports.units_of_work.begin(tenant).await?;
+        let authority = self
+            .ports
+            .store
+            .get(uow.as_mut())
+            .await?
+            .ok_or_else(not_found)?;
+        let mut found = self
+            .ports
+            .intermediates
+            .list(uow.as_mut(), authority.id(), before, page.limit() + 1)
+            .await?;
+        let more = found.len() > page.limit() as usize;
+        found.truncate(page.limit() as usize);
+        let next_cursor = more
+            .then(|| found.last().map(|last| Cursor::new(last.id().to_string())))
+            .flatten();
+        Ok((
+            Page {
+                items: found,
+                next_cursor,
+            },
+            authority.chain_above(),
+        ))
+    }
+
+    /// One intermediate of the tenant's authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns `keys.authority_not_found` and `keys.intermediate_not_found`.
+    pub async fn intermediate(
+        &self,
+        tenant: &TenantContext,
+        id: IntermediateId,
+    ) -> Result<Intermediate, DomainError> {
+        let mut uow = self.ports.units_of_work.begin(tenant).await?;
+        let authority = self
+            .ports
+            .store
+            .get(uow.as_mut())
+            .await?
+            .ok_or_else(not_found)?;
+        let intermediate = self
+            .ports
+            .intermediates
+            .get(uow.as_mut(), id)
+            .await?
+            .filter(|found| found.snapshot().authority_id == authority.id())
+            .ok_or_else(intermediate_not_found)?;
+        Ok(Intermediate {
+            intermediate,
+            chain: authority.chain_above(),
+        })
+    }
+
+    /// Withdraws an intermediate of the tenant's authority, and every
+    /// other intermediate of the tenant signed for its key that is not
+    /// withdrawn yet. Answers the one asked for first, then the others.
+    ///
+    /// # Errors
+    ///
+    /// Returns `keys.authority_not_found`, `keys.intermediate_not_found`,
+    /// `keys.intermediate_reason_invalid`, `keys.intermediate_withdrawn`
+    /// and `keys.intermediate_changed`.
+    pub async fn withdraw(
+        &self,
+        tenant: &TenantContext,
+        id: IntermediateId,
+        reason: &str,
+        caller: Caller,
+    ) -> Result<(Vec<SignedIntermediate>, Vec<Vec<u8>>), DomainError> {
+        let reason = crate::domain::intermediate::check_reason(reason)?;
+        let mut uow = self.ports.units_of_work.begin(tenant).await?;
+        let authority = self
+            .ports
+            .store
+            .lock(uow.as_mut())
+            .await?
+            .ok_or_else(not_found)?;
+        let mut asked = self
+            .ports
+            .intermediates
+            .get(uow.as_mut(), id)
+            .await?
+            .filter(|found| found.snapshot().authority_id == authority.id())
+            .ok_or_else(intermediate_not_found)?;
+        let now = self.ports.clock.now();
+        asked.withdraw(&reason, now)?;
+        let key = asked.snapshot().public_key_sha256.clone();
+        let mut withdrawn = vec![asked];
+        for mut other in self.ports.intermediates.of_key(uow.as_mut(), &key).await? {
+            if other.id() == id || other.is_withdrawn() {
+                continue;
+            }
+            other.withdraw(&reason, now)?;
+            withdrawn.push(other);
+        }
+        for intermediate in &withdrawn {
+            self.ports
+                .intermediates
+                .update(uow.as_mut(), intermediate)
+                .await?;
+            let state = intermediate.snapshot();
+            self.record(
+                uow.as_mut(),
+                caller,
+                &AuthorityEvent::IntermediateWithdrawn {
+                    authority_id: state.authority_id,
+                    intermediate_id: state.id,
+                    serial_number: state.serial_number.clone(),
+                    public_key_sha256: state.public_key_sha256.clone(),
+                    reason: reason.clone(),
+                },
+            )?;
+        }
+        uow.commit().await?;
+        Ok((withdrawn, authority.chain_above()))
     }
 
     /// The bundle of the tenant's authority, if it is active.

@@ -722,6 +722,19 @@ impl CertificateAuthority {
         Ok(())
     }
 
+    /// What is above an intermediate it signs, nearest first: its own
+    /// certificate, then the certificates above it as given. Empty until
+    /// it is active.
+    #[must_use]
+    pub fn chain_above(&self) -> Vec<Vec<u8>> {
+        self.state
+            .certificate
+            .iter()
+            .map(|issued| issued.der.clone())
+            .chain(self.state.chain.iter().cloned())
+            .collect()
+    }
+
     /// The bundle it publishes: its certificate and its key, once active.
     ///
     /// # Errors

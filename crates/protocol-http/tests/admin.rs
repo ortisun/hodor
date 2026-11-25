@@ -379,6 +379,7 @@ async fn world_with_keys(with_keys: bool) -> World {
                 units_of_work: units(),
                 store: Arc::new(hodor_keys::testing::InMemoryAuthorities::default()),
                 trust_domains: Arc::new(trust_domain_rows.clone()),
+                intermediates: Arc::new(hodor_keys::testing::InMemoryIntermediates::default()),
                 maker: provider.clone(),
                 signer: provider,
                 certificates: Arc::new(hodor_adapters_crypto::X509Certificates),
@@ -667,6 +668,7 @@ impl Operation {
                 .replace("{delivery_id}", &UserId::generate().to_string())
                 .replace("{entry_id}", &UserId::generate().to_string())
                 .replace("{trust_domain_id}", &UserId::generate().to_string())
+                .replace("{intermediate_id}", &UserId::generate().to_string())
         )
     }
 }
@@ -713,7 +715,7 @@ fn the_document_and_the_routes_list_the_same_operations_and_permissions() {
         })
         .collect();
     assert_eq!(documented, served);
-    assert_eq!(served.len(), 150);
+    assert_eq!(served.len(), 154);
 
     // Every operation says how it refuses.
     let document: serde_json::Value = serde_json::from_str(ADMIN_OPENAPI).expect("valid JSON");
@@ -757,6 +759,21 @@ async fn with_the_authority_off_the_document_does_not_name_it() {
     let paths = whole["paths"].as_object_mut().expect("paths");
     assert!(paths.remove("/certificate-authority").is_some());
     assert!(paths.remove("/certificate-authority:install").is_some());
+    assert!(
+        paths
+            .remove("/certificate-authority/intermediates")
+            .is_some()
+    );
+    assert!(
+        paths
+            .remove("/certificate-authority/intermediates/{intermediate_id}")
+            .is_some()
+    );
+    assert!(
+        paths
+            .remove("/certificate-authority/intermediates/{intermediate_id}:withdraw")
+            .is_some()
+    );
     let schemas = whole["components"]["schemas"]
         .as_object_mut()
         .expect("schemas");
@@ -764,6 +781,9 @@ async fn with_the_authority_off_the_document_does_not_name_it() {
         "CertificateAuthority",
         "NewCertificateAuthority",
         "CertificateAuthorityCertificate",
+        "Intermediate",
+        "NewIntermediate",
+        "IntermediateWithdrawal",
     ] {
         assert!(schemas.remove(schema).is_some(), "{schema}");
     }
@@ -791,6 +811,16 @@ async fn with_the_authority_off_its_operations_are_not_routed() {
         (Method::POST, "/certificate-authority"),
         (Method::POST, "/certificate-authority:install"),
         (Method::DELETE, "/certificate-authority"),
+        (Method::GET, "/certificate-authority/intermediates"),
+        (Method::POST, "/certificate-authority/intermediates"),
+        (
+            Method::GET,
+            "/certificate-authority/intermediates/0193f3b1-0000-7000-8000-000000000000",
+        ),
+        (
+            Method::POST,
+            "/certificate-authority/intermediates/0193f3b1-0000-7000-8000-000000000000:withdraw",
+        ),
     ] {
         let reply = world
             .send(

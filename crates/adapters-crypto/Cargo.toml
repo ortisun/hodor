@@ -32,7 +32,7 @@ serde_json.workspace = true
 sha2.workspace = true
 time.workspace = true
 tokio.workspace = true
-x509-parser.workspace = true
+x509-parser = { workspace = true, features = ["verify-aws"] }
 zeroize.workspace = true
 
 [dev-dependencies]

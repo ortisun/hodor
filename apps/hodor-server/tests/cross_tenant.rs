@@ -466,7 +466,8 @@ async fn an_administrators_token_is_refused_by_every_operation_of_another_tenant
                 .replace("{delivery_id}", &globex.ana.to_string())
                 .replace("{api_key_id}", &globex.ana.to_string())
                 .replace("{entry_id}", &globex.ana.to_string())
-                .replace("{trust_domain_id}", &globex.ana.to_string());
+                .replace("{trust_domain_id}", &globex.ana.to_string())
+                .replace("{intermediate_id}", &globex.ana.to_string());
             let method: Method = method.to_uppercase().parse().expect("method");
             let (status, body) = world
                 .admin(
@@ -485,7 +486,7 @@ async fn an_administrators_token_is_refused_by_every_operation_of_another_tenant
             tried += 1;
         }
     }
-    assert_eq!(tried, 150, "every documented operation was tried");
+    assert_eq!(tried, 154, "every documented operation was tried");
 
     // The token is good where it belongs, and nothing happened in Globex:
     // it has its two users, both active.
@@ -4797,12 +4798,12 @@ async fn a_jwt_svid_for_one_tenant_is_refused_by_another_under_the_same_trust_do
 }
 
 /// A tenant's application with the scope `read`, a trust domain
-/// `cluster.local` trusting `authority`, and a client of `spiffe_x509`
-/// bound to `identity`. Answers the client's identifier.
+/// `cluster.local` trusting `authority` when one is given, and a client of
+/// `spiffe_x509` bound to `identity`. Answers the client's identifier.
 async fn workload_client_trusting(
     world: &World,
     tenant: &Tenant,
-    authority: &hodor_adapters_crypto::testing::certificates::TestAuthority,
+    authority: Option<&hodor_adapters_crypto::testing::certificates::TestAuthority>,
     identity: &str,
 ) -> String {
     use hodor_adapters_crypto::testing::certificates::bundle;
@@ -4835,20 +4836,22 @@ async fn workload_client_trusting(
         )
         .await;
     assert_eq!(status, StatusCode::CREATED);
-    let (status, added) = world
-        .admin(
-            tenant,
-            token,
-            Method::POST,
-            "/trust-domains",
-            Some(serde_json::json!({
-                "name": "cluster.local",
-                "source": "uploaded",
-                "bundle": bundle(&[authority.bundle_element()]),
-            })),
-        )
-        .await;
-    assert_eq!(status, StatusCode::CREATED, "{added}");
+    if let Some(authority) = authority {
+        let (status, added) = world
+            .admin(
+                tenant,
+                token,
+                Method::POST,
+                "/trust-domains",
+                Some(serde_json::json!({
+                    "name": "cluster.local",
+                    "source": "uploaded",
+                    "bundle": bundle(&[authority.bundle_element()]),
+                })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{added}");
+    }
     let (status, account) = world
         .admin(
             tenant,
@@ -4892,20 +4895,35 @@ async fn token_with_certificate(
     client: &str,
     certificate: &[u8],
 ) -> StatusCode {
+    token_with_chain(world, tenant, client, certificate, None).await
+}
+
+/// The same, with a certificate above it in `Client-Cert-Chain`.
+async fn token_with_chain(
+    world: &World,
+    tenant: &Tenant,
+    client: &str,
+    certificate: &[u8],
+    chain: Option<&[u8]>,
+) -> StatusCode {
     use base64::Engine as _;
-    Client::new()
+    let encoded = |der: &[u8]| {
+        format!(
+            ":{}:",
+            base64::engine::general_purpose::STANDARD.encode(der)
+        )
+    };
+    let mut request = Client::new()
         .post(format!(
             "{}/t/{}/oauth2/token",
             world.server.base, tenant.slug
         ))
         .header("content-type", "application/x-www-form-urlencoded")
-        .header(
-            "client-cert",
-            format!(
-                ":{}:",
-                base64::engine::general_purpose::STANDARD.encode(certificate)
-            ),
-        )
+        .header("client-cert", encoded(certificate));
+    if let Some(chain) = chain {
+        request = request.header("client-cert-chain", encoded(chain));
+    }
+    request
         .body(
             form_urlencoded::Serializer::new(String::new())
                 .extend_pairs([
@@ -4936,8 +4954,9 @@ async fn a_certificate_of_one_tenants_trust_domain_is_refused_by_another_under_t
     // Two meshes, each named `cluster.local`, each with an authority of its
     // own, and a client in each bound to the same identifier.
     let (acme_mesh, globex_mesh) = (TestAuthority::root("mesh"), TestAuthority::root("mesh"));
-    let acme_client = workload_client_trusting(&world, acme, &acme_mesh, identity).await;
-    let globex_client = workload_client_trusting(&world, globex, &globex_mesh, identity).await;
+    let acme_client = workload_client_trusting(&world, acme, Some(&acme_mesh), identity).await;
+    let globex_client =
+        workload_client_trusting(&world, globex, Some(&globex_mesh), identity).await;
     let acme_certificate = acme_mesh.issue(&Leaf::uri(identity));
     let globex_certificate = globex_mesh.issue(&Leaf::uri(identity));
 
@@ -6010,4 +6029,163 @@ async fn one_tenants_certificate_authority_is_never_read_published_or_used_for_a
         .await;
     assert_eq!(domains["items"][0]["name"], "cluster.local");
     assert_eq!(domains["items"][0]["bundle"], acme_bundle);
+}
+
+#[tokio::test]
+async fn an_intermediate_of_one_tenants_authority_is_never_read_withdrawn_or_trusted_by_another() {
+    use base64::Engine as _;
+    use hodor_adapters_crypto::testing::certificates::{Leaf, MeshIntermediate, MeshRequest};
+    let world = world_with(&[
+        ("HODOR_SECRET_KEYS", ROOT_KEY),
+        ("HODOR_CERTIFICATE_AUTHORITY", "development"),
+        ("HODOR_TRUSTED_PROXIES", "127.0.0.1"),
+        ("HODOR_FORWARDED_HEADER", "none"),
+        ("HODOR_CLIENT_IDENTITY_HEADER", "client-cert"),
+    ])
+    .await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    let identity = "spiffe://cluster.local/ns/shop/sa/web";
+    // Each tenant has its own authority for a trust domain of the same
+    // name, and a client bound to the same identifier.
+    for tenant in [acme, globex] {
+        let (status, created) = world
+            .admin(
+                tenant,
+                &tenant.administrator_token,
+                Method::POST,
+                "/certificate-authority",
+                Some(serde_json::json!({ "kind": "root", "trust_domains": ["cluster.local"] })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{created}");
+    }
+    let acme_client = workload_client_trusting(&world, acme, None, identity).await;
+    let globex_client = workload_client_trusting(&world, globex, None, identity).await;
+
+    // Acme's authority signs a mesh's intermediate.
+    let mesh = MeshIntermediate::new(&MeshRequest::authority("istio-ca"));
+    async fn sign(
+        world: &World,
+        tenant: &Tenant,
+        request: &str,
+    ) -> (StatusCode, serde_json::Value) {
+        world
+            .admin(
+                tenant,
+                &tenant.administrator_token,
+                Method::POST,
+                "/certificate-authority/intermediates",
+                Some(serde_json::json!({ "certificate_signing_request": request })),
+            )
+            .await
+    }
+    let (status, signed) = sign(&world, acme, mesh.request()).await;
+    assert_eq!(status, StatusCode::CREATED, "{signed}");
+    let id = signed["id"].as_str().expect("id").to_owned();
+    let der = |answer: &serde_json::Value| {
+        let body: String = answer["certificate"]
+            .as_str()
+            .expect("PEM")
+            .lines()
+            .filter(|line| !line.starts_with("-----"))
+            .collect();
+        base64::engine::general_purpose::STANDARD
+            .decode(body)
+            .expect("base64")
+    };
+    let acme_intermediate = der(&signed);
+    let workload = mesh.issue(&Leaf::uri(identity));
+
+    // Trusted by Acme; never by Globex, whose authority of the same name
+    // did not sign it.
+    assert_eq!(
+        token_with_chain(
+            &world,
+            acme,
+            &acme_client,
+            &workload,
+            Some(&acme_intermediate)
+        )
+        .await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        token_with_chain(
+            &world,
+            globex,
+            &globex_client,
+            &workload,
+            Some(&acme_intermediate)
+        )
+        .await,
+        StatusCode::UNAUTHORIZED
+    );
+
+    // Globex neither reads, lists nor withdraws Acme's intermediate.
+    let token = &globex.administrator_token;
+    let path = format!("/certificate-authority/intermediates/{id}");
+    let (status, body) = world.admin(globex, token, Method::GET, &path, None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["code"], "keys.intermediate_not_found");
+    let (status, body) = world
+        .admin(
+            globex,
+            token,
+            Method::POST,
+            &format!("{path}:withdraw"),
+            Some(serde_json::json!({ "reason": "not ours" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["code"], "keys.intermediate_not_found");
+    let (_, listed) = world
+        .admin(
+            globex,
+            token,
+            Method::GET,
+            "/certificate-authority/intermediates",
+            None,
+        )
+        .await;
+    assert_eq!(listed["items"], serde_json::json!([]));
+
+    // Acme withdraws it: refused at Acme from the next request. The
+    // withdrawal is Acme's alone: Globex signs the same key and trusts it.
+    let (status, _) = world
+        .admin(
+            acme,
+            &acme.administrator_token,
+            Method::POST,
+            &format!("{path}:withdraw"),
+            Some(serde_json::json!({ "reason": "leaked" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        token_with_chain(
+            &world,
+            acme,
+            &acme_client,
+            &workload,
+            Some(&acme_intermediate)
+        )
+        .await,
+        StatusCode::UNAUTHORIZED
+    );
+    let (status, theirs) = sign(&world, globex, mesh.request()).await;
+    assert_eq!(status, StatusCode::CREATED, "{theirs}");
+    assert_eq!(
+        token_with_chain(
+            &world,
+            globex,
+            &globex_client,
+            &workload,
+            Some(&der(&theirs))
+        )
+        .await,
+        StatusCode::OK
+    );
+    let (status, refused) = sign(&world, acme, mesh.request()).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(refused["code"], "keys.intermediate_key_withdrawn");
 }

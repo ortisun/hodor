@@ -18,14 +18,15 @@ use hodor_adapters_postgres::{
     PgAuthorizationRequestStore, PgBundleStore, PgClaimMapperStore, PgClientAssertionStore,
     PgClientStore, PgConsentStore, PgDecisionLogStore, PgDeliveryStore, PgDeprovisioningPolicy,
     PgEmailSignInStore, PgEndpointStore, PgEngineBindingStore, PgGrantStore, PgGroupPolicy,
-    PgGroupRepository, PgInstanceStatusStore, PgInstanceStore, PgInvitationRepository, PgKeyStore,
-    PgLinkStore, PgMessageQueue, PgNativeRoleStore, PgOrganizationRepository,
-    PgPairwiseSecretStore, PgPasswordStore, PgPendingAuthorizationStore, PgPolicyVersionStore,
-    PgProviderStore, PgProvisionedGroupRepository, PgProvisionedUserRepository, PgPublicationStore,
-    PgRecoveryCodeStore, PgRefreshTokenStore, PgResourceServerStore, PgRoleAssignmentStore,
-    PgSealingStateStore, PgSessionStore, PgSimulationStore, PgTenantDirectory, PgTenantRepository,
-    PgTotpStore, PgTransactionStore, PgTrustDomainStore, PgUploadedDecisionStore, PgUserRepository,
-    PgVerificationTokenStore, PgWebAuthnStore, PgWorkloadRepository,
+    PgGroupRepository, PgInstanceStatusStore, PgInstanceStore, PgIntermediateStore,
+    PgInvitationRepository, PgKeyStore, PgLinkStore, PgMessageQueue, PgNativeRoleStore,
+    PgOrganizationRepository, PgPairwiseSecretStore, PgPasswordStore, PgPendingAuthorizationStore,
+    PgPolicyVersionStore, PgProviderStore, PgProvisionedGroupRepository,
+    PgProvisionedUserRepository, PgPublicationStore, PgRecoveryCodeStore, PgRefreshTokenStore,
+    PgResourceServerStore, PgRoleAssignmentStore, PgSealingStateStore, PgSessionStore,
+    PgSimulationStore, PgTenantDirectory, PgTenantRepository, PgTotpStore, PgTransactionStore,
+    PgTrustDomainStore, PgUploadedDecisionStore, PgUserRepository, PgVerificationTokenStore,
+    PgWebAuthnStore, PgWorkloadRepository,
 };
 use hodor_audit::api::AuditService;
 use hodor_authentication::api::{
@@ -1359,6 +1360,7 @@ fn authority(
             units_of_work: Arc::new(database.clone()),
             store: Arc::new(PgAuthorityStore),
             trust_domains: Arc::new(PgTrustDomainStore),
+            intermediates: Arc::new(PgIntermediateStore),
             maker: providers.authorities(),
             signer: Arc::new(providers),
             certificates: Arc::new(X509Certificates),
@@ -1705,7 +1707,8 @@ fn administration(
 /// The trust domains an administrator manages. Bundle endpoints are checked
 /// and fetched by the guarded outbound client, with the development
 /// exception of this installation; nothing of a bundle is secret, so no
-/// keys are needed.
+/// keys are needed. The withdrawn keys of the intermediates the tenants'
+/// authorities signed are read with them.
 fn trust_domains(config: &Config, database: &Database) -> Result<TrustDomainService, DomainError> {
     let guarded = || {
         GuardedHttpClient::new(OutboundPolicy {
@@ -1721,7 +1724,10 @@ fn trust_domains(config: &Config, database: &Database) -> Result<TrustDomainServ
         http: Arc::new(guarded()?),
         digest: Arc::new(Sha256Digest),
         clock: Arc::new(SystemClock),
-    }))
+    })
+    // Every check of a certificate path reads the withdrawn keys of the
+    // tenant's intermediates, whether or not the authority is on now.
+    .with_intermediates(Arc::new(PgIntermediateStore)))
 }
 
 /// The webhooks an administrator manages, when there are keys to seal

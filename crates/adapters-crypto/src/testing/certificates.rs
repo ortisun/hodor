@@ -270,3 +270,227 @@ pub async fn issue_under_authority(
         .expect("signed by the authority's key");
     crate::X509Certificates.signed(&to_be_signed, &signature)
 }
+
+/// The kind of key a mesh's intermediate is made with.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MeshKey {
+    /// ECDSA on P-256.
+    #[default]
+    P256,
+    /// ECDSA on P-384.
+    P384,
+    /// RSA of 2048 bits, too small for an intermediate.
+    Rsa2048,
+    /// RSA of 3072 bits.
+    Rsa3072,
+    /// Ed25519, which the authority does not sign.
+    Ed25519,
+}
+
+/// What a mesh's certificate signing request for its intermediate asks
+/// for, written as cert-manager or OpenSSL would.
+#[derive(Debug, Clone)]
+pub struct MeshRequest {
+    /// The common name of its subject.
+    pub common_name: String,
+    /// The URIs of its subject alternative names.
+    pub uris: Vec<String>,
+    /// The DNS names of its subject alternative names.
+    pub dns_names: Vec<String>,
+    /// An IP address among its names.
+    pub address: bool,
+    /// What its basic constraints say of `cA`; `None` for no basic
+    /// constraints.
+    pub authority: Option<bool>,
+    /// The path length it asks for.
+    pub path_length: Option<u8>,
+    /// The DNS names its name constraints permit.
+    pub permitted_dns_names: Vec<String>,
+    /// The DNS names its name constraints exclude.
+    pub excluded_dns_names: Vec<String>,
+    /// The URI hosts its name constraints permit.
+    pub permitted_uris: Vec<String>,
+    /// Whether its name constraints permit every IPv4 address.
+    pub permitted_addresses: bool,
+    /// Its key.
+    pub key: MeshKey,
+}
+
+impl MeshRequest {
+    /// A request for an authority, without a path length, as cert-manager
+    /// writes one, with this common name and nothing else.
+    #[must_use]
+    pub fn authority(common_name: &str) -> Self {
+        Self {
+            common_name: common_name.to_owned(),
+            uris: Vec::new(),
+            dns_names: Vec::new(),
+            address: false,
+            authority: Some(true),
+            path_length: None,
+            permitted_dns_names: Vec::new(),
+            excluded_dns_names: Vec::new(),
+            permitted_uris: Vec::new(),
+            permitted_addresses: false,
+            key: MeshKey::P256,
+        }
+    }
+}
+
+/// A mesh's intermediate: its key and its certificate signing request,
+/// and, once the tenant's authority signed it, what it issues to its
+/// workloads.
+pub struct MeshIntermediate {
+    key: KeyPair,
+    issuer: rcgen::Certificate,
+    request: String,
+}
+
+impl std::fmt::Debug for MeshIntermediate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MeshIntermediate").finish_non_exhaustive()
+    }
+}
+
+/// A DER element.
+fn element(tag: u8, content: &[u8]) -> Vec<u8> {
+    let mut out = vec![tag];
+    let length = content.len();
+    if length < 0x80 {
+        out.push(u8::try_from(length).expect("short"));
+    } else if length < 0x100 {
+        out.extend([0x81, u8::try_from(length).expect("one byte")]);
+    } else {
+        out.extend([0x82]);
+        out.extend(u16::try_from(length).expect("two bytes").to_be_bytes());
+    }
+    out.extend_from_slice(content);
+    out
+}
+
+fn mesh_key(kind: MeshKey) -> KeyPair {
+    match kind {
+        MeshKey::P256 => KeyPair::generate(),
+        MeshKey::P384 => KeyPair::generate_for(&rcgen::PKCS_ECDSA_P384_SHA384),
+        MeshKey::Rsa2048 => {
+            KeyPair::generate_rsa_for(&rcgen::PKCS_RSA_SHA256, rcgen::RsaKeySize::_2048)
+        }
+        MeshKey::Rsa3072 => {
+            KeyPair::generate_rsa_for(&rcgen::PKCS_RSA_SHA256, rcgen::RsaKeySize::_3072)
+        }
+        MeshKey::Ed25519 => KeyPair::generate_for(&rcgen::PKCS_ED25519),
+    }
+    .expect("a key")
+}
+
+impl MeshIntermediate {
+    /// A new key and the certificate signing request for it.
+    ///
+    /// # Panics
+    ///
+    /// If a name is not ASCII, or `rcgen` cannot make it.
+    #[must_use]
+    pub fn new(asked: &MeshRequest) -> Self {
+        let key = mesh_key(asked.key);
+        let mut parameters = CertificateParams::default();
+        parameters
+            .distinguished_name
+            .push(DnType::CommonName, asked.common_name.as_str());
+        parameters.subject_alt_names = asked
+            .uris
+            .iter()
+            .map(|uri| SanType::URI(uri.as_str().try_into().expect("an ASCII URI")))
+            .chain(
+                asked
+                    .dns_names
+                    .iter()
+                    .map(|name| SanType::DnsName(name.as_str().try_into().expect("ASCII"))),
+            )
+            .chain(
+                asked
+                    .address
+                    .then(|| SanType::IpAddress(std::net::IpAddr::from([10, 0, 0, 1]))),
+            )
+            .collect();
+        let mut extensions = Vec::new();
+        if let Some(authority) = asked.authority {
+            let mut content = Vec::new();
+            if authority {
+                content.extend([0x01, 0x01, 0xff]);
+            }
+            if let Some(length) = asked.path_length {
+                content.extend([0x02, 0x01, length]);
+            }
+            let mut basic =
+                rcgen::CustomExtension::from_oid_content(&[2, 5, 29, 19], element(0x30, &content));
+            basic.set_criticality(true);
+            extensions.push(basic);
+        }
+        let mut permitted = Vec::new();
+        for name in &asked.permitted_dns_names {
+            permitted.extend(element(0x30, &element(0x82, name.as_bytes())));
+        }
+        for host in &asked.permitted_uris {
+            permitted.extend(element(0x30, &element(0x86, host.as_bytes())));
+        }
+        if asked.permitted_addresses {
+            permitted.extend(element(0x30, &element(0x87, &[0; 8])));
+        }
+        let mut excluded = Vec::new();
+        for name in &asked.excluded_dns_names {
+            excluded.extend(element(0x30, &element(0x82, name.as_bytes())));
+        }
+        if !permitted.is_empty() || !excluded.is_empty() {
+            let mut content = Vec::new();
+            if !permitted.is_empty() {
+                content.extend(element(0xa0, &permitted));
+            }
+            if !excluded.is_empty() {
+                content.extend(element(0xa1, &excluded));
+            }
+            let mut constraints =
+                rcgen::CustomExtension::from_oid_content(&[2, 5, 29, 30], element(0x30, &content));
+            constraints.set_criticality(true);
+            extensions.push(constraints);
+        }
+        parameters.custom_extensions = extensions;
+        let request = parameters
+            .serialize_request(&key)
+            .expect("a request")
+            .pem()
+            .expect("PEM");
+        // What the intermediate is as an issuer: its subject and its key.
+        let mut issuer = CertificateParams::default();
+        issuer
+            .distinguished_name
+            .push(DnType::CommonName, asked.common_name.as_str());
+        issuer.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
+        let issuer = issuer.self_signed(&key).expect("the issuer");
+        Self {
+            key,
+            issuer,
+            request,
+        }
+    }
+
+    /// Its certificate signing request, in PEM.
+    #[must_use]
+    pub fn request(&self) -> &str {
+        &self.request
+    }
+
+    /// A workload's certificate it issues, in DER.
+    ///
+    /// # Panics
+    ///
+    /// If a name is not ASCII, or `rcgen` cannot make it.
+    #[must_use]
+    pub fn issue(&self, leaf: &Leaf) -> Vec<u8> {
+        let (parameters, key) = leaf_parameters(leaf);
+        parameters
+            .signed_by(&key, &self.issuer, &self.key)
+            .expect("a certificate")
+            .der()
+            .to_vec()
+    }
+}

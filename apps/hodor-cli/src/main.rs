@@ -3,6 +3,7 @@
 //! applications, recovery codes and checking the audit log.
 
 mod applications;
+mod authority;
 mod decisions;
 mod memberships;
 mod policies;
@@ -39,8 +40,8 @@ use hodor_kernel::{
     Actor, CorrelationId, DomainError, HttpClient, Secret, SecretBox, SystemClock, TenantContext,
 };
 use hodor_keys::api::{
-    KeyAlgorithm, KeyProvider, KeyService, KeyState, KeyUse, KeyVersion, KeyVersionId,
-    RotationPolicy, TenantSecretBox,
+    KeyAlgorithm, KeyProvider, KeyProviders, KeyService, KeyState, KeyUse, KeyVersion,
+    KeyVersionId, RotationPolicy, TenantSecretBox,
 };
 use hodor_tenant::api::{
     AssuranceLevel, AssuranceLevels, AssuranceRequirement, Caller, CreateTenant, Deprovisioning,
@@ -400,6 +401,28 @@ enum Command {
         command: KeysCommand,
     },
 
+    /// Sign, list and withdraw the intermediates a tenant's certificate
+    /// authority signs for its meshes.
+    Authority {
+        /// Connection URL of the application role.
+        #[arg(
+            long,
+            env = "HODOR_DATABASE_URL",
+            hide_env_values = true,
+            global = true
+        )]
+        database_url: Option<String>,
+        /// The keys that wrap the tenants' keys, as the server has them.
+        #[arg(long, env = "HODOR_SECRET_KEYS", hide_env_values = true, global = true)]
+        secret_keys: Option<String>,
+        /// The certificate authority of the tenants, as the server has it:
+        /// `on` or `development`.
+        #[arg(long, env = "HODOR_CERTIFICATE_AUTHORITY", global = true)]
+        certificate_authority: Option<String>,
+        #[command(subcommand)]
+        command: authority::AuthorityCommand,
+    },
+
     /// Manage people's recovery codes, until people can do it themselves
     /// from the account pages.
     RecoveryCodes {
@@ -556,7 +579,7 @@ struct RoleArgs {
     /// The user's identifier.
     #[arg(long)]
     user: hodor_kernel::UserId,
-    /// `tenant_administrator` or `tenant_auditor`.
+    /// `tenant_administrator`, `tenant_auditor` or `certificate_signer`.
     #[arg(long)]
     role: String,
 }
@@ -2282,6 +2305,35 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 writeln!(std::io::stdout(), "{output}")?;
             }
         }
+        Command::Authority {
+            database_url,
+            secret_keys,
+            certificate_authority,
+            command,
+        } => {
+            let database = connect(database_url).await?;
+            let printed = authority::run(
+                &database,
+                authority::Installation {
+                    secret_keys,
+                    setting: certificate_authority,
+                },
+                command,
+            )
+            .await
+            .map_err(|error| match error.detail() {
+                Some(detail) if !detail.is_empty() => {
+                    format!("{}: {}\n{detail}", error.code(), error.message())
+                }
+                _ => format!("{}: {}", error.code(), error.message()),
+            })?;
+            if let Some(note) = printed.note {
+                writeln!(std::io::stderr(), "{note}")?;
+            }
+            if !printed.output.is_empty() {
+                writeln!(std::io::stdout(), "{}", printed.output)?;
+            }
+        }
         Command::RecoveryCodes {
             database_url,
             command,
@@ -2359,6 +2411,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
 /// made where `HODOR_KEY_PROVIDER` says, and every version is used by the
 /// provider that made it (`docs/operations/keys-in-openbao.md`).
 fn key_provider(root: Arc<SecretKeys>) -> Result<Arc<dyn KeyProvider>, DomainError> {
+    Ok(Arc::new(key_providers(root)?))
+}
+
+/// Every key provider, as [`key_provider`] has them, with the one that
+/// makes the keys of certificate authorities.
+fn key_providers(root: Arc<SecretKeys>) -> Result<KeyProviders, DomainError> {
     let settings = KeyProviderSettings::from_lookup(|name| std::env::var(name).ok())?;
     let providers = settings.providers(Arc::new(LocalKeyProvider::new(root)), |openbao| {
         let origins = [openbao.address.clone()];
@@ -2385,5 +2443,5 @@ fn key_provider(root: Arc<SecretKeys>) -> Result<Arc<dyn KeyProvider>, DomainErr
         };
         Ok(Arc::new(client) as Arc<dyn HttpClient>)
     })?;
-    Ok(Arc::new(providers))
+    Ok(providers)
 }

@@ -418,6 +418,7 @@ async fn an_authority_for_development_is_created_published_trusted_audited_and_r
         &anchor,
         &[],
         std::slice::from_ref(&anchor),
+        &[],
         SystemClock.now(),
     )
     .expect_err("an authority is not a workload");
@@ -484,4 +485,233 @@ async fn an_authority_for_development_is_created_published_trusted_audited_and_r
     )
     .await;
     assert_eq!(domains["items"], serde_json::json!([]));
+}
+
+#[tokio::test]
+async fn intermediates_are_signed_read_and_withdrawn_by_who_may_and_each_refusal_says_why() {
+    use hodor_adapters_crypto::testing::certificates::{MeshIntermediate, MeshKey, MeshRequest};
+    let database = TestDatabase::start().await;
+    let (_, administrator, auditor) = tenant(&database, "acme").await;
+    let server = start_server_with(
+        &database,
+        &[
+            ("HODOR_SECRET_KEYS", ROOT_KEY),
+            ("HODOR_CERTIFICATE_AUTHORITY", "development"),
+        ],
+    )
+    .await;
+    let admin = |path: &str| format!("/t/acme/api/v1/admin{path}");
+    let sign = |token: String, request: String, lifetime: Option<u32>| {
+        let (server, path) = (&server, admin("/certificate-authority/intermediates"));
+        async move {
+            let mut body = serde_json::json!({ "certificate_signing_request": request });
+            if let Some(days) = lifetime {
+                body["lifetime_days"] = days.into();
+            }
+            call(server, Method::POST, &path, Some(&token), Some(body)).await
+        }
+    };
+    let istio = MeshIntermediate::new(&MeshRequest::authority("istio-ca"));
+
+    // Nothing to sign with yet.
+    let (status, body) = sign(administrator.clone(), istio.request().to_owned(), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["code"], "keys.authority_not_found");
+    let (status, _) = call(
+        &server,
+        Method::POST,
+        &admin("/certificate-authority"),
+        Some(&administrator),
+        Some(root_request()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // The auditor may not sign; the administrator signs.
+    let (status, _) = sign(auditor.clone(), istio.request().to_owned(), None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, signed) = sign(administrator.clone(), istio.request().to_owned(), None).await;
+    assert_eq!(status, StatusCode::CREATED, "{signed}");
+    assert_eq!(signed["state"], "active");
+    assert_eq!(signed["subject"], "CN=istio-ca");
+    assert_eq!(
+        signed["name_constraints"],
+        serde_json::json!({
+            "permitted_dns_names": ["prod.example.com", "edge.example.com"],
+            "excluded_dns_names": [],
+            "excluded_ip_ranges": ["0.0.0.0/0", "::/0"],
+        })
+    );
+    let (_, authority) = call(
+        &server,
+        Method::GET,
+        &admin("/certificate-authority"),
+        Some(&auditor),
+        None,
+    )
+    .await;
+    assert_eq!(
+        signed["chain"],
+        serde_json::json!([authority["certificate"]])
+    );
+    assert!(
+        signed["certificate"]
+            .as_str()
+            .is_some_and(|pem| pem.starts_with("-----BEGIN CERTIFICATE-----"))
+    );
+    let id = signed["id"].as_str().expect("id").to_owned();
+
+    // Each refused request names its reason, over HTTP.
+    let request = |change: &dyn Fn(&mut MeshRequest)| {
+        let mut asked = MeshRequest::authority("istio-ca");
+        change(&mut asked);
+        MeshIntermediate::new(&asked).request().to_owned()
+    };
+    let cases: Vec<(String, Option<u32>, &str)> = vec![
+        (
+            "not a request".to_owned(),
+            None,
+            "keys.intermediate_request_invalid",
+        ),
+        (
+            request(&|asked| asked.authority = None),
+            None,
+            "keys.intermediate_not_an_authority",
+        ),
+        (
+            request(&|asked| asked.path_length = Some(2)),
+            None,
+            "keys.intermediate_path_length_invalid",
+        ),
+        (
+            request(&|asked| asked.uris = vec!["spiffe://cluster.local/ns/istio".to_owned()]),
+            None,
+            "keys.intermediate_name_outside_trust_domains",
+        ),
+        (
+            request(&|asked| asked.permitted_dns_names = vec!["example.com".to_owned()]),
+            None,
+            "keys.intermediate_constraints_widened",
+        ),
+        (
+            request(&|asked| asked.permitted_uris = vec!["prod.example.com".to_owned()]),
+            None,
+            "keys.intermediate_constraints_unsupported",
+        ),
+        (
+            request(&|asked| asked.key = MeshKey::Rsa2048),
+            None,
+            "keys.intermediate_key_unsuitable",
+        ),
+        (
+            request(&|_| {}),
+            Some(15),
+            "keys.intermediate_lifetime_invalid",
+        ),
+    ];
+    for (pem, lifetime, code) in cases {
+        let (status, body) = sign(administrator.clone(), pem, lifetime).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{code}: {body}");
+        assert_eq!(body["code"], code, "{body}");
+        assert!(
+            body["detail"]
+                .as_str()
+                .is_some_and(|detail| !detail.is_empty()),
+            "{code} names its reason: {body}"
+        );
+    }
+
+    // Read and listed by the auditor; withdrawn only by the administrator.
+    let (status, read) = call(
+        &server,
+        Method::GET,
+        &admin(&format!("/certificate-authority/intermediates/{id}")),
+        Some(&auditor),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(read, signed);
+    let (status, listed) = call(
+        &server,
+        Method::GET,
+        &admin("/certificate-authority/intermediates"),
+        Some(&auditor),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(listed["items"], serde_json::json!([signed]));
+    let withdraw = admin(&format!(
+        "/certificate-authority/intermediates/{id}:withdraw"
+    ));
+    let reason = serde_json::json!({ "reason": "the cluster was rebuilt" });
+    let (status, _) = call(
+        &server,
+        Method::POST,
+        &withdraw,
+        Some(&auditor),
+        Some(reason.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, withdrawn) = call(
+        &server,
+        Method::POST,
+        &withdraw,
+        Some(&administrator),
+        Some(reason.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{withdrawn}");
+    assert_eq!(withdrawn["state"], "withdrawn");
+    assert_eq!(withdrawn["withdrawal_reason"], "the cluster was rebuilt");
+    let (status, again) = call(
+        &server,
+        Method::POST,
+        &withdraw,
+        Some(&administrator),
+        Some(reason),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(again["code"], "keys.intermediate_withdrawn");
+    let (status, refused) = sign(administrator.clone(), istio.request().to_owned(), None).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(refused["code"], "keys.intermediate_key_withdrawn");
+
+    // Every signature and the withdrawal are audited, with no certificate.
+    record_events(&database).await;
+    let (_, records) = call(
+        &server,
+        Method::GET,
+        &admin("/audit-records"),
+        Some(&auditor),
+        None,
+    )
+    .await;
+    let items = records["items"].as_array().expect("items");
+    let signature = items
+        .iter()
+        .find(|record| {
+            record["action"] == "keys.authority_signed"
+                && record["details"]["signed"] == "intermediate_certificate"
+        })
+        .expect("the intermediate's signature");
+    assert_eq!(signature["details"]["intermediate_id"], id.as_str());
+    assert_eq!(
+        signature["details"]["serial_number"],
+        signed["serial_number"]
+    );
+    assert_eq!(
+        signature["details"]["request_sha256"],
+        signed["request_sha256"]
+    );
+    let withdrawal = items
+        .iter()
+        .find(|record| record["action"] == "keys.intermediate_withdrawn")
+        .expect("the withdrawal");
+    assert_eq!(withdrawal["details"]["intermediate_id"], id.as_str());
+    assert_eq!(withdrawal["details"]["reason"], "the cluster was rebuilt");
+    assert!(!records.to_string().contains("BEGIN CERTIFICATE"));
 }

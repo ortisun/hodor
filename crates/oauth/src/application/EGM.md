@@ -163,7 +163,9 @@ certificates; without them every JWT-SVID, and every client of
     `TrustDomainService`, in a unit of work of its own), and match the
     client's identity by `names_match`; a certificate is checked against
     the `x509-svid` elements of the trust domain's bundle by
-    `CertificateCheck::chains_to`, and only a trust domain of source
+    `CertificateCheck::chains_to`, with the tenant's withdrawn keys read
+    through `TrustDomainService::withdrawn_keys` at every such check, and
+    only a trust domain of source
     `mesh` believes names or a Linkerd identity without one. Every failure
     is `invalid_client`.
   - `authorization_code`: `unauthorized_client` without that grant;

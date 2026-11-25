@@ -85,7 +85,11 @@ export const en = {
   revokeConsequenceValue: "Denied from the next decision",
 
   // Frame
-  roles: { tenant_administrator: "Tenant administrator", tenant_auditor: "Tenant auditor" } as Record<string, string>,
+  roles: {
+    tenant_administrator: "Tenant administrator",
+    tenant_auditor: "Tenant auditor",
+    certificate_signer: "Certificate signer",
+  } as Record<string, string>,
   sessionUntil: (time: string) => `Console session until ${time}`,
   sessionUntilHint: "The console asks you to sign in again 12 hours after you signed in.",
   searchOrRun: "Search or run a command",

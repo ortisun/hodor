@@ -67,7 +67,7 @@ Commands, as typed, from the clap enums in `main.rs`:
 | `hodor-cli webhook remove` | `--tenant`, `--id` | `WebhookService::remove`; prints `removed <id>` |
 | `hodor-cli webhook deliveries` | `--tenant`, `--endpoint`, `--status` (`pending`, `delivered`, `set_aside`) | `WebhookService::deliveries`, the latest 100; one line `<id> <status> <attempts> <event type> <event id>` each |
 | `hodor-cli webhook redeliver` | `--tenant`, `--delivery` | `WebhookService::redeliver`; prints `pending <id>` |
-| `hodor-cli admin grant` / `revoke` | `--tenant`, `--user`, `--role` (`tenant_administrator` or `tenant_auditor`) | `AuthorizationService::assign` or `revoke` for a user who exists and is not Deleted; prints `granted <role> <id>` or `revoked <role> <id>` (`built_in_role`) |
+| `hodor-cli admin grant` / `revoke` | `--tenant`, `--user`, `--role` (`tenant_administrator`, `tenant_auditor` or `certificate_signer`) | `AuthorizationService::assign` or `revoke` for a user who exists and is not Deleted; prints `granted <role> <id>` or `revoked <role> <id>` (`built_in_role`) |
 | `hodor-cli client list` | `--tenant`, `--application` | `ApplicationService::clients`; one line `<id> <status> <type> <method> <name>` each |
 | `hodor-cli client rotate-secret` | `--tenant`, `--id`, `--lifetime-days` (default 365), `--keep-previous-days` (default 7) | `ApplicationService::rotate_client_secret`; prints `secret <value>` and `expires <time>`, once |
 | `hodor-cli client disable` / `enable` | `--tenant`, `--id` | `ApplicationService::set_client_status`; prints `client <id> <status>` |
@@ -82,6 +82,9 @@ Commands, as typed, from the clap enums in `main.rs`:
 | `hodor-cli keys list` | `--tenant`, `--key-set` (`sig`, `data`; default `sig`) | `KeyService::key_set`, one `key_line` per version (`KeysCommand::List`, `run_keys`) |
 | `hodor-cli keys rotate` | `--tenant`, `--algorithm` (`es256`, `rs256`, `ps256`; default `es256`) | `KeyService::rotate_now` with the overlap of `--key-overlap-hours` (`KeysCommand::Rotate`) |
 | `hodor-cli keys revoke` | `--tenant`, `--version`, `--reason` | `KeyService::revoke` (`KeysCommand::Revoke`) |
+| `hodor-cli authority sign` | `--tenant`, `--request` (a file, or `-` for standard input), `--lifetime-days`; `HODOR_SECRET_KEYS`, `HODOR_CERTIFICATE_AUTHORITY` (`on` or `development`, else `keys.authority_setting_invalid`) and the key provider's settings | `AuthorityService::sign` (`authority.rs`), acting as the system; prints the certificate then the chain in PEM, and `signed <line>` on standard error; a refusal prints its code, message and detail |
+| `hodor-cli authority intermediates` | `--tenant` | `AuthorityService::intermediates`, every page; one line each: identifier, state, serial number, end of validity, subject |
+| `hodor-cli authority withdraw` | `--tenant`, `--intermediate`, `--reason` | `AuthorityService::withdraw`; `withdrawn <line>` for each intermediate of the key |
 | `hodor-cli recovery-codes generate` | `--tenant`, `--login`; no keys needed | `RecoveryCodeService::generate`: a set in place of any earlier one; prints `recovery codes, shown once: 10` and the ten codes (`RecoveryCodeCommand::Generate`, `run_recovery_codes`) |
 | `hodor-cli recovery-codes count` | `--tenant`, `--login` | `RecoveryCodeService::unused`; prints `unused <count>` (`RecoveryCodeCommand::Count`) |
 | `hodor-cli recovery-codes remove` | `--tenant`, `--login` | `RecoveryCodeService::remove`; prints `removed` or `nothing to remove` (`RecoveryCodeCommand::Remove`) |

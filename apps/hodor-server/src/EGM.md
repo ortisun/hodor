@@ -90,11 +90,15 @@ Routers, as assembled in `run`:
 - `HODOR_CERTIFICATE_AUTHORITY` (`certificate_authority`, read by
   `AuthoritySetting::parse`): `off` by default; `on` or `development`
   builds an `AuthorityService` in `authority` (over `PgAuthorityStore`,
-  `PgTrustDomainStore`, `X509Certificates` and the `KeyProviders` of
+  `PgTrustDomainStore`, `PgIntermediateStore`, `X509Certificates` and the
+  `KeyProviders` of
   `key_providers`, whose `authorities()` makes its key), given to the
   `AdminState` and merged as `authority_bundle_routes` into the tenant
   routes. Without `HODOR_SECRET_KEYS`, or with another value, the server
-  stops at startup with `keys.authority_setting_invalid`.
+  stops at startup with `keys.authority_setting_invalid`. The
+  `TrustDomainService` of `trust_domains` reads withdrawn keys from
+  `PgIntermediateStore` whatever the setting, so that the token endpoint
+  refuses a path through a withdrawn intermediate.
 - `/oauth2/jwks`: `hodor_protocol_http::key_set_routes(KeyService)` is merged
   into the tenant routes when `keys` built a `KeyService` (`PgKeyStore`,
   `LocalKeyProvider` over `HODOR_SECRET_KEYS`); otherwise a warning is logged

@@ -766,13 +766,18 @@ pub trait CertificateCheck: Send + Sync {
     /// at `now`, through any of `chain`, for a TLS client. `authorities`
     /// are the `x509-svid` elements of a bundle, each a JSON Web Key with
     /// its certificate in `x5c`; an element whose certificate is not an
-    /// authority holding the element's key is passed over. Anything that
-    /// does not read is `false`.
+    /// authority holding the element's key is passed over. No certificate
+    /// between `certificate` and the authority may hold a key of
+    /// `withdrawn`, each the SHA-256 of a subject public key info in
+    /// lowercase hexadecimal: the keys of the intermediates the tenant's
+    /// certificate authority signed and an administrator withdrew. Anything
+    /// that does not read is `false`.
     fn chains_to(
         &self,
         certificate: &[u8],
         chain: &[Vec<u8>],
         authorities: &[&str],
+        withdrawn: &[String],
         now: Timestamp,
     ) -> bool;
 }

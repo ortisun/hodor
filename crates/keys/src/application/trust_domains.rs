@@ -3,7 +3,7 @@
 //!
 //! See `docs/architecture/contexts/keys.md`, "Trust domains".
 
-use crate::application::ports::{DueRefreshes, TrustDomainStore};
+use crate::application::ports::{DueRefreshes, IntermediateStore, TrustDomainStore};
 use crate::domain::event::{BundleSummary, TrustDomainEvent};
 use crate::domain::trust_domain::{
     CheckedSource, FETCH_TIME_LIMIT, FetchOutcome, LEASE_MARGIN, MAX_BUNDLE_BYTES,
@@ -83,6 +83,7 @@ impl std::fmt::Debug for TrustDomainPorts {
 #[derive(Clone)]
 pub struct TrustDomainService {
     ports: TrustDomainPorts,
+    intermediates: Option<Arc<dyn IntermediateStore>>,
 }
 
 impl std::fmt::Debug for TrustDomainService {
@@ -150,7 +151,36 @@ impl TrustDomainService {
     /// Wires the use cases to their ports.
     #[must_use]
     pub const fn new(ports: TrustDomainPorts) -> Self {
-        Self { ports }
+        Self {
+            ports,
+            intermediates: None,
+        }
+    }
+
+    /// Reads the withdrawn keys of the intermediates the tenant's
+    /// certificate authority signed from `intermediates`. Without it there
+    /// are none.
+    #[must_use]
+    pub fn with_intermediates(mut self, intermediates: Arc<dyn IntermediateStore>) -> Self {
+        self.intermediates = Some(intermediates);
+        self
+    }
+
+    /// The SHA-256 of the subject public key info of every intermediate
+    /// of the tenant's authority that was withdrawn and has not expired:
+    /// no certificate path in the tenant may go through one.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    pub async fn withdrawn_keys(&self, tenant: &TenantContext) -> Result<Vec<String>, DomainError> {
+        let Some(intermediates) = &self.intermediates else {
+            return Ok(Vec::new());
+        };
+        let mut uow = self.ports.units_of_work.begin(tenant).await?;
+        intermediates
+            .withdrawn_keys(uow.as_mut(), self.ports.clock.now())
+            .await
     }
 
     /// What an event says of a bundle.

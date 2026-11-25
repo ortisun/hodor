@@ -148,6 +148,7 @@ impl CertificateCheck for X509CertificateCheck {
         certificate: &[u8],
         chain: &[Vec<u8>],
         authorities: &[&str],
+        withdrawn: &[String],
         now: Timestamp,
     ) -> bool {
         if chain.len() > MAX_FORWARDED_CHAIN || read(certificate).is_none() {
@@ -168,6 +169,6 @@ impl CertificateCheck for X509CertificateCheck {
             .filter(|der| der.len() <= MAX_FORWARDED_CERTIFICATE_BYTES)
             .cloned()
             .collect();
-        check_path(certificate, &intermediates, &anchors, now).is_ok()
+        check_path(certificate, &intermediates, &anchors, withdrawn, now).is_ok()
     }
 }

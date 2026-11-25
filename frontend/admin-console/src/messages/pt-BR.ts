@@ -84,7 +84,11 @@ export const ptBR: Messages = {
   revokeConsequence: "O que ele permitia",
   revokeConsequenceValue: "Negado a partir da próxima decisão",
 
-  roles: { tenant_administrator: "Administrador do tenant", tenant_auditor: "Auditor do tenant" },
+  roles: {
+    tenant_administrator: "Administrador do tenant",
+    tenant_auditor: "Auditor do tenant",
+    certificate_signer: "Assinante de certificados",
+  },
   sessionUntil: (time) => `Sessão do console até ${time}`,
   sessionUntilHint: "O console pede que você entre de novo 12 horas depois de ter entrado.",
   searchOrRun: "Buscar ou executar um comando",
