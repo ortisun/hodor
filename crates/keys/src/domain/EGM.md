@@ -2,8 +2,8 @@
 
 ## Overview
 
-Key versions, the key set of one use, and the events other contexts hear
-about. The domain is pure: time and the provider's answer are passed in.
+Key versions, the key set of one use, trust domains with their bundles,
+and the events other contexts hear about. The domain is pure: time and the provider's answer are passed in.
 The modules are `pub(crate)` in `mod.rs`; their types are re-exported
 through `crate::api`.
 
@@ -51,6 +51,36 @@ through `crate::api`.
   `oldest_pending(algorithm)`, `published()` (pending, active and retiring
   signing versions, newest first).
 
+### `trust_domain.rs`
+
+- `TrustDomainId`: identifier from `hodor_kernel::define_id!`.
+- `TrustDomainName::parse`: 1 to 255 of `a-z0-9._-`, nothing lowered
+  (`keys.trust_domain_name_invalid`); `as_str`.
+- `SvidKind { X509, Jwt }` (`x509-svid`, `jwt-svid`).
+- `BundleKey { kind, key_id, jwk }`: a kept element, written as compact JSON
+  with its members in order.
+- `TrustBundle`: `parse(bytes)`, `from_stored`, `document()` (the bundle as
+  kept: `keys`, `spiffe_refresh_hint`, `spiffe_sequence` in that order),
+  `sequence`, `refresh_hint`, `keys`, `authorities(kind)`, `jwt_key(kid)`,
+  `refresh_interval()` (the hint between 1 minute and 1 day, 5 minutes
+  without one), `may_follow(in_force)`.
+- `TrustSource { Uploaded, BundleEndpoint, Mesh }` with `as_str` and
+  `parse` (`keys.trust_domain_source_invalid`).
+- `CheckedSource { Uploaded(bundle), BundleEndpoint { url, bundle }, Mesh }`:
+  a source whose bundle was read or fetched.
+- `TrustDomainSnapshot`: the stored state; `TrustDomain`: `add(name,
+  source, now)`, `from_snapshot`, `snapshot`, `id`, `name`, `source`,
+  `bundle`, `version`, `replace(source, now)`, `is_due(now)`,
+  `bundle_endpoint_url`, `lease(now, until)` (`keys.trust_domain_not_due`),
+  `record_fetch(result, now) -> FetchOutcome`.
+- `FetchOutcome { Changed { previous_sequence }, Unchanged, Failed { reason,
+  first } }`.
+- Bounds: `MAX_TRUST_DOMAINS` (50), `MAX_NAME_LENGTH`,
+  `MAX_BUNDLE_ENDPOINT_LENGTH`, `MAX_BUNDLE_BYTES`, `MAX_BUNDLE_ELEMENTS`,
+  `MAX_ERROR_LENGTH`, `FETCH_TIME_LIMIT`, `DEFAULT_REFRESH`,
+  `SHORTEST_REFRESH`, `LONGEST_REFRESH`, `LONGEST_RETRY`; crate-private
+  `LEASE_MARGIN` (1 minute), `check_bundle_endpoint`.
+
 ### `event.rs`
 
 `KeyEvent` (`Serialize`, untagged) implements `DomainEvent`:
@@ -61,6 +91,19 @@ through `crate::api`.
 | `VersionActivated` | `version_id`, `algorithm`, `replaced_version_id`, `replaced_retire_after` (RFC 3339) | `keys.version_activated` |
 | `VersionRetired` | `version_id`, `algorithm` | `keys.version_retired` |
 | `VersionRevoked` | `version_id`, `algorithm`, `previous_state`, `reason` | `keys.version_revoked` |
+
+`TrustDomainEvent` (`Serialize`, untagged) implements `DomainEvent`:
+
+| Variant | Fields | `event_type()` |
+| --- | --- | --- |
+| `Added` | `trust_domain_id`, `name`, `source`, and a `BundleSummary` unless `mesh` | `keys.trust_domain_added` |
+| `Replaced` | the same | `keys.trust_domain_replaced` |
+| `BundleRefreshed` | `trust_domain_id`, `name`, a `BundleSummary`, `previous_sequence` | `keys.trust_bundle_refreshed` |
+| `RefreshFailed` | `trust_domain_id`, `name`, `reason` | `keys.trust_bundle_refresh_failed` |
+| `Removed` | `trust_domain_id`, `name` | `keys.trust_domain_removed` |
+
+`BundleSummary` is `bundle_sha256`, `sequence`, `x509_authorities` and
+`jwt_authorities`, flattened into the event.
 
 ## Invariants
 
@@ -80,7 +123,24 @@ through `crate::api`.
   `retire_after = now + overlap`.
 - `KeySet::from_versions` gives `keys.stored_data_invalid` for a version of
   another use or two active versions of one algorithm.
-- Events never carry key material or the public key.
+- Events never carry key material or the public key; trust domain events
+  never carry a bundle endpoint's address or a bundle's keys.
+- `TrustBundle::parse` follows `docs/architecture/contexts/keys.md`,
+  "Reading a bundle": at most 64 kibibytes and 100 elements; an element of
+  an unknown `use` or key type is ignored; a known one with a private part,
+  a short coordinate or modulus, an `alg` that does not fit, an `x509-svid`
+  element with a `kid` or not exactly one DER certificate, or a `jwt-svid`
+  element without a unique `kid` refuses the whole bundle
+  (`keys.trust_bundle_invalid`, the reason as detail).
+- `TrustBundle::may_follow` refuses a fetched bundle without a sequence, or
+  with a smaller one, or the same one with other contents, when the bundle
+  in force has one (`keys.trust_bundle_sequence_invalid`).
+- `TrustDomain::record_fetch` keeps the bundle in force on every failure,
+  records `failing_since` once per run of failures and the reason's code,
+  and makes the next fetch due after the interval in force, at most 5
+  minutes after a failure; it always clears the lease. Each source holds
+  exactly what it needs: a bundle for `uploaded` and `bundle_endpoint`, an
+  address and a next refresh for `bundle_endpoint` only.
 - `RotationPolicy::new` gives `keys.rotation_policy_invalid` for a period
   outside 1 to 730 days, a publication time shorter than `PUBLISHED_FOR` or
   not shorter than the period, or an overlap shorter than

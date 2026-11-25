@@ -5,8 +5,11 @@
 The use cases of the keys context and the ports they need.
 `KeyService` makes, activates, retires and revokes key versions, reads key
 sets and signs; `TenantSecretBox` seals secrets at rest under the tenant's
-data key. Every use case runs inside a unit of work bound to one tenant. Both modules are `pub(crate)` in `mod.rs` and reach other crates
-only through `crate::api`.
+data key; `TrustDomainService` adds, reads, replaces and removes trust
+domains, and `BundleRefresher` fetches their bundles again for the worker.
+Every use case runs inside a unit of work bound to one tenant. The modules
+are `pub(crate)` in `mod.rs` and reach other crates only through
+`crate::api`.
 
 ## Interface
 
@@ -46,6 +49,18 @@ final.
 (`crates/adapters-crypto/src/sealing.rs`) and `FakeFirstFormat`: opens and
 recognizes the secrets 0.1.0 sealed directly with a root key.
 
+`TrustDomainStore` (`#[async_trait]`), implemented by `PgTrustDomainStore`
+(`crates/adapters-postgres/src/trust_domain.rs`) and `InMemoryTrustDomains`:
+`insert` (`keys.trust_domain_name_taken`), `get`, `find_by_name`, `list(uow,
+after, limit)` in the order of identifiers, `count` (a second count of the
+tenant waits), `update` (needs the version read and increments it;
+`keys.trust_domain_changed`, `keys.trust_domain_not_found`), `remove ->
+bool`, `take` (skips a row another unit of work holds) and `lock` (waits).
+
+`DueRefreshes` (`#[async_trait]`), implemented by `PgDueRefreshes` and
+`InMemoryTrustDomains`: `due(now, limit) -> Vec<(TenantId, TrustDomainId)>`
+across tenants, the longest waiting first.
+
 ### Service (`service.rs`)
 
 - `KeyService::new(units_of_work, keys: Arc<dyn KeyStore>, provider: Arc<dyn KeyProvider>, clock)`.
@@ -78,6 +93,39 @@ recognizes the secrets 0.1.0 sealed directly with a root key.
 - `needs_resealing` is true for the first format and for a version that is not the active one; it does not open the secret.
 - `first_format_refused(tenant)` and `refuse_first_format(tenant)`.
 
+### Trust domains (`trust_domains.rs`)
+
+- `TrustDomainPorts { units_of_work, store, destinations: Arc<dyn
+  DestinationCheck>, http: Arc<dyn HttpClient>, digest: Arc<dyn Digest>,
+  clock }`; `TrustDomainService::new(ports)`.
+- `TrustSourceRequest { Uploaded { bundle }, BundleEndpoint { url }, Mesh }`
+  with `from_parts(source, bundle, url)`
+  (`keys.trust_domain_source_invalid`).
+
+| Entry point | Meaning |
+| --- | --- |
+| `add(tenant, name, source, caller) -> TrustDomain` | Reads the name, checks the source (reads a bundle, or checks a bundle endpoint with `DestinationCheck` and fetches it once), then stores it under the tenant's count; `keys.too_many_trust_domains` at 50, `keys.trust_domain_name_taken`. |
+| `get(tenant, id)` | `keys.trust_domain_not_found` if absent. |
+| `find_by_name(tenant, name) -> Option<TrustDomain>` | The tenant's own only. |
+| `list(tenant, &PageRequest) -> Page<TrustDomain>` | In the order of identifiers; `request.cursor_invalid`. |
+| `replace(tenant, id, source, caller)` | Checks the source first, then changes the trust domain under `lock`. |
+| `remove(tenant, id, caller)` | Removes it. |
+
+- `BundleRefresher::new(service, due)`, `CONCURRENCY` (8):
+  `lease_due(limit) -> Vec<RefreshLease>` takes each due trust domain with
+  `take`, leases it for `FETCH_TIME_LIMIT` plus one minute and commits;
+  `refresh(lease) -> RefreshOutcome` fetches outside any transaction, then
+  under `lock` records the result only if the version is still the leased
+  one (`Skipped` otherwise). `RefreshOutcome { Changed, Unchanged, Failed,
+  Skipped }` with `as_str`.
+- A fetch is a `GET` with `accept: application/json` and a time limit of 10
+  seconds; a status other than 2xx or more than 64 kibibytes is
+  `keys.bundle_endpoint_unreachable`; the client's `http.url_invalid` is
+  `keys.bundle_endpoint_invalid`, `http.destination_forbidden`
+  `keys.bundle_endpoint_forbidden`, anything else unreachable. The
+  destination check's `http.unreachable` is
+  `keys.bundle_endpoint_unresolvable`.
+
 ## Invariants
 
 - `create_version` asks the provider before beginning a unit of work, then
@@ -94,11 +142,18 @@ recognizes the secrets 0.1.0 sealed directly with a root key.
   `Conflict` `keys.no_active_version` when no version of the algorithm is
   active (`service.rs:sign`).
 
+- Nothing is stored when a source is refused; a refused replacement leaves
+  the trust domain as it was.
+- `BundleRefresher` records `keys.trust_bundle_refreshed` only when the
+  bundle in force changed, and `keys.trust_bundle_refresh_failed` only for
+  the first failure of a run; its events have the system as actor.
+
 ## Side Effects
 
 - Reads the injected `Clock`; calls the injected `KeyProvider`; begins units
   of work and reads and writes through `KeyStore`; records `KeyEvent`
-  envelopes with `UnitOfWork::record_event`.
+  envelopes with `UnitOfWork::record_event`; fetches bundles through the
+  injected `HttpClient` and records `TrustDomainEvent` envelopes.
 
 ## Verification
 

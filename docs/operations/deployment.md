@@ -69,7 +69,7 @@ flowchart TB
 
 ## The worker
 
-`hodor-worker` runs background work: delivering outbox events to their handlers ([Decision 0003](../decisions/0003-context-communication.md)), delivering queued messages to the mail server ([the notification context](../architecture/contexts/notification.md)), the cleanup jobs, rotating the tenants' signing keys ([the keys context](../architecture/contexts/keys.md#rotation)), sending webhooks ([the webhooks context](../architecture/contexts/webhooks.md)), sending logout tokens to the clients of a session that ended ([back-channel logout](../architecture/contexts/oauth.md#back-channel-logout)), and checking, testing and simulating policy versions for Open Policy Agent ([the policy lifecycle](../architecture/contexts/authorization.md#the-policy-lifecycle)).
+`hodor-worker` runs background work: delivering outbox events to their handlers ([Decision 0003](../decisions/0003-context-communication.md)), delivering queued messages to the mail server ([the notification context](../architecture/contexts/notification.md)), the cleanup jobs, rotating the tenants' signing keys ([the keys context](../architecture/contexts/keys.md#rotation)), sending webhooks ([the webhooks context](../architecture/contexts/webhooks.md)), sending logout tokens to the clients of a session that ended ([back-channel logout](../architecture/contexts/oauth.md#back-channel-logout)), fetching the bundles of the tenants' trust domains from their endpoints again ([trust domains](../architecture/contexts/keys.md#keeping-a-fetched-bundle-current)), and checking, testing and simulating policy versions for Open Policy Agent ([the policy lifecycle](../architecture/contexts/authorization.md#the-policy-lifecycle)).
 
 Two handlers hear every event. The [audit log](../architecture/contexts/audit.md) makes every event an audit record; the [webhooks context](../architecture/contexts/webhooks.md#how-an-event-reaches-an-endpoint) makes one delivery for each endpoint subscribed to the event's type. A third hears `session.revoked` only: the [OAuth context](../architecture/contexts/oauth.md#which-sessions-which-clients) makes one logout delivery for each client signed in to with the session. All three write in the transaction that marks the event dispatched. An installation without a running worker loses nothing, but its audit log, its webhooks and its logout tokens fall behind until a worker runs.
 
@@ -113,6 +113,13 @@ Webhooks are sent only when `HODOR_SECRET_KEYS` is set, with the same keys as th
 | `hodor.webhooks.passes` | Counter | `outcome`: `ok`, `error` |
 
 A growing count of `set_aside` means an endpoint keeps failing; the deliveries say why (`GET /webhook-deliveries?status=set_aside`).
+
+The bundles of trust domains are fetched again the same way, on leases, by a loop of their own, eight at once, whether or not `HODOR_SECRET_KEYS` is set: a bundle is public. A bundle that does not read, or an endpoint that fails, leaves the bundle in force as it is, and the trust domain says since when and why. Bundle endpoints are chosen by tenants, like webhook endpoints, and need the same route out. The rules are on the [keys context's page](../architecture/contexts/keys.md#keeping-a-fetched-bundle-current).
+
+| Metric | Kind | Attributes |
+|---|---|---|
+| `hodor.keys.trust_bundle.fetches` | Counter | `outcome`: `changed`, `unchanged`, `failed`, `skipped` |
+| `hodor.keys.trust_bundle.passes` | Counter | `outcome`: `ok`, `error` |
 
 Logout tokens are sent the same way, by a loop of their own, only when both `HODOR_SECRET_KEYS` and `HODOR_PUBLIC_URL` are set: the keys sign the token with the tenant's key, and the public address, the same as the server's, names the issuer. Without either the worker says so once, and logout deliveries wait. A worker sends up to 16 at once and a client never has more than 4 in flight. Back-channel logout addresses are on the internet, chosen by tenants, like webhook endpoints, and need the same route out. The settings and [bounds](../architecture/contexts/oauth.md#bounds) are on the OAuth context's page.
 

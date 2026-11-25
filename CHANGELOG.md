@@ -8,6 +8,10 @@ Every release of Hodor, newest first. The rules for versions and releases are in
 
 - Hodor is licensed under the MIT License ([Decision 0038](docs/decisions/0038-the-license.md)); until now the repository had no license.
 
+**Workloads prove who they are with their certificates**
+
+- A tenant names the SPIFFE trust domains it trusts, each with the bundle of its authorities: a bundle an administrator uploads, a bundle fetched from the trust domain's SPIFFE bundle endpoint and kept current by the worker, or none for a trust domain whose certificates the mesh in front of Hodor checks. Two tenants may each trust a trust domain of the same name, such as `cluster.local`, and never see the other's. A bundle that does not read is refused, and a bundle endpoint that fails or answers an older bundle leaves the one in force; bundle endpoints are reached through the guarded outbound client, so one at a private address is refused. Every change is in the audit log. The administration interface manages them under `/trust-domains`, with `keys:read` and `keys:write`; the worker's new setting is `HODOR_TRUST_BUNDLE_POLL_INTERVAL_MS`. Nothing checks a workload's credential against them yet: that comes next in [Milestone 10](docs/product/epics.md#milestone-10-workloads-prove-who-they-are-with-their-certificates).
+
 ### Fixed
 
 - A webhook endpoint could receive an event that happened before it was registered or given the event's type, when the event was dispatched just after. Each subscription now keeps when it began, and an endpoint receives only the events that happened since.

@@ -1,7 +1,10 @@
 //! What the keys context needs from storage and from a key provider.
 
 use crate::domain::key::{GeneratedKey, KeyAlgorithm, KeyUse, KeyVersion, KeyVersionId};
-use hodor_kernel::{DomainError, SealedSecret, Secret, TenantContext, Timestamp, UnitOfWork};
+use crate::domain::trust_domain::{TrustDomain, TrustDomainId};
+use hodor_kernel::{
+    DomainError, SealedSecret, Secret, TenantContext, TenantId, Timestamp, UnitOfWork,
+};
 
 /// Stores and loads key versions. Every method works inside the tenant
 /// the unit of work is bound to.
@@ -165,4 +168,132 @@ pub trait FirstFormatSecrets: Send + Sync {
         purpose: &str,
         sealed: &SealedSecret,
     ) -> Result<Secret<Vec<u8>>, DomainError>;
+}
+
+/// Stores the trust domains of a tenant. Every method works inside the
+/// tenant the unit of work is bound to.
+#[async_trait::async_trait]
+pub trait TrustDomainStore: Send + Sync {
+    /// Stores a new trust domain.
+    ///
+    /// # Errors
+    ///
+    /// Returns `keys.trust_domain_name_taken` if the tenant has one of the
+    /// same name.
+    async fn insert(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        domain: &TrustDomain,
+    ) -> Result<(), DomainError>;
+
+    /// Reads a trust domain of the tenant.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn get(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: TrustDomainId,
+    ) -> Result<Option<TrustDomain>, DomainError>;
+
+    /// The tenant's trust domain of a name.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn find_by_name(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        name: &str,
+    ) -> Result<Option<TrustDomain>, DomainError>;
+
+    /// Up to `limit` trust domains of the tenant whose identifier comes
+    /// after `after`, in the order of their identifiers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn list(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        after: Option<TrustDomainId>,
+        limit: u32,
+    ) -> Result<Vec<TrustDomain>, DomainError>;
+
+    /// How many trust domains the tenant has. Until the unit of work ends,
+    /// a second count of the same tenant waits, so that two additions count
+    /// one after the other.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn count(&self, uow: &mut dyn UnitOfWork) -> Result<u32, DomainError>;
+
+    /// Stores a changed trust domain if it still has the version it was
+    /// read at, and increments its version.
+    ///
+    /// # Errors
+    ///
+    /// Returns `keys.trust_domain_changed` if it changed meanwhile, and
+    /// `keys.trust_domain_not_found` if the tenant has no such trust
+    /// domain.
+    async fn update(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        domain: &TrustDomain,
+    ) -> Result<(), DomainError>;
+
+    /// Removes a trust domain. Answers whether there was one.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn remove(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: TrustDomainId,
+    ) -> Result<bool, DomainError>;
+
+    /// Takes a trust domain for a lease: holds it until the unit of work
+    /// ends. Finds nothing if another unit of work holds it: it is skipped,
+    /// not waited for.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn take(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: TrustDomainId,
+    ) -> Result<Option<TrustDomain>, DomainError>;
+
+    /// Reads a trust domain and holds it until the unit of work ends,
+    /// waiting for whoever holds it now.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn lock(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: TrustDomainId,
+    ) -> Result<Option<TrustDomain>, DomainError>;
+}
+
+/// Finds the trust domains whose bundle is due to be fetched, across
+/// tenants. Not bound to a tenant; only the worker is given it.
+#[async_trait::async_trait]
+pub trait DueRefreshes: Send + Sync {
+    /// Up to `limit` trust domains of a bundle endpoint due at `now` and
+    /// not leased past it, the longest waiting first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn due(
+        &self,
+        now: Timestamp,
+        limit: u32,
+    ) -> Result<Vec<(TenantId, TrustDomainId)>, DomainError>;
 }

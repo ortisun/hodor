@@ -41,6 +41,7 @@ mod session;
 mod tenant;
 #[cfg(feature = "testing")]
 pub mod testing;
+mod trust_domain;
 mod uow;
 mod webhooks;
 
@@ -96,5 +97,6 @@ pub use session::PgSessionStore;
 pub use sqlx::migrate::MigrateError;
 pub use sqlx::{Error, PgPool};
 pub use tenant::{PgTenantDirectory, PgTenantRepository};
+pub use trust_domain::{PgDueRefreshes, PgTrustDomainStore};
 pub use uow::{PgUnitOfWork, connection};
 pub use webhooks::{PgDeliveryStore, PgDueDeliveries, PgEndpointStore};

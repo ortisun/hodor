@@ -3,7 +3,8 @@
 //! The worker delivers outbox events to their handlers, the audit log, the
 //! fan-out of webhooks and the fan-out of back-channel logout, delivers
 //! queued messages to the mail server, sends webhooks and logout tokens,
-//! runs the cleanup jobs, rotates the tenants' signing keys, and checks,
+//! fetches the bundles of trust domains from their endpoints, runs the
+//! cleanup jobs, rotates the tenants' signing keys, and checks,
 //! tests and simulates policy versions with the `opa` binary. See
 //! `docs/operations/deployment.md`, "The worker".
 
@@ -25,11 +26,15 @@ use hodor_adapters_postgres::{
     PgApplicationStore, PgClientStore, PgDueLogoutDeliveries, PgLogoutDeliveryStore,
     PgPairwiseSecretStore, PgSessionClients, PgTenantDirectory, PgTenantRepository,
 };
+use hodor_adapters_postgres::{PgDueRefreshes, PgTrustDomainStore};
 use hodor_adapters_smtp::SmtpSender;
 use hodor_audit::api::{AuditHandler, AuditService};
 use hodor_authorization_opa::api::{BundleService, PolicyService};
 use hodor_kernel::{Clock as _, DomainError, Secret, SystemClock, TenantContext, Timestamp};
-use hodor_keys::api::{KeyService, RotationPolicy, TenantSecretBox};
+use hodor_keys::api::{
+    BundleRefresher, KeyService, MAX_BUNDLE_BYTES, RotationPolicy, TenantSecretBox,
+    TrustDomainPorts, TrustDomainService,
+};
 use hodor_notification::api::DeliveryService;
 use hodor_oauth::api::{
     BackChannelLogoutFanOut, BackChannelLogoutSender, LogoutDeliverySettings, LogoutRetryPolicy,
@@ -247,7 +252,16 @@ struct Config {
     )]
     backchannel_logout_poll_interval_ms: u64,
 
-    /// Hosts with their ports that webhooks and logout tokens may reach
+    /// Pause between passes when no trust bundle is due to be fetched.
+    #[arg(
+        long,
+        env = "HODOR_TRUST_BUNDLE_POLL_INTERVAL_MS",
+        default_value_t = 5000
+    )]
+    trust_bundle_poll_interval_ms: u64,
+
+    /// Hosts with their ports that webhooks, logout tokens and bundle
+    /// endpoints may reach
     /// without the address check and over plain HTTP, separated by commas.
     /// For a development stack on one machine; never set it anywhere real.
     #[arg(long, env = "HODOR_OUTBOUND_DEVELOPMENT_HOSTS", value_delimiter = ',')]
@@ -412,6 +426,13 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
         platform.clone(),
         database.clone(),
     ));
+    // Bundles are public: they are fetched whether or not this worker has
+    // keys.
+    let bundle_refresher = Arc::new(bundle_refresher(
+        development_hosts.clone(),
+        &database,
+        &platform,
+    )?);
     let webhook_sender = match &root_keys {
         Some(root) => Some(Arc::new(webhook_sender(
             development_hosts.clone(),
@@ -541,6 +562,13 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
             &WEBHOOKS,
             config.webhook_concurrency as usize,
             Duration::from_millis(config.webhook_poll_interval_ms),
+            stopped.clone(),
+        ),
+        sending_loop(
+            Some(bundle_refresher),
+            &TRUST_BUNDLES,
+            BundleRefresher::CONCURRENCY as usize,
+            Duration::from_millis(config.trust_bundle_poll_interval_ms),
             stopped.clone(),
         ),
         sending_loop(
@@ -971,8 +999,38 @@ fn webhook_sender(
     ))
 }
 
+/// What fetches the bundles of trust domains from their endpoints: the
+/// guarded outbound client, with the time limit of a fetch and the size of
+/// a bundle.
+fn bundle_refresher(
+    development_hosts: Vec<String>,
+    database: &Database,
+    platform: &PgPool,
+) -> Result<BundleRefresher, Box<dyn Error>> {
+    let limit = hodor_keys::api::FETCH_TIME_LIMIT;
+    let http = Arc::new(GuardedHttpClient::new(OutboundPolicy {
+        timeout: limit,
+        connect_timeout: limit.min(Duration::from_secs(5)),
+        max_response_bytes: MAX_BUNDLE_BYTES + 1,
+        development_hosts,
+    })?);
+    let service = TrustDomainService::new(TrustDomainPorts {
+        units_of_work: Arc::new(database.clone()),
+        store: Arc::new(PgTrustDomainStore),
+        destinations: http.clone(),
+        http,
+        digest: Arc::new(Sha256Digest),
+        clock: Arc::new(SystemClock),
+    });
+    Ok(BundleRefresher::new(
+        service,
+        Arc::new(PgDueRefreshes::new(platform.clone())),
+    ))
+}
+
 /// What sends deliveries leased from the database: webhooks and logout
-/// tokens, each by its own context's use case.
+/// tokens, each by its own context's use case; and what fetches trust
+/// bundles, leased the same way.
 #[async_trait::async_trait]
 trait LeasedSends: Send + Sync + 'static {
     /// A delivery leased to this worker.
@@ -1011,6 +1069,19 @@ impl LeasedSends for BackChannelLogoutSender {
     }
 }
 
+#[async_trait::async_trait]
+impl LeasedSends for BundleRefresher {
+    type Lease = hodor_keys::api::RefreshLease;
+
+    async fn lease_due(&self, limit: u32) -> Result<Vec<Self::Lease>, DomainError> {
+        Self::lease_due(self, limit).await
+    }
+
+    async fn send_one(&self, lease: Self::Lease) -> Result<&'static str, DomainError> {
+        self.refresh(lease).await.map(|outcome| outcome.as_str())
+    }
+}
+
 /// The names a sending loop reports under.
 struct LoopNames {
     /// The counter of attempts, by outcome.
@@ -1025,6 +1096,12 @@ const WEBHOOKS: LoopNames = LoopNames {
     attempts: "hodor.webhooks.attempts",
     passes: "hodor.webhooks.passes",
     what: "webhook",
+};
+
+const TRUST_BUNDLES: LoopNames = LoopNames {
+    attempts: "hodor.keys.trust_bundle.fetches",
+    passes: "hodor.keys.trust_bundle.passes",
+    what: "trust bundle",
 };
 
 const LOGOUT_TOKENS: LoopNames = LoopNames {

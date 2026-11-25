@@ -74,6 +74,10 @@ the tenant by `admin/authorization.rs:principal`), `policies: Option<PolicyServi
 versions drafted, checked, tested and simulated, and the publication status;
 `None` answers `404` `authorization.policies_unavailable`; publishing is not a
 route, since only the command line holds the key that signs bundles),
+`trust_domains: TrustDomainService` (`hodor_keys`; the five operations of
+`admin/trust_domains.rs`, `/trust-domains` and
+`/trust-domains/{trust_domain_id}`, under `keys:read` and `keys:write`; a
+bundle is taken and answered as JSON),
 `webhooks: Option<WebhookService>` (`hodor_webhooks`; endpoints,
 subscriptions, secrets shown once with `Cache-Control: no-store`,
 deliveries and delivering again, `admin/webhooks.rs`; `None` answers `503`
@@ -200,6 +204,8 @@ Administration and console handlers, shared by both routers
 | PUT | `/identity-providers/{provider}/client-secret` | `change_provider_secret` |
 | GET, POST | `/keys/{key_set}` | `list_key_versions`, `key_set_action` (`POST /keys/{key_set}:rotate` arrives here) |
 | POST | `/keys/{key_set}/versions/{version}` | `key_version_action` (`:revoke` arrives here) |
+| GET, POST | `/trust-domains` | `trust_domains::list_trust_domains`, `add_trust_domain` (`admin/trust_domains.rs`) |
+| GET, PUT, DELETE | `/trust-domains/{trust_domain}` | `get_trust_domain`, `replace_trust_domain` (the name cannot be given), `remove_trust_domain` |
 | GET, PUT | `/assurance-levels` | `read_assurance_levels`, `replace_assurance_levels` (`{ "levels": [{ "acr", "requirement" }] }`, weakest first; `tenant.settings_invalid` for levels that break a rule) |
 | GET, POST | `/applications` | `applications::list_applications`, `create_application` |
 | GET, PATCH, POST | `/applications/{application}` | `get_application`, `change_application`, `application_action` (`:disable` and `:enable` arrive here) |

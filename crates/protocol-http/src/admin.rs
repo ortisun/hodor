@@ -60,6 +60,7 @@ mod decisions;
 mod factors;
 mod groups;
 mod organizations;
+mod trust_domains;
 mod webhooks;
 mod workloads;
 
@@ -148,6 +149,23 @@ pub const ADMIN_OPERATIONS: &[(&str, &str, Permission)] = &[
     (
         "POST",
         "/keys/{key_set}/versions/{version_id}:revoke",
+        Permission::KeysWrite,
+    ),
+    ("GET", "/trust-domains", Permission::KeysRead),
+    ("POST", "/trust-domains", Permission::KeysWrite),
+    (
+        "GET",
+        "/trust-domains/{trust_domain_id}",
+        Permission::KeysRead,
+    ),
+    (
+        "PUT",
+        "/trust-domains/{trust_domain_id}",
+        Permission::KeysWrite,
+    ),
+    (
+        "DELETE",
+        "/trust-domains/{trust_domain_id}",
         Permission::KeysWrite,
     ),
     ("GET", "/applications", Permission::ApplicationsRead),
@@ -595,6 +613,8 @@ pub struct AdminState {
     pub keys: Option<KeyService>,
     /// How long a replaced signing key stays when it is rotated by hand.
     pub key_rotation: RotationPolicy,
+    /// The SPIFFE trust domains of the tenant and their bundles.
+    pub trust_domains: hodor_keys::api::TrustDomainService,
     /// The applications, their clients and resource servers.
     pub applications: ApplicationService,
     /// The claim mappers of clients.
@@ -745,6 +765,7 @@ fn shared_routes() -> Router<Shared> {
         .merge(organizations::routes())
         .merge(workloads::routes())
         .merge(webhooks::routes())
+        .merge(trust_domains::routes())
 }
 
 /// One assurance level, as the interface writes it.

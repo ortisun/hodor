@@ -23,7 +23,7 @@ use hodor_adapters_postgres::{
     PgProviderStore, PgProvisionedGroupRepository, PgProvisionedUserRepository, PgPublicationStore,
     PgRecoveryCodeStore, PgRefreshTokenStore, PgResourceServerStore, PgRoleAssignmentStore,
     PgSealingStateStore, PgSessionStore, PgSimulationStore, PgTenantDirectory, PgTenantRepository,
-    PgTotpStore, PgTransactionStore, PgUploadedDecisionStore, PgUserRepository,
+    PgTotpStore, PgTransactionStore, PgTrustDomainStore, PgUploadedDecisionStore, PgUserRepository,
     PgVerificationTokenStore, PgWebAuthnStore, PgWorkloadRepository,
 };
 use hodor_audit::api::AuditService;
@@ -52,7 +52,9 @@ use hodor_federation::api::{
 };
 use hodor_identity::api::{GroupService, IdentityService, OrganizationService, WorkloadService};
 use hodor_kernel::{DomainError, Secret, SecretBox, SystemClock, TenantContext};
-use hodor_keys::api::{KeyService, RotationPolicy, TenantSecretBox};
+use hodor_keys::api::{
+    KeyService, RotationPolicy, TenantSecretBox, TrustDomainPorts, TrustDomainService,
+};
 use hodor_notification::api::Notifier;
 use hodor_oauth::api::{
     AccessTokenRegister, ApplicationPorts, ApplicationService, AuthorizationCodePorts,
@@ -1464,6 +1466,7 @@ fn administration(
         federation,
         keys: keys(config, database)?,
         key_rotation: key_rotation(config)?,
+        trust_domains: trust_domains(config, database)?,
         applications,
         tenants: tenant_service(database),
         factors: {
@@ -1560,6 +1563,28 @@ fn administration(
         invitations,
         webhooks: webhooks(config, database)?,
     })
+}
+
+/// The trust domains an administrator manages. Bundle endpoints are checked
+/// and fetched by the guarded outbound client, with the development
+/// exception of this installation; nothing of a bundle is secret, so no
+/// keys are needed.
+fn trust_domains(config: &Config, database: &Database) -> Result<TrustDomainService, DomainError> {
+    let guarded = || {
+        GuardedHttpClient::new(OutboundPolicy {
+            development_hosts: development_hosts(config),
+            max_response_bytes: hodor_keys::api::MAX_BUNDLE_BYTES + 1,
+            ..OutboundPolicy::default()
+        })
+    };
+    Ok(TrustDomainService::new(TrustDomainPorts {
+        units_of_work: Arc::new(database.clone()),
+        store: Arc::new(PgTrustDomainStore),
+        destinations: Arc::new(guarded()?),
+        http: Arc::new(guarded()?),
+        digest: Arc::new(Sha256Digest),
+        clock: Arc::new(SystemClock),
+    }))
 }
 
 /// The webhooks an administrator manages, when there are keys to seal

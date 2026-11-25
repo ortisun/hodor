@@ -2,6 +2,9 @@
 //!
 //! Owns the keys a tenant's tokens are signed with and its secrets are
 //! encrypted under: key sets per use, key versions and their lifecycle.
+//! Also the keys of others a tenant trusts: its SPIFFE trust domains and
+//! their bundles, given by an administrator or fetched from a bundle
+//! endpoint and refreshed by the worker (Decision 0042).
 //! It holds no cryptography: keys are made, kept and used by a
 //! [`api::KeyProvider`].
 //!
@@ -16,15 +19,26 @@ pub mod testing;
 /// What other crates may use from this context.
 pub mod api {
     pub use crate::application::ports::{
-        FirstFormatSecrets, KeyProvider, KeyStore, SealingStateStore,
+        DueRefreshes, FirstFormatSecrets, KeyProvider, KeyStore, SealingStateStore,
+        TrustDomainStore,
     };
     pub use crate::application::secret_box::{FORMAT as SEALED_FORMAT, LOST_RACE, TenantSecretBox};
     pub use crate::application::service::{KeyService, LOST_FIRST_RACE, RotationReport, Signature};
-    pub use crate::domain::event::KeyEvent;
+    pub use crate::application::trust_domains::{
+        BundleRefresher, RefreshLease, RefreshOutcome, TrustDomainPorts, TrustDomainService,
+        TrustSourceRequest,
+    };
+    pub use crate::domain::event::{BundleSummary, KeyEvent, TrustDomainEvent};
     pub use crate::domain::key::{
         GeneratedKey, KeyAlgorithm, KeyMaterial, KeyState, KeyUse, KeyVersion, KeyVersionId,
         KeyVersionSnapshot, MAX_REASON_LENGTH,
     };
     pub use crate::domain::key_set::{Activation, KeySet};
     pub use crate::domain::rotation::{RotationChange, RotationPolicy};
+    pub use crate::domain::trust_domain::{
+        BundleKey, CheckedSource, DEFAULT_REFRESH, FETCH_TIME_LIMIT, FetchOutcome, LONGEST_REFRESH,
+        LONGEST_RETRY, MAX_BUNDLE_BYTES, MAX_BUNDLE_ELEMENTS, MAX_BUNDLE_ENDPOINT_LENGTH,
+        MAX_ERROR_LENGTH, MAX_NAME_LENGTH, MAX_TRUST_DOMAINS, SHORTEST_REFRESH, SvidKind,
+        TrustBundle, TrustDomain, TrustDomainId, TrustDomainName, TrustDomainSnapshot, TrustSource,
+    };
 }

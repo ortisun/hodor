@@ -459,7 +459,8 @@ async fn an_administrators_token_is_refused_by_every_operation_of_another_tenant
                 .replace("{endpoint_id}", &globex.ana.to_string())
                 .replace("{delivery_id}", &globex.ana.to_string())
                 .replace("{api_key_id}", &globex.ana.to_string())
-                .replace("{entry_id}", &globex.ana.to_string());
+                .replace("{entry_id}", &globex.ana.to_string())
+                .replace("{trust_domain_id}", &globex.ana.to_string());
             let method: Method = method.to_uppercase().parse().expect("method");
             let (status, body) = world
                 .admin(
@@ -478,7 +479,7 @@ async fn an_administrators_token_is_refused_by_every_operation_of_another_tenant
             tried += 1;
         }
     }
-    assert_eq!(tried, 141, "every documented operation was tried");
+    assert_eq!(tried, 146, "every documented operation was tried");
 
     // The token is good where it belongs, and nothing happened in Globex:
     // it has its two users, both active.
@@ -4417,4 +4418,162 @@ async fn one_tenants_second_factor_policy_asks_no_enrollment_of_another() {
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["step"], "enrollment", "{body}");
+}
+
+/// A bundle of one `jwt-svid` key named `key_id`, for a trust domain.
+fn bundle_naming(key_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "spiffe_sequence": 1,
+        "keys": [{
+            "use": "jwt-svid",
+            "kty": "EC",
+            "crv": "P-256",
+            "kid": key_id,
+            "x": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+            "y": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+        }],
+    })
+}
+
+#[tokio::test]
+async fn one_tenants_trust_domain_is_never_read_for_another_even_under_the_same_name() {
+    let world = world().await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    let mut ids = Vec::new();
+    for (tenant, key_id) in [(acme, "acme-key"), (globex, "globex-key")] {
+        let (status, added) = world
+            .admin(
+                tenant,
+                &tenant.administrator_token,
+                Method::POST,
+                "/trust-domains",
+                Some(serde_json::json!({
+                    "name": "cluster.local",
+                    "source": "uploaded",
+                    "bundle": bundle_naming(key_id),
+                })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{added}");
+        ids.push(added["id"].as_str().expect("id").to_owned());
+    }
+    let (ours, theirs) = (&ids[0], &ids[1]);
+
+    // Each tenant lists its own trust domain of that name, with its own
+    // bundle, and nothing of the other's.
+    for (tenant, own, other_key) in [(acme, ours, "globex-key"), (globex, theirs, "acme-key")] {
+        let (status, listed) = world
+            .admin(
+                tenant,
+                &tenant.administrator_token,
+                Method::GET,
+                "/trust-domains",
+                None,
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK);
+        let items = listed["items"].as_array().expect("items");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["id"].as_str(), Some(own.as_str()));
+        assert!(!listed.to_string().contains(other_key));
+    }
+
+    // Globex's administrator names Acme's trust domain: it does not exist.
+    for method in [Method::GET, Method::PUT, Method::DELETE] {
+        let (status, body) = world
+            .admin(
+                globex,
+                &globex.administrator_token,
+                method.clone(),
+                &format!("/trust-domains/{ours}"),
+                Some(serde_json::json!({ "source": "mesh" })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{method}");
+        assert_eq!(body["code"], "keys.trust_domain_not_found", "{method}");
+    }
+    // Replacing and removing its own changes nothing of Acme's.
+    let (status, _) = world
+        .admin(
+            globex,
+            &globex.administrator_token,
+            Method::PUT,
+            &format!("/trust-domains/{theirs}"),
+            Some(serde_json::json!({ "source": "mesh" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = world
+        .admin(
+            globex,
+            &globex.administrator_token,
+            Method::DELETE,
+            &format!("/trust-domains/{theirs}"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, kept) = world
+        .admin(
+            acme,
+            &acme.administrator_token,
+            Method::GET,
+            &format!("/trust-domains/{ours}"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(kept["source"], "uploaded");
+    assert_eq!(kept["bundle"]["keys"][0]["kid"], "acme-key");
+
+    // Globex may add `cluster.local` again: the name is Acme's only in Acme.
+    let (status, _) = world
+        .admin(
+            globex,
+            &globex.administrator_token,
+            Method::POST,
+            "/trust-domains",
+            Some(serde_json::json!({ "name": "cluster.local", "source": "mesh" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // A bundle endpoint at a private address is refused, in either tenant,
+    // and nothing is stored.
+    for url in [
+        "https://127.0.0.1/bundle",
+        "https://10.1.2.3/bundle",
+        "https://169.254.169.254/latest",
+        "https://localhost/bundle",
+    ] {
+        let (status, body) = world
+            .admin(
+                acme,
+                &acme.administrator_token,
+                Method::POST,
+                "/trust-domains",
+                Some(serde_json::json!({
+                    "name": "private.example",
+                    "source": "bundle_endpoint",
+                    "bundle_endpoint_url": url,
+                })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{url}");
+        assert!(
+            body["code"] == "keys.bundle_endpoint_forbidden"
+                || body["code"] == "keys.bundle_endpoint_unresolvable",
+            "{url}: {body}"
+        );
+    }
+    let (_, listed) = world
+        .admin(
+            acme,
+            &acme.administrator_token,
+            Method::GET,
+            "/trust-domains",
+            None,
+        )
+        .await;
+    assert_eq!(listed["items"].as_array().map(Vec::len), Some(1));
 }

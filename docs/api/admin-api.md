@@ -86,6 +86,11 @@ It needs `HODOR_DATABASE_URL`, like the tenant commands.
 | `GET /keys/{key_set}` | `keys:read` | List the versions of a key set: `sig` or `data` |
 | `POST /keys/{key_set}:rotate` | `keys:write` | Activate a new signing version at once |
 | `POST /keys/{key_set}/versions/{version_id}:revoke` | `keys:write` | Revoke a version, with a reason |
+| `GET /trust-domains` | `keys:read` | List the tenant's trust domains, with their bundles |
+| `POST /trust-domains` | `keys:write` | Add a trust domain: its bundle, its bundle endpoint, or the mesh |
+| `GET /trust-domains/{trust_domain_id}` | `keys:read` | Read one trust domain |
+| `PUT /trust-domains/{trust_domain_id}` | `keys:write` | Replace its source and bundle |
+| `DELETE /trust-domains/{trust_domain_id}` | `keys:write` | Remove it |
 | `GET /applications` | `applications:read` | List the tenant's applications |
 | `POST /applications` | `applications:write` | Register an application |
 | `GET /applications/{application_id}` | `applications:read` | Read one application |
@@ -449,6 +454,60 @@ The `id` is the key identifier, `kid`, of the version in [the published key set]
 | A reason that is empty or too long | `422` | `keys.reason_invalid` |
 | Two activations at the same moment | `409` | `keys.activation_conflict` |
 | The server has no keys to keep secrets with (`HODOR_SECRET_KEYS`) | `503` | `keys.not_configured` |
+
+### Trust domains
+
+The SPIFFE trust domains a tenant trusts, specified in [the keys context](../architecture/contexts/keys.md#trust-domains). A trust domain is answered as:
+
+```json
+{
+  "id": "0193f3a0-…",
+  "name": "prod.example.com",
+  "source": "bundle_endpoint",
+  "bundle_endpoint_url": "https://spire.example.com/bundle",
+  "bundle": {
+    "spiffe_sequence": 12,
+    "spiffe_refresh_hint": 300,
+    "keys": [
+      { "use": "x509-svid", "kty": "EC", "crv": "P-256", "x": "…", "y": "…", "x5c": ["MIIB…"] },
+      { "use": "jwt-svid", "kty": "EC", "crv": "P-256", "kid": "…", "x": "…", "y": "…" }
+    ]
+  },
+  "bundle_changed_at": "…",
+  "refresh": {
+    "fetched_at": "…",
+    "next_at": "…",
+    "failing_since": null,
+    "last_error": null
+  },
+  "created_at": "…",
+  "updated_at": "…"
+}
+```
+
+`bundle_endpoint_url` and `refresh` are present only for the source `bundle_endpoint`; `bundle` and `bundle_changed_at` are absent for `mesh`. The bundle is the one in force, as Hodor keeps it: only the elements it kept, with their members in order. `refresh.failing_since` and `refresh.last_error` say, while fetching fails, since when and the code of the last reason; the bundle in force is then still the last one that read.
+
+`POST /trust-domains` takes the name and one source:
+
+```json
+{ "name": "prod.example.com", "source": "uploaded", "bundle": { "keys": [ … ] } }
+{ "name": "prod.example.com", "source": "bundle_endpoint", "bundle_endpoint_url": "https://spire.example.com/bundle" }
+{ "name": "cluster.local", "source": "mesh" }
+```
+
+and answers `201` with the trust domain. A bundle endpoint is fetched before anything is stored. `PUT /trust-domains/{trust_domain_id}` takes the same body without `name`, which cannot change, and answers `200` with the trust domain; a refusal leaves it as it was. `DELETE` answers `204`. `GET /trust-domains` answers a page of `{ "items": [ … ], "next_cursor": … }` in the order of their identifiers.
+
+| Situation | Status | Code |
+|---|---|---|
+| No trust domain of that identifier | `404` | `keys.trust_domain_not_found` |
+| A name the tenant has already | `409` | `keys.trust_domain_name_taken` |
+| A fifty-first trust domain | `409` | `keys.too_many_trust_domains` |
+| The trust domain changed while it was being changed | `409` | `keys.trust_domain_changed` |
+| A name that breaks its rule, or a source that is not one of the three or comes without what it needs | `422` | `keys.trust_domain_name_invalid`, `keys.trust_domain_source_invalid` |
+| A bundle that does not read | `422` | `keys.trust_bundle_invalid` |
+| A bundle endpoint that is not an HTTPS address of at most 1000 characters | `422` | `keys.bundle_endpoint_invalid` |
+| A bundle endpoint that leads somewhere that may not be called, or resolves to nothing | `422` | `keys.bundle_endpoint_forbidden`, `keys.bundle_endpoint_unresolvable` |
+| A bundle endpoint that did not answer a bundle: no answer in 10 seconds, a status other than 2xx, a redirect, or more than 64 kibibytes | `422` | `keys.bundle_endpoint_unreachable` |
 
 ### Applications, clients and resource servers
 

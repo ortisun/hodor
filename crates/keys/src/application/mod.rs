@@ -3,3 +3,4 @@
 pub(crate) mod ports;
 pub(crate) mod secret_box;
 pub(crate) mod service;
+pub(crate) mod trust_domains;

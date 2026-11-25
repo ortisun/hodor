@@ -2,7 +2,7 @@
 
 ## Overview
 
-The PostgreSQL schema, as forty-three numbered SQL files. A number is
+The PostgreSQL schema, as forty-four numbered SQL files. A number is
 reserved when a piece of work starts, so a number can be missing until that
 work merges; every file not yet applied is applied, in order. They are
 embedded in the binaries by `static MIGRATOR: Migrator = sqlx::migrate!("../../migrations")`
@@ -74,6 +74,7 @@ Tables created, by file:
 | `0068_authentication_transaction_enrollment.sql` | `authentication.transaction` gains `enrollment_kind` (`authenticator_application`, `security_key` or `passkey`, `transaction_enrollment_kind_known`) and `enrollment_id`, the credential context's enrollment or registration, not a foreign key; both null or both set (`transaction_enrollment_whole`) |
 | `0070_oauth_pairwise_subjects.sql` | adds to `oauth.client` `subject_type` (`public` by default, `public` or `pairwise`, `client_subject_type_known`; `pairwise` only with `authorization_code`, `client_pairwise_needs_code`) and `sector_identifier_uri` (`COLLATE "C"`, 1 to 2000 characters, HTTP or HTTPS, `client_sector_identifier_uri_form`; only for a pairwise client, `client_sector_identifier_uri_needs_pairwise`); `oauth.pairwise_secret` (the tenant's sealed pairwise secret, one per tenant, `pairwise_secret_one_per_tenant`), under row-level security |
 | `0072_oauth_claim_mappers.sql` | `oauth.claim_mapper`: the claim mappers of a client, referencing it with the tenant and going with it; one per claim and client without regard to case (`claim_mapper_claim_once` on `claim_normalized`, kept the lowercase of `claim`); targets among `id_token`, `access_token` and `userinfo`; the source an object of a known `kind`, a constant at most 2048 bytes as PostgreSQL writes it. |
+| `0073_keys_trust_domains.sql` | `keys.trust_domain`: a tenant's SPIFFE trust domains, unique per tenant by name (`trust_domain_name_unique`, `trust_domain_name_shape` `^[a-z0-9._-]{1,255}$`); the source `uploaded`, `bundle_endpoint` or `mesh`, with an address exactly for `bundle_endpoint`, a bundle of at most 65536 bytes exactly unless `mesh`, a next refresh exactly for `bundle_endpoint` and a fetch, lease and failure only for it; the partial index `trust_domain_due_idx` on `next_refresh_at` of the `bundle_endpoint` rows for the worker |
 | `0077_webhooks_subscription_since.sql` | adds `since` to `webhooks.subscription`: when the endpoint began to receive the type, so that the fan-out skips an event that happened before; existing subscriptions count from the migration |
 
 No migration creates a type, an extension or seed rows; enumerations are text

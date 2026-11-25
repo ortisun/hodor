@@ -1879,6 +1879,393 @@
         }
       }
     },
+    "/trust-domains": {
+      "get": {
+        "operationId": "listTrustDomains",
+        "summary": "List the tenant's trust domains, with their bundles, in the order of their identifiers",
+        "x-hodor-permission": "keys:read",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 50
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "The `next_cursor` of the page before."
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "A page of trust domains.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "items"
+                  ],
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/TrustDomain"
+                      }
+                    },
+                    "next_cursor": {
+                      "type": "string",
+                      "description": "Present when more results exist."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A value breaks its rule, or the body is not of the expected shape.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "addTrustDomain",
+        "summary": "Add a trust domain: its bundle, its bundle endpoint, or the mesh",
+        "x-hodor-permission": "keys:write",
+        "description": "A bundle is read, and a bundle endpoint checked and fetched once, before anything is stored.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewTrustDomain"
+              }
+            }
+          }
+        },
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Added.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrustDomain"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The tenant has a trust domain of that name, `keys.trust_domain_name_taken`, or 50 already, `keys.too_many_trust_domains`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A value breaks its rule, or the body is not of the expected shape: `keys.trust_domain_name_invalid`, `keys.trust_domain_source_invalid`, `keys.trust_bundle_invalid`, `keys.bundle_endpoint_invalid`, `keys.bundle_endpoint_forbidden`, `keys.bundle_endpoint_unresolvable` or `keys.bundle_endpoint_unreachable`. Nothing is stored.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/trust-domains/{trust_domain_id}": {
+      "get": {
+        "operationId": "getTrustDomain",
+        "summary": "Read one trust domain",
+        "x-hodor-permission": "keys:read",
+        "parameters": [
+          {
+            "name": "trust_domain_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The trust domain.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrustDomain"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No trust domain of that identifier: `keys.trust_domain_not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "replaceTrustDomain",
+        "summary": "Replace a trust domain's source and bundle",
+        "x-hodor-permission": "keys:write",
+        "parameters": [
+          {
+            "name": "trust_domain_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "description": "Checked as when it is added. A refusal leaves the trust domain as it was, with the bundle it had.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TrustDomainSource"
+              }
+            }
+          }
+        },
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The trust domain.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrustDomain"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No trust domain of that identifier: `keys.trust_domain_not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "It changed while it was being replaced: `keys.trust_domain_changed`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A value breaks its rule, or the body is not of the expected shape: `keys.trust_domain_name_invalid`, `keys.trust_domain_source_invalid`, `keys.trust_bundle_invalid`, `keys.bundle_endpoint_invalid`, `keys.bundle_endpoint_forbidden`, `keys.bundle_endpoint_unresolvable` or `keys.bundle_endpoint_unreachable`. Nothing is stored.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "removeTrustDomain",
+        "summary": "Remove a trust domain, with its bundle",
+        "x-hodor-permission": "keys:write",
+        "parameters": [
+          {
+            "name": "trust_domain_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "Removed."
+          },
+          "404": {
+            "description": "No trust domain of that identifier: `keys.trust_domain_not_found`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/applications": {
       "get": {
         "operationId": "listApplications",
@@ -14856,6 +15243,180 @@
           },
           "source": {
             "$ref": "#/components/schemas/ClaimMapperSource"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "TrustBundle": {
+        "type": "object",
+        "description": "A SPIFFE bundle: a JSON Web Key Set with `use` `x509-svid` or `jwt-svid` on each key. In an answer, only the elements Hodor kept, with their members in order.",
+        "required": [
+          "keys"
+        ],
+        "properties": {
+          "keys": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "type": "object"
+            }
+          },
+          "spiffe_sequence": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "spiffe_refresh_hint": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Seconds."
+          }
+        }
+      },
+      "TrustDomainSource": {
+        "type": "object",
+        "required": [
+          "source"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "source": {
+            "type": "string",
+            "enum": [
+              "uploaded",
+              "bundle_endpoint",
+              "mesh"
+            ],
+            "description": "`uploaded`: the bundle given here. `bundle_endpoint`: fetched from `bundle_endpoint_url` now and by the worker after. `mesh`: checked by the mesh in front of Hodor, with no bundle."
+          },
+          "bundle": {
+            "$ref": "#/components/schemas/TrustBundle",
+            "description": "With `uploaded` only."
+          },
+          "bundle_endpoint_url": {
+            "type": "string",
+            "maxLength": 1000,
+            "description": "With `bundle_endpoint` only: the address of its SPIFFE bundle endpoint, HTTPS."
+          }
+        }
+      },
+      "NewTrustDomain": {
+        "type": "object",
+        "required": [
+          "name",
+          "source"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255,
+            "pattern": "^[a-z0-9._-]+$",
+            "description": "The trust domain's name, as in `spiffe://<name>/…`. Unique in the tenant; it never changes."
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "uploaded",
+              "bundle_endpoint",
+              "mesh"
+            ],
+            "description": "`uploaded`: the bundle given here. `bundle_endpoint`: fetched from `bundle_endpoint_url` now and by the worker after. `mesh`: checked by the mesh in front of Hodor, with no bundle."
+          },
+          "bundle": {
+            "$ref": "#/components/schemas/TrustBundle",
+            "description": "With `uploaded` only."
+          },
+          "bundle_endpoint_url": {
+            "type": "string",
+            "maxLength": 1000,
+            "description": "With `bundle_endpoint` only: the address of its SPIFFE bundle endpoint, HTTPS."
+          }
+        }
+      },
+      "TrustDomain": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "source",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "uploaded",
+              "bundle_endpoint",
+              "mesh"
+            ]
+          },
+          "bundle_endpoint_url": {
+            "type": "string",
+            "description": "For `bundle_endpoint` only."
+          },
+          "bundle": {
+            "$ref": "#/components/schemas/TrustBundle",
+            "description": "The bundle in force; absent for `mesh`."
+          },
+          "bundle_changed_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the bundle in force was given or fetched as new; absent for `mesh`."
+          },
+          "refresh": {
+            "type": "object",
+            "description": "For `bundle_endpoint` only.",
+            "required": [
+              "next_at",
+              "failing_since",
+              "last_error"
+            ],
+            "properties": {
+              "fetched_at": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time",
+                "description": "The last fetch that read."
+              },
+              "next_at": {
+                "type": "string",
+                "format": "date-time",
+                "description": "When the worker fetches it next."
+              },
+              "failing_since": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time",
+                "description": "While fetching fails: since when. The bundle in force is the last one that read."
+              },
+              "last_error": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "While fetching fails: the code of the last reason."
+              }
+            }
           },
           "created_at": {
             "type": "string",
