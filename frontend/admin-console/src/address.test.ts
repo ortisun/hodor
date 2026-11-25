@@ -15,6 +15,12 @@ describe("placeOf", () => {
       tenant: "acme",
       screen: { name: "provider", id: ID },
     });
+    expect(placeOf(`/t/acme/console/service-accounts/${ID}`)).toEqual({
+      tenant: "acme",
+      screen: { name: "serviceAccount", id: ID },
+    });
+    expect(placeOf(`/t/acme/console/agents/${ID}`)).toEqual({ tenant: "acme", screen: { name: "agent", id: ID } });
+    expect(placeOf(`/t/acme/console/webhooks/${ID}`)).toEqual({ tenant: "acme", screen: { name: "webhook", id: ID } });
   });
 
   it("names no screen for an address of the console that has none", () => {
@@ -23,6 +29,9 @@ describe("placeOf", () => {
     expect(placeOf(`/t/acme/console/users/${ID}/more`)).toEqual({ tenant: "acme", screen: null });
     expect(placeOf("/t/acme/console/groups/finance")).toEqual({ tenant: "acme", screen: null });
     expect(placeOf(`/t/acme/console/organizations/${ID}/units`)).toEqual({ tenant: "acme", screen: null });
+    expect(placeOf(`/t/acme/console/service-accounts/${ID}/api-keys`)).toEqual({ tenant: "acme", screen: null });
+    expect(placeOf("/t/acme/console/agents/helper")).toEqual({ tenant: "acme", screen: null });
+    expect(placeOf("/t/acme/console/webhook-endpoints")).toEqual({ tenant: "acme", screen: null });
   });
 
   it("is not the console's when the address is elsewhere", () => {
@@ -45,6 +54,12 @@ describe("pathOf", () => {
       { name: "group", id: ID },
       { name: "organizations" },
       { name: "organization", id: ID },
+      { name: "serviceAccounts" },
+      { name: "serviceAccount", id: ID },
+      { name: "agents" },
+      { name: "agent", id: ID },
+      { name: "webhooks" },
+      { name: "webhook", id: ID },
     ] as const;
     for (const screen of screens) {
       expect(placeOf(pathOf("acme", screen))).toEqual({ tenant: "acme", screen });

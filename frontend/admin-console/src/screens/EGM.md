@@ -3,9 +3,11 @@
 ## Overview
 
 The screens of the administration console: users and one user, groups and
-one group, organizations and one organization, identity providers and one
-provider, applications, one application with its clients and
-resource server, one client, and the audit log. Each screen loads what it shows
+one group, organizations and one organization, service accounts and agents
+and one of each with its API keys, identity providers and one provider,
+applications, one application with its clients and resource server, one
+client, webhook endpoints and one endpoint with its deliveries, and the audit
+log. Each screen loads what it shows
 through a method of `../client.ts:Client`, gates every button that changes
 something with `../actions.ts:may`, and sends dangerous actions through
 `../parts/Confirm.tsx:Confirm`. Screens see values, never addresses of the
@@ -63,6 +65,51 @@ console interface.
   another; with `organizations:read` their organizations
   (`client.organizationsOfUser`) and units, named from `client.listUnits` of
   each organization with units.
+- `WorkloadForm.tsx:WorkloadForm` - a service account's or an agent's name
+  and owners, one user identifier a line (`linesOf`), refused without asking
+  the server when one is not an identifier; `createWorkload` (level 0) or
+  `changeWorkload` (level 1, says `workloadKept`). `ofKind(kind, pair)` picks
+  the copy of one kind from a pair.
+- `WorkloadsScreen.tsx:WorkloadsScreen` - with `kind` `service_account` or
+  `agent`, the table a page at a time (`client.listWorkloads(kind, cursor)`),
+  with status and the number of owners, and the creating `WorkloadForm`
+  (`client.createWorkload`), then `go` to the new one (`screenOf`).
+- `WorkloadScreen.tsx:WorkloadScreen` - one workload (`client.getWorkload`):
+  its owners by `NameOf`, its API keys (`ApiKeys`), the roles it holds
+  (`RoleAssignments` of kind `user`, with `roles:read`). Change
+  (`WorkloadForm`), disable (`Confirm` `disableWorkload`, the name typed),
+  enable (`enableWorkload`), delete (`deleteWorkload`, the name typed, then
+  `go` to the list).
+- `ApiKeys.tsx:ApiKeys` - a workload's keys, newest first
+  (`client.listApiKeys`), each with `hodor_ak_…` and its last four
+  characters, its scopes, status, expiry and last use. `ApiKeyForm` (name,
+  scopes one a line, an optional application identifier, a lifetime of 1 to
+  365 days, 90 unless changed) calls `client.createApiKey`; a key that works
+  and was not replaced is rotated (`Confirm` `rotateApiKey`,
+  `client.rotateApiKey`) and revoked (`Confirm` `revokeApiKey`, the key's name
+  typed). A new key goes to `../parts/ShownOnce.tsx:ShownOnce` and is
+  forgotten when it closes. Making a key is offered only for an active
+  workload.
+- `WebhookForms.tsx:EndpointForm`, `SubscriptionsForm` - an endpoint's
+  address, description and event types, and replacing its event types. The
+  catalog comes from `client.listEventTypes`; each type is a checkbox, in the
+  groups of the webhooks context (`groupOf`), and the chosen ones are sent in
+  the catalog's order.
+- `WebhooksScreen.tsx:WebhooksScreen` - the endpoints a page at a time
+  (`client.listEndpoints`), and `EndpointForm` (`registerEndpoint`,
+  `client.registerEndpoint`); the secret is shown by `ShownOnce`, then `go` to
+  the endpoint.
+- `WebhookScreen.tsx:WebhookScreen` - one endpoint (`client.getEndpoint`): its
+  settings and event types, its secrets in force, and its deliveries a page at
+  a time (`client.listDeliveries(id, status, cursor)`) filtered by status.
+  Change the event types (`SubscriptionsForm`, `client.replaceSubscriptions`),
+  rotate the secret (`Confirm` `rotateEndpointSecret`, the address typed; the
+  new secret by `ShownOnce`), remove it (`removeEndpoint`, the address typed,
+  then `go` to `webhooks`), deliver a set-aside delivery again (`Confirm`
+  `redeliver`, `client.redeliver`). `DeliveryBadge` is a delivery's status.
+- `names.tsx:PrincipalOf` - on `ClientScreen`, the workload a client acts as:
+  asked as a service account, then as an agent, and shown as a link with its
+  name; without `workloads:read`, the identifier.
 - `UsersScreen.tsx:nameOf`, `UsersScreen.tsx:StatusBadge` - a user's list name
   (display name, then primary identifier, then `text.unnamed`) and status badge.
 - `AuthorizationScreen.tsx:AuthorizationScreen` - the tenant's authorization at `/authorization`: roles (`client.listRoles`, with the resource servers to find a role's by audience), each changed in `RoleEditor` with its permissions written one a line as `name` or `name if condition` (`permissionLines`, `readPermissionLines`) and saved with `client.defineRole`; bindings (`client.listBindings`, removed with `client.unbind` behind `Confirm` `unbind`); the policy status (`client.policyStatus`; publishing is the command line's); the latest decisions (`client.listDecisions`, filtered by effect). Each part only with its read permission.

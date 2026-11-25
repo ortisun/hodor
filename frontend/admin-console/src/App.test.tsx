@@ -8,7 +8,20 @@ import { en } from "./messages/en";
 import {
   ACME,
   ANA,
+  apiKeyBody,
   applicationBody,
+  ASSISTANT,
+  deliveryBody,
+  endpointBody,
+  EVENT,
+  EXPORT,
+  HOOK,
+  REPORTS_KEY,
+  ROTATED_KEY,
+  SET_ASIDE,
+  WEBHOOKS,
+  workloadBody,
+  WORKLOADS,
   BIA,
   BILLING,
   clientBody,
@@ -1157,5 +1170,368 @@ describe("the groups and organizations of a user", () => {
     expect(sent.some((request) => request.path.includes("/groups") || request.path.includes("/organizations"))).toBe(
       false,
     );
+  });
+});
+
+describe("service accounts and agents", () => {
+  const KEY = "hodor_ak_0123456789abcdef0123456789abcdef0123456789abcdef0123456789ab";
+  const ana = () => json(200, userBody(ANA, "ana@example.com", { display_name: "Ana Lima" }));
+  const page = (script: Parameters<typeof scripted>[0], permissions = WORKLOADS) => ({
+    "GET /console/api/me": [json(200, meBody(permissions))],
+    [`GET /console/api/service-accounts/${EXPORT}`]: [json(200, workloadBody(EXPORT, "Nightly export"))],
+    [`GET /console/api/users/${ANA}`]: [ana()],
+    [`GET /console/api/service-accounts/${EXPORT}/api-keys`]: [
+      json(200, { items: [apiKeyBody(REPORTS_KEY, "Reports", { last_used_at: "2026-11-24T15:03:11Z" })] }),
+    ],
+    ...script,
+  });
+
+  it("are under Directory for whoever may read them, a page at a time, and an auditor may not create one", async () => {
+    const { go, user } = show("/t/acme/console/service-accounts", {
+      "GET /console/api/me": [json(200, meBody(["workloads:read"], ["tenant_auditor"]))],
+      "GET /console/api/service-accounts?limit=50": [
+        json(200, { items: [workloadBody(EXPORT, "Nightly export")], next_cursor: "1" }),
+      ],
+      "GET /console/api/service-accounts?limit=50&cursor=1": [
+        json(200, { items: [workloadBody(ASSISTANT, "Old export", { status: "disabled" })] }),
+      ],
+    });
+    const link = await screen.findByRole("link", { name: "Nightly export" });
+    expect(link.getAttribute("href")).toBe(`/t/acme/console/service-accounts/${EXPORT}`);
+    expect(screen.getByRole("link", { name: en.agents }).getAttribute("href")).toBe("/t/acme/console/agents");
+    expect(screen.getByText(en.ownerCount(1))).toBeTruthy();
+    expect(screen.queryByRole("button", { name: en.createWorkload.service_account })).toBeNull();
+    await user.click(screen.getByRole("button", { name: en.loadMore }));
+    expect(await screen.findByText(en.status["disabled"] ?? "")).toBeTruthy();
+    await user.click(link);
+    expect(go).toHaveBeenCalledWith({ name: "serviceAccount", id: EXPORT });
+  });
+
+  it("are created with a name and owners by identifier, and an owner that is not one is said before asking", async () => {
+    const { sent, go, user } = show("/t/acme/console/agents", {
+      "GET /console/api/me": [json(200, meBody(WORKLOADS))],
+      "GET /console/api/agents?limit=50": [json(200, { items: [] })],
+      "POST /console/api/agents": [
+        problem(422, "identity.workload_owner_invalid"),
+        json(201, workloadBody(ASSISTANT, "Assistant", { kind: "agent" })),
+      ],
+    });
+    expect(await screen.findByText(en.noWorkloads.agent)).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: en.createWorkload.agent }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(en.level(0), { exact: false })).toBeTruthy();
+    await user.type(within(dialog).getByLabelText(en.nameLabel), "Assistant");
+    const owners = within(dialog).getByLabelText(en.ownersLabel);
+    await user.type(owners, "ana@example.com");
+    const create = within(dialog).getByRole("button", { name: en.createWorkload.agent });
+    await user.click(create);
+    expect(await within(dialog).findByText(en.ownersNotIdentifiers)).toBeTruthy();
+    expect(sent.some((request) => request.method === "POST")).toBe(false);
+
+    await user.clear(owners);
+    await user.type(owners, `${ANA}{enter}{enter}`);
+    await user.click(create);
+    expect(await within(dialog).findByText(en.valueInvalid["identity.workload_owner_invalid"] ?? "")).toBeTruthy();
+    await user.click(create);
+    await waitFor(() => expect(go).toHaveBeenCalledWith({ name: "agent", id: ASSISTANT }));
+    expect(sent.at(-1)?.body).toEqual({ name: "Assistant", owners: [ANA] });
+  });
+
+  it("show their owners by name, their keys by their last characters only, and the roles they hold", async () => {
+    show(
+      `/t/acme/console/service-accounts/${EXPORT}`,
+      page({ [`GET /console/api/users/${EXPORT}/role-assignments`]: [json(200, { items: [] })] }, [
+        ...WORKLOADS,
+        "roles:read",
+      ]),
+    );
+    expect(await screen.findByRole("heading", { name: "Nightly export" })).toBeTruthy();
+    const owner = await screen.findByRole("link", { name: "Ana Lima" });
+    expect(owner.getAttribute("href")).toBe(`/t/acme/console/users/${ANA}`);
+    expect(await screen.findByText(en.apiKeyHint("…7c1e"))).toBeTruthy();
+    expect(screen.getByText("users:read")).toBeTruthy();
+    expect(screen.getByText(en.workloadClients)).toBeTruthy();
+    expect(await screen.findByText(en.noHeldRoles)).toBeTruthy();
+    expect(screen.queryByText(/hodor_ak_[0-9a-f]{8}/)).toBeNull();
+  });
+
+  it("are disabled and deleted only with the name typed in full, and enabled after a dialog", async () => {
+    const { sent, go, user } = show(
+      `/t/acme/console/service-accounts/${EXPORT}`,
+      page({
+        [`POST /console/api/service-accounts/${EXPORT}:disable`]: [
+          json(200, workloadBody(EXPORT, "Nightly export", { status: "disabled" })),
+        ],
+        [`POST /console/api/service-accounts/${EXPORT}:enable`]: [json(200, workloadBody(EXPORT, "Nightly export"))],
+        [`DELETE /console/api/service-accounts/${EXPORT}`]: [empty(204)],
+      }),
+    );
+    await user.click(await screen.findByRole("button", { name: en.disableWorkload }));
+    let dialog = await screen.findByRole("dialog");
+    let confirm = within(dialog).getByRole("button", { name: en.disableWorkload });
+    expect(confirm.getAttribute("aria-disabled")).toBe("true");
+    expect(within(dialog).getByText(en.workloadTokensStopped)).toBeTruthy();
+    await user.type(within(dialog).getByLabelText(en.typeToConfirm("Nightly export")), "Nightly export");
+    await user.click(confirm);
+    await user.click(await screen.findByRole("button", { name: en.enableWorkload }));
+    dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(en.level(1), { exact: false })).toBeTruthy();
+    await user.click(within(dialog).getByRole("button", { name: en.enableWorkload }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    await user.click(screen.getByRole("button", { name: en.deleteWorkload }));
+    dialog = await screen.findByRole("dialog");
+    confirm = within(dialog).getByRole("button", { name: en.deleteWorkload });
+    expect(within(dialog).getByText(en.workloadForeverValue)).toBeTruthy();
+    await user.type(within(dialog).getByLabelText(en.typeToConfirm("Nightly export")), "Nightly export");
+    await user.click(confirm);
+    await waitFor(() => expect(go).toHaveBeenCalledWith({ name: "serviceAccounts" }));
+    expect(sent.filter((request) => request.method !== "GET").map((request) => request.method)).toEqual([
+      "POST",
+      "POST",
+      "DELETE",
+    ]);
+  });
+
+  it("make a key shown once, rotate one shown once, and revoke one only with its name typed in full", async () => {
+    const listed = (items: unknown[]) => json(200, { items });
+    const { sent, user } = show(
+      `/t/acme/console/service-accounts/${EXPORT}`,
+      page({
+        [`GET /console/api/service-accounts/${EXPORT}/api-keys`]: [
+          listed([apiKeyBody(REPORTS_KEY, "Reports")]),
+          listed([apiKeyBody(ROTATED_KEY, "Payroll checks"), apiKeyBody(REPORTS_KEY, "Reports")]),
+          listed([apiKeyBody(ROTATED_KEY, "Reports"), apiKeyBody(REPORTS_KEY, "Reports", { replaced_by: ROTATED_KEY })]),
+          listed([apiKeyBody(ROTATED_KEY, "Reports", { status: "revoked", revoked_at: "2026-11-24T18:03:11Z" })]),
+        ],
+        [`POST /console/api/service-accounts/${EXPORT}/api-keys`]: [
+          problem(422, "authorization.scope_needs_application"),
+          json(201, { ...apiKeyBody(ROTATED_KEY, "Payroll checks"), api_key: KEY }),
+        ],
+        [`POST /console/api/service-accounts/${EXPORT}/api-keys/${REPORTS_KEY}:rotate`]: [
+          json(201, { ...apiKeyBody(ROTATED_KEY, "Reports"), api_key: KEY }),
+        ],
+        [`DELETE /console/api/service-accounts/${EXPORT}/api-keys/${ROTATED_KEY}`]: [empty(204)],
+      }),
+    );
+    await user.click(await screen.findByRole("button", { name: en.createApiKey }));
+    let dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(en.apiKeyShownOnceConsequence)).toBeTruthy();
+    await user.type(within(dialog).getByLabelText(en.nameLabel), "Payroll checks");
+    await user.type(within(dialog).getByLabelText(en.apiKeyScopesLabel), "authz:evaluate{enter}users:read");
+    const make = within(dialog).getByRole("button", { name: en.createApiKey });
+    await user.click(make);
+    expect(await within(dialog).findByText(en.valueInvalid["authorization.scope_needs_application"] ?? "")).toBeTruthy();
+    await user.type(within(dialog).getByLabelText(`${en.apiKeyApplicationLabel} (${en.optional})`), BILLING);
+    await user.click(make);
+    expect((await screen.findByTestId("shown-once")).textContent).toBe(KEY);
+    expect(sent.filter((request) => request.method === "POST").at(-1)?.body).toEqual({
+      name: "Payroll checks",
+      scopes: ["authz:evaluate", "users:read"],
+      application_id: BILLING,
+      lifetime_days: 90,
+    });
+    await user.click(screen.getByRole("button", { name: en.secretKept }));
+    await waitFor(() => expect(screen.queryByText(KEY)).toBeNull());
+
+    const reports = await screen.findByRole("row", { name: /Reports/ });
+    await user.click(within(reports).getByRole("button", { name: en.rotateApiKey }));
+    dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(en.rotateApiKeyOldValue)).toBeTruthy();
+    await user.click(within(dialog).getByRole("button", { name: en.rotateApiKey }));
+    expect((await screen.findByTestId("shown-once")).textContent).toBe(KEY);
+    await user.click(screen.getByRole("button", { name: en.secretKept }));
+    // The replaced key is not rotated again.
+    expect(await screen.findByText(en.keyReplaced)).toBeTruthy();
+
+    const revoke = screen.getAllByRole("button", { name: en.revokeApiKey })[0];
+    if (revoke === undefined) {
+      throw new Error("no key to revoke");
+    }
+    await user.click(revoke);
+    dialog = await screen.findByRole("dialog");
+    const confirm = within(dialog).getByRole("button", { name: en.revokeApiKey });
+    expect(confirm.getAttribute("aria-disabled")).toBe("true");
+    await user.type(within(dialog).getByLabelText(en.typeToConfirm("Reports")), "Reports");
+    await user.click(confirm);
+    expect(await screen.findByText(en.apiKeyStatus["revoked"] ?? "")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: en.revokeApiKey })).toBeNull();
+  });
+
+  it("offer an auditor nothing to change", async () => {
+    show(`/t/acme/console/service-accounts/${EXPORT}`, page({}, ["users:read", "workloads:read"]));
+    expect(await screen.findByText(en.apiKeyHint("…7c1e"))).toBeTruthy();
+    for (const label of [en.changeSettings, en.disableWorkload, en.deleteWorkload, en.createApiKey, en.rotateApiKey]) {
+      expect(screen.queryByRole("button", { name: label })).toBeNull();
+    }
+  });
+
+  it("are named on the page of a client that acts as one", async () => {
+    show(`/t/acme/console/clients/${WEB}`, {
+      "GET /console/api/me": [json(200, meBody([...WORKLOADS, "applications:read"]))],
+      [`GET /console/api/clients/${WEB}`]: [
+        json(200, clientBody({ grant_types: ["client_credentials"], redirect_uris: [], principal: ASSISTANT })),
+      ],
+      [`GET /console/api/service-accounts/${ASSISTANT}`]: [problem(404, "identity.workload_not_found")],
+      [`GET /console/api/agents/${ASSISTANT}`]: [json(200, workloadBody(ASSISTANT, "Assistant", { kind: "agent" }))],
+    });
+    const agent = await screen.findByRole("link", { name: "Assistant" });
+    expect(agent.getAttribute("href")).toBe(`/t/acme/console/agents/${ASSISTANT}`);
+  });
+});
+
+describe("webhooks", () => {
+  const SECRET = "whsec_c2VjcmV0IG9mIHRoZSBlbmRwb2ludCBmb3IgdGhlIHRlc3Q=";
+  const CATALOG = ["identity.user_created", "identity.group_created", "session.started", "authentication.succeeded"];
+  const page = (script: Parameters<typeof scripted>[0], permissions = WEBHOOKS) => ({
+    "GET /console/api/me": [json(200, meBody(permissions))],
+    [`GET /console/api/webhook-endpoints/${HOOK}`]: [json(200, endpointBody())],
+    [`GET /console/api/webhook-deliveries?limit=50&endpoint_id=${HOOK}`]: [
+      json(200, { items: [deliveryBody(), deliveryBody({ id: EVENT, status: "delivered", attempts: 1, last_response_status: 204 })] }),
+    ],
+    ...script,
+  });
+
+  it("are under Audit for whoever may read them, and an auditor may not register one", async () => {
+    const { go } = show("/t/acme/console", {
+      "GET /console/api/me": [json(200, meBody(["webhooks:read"], ["tenant_auditor"]))],
+      "GET /console/api/webhook-endpoints?limit=50": [json(200, { items: [endpointBody()] })],
+    });
+    await waitFor(() => expect(go).toHaveBeenCalledWith({ name: "webhooks" }));
+    expect(screen.getByRole("link", { name: en.webhooks }).getAttribute("href")).toBe("/t/acme/console/webhooks");
+    cleanup();
+    show("/t/acme/console/webhooks", {
+      "GET /console/api/me": [json(200, meBody(["webhooks:read"], ["tenant_auditor"]))],
+      "GET /console/api/webhook-endpoints?limit=50": [json(200, { items: [endpointBody()] })],
+    });
+    const link = await screen.findByRole("link", { name: "https://hooks.example.com/hodor" });
+    expect(link.getAttribute("href")).toBe(`/t/acme/console/webhooks/${HOOK}`);
+    expect(screen.getByText(en.eventTypeCount(1))).toBeTruthy();
+    expect(screen.queryByRole("button", { name: en.registerEndpoint })).toBeNull();
+  });
+
+  it("are registered with event types from the catalog, the secret shown once and never on the endpoint's page", async () => {
+    const { sent, go, user } = show("/t/acme/console/webhooks", {
+      "GET /console/api/me": [json(200, meBody(WEBHOOKS))],
+      "GET /console/api/webhook-endpoints?limit=50": [json(200, { items: [] })],
+      "GET /console/api/webhook-event-types": [json(200, { items: CATALOG })],
+      "POST /console/api/webhook-endpoints": [
+        problem(422, "webhooks.endpoint_address_forbidden"),
+        json(201, { endpoint: endpointBody(), secret: SECRET }),
+      ],
+    });
+    expect(await screen.findByText(en.noEndpoints)).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: en.registerEndpoint }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(en.registerEndpointConsequence)).toBeTruthy();
+    expect(within(dialog).getByText(en.eventGroups["memberships"] ?? "")).toBeTruthy();
+    await user.type(within(dialog).getByLabelText(en.endpointAddressLabel), "https://hooks.example.com/hodor");
+    const register = within(dialog).getByRole("button", { name: en.registerEndpoint });
+    expect(register.getAttribute("aria-disabled")).toBe("true");
+    await user.click(await within(dialog).findByRole("checkbox", { name: "session.started" }));
+    await user.click(within(dialog).getByRole("checkbox", { name: "identity.user_created" }));
+    await user.click(register);
+    expect(await within(dialog).findByText(en.valueInvalid["webhooks.endpoint_address_forbidden"] ?? "")).toBeTruthy();
+    await user.click(register);
+    expect((await screen.findByTestId("shown-once")).textContent).toBe(SECRET);
+    expect(screen.getByText(en.signingSecretLabel)).toBeTruthy();
+    // Sent in the order of the catalog.
+    expect(sent.filter((request) => request.method === "POST").at(-1)?.body).toEqual({
+      url: "https://hooks.example.com/hodor",
+      event_types: ["identity.user_created", "session.started"],
+    });
+    await user.click(screen.getByRole("button", { name: en.secretKept }));
+    await waitFor(() => expect(go).toHaveBeenCalledWith({ name: "webhook", id: HOOK }));
+    expect(screen.queryByText(SECRET)).toBeNull();
+  });
+
+  it("show the deliveries filtered by status, and deliver a set-aside one again after a dialog", async () => {
+    const { sent, user } = show(
+      `/t/acme/console/webhooks/${HOOK}`,
+      page({
+        [`GET /console/api/webhook-deliveries?limit=50&endpoint_id=${HOOK}&status=set_aside`]: [
+          json(200, { items: [deliveryBody()] }),
+          json(200, { items: [] }),
+        ],
+        [`POST /console/api/webhook-deliveries/${SET_ASIDE}:redeliver`]: [
+          json(200, deliveryBody({ status: "pending", finished_at: null, next_attempt_at: "2026-11-24T16:04:00Z" })),
+        ],
+      }),
+    );
+    expect(await screen.findByText(en.signingCurrent, { exact: false })).toBeTruthy();
+    expect(await screen.findByText(en.answeredWith(503))).toBeTruthy();
+    expect(screen.getByText(en.answeredWith(204))).toBeTruthy();
+    await user.click(screen.getByRole("radio", { name: en.deliveryStatus["set_aside"] ?? "" }));
+    await waitFor(() => expect(screen.queryByText(en.answeredWith(204))).toBeNull());
+    await user.click(screen.getByRole("button", { name: en.redeliver }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(en.redeliverLead)).toBeTruthy();
+    expect(within(dialog).getByText(en.level(1), { exact: false })).toBeTruthy();
+    await user.click(within(dialog).getByRole("button", { name: en.redeliver }));
+    expect(await screen.findByText(en.noDeliveries)).toBeTruthy();
+    expect(sent.some((request) => request.path.endsWith(":redeliver"))).toBe(true);
+  });
+
+  it("change their event types, rotate the secret shown once and are removed, both only with the address typed", async () => {
+    const address = "https://hooks.example.com/hodor";
+    const { sent, go, user } = show(
+      `/t/acme/console/webhooks/${HOOK}`,
+      page({
+        "GET /console/api/webhook-event-types": [json(200, { items: CATALOG })],
+        [`PUT /console/api/webhook-endpoints/${HOOK}/subscriptions`]: [
+          json(200, endpointBody({ event_types: ["session.started", "authentication.succeeded"] })),
+        ],
+        [`POST /console/api/webhook-endpoints/${HOOK}:rotate-secret`]: [
+          json(201, {
+            endpoint: endpointBody({
+              secrets: [
+                { created_at: "2026-11-25T14:03:11Z", expires_at: null },
+                { created_at: "2026-11-24T14:03:11Z", expires_at: "2026-11-26T14:03:11Z" },
+              ],
+            }),
+            secret: SECRET,
+          }),
+        ],
+        [`DELETE /console/api/webhook-endpoints/${HOOK}`]: [empty(204)],
+      }),
+    );
+    await user.click(await screen.findByRole("button", { name: en.changeSubscriptions }));
+    let dialog = await screen.findByRole("dialog");
+    const save = within(dialog).getByRole("button", { name: en.saveSubscriptions });
+    expect(save.getAttribute("aria-disabled")).toBe("true");
+    await user.click(await within(dialog).findByRole("checkbox", { name: "authentication.succeeded" }));
+    await user.click(save);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(sent.find((request) => request.method === "PUT")?.body).toEqual({
+      event_types: ["session.started", "authentication.succeeded"],
+    });
+
+    await user.click(screen.getByRole("button", { name: en.rotateEndpointSecret }));
+    dialog = await screen.findByRole("dialog");
+    let confirm = within(dialog).getByRole("button", { name: en.rotateEndpointSecret });
+    expect(confirm.getAttribute("aria-disabled")).toBe("true");
+    expect(within(dialog).getByText(en.rotateEndpointPreviousValue)).toBeTruthy();
+    await user.type(within(dialog).getByLabelText(en.typeToConfirm(address)), address);
+    await user.click(confirm);
+    expect((await screen.findByTestId("shown-once")).textContent).toBe(SECRET);
+    await user.click(screen.getByRole("button", { name: en.secretKept }));
+    expect(await screen.findByText(/Stops signing/)).toBeTruthy();
+    expect(screen.queryByText(SECRET)).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: en.removeEndpoint }));
+    dialog = await screen.findByRole("dialog");
+    confirm = within(dialog).getByRole("button", { name: en.removeEndpoint });
+    await user.type(within(dialog).getByLabelText(en.typeToConfirm(address)), address);
+    await user.click(confirm);
+    await waitFor(() => expect(go).toHaveBeenCalledWith({ name: "webhooks" }));
+    expect(sent.some((request) => request.method === "DELETE")).toBe(true);
+  });
+
+  it("offer an auditor nothing to change", async () => {
+    show(`/t/acme/console/webhooks/${HOOK}`, page({}, ["webhooks:read"]));
+    expect(await screen.findByText(en.answeredWith(503))).toBeTruthy();
+    for (const label of [en.changeSubscriptions, en.rotateEndpointSecret, en.removeEndpoint, en.redeliver]) {
+      expect(screen.queryByRole("button", { name: label })).toBeNull();
+    }
   });
 });

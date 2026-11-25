@@ -59,6 +59,12 @@ pub const CONSOLE_PATHS: &[&str] = &[
     "/console/groups/{group}",
     "/console/organizations",
     "/console/organizations/{organization}",
+    "/console/service-accounts",
+    "/console/service-accounts/{service_account}",
+    "/console/agents",
+    "/console/agents/{agent}",
+    "/console/webhooks",
+    "/console/webhooks/{endpoint}",
 ];
 
 /// Where the files of the admin console are served, outside any tenant.

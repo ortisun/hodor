@@ -385,7 +385,10 @@ async fn the_console_is_another_application_at_its_own_addresses() {
             .replace("{application}", "0193f1c2-0000-7000-8000-000000000003")
             .replace("{client}", "0193f1c2-0000-7000-8000-000000000004")
             .replace("{group}", "0193f1c2-0000-7000-8000-000000000005")
-            .replace("{organization}", "0193f1c2-0000-7000-8000-000000000006");
+            .replace("{organization}", "0193f1c2-0000-7000-8000-000000000006")
+            .replace("{service_account}", "0193f1c2-0000-7000-8000-000000000007")
+            .replace("{agent}", "0193f1c2-0000-7000-8000-000000000008")
+            .replace("{endpoint}", "0193f1c2-0000-7000-8000-000000000009");
         assert!(
             !path.contains('{'),
             "{path} names a part the test does not fill"

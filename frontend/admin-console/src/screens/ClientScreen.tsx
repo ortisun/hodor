@@ -19,6 +19,7 @@ import { asFailure, Failed, useLoaded, Waiting } from "../parts/Loaded";
 import { RoleAssignments } from "./RoleAssignments";
 import { ShownOnce } from "../parts/ShownOnce";
 import { ClientForm } from "./ClientForm";
+import { PrincipalOf } from "./names";
 import { ProviderStatus } from "./ProvidersScreen";
 import { Page, type ScreenProps } from "./shared";
 
@@ -201,6 +202,11 @@ export function ClientScreen({ id, client, me, text, go, path, say }: ScreenProp
             <MetadataListItem label={text.allowedScopesLabel}>
               <span className="console-mono">{found.allowedScopes.join(" ")}</span>
             </MetadataListItem>
+            {found.principal !== null ? (
+              <MetadataListItem label={text.principalLabel}>
+                <PrincipalOf id={found.principal} client={client} me={me} text={text} go={go} path={path} />
+              </MetadataListItem>
+            ) : null}
             <MetadataListItem label={text.pkceLabel}>
               {found.requirePkce ? text.pkceRequired : text.pkceNotRequired}
             </MetadataListItem>

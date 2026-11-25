@@ -19,8 +19,10 @@ import { VStack } from "@astryxdesign/core/VStack";
 import { useHotkeys } from "@astryxdesign/core/hooks";
 import {
   AppWindow,
+  Bot,
   Building2,
   Clock,
+  Cpu,
   DoorOpen,
   FileText,
   Link2,
@@ -32,6 +34,7 @@ import {
   Sun,
   Users,
   UsersRound,
+  Webhook,
 } from "lucide-react";
 import { type MouseEvent, type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import { accountPath, isIdentifier, pathOf, type Place, type Screen, signInPath } from "./address";
@@ -52,6 +55,10 @@ import { ProvidersScreen } from "./screens/ProvidersScreen";
 import { nameOf } from "./screens/UsersScreen";
 import { UserScreen } from "./screens/UserScreen";
 import { UsersScreen } from "./screens/UsersScreen";
+import { WebhookScreen } from "./screens/WebhookScreen";
+import { WebhooksScreen } from "./screens/WebhooksScreen";
+import { WorkloadScreen } from "./screens/WorkloadScreen";
+import { WorkloadsScreen } from "./screens/WorkloadsScreen";
 
 export type Mode = "dark" | "light";
 
@@ -87,6 +94,13 @@ const SECTIONS: { title: (text: Messages) => string; entries: Entry[] }[] = [
         icon: Building2,
         needs: "organizations:read",
       },
+      {
+        screen: { name: "serviceAccounts" },
+        label: (text) => text.serviceAccounts,
+        icon: Cpu,
+        needs: "workloads:read",
+      },
+      { screen: { name: "agents" }, label: (text) => text.agents, icon: Bot, needs: "workloads:read" },
     ],
   },
   {
@@ -114,7 +128,10 @@ const SECTIONS: { title: (text: Messages) => string; entries: Entry[] }[] = [
   },
   {
     title: (text) => text.audit,
-    entries: [{ screen: { name: "audit" }, label: (text) => text.auditRecords, icon: FileText, needs: "audit:read" }],
+    entries: [
+      { screen: { name: "audit" }, label: (text) => text.auditRecords, icon: FileText, needs: "audit:read" },
+      { screen: { name: "webhooks" }, label: (text) => text.webhooks, icon: Webhook, needs: "webhooks:read" },
+    ],
   },
 ];
 
@@ -353,6 +370,9 @@ function Frame({ place, client, text, mode, changeMode, go, leave, me }: AppProp
                         (screen?.name === "provider" && entry.screen.name === "providers") ||
                         (screen?.name === "group" && entry.screen.name === "groups") ||
                         (screen?.name === "organization" && entry.screen.name === "organizations") ||
+                        (screen?.name === "serviceAccount" && entry.screen.name === "serviceAccounts") ||
+                        (screen?.name === "agent" && entry.screen.name === "agents") ||
+                        (screen?.name === "webhook" && entry.screen.name === "webhooks") ||
                         ((screen?.name === "application" || screen?.name === "client") &&
                           entry.screen.name === "applications")
                       }
@@ -387,6 +407,22 @@ function Frame({ place, client, text, mode, changeMode, go, leave, me }: AppProp
         {screen?.name === "organizations" && allowed("organizations:read") ? <OrganizationsScreen {...props} /> : null}
         {screen?.name === "organization" && allowed("organizations:read") ? (
           <OrganizationScreen key={screen.id} id={screen.id} {...props} />
+        ) : null}
+        {screen?.name === "serviceAccounts" && allowed("workloads:read") ? (
+          <WorkloadsScreen key="service_account" kind="service_account" {...props} />
+        ) : null}
+        {screen?.name === "serviceAccount" && allowed("workloads:read") ? (
+          <WorkloadScreen key={screen.id} kind="service_account" id={screen.id} {...props} />
+        ) : null}
+        {screen?.name === "agents" && allowed("workloads:read") ? (
+          <WorkloadsScreen key="agent" kind="agent" {...props} />
+        ) : null}
+        {screen?.name === "agent" && allowed("workloads:read") ? (
+          <WorkloadScreen key={screen.id} kind="agent" id={screen.id} {...props} />
+        ) : null}
+        {screen?.name === "webhooks" && allowed("webhooks:read") ? <WebhooksScreen {...props} /> : null}
+        {screen?.name === "webhook" && allowed("webhooks:read") ? (
+          <WebhookScreen key={screen.id} id={screen.id} {...props} />
         ) : null}
         {screen === null || (screen.name !== "home" && !allowed(needsOf(screen))) ? (
           <div className="console-page">
@@ -434,6 +470,14 @@ function needsOf(screen: Screen): Permission {
     case "organizations":
     case "organization":
       return "organizations:read";
+    case "serviceAccounts":
+    case "serviceAccount":
+    case "agents":
+    case "agent":
+      return "workloads:read";
+    case "webhooks":
+    case "webhook":
+      return "webhooks:read";
     default:
       return "users:read";
   }

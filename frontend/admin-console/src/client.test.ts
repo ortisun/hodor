@@ -3,7 +3,18 @@ import { Failure } from "./client";
 import {
   ACME,
   ANA,
+  apiKeyBody,
+  ASSISTANT,
+  BILLING,
+  deliveryBody,
   empty,
+  endpointBody,
+  EXPORT,
+  HOOK,
+  REPORTS_KEY,
+  ROTATED_KEY,
+  SET_ASIDE,
+  workloadBody,
   ENGINEERING,
   FINANCE,
   GOOGLE,
@@ -167,6 +178,109 @@ describe("the client of the console interface", () => {
     expect(sent[2]?.body).toEqual({ name: "finance", description: "Who pays the bills" });
     expect(sent[4]?.body).toEqual({ kind: "group", id: PAYABLES });
     expect(sent[5]?.body).toEqual({ kind: "user", id: ANA });
+  });
+
+  it("manages service accounts and agents under their own paths, and their keys, shown once", async () => {
+    const { client, sent } = scripted({
+      "GET /console/api/me": [json(200, meBody())],
+      "GET /console/api/agents?limit=50": [json(200, { items: [workloadBody(ASSISTANT, "Assistant", { kind: "agent" })] })],
+      "POST /console/api/service-accounts": [json(201, workloadBody(EXPORT, "Nightly export"))],
+      [`PATCH /console/api/service-accounts/${EXPORT}`]: [json(200, workloadBody(EXPORT, "Nightly export"))],
+      [`POST /console/api/agents/${ASSISTANT}:disable`]: [
+        json(200, workloadBody(ASSISTANT, "Assistant", { kind: "agent", status: "disabled" })),
+      ],
+      [`DELETE /console/api/service-accounts/${EXPORT}`]: [empty(204)],
+      [`GET /console/api/service-accounts/${EXPORT}/api-keys`]: [
+        json(200, { items: [apiKeyBody(REPORTS_KEY, "Reports", { api_key: "never kept" })] }),
+      ],
+      [`POST /console/api/service-accounts/${EXPORT}/api-keys`]: [
+        json(201, { ...apiKeyBody(REPORTS_KEY, "Reports"), api_key: "hodor_ak_made" }),
+      ],
+      [`POST /console/api/agents/${ASSISTANT}/api-keys/${REPORTS_KEY}:rotate`]: [
+        json(201, { ...apiKeyBody(ROTATED_KEY, "Reports"), api_key: "hodor_ak_rotated" }),
+      ],
+      [`DELETE /console/api/agents/${ASSISTANT}/api-keys/${REPORTS_KEY}`]: [empty(204)],
+    });
+    await client.me();
+    const [agent] = (await client.listWorkloads("agent")).items;
+    expect(agent?.kind).toBe("agent");
+    expect(agent?.owners).toEqual([ANA]);
+    await client.createWorkload("service_account", { name: " Nightly export ", owners: [ANA] });
+    await client.changeWorkload("service_account", EXPORT, { name: "Nightly export", owners: [ANA] });
+    expect((await client.disableWorkload("agent", ASSISTANT)).status).toBe("disabled");
+    await client.deleteWorkload("service_account", EXPORT);
+    const [listed] = await client.listApiKeys("service_account", EXPORT);
+    // A key is never part of a listed key, even when an answer holds one.
+    expect(listed).not.toHaveProperty("secret");
+    expect(listed?.hint).toBe("…7c1e");
+    const made = await client.createApiKey("service_account", EXPORT, {
+      name: " Reports ",
+      scopes: ["authz:evaluate"],
+      applicationId: BILLING,
+      lifetimeDays: 30,
+    });
+    expect(made.secret).toBe("hodor_ak_made");
+    expect((await client.rotateApiKey("agent", ASSISTANT, REPORTS_KEY)).key.id).toBe(ROTATED_KEY);
+    await client.revokeApiKey("agent", ASSISTANT, REPORTS_KEY);
+
+    expect(sent[2]?.body).toEqual({ name: "Nightly export", owners: [ANA] });
+    expect(sent[7]?.body).toEqual({
+      name: "Reports",
+      scopes: ["authz:evaluate"],
+      application_id: BILLING,
+      lifetime_days: 30,
+    });
+  });
+
+  it("registers endpoints with their secret once, and filters deliveries by endpoint and status", async () => {
+    const { client, sent } = scripted({
+      "GET /console/api/me": [json(200, meBody())],
+      "GET /console/api/webhook-event-types": [json(200, { items: ["identity.user_created", "session.started"] })],
+      "POST /console/api/webhook-endpoints": [json(201, { endpoint: endpointBody(), secret: "whsec_made" })],
+      [`PUT /console/api/webhook-endpoints/${HOOK}/subscriptions`]: [json(200, endpointBody())],
+      [`POST /console/api/webhook-endpoints/${HOOK}:rotate-secret`]: [
+        json(201, {
+          endpoint: endpointBody({
+            secrets: [
+              { created_at: "2026-11-25T14:03:11Z", expires_at: null },
+              { created_at: "2026-11-24T14:03:11Z", expires_at: "2026-11-26T14:03:11Z" },
+            ],
+          }),
+          secret: "whsec_rotated",
+        }),
+      ],
+      [`DELETE /console/api/webhook-endpoints/${HOOK}`]: [empty(204)],
+      [`GET /console/api/webhook-deliveries?limit=50&endpoint_id=${HOOK}&status=set_aside`]: [
+        json(200, { items: [deliveryBody({ payload: "never kept" })], next_cursor: "2" }),
+      ],
+      [`GET /console/api/webhook-deliveries?limit=50&cursor=2&endpoint_id=${HOOK}`]: [json(200, { items: [] })],
+      [`POST /console/api/webhook-deliveries/${SET_ASIDE}:redeliver`]: [
+        json(200, deliveryBody({ status: "pending", next_attempt_at: "2026-11-24T16:04:00Z", finished_at: null })),
+      ],
+    });
+    await client.me();
+    expect(await client.listEventTypes()).toEqual(["identity.user_created", "session.started"]);
+    const registered = await client.registerEndpoint({
+      url: " https://hooks.example.com/hodor ",
+      description: "  ",
+      eventTypes: ["session.started"],
+    });
+    expect(registered.secret).toBe("whsec_made");
+    expect(registered.endpoint).not.toHaveProperty("secret");
+    await client.replaceSubscriptions(HOOK, ["identity.user_created", "session.started"]);
+    const rotated = await client.rotateEndpointSecret(HOOK);
+    expect(rotated.endpoint.secrets.map((secret) => secret.expiresAt)).toEqual([null, "2026-11-26T14:03:11Z"]);
+    await client.removeEndpoint(HOOK);
+    const page = await client.listDeliveries(HOOK, "set_aside");
+    expect(page.items[0]).not.toHaveProperty("payload");
+    expect(page.items[0]?.lastResponseStatus).toBe(503);
+    expect(page.nextCursor).toBe("2");
+    expect((await client.listDeliveries(HOOK, null, "2")).items).toEqual([]);
+    expect((await client.redeliver(SET_ASIDE)).status).toBe("pending");
+
+    expect(sent[2]?.body).toEqual({ url: "https://hooks.example.com/hodor", event_types: ["session.started"] });
+    expect(sent[3]?.body).toEqual({ event_types: ["identity.user_created", "session.started"] });
+    expect(sent[4]?.body).toBeNull();
   });
 
   it("reads the units, members and invitations of an organization, and never a link", async () => {
