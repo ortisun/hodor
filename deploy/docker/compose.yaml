@@ -247,6 +247,9 @@ services:
       # The server's placeholder key: the worker makes the tenants'
       # signing keys under it, and the server signs with them.
       HODOR_SECRET_KEYS: development:gV8TjmTiZoYOlhsN4OdTTiWMwWa1t/o5RPNGCdbBNro=
+      # The server's address: the issuer of the logout tokens it sends to
+      # clients starts with it.
+      HODOR_PUBLIC_URL: http://localhost:${HODOR_HTTP_PORT:-8080}
       HODOR_SMTP_URL: smtp://mail:1025
       HODOR_MAIL_FROM: Hodor <no-reply@hodor.localhost>
       # The receiver of webhooks, at a private address over plain HTTP, as

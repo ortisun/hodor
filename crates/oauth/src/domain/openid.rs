@@ -487,6 +487,11 @@ pub fn discovery_document(issuer: &str, acr_values: &[&str]) -> Value {
         "request_parameter_supported": false,
         "request_uri_parameter_supported": false,
         "claims_parameter_supported": false,
+        // Every client with a back-channel logout address is told when a
+        // session it signed a person in with ends, and every logout token
+        // carries `sid`.
+        "backchannel_logout_supported": true,
+        "backchannel_logout_session_supported": true,
     })
 }
 

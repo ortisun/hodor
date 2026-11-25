@@ -1,10 +1,11 @@
 //! Background jobs composition root.
 //!
-//! The worker delivers outbox events to their handlers, the audit log and
-//! the fan-out of webhooks, delivers queued messages to the mail server,
-//! sends webhooks, runs the cleanup jobs, rotates the tenants' signing
-//! keys, and checks, tests and simulates policy versions with the `opa`
-//! binary. See `docs/operations/deployment.md`, "The worker".
+//! The worker delivers outbox events to their handlers, the audit log, the
+//! fan-out of webhooks and the fan-out of back-channel logout, delivers
+//! queued messages to the mail server, sends webhooks and logout tokens,
+//! runs the cleanup jobs, rotates the tenants' signing keys, and checks,
+//! tests and simulates policy versions with the `opa` binary. See
+//! `docs/operations/deployment.md`, "The worker".
 
 use clap::{Parser, ValueEnum};
 use hodor_adapters_crypto::{
@@ -20,16 +21,25 @@ use hodor_adapters_postgres::{
     PgPublicationStore, PgSealingStateStore, PgSimulationStore, PgUploadedDecisionStore,
     PolicyCheckJob, connect_pool, ping_pool,
 };
+use hodor_adapters_postgres::{
+    PgApplicationStore, PgClientStore, PgDueLogoutDeliveries, PgLogoutDeliveryStore,
+    PgSessionClients, PgTenantDirectory, PgTenantRepository,
+};
 use hodor_adapters_smtp::SmtpSender;
 use hodor_audit::api::{AuditHandler, AuditService};
 use hodor_authorization_opa::api::{BundleService, PolicyService};
-use hodor_kernel::{Clock as _, DomainError, Secret, SystemClock, Timestamp};
+use hodor_kernel::{Clock as _, DomainError, Secret, SystemClock, TenantContext, Timestamp};
 use hodor_keys::api::{KeyService, RotationPolicy, TenantSecretBox};
 use hodor_notification::api::DeliveryService;
+use hodor_oauth::api::{
+    BackChannelLogoutFanOut, BackChannelLogoutSender, LogoutDeliverySettings, LogoutRetryPolicy,
+    LogoutSenderPorts, TenantIssuer,
+};
 use hodor_observability::{LogFormat, Telemetry};
 use hodor_protocol_http::{Health, ReadinessCheck, ops_router, serve};
+use hodor_tenant::api::TenantService;
 use hodor_webhooks::api::{
-    AttemptOutcome, DeliverySettings, RetryPolicy, SenderPorts, WebhookFanOut, WebhookSender,
+    DeliverySettings, RetryPolicy, SenderPorts, WebhookFanOut, WebhookSender,
 };
 use opentelemetry::KeyValue;
 use opentelemetry::metrics::Counter;
@@ -197,9 +207,49 @@ struct Config {
     #[arg(long, env = "HODOR_WEBHOOK_POLL_INTERVAL_MS", default_value_t = 1000)]
     webhook_poll_interval_ms: u64,
 
-    /// Hosts with their ports that webhooks may reach without the address
-    /// check and over plain HTTP, separated by commas. For a development
-    /// stack on one machine; never set it anywhere real.
+    /// The address people reach this installation at, without a path, as
+    /// the server has it: the issuer of a logout token starts with it.
+    /// Unset: no logout token is sent, and logout deliveries wait.
+    #[arg(long, env = "HODOR_PUBLIC_URL")]
+    public_url: Option<String>,
+
+    /// Attempts before a logout delivery is set aside, 1 to 20.
+    #[arg(
+        long,
+        env = "HODOR_BACKCHANNEL_LOGOUT_MAX_ATTEMPTS",
+        default_value_t = 8
+    )]
+    backchannel_logout_max_attempts: u32,
+
+    /// The wait after a logout delivery's first failed attempt; each next
+    /// wait is twice as long, up to an hour.
+    #[arg(
+        long,
+        env = "HODOR_BACKCHANNEL_LOGOUT_FIRST_RETRY_MS",
+        default_value_t = 30_000
+    )]
+    backchannel_logout_first_retry_ms: u64,
+
+    /// The longest one attempt to send a logout token may take, 1 to 30
+    /// seconds.
+    #[arg(
+        long,
+        env = "HODOR_BACKCHANNEL_LOGOUT_TIME_LIMIT_SECONDS",
+        default_value_t = 10
+    )]
+    backchannel_logout_time_limit_seconds: u64,
+
+    /// Pause between passes when no logout delivery is due.
+    #[arg(
+        long,
+        env = "HODOR_BACKCHANNEL_LOGOUT_POLL_INTERVAL_MS",
+        default_value_t = 1000
+    )]
+    backchannel_logout_poll_interval_ms: u64,
+
+    /// Hosts with their ports that webhooks and logout tokens may reach
+    /// without the address check and over plain HTTP, separated by commas.
+    /// For a development stack on one machine; never set it anywhere real.
     #[arg(long, env = "HODOR_OUTBOUND_DEVELOPMENT_HOSTS", value_delimiter = ',')]
     outbound_development_hosts: Vec<String>,
 
@@ -274,6 +324,7 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
     // Checked before anything is connected, so that a mistake in the mail
     // or rotation settings is reported at once.
     let delivery_settings = webhook_settings(&config)?;
+    let logout_settings = backchannel_logout_settings(&config)?;
     let development_hosts: Vec<String> = config
         .outbound_development_hosts
         .iter()
@@ -363,13 +414,30 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
     ));
     let webhook_sender = match &root_keys {
         Some(root) => Some(Arc::new(webhook_sender(
-            development_hosts,
+            development_hosts.clone(),
             &database,
             &platform,
             root,
             delivery_settings,
         )?)),
         None => None,
+    };
+    // Logout tokens are signed with the tenant's key and name its issuer.
+    let logout_sender = match (&root_keys, &config.public_url) {
+        (Some(root), Some(public_url)) => Some(Arc::new(logout_sender(
+            development_hosts,
+            &database,
+            &platform,
+            root,
+            public_url,
+            logout_settings,
+        )?)),
+        _ => {
+            tracing::warn!(
+                "HODOR_SECRET_KEYS or HODOR_PUBLIC_URL is not set: no logout token is sent, and logout deliveries wait"
+            );
+            None
+        }
     };
     let rotation = root_keys.map(|root| {
         let keys = KeyService::new(
@@ -419,10 +487,22 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
         Arc::new(PgDeliveryStore),
         Arc::new(SystemClock),
     );
+    // Nor does the fan-out of back-channel logout.
+    let logout_fan_out = BackChannelLogoutFanOut::new(
+        Arc::new(PgSessionClients),
+        Arc::new(PgClientStore),
+        Arc::new(PgApplicationStore),
+        Arc::new(PgLogoutDeliveryStore),
+        Arc::new(SystemClock),
+    );
     let dispatcher = OutboxDispatcher::new(
         platform,
         database,
-        vec![Arc::new(AuditHandler::new(audit)), Arc::new(fan_out)],
+        vec![
+            Arc::new(AuditHandler::new(audit)),
+            Arc::new(fan_out),
+            Arc::new(logout_fan_out),
+        ],
     );
 
     let ops_listener = TcpListener::bind(config.ops_addr).await?;
@@ -456,10 +536,18 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
             Duration::from_millis(config.mail_poll_interval_ms),
             stopped.clone(),
         ),
-        webhook_loop(
+        sending_loop(
             webhook_sender,
+            &WEBHOOKS,
             config.webhook_concurrency as usize,
             Duration::from_millis(config.webhook_poll_interval_ms),
+            stopped.clone(),
+        ),
+        sending_loop(
+            logout_sender,
+            &LOGOUT_TOKENS,
+            LogoutDeliverySettings::CONCURRENCY as usize,
+            Duration::from_millis(config.backchannel_logout_poll_interval_ms),
             stopped.clone(),
         ),
         cleanup_loop(
@@ -883,38 +971,105 @@ fn webhook_sender(
     ))
 }
 
+/// What sends deliveries leased from the database: webhooks and logout
+/// tokens, each by its own context's use case.
+#[async_trait::async_trait]
+trait LeasedSends: Send + Sync + 'static {
+    /// A delivery leased to this worker.
+    type Lease: Send + 'static;
+
+    /// Leases up to `limit` deliveries that are due.
+    async fn lease_due(&self, limit: u32) -> Result<Vec<Self::Lease>, DomainError>;
+
+    /// Sends one and records it; answers the outcome's name.
+    async fn send_one(&self, lease: Self::Lease) -> Result<&'static str, DomainError>;
+}
+
+#[async_trait::async_trait]
+impl LeasedSends for WebhookSender {
+    type Lease = hodor_webhooks::api::Lease;
+
+    async fn lease_due(&self, limit: u32) -> Result<Vec<Self::Lease>, DomainError> {
+        Self::lease_due(self, limit).await
+    }
+
+    async fn send_one(&self, lease: Self::Lease) -> Result<&'static str, DomainError> {
+        self.send(lease).await.map(|outcome| outcome.as_str())
+    }
+}
+
+#[async_trait::async_trait]
+impl LeasedSends for BackChannelLogoutSender {
+    type Lease = hodor_oauth::api::LogoutLease;
+
+    async fn lease_due(&self, limit: u32) -> Result<Vec<Self::Lease>, DomainError> {
+        Self::lease_due(self, limit).await
+    }
+
+    async fn send_one(&self, lease: Self::Lease) -> Result<&'static str, DomainError> {
+        self.send(lease).await.map(|outcome| outcome.as_str())
+    }
+}
+
+/// The names a sending loop reports under.
+struct LoopNames {
+    /// The counter of attempts, by outcome.
+    attempts: &'static str,
+    /// The counter of passes, by outcome.
+    passes: &'static str,
+    /// What is sent, in logs.
+    what: &'static str,
+}
+
+const WEBHOOKS: LoopNames = LoopNames {
+    attempts: "hodor.webhooks.attempts",
+    passes: "hodor.webhooks.passes",
+    what: "webhook",
+};
+
+const LOGOUT_TOKENS: LoopNames = LoopNames {
+    attempts: "hodor.backchannel_logout.attempts",
+    passes: "hodor.backchannel_logout.passes",
+    what: "logout token",
+};
+
 /// Counts what one send did, and says what went wrong.
 fn finished(
-    done: Result<Result<AttemptOutcome, DomainError>, tokio::task::JoinError>,
+    done: Result<Result<&'static str, DomainError>, tokio::task::JoinError>,
+    names: &LoopNames,
     attempts: &Counter<u64>,
     passes: &Counter<u64>,
 ) {
     match done {
         Ok(Ok(outcome)) => {
-            attempts.add(1, &[KeyValue::new("outcome", outcome.as_str())]);
-            if outcome == AttemptOutcome::SetAside {
-                tracing::warn!("a webhook delivery failed for the last time and was set aside");
+            attempts.add(1, &[KeyValue::new("outcome", outcome)]);
+            if outcome == "set_aside" {
+                tracing::warn!(
+                    what = names.what,
+                    "a delivery failed for the last time and was set aside"
+                );
             }
         }
         Ok(Err(error)) => {
             passes.add(1, &[KeyValue::new("outcome", "error")]);
-            tracing::warn!(code = error.code(), detail = ?error.detail(), "a webhook attempt could not be recorded");
+            tracing::warn!(what = names.what, code = error.code(), detail = ?error.detail(), "an attempt could not be recorded");
         }
         Err(error) => {
             passes.add(1, &[KeyValue::new("outcome", "error")]);
-            tracing::warn!(%error, "a webhook attempt stopped");
+            tracing::warn!(what = names.what, %error, "an attempt stopped");
         }
     }
 }
 
-/// Sends webhooks until asked to stop, many at once and each on its own:
+/// Sends deliveries until asked to stop, many at once and each on its own:
 /// while there is room, it leases what is due and starts sending it; when
 /// nothing is due or there is no room, it waits for a send to finish, the
 /// poll interval, or the stop. A send that takes long holds only its own
 /// place. On stop, the sends under way finish, each within its time limit.
-/// Without root keys there is nothing to do.
-async fn webhook_loop(
-    sender: Option<Arc<WebhookSender>>,
+/// Without a sender there is nothing to do.
+async fn sending_loop<S: LeasedSends>(
+    sender: Option<Arc<S>>,
+    names: &LoopNames,
     concurrency: usize,
     poll_interval: Duration,
     mut stopped: watch::Receiver<bool>,
@@ -924,18 +1079,18 @@ async fn webhook_loop(
     };
     let meter = opentelemetry::global::meter("hodor.worker");
     let attempts: Counter<u64> = meter
-        .u64_counter("hodor.webhooks.attempts")
-        .with_description("Webhook delivery attempts, by outcome")
+        .u64_counter(names.attempts)
+        .with_description("Delivery attempts, by outcome")
         .build();
     let passes: Counter<u64> = meter
-        .u64_counter("hodor.webhooks.passes")
-        .with_description("Passes of the webhook delivery loop, by outcome")
+        .u64_counter(names.passes)
+        .with_description("Passes of the delivery loop, by outcome")
         .build();
 
     let mut running = JoinSet::new();
     while !*stopped.borrow() {
         while let Some(done) = running.try_join_next() {
-            finished(done, &attempts, &passes);
+            finished(done, names, &attempts, &passes);
         }
         let room = concurrency.saturating_sub(running.len());
         let mut leased = 0;
@@ -950,12 +1105,12 @@ async fn webhook_loop(
                     leased = leases.len();
                     for lease in leases {
                         let sender = sender.clone();
-                        running.spawn(async move { sender.send(lease).await });
+                        running.spawn(async move { sender.send_one(lease).await });
                     }
                 }
                 Err(error) => {
                     passes.add(1, &[KeyValue::new("outcome", "error")]);
-                    tracing::warn!(code = error.code(), detail = ?error.detail(), "webhook pass failed");
+                    tracing::warn!(what = names.what, code = error.code(), detail = ?error.detail(), "delivery pass failed");
                     failed = true;
                 }
             }
@@ -968,7 +1123,7 @@ async fn webhook_loop(
             };
             tokio::select! {
                 Some(done) = running.join_next(), if !running.is_empty() && !failed => {
-                    finished(done, &attempts, &passes);
+                    finished(done, names, &attempts, &passes);
                 }
                 () = tokio::time::sleep(pause) => {}
                 _ = stopped.changed() => {}
@@ -976,8 +1131,95 @@ async fn webhook_loop(
         }
     }
     while let Some(done) = running.join_next().await {
-        finished(done, &attempts, &passes);
+        finished(done, names, &attempts, &passes);
     }
+}
+
+/// Reads the settings of back-channel logout. A value out of its bounds
+/// stops the worker from starting.
+fn backchannel_logout_settings(config: &Config) -> Result<LogoutDeliverySettings, Box<dyn Error>> {
+    let first_wait = i64::try_from(config.backchannel_logout_first_retry_ms)
+        .map(time::Duration::milliseconds)
+        .map_err(|_| "HODOR_BACKCHANNEL_LOGOUT_FIRST_RETRY_MS is too large")?;
+    let retry = LogoutRetryPolicy::new(config.backchannel_logout_max_attempts, first_wait)
+        .map_err(|_| {
+            "HODOR_BACKCHANNEL_LOGOUT_MAX_ATTEMPTS is 1 to 20, and HODOR_BACKCHANNEL_LOGOUT_FIRST_RETRY_MS more than 0 and at most an hour"
+        })?;
+    if !(1..=30).contains(&config.backchannel_logout_time_limit_seconds) {
+        return Err("HODOR_BACKCHANNEL_LOGOUT_TIME_LIMIT_SECONDS is 1 to 30".into());
+    }
+    Ok(LogoutDeliverySettings {
+        retry,
+        time_limit: Duration::from_secs(config.backchannel_logout_time_limit_seconds),
+        ..LogoutDeliverySettings::default()
+    })
+}
+
+/// The issuer of a tenant, as the server names it: the public address and
+/// the tenant's slug, read through the tenant context.
+struct TenantIssuers {
+    tenants: TenantService,
+    public_url: String,
+}
+
+#[async_trait::async_trait]
+impl TenantIssuer for TenantIssuers {
+    async fn issuer(&self, tenant: &TenantContext) -> Result<String, DomainError> {
+        let found = self.tenants.get(tenant).await?;
+        Ok(format!(
+            "{}/t/{}",
+            self.public_url.trim_end_matches('/'),
+            found.snapshot().slug.as_str()
+        ))
+    }
+}
+
+/// What sends logout tokens: the guarded outbound client with the time
+/// limit of an attempt and a small limit on answers, and the tenants' keys
+/// opened with the same root keys as the server.
+fn logout_sender(
+    development_hosts: Vec<String>,
+    database: &Database,
+    platform: &PgPool,
+    root: &Arc<SecretKeys>,
+    public_url: &str,
+    settings: LogoutDeliverySettings,
+) -> Result<BackChannelLogoutSender, Box<dyn Error>> {
+    let http = GuardedHttpClient::new(OutboundPolicy {
+        timeout: settings.time_limit,
+        connect_timeout: settings.time_limit.min(Duration::from_secs(5)),
+        max_response_bytes: 64 * 1024,
+        development_hosts,
+    })?;
+    let keys = KeyService::new(
+        Arc::new(database.clone()),
+        Arc::new(PgKeyStore),
+        Arc::new(LocalKeyProvider::new(root.clone())),
+        Arc::new(SystemClock),
+    );
+    let tenants = TenantService::new(
+        Arc::new(database.clone()),
+        Arc::new(PgTenantRepository),
+        Arc::new(PgTenantDirectory::new(database.clone())),
+        Arc::new(SystemClock),
+    );
+    Ok(BackChannelLogoutSender::new(
+        LogoutSenderPorts {
+            units_of_work: Arc::new(database.clone()),
+            clients: Arc::new(PgClientStore),
+            deliveries: Arc::new(PgLogoutDeliveryStore),
+            due: Arc::new(PgDueLogoutDeliveries::new(platform.clone())),
+            issuers: Arc::new(TenantIssuers {
+                tenants,
+                public_url: public_url.to_owned(),
+            }),
+            keys,
+            http: Arc::new(http),
+            random: Arc::new(OsRandom),
+            clock: Arc::new(SystemClock),
+        },
+        settings,
+    ))
 }
 
 /// Sets up the mail server, if one is configured.

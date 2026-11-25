@@ -405,6 +405,9 @@ struct ClientBody {
     allowed_scopes: Vec<String>,
     require_pkce: bool,
     id_token_signed_response_alg: &'static str,
+    /// Where its logout tokens are sent, or `null`.
+    backchannel_logout_uri: Option<String>,
+    backchannel_logout_session_required: bool,
     /// The service account or agent it acts as, or `null`.
     principal: Option<String>,
     exchange_rules: Vec<ExchangeRuleBody>,
@@ -435,6 +438,8 @@ impl From<&Client> for ClientBody {
             allowed_scopes: settings.allowed_scopes.clone(),
             require_pkce: settings.require_pkce,
             id_token_signed_response_alg: settings.id_token_algorithm.as_str(),
+            backchannel_logout_uri: settings.backchannel_logout_uri.clone(),
+            backchannel_logout_session_required: settings.backchannel_logout_session_required,
             principal: settings.principal.map(|principal| principal.to_string()),
             exchange_rules: settings
                 .exchange_rules
@@ -500,6 +505,8 @@ struct NewClientBody {
     allowed_scopes: Option<Vec<String>>,
     require_pkce: Option<bool>,
     id_token_signed_response_alg: Option<String>,
+    backchannel_logout_uri: Option<String>,
+    backchannel_logout_session_required: Option<bool>,
     token_policy: Option<TokenPolicyInput>,
     secret_lifetime_days: Option<u32>,
     principal: Option<String>,
@@ -535,6 +542,10 @@ struct ClientChangesBody {
     allowed_scopes: Option<Vec<String>>,
     require_pkce: Option<bool>,
     id_token_signed_response_alg: Option<String>,
+    /// Left out: unchanged; `null`: removed; an address: replaced.
+    #[serde(default, deserialize_with = "present")]
+    backchannel_logout_uri: Option<Option<String>>,
+    backchannel_logout_session_required: Option<bool>,
     token_policy: Option<TokenPolicyInput>,
     /// Left out: unchanged; `null`: removed; an identifier: replaced.
     #[serde(default, deserialize_with = "present")]
@@ -680,6 +691,9 @@ async fn create_client(
                 settings.id_token_algorithm =
                     IdTokenAlgorithm::parse(&algorithm).map_err(failed)?;
             }
+            settings.backchannel_logout_uri = new.backchannel_logout_uri;
+            settings.backchannel_logout_session_required =
+                new.backchannel_logout_session_required.unwrap_or(false);
             if let Some(policy) = new.token_policy {
                 settings.token_policy = policy.over(settings.token_policy);
             }
@@ -778,6 +792,12 @@ async fn change_client(
                     Some(algorithm) => IdTokenAlgorithm::parse(&algorithm).map_err(failed)?,
                     None => now.id_token_algorithm,
                 },
+                backchannel_logout_uri: changes
+                    .backchannel_logout_uri
+                    .unwrap_or(now.backchannel_logout_uri),
+                backchannel_logout_session_required: changes
+                    .backchannel_logout_session_required
+                    .unwrap_or(now.backchannel_logout_session_required),
                 token_policy: changes
                     .token_policy
                     .map_or(now.token_policy, |given| given.over(now.token_policy)),

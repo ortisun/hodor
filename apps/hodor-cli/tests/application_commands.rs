@@ -245,3 +245,73 @@ async fn what_the_oauth_context_refuses_the_tool_refuses_with_the_same_code() {
     assert!(!unknown_client.status.success());
     assert!(text(&unknown_client.stderr).contains("oauth.client_not_found"));
 }
+
+#[tokio::test]
+async fn a_client_is_given_a_back_channel_logout_address_checked_as_the_server_checks_it() {
+    let database = TestDatabase::start().await;
+    let created = run(
+        &database,
+        &["tenant", "create", "--slug", "acme", "--name", "Acme"],
+    );
+    assert!(created.status.success(), "{created:?}");
+    let added = run(
+        &database,
+        &[
+            "application",
+            "add",
+            "--tenant",
+            "acme",
+            "--name",
+            "Billing",
+            "--first-party",
+        ],
+    );
+    let application = value(&added, "application");
+    let client = |address: &str, development_hosts: &str| {
+        Command::new(env!("CARGO_BIN_EXE_hodor-cli"))
+            .args([
+                "client",
+                "add",
+                "--tenant",
+                "acme",
+                "--application",
+                &application,
+                "--name",
+                "Billing web site",
+                "--type",
+                "confidential",
+                "--grant",
+                "authorization_code",
+                "--redirect-uri",
+                "https://billing.example.com/callback",
+                "--backchannel-logout-uri",
+                address,
+                "--backchannel-logout-session-required",
+            ])
+            .env("HODOR_DATABASE_URL", database.app_url())
+            .env("HODOR_OUTBOUND_DEVELOPMENT_HOSTS", development_hosts)
+            .output()
+            .expect("the command-line tool should run")
+    };
+
+    // An address on this machine is refused, unless it is one of the
+    // development exception, as the server has it.
+    let refused = client("https://localhost/logout", "");
+    assert!(!refused.status.success());
+    assert!(
+        text(&refused.stderr).contains("oauth.client_backchannel_logout_uri_forbidden"),
+        "{refused:?}"
+    );
+    let made = client("http://relay:8080/logout", "relay:8080");
+    assert!(made.status.success(), "{made:?}");
+    let id = value(&made, "client");
+    let stored: (Option<String>, bool) = sqlx::query_as(
+        "SELECT backchannel_logout_uri, backchannel_logout_session_required
+         FROM oauth.client WHERE id = $1::uuid",
+    )
+    .bind(&id)
+    .fetch_one(database.owner())
+    .await
+    .expect("client");
+    assert_eq!(stored, (Some("http://relay:8080/logout".to_owned()), true));
+}

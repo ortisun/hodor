@@ -3,8 +3,8 @@
 ## Overview
 
 The use cases of applications, clients and resource servers, those of the
-authorization endpoint and of the token endpoint, and the storage ports
-they need. Every use case runs in a unit of work bound to one
+authorization endpoint and of the token endpoint, those of back-channel
+logout, and the storage ports they need. Every use case runs in a unit of work bound to one
 tenant and records its events in it.
 
 ## Interface
@@ -35,6 +35,12 @@ clients, resource_servers, digest, random, clock })`:
   secret once), `change_client`, `rotate_client_secret(RotateSecret)`,
   `revoke_client_secret`, `add_client_key` (the key as JSON),
   `remove_client_key`, `set_client_status`, `client`, `clients`.
+- `with_destinations(check)` gives it the kernel's `DestinationCheck`: a
+  client's back-channel logout address is checked through it when it is
+  set by `create_client`, or new or changed by `change_client`, and the
+  check's `http.*` codes become `oauth.client_backchannel_logout_uri_*`.
+  Without it, any address is refused with
+  `oauth.client_backchannel_logout_uri_forbidden`.
 - Resource servers: `create_resource_server(CreateResourceServer)`,
   `change_resource_server`, `resource_server`,
   `resource_server_by_audience` (`oauth.resource_server_not_found` also for
@@ -267,9 +273,44 @@ verifier })`:
   browser while the person was asked still holds (`still_returns` of the
   domain).
 
+### Back-channel logout (`backchannel/`)
+
+- `ports.rs`: `SessionClients::clients_of(session)` (the clients with a
+  grant made in the session whose scopes hold `openid`, each once);
+  `LogoutDeliveryStore` (`insert`, unique per client and session, answers
+  whether it stored, `oauth.client_not_found`; `get`; `take`, skipping one
+  another unit of work holds; `lock`, waiting; `hold_client`, answering
+  whether the tenant has it; `leased(client, now)`; `update`,
+  `oauth.logout_delivery_not_found`); `DueLogoutDeliveries::due(now,
+  limit)`, across tenants; `TenantIssuer::issuer(tenant)`.
+- `fan_out.rs`: `BackChannelLogoutFanOut::new(sessions, clients,
+  applications, deliveries, clock)`, an `EventHandler` named
+  `oauth_backchannel_logout` for `session.revoked` only. It refuses an
+  event of another tenant than its unit of work
+  (`oauth.tenant_mismatch`), reads `session_id` and `user_id` from the
+  event (`oauth.session_event_unreadable`), and inserts one
+  `LogoutDelivery` per client of the session that has an address and is
+  enabled with its application.
+- `sender.rs`: `BackChannelLogoutSender::new(LogoutSenderPorts {
+  units_of_work, clients, deliveries, due, issuers, keys, http, random,
+  clock }, LogoutDeliverySettings { retry, time_limit, in_flight_per_client
+  })`. `lease_due(limit)` looks at four times `limit` due deliveries and,
+  for each in its tenant, holds the client, takes the delivery, sets it
+  aside at once (with `oauth.backchannel_logout_set_aside`) if the client
+  has no address or is disabled, leaves it if the client has
+  `in_flight_per_client` leased, and otherwise leases it for the time limit
+  and `LEASE_MARGIN`, answering `LogoutLease`s. `send(lease)` signs a
+  logout token (the client's ID token algorithm, `ensure_active` when the
+  tenant has no key of it, a `jti` of 16 random bytes), posts
+  `logout_token=` in a form through `HttpClient` with no transaction open,
+  then records the answer if the delivery `is_as_leased`, answering a
+  `LogoutOutcome`; a signing failure is a failed attempt.
+
 ## Invariants
 
 - A change that changes nothing stores nothing and announces nothing.
+- A logout token is signed for each attempt and kept nowhere; no event
+  carries it or the client's address.
 - Not found is `oauth.application_not_found`, `oauth.client_not_found` or
   `oauth.resource_server_not_found`, the same for a row of another tenant.
 
@@ -280,6 +321,7 @@ verifier })`:
   `cargo test -p hodor-oauth --test token`,
   `cargo test -p hodor-oauth --test refresh` and
   `cargo test -p hodor-oauth --test revocation`,
-  `cargo test -p hodor-oauth --test consent`; `cargo test -p hodor-oauth
+  `cargo test -p hodor-oauth --test consent`,
+  `cargo test -p hodor-oauth --test backchannel`; `cargo test -p hodor-oauth
   --lib openid` for the OpenID Provider's domain and `--lib logout` for
   logout's

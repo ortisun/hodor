@@ -204,6 +204,16 @@ async fn signed_in(
 async fn tokens(browser: &mut Browser, server: &Server, slug: &str, client_id: ClientId) -> Value {
     let (_, answer) = browser.sign_in(slug, "ana@example.com", PASSWORD).await;
     assert_eq!(answer["status"], "completed", "{answer}");
+    tokens_in_session(browser, server, slug, client_id).await
+}
+
+/// Gets the tokens for `client_id` from the session the browser holds.
+async fn tokens_in_session(
+    browser: &mut Browser,
+    server: &Server,
+    slug: &str,
+    client_id: ClientId,
+) -> Value {
     let id = client_id.to_string();
     let challenge = s256_challenge(VERIFIER, &Sha256Digest);
     let (status, location, body) = browser
@@ -571,4 +581,226 @@ async fn a_request_that_cannot_be_trusted_is_answered_with_hodors_own_page() {
         still_signed_in(&mut browser, "acme").await,
         "nothing refused ends anything"
     );
+}
+
+/// The claims of a compact token, unchecked.
+fn claims_of(token: &str) -> Value {
+    use base64::Engine as _;
+    let payload = token.split('.').nth(1).expect("claims");
+    serde_json::from_slice(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(payload)
+            .expect("base64url"),
+    )
+    .expect("JSON")
+}
+
+/// The issuer the server names, for the worker's use case in this test.
+struct IssuerOf(String);
+
+#[async_trait::async_trait]
+impl hodor_oauth::api::TenantIssuer for IssuerOf {
+    async fn issuer(&self, _tenant: &TenantContext) -> Result<String, hodor_kernel::DomainError> {
+        Ok(self.0.clone())
+    }
+}
+
+#[tokio::test]
+async fn an_application_that_signs_the_person_out_and_every_other_of_the_session_are_told() {
+    use hodor_adapters_postgres::{
+        OutboxDispatcher, PgDueLogoutDeliveries, PgLogoutDeliveryStore, PgSessionClients,
+    };
+    use hodor_oauth::api::{
+        BackChannelLogoutFanOut, BackChannelLogoutSender, LogoutDeliverySettings, LogoutSenderPorts,
+    };
+    use hodor_oauth::testing::{FakeDestinations, RecordingClients};
+
+    let database = TestDatabase::start().await;
+    let payroll = tenant(&database, "acme").await;
+    let acme = TenantContext::assume(
+        TenantService::new(
+            Arc::new(database.app().clone()),
+            Arc::new(PgTenantRepository),
+            Arc::new(PgTenantDirectory::new(database.app().clone())),
+            Arc::new(SystemClock),
+        )
+        .find_by_slug("acme")
+        .await
+        .expect("directory")
+        .expect("acme")
+        .tenant_id,
+    );
+    let applications = ApplicationService::new(ApplicationPorts {
+        units_of_work: Arc::new(database.app().clone()),
+        applications: Arc::new(PgApplicationStore),
+        clients: Arc::new(PgClientStore),
+        resource_servers: Arc::new(PgResourceServerStore),
+        digest: Arc::new(Sha256Digest),
+        random: Arc::new(OsRandom),
+        clock: Arc::new(SystemClock),
+    })
+    .with_destinations(Arc::new(FakeDestinations));
+    // The application that signs the person out is told too.
+    let payroll_address = "https://payroll.example.com/backchannel-logout";
+    let mut settings = applications
+        .client(&acme, payroll)
+        .await
+        .expect("client")
+        .snapshot()
+        .settings
+        .clone();
+    settings.backchannel_logout_uri = Some(payroll_address.to_owned());
+    applications
+        .change_client(&acme, payroll, settings, Caller::system())
+        .await
+        .expect("an address");
+    let reports_address = "https://reports.example.com/backchannel-logout";
+    let reporting = applications
+        .create_application(
+            &acme,
+            ApplicationSettings {
+                name: "Reports".to_owned(),
+                first_party: true,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("application");
+    let mut settings = ClientSettings::new(
+        "Reports",
+        ClientType::Public,
+        vec![GrantType::AuthorizationCode],
+        vec![REDIRECT.to_owned()],
+    );
+    settings.allowed_scopes = vec!["openid".to_owned()];
+    settings.backchannel_logout_uri = Some(reports_address.to_owned());
+    settings.backchannel_logout_session_required = true;
+    let reports = applications
+        .create_client(
+            &acme,
+            CreateClient {
+                application_id: reporting.id(),
+                client_type: ClientType::Public,
+                settings,
+                secret_lifetime: None,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("client")
+        .0
+        .id();
+
+    // One sign-in, two applications.
+    let server = server(&database).await;
+    let mut browser = Browser::not_following(&server);
+    let payroll_tokens = tokens(&mut browser, &server, "acme", payroll).await;
+    let reports_tokens = tokens_in_session(&mut browser, &server, "acme", reports).await;
+    let hint = payroll_tokens["id_token"].as_str().expect("an ID token");
+    let id_token = claims_of(hint);
+    assert_eq!(
+        claims_of(reports_tokens["id_token"].as_str().expect("an ID token"))["sid"],
+        id_token["sid"],
+        "one session"
+    );
+
+    let response = browser
+        .client
+        .get(format!(
+            "{}/t/acme/oauth2/logout?{}",
+            server.base,
+            query(&[("id_token_hint", hint), ("post_logout_redirect_uri", OUT)])
+        ))
+        .header(
+            "cookie",
+            browser
+                .cookies
+                .iter()
+                .map(|(name, value)| format!("{name}={value}"))
+                .collect::<Vec<_>>()
+                .join("; "),
+        )
+        .send()
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::FOUND);
+    assert_eq!(response.headers()["location"], OUT);
+
+    // The worker's part, with its use cases: the outbox makes the
+    // deliveries, and the sender signs and sends them.
+    let dispatcher = OutboxDispatcher::new(
+        database.platform().clone(),
+        database.app().clone(),
+        vec![Arc::new(BackChannelLogoutFanOut::new(
+            Arc::new(PgSessionClients),
+            Arc::new(PgClientStore),
+            Arc::new(PgApplicationStore),
+            Arc::new(PgLogoutDeliveryStore),
+            Arc::new(SystemClock),
+        ))],
+    );
+    while dispatcher
+        .dispatch_batch(100)
+        .await
+        .expect("dispatch")
+        .delivered
+        > 0
+    {}
+    let root = Arc::new(SecretKeys::parse(&Secret::from(ROOT_KEY.to_owned())).expect("root"));
+    let clients = RecordingClients::default();
+    let sender = BackChannelLogoutSender::new(
+        LogoutSenderPorts {
+            units_of_work: Arc::new(database.app().clone()),
+            clients: Arc::new(PgClientStore),
+            deliveries: Arc::new(PgLogoutDeliveryStore),
+            due: Arc::new(PgDueLogoutDeliveries::new(database.platform().clone())),
+            issuers: Arc::new(IssuerOf(
+                id_token["iss"].as_str().expect("issuer").to_owned(),
+            )),
+            keys: KeyService::new(
+                Arc::new(database.app().clone()),
+                Arc::new(PgKeyStore),
+                Arc::new(LocalKeyProvider::new(root)),
+                Arc::new(SystemClock),
+            ),
+            http: Arc::new(clients.clone()),
+            random: Arc::new(OsRandom),
+            clock: Arc::new(SystemClock),
+        },
+        LogoutDeliverySettings::default(),
+    );
+    let leases = sender.lease_due(10).await.expect("leased");
+    assert_eq!(leases.len(), 2, "both applications of the session");
+    for lease in leases {
+        sender.send(lease).await.expect("sent");
+    }
+
+    // Each token checks against the key set the server publishes, with a
+    // library that is not Hodor's, and names the session of the ID tokens.
+    let set: jsonwebtoken::jwk::JwkSet =
+        reqwest::get(format!("{}/t/acme/oauth2/jwks", server.base))
+            .await
+            .expect("key set")
+            .json()
+            .await
+            .expect("JSON");
+    for (client, address) in [(payroll, payroll_address), (reports, reports_address)] {
+        let tokens = clients.tokens_to(address);
+        assert_eq!(tokens.len(), 1, "{address} is told once");
+        let header = jsonwebtoken::decode_header(&tokens[0]).expect("header");
+        assert_eq!(header.typ.as_deref(), Some("logout+jwt"));
+        let jwk = set.find(&header.kid.expect("kid")).expect("published");
+        let mut validation = jsonwebtoken::Validation::new(header.alg);
+        validation.set_audience(&[client.to_string()]);
+        validation.set_issuer(&[id_token["iss"].as_str().expect("issuer")]);
+        let claims = jsonwebtoken::decode::<Value>(
+            &tokens[0],
+            &jsonwebtoken::DecodingKey::from_jwk(jwk).expect("key"),
+            &validation,
+        )
+        .expect("the signature checks")
+        .claims;
+        assert_eq!(claims["sid"], id_token["sid"]);
+        assert_eq!(claims["sub"], id_token["sub"]);
+    }
 }

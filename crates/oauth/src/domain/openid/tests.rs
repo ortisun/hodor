@@ -405,6 +405,11 @@ fn discovery_names_only_what_is_built() {
         document["end_session_endpoint"],
         format!("{ISSUER}/oauth2/logout")
     );
+    assert_eq!(document["backchannel_logout_supported"], json!(true));
+    assert_eq!(
+        document["backchannel_logout_session_supported"],
+        json!(true)
+    );
     assert_eq!(
         document["grant_types_supported"],
         json!(SUPPORTED_GRANT_TYPES)

@@ -119,7 +119,8 @@ fn applications(
             digest: Arc::new(FakeDigest),
             random: Arc::new(hodor_oauth::testing::DistinctRandom),
             clock,
-        });
+        })
+        .with_destinations(Arc::new(hodor_oauth::testing::FakeDestinations));
     (applications, consents)
 }
 
@@ -2514,6 +2515,119 @@ async fn what_breaks_a_rule_of_a_client_is_refused_with_its_code() {
         .await;
     assert_eq!(missing.status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(missing.code(), "request.body_invalid");
+}
+
+#[tokio::test]
+async fn a_client_gets_a_back_channel_logout_address_checked_as_a_webhook_endpoint() {
+    let world = world().await;
+    let application = new_application(&world, "Billing", true).await;
+    let path = format!("/applications/{application}/clients");
+    let mut body = web_client();
+    body["backchannel_logout_uri"] = "https://billing.example.com/backchannel-logout".into();
+    body["backchannel_logout_session_required"] = true.into();
+    let created = world
+        .as_administrator(Method::POST, &path, Some(body))
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    assert_eq!(
+        created.body["backchannel_logout_uri"],
+        "https://billing.example.com/backchannel-logout"
+    );
+    assert_eq!(created.body["backchannel_logout_session_required"], true);
+    let client = created.body["id"].as_str().expect("client").to_owned();
+
+    // Unless given, a client has none.
+    let plain = world
+        .as_administrator(Method::POST, &path, Some(web_client()))
+        .await;
+    assert_eq!(
+        plain.body["backchannel_logout_uri"],
+        serde_json::Value::Null
+    );
+    assert_eq!(plain.body["backchannel_logout_session_required"], false);
+
+    for (address, code) in [
+        (
+            "https://localhost/logout",
+            "oauth.client_backchannel_logout_uri_forbidden",
+        ),
+        (
+            "https://10.0.0.7/logout",
+            "oauth.client_backchannel_logout_uri_forbidden",
+        ),
+        (
+            "https://nowhere.example/logout",
+            "oauth.client_backchannel_logout_uri_unresolvable",
+        ),
+        (
+            "http://billing.example.com/logout",
+            "oauth.client_backchannel_logout_uri_invalid",
+        ),
+        (
+            "https://billing.example.com/logout#fragment",
+            "oauth.client_backchannel_logout_uri_invalid",
+        ),
+    ] {
+        let refused = world
+            .as_administrator(
+                Method::PATCH,
+                &format!("/clients/{client}"),
+                Some(serde_json::json!({ "backchannel_logout_uri": address })),
+            )
+            .await;
+        assert_eq!(
+            refused.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{address}: {}",
+            refused.body
+        );
+        assert_eq!(refused.code(), code, "{address}");
+    }
+
+    // Removing the address while `sid` is still required breaks a rule;
+    // removing both is a change.
+    let alone = world
+        .as_administrator(
+            Method::PATCH,
+            &format!("/clients/{client}"),
+            Some(serde_json::json!({ "backchannel_logout_uri": null })),
+        )
+        .await;
+    assert_eq!(alone.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(alone.code(), "oauth.client_backchannel_logout_uri_invalid");
+    let removed = world
+        .as_administrator(
+            Method::PATCH,
+            &format!("/clients/{client}"),
+            Some(serde_json::json!({
+                "backchannel_logout_uri": null,
+                "backchannel_logout_session_required": false,
+            })),
+        )
+        .await;
+    assert_eq!(removed.status, StatusCode::OK, "{}", removed.body);
+    assert_eq!(
+        removed.body["backchannel_logout_uri"],
+        serde_json::Value::Null
+    );
+    assert_eq!(removed.body["backchannel_logout_session_required"], false);
+
+    // A client that signs nobody in has no address.
+    let mut service = web_client();
+    service["grant_types"] = serde_json::json!(["client_credentials"]);
+    service
+        .as_object_mut()
+        .expect("object")
+        .remove("redirect_uris");
+    service["backchannel_logout_uri"] = "https://billing.example.com/logout".into();
+    let refused = world
+        .as_administrator(Method::POST, &path, Some(service))
+        .await;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        refused.code(),
+        "oauth.client_backchannel_logout_uri_invalid"
+    );
 }
 
 #[tokio::test]

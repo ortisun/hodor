@@ -230,6 +230,7 @@ nav:
       - decisions/0034-token-exchange.md
       - decisions/0035-access-control-lists.md
       - decisions/0036-codes-and-links-by-email.md
+      - decisions/0037-back-channel-logout.md
       - decisions/0039-enrolling-during-a-sign-in.md
   - Contributing:
       - development/conventions.md

@@ -113,7 +113,27 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
 - `client.rs` also keeps `post_logout_redirect_uris`: the rules of redirect
   addresses, at most 10, only with `authorization_code`
   (`oauth.client_post_logout_redirect_uri_invalid`);
-  `accepts_post_logout_redirect_uri`.
+  `accepts_post_logout_redirect_uri`. And `backchannel_logout_uri`, only
+  with `authorization_code`, its form checked by
+  `check_backchannel_logout_uri`, and
+  `backchannel_logout_session_required`, `true` only with an address
+  (`oauth.client_backchannel_logout_uri_invalid`);
+  `Client::backchannel_logout_uri`.
+- `backchannel.rs`: back-channel logout. `check_backchannel_logout_uri`
+  (`https://` or `http://`, a host, a valid port, no name and password, no
+  fragment, printable ASCII, at most 2000 characters; whether it may be
+  called is the guarded client's to say), `logout_token_header` (`typ`
+  `logout+jwt`), `logout_token_claims(LogoutTokenSubject, now, jti)` (`iss`,
+  `sub`, `aud`, `iat`, `exp` two minutes later, `jti`, `events`, `sid`;
+  never `nonce`), `LogoutDelivery` (`make`, `is_due`, `is_leased`, `lease`,
+  `is_as_leased`, `record_success`, `record_failure`, `set_aside`, the last
+  two returning `OauthEvent::BackchannelLogoutSetAside`),
+  `LogoutDeliverySnapshot`, `LogoutDeliveryId`, `LogoutDeliveryStatus`,
+  `LogoutRetryPolicy` (1 to 20 attempts, waits doubling up to an hour,
+  `oauth.logout_retry_policy_invalid`), and `BACKCHANNEL_LOGOUT_EVENT`,
+  `LOGOUT_TOKEN_TYPE`, `LOGOUT_TOKEN_LIFETIME`, `SESSION_REVOKED`,
+  `MAX_BACKCHANNEL_LOGOUT_URI_LENGTH`, `MAX_LOGOUT_ERROR_LENGTH`. Its cases
+  are in `backchannel/tests.rs`.
 - `consent.rs`: consent. `Consent` (`stands_at`, `covers`: every scope and
   audience of a request, never `offline_access`; `give`, which adds to a
   consent that stands and starts over one that does not; `withdraw`,

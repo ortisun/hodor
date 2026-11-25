@@ -1,6 +1,7 @@
 //! The use cases of the OAuth context and the ports they need.
 
 pub(crate) mod authorization;
+pub(crate) mod backchannel;
 pub(crate) mod consent;
 pub(crate) mod exchange;
 pub(crate) mod introspection;

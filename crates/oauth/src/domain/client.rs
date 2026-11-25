@@ -1,6 +1,7 @@
 //! Clients: what asks Hodor for tokens on behalf of an application.
 
 use crate::domain::application::{ApplicationId, Status, stored_data_invalid};
+use crate::domain::backchannel::check_backchannel_logout_uri;
 use crate::domain::consent::{
     DEFAULT_CONSENT_LIFETIME, LONGEST_CONSENT_LIFETIME, SHORTEST_CONSENT_LIFETIME,
 };
@@ -333,6 +334,12 @@ pub struct ClientSettings {
     pub require_pkce: bool,
     /// How its ID tokens are signed.
     pub id_token_algorithm: IdTokenAlgorithm,
+    /// Where its logout tokens are sent when a session it signed a person
+    /// in with ends, if anywhere.
+    pub backchannel_logout_uri: Option<String>,
+    /// Whether it needs `sid` in its logout tokens. Every logout token
+    /// carries it; this records what the client relies on.
+    pub backchannel_logout_session_required: bool,
     /// How long its tokens live.
     pub token_policy: TokenPolicy,
     /// The service account or agent it acts as, if any: its tokens are
@@ -362,7 +369,11 @@ fn post_logout_invalid(reason: impl Into<String>) -> DomainError {
     .with_detail(reason)
 }
 
-fn is_port(value: &str) -> bool {
+fn backchannel_invalid(reason: &'static str) -> DomainError {
+    crate::domain::backchannel::uri_invalid(reason)
+}
+
+pub(crate) fn is_port(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 5
         && value.bytes().all(|b| b.is_ascii_digit())
@@ -482,6 +493,8 @@ impl ClientSettings {
             allowed_scopes: Vec::new(),
             require_pkce: true,
             id_token_algorithm: IdTokenAlgorithm::default(),
+            backchannel_logout_uri: None,
+            backchannel_logout_session_required: false,
             token_policy: TokenPolicy::default(),
             principal: None,
             exchange_rules: Vec::new(),
@@ -608,6 +621,18 @@ impl ClientSettings {
                 post_logout_invalid(error.detail().unwrap_or_default().to_owned())
             })?;
         }
+        if let Some(uri) = &self.backchannel_logout_uri {
+            if !has_code {
+                return Err(backchannel_invalid(
+                    "a client without `authorization_code` has no back-channel logout address",
+                ));
+            }
+            check_backchannel_logout_uri(uri)?;
+        } else if self.backchannel_logout_session_required {
+            return Err(backchannel_invalid(
+                "back-channel logout session required needs a back-channel logout address",
+            ));
+        }
         let allowed_scopes = without_repeats(self.allowed_scopes);
         if allowed_scopes.len() > MAX_SCOPES || !allowed_scopes.iter().all(|s| text::is_scope(s)) {
             return Err(DomainError::invalid(
@@ -625,6 +650,8 @@ impl ClientSettings {
             allowed_scopes,
             require_pkce: self.require_pkce,
             id_token_algorithm: self.id_token_algorithm,
+            backchannel_logout_uri: self.backchannel_logout_uri,
+            backchannel_logout_session_required: self.backchannel_logout_session_required,
             token_policy: self.token_policy.checked()?,
             principal: self.principal,
             exchange_rules,
@@ -775,6 +802,12 @@ impl Client {
             .post_logout_redirect_uris
             .iter()
             .any(|registered| registered == presented)
+    }
+
+    /// Where its logout tokens are sent, if anywhere.
+    #[must_use]
+    pub fn backchannel_logout_uri(&self) -> Option<&str> {
+        self.state.settings.backchannel_logout_uri.as_deref()
     }
 
     /// Whether `presented` is one of its secrets that works at `now`. A

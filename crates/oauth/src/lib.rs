@@ -4,8 +4,9 @@
 //! It holds the applications a tenant registers, the clients that ask for
 //! tokens on their behalf, the resource servers those tokens are for, and
 //! the authorization endpoint's requests, grants and codes, and the token
-//! endpoint with the access tokens it issues, the OpenID Provider, and
-//! logout initiated by the relying party. It does not sign anyone in.
+//! endpoint with the access tokens it issues, the OpenID Provider, logout
+//! initiated by the relying party, and back-channel logout. It does not
+//! sign anyone in.
 //!
 //! The specification is `docs/architecture/contexts/oauth.md`; this crate
 //! follows it.
@@ -19,6 +20,14 @@ pub mod testing;
 pub mod api {
     pub use crate::application::authorization::{
         AuthorizationCodePorts, AuthorizationCodeService, RedeemedCode, ResumedRequest,
+    };
+    pub use crate::application::backchannel::fan_out::BackChannelLogoutFanOut;
+    pub use crate::application::backchannel::ports::{
+        DueLogoutDeliveries, LogoutDeliveryStore, SessionClients, TenantIssuer,
+    };
+    pub use crate::application::backchannel::sender::{
+        BackChannelLogoutSender, LogoutDeliverySettings, LogoutLease, LogoutOutcome,
+        LogoutSenderPorts,
     };
     pub use crate::application::consent::{
         AskedScope, ConsentPorts, ConsentQuestion, ConsentService, ListedConsent,
@@ -48,6 +57,12 @@ pub mod api {
         CodeRefusal, CodeValue, Grant, GrantId, GrantStatus, MAX_RESOURCES, PENDING_LIFETIME,
         PendingAuthorization, PendingAuthorizationId, Proof, SessionDecision, SignedInPerson,
         check_request, s256_challenge,
+    };
+    pub use crate::domain::backchannel::{
+        BACKCHANNEL_LOGOUT_EVENT, LOGOUT_TOKEN_LIFETIME, LOGOUT_TOKEN_TYPE, LogoutDelivery,
+        LogoutDeliveryId, LogoutDeliverySnapshot, LogoutDeliveryStatus, LogoutRetryPolicy,
+        LogoutTokenSubject, MAX_BACKCHANNEL_LOGOUT_URI_LENGTH, MAX_LOGOUT_ERROR_LENGTH,
+        SESSION_REVOKED, check_backchannel_logout_uri, logout_token_claims, logout_token_header,
     };
     pub use crate::domain::client::{
         AuthenticationMethod, Client, ClientId, ClientSettings, ClientSnapshot, ClientType,

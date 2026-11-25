@@ -4,9 +4,10 @@
 
 The background process, in one file, `main.rs`. It runs its loops side by
 side: the outbox dispatch loop, which turns every outbox event into an audit
-record and the published ones into webhook deliveries, the mail delivery
-loop, which sends queued messages over SMTP, the webhook loop, which sends
-webhook deliveries many at once, four
+record, the published ones into webhook deliveries and `session.revoked`
+into logout deliveries, the mail delivery loop, which sends queued messages
+over SMTP, the webhook loop, which sends webhook deliveries many at once,
+the logout loop, which signs and sends logout tokens many at once, four
 cleanup loops, one removing pending authorizations that expired, one
 removing the records of access tokens that expired, one maintaining the
 record of decisions, and one removing every other kind of row that stopped
@@ -52,6 +53,11 @@ Configuration (`Config`, clap, command name `hodor-worker`):
 | `--webhook-in-flight-per-endpoint` | `HODOR_WEBHOOK_IN_FLIGHT_PER_ENDPOINT` | 4, from 1 to 32 |
 | `--webhook-concurrency` | `HODOR_WEBHOOK_CONCURRENCY` | 32, from 1 to 256 |
 | `--webhook-poll-interval-ms` | `HODOR_WEBHOOK_POLL_INTERVAL_MS` | 1000 |
+| `--public-url` | `HODOR_PUBLIC_URL` | unset: no logout token is sent |
+| `--backchannel-logout-max-attempts` | `HODOR_BACKCHANNEL_LOGOUT_MAX_ATTEMPTS` | 8, from 1 to 20 |
+| `--backchannel-logout-first-retry-ms` | `HODOR_BACKCHANNEL_LOGOUT_FIRST_RETRY_MS` | 30000 |
+| `--backchannel-logout-time-limit-seconds` | `HODOR_BACKCHANNEL_LOGOUT_TIME_LIMIT_SECONDS` | 10, from 1 to 30 |
+| `--backchannel-logout-poll-interval-ms` | `HODOR_BACKCHANNEL_LOGOUT_POLL_INTERVAL_MS` | 1000 |
 | `--outbound-development-hosts` | `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` (comma-separated `host:port`) | empty |
 | `--log-format` (`json`, `pretty`) | `HODOR_LOG_FORMAT` | `json` |
 | `--log-filter` | `HODOR_LOG_FILTER` | `info` |
@@ -68,23 +74,37 @@ Symbols:
   `DecisionLogMaintenance::new(platform, database)`, one
   `ExpiredRowCleanup::new(kind, retention_days, platform, database)` for
   each of `ExpiredKind::ALL`, and
-  `OutboxDispatcher::new(platform, database, [AuditHandler, WebhookFanOut])`,
+  `OutboxDispatcher::new(platform, database, [AuditHandler, WebhookFanOut,
+  BackChannelLogoutFanOut])`, the last over `PgSessionClients`,
+  `PgClientStore`, `PgApplicationStore` and `PgLogoutDeliveryStore`,
   and, with `HODOR_SECRET_KEYS`, `KeyRotationJob::new(platform, KeyService,
   policy)` over `PgKeyStore` and `LocalKeyProvider` and `webhook_sender`
   (a `WebhookSender` over the PostgreSQL stores, `TenantSecretBox`,
   `AwsLcHmacSha256` and a `GuardedHttpClient` limited to the attempt's time
-  limit and 64 kibibytes of answer), and, with
+  limit and 64 kibibytes of answer), and, with `HODOR_PUBLIC_URL` as well,
+  `logout_sender` (a `BackChannelLogoutSender` over `PgClientStore`,
+  `PgLogoutDeliveryStore`, `PgDueLogoutDeliveries::new(platform)`,
+  `TenantIssuers`, a `KeyService` over `PgKeyStore` and `LocalKeyProvider`,
+  `OsRandom` and a `GuardedHttpClient` limited in the same way), and, with
   `HODOR_OPEN_POLICY_AGENT_BINARY`, `OpaProcessChecker::verified` (the worker
   does not start with a binary it refuses) and
   `PolicyCheckJob::new(platform, policy_service(database), checker)`; then
   serves `ops_router(health)` and joins the loops.
 - `webhook_settings` reads and bounds the `HODOR_WEBHOOK_*` settings into
   `DeliverySettings`; a value out of bounds stops the worker.
-- `webhook_loop` keeps up to `HODOR_WEBHOOK_CONCURRENCY` sends in a
-  `JoinSet`: while there is room it calls `WebhookSender::lease_due` and
-  spawns `send` for each lease; otherwise it waits for a send to finish,
-  the poll interval or the stop. On stop it waits for the sends under way.
-  `finished` counts each outcome.
+- `backchannel_logout_settings` reads and bounds the
+  `HODOR_BACKCHANNEL_LOGOUT_*` settings into `LogoutDeliverySettings`; a
+  value out of bounds stops the worker.
+- `TenantIssuers` implements the OAuth context's `TenantIssuer`:
+  `{HODOR_PUBLIC_URL}/t/{slug}`, the slug read through `TenantService::get`.
+- `sending_loop` runs one `LeasedSends` (implemented for `WebhookSender`
+  and `BackChannelLogoutSender`), with the names of `WEBHOOKS` or
+  `LOGOUT_TOKENS`: it keeps up to a number of sends in a `JoinSet`
+  (`HODOR_WEBHOOK_CONCURRENCY`, or `LogoutDeliverySettings::CONCURRENCY`,
+  16): while there is room it calls `lease_due` and spawns `send_one` for
+  each lease; otherwise it waits for a send to finish, the poll interval or
+  the stop. On stop it waits for the sends under way. `finished` counts
+  each outcome.
 - `dispatch_loop` calls `OutboxDispatcher::dispatch_batch(batch_size)`.
 - `delivery_loop` calls `DeliveryService::deliver_pending(batch_size)`.
 - `cleanup_loop` takes a slice of jobs and calls `CleanupJob::run(now,
@@ -116,12 +136,15 @@ Symbols:
 - The rotation loop runs at start, then after every pause; a pass skipped
   because another worker held the lock pauses like any other, and a full
   pass without failures is followed by another at once (`rotation_loop`).
-- The outbox handlers are `AuditHandler` and `WebhookFanOut`. Comment in
+- The outbox handlers are `AuditHandler`, `WebhookFanOut` and
+  `BackChannelLogoutFanOut`. Comment in
   `run`: "Every event becomes an audit record, in the transaction that marks
   the event delivered." The fan-out runs without keys: deliveries are made
   whether or not this worker can send them.
-- Without `HODOR_SECRET_KEYS`, `webhook_loop` returns at once and
-  deliveries wait.
+- Without `HODOR_SECRET_KEYS`, the webhook `sending_loop` returns at once
+  and deliveries wait. Without `HODOR_SECRET_KEYS` or `HODOR_PUBLIC_URL`
+  the worker logs a warning, the logout `sending_loop` returns at once and
+  logout deliveries wait; the fan-out of either needs neither.
 - An error never ends a loop: after a failed pass the loop pauses for the
   larger of its poll interval and `MIN_ERROR_PAUSE` (1 second), so a broken
   database is not hammered (`dispatch_loop`, `delivery_loop`,
@@ -171,9 +194,14 @@ Symbols:
   `version`, `simulation`).
 - Sends webhook deliveries over HTTPS, through `GuardedHttpClient`, to the
   endpoints tenants registered, and records each attempt
-  (`webhook_loop`); counts them in `hodor.webhooks.attempts` (attribute
+  (`sending_loop`); counts them in `hodor.webhooks.attempts` (attribute
   `outcome`: `delivered`, `retrying`, `set_aside`, `skipped`) and
   `hodor.webhooks.passes` (attribute `outcome`: `ok`, `error`).
+- Signs logout tokens with the tenants' keys (`KeyService`, which makes the
+  first key of an algorithm when there is none) and posts them, through
+  `GuardedHttpClient`, to the back-channel logout addresses of clients
+  (`sending_loop`); counts them in `hodor.backchannel_logout.attempts` and
+  `hodor.backchannel_logout.passes`, with the same attributes.
 - Runs the `opa` binary as a child process for each check, test and
   simulation, through `OpaProcessChecker` (`policy_check_loop`).
 - Logs and, when the endpoints are set, exports traces and metrics through

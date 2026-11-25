@@ -52,7 +52,9 @@ Routers, as assembled in `run`:
   `AdminState` built by `administration`; its `webhooks` is the
   `WebhookService` of `webhooks`, with `HODOR_SECRET_KEYS` only, whose
   addresses are checked by a `GuardedHttpClient` with the development
-  exception.
+  exception; its `applications` is an `ApplicationService` given such a
+  client too, with `with_destinations`, to check clients' back-channel
+  logout addresses.
 - `/console/api` nests `hodor_protocol_http::console_routes`.
 - `/api/v1/authorization` nests `hodor_protocol_http::authorization_api_routes`
   with the `AuthorizationApiState` built by `authorization_api`, only when

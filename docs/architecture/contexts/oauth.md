@@ -4,7 +4,7 @@ The `oauth` context makes Hodor an OAuth 2.x authorization server and an OpenID 
 
 It does not sign anyone in. When a request needs a person, it hands the request to the `authentication` context and takes the session that comes back. The two contexts do not depend on each other: the HTTP layer joins them ([crates.md](../crates.md)).
 
-This page specifies what Issue-53 builds: applications, clients and resource servers, and the rules they keep; what Issue-55 builds: the authorization endpoint, grants and authorization codes; what Issue-56 builds: the token endpoint, client authentication and access tokens; what Issue-59 builds: the OpenID Provider; what Issue-60 builds: logout initiated by the relying party; what Issue-62 builds: [consent](#consent); what Issue-93 builds: [clients that act as a workload](#clients-that-act-as-a-workload); and what Issue-95 builds: [token exchange](#token-exchange). The other endpoints and tokens are added by Issue-57 and Issue-58, under the headings at the end of this page.
+This page specifies what Issue-53 builds: applications, clients and resource servers, and the rules they keep; what Issue-55 builds: the authorization endpoint, grants and authorization codes; what Issue-56 builds: the token endpoint, client authentication and access tokens; what Issue-59 builds: the OpenID Provider; what Issue-60 builds: logout initiated by the relying party; what Issue-62 builds: [consent](#consent); what Issue-93 builds: [clients that act as a workload](#clients-that-act-as-a-workload); what Issue-95 builds: [token exchange](#token-exchange); and what Issue-100 builds: [back-channel logout](#back-channel-logout). The other endpoints and tokens are added by Issue-57 and Issue-58, under the headings at the end of this page.
 
 ## Applications
 
@@ -34,6 +34,8 @@ A client is what talks to Hodor's endpoints. Its identifier is the `client_id` o
 | Exchange rules | For a client with the token exchange grant: which tokens it may exchange for which audience. At most 20 |
 | Redirect addresses | Where the authorization endpoint may send a person back to. At most 10 |
 | Post-logout redirect addresses | Where [logout](#logout-initiated-by-the-relying-party) may send a person back to. At most 10 |
+| Back-channel logout address | Optional: where Hodor sends a [logout token](#back-channel-logout) when a session the client signed a person in with ends, its `backchannel_logout_uri` of OpenID Connect Back-Channel Logout. See [the back-channel logout address](#the-back-channel-logout-address) |
+| Back-channel logout session required | Whether the client needs `sid` in its logout tokens, its `backchannel_logout_session_required`. `false` unless chosen. Hodor puts `sid` in every logout token, so this only records what the client relies on |
 | Scopes | The scopes it may ask for. At most 50 |
 | PKCE | Whether it must send a code challenge. Always for a public client; on by default for a confidential one |
 | ID token algorithm | How its [ID tokens](#the-id-token) are signed, its `id_token_signed_response_alg` of OpenID Connect Registration: `ES256` unless changed, or `RS256` |
@@ -55,6 +57,7 @@ Every change to a client is checked against all of these at once; a change that 
 - **`refresh_token` comes with `authorization_code`.** A refresh token is only ever issued with tokens from a code.
 - **A client with `authorization_code` has at least one redirect address, and one without it has none.**
 - **Only a client with `authorization_code` has post-logout redirect addresses**, since only it gets ID tokens and signs people in. It may have none.
+- **Only a client with `authorization_code` has a back-channel logout address**, for the same reason. It may have none. Back-channel logout session required is `true` only for a client with an address.
 - **A client has at least one grant.**
 - **A client with a principal has the `client_credentials` grant**, and may have the token exchange grant besides; no other. It is the workload's credential.
 - **The token exchange grant needs a principal, which must be an agent, and at least one exchange rule; exchange rules need the grant.** Only an agent acts on a person's behalf ([Decision 0031](../../decisions/0031-workloads-are-users.md)). Each rule is a pair of audiences, the one a subject token must hold and the one the new token is for, each at most 255 printable characters, each pair once.
@@ -73,6 +76,16 @@ A redirect address is where a person's browser is sent with a code. Sending a co
 An address is kept exactly as it was given.
 
 **Post-logout redirect addresses** follow the same rules, checked the same way, and are a list of their own: an address where a person may be sent with a code is not, for that reason, one where they may be sent after signing out, and the reverse.
+
+### The back-channel logout address
+
+Issue-100. The back-channel logout address is not where a browser goes: Hodor's worker calls it, server to server, with a [logout token](#the-logout-token). An address that leads inside the network Hodor runs in would let a tenant's administrator make Hodor call it, so the address is checked as a [webhook endpoint](webhooks.md#endpoints) is:
+
+- **One absolute HTTPS address**, with a host, without a name and password or a fragment, at most 2000 characters, all of them printable ASCII without spaces. A port, a path and a query are allowed ([Back-Channel Logout, section 2.2](https://openid.net/specs/openid-connect-backchannel-1_0.html#BCRegistration)). It is kept exactly as it was given.
+- **Checked when it is set**, through the `DestinationCheck` port, which the guarded outbound client implements with the rules of [outbound HTTP](../../security/outbound-http.md): HTTPS only, and every address the name resolves to now must be public. An address that may not be called is refused with `oauth.client_backchannel_logout_uri_forbidden`, one that is not HTTPS or cannot be read with `oauth.client_backchannel_logout_uri_invalid`, a name that resolves to nothing with `oauth.client_backchannel_logout_uri_unresolvable`. The message never repeats what the name resolved to.
+- **Only a new or changed address is checked.** Changing a client's other settings does not check its address again, so a name that resolves elsewhere since does not stop an administrator from changing the client's name.
+- **Checked again at every delivery**, by the guarded client, on the resolution it connects with: a name can lead elsewhere later. An attempt to an address that may not be called fails like one the client did not answer.
+- **The addresses of the development exception** (`HODOR_OUTBOUND_DEVELOPMENT_HOSTS`) are accepted over plain HTTP, when set and when called, as the guarded client accepts them. Nowhere real has any.
 
 ### Scopes a client may ask for
 
@@ -177,7 +190,7 @@ For an operator who can reach the database, as for tenants and identity provider
 | `hodor-cli application add --tenant acme --name Billing [--first-party]` | Registers an application, enabled; third party unless `--first-party` is given. Prints its identifier |
 | `hodor-cli application list --tenant acme` | One line per application: identifier, status, first or third party, name |
 | `hodor-cli application disable --tenant acme --id …`, `enable` | |
-| `hodor-cli client add --tenant acme --application … --name … --type confidential --grant authorization_code --redirect-uri https://… --scope openid` | Creates a client. `--grant`, `--redirect-uri`, `--post-logout-redirect-uri` and `--scope` are given once per value; `--method` chooses the authentication method, `--secret-days` the lifetime of the first secret, `--without-pkce` lets a confidential client redeem a code without PKCE, `--id-token-algorithm` signs its ID tokens with `RS256` instead of `ES256`, `--principal` binds it to a service account or an agent, and `--exchange-rule '<subject audience>=><audience>'`, once per rule, gives an agent's client its exchange rules. Prints the `client_id` and, for a client with a secret method, the secret, once |
+| `hodor-cli client add --tenant acme --application … --name … --type confidential --grant authorization_code --redirect-uri https://… --scope openid` | Creates a client. `--grant`, `--redirect-uri`, `--post-logout-redirect-uri` and `--scope` are given once per value; `--method` chooses the authentication method, `--secret-days` the lifetime of the first secret, `--without-pkce` lets a confidential client redeem a code without PKCE, `--id-token-algorithm` signs its ID tokens with `RS256` instead of `ES256`, `--backchannel-logout-uri` gives it a [back-channel logout address](#the-back-channel-logout-address), checked with the development exception of `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` as the server has it, `--backchannel-logout-session-required` records that it needs `sid`, `--principal` binds it to a service account or an agent, and `--exchange-rule '<subject audience>=><audience>'`, once per rule, gives an agent's client its exchange rules. Prints the `client_id` and, for a client with a secret method, the secret, once |
 | `hodor-cli client list --tenant acme --application …` | One line per client: `client_id`, status, type, authentication method, name |
 | `hodor-cli client rotate-secret --tenant acme --id … [--lifetime-days 365] [--keep-previous-days 7]` | Gives a client a new secret and prints it, once |
 | `hodor-cli client disable --tenant acme --id …`, `enable` | |
@@ -235,6 +248,8 @@ Every table is a tenant table under row-level security, in the schema `oauth`. R
 | `principal_id` | `uuid` | The workload the client acts as, or null. Not a reference: contexts do not reference each other's tables. Check constraints allow it only with `client_credentials` and, besides, `urn:ietf:params:oauth:grant-type:token-exchange`, and require it with the latter |
 | `exchange_rules` | `jsonb` | The exchange rules, a list of `{"subject_audience": …, "audience": …}`; empty unless the client has the token exchange grant |
 | `id_token_algorithm` | `text` | `ES256` or `RS256`, by a check constraint; `ES256` for a client made before it existed |
+| `backchannel_logout_uri` | `text` | The [back-channel logout address](#the-back-channel-logout-address), or null. At most 2000 characters, `https://` or `http://`, compared byte for byte (`COLLATE "C"`); a check constraint allows it only with the `authorization_code` grant |
+| `backchannel_logout_session_required` | `boolean` | `false` for a client made before it existed; a check constraint allows `true` only with an address |
 | `access_token_seconds`, `id_token_seconds`, `refresh_token_seconds`, `refresh_idle_seconds`, `consent_seconds` | `integer` | The token policy |
 | `created_at`, `updated_at` | `timestamptz` | |
 | `version` | `integer` | For optimistic locking; secrets and keys are stored with the client under the same version |
@@ -832,7 +847,7 @@ When the scopes of a code hold `openid`, the token endpoint answers with an `id_
 | `amr` | The methods of the sign-in, as the next section says. Left out when none of them has a name in RFC 8176 |
 | `at_hash` | The base64url of the left half of the SHA-256 of the access token, so that the client can tell the two belong together |
 | `org_id` | The [organization of the sign-in](#the-organization-of-a-sign-in), as in the access token. Left out when the request named none |
-| `sid` | The identifier of the session the person signed in with: a UUID that names the session, never its token. [Logout](#logout-initiated-by-the-relying-party) uses it to know whether an ID token names the browser's current session |
+| `sid` | The identifier of the session the person signed in with: a UUID that names the session, never its token. [Logout](#logout-initiated-by-the-relying-party) uses it to know whether an ID token names the browser's current session, and the [logout token](#the-logout-token) carries the same value when the session ends |
 
 `azp` is not added: the audience is always the one client, and OpenID Connect asks for `azp` only when it is not.
 
@@ -955,6 +970,7 @@ It names only what is built:
 | `ui_locales_supported` | `en`, `pt-BR` |
 | `authorization_response_iss_parameter_supported` | `true` |
 | `request_parameter_supported`, `request_uri_parameter_supported`, `claims_parameter_supported` | `false` |
+| `backchannel_logout_supported`, `backchannel_logout_session_supported` | `true`: [back-channel logout](#back-channel-logout) is offered, and every logout token carries `sid` |
 
 The document may be kept by caches for five minutes and carries `Access-Control-Allow-Origin: *`, as the key set does: it is public.
 
@@ -1009,7 +1025,7 @@ A `POST` always asks. A form that another site posts does not carry the session 
 
 The person is asked whenever the request does not prove that it comes from the session it ends, as the specification requires: otherwise any site could sign a person out of Hodor by sending their browser to this address.
 
-**Ending the session** is what signing out does ([the interaction interface](../../api/interaction-api.md#routes-for-a-signed-in-person)): the session is revoked, with the reason `relying_party_logout` in its event and so in the audit log, and the browser is told to forget the session cookie. With it ends every refresh token family made in that session without `offline_access` (Issue-57). Access tokens already issued live out their few minutes; revoking them is Issue-58. Grants are not revoked: access the person gave with `offline_access` goes on.
+**Ending the session** is what signing out does ([the interaction interface](../../api/interaction-api.md#routes-for-a-signed-in-person)): the session is revoked, with the reason `relying_party_logout` in its event and so in the audit log, and the browser is told to forget the session cookie. With it ends every refresh token family made in that session without `offline_access` (Issue-57). Access tokens already issued live out their few minutes; revoking them is Issue-58. Grants are not revoked: access the person gave with `offline_access` goes on. Every client the person signed in to with the session, the one that asked included, is then told through [back-channel logout](#back-channel-logout) if it has an address for it.
 
 ### Asking the person
 
@@ -1038,6 +1054,188 @@ Every answer of the end-session endpoint carries `Cache-Control: no-store`.
 | `ClientStore` | Loads the client, to check the return address |
 
 The session is looked up and ended by the HTTP layer through the session context, as the authorization endpoint looks it up.
+
+## Back-channel logout
+
+Issue-100. When a person's session at Hodor ends, every application they signed in to with it is told, server to server: Hodor's worker sends each of their clients a **logout token** at the client's [back-channel logout address](#the-back-channel-logout-address) ([OpenID Connect Back-Channel Logout 1.0](https://openid.net/specs/openid-connect-backchannel-1_0.html)). The application then ends its own session for that person. Nothing passes through the person's browser, so a browser that was closed, or an application in another tab, is told all the same. Why it is built this way is [Decision 0037](../../decisions/0037-back-channel-logout.md).
+
+```mermaid
+sequenceDiagram
+    participant Person as The person's browser
+    participant Server as hodor-server
+    participant Outbox as The outbox
+    participant Worker as hodor-worker
+    participant Deliveries as oauth.logout_delivery
+    participant Client as Each client's back-channel logout address
+
+    Person->>Server: sign out, or logout initiated by the relying party
+    Server->>Outbox: session.revoked, in the transaction that ends the session
+    Worker->>Outbox: take the next event
+    Worker->>Deliveries: one delivery per client signed in to with the session
+    Note over Worker,Deliveries: Writing the deliveries and marking the event dispatched are one transaction
+    Worker->>Deliveries: lease a delivery that is due
+    Worker->>Worker: sign a logout token with the tenant's key
+    Worker->>Client: POST logout_token, through the guarded outbound client
+    alt the client answers 2xx
+        Worker->>Deliveries: delivered
+    else any other answer, no answer, or an address that may not be called
+        Worker->>Deliveries: try again after a longer wait, or set it aside after the last attempt
+    end
+```
+
+### Which sessions, which clients
+
+**When.** Whenever a session is ended on purpose: its event `session.revoked` ([the session context](session.md)). That is the person signing out, or ending their other sessions, through [the interaction interface](../../api/interaction-api.md#routes-for-a-signed-in-person); [logout initiated by the relying party](#logout-initiated-by-the-relying-party); an administrator ending a session (`DELETE /sessions/{session_id}` of [the administration interface](../../api/admin-api.md)); a password reset, which ends every session of the person; and a SCIM directory [deprovisioning](provisioning.md) the person. A session that runs out by itself, idle or at its absolute end, has no event and sends nothing; nor does one that ends because its person was suspended, which happens at its next request.
+
+**Which clients.** Every client that was issued a code in that session for a request with the scope `openid`, that is, every client with a [grant](#the-authorization-code) made in the session with `openid` among its scopes, whatever the grant's status since. Of those, the ones that, when the session ends:
+
+- have a back-channel logout address;
+- are enabled, and so is their application.
+
+A client gets **one** logout token for a session, however many codes it got in it. A client that only used client credentials, or a request without `openid`, signed nobody in and gets none.
+
+**Rules:**
+
+- **A tenant's sessions only ever reach its own clients.** The handler runs in the session's tenant and reads that tenant's grants and clients only, under row-level security.
+- **Deliveries are made once.** The outbox hands `session.revoked` to the OAuth context's handler, beside the audit log and the fan-out of webhooks; it writes one delivery per client inside the dispatcher's transaction, unique per client and session, so an event handled again makes none twice.
+- **The address is the client's at the time of each attempt.** A client whose address was changed is sent to the new one; one that lost its address or was disabled before the attempt gets nothing, and its delivery is [set aside](#deliveries-and-retries) at once.
+
+### The logout token
+
+A JSON Web Token signed by the [keys context](keys.md) with the tenant's active key of the client's [ID token algorithm](#the-id-token), so that the client checks it with the key set it already reads for its ID tokens ([Back-Channel Logout, section 2.4](https://openid.net/specs/openid-connect-backchannel-1_0.html#LogoutToken)).
+
+| Part | Value |
+|---|---|
+| Header | `alg` the client's ID token algorithm, `typ` `logout+jwt`, `kid` the key version that signed |
+| `iss` | The tenant's issuer, as in the ID token |
+| `sub` | The person's user identifier, as in the ID token |
+| `aud` | The client's identifier, alone |
+| `iat` | When it was signed |
+| `exp` | Two minutes after `iat` |
+| `jti` | 16 random bytes in base64url, new for every token |
+| `events` | `{"http://schemas.openid.net/event/backchannel-logout": {}}`, which says that this is a logout token and nothing else |
+| `sid` | The identifier of the session that ended: the `sid` of the ID tokens issued in it |
+
+There is no `nonce`: the specification forbids it, so that a logout token cannot pass for an ID token. Both `sub` and `sid` are always there, so a client that asked for `sid` with [back-channel logout session required](#clients) has it, and one that tracks people by `sub` has that.
+
+**Each attempt is signed anew**, with its own `iat`, `exp` and `jti`. A logout token lives two minutes, and the attempts of a delivery last up to an hour: a token signed once would have expired by the third attempt, and a client that remembers the `jti` it saw, as the specification suggests, would refuse a token it had seen before but not acted upon. A client that receives two tokens for one session, which can happen (see [at least once](#deliveries-and-retries)), ends the session at the first and finds nothing to end at the second.
+
+What a client does with it is the specification's section 2.6: it checks the signature against the tenant's key set (`jwks_uri`), the `iss`, the `aud`, the `iat`, the `typ` or the `events`, that there is no `nonce`, and, if it keeps them, that the `jti` is new; then it ends its session for `sid`, or every session of `sub`.
+
+### How it is sent
+
+| Part of the request | Value |
+|---|---|
+| Method and address | `POST` to the client's back-channel logout address |
+| `content-type` | `application/x-www-form-urlencoded` |
+| Body | `logout_token=` and the token, and nothing else |
+
+- **No cookie and no redirect.** A redirect is not followed, since a public address could send Hodor to a private one; it is a failed attempt.
+- **An attempt has 10 seconds**, from connecting to the end of the answer, and the answer may be at most 64 kibibytes; Hodor reads nothing of it but its status.
+- **Delivered means a status from 200 to 299.** The specification asks for `200`, and allows that some frameworks answer `204`. Any other status is a failed attempt, `400` among them: the client refused the token, and a token signed anew may be taken.
+
+### Deliveries and retries
+
+| Field | Meaning |
+|---|---|
+| Identifier | A `LogoutDeliveryId` |
+| Client | Where it goes; the address is read from the client at every attempt |
+| Session, person | The session that ended, the `sid`, and whose it was, the `sub` |
+| Status | `pending`, `delivered` or `set_aside` |
+| Attempts | How many times sending was tried |
+| Next attempt | When it is due |
+| Leased until | While a worker is sending it, the moment its lease ends |
+| Last response status | The status of the last answer, if there was one |
+| Last error | Why the last attempt failed, for administrators |
+| Created at, finished at | When it was made, and when it was delivered or set aside |
+
+Sending follows the webhooks context, rule for rule ([leases, and one slow endpoint](webhooks.md#leases-and-one-slow-endpoint)):
+
+- **Never inside a transaction.** A short transaction leases a due delivery after counting, under a lock of its client, how many of the client's deliveries are leased already; the token is signed and the request made with no transaction open; another short transaction records the result if the delivery is still as it was leased.
+- **One slow client does not hold up the others.** A client never has more than 4 deliveries in flight, whichever worker sends them, and a worker sends up to 16 at once, each on its own. A lease lasts the time limit of an attempt and one minute more; a worker that stops in the middle of one loses nothing.
+- **Waits grow.** After the first failed attempt the next waits 30 seconds, and each wait is twice the one before, up to one hour.
+- **A delivery is set aside after its eighth failed attempt**, with the event `oauth.backchannel_logout_set_aside`, and stays so until the cleanup removes it. A delivery whose client no longer has an address, or is disabled, is set aside at once, with that reason, without a request.
+- **At least once, not in order.** If a worker stops after the client took a token and before that was recorded, the delivery is sent again when its lease ends, with a new token.
+- **Without `HODOR_SECRET_KEYS` or `HODOR_PUBLIC_URL`**, a worker sends nothing: it cannot sign, or cannot name the issuer. Deliveries are still made, and wait.
+
+The issuer of a token is `{HODOR_PUBLIC_URL}/t/{slug}`, as the server names it: the worker is given the same public address as the server, and reads the tenant's slug through the tenant context.
+
+### Bounds
+
+| What | Bound |
+|---|---|
+| A client's back-channel logout address | 1, at most 2000 characters |
+| Logout tokens for one client and one session | 1 delivery, sent again only if an attempt fails or a lease runs out |
+| A logout token's life | 2 minutes |
+| Attempts of a delivery | 8, from 1 to 20 with `HODOR_BACKCHANNEL_LOGOUT_MAX_ATTEMPTS` |
+| Waits between attempts | From 30 seconds, doubling, up to 1 hour |
+| The time an attempt may take | 10 seconds, from 1 to 30 with `HODOR_BACKCHANNEL_LOGOUT_TIME_LIMIT_SECONDS` |
+| The answer of a client | 64 kibibytes, of which only the status is read |
+| Redirects | None followed |
+| Deliveries in flight to one client | 4 |
+| Deliveries in flight from one worker | 16 |
+| How long a finished delivery is kept | 30 days after it was delivered or set aside, by [the cleanup](../../operations/deployment.md#cleanup) (`logout_deliveries`) |
+
+### Events
+
+| Event type | When | Fields |
+|---|---|---|
+| `oauth.backchannel_logout_set_aside` | A delivery failed for the last time, or its client could no longer be sent to | `delivery_id`, `client_id`, `session_id`, `attempts` |
+
+It goes to the audit log. It carries no address and no token, and it is not in [the catalog of webhooks](webhooks.md#which-events-are-published).
+
+### Ports
+
+| Port | Purpose |
+|---|---|
+| `SessionClients` | The clients issued a code with `openid` in a session, from the tenant's grants |
+| `LogoutDeliveryStore` | Store a tenant's deliveries, unique per client and session; hold a client while its leases are counted; take a delivery for a lease, skipping one another worker holds; count a client's leased deliveries; record what an attempt did |
+| `DueLogoutDeliveries` | Find the deliveries that are due, across tenants. Not bound to a tenant; only the worker is given it |
+| `TenantIssuer` | The issuer of a tenant, for the worker, which has no request to read it from |
+| `ClientStore`, `ApplicationStore` | Whether a client has an address, and whether it and its application are enabled |
+| `KeyService` | Signs the logout token with the tenant's key, making the first key of an algorithm when there is none, as the token endpoint does |
+| `HttpClient` (kernel) | Sends the token; the guarded client |
+| `DestinationCheck` (kernel) | Checks an address when it is set; the guarded client again |
+| `RandomSource` (kernel) | The `jti` |
+
+### Storage
+
+`oauth.logout_delivery` is a tenant table under row-level security.
+
+| Column | Type | Notes |
+|---|---|---|
+| `tenant_id`, `id` | `uuid` | Primary key |
+| `client_id` | `uuid` | References `oauth.client` with the tenant; removed with it |
+| `session_id`, `user_id` | `uuid` | The session and the person. Not references: contexts do not reference each other's tables. Unique with the client |
+| `status` | `text` | `pending`, `delivered`, `set_aside` |
+| `attempts` | `integer` | |
+| `next_attempt_at`, `leased_until` | `timestamptz` | |
+| `last_response_status` | `integer` | |
+| `last_error` | `text` | At most 500 characters |
+| `created_at`, `finished_at` | `timestamptz` | `finished_at` is set exactly when the delivery is not pending |
+
+A partial index on `next_attempt_at` of the pending deliveries serves the worker's search across tenants, through its platform connection; each delivery is then leased and recorded inside its tenant. `oauth.authorization_grant` gains an index by tenant and session, for finding a session's clients.
+
+### Configuration
+
+Settings of `hodor-worker`; see [local setup](../../development/local-setup.md#hodor-worker) for every setting of the worker.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `HODOR_PUBLIC_URL` | — | The address people reach the installation at, as the server has it: the issuer of a logout token starts with it. Without it nothing is sent and deliveries wait |
+| `HODOR_SECRET_KEYS` | — | The same root keys as the server's, to sign with the tenant's keys. Without them nothing is sent |
+| `HODOR_BACKCHANNEL_LOGOUT_MAX_ATTEMPTS` | 8 | Attempts before a delivery is set aside, 1 to 20 |
+| `HODOR_BACKCHANNEL_LOGOUT_FIRST_RETRY_MS` | 30000 | The wait after the first failed attempt, in milliseconds; each next wait is twice as long, up to one hour |
+| `HODOR_BACKCHANNEL_LOGOUT_TIME_LIMIT_SECONDS` | 10 | The longest an attempt may take, 1 to 30 |
+| `HODOR_BACKCHANNEL_LOGOUT_POLL_INTERVAL_MS` | 1000 | The pause when nothing is due |
+| `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` | — | The development exception of the guarded client, as for the server and for webhooks. Never set anywhere real |
+
+### Metrics
+
+| Metric | Meaning |
+|---|---|
+| `hodor.backchannel_logout.attempts` | Attempts, by `outcome`: `delivered`, `retrying`, `set_aside` or `skipped` |
+| `hodor.backchannel_logout.passes` | Passes of the delivery loop, by `outcome`: `ok` or `error` |
 
 ## Consent
 
@@ -1137,7 +1335,11 @@ Both are tenant tables under row-level security, and reference their client with
 
 | Item | Planned in |
 |---|---|
-| Back-channel and front-channel logout: telling the applications of a session that it ended | Phase 2, after 0.2.0 ([Decision 0023](../../decisions/0023-what-0.2.0-holds.md)) |
+| Front-channel logout: telling the applications of a session that it ended through the person's browser | Not planned: [Milestone 9](../../product/epics.md#explicitly-not-in-milestone-9) leaves it out, and [back-channel logout](#back-channel-logout) needs no browser |
+| A logout token when a session runs out by itself, idle or at its absolute end: only a session that is ended on purpose is told | When an application needs it ([Decision 0037](../../decisions/0037-back-channel-logout.md)) |
+| Listing logout deliveries and delivering a set-aside one again, from the administration interface | Not scheduled |
+| The back-channel logout address in the console's client screens: it is set through the administration interface and the command-line tool | Not scheduled |
+| Back-channel logout to a client that registers itself: there is no dynamic client registration | With dynamic client registration |
 | Sending the person back to the application when they choose to stay signed in at the logout question | When an application asks for it |
 | `logout_hint`, which names who to sign out | Not used: a browser holds one session per tenant |
 | An `id_token_hint` signed by a key that has left the tenant's key set: it is refused, and the application can send `client_id` instead, which asks the person | When it matters |
