@@ -22,7 +22,10 @@ deliveries made when a session ends and the logout tokens the worker signs
 and sends; and Issue-98: pairwise subject identifiers, with the subject
 type and sector identifier address of clients, the tenant's pairwise
 secret, and every token and answer naming the person as the client's
-sector knows them. Storage,
+sector knows them; and Issue-106: a client of a service account bound to
+one SPIFFE identifier, proving who it is with a JWT-SVID (`spiffe_jwt`,
+draft-ietf-oauth-spiffe-client-auth-03) checked against its trust domain's
+bundle, read from the keys context. Storage,
 randomness, hashing, signature checking and time are reached through ports
 and kernel traits.
 
@@ -109,6 +112,10 @@ and kernel traits.
   that comes back is read through its record in the register, never
   through its `sub`. The pairwise secret is made once per tenant, sealed,
   and never replaced; one that does not open is an error.
+- A JWT-SVID is checked only against the bundle of the client's own trust
+  domain in the client's own tenant, found by the name in the client's
+  SPIFFE identifier, never by anything the JWT-SVID says; its `aud` must be
+  the tenant's issuer alone, and it is used once.
 - Every store call is scoped to the tenant of the unit of work (see
   [application](./src/application/EGM.md)).
 
@@ -122,7 +129,8 @@ and kernel traits.
   `HttpClient`: posts logout tokens, and fetches a sector identifier
   document when a client is saved with one. Through
   `KeyService`: signs access, ID and logout tokens, and lists the
-  published keys. Through `SecretBox`: seals and opens the secrets of
+  published keys. Through `TrustDomainService`: reads the tenant's trust
+  domain of a name and its bundle, to check a JWT-SVID. Through `SecretBox`: seals and opens the secrets of
   refresh token families and the pairwise secret. Through `IdentityService`: reads people. Through
   `UnitOfWork::record_event`: records the `oauth.*` events.
 
@@ -139,4 +147,5 @@ and kernel traits.
   `cargo test -p hodor-worker --test backchannel_logout` for back-channel
   logout; `cargo test -p hodor-oauth --test pairwise` and
   `cargo test -p hodor-server --test pairwise` for pairwise subject
-  identifiers.
+  identifiers; `cargo test -p hodor-oauth --test spiffe` and
+  `cargo test -p hodor-server --test spiffe_jwt` for JWT-SVIDs.

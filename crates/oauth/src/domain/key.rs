@@ -166,39 +166,48 @@ impl ClientKey {
     /// Ed25519 are kept but fit no algorithm Hodor checks yet.
     #[must_use]
     pub fn verifying_key(&self, algorithm: SignatureAlgorithm) -> Option<PublicKey> {
-        let key: Map<String, Value> = serde_json::from_str(&self.jwk).ok()?;
-        let member = |name: &str| {
-            key.get(name)
-                .and_then(Value::as_str)
-                .and_then(|value| URL_SAFE_NO_PAD.decode(value).ok())
-        };
-        let named = match algorithm {
-            SignatureAlgorithm::Es256 => "ES256",
-            SignatureAlgorithm::Rs256 => "RS256",
-            SignatureAlgorithm::Ps256 => "PS256",
-        };
-        if key
-            .get("alg")
-            .is_some_and(|given| given.as_str() != Some(named))
-        {
-            return None;
-        }
-        let public = match (
-            key.get("kty").and_then(Value::as_str),
-            key.get("crv").and_then(Value::as_str),
-        ) {
-            (Some("EC"), Some("P-256")) => PublicKey::P256 {
-                x: member("x")?,
-                y: member("y")?,
-            },
-            (Some("RSA"), _) => PublicKey::Rsa {
-                modulus: member("n")?,
-                exponent: member("e")?,
-            },
-            _ => return None,
-        };
-        algorithm.fits(&public).then_some(public)
+        verifying_key_of(&self.jwk, algorithm)
     }
+}
+
+/// The key a JSON Web Key `jwk`, written as JSON, checks signatures of
+/// `algorithm` with, if it fits: a P-256 key for `ES256`, an RSA key for
+/// `RS256` and `PS256`, and the key's own `alg` when it has one. Used for
+/// a client's keys and for the keys of a trust domain's bundle.
+#[must_use]
+pub(crate) fn verifying_key_of(jwk: &str, algorithm: SignatureAlgorithm) -> Option<PublicKey> {
+    let key: Map<String, Value> = serde_json::from_str(jwk).ok()?;
+    let member = |name: &str| {
+        key.get(name)
+            .and_then(Value::as_str)
+            .and_then(|value| URL_SAFE_NO_PAD.decode(value).ok())
+    };
+    let named = match algorithm {
+        SignatureAlgorithm::Es256 => "ES256",
+        SignatureAlgorithm::Rs256 => "RS256",
+        SignatureAlgorithm::Ps256 => "PS256",
+    };
+    if key
+        .get("alg")
+        .is_some_and(|given| given.as_str() != Some(named))
+    {
+        return None;
+    }
+    let public = match (
+        key.get("kty").and_then(Value::as_str),
+        key.get("crv").and_then(Value::as_str),
+    ) {
+        (Some("EC"), Some("P-256")) => PublicKey::P256 {
+            x: member("x")?,
+            y: member("y")?,
+        },
+        (Some("RSA"), _) => PublicKey::Rsa {
+            modulus: member("n")?,
+            exponent: member("e")?,
+        },
+        _ => return None,
+    };
+    algorithm.fits(&public).then_some(public)
 }
 
 #[cfg(test)]

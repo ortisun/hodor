@@ -30,7 +30,23 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   with its members in order, and refuses any private part; `MAX_KEYS`;
   `ClientKey::verifying_key(algorithm)`, the key as the kernel reads it when
   it fits `ES256`, `RS256` or `PS256` and its own `alg` (P-384 and Ed25519
-  keys fit none yet).
+  keys fit none yet), over the crate-visible `verifying_key_of(jwk,
+  algorithm)`, which a trust domain's bundle is read with too.
+- `spiffe.rs`: SPIFFE client authentication with a JWT-SVID (`spiffe_jwt`,
+  Decision 0055). `SpiffeId::parse` (`spiffe://`, a trust domain's name by
+  the keys context's `TrustDomainName`, a path of segments of letters,
+  digits, `.`, `-` and `_`, never `.` or `..`, at most
+  `MAX_SPIFFE_ID_LENGTH` bytes, no `*`; `oauth.client_spiffe_id_invalid`),
+  `as_str` and `trust_domain`; `check_svid(svid, spiffe_id, bundle, issuer,
+  now, verifier, digest)`, the checks in the specification's order (shape,
+  `alg` `ES256`, `RS256` or `PS256`, `kid` required, `typ` `JWT` or `JOSE`
+  when present, the bundle's `jwt-svid` key of that `kid`, the signature,
+  then `sub` exactly the identifier, `aud` the issuer alone, `exp` not past
+  and at most `SVID_LONGEST_AHEAD` ahead, `nbf` and `iat` not in the
+  future), answering a `CheckedSvid` whose `mark` is `SVID_MARK_PREFIX` and
+  the SHA-256 of the first two parts in base64url; `SPIFFE_ASSERTION_TYPE`
+  and `SPIFFE_CLIENT_AUTHENTICATION_DRAFT`. Its cases are in
+  `spiffe/tests.rs`.
 - `resource_server.rs`: `ResourceServerId`; `Audience::parse`;
   `ScopeDefinition`; `ResourceServerSettings`; `ResourceServer` with
   `create`, `change`, `defines`; `OPENID_SCOPES`.
@@ -57,7 +73,8 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   are `unsupported_grant_type`; `GrantRequest` has `AuthorizationCode`,
   `RefreshToken` with the token as a `Secret` and `ClientCredentials`, each
   with the optional `scope` and `resource` where they apply);
-  `PresentedClient` and its `method`; `TokenError` with `error`,
+  `PresentedClient` and its `method` (`Svid` for the `client_assertion_type`
+  of a JWT-SVID, `SpiffeJwt`); `TokenError` with `error`,
   `description` and a `reason` for logs only; `check_assertion`, the checks
   of RFC 7523 in the specification's order; `assertion_issuer`, the `iss`
   read before the signature only to find the client;
@@ -124,7 +141,9 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   sector from `sector_of` or `oauth.client_sector_identifier_uri_required`,
   and `sector_identifier_uri`, only for a pairwise client, its form checked
   by `check_sector_identifier_uri`; `Client::subject_type` and
-  `Client::sector`.
+  `Client::sector`. And `spiffe_id`, a `SpiffeId`, exactly with the method
+  `spiffe_jwt` (`AuthenticationMethod::uses_spiffe_id`) and only with a
+  principal (`oauth.client_spiffe_id_invalid`).
 - `pairwise.rs`: pairwise subject identifiers. `SubjectType` (`public`,
   `pairwise`), `host_of` (lowercase, without the port; none for a
   private-use scheme), `sector_of(sector_identifier_uri, redirect_uris)`,

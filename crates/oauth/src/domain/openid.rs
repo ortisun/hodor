@@ -480,16 +480,18 @@ pub fn discovery_document(issuer: &str, acr_values: &[&str]) -> Value {
         "response_modes_supported": ["query"],
         "grant_types_supported": crate::domain::token::SUPPORTED_GRANT_TYPES,
         "code_challenge_methods_supported": ["S256"],
+        // `spiffe_jwt` follows draft-ietf-oauth-spiffe-client-auth-03,
+        // which asks for it in all three lists (section 4).
         "token_endpoint_auth_methods_supported": [
-            "client_secret_basic", "client_secret_post", "private_key_jwt", "none"
+            "client_secret_basic", "client_secret_post", "private_key_jwt", "spiffe_jwt", "none"
         ],
         "token_endpoint_auth_signing_alg_values_supported": ["ES256", "RS256", "PS256"],
         "revocation_endpoint_auth_methods_supported": [
-            "client_secret_basic", "client_secret_post", "private_key_jwt", "none"
+            "client_secret_basic", "client_secret_post", "private_key_jwt", "spiffe_jwt", "none"
         ],
         "revocation_endpoint_auth_signing_alg_values_supported": ["ES256", "RS256", "PS256"],
         "introspection_endpoint_auth_methods_supported": [
-            "client_secret_basic", "client_secret_post", "private_key_jwt"
+            "client_secret_basic", "client_secret_post", "private_key_jwt", "spiffe_jwt"
         ],
         "introspection_endpoint_auth_signing_alg_values_supported": ["ES256", "RS256", "PS256"],
         "id_token_signing_alg_values_supported": IdTokenAlgorithm::ALL.map(IdTokenAlgorithm::as_str),

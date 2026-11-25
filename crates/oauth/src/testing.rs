@@ -151,6 +151,30 @@ impl InMemoryClients {
     }
 }
 
+/// Whether another client of `tenant` than `client` is bound to its SPIFFE
+/// identifier, as the database's unique index finds it.
+fn spiffe_id_taken(
+    rows: &BTreeMap<(TenantId, ClientId), Client>,
+    tenant: TenantId,
+    client: &Client,
+) -> bool {
+    let Some(bound) = &client.snapshot().settings.spiffe_id else {
+        return false;
+    };
+    rows.iter().any(|((owner, id), other)| {
+        *owner == tenant
+            && *id != client.id()
+            && other.snapshot().settings.spiffe_id.as_ref() == Some(bound)
+    })
+}
+
+fn spiffe_id_conflict() -> DomainError {
+    DomainError::conflict(
+        "oauth.client_spiffe_id_taken",
+        "another client of the tenant is bound to this SPIFFE identifier",
+    )
+}
+
 #[async_trait::async_trait]
 impl ClientStore for InMemoryClients {
     async fn insert(&self, uow: &mut dyn UnitOfWork, client: &Client) -> Result<(), DomainError> {
@@ -161,7 +185,11 @@ impl ClientStore for InMemoryClients {
                 "there is no such application",
             ));
         }
-        lock(&self.rows).insert((tenant, client.id()), client.clone());
+        let mut rows = lock(&self.rows);
+        if spiffe_id_taken(&rows, tenant, client) {
+            return Err(spiffe_id_conflict());
+        }
+        rows.insert((tenant, client.id()), client.clone());
         Ok(())
     }
 
@@ -171,6 +199,9 @@ impl ClientStore for InMemoryClients {
         let version = client.snapshot().version;
         match rows.get(&key) {
             Some(stored) if stored.snapshot().version == version => {
+                if spiffe_id_taken(&rows, key.0, client) {
+                    return Err(spiffe_id_conflict());
+                }
                 rows.insert(
                     key,
                     Client::from_snapshot(ClientSnapshot {
@@ -483,6 +514,7 @@ pub async fn run_contract(ports: Ports<'_>) {
     a_client_change_replaces_its_secrets_and_keys(ports).await;
     a_client_belongs_to_an_application_of_its_tenant(ports).await;
     a_stale_client_is_not_stored(ports).await;
+    a_spiffe_identifier_is_bound_to_one_client_of_its_tenant(ports).await;
     resource_servers_are_found_by_exact_audience(ports).await;
     an_audience_and_an_application_have_one_resource_server(ports).await;
 }
@@ -752,6 +784,123 @@ async fn a_stale_client_is_not_stored(ports: Ports<'_>) {
         .expect("stored");
     assert_eq!(stored.snapshot().settings.name, "Payroll web");
     assert!(!stored.is_enabled());
+}
+
+/// A client of a service account bound to `spiffe_id`, of `application_id`.
+fn workload_client(application_id: ApplicationId, spiffe_id: &str) -> Client {
+    use crate::api::{AuthenticationMethod, SpiffeId};
+    use hodor_kernel::UserId;
+    use hodor_kernel::random::testing::FakeDigest;
+    let mut settings = ClientSettings::new(
+        "Nightly export",
+        ClientType::Confidential,
+        vec![GrantType::ClientCredentials],
+        Vec::new(),
+    );
+    settings.authentication_method = AuthenticationMethod::SpiffeJwt;
+    settings.principal = Some(UserId::generate());
+    settings.spiffe_id = Some(SpiffeId::parse(spiffe_id).expect("identifier"));
+    Client::create(
+        application_id,
+        ClientType::Confidential,
+        settings,
+        ClientSecret::DEFAULT_LIFETIME,
+        MOMENT,
+        &DistinctRandom,
+        &FakeDigest,
+    )
+    .expect("valid client")
+    .0
+}
+
+async fn a_spiffe_identifier_is_bound_to_one_client_of_its_tenant(ports: Ports<'_>) {
+    use crate::api::{AuthenticationMethod, SpiffeId};
+    const EXPORT: &str = "spiffe://cluster.local/ns/payroll/sa/export";
+    let tenant = tenant();
+    let owner = application("Payroll", MOMENT);
+    store_application(ports, &tenant, &owner).await;
+    let export = workload_client(owner.id(), EXPORT);
+    store_client(ports, &tenant, &export).await;
+    let stored = load_client(ports, &tenant, export.id())
+        .await
+        .expect("stored");
+    assert_eq!(stored, export, "kept with its SPIFFE identifier");
+
+    // A second client of the tenant may not take the identifier.
+    let twin = workload_client(owner.id(), EXPORT);
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    assert_eq!(
+        ports
+            .clients
+            .insert(uow.as_mut(), &twin)
+            .await
+            .expect_err("taken")
+            .code(),
+        "oauth.client_spiffe_id_taken"
+    );
+    drop(uow);
+
+    // Nor by a change.
+    let mut other = workload_client(owner.id(), "spiffe://cluster.local/ns/payroll/sa/import");
+    store_client(ports, &tenant, &other).await;
+    let mut settings = other.snapshot().settings.clone();
+    settings.spiffe_id = Some(SpiffeId::parse(EXPORT).expect("identifier"));
+    other.change(settings, MOMENT).expect("changed");
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    assert_eq!(
+        ports
+            .clients
+            .update(uow.as_mut(), &other)
+            .await
+            .expect_err("taken")
+            .code(),
+        "oauth.client_spiffe_id_taken"
+    );
+    drop(uow);
+
+    // Once the first client lets it go, the identifier is free.
+    let mut released = stored.clone();
+    let mut settings = released.snapshot().settings.clone();
+    settings.authentication_method = AuthenticationMethod::PrivateKeyJwt;
+    settings.spiffe_id = None;
+    released.change(settings, MOMENT).expect("changed");
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    ports
+        .clients
+        .update(uow.as_mut(), &released)
+        .await
+        .expect("released");
+    uow.commit().await.expect("commit");
+    let stale = load_client(ports, &tenant, other.id())
+        .await
+        .expect("other");
+    let mut settings = stale.snapshot().settings.clone();
+    settings.spiffe_id = Some(SpiffeId::parse(EXPORT).expect("identifier"));
+    let mut taking = stale.clone();
+    taking.change(settings, MOMENT).expect("changed");
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    ports
+        .clients
+        .update(uow.as_mut(), &taking)
+        .await
+        .expect("free now");
+    uow.commit().await.expect("commit");
+
+    // Another tenant binds the same identifier to a client of its own.
+    let elsewhere = self::tenant();
+    let theirs = application("Payroll", MOMENT);
+    store_application(ports, &elsewhere, &theirs).await;
+    let same = workload_client(theirs.id(), EXPORT);
+    store_client(ports, &elsewhere, &same).await;
+    assert_eq!(
+        load_client(ports, &elsewhere, same.id())
+            .await
+            .expect("stored")
+            .snapshot()
+            .settings
+            .spiffe_id,
+        same.snapshot().settings.spiffe_id
+    );
 }
 
 async fn resource_servers_are_found_by_exact_audience(ports: Ports<'_>) {

@@ -440,21 +440,26 @@ fn discovery_names_only_what_is_built() {
         document["introspection_endpoint"],
         format!("{ISSUER}/oauth2/introspect")
     );
-    assert_eq!(
-        document["revocation_endpoint_auth_methods_supported"],
-        json!([
-            "client_secret_basic",
-            "client_secret_post",
-            "private_key_jwt",
-            "none"
-        ])
-    );
+    for endpoint in ["token", "revocation"] {
+        assert_eq!(
+            document[format!("{endpoint}_endpoint_auth_methods_supported")],
+            json!([
+                "client_secret_basic",
+                "client_secret_post",
+                "private_key_jwt",
+                "spiffe_jwt",
+                "none"
+            ]),
+            "{endpoint}"
+        );
+    }
     assert_eq!(
         document["introspection_endpoint_auth_methods_supported"],
         json!([
             "client_secret_basic",
             "client_secret_post",
-            "private_key_jwt"
+            "private_key_jwt",
+            "spiffe_jwt"
         ]),
         "a public client may not introspect"
     );
@@ -507,4 +512,30 @@ fn userinfo_answers_every_group_however_many() {
         &person,
     );
     assert_eq!(claims["groups"].as_array().map(Vec::len), Some(150));
+}
+
+/// The specification of discovery, which the documentation site publishes.
+const OAUTH_CONTEXT: &str = include_str!("../../../../../docs/architecture/contexts/oauth.md");
+
+#[test]
+fn the_metadata_page_names_the_version_of_the_spiffe_draft() {
+    use crate::domain::spiffe::SPIFFE_CLIENT_AUTHENTICATION_DRAFT;
+    let discovery = OAUTH_CONTEXT
+        .split("\n### Discovery\n")
+        .nth(1)
+        .and_then(|section| section.split("\n### ").next())
+        .expect("the discovery section");
+    assert!(
+        discovery.contains(&format!(
+            "**`spiffe_jwt` follows {SPIFFE_CLIENT_AUTHENTICATION_DRAFT}**"
+        )),
+        "the metadata page names the version of the draft Hodor follows"
+    );
+    let document = discovery_document(ISSUER, &[]);
+    assert!(
+        document["token_endpoint_auth_methods_supported"]
+            .as_array()
+            .expect("a list")
+            .contains(&json!("spiffe_jwt"))
+    );
 }

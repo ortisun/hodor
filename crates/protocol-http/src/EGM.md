@@ -223,9 +223,12 @@ Administration and console handlers, shared by both routers
 The application routes live in `admin/applications.rs` and are merged into
 `shared_routes`; they need `ApplicationService` in `AdminState.applications`.
 A client's `principal` is checked there through `AdminState.identity`
-(`principal_of`, which also asks for an agent when the grants hold token exchange, the kept principal included on `PATCH`): a service account or an agent of the tenant that is not
+(`principal_of`, which also asks for an agent when the grants hold token exchange, and for a service account when the method is `spiffe_jwt`, the kept principal included on `PATCH`): a service account or an agent of the tenant that is not
 Deleted, otherwise `422` `oauth.client_principal_invalid`; `PATCH` tells a
-`principal` left out from one given as `null`, which removes it.
+`principal` left out from one given as `null`, which removes it. A client's
+`spiffe_id` is read with `SpiffeId::parse` (`422`
+`oauth.client_spiffe_id_invalid`), answered as text or `null`, and on
+`PATCH` left out, `null` (removed) or replaced alike.
 
 `GET` and `PUT /email-sign-in` (`read_email_sign_in`, `set_email_sign_in`
 in `admin.rs`, `users:read` and `users:write`) read and replace the

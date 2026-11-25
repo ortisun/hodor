@@ -4577,3 +4577,192 @@ async fn one_tenants_trust_domain_is_never_read_for_another_even_under_the_same_
         .await;
     assert_eq!(listed["items"].as_array().map(Vec::len), Some(1));
 }
+
+/// An authority of a tenant's `cluster.local`: a P-256 key made here, as
+/// SPIRE would sign JWT-SVIDs with, under the same `kid` in both tenants.
+struct SvidAuthority {
+    pkcs8: Vec<u8>,
+    public: Vec<u8>,
+}
+
+impl SvidAuthority {
+    const KID: &'static str = "cluster-2026-11";
+
+    fn new() -> Self {
+        use aws_lc_rs::rand::SystemRandom;
+        use aws_lc_rs::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, KeyPair as _};
+        let pkcs8 =
+            EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
+                .expect("a key");
+        let pair = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8.as_ref())
+            .expect("the key reads");
+        Self {
+            pkcs8: pkcs8.as_ref().to_vec(),
+            public: pair.public_key().as_ref().to_vec(),
+        }
+    }
+
+    fn bundle(&self) -> serde_json::Value {
+        use base64::Engine as _;
+        let encode = |bytes: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
+        let (x, y) = self.public[1..].split_at(32);
+        serde_json::json!({ "keys": [{
+            "use": "jwt-svid", "kty": "EC", "crv": "P-256", "kid": Self::KID,
+            "x": encode(x), "y": encode(y),
+        }] })
+    }
+
+    /// A JWT-SVID of `subject` for `audience`, made distinct by `nonce`.
+    fn svid(&self, subject: &str, audience: &str, nonce: &str) -> String {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("after 1970")
+            .as_secs();
+        let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::ES256);
+        header.kid = Some(Self::KID.to_owned());
+        jsonwebtoken::encode(
+            &header,
+            &serde_json::json!({
+                "sub": subject, "aud": audience, "iat": now, "exp": now + 300, "x-nonce": nonce,
+            }),
+            &jsonwebtoken::EncodingKey::from_ec_der(&self.pkcs8),
+        )
+        .expect("a JWT-SVID")
+    }
+}
+
+/// A tenant trusting its own `cluster.local`, signed by `authority`, with
+/// a service account's client bound to `spiffe_id` there. Answers the
+/// client's identifier and the tenant's issuer.
+async fn workload_bound_to(
+    world: &World,
+    tenant: &Tenant,
+    authority: &SvidAuthority,
+    spiffe_id: &str,
+) -> (String, String) {
+    let token = &tenant.administrator_token;
+    let (status, added) = world
+        .admin(
+            tenant,
+            token,
+            Method::POST,
+            "/trust-domains",
+            Some(serde_json::json!({
+                "name": "cluster.local", "source": "uploaded", "bundle": authority.bundle(),
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{added}");
+    let (account, _) = service_account_with_a_client(world, tenant).await;
+    let (_, applications) = world
+        .admin(tenant, token, Method::GET, "/applications", None)
+        .await;
+    let application = applications["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .find(|item| item["name"] == "Exports")
+        .and_then(|item| item["id"].as_str())
+        .expect("the application")
+        .to_owned();
+    let (status, client) = world
+        .admin(
+            tenant,
+            token,
+            Method::POST,
+            &format!("/applications/{application}/clients"),
+            Some(serde_json::json!({
+                "name": "Nightly export", "type": "confidential",
+                "authentication_method": "spiffe_jwt", "spiffe_id": spiffe_id,
+                "grant_types": ["client_credentials"], "allowed_scopes": ["read"],
+                "principal": account
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{client}");
+    let discovery: serde_json::Value = reqwest::get(format!(
+        "{}/t/{}/.well-known/openid-configuration",
+        world.server.base, tenant.slug
+    ))
+    .await
+    .expect("response")
+    .json()
+    .await
+    .expect("JSON");
+    (
+        client["id"].as_str().expect("id").to_owned(),
+        discovery["issuer"].as_str().expect("issuer").to_owned(),
+    )
+}
+
+/// A token request of `client` at `tenant`, proven with `svid`.
+async fn token_with_svid(
+    world: &World,
+    tenant: &Tenant,
+    client: &str,
+    svid: &str,
+) -> (StatusCode, serde_json::Value) {
+    let response = Client::new()
+        .post(format!(
+            "{}/t/{}/oauth2/token",
+            world.server.base, tenant.slug
+        ))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(
+            form_urlencoded::Serializer::new(String::new())
+                .extend_pairs([
+                    ("grant_type", "client_credentials"),
+                    ("client_id", client),
+                    (
+                        "client_assertion_type",
+                        "urn:ietf:params:oauth:client-assertion-type:jwt-spiffe",
+                    ),
+                    ("client_assertion", svid),
+                ])
+                .finish(),
+        )
+        .send()
+        .await
+        .expect("response");
+    let status = response.status();
+    (
+        status,
+        response.json().await.unwrap_or(serde_json::Value::Null),
+    )
+}
+
+#[tokio::test]
+async fn a_jwt_svid_for_one_tenant_is_refused_by_another_under_the_same_trust_domain_name() {
+    const EXPORT: &str = "spiffe://cluster.local/ns/payroll/sa/export";
+    let world = world_with(&[("HODOR_SECRET_KEYS", ROOT_KEY)]).await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    let (acme_authority, globex_authority) = (SvidAuthority::new(), SvidAuthority::new());
+    // Both tenants trust a `cluster.local` and bind the same identifier.
+    let (acme_client, acme_issuer) = workload_bound_to(&world, acme, &acme_authority, EXPORT).await;
+    let (globex_client, globex_issuer) =
+        workload_bound_to(&world, globex, &globex_authority, EXPORT).await;
+
+    // Acme's JWT-SVID, for Acme, at Globex: for Globex's client and for
+    // Acme's, which Globex does not have.
+    let for_acme = acme_authority.svid(EXPORT, &acme_issuer, "one");
+    for client in [&globex_client, &acme_client] {
+        let (status, body) = token_with_svid(&world, globex, client, &for_acme).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+        assert_eq!(body["error"], "invalid_client");
+    }
+    // Acme's authority, even for Globex's issuer and under the same kid:
+    // Globex's `cluster.local` is its own.
+    let forged = acme_authority.svid(EXPORT, &globex_issuer, "two");
+    let (status, _) = token_with_svid(&world, globex, &globex_client, &forged).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    // Globex's own JWT-SVID, at Acme.
+    let for_globex = globex_authority.svid(EXPORT, &globex_issuer, "three");
+    let (status, _) = token_with_svid(&world, acme, &acme_client, &for_globex).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // Each passes at its own tenant, the refusals elsewhere notwithstanding.
+    let (status, body) = token_with_svid(&world, acme, &acme_client, &for_acme).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = token_with_svid(&world, globex, &globex_client, &for_globex).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}

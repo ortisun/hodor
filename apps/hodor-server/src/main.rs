@@ -811,7 +811,10 @@ fn token(
         clock,
     })
     .with_retry_window(time::Duration::seconds(config.refresh_retry_seconds))?
-    .with_pairwise_subjects(pairwise);
+    .with_pairwise_subjects(pairwise)
+    // JWT-SVIDs are checked against the bundles of the tenants' trust
+    // domains.
+    .with_trust_domains(trust_domains(config, database)?);
     Ok(TokenState {
         tokens,
         public_url: config.public_url.clone(),

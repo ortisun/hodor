@@ -16,5 +16,6 @@ pub(crate) mod pairwise;
 pub(crate) mod refresh;
 pub(crate) mod resource_server;
 pub(crate) mod secret;
+pub(crate) mod spiffe;
 pub(crate) mod text;
 pub(crate) mod token;
