@@ -10,7 +10,8 @@ The operations tool of a Hodor installation: `main.rs`, and
 `assign`, `revoke`, `access-entry grant|list|remove`, `bind`, `unbind` and
 `bindings` (a resource server named by
 its audience; `bind` knows the engine names `native` and `open_policy_agent`
-through a registry of names only, since the tool never evaluates). It parses
+through a registry of names only, since the tool never evaluates), and
+`webhooks.rs` for `hodor-cli webhook`. It parses
 the command line with clap (`Cli`, `Command`), connects to PostgreSQL and calls
 the services of the domain crates directly. It applies migrations, manages
 tenants, makes the first administrator of a tenant, verifies the audit chain,
@@ -51,6 +52,14 @@ Commands, as typed, from the clap enums in `main.rs`:
 | `hodor-cli service-account disable` / `enable` / `delete`, and the same of `agent` | `--tenant`, `--id` | `WorkloadService::disable`, `enable` and `delete`; print `<status> <id>` or `deleted <id>`. `CommandLineAccess` implements `WorkloadAccess` with `WorkloadTokens` and, on deletion, `ApiKeyService::revoke_all_of_in`, since a workload holds no session and no grant |
 | `hodor-cli service-account key create` / `agent key create` | `--tenant`, `--id`, `--name`, `--scope` (repeatable, required), `--application`, `--lifetime-days` (default 90) | `check_key_scopes`, the application through `ApplicationService::application` (`credential.api_key_application_invalid`), then `ApiKeyService::create`; prints `key <id>`, `api-key <value>` once and `expires <time>` (`workloads.rs:run_key`) |
 | `hodor-cli service-account key list` / `rotate` / `revoke`, and the same of `agent` | `--tenant`, `--id`; `--key` for `rotate` and `revoke`; `--lifetime-days` and `--keep-previous-days` (default 7) for `rotate` | `ApiKeyService::list` (one line `<id> <status> <hint> <name>` each), `rotate` (prints as `create`), `revoke` (prints `revoked <id>`) |
+| `hodor-cli webhook event-types` | none; no tenant | `CATALOG`, one a line (`webhooks.rs:run`) |
+| `hodor-cli webhook add` | `--tenant`, `--url`, `--event` (repeatable, required), `--description`; `HODOR_SECRET_KEYS` and `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` | `WebhookService::register`, the address checked by `GuardedHttpClient` as `DestinationCheck`; prints `created <id> <url>` and `secret <whsec_…>`, once |
+| `hodor-cli webhook list` | `--tenant` | `WebhookService::list`, every page; one line `<id> <url> <type>,<type>…` each |
+| `hodor-cli webhook subscribe` | `--tenant`, `--id`, `--event` (repeatable, required) | `WebhookService::replace_subscriptions`; prints `subscribed <id> <type>,<type>…` |
+| `hodor-cli webhook rotate-secret` | `--tenant`, `--id`, `--overlap-hours` (24 unless given); `HODOR_SECRET_KEYS` | `WebhookService::rotate_secret`; prints `secret <whsec_…>` once and `previous-until <time>` |
+| `hodor-cli webhook remove` | `--tenant`, `--id` | `WebhookService::remove`; prints `removed <id>` |
+| `hodor-cli webhook deliveries` | `--tenant`, `--endpoint`, `--status` (`pending`, `delivered`, `set_aside`) | `WebhookService::deliveries`, the latest 100; one line `<id> <status> <attempts> <event type> <event id>` each |
+| `hodor-cli webhook redeliver` | `--tenant`, `--delivery` | `WebhookService::redeliver`; prints `pending <id>` |
 | `hodor-cli admin grant` / `revoke` | `--tenant`, `--user`, `--role` (`tenant_administrator` or `tenant_auditor`) | `AuthorizationService::assign` or `revoke` for a user who exists and is not Deleted; prints `granted <role> <id>` or `revoked <role> <id>` (`built_in_role`) |
 | `hodor-cli client list` | `--tenant`, `--application` | `ApplicationService::clients`; one line `<id> <status> <type> <method> <name>` each |
 | `hodor-cli client rotate-secret` | `--tenant`, `--id`, `--lifetime-days` (default 365), `--keep-previous-days` (default 7) | `ApplicationService::rotate_client_secret`; prints `secret <value>` and `expires <time>`, once |
@@ -125,6 +134,10 @@ the application commands), `run_tenant`, `run_provider`,
   says the token "is printed once" and running the command again issues a new
   one and leaves earlier ones as they are. The 1 to 43200 minute range is
   stated in the doc comment only; `main.rs` does not check it.
+- `webhooks.rs:run` builds `WebhookService` with `NoKeys` in place of the
+  tenants' secret box when `HODOR_SECRET_KEYS` is not given: it refuses to
+  seal or open with `secret.keys_missing`, so `add` and `rotate-secret` are
+  refused and the other commands work.
 - `run_provider` refuses with `secret.keys_missing` when no secret keys are
   given, because provider secrets are kept encrypted. For every kind except
   SAML it refuses with `federation.client_secret_invalid` when
