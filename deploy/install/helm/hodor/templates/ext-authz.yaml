@@ -1,0 +1,147 @@
+{{- if .Values.extAuthz.enabled }}
+{{- $name := printf "%s-ext-authz" (include "hodor.fullname" .) }}
+{{- $config := include "hodor.extAuthzConfig" . }}
+# hodor-ext-authz: Envoy's external authorization for the proxies of a service mesh, each check answered by
+# Hodor's Authorization API. docs/operations/hodor-ext-authz.md.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "hodor.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ext-authz
+data:
+  config.json: |
+    {{- $config | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "hodor.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ext-authz
+spec:
+  replicas: {{ .Values.extAuthz.replicas }}
+  selector:
+    matchLabels:
+      {{- include "hodor.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: ext-authz
+  template:
+    metadata:
+      labels:
+        {{- include "hodor.labels" . | nindent 8 }}
+        app.kubernetes.io/component: ext-authz
+      annotations:
+        # The configuration is read once at start: a change of it restarts the pods.
+        checksum/config: {{ $config | sha256sum }}
+        {{- with .Values.extAuthz.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "hodor.extAuthzServiceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- range . }}
+        - name: {{ . }}
+        {{- end }}
+      {{- end }}
+      securityContext:
+        {{- include "hodor.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: ext-authz
+          image: {{ printf "%s:%s" .Values.extAuthz.image.repository (.Values.extAuthz.image.tag | default .Chart.AppVersion) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- include "hodor.containerSecurityContext" . | nindent 12 }}
+          ports:
+            - name: grpc
+              containerPort: 9191
+            - name: operations
+              containerPort: 9090
+          env:
+            - name: HODOR_EXT_AUTHZ_CONFIG
+              value: /etc/hodor-ext-authz/config.json
+            - name: HODOR_EXT_AUTHZ_LISTEN_ADDR
+              value: "0.0.0.0:9191"
+            {{- include "hodor.sharedEnvironment" . | nindent 12 }}
+            {{- with .Values.extAuthz.extraEnvironment }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/hodor-ext-authz
+              readOnly: true
+          {{- include "hodor.probes" . | nindent 10 }}
+          resources:
+            {{- toYaml .Values.extAuthz.resources | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $name }}
+      {{- include "hodor.spread" (list . "ext-authz") | nindent 6 }}
+      {{- with .Values.extAuthz.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.extAuthz.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.extAuthz.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "hodor.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ext-authz
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "hodor.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: ext-authz
+  ports:
+    # Named grpc so that a mesh treats it as gRPC.
+    - name: grpc
+      port: {{ .Values.extAuthz.service.port }}
+      targetPort: grpc
+      appProtocol: grpc
+{{- if .Values.extAuthz.serviceAccount.create }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "hodor.extAuthzServiceAccountName" . }}
+  labels:
+    {{- include "hodor.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ext-authz
+  {{- with .Values.extAuthz.serviceAccount.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+# It never talks to the Kubernetes interface; its mesh identity comes from its sidecar.
+automountServiceAccountToken: false
+{{- end }}
+{{- if .Values.extAuthz.podDisruptionBudget.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "hodor.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ext-authz
+spec:
+  maxUnavailable: {{ .Values.extAuthz.podDisruptionBudget.maxUnavailable }}
+  selector:
+    matchLabels:
+      {{- include "hodor.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: ext-authz
+{{- end }}
+{{- end }}

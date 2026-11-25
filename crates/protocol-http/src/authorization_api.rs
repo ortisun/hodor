@@ -28,7 +28,7 @@ use hodor_identity::api::IdentityService;
 use hodor_kernel::{DomainError, ErrorKind, TenantContext};
 use hodor_oauth::api::{
     ApplicationId, ApplicationService, BearerRefusal, ForwardedIdentity, ResourceAccessService,
-    ResourceCaller, ResourceServer,
+    ResourceCaller, ResourceServer, WorkloadIdentity,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -353,6 +353,58 @@ fn request(question: Question, asker: &Asker) -> Result<AuthorizationRequest, Do
     })
 }
 
+/// The subject type that names a workload by its identity (Decision 0058).
+const WORKLOAD_IDENTITY: &str = "workload_identity";
+
+/// `value` with a subject named by a workload's identity replaced by the
+/// user it names: the service account the tenant's enabled clients bound to
+/// that identity act as, or, when none is bound, a user whose identifier is
+/// the identity itself, whom Hodor does not know. Any other value is given
+/// back as it came.
+async fn resolve_workload(
+    applications: &ApplicationService,
+    tenant: &TenantContext,
+    mut value: Value,
+) -> Result<Value, Box<Problem>> {
+    let Some(subject) = value.get_mut("subject").and_then(Value::as_object_mut) else {
+        return Ok(value);
+    };
+    if subject.get("type").and_then(Value::as_str) != Some(WORKLOAD_IDENTITY) {
+        return Ok(value);
+    }
+    let Some(text) = subject.get("id").and_then(Value::as_str) else {
+        return Err(Box::new(body_invalid()));
+    };
+    let identity = WorkloadIdentity::parse(text).map_err(|_| {
+        Box::new(Problem::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "authorization.workload_identity_invalid",
+            "a workload's identity is a SPIFFE identifier or a Linkerd identity, written as a \
+             client is bound to it",
+        ))
+    })?;
+    let user = match applications.service_account_of(tenant, &identity).await {
+        Ok(Some(user)) => user.to_string(),
+        Ok(None) => identity.as_str().to_owned(),
+        Err(error) => return Err(Box::new(Problem::from(error))),
+    };
+    subject.insert("type".into(), json!("user"));
+    subject.insert("id".into(), json!(user));
+    Ok(value)
+}
+
+/// The request a JSON value asks, with a workload named by its identity
+/// resolved, or the problem with it.
+async fn resolve_request(
+    state: &AuthorizationApiState,
+    tenant: &TenantContext,
+    value: Value,
+    asker: &Asker,
+) -> Result<AuthorizationRequest, Box<Problem>> {
+    let value = resolve_workload(&state.keys.applications, tenant, value).await?;
+    read_request(value, asker)
+}
+
 /// The request a JSON value asks, or the problem with it.
 fn read_request(value: Value, asker: &Asker) -> Result<AuthorizationRequest, Box<Problem>> {
     let question: Question = serde_json::from_value(value).map_err(|_| Box::new(body_invalid()))?;
@@ -432,7 +484,7 @@ async fn evaluate(
     let Ok(value) = serde_json::from_slice::<Value>(&bytes) else {
         return not_cached(body_invalid().into_response());
     };
-    let request = match read_request(value, &asker) {
+    let request = match resolve_request(&state, &tenant, value, &asker).await {
         Ok(request) => request,
         Err(problem) => return not_cached((*problem).into_response()),
     };
@@ -474,11 +526,11 @@ async fn batch(
             .into_response(),
         );
     }
-    let read: Vec<Result<AuthorizationRequest, Box<Problem>>> = body
-        .requests
-        .into_iter()
-        .map(|value| read_request(value, &asker))
-        .collect();
+    let mut read: Vec<Result<AuthorizationRequest, Box<Problem>>> =
+        Vec::with_capacity(body.requests.len());
+    for value in body.requests {
+        read.push(resolve_request(&state, &tenant, value, &asker).await);
+    }
     let requests: Vec<AuthorizationRequest> = read
         .iter()
         .filter_map(|item| item.as_ref().ok().cloned())
@@ -554,7 +606,7 @@ async fn simulate(
         Ok(against) => against,
         Err(problem) => return not_cached((*problem).into_response()),
     };
-    let request = match read_request(Value::Object(fields), &asker) {
+    let request = match resolve_request(&state, &tenant, Value::Object(fields), &asker).await {
         Ok(request) => request,
         Err(problem) => return not_cached((*problem).into_response()),
     };

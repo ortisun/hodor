@@ -1165,14 +1165,17 @@ async fn the_database_keeps_spiffe_identifiers_to_their_rules() {
         ("a dot segment", "spiffe://cluster.local/ns/../sa"),
         ("an uppercase trust domain", "spiffe://Cluster.local/ns"),
         ("another scheme", "https://cluster.local/ns"),
-        (
-            "taken in the tenant",
-            "spiffe://cluster.local/ns/payroll/sa/export",
-        ),
     ] {
         let refused = bind(twin, spiffe_id).execute(database.owner()).await;
         assert!(refused.is_err(), "{case}");
     }
+    // Two clients of one principal may share the identifier (Decision
+    // 0058); the client store, under its lock, refuses one of another
+    // principal, as the contract of clients checks.
+    bind(twin, "spiffe://cluster.local/ns/payroll/sa/export")
+        .execute(database.owner())
+        .await
+        .expect("a second client of the same principal");
     for (case, statement) in [
         (
             "another method keeps no identifier",
@@ -1437,12 +1440,6 @@ async fn the_database_holds_each_method_to_its_identity() {
             true,
         ),
         ("linkerd_identity", None, fresh_linkerd, false),
-        (
-            "linkerd_identity",
-            None,
-            Some("web.shop.serviceaccount.identity.linkerd.cluster.local"),
-            true,
-        ),
         ("unknown", None, None, false),
     ] {
         let refused = insert(method, spiffe_id, linkerd_identity, principal).await;

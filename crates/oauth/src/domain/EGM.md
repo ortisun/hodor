@@ -38,7 +38,9 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
 - `forwarded.rs`: `LinkerdIdentity` (`parse`, `as_str`, `trust_domain`,
   what follows the control plane's namespace;
   `oauth.client_linkerd_identity_invalid` otherwise); `WorkloadIdentity`
-  (`Spiffe` with `spiffe.rs`'s `SpiffeId`, or `Linkerd`), what
+  (`Spiffe` with `spiffe.rs`'s `SpiffeId`, or `Linkerd`; `parse` reads
+  `spiffe://` as a SPIFFE identifier and anything else as a Linkerd
+  identity), what
   `ClientSettings::workload_identity` answers; `ForwardedIdentity`
   (`Certificate { certificate, chain }`, `Names { uris, dns_names, hash }`,
   `Linkerd`) and its `thumbprint(digest)`, with `presented_thumbprint`;

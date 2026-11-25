@@ -897,8 +897,8 @@ export const en = {
   trustDomainNotFound: "This trust domain does not exist in this tenant.",
   trustDomainNameTaken: "This tenant already has a trust domain of this name.",
   tooManyTrustDomains: "This tenant already has 50 trust domains, the most it may.",
-  spiffeIdTaken: "Another client of this tenant is already bound to this SPIFFE identifier.",
-  linkerdIdentityTaken: "Another client of this tenant is already bound to this Linkerd identity.",
+  spiffeIdTaken: "A client of another service account of this tenant is already bound to this SPIFFE identifier.",
+  linkerdIdentityTaken: "A client of another service account of this tenant is already bound to this Linkerd identity.",
 
   valueInvalid: {
     "federation.alias_invalid": "The alias must be 2 to 32 lowercase letters, digits and hyphens, starting with a letter or digit.",

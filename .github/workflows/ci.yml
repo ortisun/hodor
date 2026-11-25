@@ -301,6 +301,37 @@ jobs:
           path: deploy/conformance/conformance-results.json
           retention-days: 14
 
+  # The image of hodor-ext-authz, built as the release builds it: it starts with a configuration that reads,
+  # answers its health checks, and stops at once on one that does not. docs/operations/hodor-ext-authz.md.
+  ext-authz-image:
+    name: Image of hodor-ext-authz
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Build the image
+        run: docker build --file deploy/docker/ext-authz.Dockerfile --tag hodor-ext-authz:ci .
+      - name: It starts and answers its health checks
+        run: |
+          mkdir -p "$RUNNER_TEMP/ext-authz"
+          echo '{ "hodor": { "url": "http://hodor:8080", "tenant": "acme" } }' > "$RUNNER_TEMP/ext-authz/config.json"
+          chmod -R a+rX "$RUNNER_TEMP/ext-authz"
+          docker run --detach --name ext-authz --publish 9090:9090 \
+            --volume "$RUNNER_TEMP/ext-authz:/etc/hodor-ext-authz:ro" hodor-ext-authz:ci
+          for _ in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:9090/readyz; then exit 0; fi
+            sleep 1
+          done
+          docker logs ext-authz
+          exit 1
+      - name: It refuses a configuration that does not read
+        run: |
+          echo '{ "hodor": { "url": "http://hodor:8080" } }' > "$RUNNER_TEMP/ext-authz/broken.json"
+          chmod a+r "$RUNNER_TEMP/ext-authz/broken.json"
+          if docker run --rm --volume "$RUNNER_TEMP/ext-authz:/etc/hodor-ext-authz:ro" \
+            --env HODOR_EXT_AUTHZ_CONFIG=/etc/hodor-ext-authz/broken.json hodor-ext-authz:ci; then
+            echo "a configuration without a tenant was accepted"; exit 1
+          fi
+
   # The two installation packages in deploy/install: the Helm chart renders and the Compose file is valid.
   # Neither is installed here; docs/operations/install-with-docker.md and install-on-kubernetes.md say how
   # that was checked by hand.
@@ -337,6 +368,14 @@ jobs:
           --set keyProvider.openbao.address=https://openbao.openbao.svc:8200
           --set keyProvider.openbao.certificateAuthority.configMap=openbao-authority
           --set outboundAuthorities.configMap=hodor-authorities
+          --set extAuthz.enabled=true --set extAuthz.tenant=acme
+          --set extAuthz.token.header=x-hodor-token-claims
+          --set "extAuthz.applications[0].destination=spiffe://cluster.local/ns/shop/sa/orders"
+          --set "extAuthz.applications[0].clientId=0193f1c2-6a1d-7c55-b0c8-6b1f2c9d4e01"
+          --set "extAuthz.applications[0].routes[0].methods={GET}"
+          --set "extAuthz.applications[0].routes[0].path=/orders/{id}"
+          --set "extAuthz.applications[0].routes[0].resourceType=order"
+          --set "extAuthz.applications[0].routes[0].action=read"
           > /dev/null
       - name: Render the chart signing in to OpenBao with an AppRole
         run: >
@@ -352,6 +391,7 @@ jobs:
           refused helm template hodor "$CHART" --namespace hodor $REQUIRED --set mail.enabled=true
           refused helm template hodor "$CHART" --namespace hodor $REQUIRED --set keyProvider.signingKeys=openbao
           refused helm template hodor "$CHART" --namespace hodor $REQUIRED --set keyProvider.openbao.enabled=true
+          refused helm template hodor "$CHART" --namespace hodor $REQUIRED --set extAuthz.enabled=true
       - name: The Compose file is valid with every part
         env:
           HODOR_IMAGE: hodor:test

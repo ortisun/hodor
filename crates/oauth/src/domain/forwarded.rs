@@ -115,6 +115,22 @@ pub enum WorkloadIdentity {
 }
 
 impl WorkloadIdentity {
+    /// Reads an identity as a client's binding is read: a SPIFFE
+    /// identifier when it starts with `spiffe://`, a Linkerd identity
+    /// otherwise.
+    ///
+    /// # Errors
+    ///
+    /// Returns `oauth.client_spiffe_id_invalid` or
+    /// `oauth.client_linkerd_identity_invalid`.
+    pub fn parse(text: &str) -> Result<Self, DomainError> {
+        if text.starts_with("spiffe://") {
+            SpiffeId::parse(text).map(Self::Spiffe)
+        } else {
+            LinkerdIdentity::parse(text).map(Self::Linkerd)
+        }
+    }
+
     /// The name of the trust domain it belongs to.
     #[must_use]
     pub fn trust_domain(&self) -> &str {

@@ -6,6 +6,7 @@ use crate::domain::application::{
 };
 use crate::domain::client::{Client, ClientId, ClientSettings, ClientType, MAX_CLIENTS};
 use crate::domain::event::OauthEvent;
+use crate::domain::forwarded::WorkloadIdentity;
 use crate::domain::key::ClientKey;
 use crate::domain::pairwise::{
     MAX_SECTOR_DOCUMENT_BYTES, SECTOR_DOCUMENT_TIME_LIMIT, SubjectType, check_sector_document,
@@ -16,7 +17,7 @@ use crate::domain::resource_server::{
 use crate::domain::secret::{ClientSecret, ClientSecretId, ClientSecretValue};
 use hodor_kernel::{
     Caller, Clock, DestinationCheck, Digest, DomainError, EventEnvelope, EventMetadata, HttpClient,
-    HttpRequest, RandomSource, TenantContext, UnitOfWork, UnitOfWorkFactory,
+    HttpRequest, RandomSource, TenantContext, UnitOfWork, UnitOfWorkFactory, UserId,
 };
 use std::sync::Arc;
 use time::Duration;
@@ -423,6 +424,29 @@ impl ApplicationService {
     }
 
     // Clients.
+
+    /// The service account a workload's identity names in the tenant: the
+    /// principal the tenant's enabled clients bound to it act as, if any.
+    /// An identity binds the clients of one service account only
+    /// (Decision 0058), so there is at most one.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    pub async fn service_account_of(
+        &self,
+        tenant: &TenantContext,
+        identity: &WorkloadIdentity,
+    ) -> Result<Option<UserId>, DomainError> {
+        let mut uow = self.units_of_work.begin(tenant).await?;
+        Ok(self
+            .clients
+            .bound_to(uow.as_mut(), identity)
+            .await?
+            .into_iter()
+            .filter(Client::is_enabled)
+            .find_map(|client| client.principal()))
+    }
 
     /// Creates a client of an application, enabled. A confidential client
     /// with a secret method gets its first secret, returned once.

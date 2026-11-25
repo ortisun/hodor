@@ -24,6 +24,7 @@ hodor-authorization = { path = "crates/authorization" }
 hodor-authorization-native = { path = "crates/authorization-native" }
 hodor-authorization-opa = { path = "crates/authorization-opa" }
 hodor-credential = { path = "crates/credential" }
+hodor-ext-authz = { path = "apps/hodor-ext-authz" }
 hodor-federation = { path = "crates/federation" }
 hodor-identity = { path = "crates/identity" }
 hodor-kernel = { path = "crates/kernel" }
@@ -47,6 +48,10 @@ axum = "0.8"
 cargo_metadata = "0.23"
 base64 = "0.22"
 clap = { version = "4", features = ["derive", "env"] }
+# Envoy's types, generated from its `.proto` files and shipped compiled, so
+# that no build needs `protoc` or the network (Decision 0058). Only
+# hodor-ext-authz, and the server's tests that call it.
+envoy-types = "0.7"
 proptest = "1"
 opentelemetry = "0.33"
 opentelemetry-otlp = { version = "0.33", default-features = false, features = [
@@ -99,6 +104,8 @@ thiserror = "2"
 tracing = "0.1"
 tracing-opentelemetry = "0.34"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+# gRPC for Envoy's external authorization; only hodor-ext-authz.
+tonic = { version = "0.14", default-features = false, features = ["transport", "router", "codegen"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.7", features = ["fs", "limit", "timeout"] }

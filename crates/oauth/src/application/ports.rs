@@ -8,6 +8,7 @@ use crate::domain::authorization::{
 use crate::domain::claim_mapper::{ClaimMapper, ClaimMapperId, PersonAttributes};
 use crate::domain::client::{Client, ClientId};
 use crate::domain::consent::{Consent, ConsentAnswer, ConsentHistoryEntry};
+use crate::domain::forwarded::WorkloadIdentity;
 use crate::domain::introspection::AccessTokenRecord;
 use crate::domain::refresh::{
     RefreshAsk, RefreshFamily, RefreshFamilyId, RefreshTokenHash, RefreshTokenRecord,
@@ -71,7 +72,10 @@ pub trait ClientStore: Send + Sync {
     /// # Errors
     ///
     /// Returns `oauth.application_not_found` if the tenant has no such
-    /// application.
+    /// application, and `oauth.client_spiffe_id_taken` or
+    /// `oauth.client_linkerd_identity_taken` if a client of the tenant
+    /// acting as another principal is bound to the client's identity: an
+    /// identity binds the clients of one service account (Decision 0058).
     async fn insert(&self, uow: &mut dyn UnitOfWork, client: &Client) -> Result<(), DomainError>;
 
     /// Stores a changed client with its secrets and keys, if its stored
@@ -80,8 +84,21 @@ pub trait ClientStore: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns `oauth.client_modified_concurrently` otherwise.
+    /// Returns `oauth.client_modified_concurrently` otherwise, and the
+    /// errors of [`ClientStore::insert`] for its identity.
     async fn update(&self, uow: &mut dyn UnitOfWork, client: &Client) -> Result<(), DomainError>;
+
+    /// The clients of the tenant bound to `identity`, oldest first. They
+    /// all act as one service account.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn bound_to(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        identity: &WorkloadIdentity,
+    ) -> Result<Vec<Client>, DomainError>;
 
     /// The client with this identifier, if the tenant has it.
     ///
