@@ -155,7 +155,8 @@ too),
 through `with_directories`, `LdapDirectoryClient`), `keys`, `key_rotation`
 (the default policy with `HODOR_KEY_OVERLAP_HOURS`), `token` (the token
 endpoint, with `PgRefreshTokenStore`, `ServerStanding`, the secret box,
-the retry window of `HODOR_REFRESH_RETRY_SECONDS` and `pairwise_subjects`),
+the retry window of `HODOR_REFRESH_RETRY_SECONDS`, `pairwise_subjects`, and
+the `TrustDomainService` of `trust_domains`, to check JWT-SVIDs),
 `pairwise_subjects` (`PairwiseSubjects` over `PgPairwiseSecretStore`, a
 secret box and `AwsLcHmacSha256`, given to the token endpoint and to
 `logout`, the end-session endpoint), `consents` (the

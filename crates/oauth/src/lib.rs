@@ -122,6 +122,11 @@ pub mod api {
     pub use crate::domain::secret::{
         ClientSecret, ClientSecretHash, ClientSecretId, ClientSecretValue,
     };
+    pub use crate::domain::spiffe::{
+        CheckedSvid, MAX_SPIFFE_ID_LENGTH, SPIFFE_ASSERTION_TYPE,
+        SPIFFE_CLIENT_AUTHENTICATION_DRAFT, SVID_LONGEST_AHEAD, SVID_MARK_PREFIX, SpiffeId,
+        check_svid,
+    };
     pub use crate::domain::text::{MAX_SCOPE_LENGTH, is_scope};
     pub use crate::domain::token::{
         ACCESS_TOKEN_TYPE, ASSERTION_LONGEST_AHEAD, ASSERTION_TYPE, AccessTokenClaims,

@@ -20,6 +20,7 @@ use crate::domain::refresh::{
     RefreshDecision, RefreshFamily, RefreshRefusal, RefreshTokenHash,
 };
 use crate::domain::resource_server::{GROUPS_SCOPE, OPENID_SCOPES};
+use crate::domain::spiffe::{CheckedSvid, check_svid};
 use crate::domain::token::{
     AssertionAudience, GrantRequest, PresentedClient, TokenError, TokenRequest, TokenSubject,
     access_token_header, assertion_issuer, check_assertion, claims_for, compact, signing_input,
@@ -29,7 +30,7 @@ use hodor_kernel::{
     GroupId, OrganizationId, RandomSource, Secret, SecretBox, SignatureVerifier, TenantContext,
     UnitOfWork, UnitOfWorkFactory, UserId,
 };
-use hodor_keys::api::{KeyAlgorithm, KeyService, KeyVersionId, Signature};
+use hodor_keys::api::{KeyAlgorithm, KeyService, KeyVersionId, Signature, TrustDomainService};
 use serde_json::{Map, Value};
 use std::fmt;
 use std::sync::Arc;
@@ -134,6 +135,7 @@ pub struct TokenService {
     pub(crate) ports: TokenPorts,
     retry_window: Duration,
     pub(crate) pairwise: Option<PairwiseSubjects>,
+    trust_domains: Option<TrustDomainService>,
 }
 
 impl fmt::Debug for TokenService {
@@ -173,7 +175,17 @@ impl TokenService {
             ports,
             retry_window: DEFAULT_RETRY_WINDOW,
             pairwise: None,
+            trust_domains: None,
         }
+    }
+
+    /// Checks the JWT-SVIDs of clients using `spiffe_jwt` against the
+    /// bundles of the tenants' trust domains, found through `trust_domains`.
+    /// Without it, every JWT-SVID is refused.
+    #[must_use]
+    pub fn with_trust_domains(mut self, trust_domains: TrustDomainService) -> Self {
+        self.trust_domains = Some(trust_domains);
+        self
     }
 
     /// Names people to pairwise clients through `pairwise`. Without it, a
@@ -305,6 +317,10 @@ impl TokenService {
                 assertion,
                 client_id,
             } => client_id.clone().or_else(|| assertion_issuer(assertion)),
+            // Without `client_id`, the draft makes the SPIFFE identifier the
+            // client identifier, and no client of Hodor has such an
+            // identifier.
+            PresentedClient::Svid { client_id, .. } => client_id.clone(),
         };
         let Some(client_id) = named.and_then(|text| text.parse::<ClientId>().ok()) else {
             return Ok(Err(TokenError::invalid_client("the client is unknown")));
@@ -374,8 +390,66 @@ impl TokenService {
                 }
                 uow.commit().await?;
             }
+            PresentedClient::Svid { svid, .. } => {
+                // The trust domain is read in a unit of work of its own.
+                drop(uow);
+                let checked = match self.check_svid(tenant, issuer, &client, svid, now).await? {
+                    Ok(checked) => checked,
+                    Err(reason) => return Ok(Err(TokenError::invalid_client(reason))),
+                };
+                let mut uow = self.ports.units_of_work.begin(tenant).await?;
+                let first = self
+                    .ports
+                    .assertions
+                    .remember(uow.as_mut(), client.id(), &checked.mark, checked.expires_at)
+                    .await?;
+                if !first {
+                    return Ok(Err(TokenError::invalid_client(
+                        "the JWT-SVID was presented before",
+                    )));
+                }
+                uow.commit().await?;
+            }
         }
         Ok(Ok(client))
+    }
+
+    /// Checks a JWT-SVID of `client` against the bundle of its SPIFFE
+    /// identifier's trust domain in the tenant.
+    async fn check_svid(
+        &self,
+        tenant: &TenantContext,
+        issuer: Issuer<'_>,
+        client: &Client,
+        svid: &str,
+        now: hodor_kernel::Timestamp,
+    ) -> Result<Result<CheckedSvid, &'static str>, DomainError> {
+        let Some(spiffe_id) = &client.snapshot().settings.spiffe_id else {
+            return Ok(Err("the client is bound to no SPIFFE identifier"));
+        };
+        let Some(trust_domains) = &self.trust_domains else {
+            return Ok(Err("this server checks no JWT-SVID"));
+        };
+        let Some(domain) = trust_domains
+            .find_by_name(tenant, spiffe_id.trust_domain())
+            .await?
+        else {
+            return Ok(Err("the tenant does not trust the client's trust domain"));
+        };
+        let Some(bundle) = domain.bundle() else {
+            return Ok(Err(
+                "the client's trust domain is checked by the mesh and has no bundle",
+            ));
+        };
+        Ok(check_svid(
+            svid,
+            spiffe_id,
+            bundle,
+            issuer.issuer,
+            now,
+            self.ports.verifier.as_ref(),
+            self.ports.digest.as_ref(),
+        ))
     }
 
     /// Signs an access token about `subject` for `client`, with the claims

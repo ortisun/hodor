@@ -22,7 +22,8 @@ use hodor_oauth::api::{
     Application, ApplicationId, ApplicationSettings, AuthenticationMethod, Client, ClientId,
     ClientSecret, ClientSecretId, ClientSettings, ClientType, CreateClient, CreateResourceServer,
     ExchangeRule, GrantType, IdTokenAlgorithm, ResourceServer, ResourceServerId,
-    ResourceServerSettings, RotateSecret, ScopeDefinition, Status, SubjectType, TokenPolicy,
+    ResourceServerSettings, RotateSecret, ScopeDefinition, SpiffeId, Status, SubjectType,
+    TokenPolicy,
 };
 use serde::{Deserialize, Serialize};
 use time::Duration;
@@ -415,6 +416,8 @@ struct ClientBody {
     /// The service account or agent it acts as, or `null`.
     principal: Option<String>,
     exchange_rules: Vec<ExchangeRuleBody>,
+    /// The SPIFFE identifier of a client using `spiffe_jwt`, or `null`.
+    spiffe_id: Option<String>,
     token_policy: TokenPolicyBody,
     /// What identifies each secret and when it expires: never the secret
     /// or its hash.
@@ -455,6 +458,10 @@ impl From<&Client> for ClientBody {
                     audience: rule.audience.clone(),
                 })
                 .collect(),
+            spiffe_id: settings
+                .spiffe_id
+                .as_ref()
+                .map(|spiffe_id| spiffe_id.as_str().to_owned()),
             token_policy: TokenPolicyBody {
                 access_token_seconds: policy.access_token.whole_seconds(),
                 id_token_seconds: policy.id_token.whole_seconds(),
@@ -519,6 +526,7 @@ struct NewClientBody {
     secret_lifetime_days: Option<u32>,
     principal: Option<String>,
     exchange_rules: Option<Vec<ExchangeRuleBody>>,
+    spiffe_id: Option<String>,
 }
 
 /// One exchange rule, as the interface writes it.
@@ -563,6 +571,9 @@ struct ClientChangesBody {
     #[serde(default, deserialize_with = "present")]
     principal: Option<Option<String>>,
     exchange_rules: Option<Vec<ExchangeRuleBody>>,
+    /// Left out: unchanged; `null`: removed; an identifier: replaced.
+    #[serde(default, deserialize_with = "present")]
+    spiffe_id: Option<Option<String>>,
 }
 
 /// A field that may be given as `null`, told apart from one left out.
@@ -581,13 +592,17 @@ async fn principal_of(
     tenant: &TenantContext,
     given: &str,
     grants: &[GrantType],
+    method: AuthenticationMethod,
 ) -> Result<UserId, Box<Response>> {
-    // Only an agent acts on a person's behalf.
+    // Only an agent acts on a person's behalf, and only a service account
+    // proves who it is with its SPIFFE identifier.
     let exchanges = grants.contains(&GrantType::TokenExchange);
+    let spiffe = method.uses_spiffe_id();
     let refused = || {
         failed(DomainError::invalid(
             "oauth.client_principal_invalid",
-            "a client's principal is a service account or an agent of the tenant",
+            "a client's principal is a service account or an agent of the tenant; an agent \
+             with the token exchange grant, a service account with `spiffe_jwt`",
         ))
     };
     let id: UserId = given.parse().map_err(|_| refused())?;
@@ -595,7 +610,8 @@ async fn principal_of(
         Ok(user)
             if user.kind().is_workload()
                 && user.status() != UserStatus::Deleted
-                && (!exchanges || user.kind() == UserKind::Agent) =>
+                && (!exchanges || user.kind() == UserKind::Agent)
+                && (!spiffe || user.kind() == UserKind::ServiceAccount) =>
         {
             Ok(id)
         }
@@ -716,9 +732,20 @@ async fn create_client(
             if let Some(rules) = new.exchange_rules {
                 settings.exchange_rules = exchange_rules(rules);
             }
+            if let Some(spiffe_id) = &new.spiffe_id {
+                settings.spiffe_id = Some(SpiffeId::parse(spiffe_id).map_err(failed)?);
+            }
             if let Some(principal) = &new.principal {
-                settings.principal =
-                    Some(principal_of(&state, &tenant, principal, &settings.grant_types).await?);
+                settings.principal = Some(
+                    principal_of(
+                        &state,
+                        &tenant,
+                        principal,
+                        &settings.grant_types,
+                        settings.authentication_method,
+                    )
+                    .await?,
+                );
             }
             let (client, secret) = state
                 .applications
@@ -791,12 +818,18 @@ async fn change_client(
                 Some(given) => grant_types(&given)?,
                 None => now.grant_types.clone(),
             };
+            let method = match changes.authentication_method {
+                Some(method) => AuthenticationMethod::parse(&method).map_err(failed)?,
+                None => now.authentication_method,
+            };
+            let spiffe_id = match changes.spiffe_id {
+                None => now.spiffe_id.clone(),
+                Some(None) => None,
+                Some(Some(given)) => Some(SpiffeId::parse(&given).map_err(failed)?),
+            };
             let settings = ClientSettings {
                 name: changes.name.unwrap_or(now.name),
-                authentication_method: match changes.authentication_method {
-                    Some(method) => AuthenticationMethod::parse(&method).map_err(failed)?,
-                    None => now.authentication_method,
-                },
+                authentication_method: method,
                 grant_types: grants.clone(),
                 redirect_uris: changes.redirect_uris.unwrap_or(now.redirect_uris),
                 post_logout_redirect_uris: changes
@@ -825,19 +858,29 @@ async fn change_client(
                     .token_policy
                     .map_or(now.token_policy, |given| given.over(now.token_policy)),
                 principal: match &changes.principal {
-                    // Kept, but checked again when the grants now exchange.
+                    // Kept, but checked again when the grants now exchange
+                    // or the method now uses a SPIFFE identifier.
                     None => match now.principal {
-                        Some(kept) if grants.contains(&GrantType::TokenExchange) => {
-                            Some(principal_of(&state, &tenant, &kept.to_string(), &grants).await?)
+                        Some(kept)
+                            if grants.contains(&GrantType::TokenExchange)
+                                || method.uses_spiffe_id() =>
+                        {
+                            Some(
+                                principal_of(&state, &tenant, &kept.to_string(), &grants, method)
+                                    .await?,
+                            )
                         }
                         kept => kept,
                     },
                     Some(None) => None,
-                    Some(Some(given)) => Some(principal_of(&state, &tenant, given, &grants).await?),
+                    Some(Some(given)) => {
+                        Some(principal_of(&state, &tenant, given, &grants, method).await?)
+                    }
                 },
                 exchange_rules: changes
                     .exchange_rules
                     .map_or(now.exchange_rules, exchange_rules),
+                spiffe_id,
             };
             let client = state
                 .applications

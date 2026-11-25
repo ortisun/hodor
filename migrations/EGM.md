@@ -2,7 +2,7 @@
 
 ## Overview
 
-The PostgreSQL schema, as forty-four numbered SQL files. A number is
+The PostgreSQL schema, as forty-five numbered SQL files. A number is
 reserved when a piece of work starts, so a number can be missing until that
 work merges; every file not yet applied is applied, in order. They are
 embedded in the binaries by `static MIGRATOR: Migrator = sqlx::migrate!("../../migrations")`
@@ -76,6 +76,7 @@ Tables created, by file:
 | `0072_oauth_claim_mappers.sql` | `oauth.claim_mapper`: the claim mappers of a client, referencing it with the tenant and going with it; one per claim and client without regard to case (`claim_mapper_claim_once` on `claim_normalized`, kept the lowercase of `claim`); targets among `id_token`, `access_token` and `userinfo`; the source an object of a known `kind`, a constant at most 2048 bytes as PostgreSQL writes it. |
 | `0073_keys_trust_domains.sql` | `keys.trust_domain`: a tenant's SPIFFE trust domains, unique per tenant by name (`trust_domain_name_unique`, `trust_domain_name_shape` `^[a-z0-9._-]{1,255}$`); the source `uploaded`, `bundle_endpoint` or `mesh`, with an address exactly for `bundle_endpoint`, a bundle of at most 65536 bytes exactly unless `mesh`, a next refresh exactly for `bundle_endpoint` and a fetch, lease and failure only for it; the partial index `trust_domain_due_idx` on `next_refresh_at` of the `bundle_endpoint` rows for the worker |
 | `0077_webhooks_subscription_since.sql` | adds `since` to `webhooks.subscription`: when the endpoint began to receive the type, so that the fan-out skips an event that happened before; existing subscriptions count from the migration |
+| `0078_oauth_client_spiffe_id.sql` | adds `spiffe_jwt` to `client_method_known` and `oauth.client.spiffe_id` (`COLLATE "C"`, `client_spiffe_id_shape`: `spiffe://`, a trust domain's name and a path without `.` or `..` segments nor `*`, at most 2048 bytes; exactly with `spiffe_jwt`, `client_spiffe_id_with_spiffe_jwt`; only with a principal, `client_spiffe_id_needs_principal`), unique per tenant by the partial index `client_spiffe_id_unique`. Numbers 0074 to 0077 are left to other work |
 
 No migration creates a type, an extension or seed rows; enumerations are text
 columns with `CHECK ... IN (...)` constraints.

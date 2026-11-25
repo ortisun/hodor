@@ -6,6 +6,7 @@
 
 use crate::domain::authorization::AuthorizationCode;
 use crate::domain::client::{AuthenticationMethod, Client, ClientId};
+use crate::domain::spiffe::SPIFFE_ASSERTION_TYPE;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use hodor_kernel::{
@@ -149,6 +150,13 @@ pub enum PresentedClient {
         /// The `client_id` of the form, if one was given.
         client_id: Option<String>,
     },
+    /// A JWT-SVID of the workload the client is bound to (`spiffe_jwt`).
+    Svid {
+        /// The JWT-SVID.
+        svid: String,
+        /// The `client_id` of the form, if one was given.
+        client_id: Option<String>,
+    },
     /// Only its identifier: a public client.
     Public {
         /// The `client_id` it names.
@@ -170,6 +178,10 @@ impl fmt::Debug for PresentedClient {
                 .debug_struct("Assertion")
                 .field("client_id", client_id)
                 .finish_non_exhaustive(),
+            Self::Svid { client_id, .. } => f
+                .debug_struct("Svid")
+                .field("client_id", client_id)
+                .finish_non_exhaustive(),
             Self::Public { client_id } => f
                 .debug_struct("Public")
                 .field("client_id", client_id)
@@ -185,6 +197,7 @@ impl PresentedClient {
         match self {
             Self::Secret { method, .. } => *method,
             Self::Assertion { .. } => AuthenticationMethod::PrivateKeyJwt,
+            Self::Svid { .. } => AuthenticationMethod::SpiffeJwt,
             Self::Public { .. } => AuthenticationMethod::None,
         }
     }
@@ -478,17 +491,20 @@ pub(crate) fn presented_client(
         });
     }
     if has_assertion {
-        if assertion_type.as_deref() != Some(ASSERTION_TYPE) {
-            return Err(TokenError::invalid_request(
+        let assertion = assertion.ok_or(TokenError::invalid_request("client_assertion is missing"));
+        return match assertion_type.as_deref() {
+            Some(ASSERTION_TYPE) => Ok(PresentedClient::Assertion {
+                assertion: assertion?,
+                client_id: form_id,
+            }),
+            Some(SPIFFE_ASSERTION_TYPE) => Ok(PresentedClient::Svid {
+                svid: assertion?,
+                client_id: form_id,
+            }),
+            _ => Err(TokenError::invalid_request(
                 "client_assertion_type is missing or unknown",
-            ));
-        }
-        let assertion =
-            assertion.ok_or(TokenError::invalid_request("client_assertion is missing"))?;
-        return Ok(PresentedClient::Assertion {
-            assertion,
-            client_id: form_id,
-        });
+            )),
+        };
     }
     match form_id {
         Some(client_id) => Ok(PresentedClient::Public { client_id }),

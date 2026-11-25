@@ -239,6 +239,7 @@ nav:
       - decisions/0040-pairwise-subjects.md
       - decisions/0041-claim-mappers.md
       - decisions/0042-trust-domains.md
+      - decisions/0055-spiffe-jwt-client-authentication.md
   - Contributing:
       - development/conventions.md
       - development/documentation-site.md

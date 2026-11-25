@@ -121,7 +121,8 @@ random, clock })`, with `mapping` the `ClaimMapping` of the claim mappers,
 register and `secrets` the kernel `SecretBox`. The retry window of
 refresh tokens is `DEFAULT_RETRY_WINDOW`, 10 seconds;
 `with_retry_window(window)` sets another, 0 to 60 seconds, or answers
-`oauth.retry_window_invalid`.
+`oauth.retry_window_invalid`. `with_trust_domains(TrustDomainService)`
+lets it check JWT-SVIDs; without it every JWT-SVID is refused.
 
 - `token(tenant, Issuer { issuer, token_endpoint }, request,
   correlation_id)`: the outer `Result` is storage, sealing or signing; the
@@ -131,7 +132,12 @@ refresh tokens is `DEFAULT_RETRY_WINDOW`, 10 seconds;
     application must be enabled; the request's method must be the one it
     was registered with; then the secret (`Client::accepts_secret`), or the
     assertion (`check_assertion`) whose `jti` is remembered and committed at
-    once. Every failure is `invalid_client`.
+    once, or the JWT-SVID: the client named by `client_id` alone, its
+    SPIFFE identifier's trust domain found by name in the tenant through
+    the `TrustDomainService` (in a unit of work of its own) and its bundle,
+    `check_svid` against it and the tenant's issuer, and its `mark`
+    remembered through the `ClientAssertionStore` until it expires and
+    committed at once. Every failure is `invalid_client`.
   - `authorization_code`: `unauthorized_client` without that grant;
     `AuthorizationCodeService::redeem_code` (any `oauth.code_refused` is
     `invalid_grant`); the grant must still be `active`. With the

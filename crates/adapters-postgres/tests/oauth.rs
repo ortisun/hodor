@@ -1077,3 +1077,110 @@ async fn the_database_keeps_subject_types_and_sector_addresses_to_their_rules() 
         "a tenant has one secret"
     );
 }
+
+#[tokio::test]
+async fn the_database_keeps_spiffe_identifiers_to_their_rules() {
+    let database = TestDatabase::start().await;
+    let tenant = sqlx::types::Uuid::now_v7();
+    let twin = sqlx::types::Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO oauth.application VALUES ($1, $1, 'Exports', false, 'enabled', now(), now(), 0)",
+    )
+    .bind(tenant)
+    .execute(database.owner())
+    .await
+    .expect("application");
+    for id in [tenant, twin] {
+        sqlx::query(
+            "INSERT INTO oauth.client VALUES ($1, $2, $1, 'Export', 'confidential',
+                 'client_secret_basic', ARRAY['client_credentials'], ARRAY[]::text[],
+                 ARRAY[]::text[], true, 300, 300, 2592000, 604800, 'enabled', now(), now(), 0)",
+        )
+        .bind(tenant)
+        .bind(id)
+        .execute(database.owner())
+        .await
+        .expect("client");
+    }
+    let bind = |id: sqlx::types::Uuid, spiffe_id: &'static str| {
+        sqlx::query(
+            "UPDATE oauth.client
+             SET authentication_method = 'spiffe_jwt', principal_id = $1, spiffe_id = $3
+             WHERE tenant_id = $1 AND id = $2",
+        )
+        .bind(tenant)
+        .bind(id)
+        .bind(spiffe_id)
+    };
+    bind(tenant, "spiffe://cluster.local/ns/payroll/sa/export")
+        .execute(database.owner())
+        .await
+        .expect("a client bound to an identifier");
+    for (case, spiffe_id) in [
+        ("a prefix", "spiffe://cluster.local/ns/payroll/*"),
+        ("no path", "spiffe://cluster.local"),
+        ("a dot segment", "spiffe://cluster.local/ns/../sa"),
+        ("an uppercase trust domain", "spiffe://Cluster.local/ns"),
+        ("another scheme", "https://cluster.local/ns"),
+        (
+            "taken in the tenant",
+            "spiffe://cluster.local/ns/payroll/sa/export",
+        ),
+    ] {
+        let refused = bind(twin, spiffe_id).execute(database.owner()).await;
+        assert!(refused.is_err(), "{case}");
+    }
+    for (case, statement) in [
+        (
+            "another method keeps no identifier",
+            "UPDATE oauth.client SET authentication_method = 'private_key_jwt' WHERE id = $1",
+        ),
+        (
+            "spiffe_jwt needs an identifier",
+            "UPDATE oauth.client SET spiffe_id = NULL WHERE id = $1",
+        ),
+        (
+            "an identifier needs a principal",
+            "UPDATE oauth.client SET principal_id = NULL WHERE id = $1",
+        ),
+    ] {
+        let refused = sqlx::query(statement)
+            .bind(tenant)
+            .execute(database.owner())
+            .await;
+        assert!(refused.is_err(), "{case}");
+    }
+
+    // Another tenant binds the same identifier.
+    let other = sqlx::types::Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO oauth.application VALUES ($1, $1, 'Exports', false, 'enabled', now(), now(), 0)",
+    )
+    .bind(other)
+    .execute(database.owner())
+    .await
+    .expect("application");
+    sqlx::query(
+        "INSERT INTO oauth.client VALUES ($1, $1, $1, 'Export', 'confidential', 'spiffe_jwt',
+             ARRAY['client_credentials'], ARRAY[]::text[], ARRAY[]::text[], true, 300, 300,
+             2592000, 604800, 'enabled', now(), now(), 0)",
+    )
+    .bind(other)
+    .execute(database.owner())
+    .await
+    .expect_err("the identifier comes with the method");
+    sqlx::query(
+        "INSERT INTO oauth.client (tenant_id, id, application_id, name, client_type,
+             authentication_method, grant_types, redirect_uris, allowed_scopes, require_pkce,
+             access_token_seconds, id_token_seconds, refresh_token_seconds,
+             refresh_idle_seconds, status, created_at, updated_at, principal_id, spiffe_id)
+         VALUES ($1, $1, $1, 'Export', 'confidential', 'spiffe_jwt',
+             ARRAY['client_credentials'], ARRAY[]::text[], ARRAY[]::text[], true, 300, 300,
+             2592000, 604800, 'enabled', now(), now(), $1,
+             'spiffe://cluster.local/ns/payroll/sa/export')",
+    )
+    .bind(other)
+    .execute(database.owner())
+    .await
+    .expect("the same identifier in another tenant");
+}

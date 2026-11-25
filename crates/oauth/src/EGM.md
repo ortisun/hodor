@@ -66,6 +66,10 @@ follows is `docs/architecture/contexts/oauth.md`.
     `TokenSubject`, `AccessTokenClaims`, and
     `ASSERTION_TYPE`, `MAX_ASSERTION_BYTES`, `MAX_ASSERTION_ID_LENGTH`,
     `ASSERTION_LONGEST_AHEAD`, `CLOCK_ALLOWANCE`, `SUPPORTED_GRANT_TYPES`.
+  - SPIFFE client authentication: `SpiffeId`, `check_svid`, `CheckedSvid`,
+    and `SPIFFE_ASSERTION_TYPE`, `SPIFFE_CLIENT_AUTHENTICATION_DRAFT`,
+    `MAX_SPIFFE_ID_LENGTH`, `SVID_LONGEST_AHEAD`, `SVID_MARK_PREFIX`;
+    `TokenService::with_trust_domains`.
   - The OpenID Provider's domain: `id_token_claims`, `access_token_hash`,
     `authentication_methods`, `assurance`, `is_multi_factor`,
     `asks_for_openid`, `check_access_token`, `read_access_token`,

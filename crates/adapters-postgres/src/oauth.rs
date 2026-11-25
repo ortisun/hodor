@@ -9,7 +9,8 @@ use hodor_oauth::api::{
     Audience, AuthenticationMethod, Client, ClientId, ClientKey, ClientSecret, ClientSecretHash,
     ClientSecretId, ClientSettings, ClientSnapshot, ClientStore, ClientType, ExchangeRule,
     GrantType, IdTokenAlgorithm, ResourceServer, ResourceServerId, ResourceServerSettings,
-    ResourceServerSnapshot, ResourceServerStore, ScopeDefinition, Status, SubjectType, TokenPolicy,
+    ResourceServerSnapshot, ResourceServerStore, ScopeDefinition, SpiffeId, Status, SubjectType,
+    TokenPolicy,
 };
 use sqlx::PgConnection;
 use sqlx::Row as _;
@@ -21,6 +22,14 @@ const CLIENT_APPLICATION_CONSTRAINT: &str = "client_application_fk";
 const SERVER_APPLICATION_CONSTRAINT: &str = "resource_server_application_fk";
 const AUDIENCE_CONSTRAINT: &str = "resource_server_audience_unique";
 const ONE_SERVER_CONSTRAINT: &str = "resource_server_application_unique";
+const SPIFFE_ID_CONSTRAINT: &str = "client_spiffe_id_unique";
+
+fn spiffe_id_taken() -> DomainError {
+    DomainError::conflict(
+        "oauth.client_spiffe_id_taken",
+        "another client of the tenant is bound to this SPIFFE identifier",
+    )
+}
 
 fn corrupted(what: &str) -> DomainError {
     DomainError::internal(
@@ -219,7 +228,7 @@ const CLIENT_COLUMNS: &str = "id, application_id, name, client_type, authenticat
      id_token_algorithm, access_token_seconds, id_token_seconds, refresh_token_seconds, \
      refresh_idle_seconds, consent_seconds, status, created_at, updated_at, version, principal_id, \
      exchange_rules, backchannel_logout_uri, backchannel_logout_session_required, subject_type, \
-     sector_identifier_uri";
+     sector_identifier_uri, spiffe_id";
 
 async fn load_client(
     connection: &mut PgConnection,
@@ -321,6 +330,11 @@ async fn load_client(
                 &row.try_get::<serde_json::Value, _>("exchange_rules")
                     .map_err(get)?,
             )?,
+            spiffe_id: row
+                .try_get::<Option<String>, _>("spiffe_id")
+                .map_err(get)?
+                .map(|text| SpiffeId::parse(&text).map_err(|_| corrupted("SPIFFE identifier")))
+                .transpose()?,
         },
         secrets,
         keys,
@@ -399,9 +413,9 @@ impl ClientStore for PgClientStore {
                   refresh_idle_seconds, consent_seconds, status, created_at, updated_at,
                   id_token_algorithm, principal_id, exchange_rules, backchannel_logout_uri,
                   backchannel_logout_session_required, subject_type, sector_identifier_uri,
-                  version)
+                  spiffe_id, version)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-                     $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, 0)",
+                     $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, 0)",
         )
         .bind(tenant)
         .bind(state.id.as_uuid())
@@ -429,6 +443,7 @@ impl ClientStore for PgClientStore {
         .bind(settings.backchannel_logout_session_required)
         .bind(settings.subject_type.as_str())
         .bind(settings.sector_identifier_uri.as_deref())
+        .bind(settings.spiffe_id.as_ref().map(SpiffeId::as_str))
         .execute(&mut *connection)
         .await;
         match inserted {
@@ -437,6 +452,11 @@ impl ClientStore for PgClientStore {
                 if error.constraint() == Some(CLIENT_APPLICATION_CONSTRAINT) =>
             {
                 return Err(application_not_found());
+            }
+            Err(sqlx::Error::Database(error))
+                if error.constraint() == Some(SPIFFE_ID_CONSTRAINT) =>
+            {
+                return Err(spiffe_id_taken());
             }
             Err(error) => return Err(database_error(&error)),
         }
@@ -460,7 +480,8 @@ impl ClientStore for PgClientStore {
                  consent_seconds = $14, status = $15, updated_at = $16,
                  id_token_algorithm = $18, principal_id = $19, exchange_rules = $20,
                  backchannel_logout_uri = $21, backchannel_logout_session_required = $22,
-                 subject_type = $23, sector_identifier_uri = $24, version = version + 1
+                 subject_type = $23, sector_identifier_uri = $24, spiffe_id = $25,
+                 version = version + 1
              WHERE tenant_id = $1 AND id = $2 AND version = $17",
         )
         .bind(tenant)
@@ -487,9 +508,17 @@ impl ClientStore for PgClientStore {
         .bind(settings.backchannel_logout_session_required)
         .bind(settings.subject_type.as_str())
         .bind(settings.sector_identifier_uri.as_deref())
+        .bind(settings.spiffe_id.as_ref().map(SpiffeId::as_str))
         .execute(&mut *connection)
         .await
-        .map_err(get)?;
+        .map_err(|error| match &error {
+            sqlx::Error::Database(failure)
+                if failure.constraint() == Some(SPIFFE_ID_CONSTRAINT) =>
+            {
+                spiffe_id_taken()
+            }
+            _ => get(error),
+        })?;
         if updated.rows_affected() != 1 {
             return Err(modified("oauth.client_modified_concurrently"));
         }

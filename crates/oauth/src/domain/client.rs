@@ -12,6 +12,7 @@ use crate::domain::pairwise::{
     subject_type_invalid,
 };
 use crate::domain::secret::{ClientSecret, ClientSecretHash, ClientSecretId, ClientSecretValue};
+use crate::domain::spiffe::SpiffeId;
 use crate::domain::text;
 use hodor_kernel::{Digest, DomainError, RandomSource, Timestamp, UserId};
 use hodor_keys::api::{KeyAlgorithm, RotationPolicy};
@@ -127,6 +128,10 @@ pub enum AuthenticationMethod {
     ClientSecretPost,
     /// An assertion signed with the client's own private key (RFC 7523).
     PrivateKeyJwt,
+    /// A JWT-SVID of the one SPIFFE identifier the client is bound to,
+    /// checked against its trust domain's bundle
+    /// (draft-ietf-oauth-spiffe-client-auth-03).
+    SpiffeJwt,
     /// Nothing: a public client.
     None,
 }
@@ -139,6 +144,7 @@ impl AuthenticationMethod {
             Self::ClientSecretBasic => "client_secret_basic",
             Self::ClientSecretPost => "client_secret_post",
             Self::PrivateKeyJwt => "private_key_jwt",
+            Self::SpiffeJwt => "spiffe_jwt",
             Self::None => "none",
         }
     }
@@ -154,6 +160,7 @@ impl AuthenticationMethod {
             "client_secret_basic" => Ok(Self::ClientSecretBasic),
             "client_secret_post" => Ok(Self::ClientSecretPost),
             "private_key_jwt" => Ok(Self::PrivateKeyJwt),
+            "spiffe_jwt" => Ok(Self::SpiffeJwt),
             "none" => Ok(Self::None),
             _ => Err(method_invalid()),
         }
@@ -164,13 +171,29 @@ impl AuthenticationMethod {
     pub const fn uses_secret(self) -> bool {
         matches!(self, Self::ClientSecretBasic | Self::ClientSecretPost)
     }
+
+    /// Whether the method proves who the client is with the credential of
+    /// the one SPIFFE identifier it is bound to.
+    #[must_use]
+    pub const fn uses_spiffe_id(self) -> bool {
+        matches!(self, Self::SpiffeJwt)
+    }
+}
+
+fn spiffe_id_required(reason: &'static str) -> DomainError {
+    DomainError::invalid(
+        "oauth.client_spiffe_id_invalid",
+        "a client using `spiffe_jwt` is bound to one SPIFFE identifier and acts as a service \
+         account; only such a client has one",
+    )
+    .with_detail(reason)
 }
 
 fn method_invalid() -> DomainError {
     DomainError::invalid(
         "oauth.client_authentication_method_invalid",
         "a confidential client proves who it is with `client_secret_basic`, \
-         `client_secret_post` or `private_key_jwt`; a public client with `none`",
+         `client_secret_post`, `private_key_jwt` or `spiffe_jwt`; a public client with `none`",
     )
 }
 
@@ -359,6 +382,11 @@ pub struct ClientSettings {
     /// What an agent's client may exchange for which audience; empty
     /// unless it has the token exchange grant.
     pub exchange_rules: Vec<ExchangeRule>,
+    /// The one SPIFFE identifier whose JWT-SVIDs prove who the client is,
+    /// for a client using `spiffe_jwt` only. Whether its principal is a
+    /// service account is checked by whoever binds it, through the
+    /// identity context.
+    pub spiffe_id: Option<SpiffeId>,
 }
 
 fn redirect_invalid(reason: &'static str) -> DomainError {
@@ -510,6 +538,7 @@ impl ClientSettings {
             token_policy: TokenPolicy::default(),
             principal: None,
             exchange_rules: Vec::new(),
+            spiffe_id: None,
         }
     }
 
@@ -667,6 +696,27 @@ impl ClientSettings {
                 }
             }
         }
+        match (
+            self.authentication_method.uses_spiffe_id(),
+            self.spiffe_id.is_some(),
+        ) {
+            (true, false) => {
+                return Err(spiffe_id_required(
+                    "a client using `spiffe_jwt` has a SPIFFE identifier",
+                ));
+            }
+            (false, true) => {
+                return Err(spiffe_id_required(
+                    "only a client using `spiffe_jwt` has a SPIFFE identifier",
+                ));
+            }
+            _ => {}
+        }
+        if self.spiffe_id.is_some() && self.principal.is_none() {
+            return Err(spiffe_id_required(
+                "a client bound to a SPIFFE identifier acts as a service account",
+            ));
+        }
         let allowed_scopes = without_repeats(self.allowed_scopes);
         if allowed_scopes.len() > MAX_SCOPES || !allowed_scopes.iter().all(|s| text::is_scope(s)) {
             return Err(DomainError::invalid(
@@ -691,6 +741,7 @@ impl ClientSettings {
             token_policy: self.token_policy.checked()?,
             principal: self.principal,
             exchange_rules,
+            spiffe_id: self.spiffe_id,
         })
     }
 }
