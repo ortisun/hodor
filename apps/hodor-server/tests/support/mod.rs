@@ -6,34 +6,108 @@
 use hodor_adapters_postgres::testing::TestDatabase;
 use reqwest::header::{COOKIE, SET_COOKIE};
 use reqwest::{Client, Method, Response, StatusCode};
-use std::collections::BTreeMap;
-use std::net::TcpListener;
+use std::collections::{BTreeMap, VecDeque};
+use std::io::{BufRead as _, BufReader, Read};
 use std::process::{Child, Command, Stdio};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, PoisonError};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 /// Light hashing parameters, the same for the test's setup and for the
 /// server, so that the test is quick. The algorithm is the real one.
 pub(crate) const MEMORY_KIBIBYTES: u32 = 1024;
 pub(crate) const PASSES: u32 = 1;
 
+/// How long a server may take to become ready. A test file starts a
+/// server and a database per test, all at once, and on a busy machine ten
+/// seconds were not always enough.
+const READY_WITHIN: Duration = Duration::from_secs(30);
+
+/// How many of the last lines the server wrote are kept, and shown when it
+/// does not become ready or a test fails.
+const LINES_KEPT: usize = 200;
+const LINES_SHOWN: usize = 40;
+
 pub(crate) struct Server {
     process: Child,
     /// Where the public listener answers.
     pub(crate) base: String,
+    output: Arc<Mutex<Output>>,
+    readers: Vec<JoinHandle<()>>,
+    /// Whether a panic already showed what the server wrote.
+    shown: bool,
 }
 
 impl Drop for Server {
+    #[expect(
+        clippy::print_stderr,
+        reason = "the test's own output, shown when the test fails"
+    )]
     fn drop(&mut self) {
         let _ = self.process.kill();
         let _ = self.process.wait();
+        if std::thread::panicking() && !self.shown {
+            eprintln!("the end of what the server wrote:\n{}", tail(&self.output));
+        }
     }
 }
 
-fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .and_then(|listener| listener.local_addr())
-        .expect("a free port")
-        .port()
+/// What the server wrote, on its standard output and its standard error.
+#[derive(Default)]
+struct Output {
+    lines: VecDeque<String>,
+    /// The addresses of the public and the operations listeners, from the
+    /// line the server writes once it listens.
+    listening: Option<(String, String)>,
+}
+
+/// Reads one stream of the server on a thread of its own until the server
+/// closes it, so that the server never waits on a full pipe.
+fn read_into(stream: impl Read + Send + 'static, output: &Arc<Mutex<Output>>) -> JoinHandle<()> {
+    let output = Arc::clone(output);
+    std::thread::spawn(move || {
+        let mut stream = BufReader::new(stream);
+        let mut line = Vec::new();
+        while stream
+            .read_until(b'\n', &mut line)
+            .is_ok_and(|read| read > 0)
+        {
+            let text = String::from_utf8_lossy(&line).trim_end().to_owned();
+            line.clear();
+            let mut output = output.lock().unwrap_or_else(PoisonError::into_inner);
+            if output.listening.is_none() {
+                output.listening = listening(&text);
+            }
+            if output.lines.len() == LINES_KEPT {
+                output.lines.pop_front();
+            }
+            output.lines.push_back(text);
+        }
+    })
+}
+
+/// The addresses in the line `hodor-server started`, written in JSON.
+fn listening(line: &str) -> Option<(String, String)> {
+    let line: serde_json::Value = serde_json::from_str(line).ok()?;
+    if line["message"] != "hodor-server started" {
+        return None;
+    }
+    Some((
+        line["listen"].as_str()?.to_owned(),
+        line["ops"].as_str()?.to_owned(),
+    ))
+}
+
+fn tail(output: &Mutex<Output>) -> String {
+    let output = output.lock().unwrap_or_else(PoisonError::into_inner);
+    let skipped = output.lines.len().saturating_sub(LINES_SHOWN);
+    output
+        .lines
+        .iter()
+        .skip(skipped)
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 pub(crate) async fn start_server(database: &TestDatabase) -> Server {
@@ -41,43 +115,84 @@ pub(crate) async fn start_server(database: &TestDatabase) -> Server {
 }
 
 /// Starts the server with more settings than the tests usually need.
+///
+/// The server chooses its own ports and says which in the line it writes
+/// once it listens. Ports chosen here and handed to it would be free when
+/// chosen, not when the server binds them: on a busy machine another test,
+/// another server or a connection may take one in between, and the server
+/// then stops at once.
 pub(crate) async fn start_server_with(
     database: &TestDatabase,
     settings: &[(&str, &str)],
 ) -> Server {
-    let (public, ops) = (free_port(), free_port());
-    let process = Command::new(env!("CARGO_BIN_EXE_hodor-server"))
+    let mut process = Command::new(env!("CARGO_BIN_EXE_hodor-server"))
         .envs(settings.iter().copied())
         .env("HODOR_DATABASE_URL", database.app_url())
-        .env("HODOR_LISTEN_ADDR", format!("127.0.0.1:{public}"))
-        .env("HODOR_OPS_ADDR", format!("127.0.0.1:{ops}"))
+        .env("HODOR_LISTEN_ADDR", "127.0.0.1:0")
+        .env("HODOR_OPS_ADDR", "127.0.0.1:0")
+        .env("HODOR_LOG_FORMAT", "json")
         .env(
             "HODOR_PASSWORD_HASH_MEMORY_KIBIBYTES",
             MEMORY_KIBIBYTES.to_string(),
         )
         .env("HODOR_PASSWORD_HASH_PASSES", PASSES.to_string())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .expect("the server should start");
-    let server = Server {
+    let output = Arc::new(Mutex::new(Output::default()));
+    let readers = vec![
+        read_into(process.stdout.take().expect("standard output"), &output),
+        read_into(process.stderr.take().expect("standard error"), &output),
+    ];
+    let mut server = Server {
         process,
-        base: format!("http://127.0.0.1:{public}"),
+        base: String::new(),
+        output,
+        readers,
+        shown: false,
     };
-    let ready = format!("http://127.0.0.1:{ops}/readyz");
-    // Up to thirty seconds: a test file starts a server and a database per
-    // test, all at once, and on a busy machine ten seconds were not always
-    // enough.
-    for _ in 0..300 {
-        if reqwest::get(&ready)
-            .await
-            .is_ok_and(|r| r.status().is_success())
-        {
-            return server;
+
+    let client = Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .expect("client");
+    let deadline = Instant::now() + READY_WITHIN;
+    loop {
+        if let Some(status) = server.process.try_wait().expect("the server's status") {
+            // Everything it wrote, up to its last line.
+            for reader in server.readers.drain(..) {
+                let _ = reader.join();
+            }
+            server.shown = true;
+            panic!(
+                "the server stopped before it was ready, {status}; the end of what it wrote:\n{}",
+                tail(&server.output)
+            );
+        }
+        let listening = server
+            .output
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .listening
+            .clone();
+        if let Some((public, ops)) = listening {
+            let ready = client.get(format!("http://{ops}/readyz")).send().await;
+            if ready.is_ok_and(|response| response.status().is_success()) {
+                server.base = format!("http://{public}");
+                return server;
+            }
+        }
+        if Instant::now() >= deadline {
+            server.shown = true;
+            panic!(
+                "the server did not become ready within {} seconds; the end of what it wrote:\n{}",
+                READY_WITHIN.as_secs(),
+                tail(&server.output)
+            );
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    panic!("the server did not become ready");
 }
 
 /// A browser, as far as these tests need one.

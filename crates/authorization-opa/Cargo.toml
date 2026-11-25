@@ -31,7 +31,7 @@ hodor-authorization = { workspace = true, features = ["testing"] }
 hodor-authorization-opa = { path = ".", features = ["testing"] }
 hodor-kernel = { workspace = true, features = ["testing"] }
 testcontainers.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["io-util"] }
 
 [lints]
 workspace = true
