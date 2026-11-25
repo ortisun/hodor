@@ -64,7 +64,7 @@ use hodor_oauth::api::{
     AuthorizationCodeService, ClaimMapperPorts, ClaimMapperService, ClaimMapping, ConsentPorts,
     ConsentService, LogoutPorts, LogoutService, PairwisePorts, PairwiseSubjects,
     ResourceAccessPorts, ResourceAccessService, TokenPorts, TokenService, UserInfoPorts,
-    UserInfoService, WorkloadTokens,
+    UserInfoService, WorkloadIdentity, WorkloadTokens,
 };
 use hodor_observability::{LogFormat, Telemetry};
 use hodor_protocol_http::{
@@ -74,7 +74,7 @@ use hodor_protocol_http::{
     TenantResolver, TenantStatus as HttpTenantStatus, TokenState, TrustedProxies, UserInfoState,
     admin_routes, authority_bundle_routes, authorization_api_routes, authorization_routes,
     consent_routes, console_routes, discovery_routes, interaction_routes, invitation_routes,
-    key_set_routes, logout_routes, ops_router, parse_ranges, policy_agent_routes,
+    key_set_routes, logout_routes, ops_router, parse_gateways, parse_ranges, policy_agent_routes,
     public_router_behind, scim_routes, serve, token_routes, userinfo_routes,
 };
 use hodor_provisioning::api::{ProvisioningPorts, ProvisioningService};
@@ -239,6 +239,13 @@ struct Config {
     /// no identity is read.
     #[arg(long, env = "HODOR_CLIENT_IDENTITY_HEADER", default_value = "")]
     client_identity_header: String,
+
+    /// The identities of the ingress gateways of a service mesh, SPIFFE
+    /// identifiers or Linkerd identities separated by commas. Set: the
+    /// forwarded address is read only from a request whose caller is one of
+    /// them. Empty: it is read from every trusted proxy.
+    #[arg(long, env = "HODOR_GATEWAY_IDENTITIES", default_value = "")]
+    gateway_identities: String,
 
     /// The LDAP directories identity providers may name, as `host:port`
     /// separated by commas. Empty: no directory can be used.
@@ -1161,9 +1168,9 @@ fn authorization_engines(
     Ok(registry)
 }
 
-/// The directories that may be connected to: empty unless set.
 /// The proxies whose forwarded header is read. A range that cannot be read,
-/// or one that holds every address, stops the server from starting.
+/// or one that holds every address, stops the server from starting; so do
+/// ingress gateways that could never be recognized.
 fn trusted_proxies(config: &Config) -> Result<TrustedProxies, Box<dyn Error>> {
     let ranges = parse_ranges(&config.trusted_proxies)
         .map_err(|invalid| format!("HODOR_TRUSTED_PROXIES: {invalid}"))?;
@@ -1206,9 +1213,38 @@ fn trusted_proxies(config: &Config) -> Result<TrustedProxies, Box<dyn Error>> {
             "the caller's identity is read from the header of trusted proxies"
         ),
     }
-    Ok(TrustedProxies::new(ranges, header).with_identity_header(identity))
+    let gateways = parse_gateways(&config.gateway_identities)
+        .map_err(|invalid| format!("HODOR_GATEWAY_IDENTITIES: {invalid}"))?;
+    if !gateways.is_empty() {
+        let never = if ranges.is_empty() {
+            Some("no proxy is trusted, in HODOR_TRUSTED_PROXIES")
+        } else if identity.is_none() {
+            Some("no header of the caller's identity is named, in HODOR_CLIENT_IDENTITY_HEADER")
+        } else if header == ForwardedHeader::None {
+            Some("HODOR_FORWARDED_HEADER is none, so no forwarded address is ever read")
+        } else {
+            None
+        };
+        if let Some(never) = never {
+            return Err(format!(
+                "HODOR_GATEWAY_IDENTITIES names ingress gateways that could never be recognized: \
+                 {never}"
+            )
+            .into());
+        }
+        let named: Vec<&str> = gateways.iter().map(WorkloadIdentity::as_str).collect();
+        tracing::info!(
+            gateways = %named.join(","),
+            "the forwarded address is read only from a request whose caller is one of these \
+             ingress gateways"
+        );
+    }
+    Ok(TrustedProxies::new(ranges, header)
+        .with_identity_header(identity)
+        .with_gateways(gateways, Arc::new(X509CertificateCheck)))
 }
 
+/// The directories that may be connected to: empty unless set.
 fn directory_hosts(config: &Config) -> Vec<String> {
     config
         .directory_hosts

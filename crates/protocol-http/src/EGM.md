@@ -26,7 +26,7 @@ the set of re-exports in `lib.rs`.
 | `TenantResolver`, `ResolvedTenant`, `TenantSlug`, `TenantStatus` | `tenant.rs` | `TenantResolver::resolve(slug) -> Result<Option<ResolvedTenant>, DomainError>`. `ResolvedTenant` holds a `TenantContext` and a `TenantStatus` (`Active` or `Suspended`). `TenantSlug(pub String)` is the slug as it appears in the path. |
 | `Problem` | `problem.rs` | Error response body, `application/problem+json`. `Problem::new(status, code, detail)`, `status()`, `impl From<DomainError>`, `impl IntoResponse`. |
 | `ClientAddress(pub Option<IpAddr>)` | `request.rs` | The address of the connection, or the one a trusted proxy forwarded, inserted as a request extension. |
-| `TrustedProxies`, `AddressRange`, `ForwardedHeader`, `parse_ranges`, `public_router_behind` | `client_address.rs`, `server.rs` | The proxies whose forwarded header is read (`HODOR_TRUSTED_PROXIES`) and that header (`HODOR_FORWARDED_HEADER`: `XForwardedFor`, `Forwarded`, or `None`, which reads no address). `TrustedProxies::with_identity_header(Option<IdentityHeader>)` names the header of the caller's identity those proxies write, and `identity_header()` answers it. |
+| `TrustedProxies`, `AddressRange`, `ForwardedHeader`, `parse_ranges`, `public_router_behind` | `client_address.rs`, `server.rs` | The proxies whose forwarded header is read (`HODOR_TRUSTED_PROXIES`) and that header (`HODOR_FORWARDED_HEADER`: `XForwardedFor`, `Forwarded`, or `None`, which reads no address). `TrustedProxies::with_identity_header(Option<IdentityHeader>)` names the header of the caller's identity those proxies write, and `identity_header()` answers it. `parse_gateways` reads `HODOR_GATEWAY_IDENTITIES` into `WorkloadIdentity` values, SPIFFE identifiers or Linkerd identities, refusing one that does not read with `InvalidGateway`; `TrustedProxies::with_gateways(identities, Arc<dyn CertificateCheck>)` reads the forwarded header only from a caller that is one of them, the check reading a forwarded certificate's names, and `gateways()` answers them. `Resolved::ignored` says why a forwarded header that was there was not read: `Ignored::NoIdentity` or `Ignored::NotAGateway`. |
 | `IdentityHeader` | `forwarded_identity.rs` | `ClientCert` (`client-cert` with `client-cert-chain`, RFC 9440), `XForwardedClientCert` (Envoy) or `LinkerdClientId` (`l5d-client-id`), read with `FromStr` from `HODOR_CLIENT_IDENTITY_HEADER`; `as_str()`, `methods()`, the methods of client authentication it makes usable, and `forwards_certificates()`, whether tokens can be bound to what it forwards. The header is read only from a trusted proxy, and only its nearest element, the last: a structured byte sequence with every element of the chain; a pair list read by `Cert` and `Chain` (percent-encoded PEM, the certificate itself left out of the chain) or, without `Cert`, by `URI` and `DNS` and `Hash`, the certificate's SHA-256 in 64 hexadecimal digits (`CertificateThumbprint::from_hex`; one that does not read, or given twice, is left out); a lowercase DNS name. Certificates over 16 kibibytes, more than 10 in a chain and elements that do not read give no identity. |
 | `interaction_routes(state)`, `InteractionState` | `interaction.rs` | The interaction interface: browser sign-in, sessions, registration and password recovery. |
 | `authorization_routes(state)`, `AuthorizationState` | `authorize.rs` | The OAuth authorization endpoint: checks a request, its request object first when it has one (`AuthorizationCodeService::check` with the tenant's issuer), issues a code to a signed-in browser whose methods that count (`max_age`) reach the tenant level `acr_values` asks for, starts a step-up of the session when they do not (`AuthenticationService::start_step_up`, giving the browser the sign-in cookie; `unmet_authentication_requirements` when it cannot be reached), or keeps the request while the person signs in, sending them to `/account/sign-in?continue=authorization` with the request's `login_hint` and `ui_locales`, or for `prompt=create` to `/account/register?continue=authorization` with `ui_locales` (Issue-125). Once the request passes `check`, `prompt=create` is refused with `invalid_request` when the tenant's registration policy is closed, and `AuthorizationCodeService::check_hint` checks `id_token_hint`; both refusals are answered in the request's response mode. A session whose person `hint_names` does not name counts as none (`login_required` with `prompt=none`), and at the resume a person other than the hint's gets `login_required`. The code carries the `acr` of the tenant's levels the counted methods reach. `AuthorizationState { authorization: AuthorizationCodeService, sessions, authentication: AuthenticationService, tenants: TenantService, public_url }`. |
@@ -337,13 +337,16 @@ root, outside any tenant.
   `Cache-Control: no-store`,
   `Strict-Transport-Security: max-age=63072000; includeSubDomains`
   (`SECURITY_HEADERS`).
-- `ClientAddress` is the connection's address, or the address a trusted
-  proxy forwarded (`TrustedProxies::resolve`).
-- The caller's identity is read in the same layer, from the one header the
-  operator named, only when the connection is from a trusted proxy, and is
-  inserted as a `hodor_oauth::api::ForwardedIdentity` extension. A header
-  that does not read inserts nothing and is counted by
+- The caller's identity is read first, from the one header the operator
+  named, only when the connection is from a trusted proxy, and is inserted
+  as a `hodor_oauth::api::ForwardedIdentity` extension. A header that does
+  not read inserts nothing and is counted by
   `hodor.http.forwarded_identity.unreadable`, by `header`.
+- `ClientAddress` is the connection's address, or the address a trusted
+  proxy forwarded (`TrustedProxies::resolve_with`, given the identity just
+  read). With ingress gateways named, the forwarded header is read only
+  when that identity is one of them; otherwise a header that was there is
+  counted by `hodor.http.forwarded_address.ignored`, by `reason`.
 - `limit_bodies` refuses a body over the limit with
   `413 request.body_too_large`, whether or not it declares its length.
   `POST /t/.../interaction/sign-in/providers/.../saml` gets

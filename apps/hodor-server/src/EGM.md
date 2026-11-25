@@ -38,6 +38,7 @@ Configuration (`Config`, clap, command name `hodor-server`):
 | `--trusted-proxies` | `HODOR_TRUSTED_PROXIES` | empty, comma separated address ranges; `trusted_proxies` refuses one that does not read or holds every address |
 | `--forwarded-header` | `HODOR_FORWARDED_HEADER` | `x-forwarded-for`, or `forwarded`, or `none` |
 | `--client-identity-header` | `HODOR_CLIENT_IDENTITY_HEADER` | empty: no header of the caller's identity is read; or `client-cert`, `x-forwarded-client-cert`, `l5d-client-id`, given to `TrustedProxies::with_identity_header`. Another value stops the server; a header named without a trusted proxy is logged as never read |
+| `--gateway-identities` | `HODOR_GATEWAY_IDENTITIES` | empty: the forwarded header is read from every trusted proxy; or SPIFFE identifiers and Linkerd identities separated by commas, read by `parse_gateways` and given to `TrustedProxies::with_gateways` with `X509CertificateCheck`. An identity that does not read stops the server, and so do gateways named with no trusted proxy, no header of the caller's identity, or `HODOR_FORWARDED_HEADER=none` |
 | `--directory-hosts` | `HODOR_DIRECTORY_HOSTS` | empty, comma separated `host:port` |
 | `--password-hash-memory-kibibytes` | `HODOR_PASSWORD_HASH_MEMORY_KIBIBYTES` | `19 * 1024` |
 | `--password-hash-passes` | `HODOR_PASSWORD_HASH_PASSES` | 2 |

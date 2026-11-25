@@ -94,8 +94,34 @@ trustedProxies: []
 # identity below.
 forwardedHeader: x-forwarded-for
 # The header the proxy in front of Hodor writes the caller's identity into, for workloads of a service mesh:
-# client-cert, x-forwarded-client-cert or l5d-client-id. Read only from trustedProxies. Empty: none is read.
+# client-cert, x-forwarded-client-cert or l5d-client-id. Read only from trustedProxies. Empty: none is read, or,
+# with mesh.provider, the header of that mesh.
 clientIdentityHeader: ""
+# The identities of the ingress gateways of a service mesh, whose forwarded address is believed: SPIFFE
+# identifiers, such as spiffe://cluster.local/ns/istio-system/sa/istio-ingressgateway-service-account, or
+# Linkerd identities, such as gateway.edge.serviceaccount.identity.linkerd.cluster.local. Set: the forwarded
+# address is read only from a request whose caller, in the header of the caller's identity, is one of them;
+# every other workload is known by the address of the proxy beside Hodor. Empty: it is read from every
+# trusted proxy, or, with mesh.provider, from none.
+gatewayIdentities: []
+
+# Hodor's pods with the proxy of a service mesh beside them. Istio's ambient mode needs nothing here: see
+# "Inside a service mesh" in docs/operations/install-on-kubernetes.md.
+mesh:
+  # istio or linkerd: the server's and the worker's pods join that mesh; the health checks on the operations
+  # port stay out of its proxy; the proxy is a trusted proxy for the caller's identity; and the forwarded
+  # address is read only from gatewayIdentities. Empty: nothing is done for a mesh.
+  provider: ""
+  # The migration job joins the mesh too. Keep it with native sidecars, which both meshes inject on
+  # Kubernetes 1.33 and newer. With a classic sidecar the job never completes: set false, if the database can
+  # be reached from outside the mesh.
+  injectMigration: true
+  # Ports whose outgoing connections bypass the proxy. With Linkerd, 25 and 587 for a mail server that speaks
+  # first, which the proxy otherwise holds for about ten seconds.
+  skipOutboundPorts: []
+  # The namespace of the mesh's control plane, which the pods may reach when networkPolicy.egress.enabled.
+  # Empty: istio-system for Istio, linkerd for Linkerd.
+  controlPlaneNamespace: ""
 
 # The authorities Hodor's outbound requests trust, in place of the public ones the image holds: a ConfigMap
 # of yours, made before the chart is installed, whose key holds certificates in PEM. For an identity
