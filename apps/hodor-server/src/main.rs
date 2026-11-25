@@ -12,14 +12,14 @@ use hodor_adapters_crypto::{
 use hodor_adapters_http::{GuardedHttpClient, OutboundPolicy, ServiceHttpClient};
 use hodor_adapters_ldap::LdapDirectoryClient;
 use hodor_adapters_postgres::{
-    Database, PgAccessTokenRecordStore, PgAccessTokenStore, PgApplicationStore, PgAttemptStore,
-    PgAuditLog, PgAuthorizationCodeStore, PgAuthorizationRequestStore, PgBundleStore,
-    PgClientAssertionStore, PgClientStore, PgConsentStore, PgDecisionLogStore, PgDeliveryStore,
-    PgDeprovisioningPolicy, PgEndpointStore, PgEngineBindingStore, PgGrantStore, PgGroupPolicy,
-    PgGroupRepository, PgInstanceStatusStore, PgInstanceStore, PgInvitationRepository, PgKeyStore,
-    PgLinkStore, PgMessageQueue, PgNativeRoleStore, PgOrganizationRepository, PgPasswordStore,
-    PgPendingAuthorizationStore, PgPolicyVersionStore, PgProviderStore,
-    PgProvisionedGroupRepository, PgProvisionedUserRepository, PgPublicationStore,
+    Database, PgAccessTokenRecordStore, PgAccessTokenStore, PgApiKeyStore, PgApplicationStore,
+    PgAttemptStore, PgAuditLog, PgAuthorizationCodeStore, PgAuthorizationRequestStore,
+    PgBundleStore, PgClientAssertionStore, PgClientStore, PgConsentStore, PgDecisionLogStore,
+    PgDeliveryStore, PgDeprovisioningPolicy, PgEndpointStore, PgEngineBindingStore, PgGrantStore,
+    PgGroupPolicy, PgGroupRepository, PgInstanceStatusStore, PgInstanceStore,
+    PgInvitationRepository, PgKeyStore, PgLinkStore, PgMessageQueue, PgNativeRoleStore,
+    PgOrganizationRepository, PgPasswordStore, PgPendingAuthorizationStore, PgPolicyVersionStore,
+    PgProviderStore, PgProvisionedGroupRepository, PgProvisionedUserRepository, PgPublicationStore,
     PgRecoveryCodeStore, PgRefreshTokenStore, PgResourceServerStore, PgRoleAssignmentStore,
     PgSealingStateStore, PgSessionStore, PgSimulationStore, PgTenantDirectory, PgTenantRepository,
     PgTotpStore, PgTransactionStore, PgUploadedDecisionStore, PgUserRepository,
@@ -40,8 +40,8 @@ use hodor_authorization_opa::api::{
     BundleService, Instances, OpenPolicyAgentEngine, PolicyService, StoredRevisions,
 };
 use hodor_credential::api::{
-    AccessTokenService, CredentialService, RecoveryCodeService, RelyingParty, TotpService,
-    WebAuthnService,
+    AccessTokenService, ApiKeyService, CredentialService, RecoveryCodeService, RelyingParty,
+    TotpService, WebAuthnService,
 };
 use hodor_federation::api::{
     EXTERNAL_STEP, ExternalIdentityAuthenticator, ExternalSignIn, FederationService, GitHubClient,
@@ -59,9 +59,9 @@ use hodor_oauth::api::{
 };
 use hodor_observability::{LogFormat, Telemetry};
 use hodor_protocol_http::{
-    AdminState, AuthorizationApiState, AuthorizationState, ConsentState, ConsoleState,
-    DiscoveryState, ForwardedHeader, Health, InteractionState, InvitationState, Limits,
-    LogoutState, Pages, ReadinessCheck, ResolvedTenant, ScimState, TenantResolver,
+    AdminState, ApiKeyAccess, AuthorizationApiState, AuthorizationState, ConsentState,
+    ConsoleState, DiscoveryState, ForwardedHeader, Health, InteractionState, InvitationState,
+    Limits, LogoutState, Pages, ReadinessCheck, ResolvedTenant, ScimState, TenantResolver,
     TenantStatus as HttpTenantStatus, TokenState, TrustedProxies, UserInfoState, admin_routes,
     authorization_api_routes, authorization_routes, consent_routes, console_routes,
     discovery_routes, interaction_routes, invitation_routes, key_set_routes, logout_routes,
@@ -826,6 +826,11 @@ fn authorization_api(
     });
     AuthorizationApiState {
         access: resource_access(database, keys, applications.clone()),
+        keys: ApiKeyAccess {
+            keys: api_keys(database),
+            identity: IdentityService::new(units(), Arc::new(PgUserRepository), clock.clone()),
+            applications: applications.clone(),
+        },
         evaluation: EvaluationService::new(
             units(),
             Arc::new(PgRoleAssignmentStore),
@@ -1283,7 +1288,19 @@ fn access_revoker(database: &Database) -> deprovisioning::ServerAccessRevoker {
             clock: clock.clone(),
         }),
         tokens: WorkloadTokens::new(Arc::new(PgAccessTokenRecordStore), clock),
+        keys: api_keys(database),
     }
+}
+
+/// The API keys of service accounts and agents.
+fn api_keys(database: &Database) -> ApiKeyService {
+    ApiKeyService::new(
+        Arc::new(database.clone()),
+        Arc::new(PgApiKeyStore),
+        Arc::new(Sha256Digest),
+        Arc::new(OsRandom),
+        Arc::new(SystemClock),
+    )
 }
 
 /// Builds everything the administration interface needs.
@@ -1348,6 +1365,7 @@ fn administration(
             Arc::new(access_revoker(database)),
             clock.clone(),
         ),
+        api_keys: api_keys(database),
         sessions: SessionService::new(
             units(),
             Arc::new(PgSessionStore),

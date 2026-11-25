@@ -14,8 +14,8 @@ All paths are relative to the tenant base: `https://{host}/t/{tenant}` or the te
 | Interaction API | `/interaction` | `auth-ui` only | Interaction cookie + CSRF token |
 | Federation callbacks | `/federation` | External identity providers via the browser | `state` |
 | Account API | `/api/v1/account` | `account-console`, first-party apps | Session (backend-for-frontend) or access token with `account:*` scopes |
-| Admin API | `/api/v1/admin` | `admin-console`, automation, Terraform | Access token with `admin:*` scopes; role-based access control on every route |
-| Authorization API | `/api/v1/authorization` | Applications (policy enforcement points) | Access token with `authz:*` scopes |
+| Admin API | `/api/v1/admin` | `admin-console`, automation, Terraform | A person's access token, or a workload's API key whose scopes are permissions; role-based access control on every route |
+| Authorization API | `/api/v1/authorization` | Applications (policy enforcement points) | Access token or a workload's API key, with `authz:*` scopes |
 | SCIM | `/scim/v2` | Provisioning clients | Access token with the audience `urn:hodor:scim` and the scope `scim` |
 | SAML | `/saml` | SAML peers | Per protocol |
 | Open Policy Agent service API | `/opa` | Open Policy Agent instances | Per-instance bearer token or mTLS |
@@ -192,7 +192,7 @@ Applications ask Hodor whether a subject may do an action to one of their resour
 | `POST /simulate` | What would be decided against chosen policies; never recorded as a real decision | `authz:simulate` |
 | `GET /openapi.json` | The OpenAPI document of this API, without authentication | |
 
-The caller sends `Authorization: Bearer` with an access token of the tenant whose audience includes `urn:hodor:authorization`. The resource server asked about is the one of the token client's application; the body never names it, and never names a tenant.
+The caller sends `Authorization: Bearer` with an access token of the tenant whose audience includes `urn:hodor:authorization`, or with the [API key](../architecture/contexts/credential.md#api-keys) of a service account or an agent. The resource server asked about is the one of the token client's application, or of the application the key names; the body never names it, and never names a tenant.
 
 ```http
 POST /t/acme/api/v1/authorization/evaluate
@@ -234,7 +234,7 @@ Differences from the example in the specification: there is no `tenant_id` in th
 
 | Answer | When |
 |---|---|
-| `401` with `WWW-Authenticate: Bearer` | No token, or a token that is not good here: another tenant's, expired, revoked, or without the API's audience |
+| `401` with `WWW-Authenticate: Bearer` | No token, or a token or key that is not good here: another tenant's, expired, revoked, without the API's audience, or a key whose holder may not act |
 | `403` with `error="insufficient_scope"` | The token lacks the route's scope |
 | `403` `authorization.no_resource_server` | The token client's application has no resource server |
 | `422` | The body cannot be read; the problem's `code` says why |

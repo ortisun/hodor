@@ -541,4 +541,20 @@ pub trait WorkloadAccess: Send + Sync {
         reason: &'static str,
         caller: Caller,
     ) -> Result<(), DomainError>;
+
+    /// Revokes the credentials `workload` holds, its API keys, when it is
+    /// deleted, in the caller's unit of work. Disabling a workload does not
+    /// call this: its keys are refused while it is disabled, and work again
+    /// when it is enabled.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails. After an error the unit of work
+    /// must be abandoned.
+    async fn revoke_credentials(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        workload: UserId,
+        caller: Caller,
+    ) -> Result<(), DomainError>;
 }

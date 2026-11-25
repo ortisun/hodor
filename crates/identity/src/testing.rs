@@ -1941,6 +1941,21 @@ impl crate::api::WorkloadAccess for RecordingWorkloadAccess {
         ));
         Ok(())
     }
+
+    /// Recorded with the reason `credentials`.
+    async fn revoke_credentials(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        workload: UserId,
+        _caller: hodor_kernel::Caller,
+    ) -> Result<(), DomainError> {
+        self.calls.lock().unwrap_or_else(|e| e.into_inner()).push((
+            uow.tenant().tenant_id(),
+            workload,
+            "credentials",
+        ));
+        Ok(())
+    }
 }
 
 /// The ports the contract of workloads runs against.

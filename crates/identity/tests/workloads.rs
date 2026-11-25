@@ -511,7 +511,10 @@ async fn deleting_erases_it_takes_it_out_of_its_groups_and_revokes_its_access() 
         .expect("deleted");
     assert_eq!(
         world.access.calls(),
-        [(world.tenant.tenant_id(), helper.id(), WORKLOAD_DELETED)]
+        [
+            (world.tenant.tenant_id(), helper.id(), WORKLOAD_DELETED),
+            (world.tenant.tenant_id(), helper.id(), "credentials")
+        ]
     );
     let missing = world
         .workloads

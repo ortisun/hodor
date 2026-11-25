@@ -254,9 +254,13 @@ The caller presents an **access token of the tenant**, issued by [Hodor's token 
 
 A token of another tenant fails the signature and issuer checks, whatever its body says.
 
+The caller may instead present the **API key** of a service account or an agent ([API keys](credential.md#api-keys)), as the bearer token. The key must be good in the tenant and its holder a workload that may act. It needs no audience: it stands for the application it names, whose resource server is the one asked about, and its scopes open the routes as a token's do. A key of another tenant is unknown here.
+
+Which scopes a key may hold is one rule of this context, so that every interface that makes keys agrees on it: a permission of [Hodor's administration](#permissions), or one of the three scopes above. Anything else is `authorization.scope_unknown`. A scope of the Authorization API needs the key to name an application (`authorization.scope_needs_application`), and a key that names an application holds one (`authorization.application_without_scope`).
+
 ### What is asked about
 
-**The resource server asked about is the one of the application the token's client belongs to.** An application has at most one resource server, so the caller never names a namespace: it asks about its own resources and no other application's. A client whose application has no resource server is refused with `authorization.no_resource_server`. Hodor's administration namespace is never reachable through the API.
+**The resource server asked about is the one of the application the token's client belongs to**, or that the key names. An application has at most one resource server, so the caller never names a namespace: it asks about its own resources and no other application's. A client whose application has no resource server is refused with `authorization.no_resource_server`. Hodor's administration namespace is never reachable through the API.
 
 **The application of the request is the token client's application.** It is what an assignment scoped to an application is compared with.
 

@@ -54,7 +54,7 @@ bound to. Implemented outside this crate by `PgUserRepository` in
 ### Ports of workloads (`ports.rs`)
 
 - `WorkloadRepository`: `list(uow, kind, after, limit)` (users of the kind that are not Deleted, in creation order), `owners(uow, workload)` (by when they became owners, then by identifier), `replace_owners(uow, workload, owners, now)` (owners that stay keep when they were added), `forget_owners(uow, workload)`. Implemented by `PgWorkloadRepository` and `InMemoryWorkloads`.
-- `WorkloadAccess`: `revoke_access(uow, workload, reason, caller)`, in the caller's unit of work. Implemented in the composition roots: `ServerAccessRevoker` in `apps/hodor-server`, a command-line one in `apps/hodor-cli`.
+- `WorkloadAccess`: `revoke_access(uow, workload, reason, caller)`, in the caller's unit of work, called when a workload is disabled or deleted; and `revoke_credentials(uow, workload, caller)`, its API keys, called when it is deleted only. Implemented in the composition roots: `ServerAccessRevoker` in `apps/hodor-server`, a command-line one in `apps/hodor-cli`.
 
 ## Invariants
 

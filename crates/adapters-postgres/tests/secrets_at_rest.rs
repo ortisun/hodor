@@ -342,6 +342,7 @@ const NOT_SEALED_SECRETS: &[(&str, &str, &str)] = &[
         "token_hash",
         "a hash of a random token",
     ),
+    ("credential.api_key", "key_hash", "a hash of a random key"),
     (
         "authentication.attempt_counter",
         "subject_key",

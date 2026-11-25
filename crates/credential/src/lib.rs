@@ -15,6 +15,7 @@ pub mod testing;
 /// What other crates may use from this context.
 pub mod api {
     pub use crate::application::access_tokens::{AccessTokenService, AccessTokenStore};
+    pub use crate::application::api_keys::{ApiKeyService, ApiKeyStore};
     pub use crate::application::ports::{PasswordHasher, PasswordStore, PasswordVerification};
     pub use crate::application::recovery_codes::{
         RecoveryCodeCheck, RecoveryCodeService, RecoveryCodeStore,
@@ -27,6 +28,13 @@ pub mod api {
     pub use crate::domain::access_token::{
         AccessToken, AccessTokenEvent, AccessTokenHash, AccessTokenId, AccessTokenSecret,
         AccessTokenSnapshot,
+    };
+    pub use crate::domain::api_key::{
+        API_KEY_PREFIX, ApiKey, ApiKeyEvent, ApiKeyHash, ApiKeyId, ApiKeySecret, ApiKeySettings,
+        ApiKeySnapshot, ApiKeyStatus, DEFAULT_API_KEY_LIFETIME, DEFAULT_API_KEY_OVERLAP,
+        KeyApplicationId, LAST_USE_PRECISION, LONGEST_API_KEY_LIFETIME, LONGEST_API_KEY_OVERLAP,
+        MAX_API_KEY_SCOPES, MAX_API_KEYS, REVOKED_BY_ADMINISTRATOR, SHORTEST_API_KEY_LIFETIME,
+        looks_like_api_key,
     };
     pub use crate::domain::event::PasswordEvent;
     pub use crate::domain::password::{

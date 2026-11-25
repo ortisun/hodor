@@ -49,6 +49,7 @@ reach other crates through `hodor_authorization::api`.
 
   `Permission::ALL` lists all thirty-one, `webhooks:read` and `webhooks:write` the last; `from_name(name) -> Option<Permission>`.
   The auditor holds every permission that ends in `:read`, and nothing else.
+- `AUTHORIZATION_API_SCOPES` (`authz:evaluate`, `authz:simulate`, `authz:explain`) and `check_key_scopes(scopes, names_application)`: the rule every interface that makes an API key follows; a scope is a `Permission` name or one of those three (`authorization.scope_unknown`), and a scope of the Authorization API comes with an application, which comes with one (`authorization.scope_needs_application`, `authorization.application_without_scope`).
 - `Role` (`role.rs:Role`): `TenantAdministrator` (`tenant_administrator`) and
   `TenantAuditor` (`tenant_auditor`); `Role::ALL`, `as_str`,
   `from_name(name) -> Result<Role, DomainError>`, `permissions()`,

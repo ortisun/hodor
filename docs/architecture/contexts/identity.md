@@ -237,7 +237,7 @@ A **service account** is a program of the tenant that acts on its own: a nightly
 | Status | `active`, `disabled` or `deleted`; see below |
 | Owners | The people responsible for it: 1 to 10 human users of the tenant |
 
-A workload proves who it is as a [client of the client credentials grant](oauth.md#clients-that-act-as-a-workload) bound to it; API keys follow in Issue-94. It has no login identifier, no password and no second factor, and [only a person may sign in](#lifecycle), so no part of a sign-in can make a session for it.
+A workload proves who it is as a [client of the client credentials grant](oauth.md#clients-that-act-as-a-workload) bound to it, or with an [API key](credential.md#api-keys) it holds. It has no login identifier, no password and no second factor, and [only a person may sign in](#lifecycle), so no part of a sign-in can make a session for it.
 
 **An agent differs from a service account only in its kind**, for now. [Token exchange](../../product/epics.md#slice-y--workloads-and-agents-epic-22) (Issue-95) lets an agent, and only an agent, act on a person's behalf. A service account always acts as itself.
 
@@ -257,13 +257,13 @@ stateDiagram-v2
 
 | Status | As a user | Its tokens |
 |---|---|---|
-| `active` | Active | Issued and in force |
-| `disabled` | Deactivated, or Suspended if an administrator suspended it as a user | Refused at the token endpoint; those already issued are no longer in force |
-| `deleted` | Deleted | As when disabled, and the workload is no longer read or listed: only its identifier remains, in the audit log and wherever it is referred to |
+| `active` | Active | Issued and in force; its API keys work |
+| `disabled` | Deactivated, or Suspended if an administrator suspended it as a user | Refused at the token endpoint; those already issued are no longer in force; its API keys are refused, and work again when it is enabled |
+| `deleted` | Deleted | As when disabled, its API keys are revoked, and the workload is no longer read or listed: only its identifier remains, in the audit log and wherever it is referred to |
 
 - **A workload is created Active.** Nothing about it needs confirming.
 - **Disabling** deactivates it, a suspended one included. **Enabling** restores a deactivated workload, or reactivates a suspended one after revoking its tokens, since suspending it as a user revoked nothing. Disabling a deactivated workload or enabling an active one changes nothing and records nothing.
-- **Deleting** deactivates it if it is not already, then marks it Deleted, in one unit of work: its name is erased, it leaves every group and organization, and its owners are forgotten.
+- **Deleting** deactivates it if it is not already, then marks it Deleted, in one unit of work: its name is erased, it leaves every group and organization, its owners are forgotten and its API keys are revoked, with the reason `workload_deleted`.
 - **Disabling and deleting end its access at once, in the same unit of work**: through the [`WorkloadAccess`](#port) port, every access token issued for it is revoked, with the reason `workload_disabled` or `workload_deleted`. Enabling it again does not bring a revoked token back; its clients ask for new ones. Even without the revocation, a token of a workload that is not active is not [in force](oauth.md#the-register-of-access-tokens), so a workload suspended as a user stops too.
 
 ### Owners
@@ -368,7 +368,7 @@ Every use case that changes a user loads it, applies the change, stores it and r
 | `InvitationRepository` | Store invitations, withdraw the pending one of an organization and address, find one by the hash of its token, use one up at most once, list an organization's pending invitations |
 | `OrganizationRepository` | Store, load, change and delete organizations with optimistic locking; store, change and delete units; take an organization's lock on its tree; add, change and remove memberships; list units, members and a user's organizations |
 | `WorkloadRepository` | List the workloads of one kind that are not Deleted, a page at a time; read, replace and forget a workload's owners |
-| `WorkloadAccess` | Ends whatever a workload holds, its access tokens first, in the caller's unit of work. Implemented in the composition root with the OAuth and session contexts, which this context does not depend on, by the same object that ends a deprovisioned person's access ([provisioning](provisioning.md#deprovisioning)) |
+| `WorkloadAccess` | Ends whatever a workload holds, its access tokens first, in the caller's unit of work, and revokes its API keys when it is deleted. Implemented in the composition root with the OAuth and session contexts, which this context does not depend on, by the same object that ends a deprovisioned person's access ([provisioning](provisioning.md#deprovisioning)) |
 
 Every method works inside the tenant of the unit of work it is given.
 
@@ -392,6 +392,11 @@ What an administrator does through [the administration interface](../../api/admi
 | `hodor-cli service-account list --tenant <slug>` | Prints `<id> <status> <name>` for every service account that is not deleted |
 | `hodor-cli service-account disable\|enable\|delete --tenant <slug> --id <id>` | Applies [its lifecycle](#its-lifecycle), and prints `<status> <id>` |
 | `hodor-cli agent create\|list\|disable\|enable\|delete …` | The same, for agents |
+| `hodor-cli service-account key create --tenant <slug> --id <id> --name <name> --scope <scope> [--scope <scope> ...] [--application <id>] [--lifetime-days <days>]` | Makes an [API key](credential.md#api-keys) for the workload, and prints `key <id>`, `api-key <value>`, once, and `expires <time>` |
+| `hodor-cli service-account key list --tenant <slug> --id <id>` | Prints `<key id> <status> <hint> <name>` for every key of the workload, newest first |
+| `hodor-cli service-account key rotate --tenant <slug> --id <id> --key <key id> [--lifetime-days <days>] [--keep-previous-days <days>]` | Replaces a key, and prints the new one as `key create` does |
+| `hodor-cli service-account key revoke --tenant <slug> --id <id> --key <key id>` | Revokes a key, and prints `revoked <key id>` |
+| `hodor-cli agent key …` | The same, for agents |
 
 A refusal is the same as through the administration interface, with the same code, and the command exits with a status that is not zero.
 
@@ -500,7 +505,6 @@ A tenant table under row-level security. That the workload is a service account 
 | Linked external identities | Phase 3 |
 | Non-ASCII email addresses | Not scheduled |
 | Purging the remaining row of a Deleted user | With the tenant purge job |
-| API keys of a workload | Milestone 8, Issue-94 |
 | An agent acting on a person's behalf through token exchange | Milestone 8, Issue-95 |
 | Console pages for service accounts and agents | Milestone 8, Issue-97 |
 | Listing the clients bound to a workload, and the workloads a person owns | When the console pages need them, Issue-97 |

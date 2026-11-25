@@ -376,6 +376,13 @@ async fn world_with_keys(with_keys: bool) -> World {
             clock.clone(),
         ),
         webhooks,
+        api_keys: hodor_credential::api::ApiKeyService::new(
+            units(),
+            Arc::new(hodor_credential::testing::InMemoryApiKeys::default()),
+            Arc::new(FakeDigest),
+            Arc::new(SequentialRandom::default()),
+            clock.clone(),
+        ),
     };
     let router = public_router(
         Arc::new(Tenants {
@@ -641,7 +648,7 @@ fn the_document_and_the_routes_list_the_same_operations_and_permissions() {
         })
         .collect();
     assert_eq!(documented, served);
-    assert_eq!(served.len(), 122);
+    assert_eq!(served.len(), 130);
 
     // Every operation says how it refuses.
     let document: serde_json::Value = serde_json::from_str(ADMIN_OPENAPI).expect("valid JSON");
@@ -4451,4 +4458,242 @@ async fn without_keys_webhooks_are_not_offered() {
         .as_administrator(Method::GET, "/webhook-event-types", None)
         .await;
     assert_eq!(types.status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn a_workloads_api_key_is_shown_once_and_does_no_more_than_its_scopes_and_its_roles() {
+    let world = world().await;
+    let (ana, _) = world.person(&world.acme, "ana@example.com", &[]).await;
+    let created = world
+        .as_administrator(
+            Method::POST,
+            "/service-accounts",
+            Some(serde_json::json!({ "name": "Reports", "owners": [ana.to_string()] })),
+        )
+        .await;
+    let account = created.body["id"].as_str().expect("id").to_owned();
+    let keys = format!("/service-accounts/{account}/api-keys");
+
+    // What breaks a rule is refused with its code.
+    for (body, code) in [
+        (
+            serde_json::json!({ "name": "x", "scopes": ["users:delete"] }),
+            "authorization.scope_unknown",
+        ),
+        (
+            serde_json::json!({ "name": "x", "scopes": ["authz:evaluate"] }),
+            "authorization.scope_needs_application",
+        ),
+        (
+            serde_json::json!({ "name": "x", "scopes": ["users:read"], "lifetime_days": 400 }),
+            "credential.api_key_lifetime_invalid",
+        ),
+        (
+            serde_json::json!({
+                "name": "x", "scopes": ["authz:evaluate"],
+                "application_id": UserId::generate().to_string()
+            }),
+            "credential.api_key_application_invalid",
+        ),
+    ] {
+        let refused = world
+            .as_administrator(Method::POST, &keys, Some(body))
+            .await;
+        assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY, "{code}");
+        assert_eq!(refused.code(), code);
+    }
+
+    let made = world
+        .as_administrator(
+            Method::POST,
+            &keys,
+            Some(serde_json::json!({ "name": "Reports on the build server", "scopes": ["users:read"] })),
+        )
+        .await;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.body);
+    let secret = made.body["api_key"].as_str().expect("the key").to_owned();
+    assert!(
+        secret.starts_with("hodor_ak_") && secret.len() == 73,
+        "{secret}"
+    );
+    assert_eq!(made.body["status"], "active");
+    assert_eq!(
+        made.body["hint"],
+        format!("…{}", &secret[secret.len() - 4..])
+    );
+    let key_id = made.body["id"].as_str().expect("id").to_owned();
+
+    // Never shown again.
+    let listed = world.as_administrator(Method::GET, &keys, None).await;
+    assert_eq!(listed.status, StatusCode::OK);
+    assert_eq!(listed.body["items"][0]["id"], key_id.as_str());
+    assert!(!listed.body.to_string().contains(&secret[9..]));
+    assert!(listed.body["items"][0].get("api_key").is_none());
+
+    // The key does nothing until its holder holds a role, and then only
+    // what its scopes say.
+    let bearer = format!("Bearer {secret}");
+    let with_key = |method: Method, path: &str| {
+        let path = format!("/t/acme/api/v1/admin{path}");
+        let bearer = bearer.clone();
+        let world = &world;
+        async move {
+            world
+                .send(
+                    method,
+                    &path,
+                    Some(&bearer),
+                    Some(serde_json::json!({ "email": "new@example.com" })),
+                )
+                .await
+        }
+    };
+    let reply = with_key(Method::GET, "/users").await;
+    assert_eq!(reply.status, StatusCode::FORBIDDEN, "no role yet");
+    world
+        .authorization
+        .assign(
+            &world.acme,
+            account.parse().expect("an identifier"),
+            Role::TenantAdministrator,
+            Caller::system(),
+        )
+        .await
+        .expect("a role");
+    assert_eq!(with_key(Method::GET, "/users").await.status, StatusCode::OK);
+    for (method, path) in [(Method::GET, "/groups"), (Method::POST, "/users")] {
+        let reply = with_key(method.clone(), path).await;
+        assert_eq!(reply.status, StatusCode::FORBIDDEN, "{method} {path}");
+        assert_eq!(reply.code(), "admin.forbidden");
+    }
+    let elsewhere = world
+        .send(
+            Method::GET,
+            "/t/globex/api/v1/admin/users",
+            Some(&format!("Bearer {secret}")),
+            None,
+        )
+        .await;
+    assert_eq!(elsewhere.status, StatusCode::UNAUTHORIZED, "another tenant");
+
+    // Rotated: both work for the overlap.
+    let rotated = world
+        .as_administrator(
+            Method::POST,
+            &format!("{keys}/{key_id}:rotate"),
+            Some(serde_json::json!({ "keep_previous_days": 1 })),
+        )
+        .await;
+    assert_eq!(rotated.status, StatusCode::CREATED, "{}", rotated.body);
+    let next = rotated.body["api_key"]
+        .as_str()
+        .expect("the key")
+        .to_owned();
+    assert_ne!(next, secret);
+    let next_id = rotated.body["id"].as_str().expect("id").to_owned();
+    assert_eq!(with_key(Method::GET, "/users").await.status, StatusCode::OK);
+    let reply = world
+        .send(
+            Method::GET,
+            "/t/acme/api/v1/admin/users",
+            Some(&format!("Bearer {next}")),
+            None,
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::OK);
+    let again = world
+        .as_administrator(Method::POST, &format!("{keys}/{key_id}:rotate"), None)
+        .await;
+    assert_eq!(again.status, StatusCode::CONFLICT);
+    assert_eq!(again.code(), "credential.api_key_not_rotatable");
+
+    // Disabling the holder stops its keys; enabling lets them work again.
+    world
+        .as_administrator(
+            Method::POST,
+            &format!("/service-accounts/{account}:disable"),
+            None,
+        )
+        .await;
+    let reply = with_key(Method::GET, "/users").await;
+    assert_eq!(reply.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(reply.code(), "admin.not_authenticated");
+    world
+        .as_administrator(
+            Method::POST,
+            &format!("/service-accounts/{account}:enable"),
+            None,
+        )
+        .await;
+    assert_eq!(with_key(Method::GET, "/users").await.status, StatusCode::OK);
+
+    // Revoked: refused at once, and listed as revoked.
+    let revoked = world
+        .as_administrator(Method::DELETE, &format!("{keys}/{key_id}"), None)
+        .await;
+    assert_eq!(revoked.status, StatusCode::NO_CONTENT);
+    assert_eq!(
+        with_key(Method::GET, "/users").await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    let listed = world.as_administrator(Method::GET, &keys, None).await;
+    let statuses: Vec<(&str, &str)> = listed.body["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .map(|key| {
+            (
+                key["id"].as_str().expect("id"),
+                key["status"].as_str().expect("status"),
+            )
+        })
+        .collect();
+    assert_eq!(
+        statuses,
+        [(next_id.as_str(), "active"), (key_id.as_str(), "revoked")]
+    );
+
+    // A key is reached only under its own workload and kind.
+    let agent_path = format!("/agents/{account}/api-keys");
+    assert_eq!(
+        world
+            .as_administrator(Method::GET, &agent_path, None)
+            .await
+            .code(),
+        "identity.workload_not_found"
+    );
+    let other = world
+        .as_administrator(
+            Method::POST,
+            "/service-accounts",
+            Some(serde_json::json!({ "name": "Other", "owners": [ana.to_string()] })),
+        )
+        .await;
+    let other = other.body["id"].as_str().expect("id").to_owned();
+    let missing = world
+        .as_administrator(
+            Method::DELETE,
+            &format!("/service-accounts/{other}/api-keys/{next_id}"),
+            None,
+        )
+        .await;
+    assert_eq!(missing.code(), "credential.api_key_not_found");
+
+    // Deleting the holder revokes its keys.
+    world
+        .as_administrator(
+            Method::DELETE,
+            &format!("/service-accounts/{account}"),
+            None,
+        )
+        .await;
+    let reply = world
+        .send(
+            Method::GET,
+            "/t/acme/api/v1/admin/users",
+            Some(&format!("Bearer {next}")),
+            None,
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::UNAUTHORIZED);
 }

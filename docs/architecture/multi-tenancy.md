@@ -152,6 +152,8 @@ Every case has the same shape. First something is shown to work in the tenant it
 | The identifier of a service account or an agent, read, changed, disabled, enabled or deleted by the other tenant's own administrator, and named as the principal of the other tenant's client | Not found; refused as a principal. It still works where it belongs |
 | A person of one tenant named as an owner of the other tenant's service account | No such user |
 | The access token of a client that acts as a service account, at the other tenant's Authorization API and at introspection by the other tenant's client | Not authenticated; not active |
+| A service account's API key, at the other tenant's administration interface and Authorization API | Not authenticated. It still works where it belongs |
+| The identifier of an API key, listed, rotated or revoked by the other tenant's own administrator | Not found |
 
 It also checks what must not be shared: one tenant's list of users and audit log name nothing of the other's; locking a person out by failed attempts in one tenant does not lock out the person with the same address in the other; a person with an authenticator application in one tenant signs in to the other with the password alone; each tenant's discovery document names its own assurance levels only; one tenant's lists of roles, bindings and policy versions name nothing of the other's; one tenant's lists of groups and organizations name nothing of the other's; and a person deactivated through SCIM in one tenant loses their session there, while the person with the same address stays signed in to the other.
 
