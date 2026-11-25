@@ -78,10 +78,11 @@ docker compose -f deploy/docker/compose.yaml up --build --wait
 | `system-tenant` | Runs `hodor-cli tenant create-system` once and exits. It creates the system tenant unless it exists | — |
 | `server` | `hodor-server`, with the hosted pages. It trusts every private address as a [proxy](../api/api-spec.md#the-client-address), as the Docker installation does, so a forwarded header from this machine or another container is believed. Never do that where the port is reachable from elsewhere | <http://localhost:8080>, health on <http://localhost:9090/readyz> |
 | `edge` | A web server in front of the server, as a load balancer would be: it keeps the `X-Forwarded-For` it receives from this machine and adds the address it saw. [The demonstration of Milestone 6](../operations/quick-start.md#the-demonstration-of-milestone-6) goes through it | <http://localhost:8081> |
-| `worker` | `hodor-worker`, writing the audit log and delivering email | internal only |
+| `worker` | `hodor-worker`, writing the audit log and delivering email and webhooks. It waits one second after a webhook's first failed attempt and sets a delivery aside after three, so that [the demonstration of Milestone 8](../operations/quick-start.md#the-demonstration-of-milestone-8) sees it in seconds | internal only |
 | `mail` | A mail server for development. It accepts every message and delivers none: what Hodor sends can be read in its web page | <http://localhost:8025> |
 | `provider` | [The development identity provider](#the-development-identity-provider), which lets anyone sign in as anyone | <http://localhost:9400> |
 | `saml-provider` | [The development SAML identity provider](#the-development-saml-identity-provider), which lets anyone sign in as anyone too | <http://localhost:9500> |
+| `webhook-receiver` | [The development receiver of webhooks](#the-development-receiver-of-webhooks), which keeps what it is sent | <http://localhost:9600> |
 | `directory` | [The development directory](#the-development-directory), OpenLDAP with one person in it | internal only |
 | `victoriametrics` | Metrics backend; the server and the worker push to it over OTLP | <http://localhost:8428/vmui> |
 | `victoriatraces` | Traces backend; the server and the worker push to it over OTLP | <http://localhost:10428/select/vmui> |
@@ -89,7 +90,7 @@ docker compose -f deploy/docker/compose.yaml up --build --wait
 If one of those ports is taken on your machine, choose others:
 
 ```bash
-HODOR_HTTP_PORT=18080 HODOR_EDGE_PORT=18081 HODOR_OPS_PORT=19090 HODOR_VM_PORT=18428 HODOR_TRACES_PORT=20428 HODOR_MAIL_PORT=18025 HODOR_PROVIDER_PORT=19400 HODOR_SAML_PROVIDER_PORT=19500 docker compose -f deploy/docker/compose.yaml up --build --wait
+HODOR_HTTP_PORT=18080 HODOR_EDGE_PORT=18081 HODOR_OPS_PORT=19090 HODOR_VM_PORT=18428 HODOR_TRACES_PORT=20428 HODOR_MAIL_PORT=18025 HODOR_PROVIDER_PORT=19400 HODOR_SAML_PROVIDER_PORT=19500 HODOR_WEBHOOK_RECEIVER_PORT=19600 docker compose -f deploy/docker/compose.yaml up --build --wait
 ```
 
 Set the same variables for every later `docker compose` command on that stack. The commands on this page pass `--no-deps` to `run`, so that running the command-line tool never restarts a service of the stack.
@@ -262,6 +263,18 @@ docker compose -f deploy/docker/compose.yaml run --rm --no-deps --entrypoint /us
 ```
 
 The sign-in page then offers "Continue with Development SAML provider". The Compose file names `localhost:9500` in `HODOR_OUTBOUND_DEVELOPMENT_HOSTS`, which lets its single sign-on address be plain HTTP; that does not belong anywhere real either. Hodor's metadata for it is at <http://localhost:8080/t/acme/interaction/sign-in/providers/corp/saml/metadata>.
+
+### The development receiver of webhooks
+
+The stack has a receiver of webhooks, `deploy/dev-webhook-receiver/receiver.mjs`, one file for Node.js with no dependencies. It answers every `POST` with `204` and keeps the last 500 it got, with their headers and bodies, and `GET /received` shows them as JSON, the oldest first; `?path=<path>` keeps those sent to one path, and `?webhook-id=<id>` those of one event. It checks nothing: checking the signature is the receiver's part that [the demonstration of Milestone 8](../operations/quick-start.md#the-demonstration-of-milestone-8) plays. Hodor reaches it as `webhook-receiver:9600`, which the Compose file names in `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` of the server and the worker; a browser or a script on this machine reaches it as `localhost:9600`, or the port in `HODOR_WEBHOOK_RECEIVER_PORT`.
+
+Register it for a tenant:
+
+```bash
+docker compose -f deploy/docker/compose.yaml run --rm --no-deps --entrypoint /usr/local/bin/hodor-cli -e HODOR_DATABASE_URL=postgres://hodor_server:dev-server@postgres:5432/hodor server webhook add --tenant acme --url http://webhook-receiver:9600/hodor --event session.started
+```
+
+The command prints the endpoint's secret once. The service `server` already holds the stack's `HODOR_SECRET_KEYS` and development exception, which the command needs.
 
 ### The first administrator
 

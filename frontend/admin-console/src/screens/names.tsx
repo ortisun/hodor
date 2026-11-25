@@ -1,6 +1,6 @@
 import { Link } from "@astryxdesign/core/Link";
 import { useEffect, useState } from "react";
-import type { Permission } from "../client";
+import type { Permission, Workload } from "../client";
 import { Identifier, shortened } from "../parts/Identifier";
 import { follow, type ScreenProps } from "./shared";
 import { nameOf } from "./UsersScreen";
@@ -81,6 +81,54 @@ export function NameOf({ of, id, client, me, text, go, path, known }: NameOfProp
   return (
     <Link href={path(screen)} onClick={(event) => follow(event, go, screen)}>
       {name ?? <span className="console-mono">{shortened(id)}</span>}
+    </Link>
+  );
+}
+
+interface PrincipalOfProps extends Pick<ScreenProps, "client" | "me" | "text" | "go" | "path"> {
+  id: string;
+}
+
+/**
+ * The service account or agent a client acts as, shown as a link to its
+ * page with its name once the server gives it. The client says only the
+ * identifier, so it is asked for as a service account and then as an
+ * agent. Someone who may not read workloads sees the identifier.
+ */
+export function PrincipalOf({ id, client, me, text, go, path }: PrincipalOfProps) {
+  const allowed = me.permissions.includes("workloads:read");
+  const [found, setFound] = useState<Workload | null>(null);
+
+  useEffect(() => {
+    if (!allowed) {
+      return;
+    }
+    let current = true;
+    client
+      .getWorkload("service_account", id)
+      .catch(() => client.getWorkload("agent", id))
+      .then(
+        (workload) => {
+          if (current) {
+            setFound(workload);
+          }
+        },
+        () => {
+          // Neither: the identifier is shown.
+        },
+      );
+    return () => {
+      current = false;
+    };
+  }, [allowed, id, client]);
+
+  if (!allowed || found === null) {
+    return <Identifier value={id} text={text} />;
+  }
+  const screen = found.kind === "agent" ? ({ name: "agent", id } as const) : ({ name: "serviceAccount", id } as const);
+  return (
+    <Link href={path(screen)} onClick={(event) => follow(event, go, screen)}>
+      {found.name}
     </Link>
   );
 }

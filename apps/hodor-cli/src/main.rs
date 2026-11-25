@@ -7,6 +7,7 @@ mod decisions;
 mod memberships;
 mod policies;
 mod roles;
+mod webhooks;
 mod workloads;
 
 use clap::{Parser, Subcommand, ValueEnum};
@@ -282,6 +283,35 @@ enum Command {
         database_url: Option<String>,
         #[command(subcommand)]
         command: applications::ResourceServerCommand,
+    },
+
+    /// Manage a tenant's webhook endpoints and their deliveries.
+    Webhook {
+        /// Connection URL of the application role.
+        #[arg(
+            long,
+            env = "HODOR_DATABASE_URL",
+            hide_env_values = true,
+            global = true
+        )]
+        database_url: Option<String>,
+        /// The keys that keep secrets encrypted at rest, as the server
+        /// has them. Registering an endpoint and rotating its secret need
+        /// them.
+        #[arg(long, env = "HODOR_SECRET_KEYS", hide_env_values = true, global = true)]
+        secret_keys: Option<String>,
+        /// Hosts with their ports that an endpoint may name at a private
+        /// address and over plain HTTP, separated by commas, as the server
+        /// has them. For a development stack; never set it anywhere real.
+        #[arg(
+            long,
+            env = "HODOR_OUTBOUND_DEVELOPMENT_HOSTS",
+            value_delimiter = ',',
+            global = true
+        )]
+        development_hosts: Vec<String>,
+        #[command(subcommand)]
+        command: webhooks::WebhookCommand,
     },
 
     /// Manage people's authenticator applications, until people can do it
@@ -2104,6 +2134,25 @@ async fn main() -> Result<(), Box<dyn Error>> {
         } => {
             let database = connect(database_url).await?;
             print(applications::run_resource_server(&database, command).await)?;
+        }
+        Command::Webhook {
+            database_url,
+            secret_keys,
+            development_hosts,
+            command,
+        } => {
+            let database = connect(database_url).await?;
+            print(
+                webhooks::run(
+                    &database,
+                    webhooks::Installation {
+                        secret_keys,
+                        development_hosts: &development_hosts,
+                    },
+                    command,
+                )
+                .await,
+            )?;
         }
         Command::Totp {
             database_url,

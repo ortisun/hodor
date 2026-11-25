@@ -97,6 +97,32 @@ export const ACTIONS = {
   invite: { level: 1, permission: "organizations:write" },
   /** The link in the message stops working. */
   withdrawInvitation: { level: 1, permission: "organizations:write" },
+  /** A form is its own confirmation. */
+  createWorkload: { level: 0, permission: "workloads:write" },
+  /** Its name and owners change; its clients, keys and roles stay as they are. */
+  changeWorkload: { level: 1, permission: "workloads:write" },
+  /** Its clients get tokens and its keys work again. */
+  enableWorkload: { level: 1, permission: "workloads:write" },
+  /** Its clients get no tokens, its tokens stop at once and its keys stop working. */
+  disableWorkload: { level: 2, permission: "workloads:write" },
+  /** Its tokens and keys are revoked, its name erased and its owners forgotten, for good. */
+  deleteWorkload: { level: 2, permission: "workloads:write" },
+  /** A key that acts as the workload, within its scopes; shown once. */
+  createApiKey: { level: 1, permission: "workloads:write" },
+  /** A new key, shown once; the old one keeps working for seven days. */
+  rotateApiKey: { level: 1, permission: "workloads:write" },
+  /** Whatever still uses the key is refused at once. */
+  revokeApiKey: { level: 2, permission: "workloads:write" },
+  /** Every event of the chosen types is sent to the address, signed with a secret shown once. */
+  registerEndpoint: { level: 1, permission: "webhooks:write" },
+  /** Only events that happen from now on are sent with the new choice. */
+  changeSubscriptions: { level: 1, permission: "webhooks:write" },
+  /** A new secret, shown once; the previous one signs for 24 hours more, then a receiver checking with it refuses everything. */
+  rotateEndpointSecret: { level: 2, permission: "webhooks:write" },
+  /** Its secrets and every delivery, pending, delivered or set aside, go with it. */
+  removeEndpoint: { level: 2, permission: "webhooks:write" },
+  /** The endpoint receives the event again, with the same webhook-id. */
+  redeliver: { level: 1, permission: "webhooks:write" },
 } as const satisfies Record<string, Action>;
 
 export type ActionName = keyof typeof ACTIONS;

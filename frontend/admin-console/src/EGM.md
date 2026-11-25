@@ -24,17 +24,22 @@ person sees from who they are (`Client.me`).
   `audit:read`; `providers` and `provider` need `identity-providers:read`;
   `applications`, `application` and `client` need `applications:read`;
   `groups` and `group` need `groups:read`; `organizations` and `organization`
-  need `organizations:read`; the others need `users:read`.
+  need `organizations:read`; `serviceAccounts`, `serviceAccount`, `agents`
+  and `agent` need `workloads:read`; `webhooks` and `webhook` need
+  `webhooks:read`; the others need `users:read`. Service accounts and agents
+  are under Directory, webhooks under Audit.
 - `address.ts` - `Screen` (`home`, `users`, `user`, `audit`, `providers`,
   `provider`, `applications`, `application`, `client`, `authorization`,
-  `groups`, `group`, `organizations`, `organization`), `Place`, `placeOf(pathname)`, `pathOf(tenant, screen)`,
+  `groups`, `group`, `organizations`, `organization`, `serviceAccounts`,
+  `serviceAccount`, `agents`, `agent`, `webhooks`, `webhook`), `Place`, `placeOf(pathname)`, `pathOf(tenant, screen)`,
   `isIdentifier(text)`, `signInPath(tenant)` (`/t/{tenant}/account/sign-in`)
   and `accountPath(tenant)` (`/t/{tenant}/account`). Console addresses are
   `/t/{tenant}/console`, `.../users`, `.../users/{id}`, `.../audit`,
   `.../identity-providers`, `.../identity-providers/{id}`, `.../applications`,
   `.../applications/{id}`, `.../clients/{id}`, `.../authorization`,
-  `.../groups`, `.../groups/{id}`, `.../organizations` and
-  `.../organizations/{id}`.
+  `.../groups`, `.../groups/{id}`, `.../organizations`,
+  `.../organizations/{id}`, `.../service-accounts`, `.../service-accounts/{id}`,
+  `.../agents`, `.../agents/{id}`, `.../webhooks` and `.../webhooks/{id}`.
 - `actions.ts:ACTIONS`, `ActionName`, `Level`, `Action`, `may(permissions,
   action)` - `createUser` (level 0, `users:write`); `endSession` (1,
   `sessions:revoke`); `suspendUser` (2, `users:write`); `addProvider`,
@@ -49,7 +54,11 @@ person sees from who they are (`Client.me`).
   `createOrganization`, `createUnit` (0), `changeOrganization`, `changeUnit`,
   `putOrganizationMember`, `removeOrganizationMember`, `invite`,
   `withdrawInvitation` (1), `deleteOrganization`, `deleteUnit` (2), all
-  `organizations:write`.
+  `organizations:write`; `createWorkload` (0), `changeWorkload`,
+  `enableWorkload`, `createApiKey`, `rotateApiKey` (1), `disableWorkload`,
+  `deleteWorkload`, `revokeApiKey` (2), all `workloads:write`;
+  `registerEndpoint`, `changeSubscriptions`, `redeliver` (1),
+  `rotateEndpointSecret`, `removeEndpoint` (2), all `webhooks:write`.
 - `client.ts:Client` - every request goes to `/t/{tenant}/console/api{path}`,
   except sign-out, which uses `/t/{tenant}/interaction{path}`:
 
@@ -100,6 +109,16 @@ person sees from who they are (`Client.me`).
   | `putOrganizationMember(id, userId, unitIds)`, `removeOrganizationMember(id, userId)` | `PUT` and `DELETE /organizations/{id}/members/{userId}` |
   | `listInvitations(id)`, `invite(id, email, unitIds, locale)`, `withdrawInvitation(id, invitationId)` | `GET` and `POST /organizations/{id}/invitations`, `DELETE /organizations/{id}/invitations/{invitationId}`; the answer to `POST` holds nothing |
   | `organizationsOfUser(userId)` | `GET /users/{id}/organizations` |
+  | `listWorkloads(kind, cursor)` | `GET /service-accounts` or `GET /agents`, `?limit=50[&cursor=]` |
+  | `getWorkload(kind, id)`, `createWorkload(kind, settings)`, `changeWorkload(kind, id, settings)` | `GET /…/{id}`, `POST /…`, `PATCH /…/{id}` with `{ name, owners }` |
+  | `disableWorkload(kind, id)`, `enableWorkload(kind, id)`, `deleteWorkload(kind, id)` | `POST /…/{id}:disable`, `POST /…/{id}:enable`, `DELETE /…/{id}` |
+  | `listApiKeys(kind, id)` | `GET /…/{id}/api-keys` |
+  | `createApiKey(kind, id, settings)`, `rotateApiKey(kind, id, keyId)`, `revokeApiKey(kind, id, keyId)` | `POST /…/{id}/api-keys` with `{ name, scopes, application_id?, lifetime_days }`, `POST /…/{id}/api-keys/{keyId}:rotate` with `{}`, `DELETE /…/{id}/api-keys/{keyId}`; the first two answer the key and `api_key`, once |
+  | `listEventTypes()` | `GET /webhook-event-types` |
+  | `listEndpoints(cursor)`, `getEndpoint(id)` | `GET /webhook-endpoints?limit=50[&cursor=]`, `GET /webhook-endpoints/{id}` |
+  | `registerEndpoint(settings)`, `rotateEndpointSecret(id)` | `POST /webhook-endpoints` with `{ url, description?, event_types }`, `POST /webhook-endpoints/{id}:rotate-secret` with no body; both answer the endpoint and its `secret`, once |
+  | `replaceSubscriptions(id, eventTypes)`, `removeEndpoint(id)` | `PUT /webhook-endpoints/{id}/subscriptions`, `DELETE /webhook-endpoints/{id}` |
+  | `listDeliveries(endpointId, status, cursor)`, `redeliver(id)` | `GET /webhook-deliveries?limit=50[&cursor=]&endpoint_id=…[&status=]`, `POST /webhook-deliveries/{id}:redeliver` |
 
 - `client.ts` types - `Failure` (`code`, `status`, `requestId`, `signedOut`),
   `Permission`, `Identifier`, `User`, `Me`, `Session`, `AuditRecord`,
@@ -109,7 +128,11 @@ person sees from who they are (`Client.me`).
   `NewSecret`, `Scope`, `ResourceServer`, `Page<T>`, `Named` (with `Group`
   and `Organization`), `NamedSettings`, `GroupMember`, `GroupOfUser`, `Unit`,
   `UnitKind`, `UnitSettings`, `OrganizationMember`, `OrganizationOfUser`,
-  `Invitation` (never a link or a secret).
+  `Invitation` (never a link or a secret), `WorkloadKind`, `Workload`,
+  `WorkloadSettings`, `ApiKey` (never the key), `ApiKeySettings`, `MadeApiKey`,
+  `WebhookEndpoint` (never a secret), `EndpointSettings`, `SignedEndpoint`,
+  `DeliveryStatus`, `WebhookDelivery` (never its body). `ApplicationClient`
+  has `principal`, the workload it acts as.
 - `hodor-theme.d.ts` - declares the modules `@hodor-theme/hodor.js`
   (`hodorTheme: DefinedTheme`) and `@hodor-theme/hodor.css`; the alias is
   resolved by `../vite.config.ts`.

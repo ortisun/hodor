@@ -108,6 +108,20 @@ Every route of the [administration interface](admin-api.md#routes) exists here a
 | `POST /organizations/{organization_id}/invitations` | `organizations:write` |
 | `DELETE /organizations/{organization_id}/invitations/{invitation_id}` | `organizations:write` |
 | `GET /users/{user_id}/organizations` | `organizations:read` |
+| `GET /service-accounts` | `workloads:read` |
+| `POST /service-accounts` | `workloads:write` |
+| `GET /service-accounts/{service_account_id}` | `workloads:read` |
+| `PATCH /service-accounts/{service_account_id}` | `workloads:write` |
+| `POST /service-accounts/{service_account_id}:disable` | `workloads:write` |
+| `POST /service-accounts/{service_account_id}:enable` | `workloads:write` |
+| `DELETE /service-accounts/{service_account_id}` | `workloads:write` |
+| `GET /agents` | `workloads:read` |
+| `POST /agents` | `workloads:write` |
+| `GET /agents/{agent_id}` | `workloads:read` |
+| `PATCH /agents/{agent_id}` | `workloads:write` |
+| `POST /agents/{agent_id}:disable` | `workloads:write` |
+| `POST /agents/{agent_id}:enable` | `workloads:write` |
+| `DELETE /agents/{agent_id}` | `workloads:write` |
 | `GET /scim-deprovisioning` | `users:read` |
 | `PUT /scim-deprovisioning` | `users:write` |
 | `GET /webhook-event-types` | `webhooks:read` |
@@ -119,6 +133,14 @@ Every route of the [administration interface](admin-api.md#routes) exists here a
 | `POST /webhook-endpoints/{endpoint_id}:rotate-secret` | `webhooks:write` |
 | `GET /webhook-deliveries` | `webhooks:read` |
 | `POST /webhook-deliveries/{delivery_id}:redeliver` | `webhooks:write` |
+| `GET /service-accounts/{service_account_id}/api-keys` | `workloads:read` |
+| `POST /service-accounts/{service_account_id}/api-keys` | `workloads:write` |
+| `POST /service-accounts/{service_account_id}/api-keys/{api_key_id}:rotate` | `workloads:write` |
+| `DELETE /service-accounts/{service_account_id}/api-keys/{api_key_id}` | `workloads:write` |
+| `GET /agents/{agent_id}/api-keys` | `workloads:read` |
+| `POST /agents/{agent_id}/api-keys` | `workloads:write` |
+| `POST /agents/{agent_id}/api-keys/{api_key_id}:rotate` | `workloads:write` |
+| `DELETE /agents/{agent_id}/api-keys/{api_key_id}` | `workloads:write` |
 | `GET /assurance-levels` | `assurance-levels:read` |
 | `PUT /assurance-levels` | `assurance-levels:write` |
 

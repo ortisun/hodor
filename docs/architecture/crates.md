@@ -103,7 +103,7 @@ flowchart BT
 
     server["hodor-server"] --> protocolHttp & adaptersPostgres & redis & crypto & adaptersKeyService & adaptersHttp & authorizationNative & authorizationPolicyAgent & observability
     worker["hodor-worker"] --> adaptersPostgres & adaptersSmtp & adaptersPolicyCheck & redis & crypto & adaptersKeyService & adaptersHttp & authorizationPolicyAgent & observability & notification & audit & webhooks
-    commandLineTool["hodor-cli"] --> adaptersPostgres & crypto
+    commandLineTool["hodor-cli"] --> adaptersPostgres & crypto & adaptersHttp
 ```
 
 ## Layers and allowed edges

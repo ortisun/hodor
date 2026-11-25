@@ -44,7 +44,11 @@ export type Permission =
   | "groups:read"
   | "groups:write"
   | "organizations:read"
-  | "organizations:write";
+  | "organizations:write"
+  | "workloads:read"
+  | "workloads:write"
+  | "webhooks:read"
+  | "webhooks:write";
 
 /** A permission a role holds, with its condition when it has one. */
 export interface HeldPermission {
@@ -252,6 +256,8 @@ export interface ApplicationClient {
   tokenPolicy: TokenPolicy;
   secrets: { id: string; createdAt: string; expiresAt: string }[];
   keys: { kid: string; jwk: Record<string, unknown>; addedAt: string }[];
+  /** The service account or agent the client acts as; `null` for none. */
+  principal: string | null;
   status: string;
   createdAt: string;
   updatedAt: string;
@@ -378,6 +384,100 @@ export interface Invitation {
   unitIds: string[];
   createdAt: string;
   expiresAt: string;
+}
+
+/** The two kinds of workload, each under a path of its own. */
+export type WorkloadKind = "service_account" | "agent";
+
+/** A service account or an agent: a principal of the tenant that is not a person. */
+export interface Workload {
+  id: string;
+  kind: WorkloadKind;
+  name: string;
+  status: string;
+  /** The user identifiers of the people responsible for it, in the order they became owners. */
+  owners: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** What an administrator gives to create a workload, or to rename it and replace its owners. */
+export interface WorkloadSettings {
+  name: string;
+  owners: string[];
+}
+
+/** An API key of a workload. The key itself is never here: only its last four characters. */
+export interface ApiKey {
+  id: string;
+  name: string;
+  hint: string;
+  scopes: string[];
+  applicationId: string | null;
+  status: string;
+  createdAt: string;
+  expiresAt: string;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+  replacedBy: string | null;
+}
+
+/** What an administrator gives to make an API key. */
+export interface ApiKeySettings {
+  name: string;
+  scopes: string[];
+  /** Needed with a scope of the Authorization API; `null` otherwise. */
+  applicationId: string | null;
+  lifetimeDays: number;
+}
+
+/** A new API key, and the key itself: shown once. */
+export interface MadeApiKey {
+  key: ApiKey;
+  secret: string;
+}
+
+/** A webhook endpoint, with when its secrets in force started and stop. Never a secret. */
+export interface WebhookEndpoint {
+  id: string;
+  url: string;
+  description: string | null;
+  eventTypes: string[];
+  /** Newest first; `expiresAt` is `null` for the current secret. */
+  secrets: { createdAt: string; expiresAt: string | null }[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** What an administrator gives to register an endpoint. */
+export interface EndpointSettings {
+  url: string;
+  /** Empty for none. */
+  description: string;
+  eventTypes: string[];
+}
+
+/** An endpoint with its new secret: shown once. */
+export interface SignedEndpoint {
+  endpoint: WebhookEndpoint;
+  secret: string;
+}
+
+export type DeliveryStatus = "pending" | "delivered" | "set_aside";
+
+/** One event on its way to one endpoint, without the body it carries. */
+export interface WebhookDelivery {
+  id: string;
+  endpointId: string;
+  eventId: string;
+  eventType: string;
+  status: DeliveryStatus;
+  attempts: number;
+  nextAttemptAt: string | null;
+  lastResponseStatus: number | null;
+  lastError: string | null;
+  createdAt: string;
+  finishedAt: string | null;
 }
 
 type Fetch = typeof globalThis.fetch;
@@ -545,6 +645,7 @@ function applicationClient(body: Fields): ApplicationClient {
       jwk: fields(key["jwk"]),
       addedAt: required(key["added_at"]),
     })),
+    principal: text(body["principal"]),
     status: required(body["status"]),
     createdAt: required(body["created_at"]),
     updatedAt: required(body["updated_at"]),
@@ -627,6 +728,86 @@ function clientBody(settings: ClientSettings): Fields {
     redirect_uris: settings.redirectUris,
     post_logout_redirect_uris: settings.postLogoutRedirectUris,
     allowed_scopes: settings.allowedScopes,
+  };
+}
+
+/** The collection a kind of workload is under. */
+function collectionOf(kind: WorkloadKind): string {
+  return kind === "agent" ? "/agents" : "/service-accounts";
+}
+
+function workload(body: Fields): Workload {
+  return {
+    id: required(body["id"]),
+    kind: body["kind"] === "agent" ? "agent" : "service_account",
+    name: required(body["name"]),
+    status: required(body["status"]),
+    owners: strings(body["owners"]),
+    createdAt: required(body["created_at"]),
+    updatedAt: required(body["updated_at"]),
+  };
+}
+
+function workloadBody(settings: WorkloadSettings): Fields {
+  return { name: settings.name.trim(), owners: settings.owners };
+}
+
+function apiKey(body: Fields): ApiKey {
+  return {
+    id: required(body["id"]),
+    name: required(body["name"]),
+    hint: required(body["hint"]),
+    scopes: strings(body["scopes"]),
+    applicationId: text(body["application_id"]),
+    status: required(body["status"]),
+    createdAt: required(body["created_at"]),
+    expiresAt: required(body["expires_at"]),
+    lastUsedAt: text(body["last_used_at"]),
+    revokedAt: text(body["revoked_at"]),
+    replacedBy: text(body["replaced_by"]),
+  };
+}
+
+function madeApiKey(body: Fields): MadeApiKey {
+  return { key: apiKey(body), secret: required(body["api_key"]) };
+}
+
+function endpoint(body: Fields): WebhookEndpoint {
+  return {
+    id: required(body["id"]),
+    url: required(body["url"]),
+    description: text(body["description"]),
+    eventTypes: strings(body["event_types"]),
+    secrets: list(body["secrets"]).map((secret) => ({
+      createdAt: required(secret["created_at"]),
+      expiresAt: text(secret["expires_at"]),
+    })),
+    createdAt: required(body["created_at"]),
+    updatedAt: required(body["updated_at"]),
+  };
+}
+
+function signedEndpoint(body: Fields): SignedEndpoint {
+  return { endpoint: endpoint(fields(body["endpoint"])), secret: required(body["secret"]) };
+}
+
+function deliveryStatus(value: unknown): DeliveryStatus {
+  return value === "delivered" || value === "set_aside" ? value : "pending";
+}
+
+function delivery(body: Fields): WebhookDelivery {
+  return {
+    id: required(body["id"]),
+    endpointId: required(body["endpoint_id"]),
+    eventId: required(body["event_id"]),
+    eventType: required(body["event_type"]),
+    status: deliveryStatus(body["status"]),
+    attempts: typeof body["attempts"] === "number" ? body["attempts"] : 0,
+    nextAttemptAt: text(body["next_attempt_at"]),
+    lastResponseStatus: typeof body["last_response_status"] === "number" ? body["last_response_status"] : null,
+    lastError: text(body["last_error"]),
+    createdAt: required(body["created_at"]),
+    finishedAt: text(body["finished_at"]),
   };
 }
 
@@ -1169,6 +1350,121 @@ export class Client {
         addedAt: required(found["added_at"]),
       }),
     );
+  }
+
+  async listWorkloads(kind: WorkloadKind, cursor: string | null = null): Promise<Page<Workload>> {
+    return page(await this.#send("GET", `${collectionOf(kind)}${query(cursor)}`), workload);
+  }
+
+  async getWorkload(kind: WorkloadKind, id: string): Promise<Workload> {
+    return workload(await this.#send("GET", `${collectionOf(kind)}/${encodeURIComponent(id)}`));
+  }
+
+  async createWorkload(kind: WorkloadKind, settings: WorkloadSettings): Promise<Workload> {
+    return workload(await this.#send("POST", collectionOf(kind), workloadBody(settings)));
+  }
+
+  /** Renames it and replaces the whole list of its owners. */
+  async changeWorkload(kind: WorkloadKind, id: string, settings: WorkloadSettings): Promise<Workload> {
+    return workload(await this.#send("PATCH", `${collectionOf(kind)}/${encodeURIComponent(id)}`, workloadBody(settings)));
+  }
+
+  async disableWorkload(kind: WorkloadKind, id: string): Promise<Workload> {
+    return workload(await this.#send("POST", `${collectionOf(kind)}/${encodeURIComponent(id)}:disable`));
+  }
+
+  async enableWorkload(kind: WorkloadKind, id: string): Promise<Workload> {
+    return workload(await this.#send("POST", `${collectionOf(kind)}/${encodeURIComponent(id)}:enable`));
+  }
+
+  async deleteWorkload(kind: WorkloadKind, id: string): Promise<void> {
+    await this.#send("DELETE", `${collectionOf(kind)}/${encodeURIComponent(id)}`);
+  }
+
+  /** A workload's API keys, newest first. */
+  async listApiKeys(kind: WorkloadKind, id: string): Promise<ApiKey[]> {
+    return list((await this.#send("GET", `${collectionOf(kind)}/${encodeURIComponent(id)}/api-keys`))["items"]).map(
+      apiKey,
+    );
+  }
+
+  async createApiKey(kind: WorkloadKind, id: string, settings: ApiKeySettings): Promise<MadeApiKey> {
+    return madeApiKey(
+      await this.#send("POST", `${collectionOf(kind)}/${encodeURIComponent(id)}/api-keys`, {
+        name: settings.name.trim(),
+        scopes: settings.scopes,
+        ...(settings.applicationId === null ? {} : { application_id: settings.applicationId }),
+        lifetime_days: settings.lifetimeDays,
+      }),
+    );
+  }
+
+  /** Replaces a key with a new one, shown once; the old one keeps working for the server's default overlap. */
+  async rotateApiKey(kind: WorkloadKind, id: string, keyId: string): Promise<MadeApiKey> {
+    return madeApiKey(
+      await this.#send(
+        "POST",
+        `${collectionOf(kind)}/${encodeURIComponent(id)}/api-keys/${encodeURIComponent(keyId)}:rotate`,
+        {},
+      ),
+    );
+  }
+
+  async revokeApiKey(kind: WorkloadKind, id: string, keyId: string): Promise<void> {
+    await this.#send("DELETE", `${collectionOf(kind)}/${encodeURIComponent(id)}/api-keys/${encodeURIComponent(keyId)}`);
+  }
+
+  /** The event types an endpoint can receive. */
+  async listEventTypes(): Promise<string[]> {
+    return strings((await this.#send("GET", "/webhook-event-types"))["items"]);
+  }
+
+  async listEndpoints(cursor: string | null = null): Promise<Page<WebhookEndpoint>> {
+    return page(await this.#send("GET", `/webhook-endpoints${query(cursor)}`), endpoint);
+  }
+
+  async getEndpoint(id: string): Promise<WebhookEndpoint> {
+    return endpoint(await this.#send("GET", `/webhook-endpoints/${encodeURIComponent(id)}`));
+  }
+
+  async registerEndpoint(settings: EndpointSettings): Promise<SignedEndpoint> {
+    const description = settings.description.trim();
+    return signedEndpoint(
+      await this.#send("POST", "/webhook-endpoints", {
+        url: settings.url.trim(),
+        ...(description === "" ? {} : { description }),
+        event_types: settings.eventTypes,
+      }),
+    );
+  }
+
+  async replaceSubscriptions(id: string, eventTypes: string[]): Promise<WebhookEndpoint> {
+    return endpoint(
+      await this.#send("PUT", `/webhook-endpoints/${encodeURIComponent(id)}/subscriptions`, { event_types: eventTypes }),
+    );
+  }
+
+  /** A new secret, shown once; the previous one keeps signing for the server's default overlap. */
+  async rotateEndpointSecret(id: string): Promise<SignedEndpoint> {
+    return signedEndpoint(await this.#send("POST", `/webhook-endpoints/${encodeURIComponent(id)}:rotate-secret`));
+  }
+
+  async removeEndpoint(id: string): Promise<void> {
+    await this.#send("DELETE", `/webhook-endpoints/${encodeURIComponent(id)}`);
+  }
+
+  /** An endpoint's deliveries, newest first, of one status or of all. */
+  async listDeliveries(
+    endpointId: string,
+    status: DeliveryStatus | null,
+    cursor: string | null = null,
+  ): Promise<Page<WebhookDelivery>> {
+    const filter = `&endpoint_id=${encodeURIComponent(endpointId)}${status === null ? "" : `&status=${status}`}`;
+    return page(await this.#send("GET", `/webhook-deliveries${query(cursor)}${filter}`), delivery);
+  }
+
+  async redeliver(id: string): Promise<WebhookDelivery> {
+    return delivery(await this.#send("POST", `/webhook-deliveries/${encodeURIComponent(id)}:redeliver`));
   }
 
   async listAuditRecords(cursor: string | null = null): Promise<Page<AuditRecord>> {

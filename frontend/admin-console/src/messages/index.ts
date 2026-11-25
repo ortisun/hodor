@@ -99,6 +99,27 @@ export function describe(failure: Failure, text: Messages): string {
       return text.unitTreeTooDeep;
     case "identity.unit_not_empty":
       return text.unitNotEmpty;
+    case "identity.workload_not_found":
+      return text.workloadNotFound;
+    case "identity.user_modified_concurrently":
+    case "webhooks.endpoint_changed":
+      return text.changedConcurrently;
+    case "credential.api_key_not_found":
+      return text.apiKeyNotFound;
+    case "credential.too_many_api_keys":
+      return text.tooManyApiKeys;
+    case "credential.api_key_not_rotatable":
+      return text.apiKeyNotRotatable;
+    case "webhooks.endpoint_not_found":
+      return text.endpointNotFound;
+    case "webhooks.delivery_not_found":
+      return text.deliveryNotFound;
+    case "webhooks.too_many_endpoints":
+      return text.tooManyEndpoints;
+    case "webhooks.delivery_not_set_aside":
+      return text.deliveryNotSetAside;
+    case "webhooks.not_configured":
+      return text.webhooksNotConfigured;
     default:
       if (failure.code !== null && text.valueInvalid[failure.code] !== undefined) {
         return text.valueInvalid[failure.code] ?? text.somethingWrong;

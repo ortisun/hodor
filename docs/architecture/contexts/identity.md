@@ -505,5 +505,4 @@ A tenant table under row-level security. That the workload is a service account 
 | Linked external identities | Phase 3 |
 | Non-ASCII email addresses | Not scheduled |
 | Purging the remaining row of a Deleted user | With the tenant purge job |
-| Console pages for service accounts and agents | Milestone 8, Issue-97 |
-| Listing the clients bound to a workload, and the workloads a person owns | When the console pages need them, Issue-97 |
+| Listing the clients bound to a workload, and the workloads a person owns | Not scheduled. The console's pages of Issue-97 name a client's principal on the client's page instead |
