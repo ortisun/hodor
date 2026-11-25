@@ -178,6 +178,7 @@ kubectl exec --namespace hodor deployment/hodor-server -- /usr/local/bin/hodor-c
 | `keyProvider.openbao.enabled`, `address`, `transitMount` | `false`; none; `hodor-transit` | Whether the servers and workers use OpenBao, its address, and Hodor's Transit mount. Keep it enabled while a key made there may sign |
 | `keyProvider.openbao.authMethod` | `kubernetes` | `kubernetes`: the pods present a token of the release's service account made for the audience `keyProvider.openbao.tokenAudience` alone, mounted for that purpose, under the role `kubernetesRole`. `approle`: the identifiers in the Secret |
 | `keyProvider.openbao.certificateAuthority.configMap`, `key` | Empty; `ca.crt` | A ConfigMap holding the certificate of the authority that issued OpenBao's certificate. Set, only that authority is trusted for OpenBao |
+| `outboundAuthorities.configMap`, `outboundAuthorities.key` | Empty; `authorities.pem` | A ConfigMap of yours whose key holds the certificates, in PEM, of the authorities Hodor's outbound requests trust in place of the image's, for an identity provider or a bundle endpoint served under an authority of your own. It replaces them all: [the authorities it trusts](../security/outbound-http.md#the-authorities-it-trusts) |
 
 Changing the Secret does not restart anything. After changing it, restart the pods so that they read it again:
 
@@ -243,6 +244,8 @@ clientIdentityHeader: x-forwarded-client-cert
 - **Name only the proxy that ends the workload's mutual TLS**, here Istio's sidecar, which connects to Hodor from `127.0.0.6`, and only if it replaces or appends to the header a caller sends. Linkerd's proxy connects from inside the pod as well, and removes any `l5d-client-id` a caller sent: name the address it connects from. The service mesh guide will say which address each mesh uses, as tried (Issue-113).
 - **Set `forwardedHeader` to `none` when the sidecar is named.** A sidecar passes `X-Forwarded-For` as the caller wrote it, so any workload could choose its own address. With `none`, every caller is known by the sidecar's address and shares one limit on sign-in attempts, until the forwarded address can be read from named gateways only (Issue-112).
 - **Give the tenant the workload's trust domain**: by its bundle, so that the forwarded certificate is checked against it, or as checked by the mesh, which is needed when the proxy forwards only the names of the certificate, as Istio does by default, or the Linkerd identity.
+
+[The demonstration of Milestone 10](quick-start.md#the-demonstration-of-milestone-10) installs the chart this way on a kind cluster with Istio and SPIRE, and checks it: Istio's sidecar does connect to Hodor from `127.0.0.6`, takes away an `X-Forwarded-Client-Cert` sent by a caller outside the mesh, and forwards the names and the `Hash` of the certificate of a caller inside it. Its settings are in `deploy/demo/workload-identity/hodor-values.yaml`.
 
 ## Upgrading
 

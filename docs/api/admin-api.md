@@ -573,7 +573,7 @@ A client:
 }
 ```
 
-`id` is the `client_id` the client sends. `secrets` lists the secrets that exist, by identifier and expiry, never the secret or its hash. `keys` lists the public keys, each as `{ "kid": "…", "jwk": { … }, "added_at": "…" }`. `spiffe_id` is the SPIFFE identifier of a client using `spiffe_jwt`, `null` for any other.
+`id` is the `client_id` the client sends. `secrets` lists the secrets that exist, by identifier and expiry, never the secret or its hash. `keys` lists the public keys, each as `{ "kid": "…", "jwk": { … }, "added_at": "…" }`. `spiffe_id` is the SPIFFE identifier of a client using `spiffe_jwt` or `spiffe_x509`, or using `tls_client_auth` bound to one, and `linkerd_identity` the Linkerd identity of a client using `linkerd_identity`, or using `tls_client_auth` bound to one; each is `null` for any other. `tls_client_certificate_bound_access_tokens` says whether the client's access tokens are bound to a certificate.
 
 `POST /applications/{application_id}/clients` with:
 

@@ -367,7 +367,23 @@ The worker fetches bundles whether or not it has `HODOR_SECRET_KEYS`: a bundle i
 | Remove | Removes it with its bundle |
 | Refresh what is due | The worker's loop: lease, fetch, record |
 
-The administration interface offers adding, listing, reading, replacing and removing; see [trust domains](../../api/admin-api.md#trust-domains). They need the permissions `keys:read` and `keys:write`, which the auditor and the administrator hold as for key versions. Managing them from the command-line tool and the console is Issue-109.
+The administration interface offers adding, listing, reading, replacing and removing; see [trust domains](../../api/admin-api.md#trust-domains). They need the permissions `keys:read` and `keys:write`, which the auditor and the administrator hold as for key versions. The [admin console](../admin-console.md#screens) offers them too, under Security, and so does the command-line tool.
+
+### The command-line tool for trust domains
+
+What an administrator does through the administration interface, an operator can do with `hodor-cli trust-domain`, against the database, naming the tenant by its slug and a trust domain by its name, which never changes. The use cases are the ones above, so a refusal is the same as through the administration interface, with the same code, and the command exits with a status that is not zero. Each change acts as the system in the audit log.
+
+| Command | Does |
+|---|---|
+| `hodor-cli trust-domain add --tenant <slug> --name <name> --bundle-file <path>` | Adds a trust domain whose bundle is read from a file, or from the standard input when the path is `-` |
+| `hodor-cli trust-domain add --tenant <slug> --name <name> --bundle-endpoint <address>` | Adds one whose bundle is fetched from its SPIFFE bundle endpoint now, and again by the worker |
+| `hodor-cli trust-domain add --tenant <slug> --name <name> --mesh` | Adds one checked by the mesh in front of Hodor, with no bundle |
+| `hodor-cli trust-domain list --tenant <slug>` | Prints `<id> <name> <source>` for every trust domain, in the order of their identifiers, followed for a bundle endpoint by `fetched <time>`, or by `failing-since <time> <code>` while fetching fails |
+| `hodor-cli trust-domain show --tenant <slug> --name <name>` | Prints the trust domain, a fact a line, after `trust-domain <id>` |
+| `hodor-cli trust-domain replace --tenant <slug> --name <name>` with one of `--bundle-file`, `--bundle-endpoint` or `--mesh` | Gives it another source, checked as when it is added; prints it after `replaced <id>` |
+| `hodor-cli trust-domain remove --tenant <slug> --name <name>` | Removes it with its bundle, and prints `removed <id> <name>` |
+
+`add` prints the trust domain after `added <id>`, as `show` does: `name`, `source`, `bundle-endpoint` for a bundle endpoint; for a bundle, `sequence` and `refresh-hint` when it has them, `x509-authorities` and `jwt-authorities`, the number of authorities of each kind, and `bundle-sha256`, the SHA-256 the audit log names it by, never its keys; then `bundle-changed`, and for a bundle endpoint `fetched`, `next-fetch` and, while fetching fails, `failing-since` and `last-error`. A bundle endpoint is checked and fetched through the guarded outbound client, with the development exception of `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` when it is set, as the server has it, and with the authorities of the machine the command runs on ([outbound HTTP](../../security/outbound-http.md#the-authorities-it-trusts)).
 
 ### Events of trust domains
 
@@ -456,7 +472,6 @@ A tenant table under row-level security. A partial index on `next_refresh_at` of
 | Algorithms for the encryption key set | When Hodor accepts encrypted requests or encrypts tokens |
 | EdDSA | Optional, not scheduled |
 | A rotation policy per tenant | When a tenant asks for one |
-| Managing trust domains from the command-line tool and the console | Issue-109 |
 | Following a temporary redirect of a bundle endpoint; the `https_spiffe` profile, where the endpoint proves itself with an SVID of its own trust domain | Not scheduled |
 | Asking for a bundle to be fetched again at once | Not scheduled: replacing the trust domain with the same address fetches it |
 | The cloud's key management services: Amazon Web Services, Google Cloud, Azure Key Vault (Requirement-Key-03) | Phase 9, on the same port and the same contract |
