@@ -40,6 +40,7 @@ hodor-session.workspace = true
 tower.workspace = true
 hodor-adapters-postgres = { workspace = true, features = ["testing"] }
 hodor-kernel = { workspace = true, features = ["testing"] }
+hodor-keys = { workspace = true, features = ["testing"] }
 hodor-notification = { workspace = true, features = ["testing"] }
 hodor-webhooks = { workspace = true, features = ["testing"] }
 http.workspace = true

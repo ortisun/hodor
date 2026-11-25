@@ -91,6 +91,8 @@ struct World {
     endpoints: hodor_webhooks::testing::RecordingEndpoints,
     /// How many committed events were handed to the webhooks fan-out.
     fanned_out: AtomicUsize,
+    /// The bundle endpoints trust domains are fetched from.
+    bundle_endpoints: hodor_keys::testing::FakeBundleEndpoints,
     /// The administrator of Acme and their token.
     administrator: UserId,
     administrator_token: String,
@@ -360,6 +362,16 @@ async fn world_with_keys(with_keys: bool) -> World {
             clock.clone(),
         )
     });
+    let bundle_endpoints = hodor_keys::testing::FakeBundleEndpoints::default();
+    let trust_domains =
+        hodor_keys::api::TrustDomainService::new(hodor_keys::api::TrustDomainPorts {
+            units_of_work: units(),
+            store: Arc::new(hodor_keys::testing::InMemoryTrustDomains::default()),
+            destinations: Arc::new(bundle_endpoints.clone()),
+            http: Arc::new(bundle_endpoints.clone()),
+            digest: Arc::new(FakeDigest),
+            clock: clock.clone(),
+        });
     let state = AdminState {
         tokens: tokens.clone(),
         authorization: authorization.clone(),
@@ -369,6 +381,7 @@ async fn world_with_keys(with_keys: bool) -> World {
         federation: Some(federation),
         keys,
         key_rotation: RotationPolicy::DEFAULT,
+        trust_domains,
         applications: oauth.0,
         claim_mappers: oauth.2.clone(),
         consents: oauth.1.clone(),
@@ -436,6 +449,7 @@ async fn world_with_keys(with_keys: bool) -> World {
         webhooks: webhook_rows,
         endpoints: hodor_webhooks::testing::RecordingEndpoints::default(),
         fanned_out: AtomicUsize::new(0),
+        bundle_endpoints,
         administrator: UserId::generate(),
         administrator_token: String::new(),
     };
@@ -626,6 +640,7 @@ impl Operation {
                 .replace("{endpoint_id}", &UserId::generate().to_string())
                 .replace("{delivery_id}", &UserId::generate().to_string())
                 .replace("{entry_id}", &UserId::generate().to_string())
+                .replace("{trust_domain_id}", &UserId::generate().to_string())
         )
     }
 }
@@ -672,7 +687,7 @@ fn the_document_and_the_routes_list_the_same_operations_and_permissions() {
         })
         .collect();
     assert_eq!(documented, served);
-    assert_eq!(served.len(), 141);
+    assert_eq!(served.len(), 146);
 
     // Every operation says how it refuses.
     let document: serde_json::Value = serde_json::from_str(ADMIN_OPENAPI).expect("valid JSON");
@@ -5634,4 +5649,255 @@ async fn an_administrator_manages_the_claim_mappers_of_a_client() {
     }
     let still = world.as_administrator(Method::GET, &mappers, None).await;
     assert_eq!(still.body["items"].as_array().map(Vec::len), Some(1));
+}
+
+#[tokio::test]
+async fn an_administrator_adds_reads_replaces_and_removes_trust_domains() {
+    let world = world().await;
+    let bundle = hodor_keys::testing::sample_bundle(Some(3), &["one"]);
+    let added = world
+        .as_administrator(
+            Method::POST,
+            "/trust-domains",
+            Some(serde_json::json!({
+                "name": "prod.example.com",
+                "source": "uploaded",
+                "bundle": bundle,
+            })),
+        )
+        .await;
+    assert_eq!(added.status, StatusCode::CREATED, "{}", added.body);
+    let id = added.body["id"].as_str().expect("id").to_owned();
+    assert_eq!(added.body["source"], "uploaded");
+    assert_eq!(added.body["bundle"]["spiffe_sequence"], 3);
+    assert_eq!(
+        added.body["bundle"]["keys"].as_array().map(Vec::len),
+        Some(2)
+    );
+    assert!(added.body.get("refresh").is_none());
+    assert!(added.body.get("bundle_endpoint_url").is_none());
+
+    // From a bundle endpoint: fetched once when it is saved.
+    let url = "https://spire.example.com/bundle?token=receiver";
+    world.bundle_endpoints.serve(
+        url,
+        &hodor_keys::testing::sample_bundle(Some(1), &["spire"]),
+    );
+    let fetched = world
+        .as_administrator(
+            Method::POST,
+            "/trust-domains",
+            Some(serde_json::json!({
+                "name": "spire.example",
+                "source": "bundle_endpoint",
+                "bundle_endpoint_url": url,
+            })),
+        )
+        .await;
+    assert_eq!(fetched.status, StatusCode::CREATED, "{}", fetched.body);
+    assert_eq!(fetched.body["bundle_endpoint_url"], url);
+    assert_eq!(
+        fetched.body["refresh"]["fetched_at"],
+        "1970-01-01T00:00:00Z"
+    );
+    assert_eq!(fetched.body["refresh"]["next_at"], "1970-01-01T00:05:00Z");
+    assert_eq!(
+        fetched.body["refresh"]["failing_since"],
+        serde_json::Value::Null
+    );
+    let mesh = world
+        .as_administrator(
+            Method::POST,
+            "/trust-domains",
+            Some(serde_json::json!({ "name": "cluster.local", "source": "mesh" })),
+        )
+        .await;
+    assert_eq!(mesh.status, StatusCode::CREATED);
+    assert!(mesh.body.get("bundle").is_none());
+
+    let listed = world
+        .as_administrator(Method::GET, "/trust-domains?limit=2", None)
+        .await;
+    assert_eq!(listed.status, StatusCode::OK);
+    assert_eq!(listed.body["items"].as_array().map(Vec::len), Some(2));
+    assert!(listed.body["next_cursor"].is_string());
+
+    // A replacement that does not read is refused, and the bundle stays.
+    let refused = world
+        .as_administrator(
+            Method::PUT,
+            &format!("/trust-domains/{id}"),
+            Some(serde_json::json!({
+                "source": "uploaded",
+                "bundle": { "keys": [{ "use": "jwt-svid", "kty": "EC", "crv": "P-256", "kid": "k", "x": "AA", "y": "AA" }] },
+            })),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(refused.body["code"], "keys.trust_bundle_invalid");
+    let read = world
+        .as_administrator(Method::GET, &format!("/trust-domains/{id}"), None)
+        .await;
+    assert_eq!(read.status, StatusCode::OK);
+    assert_eq!(read.body["bundle"], added.body["bundle"]);
+
+    let replaced = world
+        .as_administrator(
+            Method::PUT,
+            &format!("/trust-domains/{id}"),
+            Some(serde_json::json!({ "source": "mesh" })),
+        )
+        .await;
+    assert_eq!(replaced.status, StatusCode::OK);
+    assert_eq!(replaced.body["name"], "prod.example.com");
+    assert!(replaced.body.get("bundle").is_none());
+
+    let removed = world
+        .as_administrator(Method::DELETE, &format!("/trust-domains/{id}"), None)
+        .await;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT);
+    let gone = world
+        .as_administrator(Method::GET, &format!("/trust-domains/{id}"), None)
+        .await;
+    assert_eq!(gone.status, StatusCode::NOT_FOUND);
+    assert_eq!(gone.body["code"], "keys.trust_domain_not_found");
+
+    // Every change is an event for the audit log, and none names the
+    // address.
+    let types: Vec<String> = world
+        .units_of_work
+        .committed_events()
+        .into_iter()
+        .filter(|event| event.event_type.starts_with("keys.trust"))
+        .map(|event| {
+            assert!(!event.payload.to_string().contains("spire.example.com"));
+            event.event_type
+        })
+        .collect();
+    assert_eq!(
+        types,
+        [
+            "keys.trust_domain_added",
+            "keys.trust_domain_added",
+            "keys.trust_domain_added",
+            "keys.trust_domain_replaced",
+            "keys.trust_domain_removed",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn each_refusal_of_a_trust_domain_has_its_code() {
+    let world = world().await;
+    world.bundle_endpoints.forbid("https://10.0.0.1/bundle");
+    world
+        .bundle_endpoints
+        .answer("https://moved.example/bundle", 302, b"");
+    let cases = [
+        (
+            serde_json::json!({ "name": "Prod", "source": "mesh" }),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "keys.trust_domain_name_invalid",
+        ),
+        (
+            serde_json::json!({ "name": "prod", "source": "other" }),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "keys.trust_domain_source_invalid",
+        ),
+        (
+            serde_json::json!({ "name": "prod", "source": "uploaded" }),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "keys.trust_domain_source_invalid",
+        ),
+        (
+            serde_json::json!({ "name": "prod", "source": "mesh", "bundle_endpoint_url": "https://e.example/b" }),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "keys.trust_domain_source_invalid",
+        ),
+        (
+            serde_json::json!({ "name": "prod", "source": "uploaded", "bundle": [] }),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "keys.trust_bundle_invalid",
+        ),
+        (
+            serde_json::json!({ "name": "prod", "source": "bundle_endpoint", "bundle_endpoint_url": "ftp://e.example/b" }),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "keys.bundle_endpoint_invalid",
+        ),
+        (
+            serde_json::json!({ "name": "prod", "source": "bundle_endpoint", "bundle_endpoint_url": "https://10.0.0.1/bundle" }),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "keys.bundle_endpoint_forbidden",
+        ),
+        (
+            serde_json::json!({ "name": "prod", "source": "bundle_endpoint", "bundle_endpoint_url": "https://moved.example/bundle" }),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "keys.bundle_endpoint_unreachable",
+        ),
+    ];
+    for (body, status, code) in cases {
+        let reply = world
+            .as_administrator(Method::POST, "/trust-domains", Some(body.clone()))
+            .await;
+        assert_eq!(reply.status, status, "{body}");
+        assert_eq!(reply.body["code"], code, "{body}");
+    }
+    let first = world
+        .as_administrator(
+            Method::POST,
+            "/trust-domains",
+            Some(serde_json::json!({ "name": "cluster.local", "source": "mesh" })),
+        )
+        .await;
+    assert_eq!(first.status, StatusCode::CREATED);
+    let again = world
+        .as_administrator(
+            Method::POST,
+            "/trust-domains",
+            Some(serde_json::json!({ "name": "cluster.local", "source": "mesh" })),
+        )
+        .await;
+    assert_eq!(again.status, StatusCode::CONFLICT);
+    assert_eq!(again.body["code"], "keys.trust_domain_name_taken");
+    // The name cannot be changed.
+    let renamed = world
+        .as_administrator(
+            Method::PUT,
+            &format!("/trust-domains/{}", first.body["id"].as_str().expect("id")),
+            Some(serde_json::json!({ "name": "other", "source": "mesh" })),
+        )
+        .await;
+    assert_eq!(renamed.status, StatusCode::UNPROCESSABLE_ENTITY);
+    // Nothing was fetched from a forbidden address.
+    assert!(
+        !world
+            .bundle_endpoints
+            .asked()
+            .iter()
+            .any(|url| url.contains("10.0.0.1"))
+    );
+
+    // An auditor reads trust domains and changes none.
+    let acme = world.acme.clone();
+    let (_, auditor) = world
+        .person(&acme, "auditor@example.com", &[Role::TenantAuditor])
+        .await;
+    let read = world
+        .send(
+            Method::GET,
+            "/t/acme/api/v1/admin/trust-domains",
+            Some(&format!("Bearer {auditor}")),
+            None,
+        )
+        .await;
+    assert_eq!(read.status, StatusCode::OK);
+    let write = world
+        .send(
+            Method::POST,
+            "/t/acme/api/v1/admin/trust-domains",
+            Some(&format!("Bearer {auditor}")),
+            Some(serde_json::json!({ "name": "x", "source": "mesh" })),
+        )
+        .await;
+    assert_eq!(write.status, StatusCode::FORBIDDEN);
 }

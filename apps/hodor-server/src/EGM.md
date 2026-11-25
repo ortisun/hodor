@@ -49,7 +49,10 @@ Routers, as assembled in `run`:
   `hodor_protocol_http::consent_routes`, whose `ConsentState` shares the
   `ConsentService` and `SessionService` of the authorization endpoint.
 - `/api/v1/admin` nests `hodor_protocol_http::admin_routes` with the
-  `AdminState` built by `administration`; its `webhooks` is the
+  `AdminState` built by `administration`; its `trust_domains` is the
+  `TrustDomainService` of `trust_domains`, over `PgTrustDomainStore`, whose
+  bundle endpoints are checked and fetched by a `GuardedHttpClient` with
+  the development exception, whatever the keys; its `webhooks` is the
   `WebhookService` of `webhooks`, with `HODOR_SECRET_KEYS` only, whose
   addresses are checked by a `GuardedHttpClient` with the development
   exception; its `applications` is an `ApplicationService` given such a

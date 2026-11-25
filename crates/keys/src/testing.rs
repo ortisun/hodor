@@ -1,15 +1,16 @@
-//! In-memory store, a stand-in provider, and the contract every key store
-//! passes.
+//! In-memory stores, a stand-in provider and stand-in bundle endpoints,
+//! and the contracts every key store and trust domain store pass.
 
 use crate::api::{
-    GeneratedKey, KeyAlgorithm, KeyMaterial, KeyProvider, KeyState, KeyStore, KeyUse, KeyVersion,
-    KeyVersionId, KeyVersionSnapshot,
+    CheckedSource, DueRefreshes, GeneratedKey, KeyAlgorithm, KeyMaterial, KeyProvider, KeyState,
+    KeyStore, KeyUse, KeyVersion, KeyVersionId, KeyVersionSnapshot, TrustBundle, TrustDomain,
+    TrustDomainId, TrustDomainStore,
 };
 use hodor_kernel::{
-    DomainError, PublicKey, Secret, TenantContext, TenantId, Timestamp, UnitOfWork,
-    UnitOfWorkFactory,
+    DestinationCheck, DomainError, HttpClient, HttpRequest, HttpResponse, PublicKey, Secret,
+    TenantContext, TenantId, Timestamp, UnitOfWork, UnitOfWorkFactory,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use time::Duration;
 
@@ -470,4 +471,626 @@ impl crate::api::FirstFormatSecrets for FakeFirstFormat {
             .ok_or_else(|| hodor_kernel::sealing::unreadable("another tenant or purpose"))?;
         Ok(Secret::new(rest.iter().rev().copied().collect()))
     }
+}
+
+/// Trust domains kept in memory, for every tenant; also finds those due
+/// across tenants, as the worker's port does.
+#[derive(Debug, Clone, Default)]
+pub struct InMemoryTrustDomains {
+    rows: Arc<Mutex<BTreeMap<(TenantId, TrustDomainId), TrustDomain>>>,
+}
+
+impl InMemoryTrustDomains {
+    fn rows(&self) -> std::sync::MutexGuard<'_, BTreeMap<(TenantId, TrustDomainId), TrustDomain>> {
+        self.rows.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+fn trust_domain_not_found() -> DomainError {
+    DomainError::not_found(
+        "keys.trust_domain_not_found",
+        "there is no such trust domain",
+    )
+}
+
+#[async_trait::async_trait]
+impl TrustDomainStore for InMemoryTrustDomains {
+    async fn insert(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        domain: &TrustDomain,
+    ) -> Result<(), DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let mut rows = self.rows();
+        if rows
+            .iter()
+            .any(|((owner, _), kept)| *owner == tenant && kept.name() == domain.name())
+        {
+            return Err(DomainError::conflict(
+                "keys.trust_domain_name_taken",
+                "the tenant already has a trust domain of that name",
+            ));
+        }
+        rows.insert((tenant, domain.id()), domain.clone());
+        Ok(())
+    }
+
+    async fn get(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: TrustDomainId,
+    ) -> Result<Option<TrustDomain>, DomainError> {
+        Ok(self.rows().get(&(uow.tenant().tenant_id(), id)).cloned())
+    }
+
+    async fn find_by_name(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        name: &str,
+    ) -> Result<Option<TrustDomain>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        Ok(self
+            .rows()
+            .iter()
+            .find(|((owner, _), kept)| *owner == tenant && kept.name().as_str() == name)
+            .map(|(_, kept)| kept.clone()))
+    }
+
+    async fn list(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        after: Option<TrustDomainId>,
+        limit: u32,
+    ) -> Result<Vec<TrustDomain>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        Ok(self
+            .rows()
+            .iter()
+            .filter(|((owner, id), _)| *owner == tenant && after.is_none_or(|after| *id > after))
+            .take(limit as usize)
+            .map(|(_, kept)| kept.clone())
+            .collect())
+    }
+
+    async fn count(&self, uow: &mut dyn UnitOfWork) -> Result<u32, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let count = self
+            .rows()
+            .keys()
+            .filter(|(owner, _)| *owner == tenant)
+            .count();
+        Ok(u32::try_from(count).unwrap_or(u32::MAX))
+    }
+
+    async fn update(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        domain: &TrustDomain,
+    ) -> Result<(), DomainError> {
+        let key = (uow.tenant().tenant_id(), domain.id());
+        let mut rows = self.rows();
+        let Some(kept) = rows.get(&key) else {
+            return Err(trust_domain_not_found());
+        };
+        if kept.version() != domain.version() {
+            return Err(DomainError::conflict(
+                "keys.trust_domain_changed",
+                "the trust domain changed meanwhile; read it again",
+            ));
+        }
+        let mut changed = domain.snapshot().clone();
+        // The name never changes, whatever is given.
+        changed.name = kept.name().clone();
+        changed.created_at = kept.snapshot().created_at;
+        changed.version += 1;
+        rows.insert(key, TrustDomain::from_snapshot(changed));
+        Ok(())
+    }
+
+    async fn remove(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: TrustDomainId,
+    ) -> Result<bool, DomainError> {
+        Ok(self
+            .rows()
+            .remove(&(uow.tenant().tenant_id(), id))
+            .is_some())
+    }
+
+    async fn take(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: TrustDomainId,
+    ) -> Result<Option<TrustDomain>, DomainError> {
+        self.get(uow, id).await
+    }
+
+    async fn lock(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: TrustDomainId,
+    ) -> Result<Option<TrustDomain>, DomainError> {
+        self.get(uow, id).await
+    }
+}
+
+#[async_trait::async_trait]
+impl DueRefreshes for InMemoryTrustDomains {
+    async fn due(
+        &self,
+        now: Timestamp,
+        limit: u32,
+    ) -> Result<Vec<(TenantId, TrustDomainId)>, DomainError> {
+        let mut due: Vec<(Timestamp, TenantId, TrustDomainId)> = self
+            .rows()
+            .iter()
+            .filter(|(_, kept)| kept.is_due(now))
+            .filter_map(|((tenant, id), kept)| {
+                kept.snapshot().next_refresh_at.map(|at| (at, *tenant, *id))
+            })
+            .collect();
+        due.sort();
+        Ok(due
+            .into_iter()
+            .take(limit as usize)
+            .map(|(_, tenant, id)| (tenant, id))
+            .collect())
+    }
+}
+
+/// Bundle endpoints for tests: each address answers what it is told, or
+/// fails as it is told; an address it does not know answers `404`. As a
+/// destination check, it refuses the addresses it is told are forbidden.
+/// Never use outside tests.
+#[derive(Debug, Clone, Default)]
+pub struct FakeBundleEndpoints {
+    answers: Arc<Mutex<BTreeMap<String, Result<HttpResponse, DomainError>>>>,
+    forbidden: Arc<Mutex<BTreeSet<String>>>,
+    asked: Arc<Mutex<Vec<String>>>,
+}
+
+impl FakeBundleEndpoints {
+    /// The address answers `status` with `body`.
+    pub fn answer(&self, url: &str, status: u16, body: &[u8]) {
+        self.answers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(
+                url.to_owned(),
+                Ok(HttpResponse {
+                    status,
+                    headers: vec![("content-type".to_owned(), "application/json".to_owned())],
+                    body: body.to_vec(),
+                }),
+            );
+    }
+
+    /// The address answers the bundle `bundle` with `200`.
+    pub fn serve(&self, url: &str, bundle: &serde_json::Value) {
+        self.answer(url, 200, bundle.to_string().as_bytes());
+    }
+
+    /// Fetching the address fails with `code`, as the guarded client's
+    /// errors do.
+    pub fn fail(&self, url: &str, code: &'static str) {
+        self.answers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(
+                url.to_owned(),
+                Err(DomainError::invalid(code, "refused by the test")),
+            );
+    }
+
+    /// The destination check refuses the address.
+    pub fn forbid(&self, url: &str) {
+        self.forbidden
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(url.to_owned());
+    }
+
+    /// Every address fetched, in order.
+    #[must_use]
+    pub fn asked(&self) -> Vec<String> {
+        self.asked.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl HttpClient for FakeBundleEndpoints {
+    async fn send(&self, request: HttpRequest) -> Result<HttpResponse, DomainError> {
+        self.asked
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(request.url.clone());
+        self.answers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&request.url)
+            .cloned()
+            .unwrap_or_else(|| {
+                Ok(HttpResponse {
+                    status: 404,
+                    headers: Vec::new(),
+                    body: Vec::new(),
+                })
+            })
+    }
+}
+
+#[async_trait::async_trait]
+impl DestinationCheck for FakeBundleEndpoints {
+    async fn check(&self, url: &str) -> Result<(), DomainError> {
+        if self
+            .forbidden
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(url)
+        {
+            return Err(DomainError::invalid(
+                "http.destination_forbidden",
+                "refused by the test",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// A bundle with one `x509-svid` authority, whose certificate is only a
+/// DER sequence, and one `jwt-svid` key per identifier, each a P-256 point
+/// made from the identifier. Never a real authority.
+#[must_use]
+pub fn sample_bundle(sequence: Option<u64>, key_ids: &[&str]) -> serde_json::Value {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
+    let mut keys = vec![serde_json::json!({
+        "use": "x509-svid",
+        "kty": "EC",
+        "crv": "P-256",
+        "x": URL_SAFE_NO_PAD.encode([7_u8; 32]),
+        "y": URL_SAFE_NO_PAD.encode([8_u8; 32]),
+        "x5c": [STANDARD.encode([0x30, 0x03, 0x02, 0x01, 0x01])],
+    })];
+    for key_id in key_ids {
+        let seed = key_id.bytes().fold(0_u8, u8::wrapping_add);
+        keys.push(serde_json::json!({
+            "use": "jwt-svid",
+            "kty": "EC",
+            "crv": "P-256",
+            "kid": key_id,
+            "x": URL_SAFE_NO_PAD.encode([seed; 32]),
+            "y": URL_SAFE_NO_PAD.encode([seed.wrapping_add(1); 32]),
+        }));
+    }
+    let mut bundle = serde_json::json!({ "keys": keys });
+    if let Some(sequence) = sequence {
+        bundle["spiffe_sequence"] = serde_json::json!(sequence);
+    }
+    bundle
+}
+
+fn read_bundle(sequence: Option<u64>, key_ids: &[&str]) -> TrustBundle {
+    TrustBundle::parse(sample_bundle(sequence, key_ids).to_string().as_bytes())
+        .expect("a sample bundle reads")
+}
+
+/// The ports a store of trust domains is tried through.
+#[derive(Clone)]
+pub struct TrustDomainContract<'a> {
+    /// Starts units of work.
+    pub units_of_work: &'a dyn UnitOfWorkFactory,
+    /// The store under test.
+    pub store: &'a dyn TrustDomainStore,
+    /// Its search across tenants.
+    pub due: &'a dyn DueRefreshes,
+}
+
+impl std::fmt::Debug for TrustDomainContract<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TrustDomainContract")
+            .finish_non_exhaustive()
+    }
+}
+
+/// Runs the contract of trust domain stores. Each case uses tenants of its
+/// own, so runs can share one database.
+///
+/// # Panics
+///
+/// Panics when the implementation breaks the contract.
+pub async fn run_trust_domain_contract(ports: TrustDomainContract<'_>) {
+    every_source_loads_back_unchanged(&ports).await;
+    one_name_in_two_tenants_is_two_trust_domains_never_mixed(&ports).await;
+    a_name_is_taken_once_in_a_tenant(&ports).await;
+    an_update_needs_the_version_it_read_and_its_tenant(&ports).await;
+    trust_domains_are_listed_a_page_at_a_time_and_counted_per_tenant(&ports).await;
+    a_removal_reaches_its_tenant_only(&ports).await;
+    the_due_search_finds_only_what_is_due_in_any_tenant(&ports).await;
+}
+
+async fn stored(ports: &TrustDomainContract<'_>, tenant: &TenantContext, domain: &TrustDomain) {
+    let mut uow = ports.units_of_work.begin(tenant).await.expect("begin");
+    ports
+        .store
+        .insert(uow.as_mut(), domain)
+        .await
+        .expect("insert");
+    uow.commit().await.expect("commit");
+}
+
+async fn read(
+    ports: &TrustDomainContract<'_>,
+    tenant: &TenantContext,
+    id: TrustDomainId,
+) -> Option<TrustDomain> {
+    let mut uow = ports.units_of_work.begin(tenant).await.expect("begin");
+    ports.store.get(uow.as_mut(), id).await.expect("get")
+}
+
+async fn by_name(
+    ports: &TrustDomainContract<'_>,
+    tenant: &TenantContext,
+    name: &str,
+) -> Option<TrustDomain> {
+    let mut uow = ports.units_of_work.begin(tenant).await.expect("begin");
+    ports
+        .store
+        .find_by_name(uow.as_mut(), name)
+        .await
+        .expect("find")
+}
+
+async fn changed(
+    ports: &TrustDomainContract<'_>,
+    tenant: &TenantContext,
+    domain: &TrustDomain,
+) -> Result<(), DomainError> {
+    let mut uow = ports.units_of_work.begin(tenant).await?;
+    ports.store.update(uow.as_mut(), domain).await?;
+    uow.commit().await
+}
+
+fn endpoint_source(sequence: u64) -> CheckedSource {
+    CheckedSource::BundleEndpoint {
+        url: "https://spire.example.com/bundle".to_owned(),
+        bundle: read_bundle(Some(sequence), &["one"]),
+    }
+}
+
+async fn every_source_loads_back_unchanged(ports: &TrustDomainContract<'_>) {
+    let tenant = tenant();
+    let uploaded = TrustDomain::add(
+        "uploaded.example",
+        CheckedSource::Uploaded(read_bundle(None, &["a", "b"])),
+        MOMENT,
+    )
+    .expect("uploaded");
+    let mut fetched =
+        TrustDomain::add("fetched.example", endpoint_source(3), MOMENT).expect("fetched");
+    let mesh = TrustDomain::add("cluster.local", CheckedSource::Mesh, MOMENT).expect("mesh");
+    for domain in [&uploaded, &fetched, &mesh] {
+        stored(ports, &tenant, domain).await;
+        assert_eq!(
+            read(ports, &tenant, domain.id()).await.as_ref(),
+            Some(domain),
+            "a trust domain of source {} loads back unchanged",
+            domain.source().as_str()
+        );
+    }
+    // A lease, then a failed fetch: every field of the refresh is stored.
+    let later = MOMENT + Duration::minutes(5);
+    fetched
+        .lease(later, later + Duration::seconds(70))
+        .expect("due");
+    changed(ports, &tenant, &fetched).await.expect("leased");
+    let mut leased = read(ports, &tenant, fetched.id()).await.expect("there");
+    assert_eq!(leased.version(), fetched.version() + 1);
+    assert_eq!(
+        leased.snapshot().leased_until,
+        Some(later + Duration::seconds(70))
+    );
+    leased.record_fetch(
+        Err(DomainError::invalid(
+            "keys.bundle_endpoint_unreachable",
+            "x",
+        )),
+        later,
+    );
+    changed(ports, &tenant, &leased).await.expect("recorded");
+    let failing = read(ports, &tenant, fetched.id()).await.expect("there");
+    assert_eq!(failing.snapshot().failing_since, Some(later));
+    assert_eq!(
+        failing.snapshot().last_error.as_deref(),
+        Some("keys.bundle_endpoint_unreachable")
+    );
+    assert_eq!(failing.bundle(), fetched.bundle());
+    assert_eq!(failing.snapshot().leased_until, None);
+    assert_eq!(read(ports, &tenant, TrustDomainId::generate()).await, None);
+}
+
+async fn one_name_in_two_tenants_is_two_trust_domains_never_mixed(ports: &TrustDomainContract<'_>) {
+    let (home, elsewhere) = (tenant(), tenant());
+    let ours = TrustDomain::add(
+        "cluster.local",
+        CheckedSource::Uploaded(read_bundle(Some(1), &["ours"])),
+        MOMENT,
+    )
+    .expect("ours");
+    let theirs = TrustDomain::add(
+        "cluster.local",
+        CheckedSource::Uploaded(read_bundle(Some(9), &["theirs"])),
+        MOMENT,
+    )
+    .expect("theirs");
+    stored(ports, &home, &ours).await;
+    stored(ports, &elsewhere, &theirs).await;
+    let found = by_name(ports, &home, "cluster.local").await.expect("ours");
+    assert_eq!(found, ours);
+    assert!(found.bundle().expect("bundle").jwt_key("theirs").is_none());
+    let found = by_name(ports, &elsewhere, "cluster.local")
+        .await
+        .expect("theirs");
+    assert_eq!(found, theirs);
+    assert_eq!(read(ports, &elsewhere, ours.id()).await, None);
+    assert_eq!(read(ports, &home, theirs.id()).await, None);
+    assert_eq!(by_name(ports, &tenant(), "cluster.local").await, None);
+}
+
+async fn a_name_is_taken_once_in_a_tenant(ports: &TrustDomainContract<'_>) {
+    let tenant = tenant();
+    let first = TrustDomain::add("prod.example", CheckedSource::Mesh, MOMENT).expect("first");
+    stored(ports, &tenant, &first).await;
+    let second = TrustDomain::add("prod.example", CheckedSource::Mesh, MOMENT).expect("second");
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    let error = ports
+        .store
+        .insert(uow.as_mut(), &second)
+        .await
+        .expect_err("taken");
+    assert_eq!(error.code(), "keys.trust_domain_name_taken");
+}
+
+async fn an_update_needs_the_version_it_read_and_its_tenant(ports: &TrustDomainContract<'_>) {
+    let (home, elsewhere) = (tenant(), tenant());
+    let domain = TrustDomain::add("versioned.example", CheckedSource::Mesh, MOMENT).expect("added");
+    stored(ports, &home, &domain).await;
+    let mut first = domain.clone();
+    first.replace(
+        CheckedSource::Uploaded(read_bundle(Some(1), &["a"])),
+        MOMENT + Duration::seconds(1),
+    );
+    changed(ports, &home, &first).await.expect("first change");
+    // A second change from the same reading is refused.
+    let mut stale = domain.clone();
+    stale.replace(CheckedSource::Mesh, MOMENT + Duration::seconds(2));
+    assert_eq!(
+        changed(ports, &home, &stale)
+            .await
+            .expect_err("stale")
+            .code(),
+        "keys.trust_domain_changed"
+    );
+    let kept = read(ports, &home, domain.id()).await.expect("there");
+    assert_eq!(kept.source(), crate::api::TrustSource::Uploaded);
+    assert_eq!(kept.version(), domain.version() + 1);
+    // Another tenant cannot change it, even with the right version.
+    assert_eq!(
+        changed(ports, &elsewhere, &kept)
+            .await
+            .expect_err("elsewhere")
+            .code(),
+        "keys.trust_domain_not_found"
+    );
+}
+
+async fn trust_domains_are_listed_a_page_at_a_time_and_counted_per_tenant(
+    ports: &TrustDomainContract<'_>,
+) {
+    let (tenant, other) = (tenant(), tenant());
+    let mut ids = Vec::new();
+    for index in 0..3 {
+        let domain = TrustDomain::add(&format!("d{index}.example"), CheckedSource::Mesh, MOMENT)
+            .expect("added");
+        ids.push(domain.id());
+        stored(ports, &tenant, &domain).await;
+    }
+    stored(
+        ports,
+        &other,
+        &TrustDomain::add("d0.example", CheckedSource::Mesh, MOMENT).expect("added"),
+    )
+    .await;
+    ids.sort();
+    let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    let first: Vec<TrustDomainId> = ports
+        .store
+        .list(uow.as_mut(), None, 2)
+        .await
+        .expect("list")
+        .iter()
+        .map(TrustDomain::id)
+        .collect();
+    assert_eq!(first, ids[..2]);
+    let rest: Vec<TrustDomainId> = ports
+        .store
+        .list(uow.as_mut(), Some(ids[1]), 2)
+        .await
+        .expect("list")
+        .iter()
+        .map(TrustDomain::id)
+        .collect();
+    assert_eq!(rest, ids[2..]);
+    assert_eq!(ports.store.count(uow.as_mut()).await.expect("count"), 3);
+}
+
+async fn a_removal_reaches_its_tenant_only(ports: &TrustDomainContract<'_>) {
+    let (home, elsewhere) = (tenant(), tenant());
+    let domain = TrustDomain::add("removed.example", CheckedSource::Mesh, MOMENT).expect("added");
+    stored(ports, &home, &domain).await;
+    let mut uow = ports.units_of_work.begin(&elsewhere).await.expect("begin");
+    assert!(
+        !ports
+            .store
+            .remove(uow.as_mut(), domain.id())
+            .await
+            .expect("remove")
+    );
+    uow.commit().await.expect("commit");
+    assert!(read(ports, &home, domain.id()).await.is_some());
+    let mut uow = ports.units_of_work.begin(&home).await.expect("begin");
+    assert!(
+        ports
+            .store
+            .remove(uow.as_mut(), domain.id())
+            .await
+            .expect("remove")
+    );
+    uow.commit().await.expect("commit");
+    assert_eq!(read(ports, &home, domain.id()).await, None);
+    assert_eq!(by_name(ports, &home, "removed.example").await, None);
+}
+
+async fn the_due_search_finds_only_what_is_due_in_any_tenant(ports: &TrustDomainContract<'_>) {
+    let (one, two) = (tenant(), tenant());
+    let due_here = TrustDomain::add("due.example", endpoint_source(1), MOMENT).expect("added");
+    let due_there = TrustDomain::add("due.example", endpoint_source(1), MOMENT).expect("added");
+    let uploaded = TrustDomain::add(
+        "uploaded.example",
+        CheckedSource::Uploaded(read_bundle(None, &[])),
+        MOMENT,
+    )
+    .expect("added");
+    let mesh = TrustDomain::add("mesh.example", CheckedSource::Mesh, MOMENT).expect("added");
+    let mut leased = TrustDomain::add("leased.example", endpoint_source(1), MOMENT).expect("added");
+    stored(ports, &one, &due_here).await;
+    stored(ports, &two, &due_there).await;
+    stored(ports, &one, &uploaded).await;
+    stored(ports, &one, &mesh).await;
+    stored(ports, &one, &leased).await;
+    let now = MOMENT + Duration::minutes(5);
+    leased.lease(now, now + Duration::minutes(1)).expect("due");
+    changed(ports, &one, &leased).await.expect("leased");
+
+    let found = ports.due.due(now, 10_000).await.expect("due");
+    assert!(found.contains(&(one.tenant_id(), due_here.id())));
+    assert!(found.contains(&(two.tenant_id(), due_there.id())));
+    for absent in [uploaded.id(), mesh.id(), leased.id()] {
+        assert!(!found.iter().any(|(_, id)| *id == absent));
+    }
+    // Not yet due a moment before.
+    let before = ports
+        .due
+        .due(now - Duration::seconds(1), 10_000)
+        .await
+        .expect("due");
+    assert!(!before.iter().any(|(_, id)| *id == due_here.id()));
+    // The lease ends.
+    let after = ports
+        .due
+        .due(now + Duration::minutes(1), 10_000)
+        .await
+        .expect("due");
+    assert!(after.iter().any(|(_, id)| *id == leased.id()));
 }

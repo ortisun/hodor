@@ -290,6 +290,17 @@ fn world() -> World {
         federation: None,
         keys: None,
         key_rotation: hodor_keys::api::RotationPolicy::DEFAULT,
+        // Trust domains are tested in `admin.rs`; here none is fetched.
+        trust_domains: hodor_keys::api::TrustDomainService::new(
+            hodor_keys::api::TrustDomainPorts {
+                units_of_work: units(),
+                store: Arc::new(hodor_keys::testing::InMemoryTrustDomains::default()),
+                destinations: Arc::new(hodor_keys::testing::FakeBundleEndpoints::default()),
+                http: Arc::new(hodor_keys::testing::FakeBundleEndpoints::default()),
+                digest: Arc::new(FakeDigest),
+                clock: clock.clone(),
+            },
+        ),
         applications: oauth.0,
         claim_mappers: oauth.2.clone(),
         consents: oauth.1,
