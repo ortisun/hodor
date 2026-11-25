@@ -258,6 +258,12 @@ export interface ApplicationClient {
   keys: { kid: string; jwk: Record<string, unknown>; addedAt: string }[];
   /** The service account or agent the client acts as; `null` for none. */
   principal: string | null;
+  /** The SPIFFE identifier it is bound to, for a method that takes one; `null` otherwise. */
+  spiffeId: string | null;
+  /** The Linkerd identity it is bound to, for a method that takes one; `null` otherwise. */
+  linkerdIdentity: string | null;
+  /** Whether its access tokens are bound to the certificate the proxy forwards. */
+  certificateBoundAccessTokens: boolean;
   status: string;
   createdAt: string;
   updatedAt: string;
@@ -271,6 +277,16 @@ export interface ClientSettings {
   redirectUris: string[];
   postLogoutRedirectUris: string[];
   allowedScopes: string[];
+  /**
+   * The service account a client of a workload's identity acts as; `null`
+   * to send none, which leaves a changed client's principal as it is.
+   */
+  principal: string | null;
+  /** The SPIFFE identifier to bind it to; `null` to send none. */
+  spiffeId: string | null;
+  /** The Linkerd identity to bind it to; `null` to send none. */
+  linkerdIdentity: string | null;
+  certificateBoundAccessTokens: boolean;
 }
 
 /** A new client, with its first secret when it has one: shown once. */
@@ -436,6 +452,50 @@ export interface MadeApiKey {
   key: ApiKey;
   secret: string;
 }
+
+/** Where the bundle of a trust domain comes from. */
+export type TrustDomainSource = "uploaded" | "bundle_endpoint" | "mesh";
+
+/** The bundle a trust domain trusts now, summarized: its authorities are counted, never shown. */
+export interface TrustBundleSummary {
+  sequence: number | null;
+  /** In seconds; `null` when the bundle gives none. */
+  refreshHint: number | null;
+  x509Authorities: number;
+  jwtAuthorities: number;
+}
+
+/** How a fetched bundle is kept current: for a bundle endpoint only. */
+export interface BundleRefresh {
+  /** The last fetch that read; `null` before any. */
+  fetchedAt: string | null;
+  nextAt: string;
+  /** While fetching fails: since when, and the code of the last reason. */
+  failingSince: string | null;
+  lastError: string | null;
+}
+
+/** A SPIFFE trust domain the tenant trusts. */
+export interface TrustDomain {
+  id: string;
+  name: string;
+  source: TrustDomainSource;
+  /** For `bundle_endpoint` only. */
+  bundleEndpointUrl: string | null;
+  /** The bundle in force; `null` for `mesh`. */
+  bundle: TrustBundleSummary | null;
+  bundleChangedAt: string | null;
+  /** For `bundle_endpoint` only. */
+  refresh: BundleRefresh | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Where a trust domain's bundle comes from, with what that source needs. */
+export type TrustDomainSettings =
+  | { source: "uploaded"; bundle: unknown }
+  | { source: "bundle_endpoint"; bundleEndpointUrl: string }
+  | { source: "mesh" };
 
 /** A webhook endpoint, with when its secrets in force started and stop. Never a secret. */
 export interface WebhookEndpoint {
@@ -646,6 +706,9 @@ function applicationClient(body: Fields): ApplicationClient {
       addedAt: required(key["added_at"]),
     })),
     principal: text(body["principal"]),
+    spiffeId: text(body["spiffe_id"]),
+    linkerdIdentity: text(body["linkerd_identity"]),
+    certificateBoundAccessTokens: body["tls_client_certificate_bound_access_tokens"] === true,
     status: required(body["status"]),
     createdAt: required(body["created_at"]),
     updatedAt: required(body["updated_at"]),
@@ -728,6 +791,10 @@ function clientBody(settings: ClientSettings): Fields {
     redirect_uris: settings.redirectUris,
     post_logout_redirect_uris: settings.postLogoutRedirectUris,
     allowed_scopes: settings.allowedScopes,
+    ...(settings.principal === null ? {} : { principal: settings.principal.trim() }),
+    ...(settings.spiffeId === null ? {} : { spiffe_id: settings.spiffeId.trim() }),
+    ...(settings.linkerdIdentity === null ? {} : { linkerd_identity: settings.linkerdIdentity.trim() }),
+    tls_client_certificate_bound_access_tokens: settings.certificateBoundAccessTokens,
   };
 }
 
@@ -785,6 +852,58 @@ function endpoint(body: Fields): WebhookEndpoint {
     createdAt: required(body["created_at"]),
     updatedAt: required(body["updated_at"]),
   };
+}
+
+function count(value: unknown): number | null {
+  return typeof value === "number" ? value : null;
+}
+
+function trustDomainSource(value: unknown): TrustDomainSource {
+  return value === "uploaded" || value === "mesh" ? value : "bundle_endpoint";
+}
+
+function trustDomain(body: Fields): TrustDomain {
+  const bundle = body["bundle"];
+  const refresh = body["refresh"];
+  const keys = typeof bundle === "object" && bundle !== null ? list(fields(bundle)["keys"]) : [];
+  return {
+    id: required(body["id"]),
+    name: required(body["name"]),
+    source: trustDomainSource(body["source"]),
+    bundleEndpointUrl: text(body["bundle_endpoint_url"]),
+    bundle:
+      typeof bundle === "object" && bundle !== null
+        ? {
+            sequence: count(fields(bundle)["spiffe_sequence"]),
+            refreshHint: count(fields(bundle)["spiffe_refresh_hint"]),
+            x509Authorities: keys.filter((key) => key["use"] === "x509-svid").length,
+            jwtAuthorities: keys.filter((key) => key["use"] === "jwt-svid").length,
+          }
+        : null,
+    bundleChangedAt: text(body["bundle_changed_at"]),
+    refresh:
+      typeof refresh === "object" && refresh !== null
+        ? {
+            fetchedAt: text(fields(refresh)["fetched_at"]),
+            nextAt: required(fields(refresh)["next_at"]),
+            failingSince: text(fields(refresh)["failing_since"]),
+            lastError: text(fields(refresh)["last_error"]),
+          }
+        : null,
+    createdAt: required(body["created_at"]),
+    updatedAt: required(body["updated_at"]),
+  };
+}
+
+function trustDomainBody(settings: TrustDomainSettings): Fields {
+  switch (settings.source) {
+    case "uploaded":
+      return { source: "uploaded", bundle: settings.bundle };
+    case "bundle_endpoint":
+      return { source: "bundle_endpoint", bundle_endpoint_url: settings.bundleEndpointUrl.trim() };
+    case "mesh":
+      return { source: "mesh" };
+  }
 }
 
 function signedEndpoint(body: Fields): SignedEndpoint {
@@ -1465,6 +1584,28 @@ export class Client {
 
   async redeliver(id: string): Promise<WebhookDelivery> {
     return delivery(await this.#send("POST", `/webhook-deliveries/${encodeURIComponent(id)}:redeliver`));
+  }
+
+  async listTrustDomains(cursor: string | null = null): Promise<Page<TrustDomain>> {
+    return page(await this.#send("GET", `/trust-domains${query(cursor)}`), trustDomain);
+  }
+
+  async getTrustDomain(id: string): Promise<TrustDomain> {
+    return trustDomain(await this.#send("GET", `/trust-domains/${encodeURIComponent(id)}`));
+  }
+
+  /** Adds a trust domain; a bundle endpoint is fetched by the server before anything is kept. */
+  async addTrustDomain(name: string, settings: TrustDomainSettings): Promise<TrustDomain> {
+    return trustDomain(await this.#send("POST", "/trust-domains", { name: name.trim(), ...trustDomainBody(settings) }));
+  }
+
+  /** Replaces its source and bundle; the name never changes, and a refusal leaves it as it was. */
+  async replaceTrustDomain(id: string, settings: TrustDomainSettings): Promise<TrustDomain> {
+    return trustDomain(await this.#send("PUT", `/trust-domains/${encodeURIComponent(id)}`, trustDomainBody(settings)));
+  }
+
+  async removeTrustDomain(id: string): Promise<void> {
+    await this.#send("DELETE", `/trust-domains/${encodeURIComponent(id)}`);
   }
 
   async listAuditRecords(cursor: string | null = null): Promise<Page<AuditRecord>> {

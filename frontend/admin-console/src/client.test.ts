@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { Failure } from "./client";
 import {
+  clientBody,
+  CLUSTER,
+  meshTrustDomainBody,
+  PROD,
+  trustDomainBody,
+  WEB,
   ACME,
   ANA,
   apiKeyBody,
@@ -281,6 +287,116 @@ describe("the client of the console interface", () => {
     expect(sent[2]?.body).toEqual({ url: "https://hooks.example.com/hodor", event_types: ["session.started"] });
     expect(sent[3]?.body).toEqual({ event_types: ["identity.user_created", "session.started"] });
     expect(sent[4]?.body).toBeNull();
+  });
+
+  it("reads trust domains with their bundle summarized, and adds, replaces and removes them with each source", async () => {
+    const BUNDLE = { keys: [] };
+    const { client, sent } = scripted({
+      "GET /console/api/me": [json(200, meBody())],
+      "GET /console/api/trust-domains?limit=50": [
+        json(200, { items: [trustDomainBody(), meshTrustDomainBody()], next_cursor: "2" }),
+      ],
+      [`GET /console/api/trust-domains/${PROD}`]: [json(200, trustDomainBody())],
+      "POST /console/api/trust-domains": [
+        json(201, trustDomainBody()),
+        json(201, trustDomainBody({ source: "uploaded" })),
+        json(201, meshTrustDomainBody()),
+      ],
+      [`PUT /console/api/trust-domains/${PROD}`]: [json(200, trustDomainBody())],
+      [`DELETE /console/api/trust-domains/${CLUSTER}`]: [empty(204)],
+    });
+    await client.me();
+    const page = await client.listTrustDomains();
+    expect(page.nextCursor).toBe("2");
+    expect(page.items[0]).toEqual({
+      id: PROD,
+      name: "prod.example.com",
+      source: "bundle_endpoint",
+      bundleEndpointUrl: "https://spire.example.com/bundle",
+      // Counted, never kept: the console shows no key.
+      bundle: { sequence: 12, refreshHint: 300, x509Authorities: 1, jwtAuthorities: 1 },
+      bundleChangedAt: "2026-11-25T14:03:11Z",
+      refresh: {
+        fetchedAt: "2026-11-25T15:03:11Z",
+        nextAt: "2026-11-25T15:08:11Z",
+        failingSince: null,
+        lastError: null,
+      },
+      createdAt: "2026-11-25T14:03:11Z",
+      updatedAt: "2026-11-25T14:03:11Z",
+    });
+    expect(page.items[1]).toMatchObject({ source: "mesh", bundle: null, refresh: null, bundleEndpointUrl: null });
+    expect((await client.getTrustDomain(PROD)).name).toBe("prod.example.com");
+    await client.addTrustDomain(" prod.example.com ", {
+      source: "bundle_endpoint",
+      bundleEndpointUrl: " https://spire.example.com/bundle ",
+    });
+    await client.addTrustDomain("partner.example.com", { source: "uploaded", bundle: BUNDLE });
+    await client.addTrustDomain("cluster.local", { source: "mesh" });
+    await client.replaceTrustDomain(PROD, { source: "mesh" });
+    await client.removeTrustDomain(CLUSTER);
+
+    expect(sent[3]?.body).toEqual({
+      name: "prod.example.com",
+      source: "bundle_endpoint",
+      bundle_endpoint_url: "https://spire.example.com/bundle",
+    });
+    expect(sent[4]?.body).toEqual({ name: "partner.example.com", source: "uploaded", bundle: BUNDLE });
+    expect(sent[5]?.body).toEqual({ name: "cluster.local", source: "mesh" });
+    // The name never changes, so a replacement does not carry it.
+    expect(sent[6]?.body).toEqual({ source: "mesh" });
+    expect(sent[7]?.method).toBe("DELETE");
+  });
+
+  it("reads and sends a client's workload identity and whether its tokens are bound to a certificate", async () => {
+    const { client, sent } = scripted({
+      "GET /console/api/me": [json(200, meBody())],
+      [`GET /console/api/clients/${WEB}`]: [
+        json(200, clientBody({ linkerd_identity: "web.shop.serviceaccount.identity.linkerd.cluster.local" })),
+      ],
+      [`PATCH /console/api/clients/${WEB}`]: [json(200, clientBody()), json(200, clientBody())],
+    });
+    await client.me();
+    const found = await client.getClient(WEB);
+    expect(found.linkerdIdentity).toBe("web.shop.serviceaccount.identity.linkerd.cluster.local");
+    expect(found.spiffeId).toBeNull();
+    expect(found.certificateBoundAccessTokens).toBe(false);
+    const settings = {
+      name: "Nightly export",
+      authenticationMethod: "spiffe_x509",
+      grantTypes: ["client_credentials"],
+      redirectUris: [],
+      postLogoutRedirectUris: [],
+      allowedScopes: [],
+      principal: ` ${EXPORT} `,
+      spiffeId: " spiffe://prod.example.com/ns/payroll/sa/nightly-export ",
+      linkerdIdentity: null,
+      certificateBoundAccessTokens: true,
+    };
+    await client.changeClient(WEB, settings);
+    // A client of a secret sends no principal nor identity, which leaves its principal as it is.
+    await client.changeClient(WEB, {
+      ...settings,
+      authenticationMethod: "client_secret_basic",
+      principal: null,
+      spiffeId: null,
+      certificateBoundAccessTokens: false,
+    });
+
+    expect(sent[2]?.body).toEqual({
+      name: "Nightly export",
+      authentication_method: "spiffe_x509",
+      grant_types: ["client_credentials"],
+      redirect_uris: [],
+      post_logout_redirect_uris: [],
+      allowed_scopes: [],
+      principal: EXPORT,
+      spiffe_id: "spiffe://prod.example.com/ns/payroll/sa/nightly-export",
+      tls_client_certificate_bound_access_tokens: true,
+    });
+    expect(sent[3]?.body).not.toHaveProperty("principal");
+    expect(sent[3]?.body).not.toHaveProperty("spiffe_id");
+    expect(sent[3]?.body).not.toHaveProperty("linkerd_identity");
   });
 
   it("reads the units, members and invitations of an organization, and never a link", async () => {

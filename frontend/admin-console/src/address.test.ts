@@ -21,6 +21,11 @@ describe("placeOf", () => {
     });
     expect(placeOf(`/t/acme/console/agents/${ID}`)).toEqual({ tenant: "acme", screen: { name: "agent", id: ID } });
     expect(placeOf(`/t/acme/console/webhooks/${ID}`)).toEqual({ tenant: "acme", screen: { name: "webhook", id: ID } });
+    expect(placeOf("/t/acme/console/trust-domains")).toEqual({ tenant: "acme", screen: { name: "trustDomains" } });
+    expect(placeOf(`/t/acme/console/trust-domains/${ID}`)).toEqual({
+      tenant: "acme",
+      screen: { name: "trustDomain", id: ID },
+    });
   });
 
   it("names no screen for an address of the console that has none", () => {
@@ -32,6 +37,8 @@ describe("placeOf", () => {
     expect(placeOf(`/t/acme/console/service-accounts/${ID}/api-keys`)).toEqual({ tenant: "acme", screen: null });
     expect(placeOf("/t/acme/console/agents/helper")).toEqual({ tenant: "acme", screen: null });
     expect(placeOf("/t/acme/console/webhook-endpoints")).toEqual({ tenant: "acme", screen: null });
+    expect(placeOf("/t/acme/console/trust-domains/cluster.local")).toEqual({ tenant: "acme", screen: null });
+    expect(placeOf(`/t/acme/console/trust-domains/${ID}/bundle`)).toEqual({ tenant: "acme", screen: null });
   });
 
   it("is not the console's when the address is elsewhere", () => {
@@ -60,6 +67,8 @@ describe("pathOf", () => {
       { name: "agent", id: ID },
       { name: "webhooks" },
       { name: "webhook", id: ID },
+      { name: "trustDomains" },
+      { name: "trustDomain", id: ID },
     ] as const;
     for (const screen of screens) {
       expect(placeOf(pathOf("acme", screen))).toEqual({ tenant: "acme", screen });
