@@ -3,15 +3,16 @@
 //! depends on neither.
 //!
 //! See `docs/architecture/contexts/oauth.md`, "Refresh tokens", "The
-//! organization of a sign-in" and "Clients that act as a workload".
+//! organization of a sign-in", "Clients that act as a workload" and
+//! "Claim mappers".
 
 use hodor_adapters_postgres::{
     Database, PgGroupPolicy, PgGroupRepository, PgInvitationRepository, PgOrganizationRepository,
     PgUserRepository,
 };
-use hodor_identity::api::{GroupService, IdentityService, OrganizationService};
+use hodor_identity::api::{GroupService, IdentifierKind, IdentityService, OrganizationService};
 use hodor_kernel::{Clock, DomainError, ErrorKind, GroupId, OrganizationId, TenantContext, UserId};
-use hodor_oauth::api::{PersonMemberships, PersonStanding};
+use hodor_oauth::api::{PersonAttributes, PersonClaimSources, PersonMemberships, PersonStanding};
 use hodor_session::api::{SessionId, SessionService};
 use std::sync::Arc;
 
@@ -133,5 +134,85 @@ impl PersonMemberships for ServerMemberships {
             .await?
             .into_iter()
             .collect())
+    }
+}
+
+/// [`PersonClaimSources`] over the identity context: what the claim
+/// mappers of a client read of a person and of an organization.
+#[derive(Clone)]
+pub(crate) struct ServerClaimSources {
+    identity: IdentityService,
+    organizations: OrganizationService,
+}
+
+impl ServerClaimSources {
+    /// Over the tables of `database`.
+    pub(crate) fn over(database: &Database, clock: Arc<dyn Clock>) -> Self {
+        let units = Arc::new(database.clone());
+        Self {
+            identity: IdentityService::new(
+                units.clone(),
+                Arc::new(PgUserRepository),
+                clock.clone(),
+            ),
+            organizations: OrganizationService::new(
+                units,
+                Arc::new(PgOrganizationRepository),
+                Arc::new(PgInvitationRepository),
+                Arc::new(PgUserRepository),
+                clock,
+            ),
+        }
+    }
+}
+
+impl std::fmt::Debug for ServerClaimSources {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ServerClaimSources").finish_non_exhaustive()
+    }
+}
+
+#[async_trait::async_trait]
+impl PersonClaimSources for ServerClaimSources {
+    async fn attributes(
+        &self,
+        tenant: &TenantContext,
+        user: UserId,
+    ) -> Result<PersonAttributes, DomainError> {
+        let user = match self.identity.get(tenant, user).await {
+            Ok(user) => user,
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                return Ok(PersonAttributes::default());
+            }
+            Err(error) => return Err(error),
+        };
+        let profile = &user.snapshot().profile;
+        Ok(PersonAttributes {
+            display_name: profile.display_name.clone(),
+            username: user
+                .primary_identifier(IdentifierKind::Username)
+                .map(|identifier| identifier.value.display().to_owned()),
+            email: user
+                .primary_identifier(IdentifierKind::Email)
+                .map(|identifier| {
+                    (
+                        identifier.value.display().to_owned(),
+                        identifier.is_verified(),
+                    )
+                }),
+            locale: profile.locale.clone(),
+        })
+    }
+
+    async fn organization_name(
+        &self,
+        tenant: &TenantContext,
+        organization: OrganizationId,
+    ) -> Result<Option<String>, DomainError> {
+        match self.organizations.get(tenant, organization).await {
+            Ok(found) => Ok(Some(found.name().as_str().to_owned())),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 }

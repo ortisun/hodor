@@ -29,6 +29,9 @@ pub mod api {
         BackChannelLogoutSender, LogoutDeliverySettings, LogoutLease, LogoutOutcome,
         LogoutSenderPorts,
     };
+    pub use crate::application::claim_mapper::{
+        ClaimMapperPorts, ClaimMapperService, ClaimMapping, MappedClaims, MappedToken,
+    };
     pub use crate::application::consent::{
         AskedScope, ConsentPorts, ConsentQuestion, ConsentService, ListedConsent,
     };
@@ -37,9 +40,9 @@ pub mod api {
     pub use crate::application::pairwise::{PairwisePorts, PairwiseSubjects};
     pub use crate::application::ports::{
         AccessTokenRecordStore, ApplicationStore, AuthorizationCodeStore,
-        AuthorizationRequestStore, ClientAssertionStore, ClientStore, ConsentStore, GrantStore,
-        PairwiseSecretStore, PersonMemberships, PersonStanding, RefreshTokenStore,
-        ResourceServerStore,
+        AuthorizationRequestStore, ClaimMapperStore, ClientAssertionStore, ClientStore,
+        ConsentStore, GrantStore, PairwiseSecretStore, PersonClaimSources, PersonMemberships,
+        PersonStanding, RefreshTokenStore, ResourceServerStore,
     };
     pub use crate::application::resource_access::{
         ResourceAccessPorts, ResourceAccessService, ResourceCaller,
@@ -65,6 +68,12 @@ pub mod api {
         LogoutDeliveryId, LogoutDeliverySnapshot, LogoutDeliveryStatus, LogoutRetryPolicy,
         LogoutTokenSubject, MAX_BACKCHANNEL_LOGOUT_URI_LENGTH, MAX_LOGOUT_ERROR_LENGTH,
         SESSION_REVOKED, check_backchannel_logout_uri, logout_token_claims, logout_token_header,
+    };
+    pub use crate::domain::claim_mapper::{
+        ClaimMapper, ClaimMapperId, ClaimMapperSettings, ClaimMapperSnapshot, ClaimSource,
+        ClaimTarget, LONGEST_LOCALE, MAX_CLAIM_MAPPERS, MAX_CONSTANT_BYTES, MOST_MAPPED_BYTES,
+        OrganizationAttribute, PersonAttribute, PersonAttributes, PersonFacts, RESERVED_CLAIMS,
+        add_mapped_claims, check_together, is_reserved, mapped_claims,
     };
     pub use crate::domain::client::{
         AuthenticationMethod, Client, ClientId, ClientSettings, ClientSnapshot, ClientType,

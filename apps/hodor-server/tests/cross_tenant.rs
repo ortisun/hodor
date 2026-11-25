@@ -442,6 +442,7 @@ async fn an_administrators_token_is_refused_by_every_operation_of_another_tenant
                 .replace("{version_id}", &globex.ana.to_string())
                 .replace("{application_id}", &globex.ana.to_string())
                 .replace("{client_id}", &globex.ana.to_string())
+                .replace("{claim_mapper_id}", &globex.ana.to_string())
                 .replace("{secret_id}", &globex.ana.to_string())
                 .replace("{key_id}", "a-key")
                 .replace("{resource_server_id}", &globex.ana.to_string())
@@ -477,7 +478,7 @@ async fn an_administrators_token_is_refused_by_every_operation_of_another_tenant
             tried += 1;
         }
     }
-    assert_eq!(tried, 136, "every documented operation was tried");
+    assert_eq!(tried, 141, "every documented operation was tried");
 
     // The token is good where it belongs, and nothing happened in Globex:
     // it has its two users, both active.
@@ -4122,4 +4123,156 @@ async fn one_sector_in_two_tenants_knows_the_same_address_by_two_identifiers() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(introspected["sub"], acme_sub);
+}
+
+/// The ID token and the access token a person gets at a tenant's
+/// first-party client, signed in with the shared address.
+async fn first_party_tokens(
+    world: &World,
+    tenant: &Tenant,
+    client: (&str, &str),
+) -> (serde_json::Value, serde_json::Value) {
+    let mut browser = Browser::not_following(&world.server);
+    let (_, body) = browser.sign_in(tenant.slug, EMAIL, PASSWORD).await;
+    assert_eq!(body["status"], "completed", "{body}");
+    let back = authorized(&mut browser, &authorize_path(tenant.slug, client.0)).await;
+    let code = back.get("code").expect("a code");
+    let (status, tokens) = oauth_form(
+        world,
+        tenant,
+        "token",
+        client,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", code),
+            ("redirect_uri", REDIRECT),
+            ("code_verifier", VERIFIER),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{tokens}");
+    (
+        claims_of(tokens["id_token"].as_str().expect("an ID token")),
+        claims_of(tokens["access_token"].as_str().expect("an access token")),
+    )
+}
+
+#[tokio::test]
+async fn one_tenants_claim_mappers_are_out_of_reach_of_another_and_read_only_their_own_tenant() {
+    let world = world_with(&[("HODOR_SECRET_KEYS", ROOT_KEY)]).await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    let finance = created(
+        &world,
+        acme,
+        "/groups",
+        serde_json::json!({ "name": "finance" }),
+    )
+    .await;
+    let (status, _) = call(
+        &world,
+        acme,
+        Method::POST,
+        format!("/groups/{finance}/members"),
+        Some(serde_json::json!({ "kind": "user", "id": acme.ana.to_string() })),
+    )
+    .await;
+    assert!(status.is_success(), "{status}");
+    let (acme_client, acme_secret) = first_party_client(&world, acme).await;
+    let (globex_client, globex_secret) = first_party_client(&world, globex).await;
+    let mappers = format!("/clients/{acme_client}/claim-mappers");
+    let mapper = created(
+        &world,
+        acme,
+        &mappers,
+        serde_json::json!({
+            "claim": "in_finance",
+            "targets": ["id_token", "access_token"],
+            "source": { "kind": "group_member", "group_id": finance },
+        }),
+    )
+    .await;
+
+    // Globex's administrator, naming Acme's client and mapper at Globex,
+    // finds no such client.
+    let replacement = serde_json::json!({
+        "claim": "plan",
+        "targets": ["userinfo"],
+        "source": { "kind": "constant", "value": "gold" },
+    });
+    for (method, path, body) in [
+        (Method::GET, mappers.clone(), None),
+        (Method::POST, mappers.clone(), Some(replacement.clone())),
+        (Method::GET, format!("{mappers}/{mapper}"), None),
+        (
+            Method::PUT,
+            format!("{mappers}/{mapper}"),
+            Some(replacement.clone()),
+        ),
+        (Method::DELETE, format!("{mappers}/{mapper}"), None),
+    ] {
+        let (status, answer) = call(&world, globex, method.clone(), path.clone(), body).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{method} {path}: {answer}");
+        assert_eq!(answer["code"], "oauth.client_not_found", "{method} {path}");
+    }
+    // Acme's mapper, named under Globex's own client, is not one of it.
+    let (status, answer) = call(
+        &world,
+        globex,
+        Method::GET,
+        format!("/clients/{globex_client}/claim-mappers/{mapper}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{answer}");
+    assert_eq!(answer["code"], "oauth.claim_mapper_not_found");
+    // A mapper of Globex cannot name Acme's group.
+    let globex_mappers = format!("/clients/{globex_client}/claim-mappers");
+    let (status, answer) = call(
+        &world,
+        globex,
+        Method::POST,
+        globex_mappers.clone(),
+        Some(serde_json::json!({
+            "claim": "in_finance",
+            "targets": ["id_token"],
+            "source": { "kind": "group_member", "group_id": finance },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{answer}");
+    assert_eq!(answer["code"], "oauth.claim_mapper_group_unknown");
+
+    // Globex's own mapper of the person's groups reads Globex's groups
+    // only: the person with the same address is in none there.
+    created(
+        &world,
+        globex,
+        &globex_mappers,
+        serde_json::json!({
+            "claim": "teams",
+            "targets": ["id_token", "access_token"],
+            "source": { "kind": "groups" },
+        }),
+    )
+    .await;
+    let (identity, access) =
+        first_party_tokens(&world, globex, (&globex_client, &globex_secret)).await;
+    assert_eq!(identity["teams"], serde_json::json!([]));
+    assert_eq!(access["teams"], serde_json::json!([]));
+    assert!(
+        identity.get("in_finance").is_none(),
+        "Acme's mapper is Acme's"
+    );
+
+    // Where it belongs, the mapper writes the group, unchanged.
+    let (identity, access) = first_party_tokens(&world, acme, (&acme_client, &acme_secret)).await;
+    assert_eq!(identity["in_finance"], true);
+    assert_eq!(access["in_finance"], true);
+    assert!(
+        identity.get("teams").is_none(),
+        "Globex's mapper is Globex's"
+    );
+    let (_, listed) = call(&world, acme, Method::GET, mappers, None).await;
+    assert_eq!(listed["items"][0]["id"], mapper.as_str());
+    assert_eq!(listed["items"][0]["claim"], "in_finance");
 }

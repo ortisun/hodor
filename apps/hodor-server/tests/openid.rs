@@ -11,9 +11,9 @@ use hodor_adapters_crypto::{
 };
 use hodor_adapters_postgres::testing::TestDatabase;
 use hodor_adapters_postgres::{
-    PgApplicationStore, PgClientStore, PgGroupPolicy, PgGroupRepository, PgInvitationRepository,
-    PgKeyStore, PgOrganizationRepository, PgPasswordStore, PgResourceServerStore,
-    PgTenantDirectory, PgTenantRepository, PgUserRepository,
+    PgApplicationStore, PgClaimMapperStore, PgClientStore, PgGroupPolicy, PgGroupRepository,
+    PgInvitationRepository, PgKeyStore, PgOrganizationRepository, PgPasswordStore,
+    PgResourceServerStore, PgTenantDirectory, PgTenantRepository, PgUserRepository,
 };
 use hodor_credential::api::{CredentialService, NewPassword, PasswordRules};
 use hodor_identity::api::{
@@ -23,9 +23,10 @@ use hodor_identity::api::{
 use hodor_kernel::{Caller, Digest as _, Secret, SystemClock, TenantContext};
 use hodor_keys::api::{KeyAlgorithm, KeyService, RotationPolicy};
 use hodor_oauth::api::{
-    ApplicationPorts, ApplicationService, ApplicationSettings, AuthenticationMethod, ClientId,
+    ApplicationPorts, ApplicationService, ApplicationSettings, AuthenticationMethod,
+    ClaimMapperPorts, ClaimMapperService, ClaimMapperSettings, ClaimSource, ClaimTarget, ClientId,
     ClientSettings, ClientType, CreateClient, CreateResourceServer, GrantType, IdTokenAlgorithm,
-    ResourceServerSettings, ScopeDefinition, s256_challenge,
+    PersonAttribute, ResourceServerSettings, ScopeDefinition, s256_challenge,
 };
 use hodor_tenant::api::{CreateTenant, TenantService};
 use jsonwebtoken::jwk::JwkSet;
@@ -813,6 +814,160 @@ async fn ana_of(database: &TestDatabase, slug: &str) -> (TenantContext, hodor_ke
         .expect("Ana")
         .id();
     (tenant, ana)
+}
+
+#[tokio::test]
+async fn a_claim_mapper_puts_a_group_into_the_id_token_until_the_person_leaves_it() {
+    let database = TestDatabase::start().await;
+    let client_id = tenant(&database, "acme").await;
+    let (tenant, ana) = ana_of(&database, "acme").await;
+    let units = || Arc::new(database.app().clone());
+    let clock = Arc::new(SystemClock);
+    let groups = GroupService::new(
+        units(),
+        Arc::new(PgGroupRepository),
+        Arc::new(PgUserRepository),
+        Arc::new(PgGroupPolicy),
+        clock.clone(),
+    );
+    let finance = groups
+        .create(&tenant, "finance", None, Caller::system())
+        .await
+        .expect("group")
+        .id();
+    groups
+        .add_member(&tenant, finance, GroupMember::User(ana), Caller::system())
+        .await
+        .expect("member");
+    let mappers = ClaimMapperService::new(ClaimMapperPorts {
+        units_of_work: units(),
+        clients: Arc::new(PgClientStore),
+        mappers: Arc::new(PgClaimMapperStore),
+        clock,
+    });
+    for settings in [
+        ClaimMapperSettings {
+            claim: "in_finance".to_owned(),
+            targets: vec![ClaimTarget::IdToken, ClaimTarget::UserInfo],
+            scope: None,
+            source: ClaimSource::GroupMember(finance),
+        },
+        ClaimMapperSettings {
+            claim: "teams".to_owned(),
+            targets: vec![ClaimTarget::IdToken],
+            scope: None,
+            source: ClaimSource::Groups,
+        },
+        ClaimMapperSettings {
+            claim: "login".to_owned(),
+            targets: vec![ClaimTarget::AccessToken, ClaimTarget::UserInfo],
+            scope: Some("profile".to_owned()),
+            source: ClaimSource::Attribute(PersonAttribute::Username),
+        },
+    ] {
+        mappers
+            .create(&tenant, client_id, settings, Caller::system())
+            .await
+            .expect("a mapper");
+    }
+    let refused = mappers
+        .create(
+            &tenant,
+            client_id,
+            ClaimMapperSettings {
+                claim: "acr".to_owned(),
+                targets: vec![ClaimTarget::IdToken],
+                scope: None,
+                source: ClaimSource::Constant(Value::from("urn:hodor:acr:mfa")),
+            },
+            Caller::system(),
+        )
+        .await
+        .expect_err("a name Hodor sets");
+    assert_eq!(refused.code(), "oauth.claim_mapper_name_reserved");
+
+    let server = server(&database).await;
+    let mut browser = Browser::not_following(&server);
+    browser.sign_in("acme", "ana@example.com", PASSWORD).await;
+    let signed_in = code(
+        &mut browser,
+        "acme",
+        &authorize_query(client_id, "openid profile", &[("nonce", NONCE)]),
+    )
+    .await;
+    let answer = redeem(&server, "acme", client_id, &signed_in).await;
+
+    // The application checks the ID token with a library of its own, and
+    // reads the group in it.
+    let keys: JwkSet = reqwest::get(format!("{}/t/acme/oauth2/jwks", server.base))
+        .await
+        .expect("key set")
+        .json()
+        .await
+        .expect("JSON");
+    let id_token = answer["id_token"].as_str().expect("an ID token");
+    let header = decode_header(id_token).expect("header");
+    let key = keys
+        .find(header.kid.as_deref().expect("kid"))
+        .expect("a published key");
+    let mut validation = Validation::new(Algorithm::ES256);
+    validation.set_audience(&[client_id.to_string()]);
+    validation.set_issuer(&[issuer("acme")]);
+    let checked = decode::<Value>(
+        id_token,
+        &DecodingKey::from_jwk(key).expect("key"),
+        &validation,
+    )
+    .expect("a valid ID token")
+    .claims;
+    assert_eq!(checked["in_finance"], true);
+    assert_eq!(checked["teams"], serde_json::json!([finance.to_string()]));
+    assert_eq!(checked["sub"], ana.to_string(), "Hodor's own claims stay");
+    assert!(
+        checked.get("login").is_none(),
+        "not a target of the ID token"
+    );
+    let access = claims_of(answer["access_token"].as_str().expect("an access token"));
+    assert_eq!(access["login"], "ana.lima");
+    assert!(
+        access.get("in_finance").is_none(),
+        "not a target of the access token"
+    );
+    let info = userinfo(
+        &server,
+        "acme",
+        Method::GET,
+        answer["access_token"].as_str(),
+    )
+    .await;
+    assert_eq!(info.status, StatusCode::OK);
+    assert_eq!(info.body["in_finance"], true);
+    assert_eq!(info.body["login"], "ana.lima");
+    assert_eq!(info.body["name"], "Ana Lima", "UserInfo's own claims stay");
+
+    // Taken out of the group, Ana loses it from the next token.
+    groups
+        .remove_member(&tenant, finance, GroupMember::User(ana), Caller::system())
+        .await
+        .expect("removed");
+    let info = userinfo(
+        &server,
+        "acme",
+        Method::GET,
+        answer["access_token"].as_str(),
+    )
+    .await;
+    assert_eq!(info.body["in_finance"], false, "UserInfo reads it again");
+    let next = code(
+        &mut browser,
+        "acme",
+        &authorize_query(client_id, "openid", &[]),
+    )
+    .await;
+    let answer = redeem(&server, "acme", client_id, &next).await;
+    let identity = claims_of(answer["id_token"].as_str().expect("an ID token"));
+    assert_eq!(identity["in_finance"], false);
+    assert_eq!(identity["teams"], serde_json::json!([]));
 }
 
 /// Gives Ana an authenticator application, with the server's own way of

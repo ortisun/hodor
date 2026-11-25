@@ -3,12 +3,14 @@
 //! tokens.
 
 use crate::application::authorization::AuthorizationCodeService;
+use crate::application::claim_mapper::{ClaimMapping, MappedToken};
 use crate::application::pairwise::{PairwiseSubjects, session_for, subject_for};
 use crate::application::ports::{
     AccessTokenRecordStore, ApplicationStore, ClientAssertionStore, ClientStore, GrantStore,
     PersonMemberships, PersonStanding, RefreshTokenStore, ResourceServerStore,
 };
 use crate::domain::authorization::{CodePresentation, GrantStatus};
+use crate::domain::claim_mapper::{ClaimTarget, add_mapped_claims};
 use crate::domain::client::{AuthenticationMethod, Client, ClientId, GrantType, TokenPolicy};
 use crate::domain::event::OauthEvent;
 use crate::domain::introspection::AccessTokenRecord;
@@ -28,6 +30,7 @@ use hodor_kernel::{
     UnitOfWork, UnitOfWorkFactory, UserId,
 };
 use hodor_keys::api::{KeyAlgorithm, KeyService, KeyVersionId, Signature};
+use serde_json::{Map, Value};
 use std::fmt;
 use std::sync::Arc;
 use time::Duration;
@@ -55,6 +58,8 @@ pub struct TokenPorts {
     pub standing: Arc<dyn PersonStanding>,
     /// The person's organizations and groups, for `org_id` and `groups`.
     pub memberships: Arc<dyn PersonMemberships>,
+    /// The claims the client's mappers add.
+    pub mapping: ClaimMapping,
     /// Seals the secrets of refresh token families.
     pub secrets: Arc<dyn SecretBox>,
     /// Redeems codes.
@@ -373,21 +378,23 @@ impl TokenService {
         Ok(Ok(client))
     }
 
-    /// Signs an access token about `subject` for `client`.
+    /// Signs an access token about `subject` for `client`, with the claims
+    /// its mappers add.
     async fn sign(
         &self,
         tenant: &TenantContext,
         issuer: Issuer<'_>,
         client: &Client,
         subject: &TokenSubject,
+        mapped: &Map<String, Value>,
     ) -> Result<Result<SignedAccessToken, TokenError>, DomainError> {
         let lifetime = client.snapshot().settings.token_policy.access_token;
-        self.sign_living(tenant, issuer, client, subject, lifetime)
+        self.sign_living(tenant, issuer, client, subject, lifetime, mapped)
             .await
     }
 
     /// Signs an access token about `subject` for `client`, living
-    /// `lifetime`.
+    /// `lifetime`, with the claims its mappers add after Hodor's own.
     pub(crate) async fn sign_living(
         &self,
         tenant: &TenantContext,
@@ -395,6 +402,7 @@ impl TokenService {
         client: &Client,
         subject: &TokenSubject,
         lifetime: time::Duration,
+        mapped: &Map<String, Value>,
     ) -> Result<Result<SignedAccessToken, TokenError>, DomainError> {
         if lifetime > TokenPolicy::LONGEST_SIGNED_LIFETIME {
             // The token policy refuses such a lifetime; this is a last guard.
@@ -403,7 +411,7 @@ impl TokenService {
             )));
         }
         let now = self.ports.clock.now();
-        let claims = claims_for(
+        let mut claims = claims_for(
             issuer.issuer,
             subject,
             client.id(),
@@ -411,6 +419,7 @@ impl TokenService {
             now,
             self.ports.random.as_ref(),
         );
+        add_mapped_claims(&mut claims.claims, mapped);
         let algorithm = KeyAlgorithm::DEFAULT_SIGNING;
         let Some((message, signature)) = self
             .signed(tenant, algorithm, |key_id| {
@@ -432,7 +441,8 @@ impl TokenService {
     }
 
     /// Signs the ID token for a redeemed `code`, issued with
-    /// `access_token`, naming the person as `subject`.
+    /// `access_token`, naming the person as `subject`, with the claims the
+    /// client's mappers add after Hodor's own.
     #[allow(
         clippy::too_many_arguments,
         reason = "each is one part of the ID token; grouping them would only rename them"
@@ -446,6 +456,7 @@ impl TokenService {
         organization: Option<OrganizationId>,
         access_token: &str,
         subject: &str,
+        mapped: &Map<String, Value>,
     ) -> Result<Result<Secret<String>, TokenError>, DomainError> {
         let lifetime = client.snapshot().settings.token_policy.id_token;
         if lifetime > TokenPolicy::LONGEST_SIGNED_LIFETIME {
@@ -454,7 +465,7 @@ impl TokenService {
             )));
         }
         let session = session_for(self.pairwise.as_ref(), tenant, client, code.session_id).await?;
-        let claims = id_token_claims(
+        let mut claims = id_token_claims(
             issuer.issuer,
             code,
             IdTokenNames {
@@ -468,6 +479,7 @@ impl TokenService {
             access_token,
             self.ports.digest.as_ref(),
         );
+        add_mapped_claims(&mut claims, mapped);
         let algorithm = client
             .snapshot()
             .settings
@@ -599,7 +611,30 @@ impl TokenService {
         subject.groups = self
             .groups_for(tenant, redeemed.user_id, &redeemed.scopes)
             .await?;
-        let signed = match self.sign(tenant, issuer, client, &subject).await? {
+        let mapped = self
+            .ports
+            .mapping
+            .read(
+                tenant,
+                MappedToken {
+                    client_id: client.id(),
+                    user_id: redeemed.user_id,
+                    scopes: &redeemed.scopes,
+                    organization: grant.organization,
+                },
+                &[ClaimTarget::AccessToken, ClaimTarget::IdToken],
+            )
+            .await?;
+        let signed = match self
+            .sign(
+                tenant,
+                issuer,
+                client,
+                &subject,
+                &mapped.of(ClaimTarget::AccessToken),
+            )
+            .await?
+        {
             Ok(signed) => signed,
             Err(refusal) => return Ok(Err(refusal)),
         };
@@ -614,6 +649,7 @@ impl TokenService {
                     grant.organization,
                     &signed.token,
                     &known_as,
+                    &mapped.of(ClaimTarget::IdToken),
                 )
                 .await?
             {
@@ -951,7 +987,31 @@ impl TokenService {
                 act: None,
                 amr: None,
             };
-            let signed = match self.sign(tenant, issuer, client, &subject).await? {
+            // Read again at every refresh, as the groups are.
+            let mapped = self
+                .ports
+                .mapping
+                .read(
+                    tenant,
+                    MappedToken {
+                        client_id: client.id(),
+                        user_id: family.user_id,
+                        scopes: &subject.scopes,
+                        organization,
+                    },
+                    &[ClaimTarget::AccessToken],
+                )
+                .await?;
+            let signed = match self
+                .sign(
+                    tenant,
+                    issuer,
+                    client,
+                    &subject,
+                    &mapped.of(ClaimTarget::AccessToken),
+                )
+                .await?
+            {
                 Ok(signed) => signed,
                 Err(refusal) => return Ok(Err(refusal)),
             };
@@ -1103,7 +1163,11 @@ impl TokenService {
             act: None,
             amr: None,
         };
-        let signed = match self.sign(tenant, issuer, client, &subject).await? {
+        // Nobody signed in: no mapper applies.
+        let signed = match self
+            .sign(tenant, issuer, client, &subject, &Map::new())
+            .await?
+        {
             Ok(signed) => signed,
             Err(refusal) => return Ok(Err(refusal)),
         };

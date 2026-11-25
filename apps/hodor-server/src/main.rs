@@ -14,8 +14,8 @@ use hodor_adapters_ldap::LdapDirectoryClient;
 use hodor_adapters_postgres::{
     Database, PgAccessListStore, PgAccessTokenRecordStore, PgAccessTokenStore, PgApiKeyStore,
     PgApplicationStore, PgAttemptStore, PgAuditLog, PgAuthorizationCodeStore,
-    PgAuthorizationRequestStore, PgBundleStore, PgClientAssertionStore, PgClientStore,
-    PgConsentStore, PgDecisionLogStore, PgDeliveryStore, PgDeprovisioningPolicy,
+    PgAuthorizationRequestStore, PgBundleStore, PgClaimMapperStore, PgClientAssertionStore,
+    PgClientStore, PgConsentStore, PgDecisionLogStore, PgDeliveryStore, PgDeprovisioningPolicy,
     PgEmailSignInStore, PgEndpointStore, PgEngineBindingStore, PgGrantStore, PgGroupPolicy,
     PgGroupRepository, PgInstanceStatusStore, PgInstanceStore, PgInvitationRepository, PgKeyStore,
     PgLinkStore, PgMessageQueue, PgNativeRoleStore, PgOrganizationRepository,
@@ -56,9 +56,10 @@ use hodor_keys::api::{KeyService, RotationPolicy, TenantSecretBox};
 use hodor_notification::api::Notifier;
 use hodor_oauth::api::{
     AccessTokenRegister, ApplicationPorts, ApplicationService, AuthorizationCodePorts,
-    AuthorizationCodeService, ConsentPorts, ConsentService, LogoutPorts, LogoutService,
-    PairwisePorts, PairwiseSubjects, ResourceAccessPorts, ResourceAccessService, TokenPorts,
-    TokenService, UserInfoPorts, UserInfoService, WorkloadTokens,
+    AuthorizationCodeService, ClaimMapperPorts, ClaimMapperService, ClaimMapping, ConsentPorts,
+    ConsentService, LogoutPorts, LogoutService, PairwisePorts, PairwiseSubjects,
+    ResourceAccessPorts, ResourceAccessService, TokenPorts, TokenService, UserInfoPorts,
+    UserInfoService, WorkloadTokens,
 };
 use hodor_observability::{LogFormat, Telemetry};
 use hodor_protocol_http::{
@@ -798,6 +799,7 @@ fn token(
         access_tokens: Arc::new(PgAccessTokenRecordStore),
         standing: Arc::new(standing),
         memberships: Arc::new(ServerMemberships::over(database, clock.clone())),
+        mapping: claim_mapping(database, clock.clone()),
         secrets,
         codes,
         keys,
@@ -850,10 +852,22 @@ fn userinfo(config: &Config, database: &Database, keys: KeyService) -> UserInfoS
                 Arc::new(standing(database)),
             ),
             memberships: Arc::new(ServerMemberships::over(database, clock.clone())),
+            mapping: claim_mapping(database, clock.clone()),
             clock,
         }),
         public_url: config.public_url.clone(),
     }
+}
+
+/// What the claim mappers of clients add to tokens and to UserInfo, read
+/// from the identity context.
+fn claim_mapping(database: &Database, clock: Arc<SystemClock>) -> ClaimMapping {
+    ClaimMapping::new(
+        Arc::new(database.clone()),
+        Arc::new(PgClaimMapperStore),
+        Arc::new(ServerMemberships::over(database, clock.clone())),
+        Arc::new(standing::ServerClaimSources::over(database, clock)),
+    )
 }
 
 /// Builds everything the Authorization API needs. It checks access tokens
@@ -1407,6 +1421,12 @@ fn administration(
     })?));
     let applications_for_subjects = applications.clone();
     Ok(AdminState {
+        claim_mappers: ClaimMapperService::new(ClaimMapperPorts {
+            units_of_work: units(),
+            clients: Arc::new(PgClientStore),
+            mappers: Arc::new(PgClaimMapperStore),
+            clock: clock.clone(),
+        }),
         tokens: AccessTokenService::new(
             units(),
             Arc::new(PgAccessTokenStore),

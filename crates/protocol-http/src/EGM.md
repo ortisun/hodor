@@ -209,6 +209,8 @@ Administration and console handlers, shared by both routers
 | DELETE | `/clients/{client}/secrets/{secret}` | `revoke_secret` |
 | POST | `/clients/{client}/keys` | `add_key` |
 | DELETE | `/clients/{client}/keys/{key}` | `remove_key` (the `kid`, percent-decoded) |
+| GET, POST | `/clients/{client}/claim-mappers` | `list_mappers`, `create_mapper` (`admin/claim_mappers.rs`) |
+| GET, PUT, DELETE | `/clients/{client}/claim-mappers/{mapper}` | `get_mapper`, `replace_mapper`, `delete_mapper` |
 | GET, POST | `/resource-servers` | `list_resource_servers`, `create_resource_server` |
 | GET, PATCH | `/resource-servers/{resource_server}` | `get_resource_server`, `change_resource_server` |
 
@@ -223,6 +225,12 @@ Deleted, otherwise `422` `oauth.client_principal_invalid`; `PATCH` tells a
 in `admin.rs`, `users:read` and `users:write`) read and replace the
 tenant's `authentication.email_sign_in` as `{ "code", "link" }`, both
 required and nothing else (`422` `request.body_invalid`).
+
+The claim mapper routes live in `admin/claim_mappers.rs`, merged into
+`shared_routes`, under the permissions of clients, and need
+`ClaimMapperService` in `AdminState.claim_mappers`. A `group_member`
+source's group is checked through `AdminState.groups`; another tenant's
+group, or none, is `422` `oauth.claim_mapper_group_unknown`.
 
 Service accounts and agents live in `admin/workloads.rs`, merged into
 `shared_routes`, and need `WorkloadService` in `AdminState.workloads`. One

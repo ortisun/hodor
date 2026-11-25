@@ -79,8 +79,18 @@ fn applications(
 ) -> (
     hodor_oauth::api::ApplicationService,
     hodor_oauth::api::ConsentService,
+    hodor_oauth::api::ClaimMapperService,
 ) {
     let stores = hodor_oauth::testing::InMemoryStores::default();
+    let claim_mappers =
+        hodor_oauth::api::ClaimMapperService::new(hodor_oauth::api::ClaimMapperPorts {
+            units_of_work: Arc::new(units_of_work.clone()),
+            clients: Arc::new(stores.clients.clone()),
+            mappers: Arc::new(hodor_oauth::testing::InMemoryClaimMappers::new(
+                &stores.clients,
+            )),
+            clock: clock.clone(),
+        });
     let consents = hodor_oauth::testing::consent_service(
         Arc::new(units_of_work.clone()),
         &stores,
@@ -96,7 +106,7 @@ fn applications(
             random: Arc::new(hodor_oauth::testing::DistinctRandom),
             clock,
         });
-    (applications, consents)
+    (applications, consents, claim_mappers)
 }
 
 /// The use cases of people's factors on in-memory stores, with
@@ -281,6 +291,7 @@ fn world() -> World {
         keys: None,
         key_rotation: hodor_keys::api::RotationPolicy::DEFAULT,
         applications: oauth.0,
+        claim_mappers: oauth.2.clone(),
         consents: oauth.1,
         tenants: TenantService::new(
             Arc::new(units_of_work.clone()),

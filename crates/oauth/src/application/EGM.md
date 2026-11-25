@@ -21,6 +21,8 @@ tenant and records its events in it.
 | `ConsentStore` | `get(user, client)` (withdrawn and expired included), `save` (replaces; `oauth.client_not_found`), `list_standing(user, now)` (newest first), `record` (a history entry; `oauth.client_not_found`) |
 | `AuthorizationCodeStore` | `insert` (`oauth.grant_not_found`), `find` (by hash), `redeem` (only if not redeemed; answers whether this call redeemed it) |
 | `ClientAssertionStore` | `remember(client, jti, expires_at)` (`oauth.client_not_found`; answers whether this call was the first) |
+| `ClaimMapperStore` | `lock_client` (locks the client's row in the unit of work; answers whether there is one), `insert` (`oauth.client_not_found`, `oauth.claim_mapper_name_taken`), `update` (version checked, `oauth.claim_mapper_modified_concurrently`), `delete` (answers whether there was one), `get(client, id)`, `list_for_client` (by claim name) |
+| `PersonClaimSources` | `attributes(tenant, user)` (none for an unknown user), `organization_name(tenant, organization)` |
 
 ### Service (`service.rs`)
 
@@ -86,12 +88,28 @@ memberships, digest, random, clock })`:
   `oauth.grant_revoked` for each; answers how many. Their families and
   access tokens stop being in force with them. SCIM deprovisioning uses it.
 
+### Claim mappers (`claim_mapper.rs`)
+
+`ClaimMapperService::new(ClaimMapperPorts { units_of_work, clients,
+mappers, clock })`: `create`, `replace` and `delete` lock the client
+(`oauth.client_not_found`), load its mappers and check them together with
+`check_together`, then store and record `oauth.claim_mapper_created`,
+`_changed` or `_deleted`; `mapper` and `mappers` read.
+`ClaimMapping::new(units_of_work, mappers, memberships, sources)` and
+`read(tenant, MappedToken { client_id, user_id, scopes, organization },
+targets)`: the client's mappers, what those that apply need read now (the
+attributes, the effective groups, the organization's name), and the claims
+of each target as `MappedClaims::of(target)`. The token endpoint reads the
+access token and the ID token of a code and the access token of a refresh;
+client credentials and token exchange pass none; UserInfo reads its own.
+
 ### Token endpoint (`token.rs`)
 
 `TokenService::new(TokenPorts { units_of_work, applications, clients,
 resource_servers, grants, assertions, refresh_tokens, access_tokens,
-standing, memberships, secrets, codes, keys, verifier, digest, random,
-clock })`, with `codes` the
+standing, memberships, mapping, secrets, codes, keys, verifier, digest,
+random, clock })`, with `mapping` the `ClaimMapping` of the claim mappers,
+`codes` the
 `AuthorizationCodeService`, `keys` the `KeyService`, `standing` a
 `PersonStanding`, `access_tokens` the `AccessTokenRecordStore` of the
 register and `secrets` the kernel `SecretBox`. The retry window of

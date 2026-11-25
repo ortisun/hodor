@@ -4,7 +4,7 @@ The `oauth` context makes Hodor an OAuth 2.x authorization server and an OpenID 
 
 It does not sign anyone in. When a request needs a person, it hands the request to the `authentication` context and takes the session that comes back. The two contexts do not depend on each other: the HTTP layer joins them ([crates.md](../crates.md)).
 
-This page specifies what Issue-53 builds: applications, clients and resource servers, and the rules they keep; what Issue-55 builds: the authorization endpoint, grants and authorization codes; what Issue-56 builds: the token endpoint, client authentication and access tokens; what Issue-59 builds: the OpenID Provider; what Issue-60 builds: logout initiated by the relying party; what Issue-62 builds: [consent](#consent); what Issue-93 builds: [clients that act as a workload](#clients-that-act-as-a-workload); what Issue-95 builds: [token exchange](#token-exchange); what Issue-100 builds: [back-channel logout](#back-channel-logout); and what Issue-98 builds: [pairwise subject identifiers](#pairwise-subject-identifiers). The other endpoints and tokens are added by Issue-57 and Issue-58, under the headings at the end of this page.
+This page specifies what Issue-53 builds: applications, clients and resource servers, and the rules they keep; what Issue-55 builds: the authorization endpoint, grants and authorization codes; what Issue-56 builds: the token endpoint, client authentication and access tokens; what Issue-59 builds: the OpenID Provider; what Issue-60 builds: logout initiated by the relying party; what Issue-62 builds: [consent](#consent); what Issue-93 builds: [clients that act as a workload](#clients-that-act-as-a-workload); what Issue-95 builds: [token exchange](#token-exchange); what Issue-100 builds: [back-channel logout](#back-channel-logout); what Issue-98 builds: [pairwise subject identifiers](#pairwise-subject-identifiers); and what Issue-99 builds: [claim mappers](#claim-mappers). The other endpoints and tokens are added by Issue-57 and Issue-58, under the headings at the end of this page.
 
 ## Applications
 
@@ -551,6 +551,8 @@ The access token is a JSON Web Token per [RFC 9068](https://www.rfc-editor.org/r
 | `principal_kind` | `service_account` or `agent`, for the token of a [client that acts as a workload](#clients-that-act-as-a-workload). Left out otherwise |
 | `act` | For a token made by [token exchange](#token-exchange): who acts for the subject, the newest actor outermost. Left out otherwise |
 
+A client's [claim mappers](#claim-mappers) that name the access token add their claims after these, never in place of one.
+
 `acr`, `amr` and `auth_time` are the authentication claims of [RFC 9068, section 2.2.1](https://www.rfc-editor.org/rfc/rfc9068#section-2.2.1): a resource server that guards an operation behind a strong sign-in reads them from the token. `sid` is in the [ID token](#the-id-token) only.
 
 **No signed token outlives the rotation overlap.** The keys context keeps a retiring key published for `RotationPolicy::LONGEST_SIGNED_LIFETIME`, one hour, after it stops signing. The token policy therefore refuses an access or ID token lifetime longer than that, and the token endpoint refuses to sign one: a token checked after its key left the key set would be refused by everyone.
@@ -653,7 +655,7 @@ The new access token:
 - `sub` is the subject token's `sub`, unchanged: the person as the client they gave the token to knows them, their user identifier or a [pairwise identifier](#where-a-pairwise-identifier-goes). `client_id` is the agent's client, `aud` the audience asked, `scope` the scopes above;
 - `act` is `{"sub": "<agent>", "principal_kind": "agent"}`, with the subject token's own `act` inside it as `act`: the newest actor outermost ([RFC 8693, section 4.1](https://www.rfc-editor.org/rfc/rfc8693#section-4.1));
 - `auth_time`, `acr` and `amr` are the subject token's, when it has them: they say how the person signed in;
-- `org_id` is the organization of the subject token's grant, when it names one; `groups` never appears, since the `groups` scope is one of OpenID Connect's and is not exchanged;
+- `org_id` is the organization of the subject token's grant, when it names one; `groups` never appears, since the `groups` scope is one of OpenID Connect's and is not exchanged, and neither does any [mapped claim](#what-mappers-apply-to);
 - it lives the client's access token lifetime, or until the subject token expires if that comes first;
 - its record in the register names the subject token as its **parent**, the parent's grant and refresh token family, and the agent as its principal. It is in force only while all of them stand: revoking the person's token, ending their grant, deprovisioning them or disabling the agent stops it at once.
 
@@ -806,6 +808,8 @@ Any other token is answered as not active.
 | `principal_kind` | Its `principal_kind`, when it has one | Never |
 | `act` | Its `act`, when it has one | Never |
 
+No [mapped claim](#what-mappers-apply-to) is answered: a resource server that wants one reads it from the token.
+
 ### Limits
 
 No limit on the number of requests is built for the token, revocation and introspection endpoints, per client or per address. The limits Hodor has today are the attempt counters of the [authentication context](authentication.md), and the OAuth context may not depend on it ([crates](../crates.md)). Limits per address wait for an address Hodor can trust behind a load balancer ([known gaps](../../product/progress.md#known-gaps-in-what-is-done)).
@@ -858,7 +862,7 @@ When the scopes of a code hold `openid`, the token endpoint answers with an `id_
 
 `azp` is not added: the audience is always the one client, and OpenID Connect asks for `azp` only when it is not.
 
-**The person's claims are not in the ID token.** OpenID Connect returns the claims of the `profile` and `email` scopes from UserInfo whenever an access token is issued as well ([section 5.4](https://openid.net/specs/openid-connect-core-1_0.html#ScopeClaims)), and Hodor always issues one. A client that wants the person's name or address reads UserInfo with the access token. This keeps personal data out of a token that a browser may hold.
+**The person's claims are not in the ID token.** OpenID Connect returns the claims of the `profile` and `email` scopes from UserInfo whenever an access token is issued as well ([section 5.4](https://openid.net/specs/openid-connect-core-1_0.html#ScopeClaims)), and Hodor always issues one. A client that wants the person's name or address reads UserInfo with the access token. This keeps personal data out of a token that a browser may hold. An administrator may still put a claim into a client's ID tokens with a [claim mapper](#claim-mappers) that names the ID token; it is added after the claims above.
 
 ### Methods and assurance
 
@@ -918,6 +922,8 @@ The answer is JSON with `sub`, the token's own, which is the `sub` of the ID tok
 | `email` | `email`, the person's primary email address, and `email_verified`. Left out when they have no address |
 | `groups` | `groups`, the identifiers of the person's [effective groups](#the-groups-claim), all of them. An empty list when they are in none |
 
+The [claim mappers](#claim-mappers) of the token's client that name UserInfo add their claims after these.
+
 The answer carries `Cache-Control: no-store`. A browser on another origin cannot call UserInfo yet: clients have no registered origins, so no cross-origin headers are sent.
 
 ### The `groups` claim
@@ -971,7 +977,7 @@ It names only what is built:
 | `id_token_signing_alg_values_supported` | `ES256`, `RS256` |
 | `subject_types_supported` | `public`, `pairwise` |
 | `scopes_supported` | `openid`, `profile`, `email`, `groups`. A tenant's own scopes belong to its resource servers and are not listed |
-| `claims_supported` | The claims of the ID token and of UserInfo, `org_id` and `groups` among them |
+| `claims_supported` | The claims of the ID token and of UserInfo, `org_id` and `groups` among them. Claims of [claim mappers](#claim-mappers) are a client's, and are not listed |
 | `acr_values_supported` | The names of the tenant's [assurance levels](tenant.md#assurance-levels), weakest first |
 | `prompt_values_supported` | `none`, `login`, `consent`, `select_account` |
 | `ui_locales_supported` | `en`, `pt-BR` |
@@ -1438,6 +1444,114 @@ Withdrawing also records `oauth.grant_revoked` for each grant it revokes. No eve
 
 Both are tenant tables under row-level security, and reference their client with the tenant. `oauth.authorization_request` gains the user and the session a request waits for consent for, and the answer, `agreed` or `refused`. `oauth.client` gains `consent_seconds`, the consent lifetime.
 
+## Claim mappers
+
+Issue-99. A **claim mapper** adds one claim to the tokens of one client: taken from what Hodor knows of the person, from their groups, from the organization they signed in for, or written as a constant. Its rules are checked when it is saved, so that no token is ever refused or cut because of it ([Decision 0041](../../decisions/0041-claim-mappers.md)).
+
+### What a mapper is
+
+| Field | Meaning |
+|---|---|
+| Identifier | A `ClaimMapperId` |
+| Client | The client whose tokens it writes into. It never changes |
+| Claim | The name of the claim: 1 to 128 printable ASCII characters other than a space, a double quote and a backslash, as a scope is written. Not a [reserved name](#names-a-mapper-may-not-use), and unique among the client's mappers, both compared without regard to case |
+| Targets | One or more of `id_token`, `access_token` and `userinfo`: which of the client's tokens get the claim |
+| Scope | Optional. When given, the claim is added only when the scopes of the token hold this scope, which must be one the client may ask for |
+| Source | Where the value comes from; see [sources](#sources) |
+
+A client has at most 20 mappers. Mappers are kept with their client and go with it.
+
+### Sources
+
+| Source | Written as | The value | The largest value |
+|---|---|---|---|
+| An attribute of the person | `{"kind": "attribute", "attribute": "…"}` | `display_name`: the display name. `username`: the primary username. `email`: the primary email address. `email_verified`: whether the primary email address is verified, a boolean. `locale`: the language tag. The claim is left out when the person has no such value, and `email_verified` when they have no address | `display_name` 802 bytes, `username` 258, `email` 1018, `email_verified` 5, `locale` 142 |
+| The person's groups | `{"kind": "groups"}` | The identifiers of the person's [effective groups](identity.md#groups-inside-groups), sorted, as the [`groups` claim](#the-groups-claim) names them. Left out for a person in more than 100 | 3901 bytes |
+| Membership of one group | `{"kind": "group_member", "group_id": "…"}` | `true` when the group is one of the person's effective groups, `false` otherwise. The group must be one of the tenant's when the mapper is saved; a group deleted later makes it `false` | 5 bytes |
+| The organization of the sign-in | `{"kind": "organization", "attribute": "id"}` or `"name"` | The identifier or the name of the [organization of the sign-in](#the-organization-of-a-sign-in). Left out when the sign-in named none, or the organization is gone | `id` 38 bytes, `name` 402 |
+| A constant | `{"kind": "constant", "value": …}` | The value as given: any JSON value but `null`, at most 1024 bytes as Hodor writes it | Its own size |
+
+The largest value of a text is four bytes for each character the identity context allows it, plus its two quotes: a display name has at most 200 characters, a username 64, an email address 254 and an organization's name 100. A locale has no length of its own in the identity context; a mapper writes one of at most 35 characters, the length [RFC 5646](https://www.rfc-editor.org/rfc/rfc5646#section-4.4.1) asks every implementation to hold. **A value is never written larger than its largest value**: one that would be, which only a locale longer than 35 characters or the escaping of unusual characters can make, leaves the claim out.
+
+Every value is read when the token is issued, in the tenant of the token, from the person the token is about: the attributes through the `PersonClaimSources` port, the groups and the organization through `PersonMemberships` and `PersonClaimSources`. A person taken out of a group loses it from the next token.
+
+### Names a mapper may not use
+
+A mapper may not name a claim Hodor sets, nor one a specification Hodor follows gives a meaning to in these tokens, compared without regard to case:
+
+`iss`, `sub`, `aud`, `exp`, `nbf`, `iat`, `jti`, `auth_time`, `nonce`, `acr`, `amr`, `azp`, `at_hash`, `c_hash`, `s_hash`, `sid`, `scope`, `client_id`, `cnf`, `act`, `may_act`, `events`, `org_id`, `groups`, `principal_kind`, `name`, `preferred_username`, `locale`, `updated_at`, `email`, `email_verified`, `_claim_names`, `_claim_sources`.
+
+These are every claim of [the ID token](#the-id-token), [the access token](#the-access-token) and [UserInfo](#userinfo), and the registered claims of JSON Web Tokens, OpenID Connect, token exchange and proof of possession that a reader checks. A mapper that names one is refused with `oauth.claim_mapper_name_reserved`.
+
+### The bound on a token
+
+The claims the mappers of one client add to one target are at most **4096 bytes** as JSON writes them, in the worst case. Each mapper's worst case is the largest value of its source plus its name, its two quotes, the colon and the comma that separate it. When a mapper is created or changed, the worst cases of every mapper of the client that names a target, the new or changed one included, are added up for each target; if any target would pass 4096 bytes, the mapper is refused with `oauth.claim_mapper_token_too_large`, which says the target and the sum, and nothing is stored.
+
+Since no value is written larger than its worst case, the bound holds for every token the mappers ever write into: a token is never refused or cut when it is issued. One mapper of the person's groups, 3901 bytes and its name, fits; two into the same target do not. Hodor's own claims are bounded by their own rules, such as the hundred groups of the `groups` claim.
+
+### What mappers apply to
+
+| Token | Mappers |
+|---|---|
+| The ID token of a code | Those that name `id_token` |
+| The access token of a code, and of a refresh | Those that name `access_token`, read again at every refresh |
+| The answer of UserInfo | Those of the client the access token was issued to that name `userinfo` |
+| An access token of client credentials | None: nobody signed in |
+| An access token made by [token exchange](#token-exchange) | None, of the person's client or of the agent's: it is issued to another client, for another audience |
+| The answer of [introspection](#introspection) | None: it answers its own members only |
+
+Each applies only when its scope, if it has one, is among the scopes of the token. A mapper adds its claim after Hodor's own and never replaces one: its name cannot be one Hodor writes. Two mappers of one client never write one claim, since their names differ, so the order they are applied in, by claim name, changes nothing.
+
+### Operations
+
+| Use case | What it does |
+|---|---|
+| Create a mapper | Checks it against every rule above, the bound with the client's other mappers included, under a lock of the client, and stores it |
+| Replace a mapper | The same, for every field but the client |
+| Delete a mapper | |
+| Read and list | A mapper of a client, or every mapper of a client by claim name |
+
+Administrators reach them through [the administration interface](../../api/admin-api.md#claim-mappers), under `/clients/{client_id}/claim-mappers`, with the permissions of clients, `applications:read` and `applications:write`, and through `hodor-cli client mapper`. Both check, through the identity context, that the group a `group_member` mapper names is one of the tenant's, and refuse any other with `oauth.claim_mapper_group_unknown`.
+
+| Command | What it does |
+|---|---|
+| `hodor-cli client mapper add --tenant acme --client … --claim department --target id_token --target userinfo --source groups` | Creates a mapper and prints `mapper <id>`. `--target` is given once per target; `--source` is `attribute` with `--attribute`, `groups`, `group_member` with `--group`, `organization` with `--attribute id` or `name`, or `constant` with `--value`, written as JSON; `--scope` names its scope |
+| `hodor-cli client mapper list --tenant acme --client …` | One line per mapper: identifier, claim, targets separated by commas, source (`attribute:display_name`, `groups`, `group_member:<group>`, `organization:name`, `constant`), and scope, or `-` |
+| `hodor-cli client mapper remove --tenant acme --client … --id …` | Deletes a mapper and prints `removed <id>` |
+
+| Refusal | Code |
+|---|---|
+| The claim is not written as a scope is | `oauth.claim_mapper_name_invalid` |
+| The claim is a reserved name | `oauth.claim_mapper_name_reserved` |
+| Another mapper of the client has the claim | `oauth.claim_mapper_name_taken` |
+| No target, or a target given twice or unknown | `oauth.claim_mapper_targets_invalid` |
+| An unknown source or attribute, or a constant that is `null` or larger than 1024 bytes | `oauth.claim_mapper_source_invalid` |
+| A scope the client may not ask for | `oauth.claim_mapper_scope_not_allowed` |
+| The group is not one of the tenant's | `oauth.claim_mapper_group_unknown` |
+| The client would have more than 20 | `oauth.claim_mappers_too_many` |
+| The bound of a target would be passed | `oauth.claim_mapper_token_too_large` |
+| No such client, or no such mapper of it | `oauth.client_not_found`, `oauth.claim_mapper_not_found` |
+| Someone else changed the mapper at the same moment | `oauth.claim_mapper_modified_concurrently` |
+
+### Events
+
+| Event type | When |
+|---|---|
+| `oauth.claim_mapper_created`, `oauth.claim_mapper_changed` | A mapper was created or replaced. They carry the mapper, its client, the claim, the targets and the kind of source, never a constant's value |
+| `oauth.claim_mapper_deleted` | A mapper was deleted. It carries the mapper, its client and the claim |
+
+### Ports
+
+| Port | Purpose |
+|---|---|
+| `ClaimMapperStore` | Store, replace, delete and load a client's mappers; take the lock of a client in the unit of work of a change |
+| `PersonClaimSources` | The attributes of a person, and the name of an organization, from the identity context. The server implements it |
+| `PersonMemberships` | The person's effective groups, as for the `groups` claim |
+
+### Storage
+
+`oauth.claim_mapper` holds `tenant_id`, `id` (the key, with the tenant), `client_id`, referenced with the tenant so that mappers go with their client, `claim`, `claim_normalized` (its lowercase form, unique per client), `targets` (`text[]`), `scope`, `source` (`jsonb`), `created_at`, `updated_at` and `version`. Check constraints keep the claim's length, the targets to the three, the source an object with a known `kind`, and a constant to 2048 bytes as PostgreSQL writes it, which holds every constant of 1024 bytes as Hodor writes it. It is a tenant table under row-level security (migration 0072). The lock of a client is a `SELECT … FOR UPDATE` of its row of `oauth.client`.
+
 ## Not built yet
 
 | Item | Planned in |
@@ -1461,10 +1575,11 @@ Both are tenant tables under row-level security, and reference their client with
 | A page where a person sees the history of their consents | The account console, Phase 2 |
 | Limits on requests to the authorization endpoint per address | With the other limits per address, before any deployment behind a load balancer |
 | Request objects (`request`, `request_uri`) and pushed authorization requests | Phase 4, after 0.2.0 |
-| Claim mappers per client | Issue-99 |
 | Fetching a sector identifier address again after the client was saved | Not planned: only its host is used ([Decision 0040](../../decisions/0040-pairwise-subjects.md)) |
 | Finding a person by a pairwise identifier outside a token's record, for the Authorization API or a resource server | Not planned: it would undo what the identifier hides ([Decision 0040](../../decisions/0040-pairwise-subjects.md)) |
 | A pairwise client that registers itself, and the suite's pairwise tests, which need it: there is no dynamic client registration | With dynamic client registration |
+| Claims mapped from custom attributes of a person, and from what SCIM keeps of them, such as the department | With custom attributes in the identity context |
+| Managing claim mappers from the admin console | With the console pages of clients |
 | Opaque access tokens chosen per client | Not planned for 0.2.0 |
 | A page where a person chooses which of their organizations to sign in for, when the client names none | When a client needs it; the client names the organization |
 | The organization's name on the consent page | With the organization's branding |

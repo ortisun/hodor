@@ -1,7 +1,10 @@
 //! UserInfo: the claims of the person an access token was issued for.
 
+use crate::application::claim_mapper::{ClaimMapping, MappedToken};
 use crate::application::introspection::AccessTokenRegister;
 use crate::application::ports::PersonMemberships;
+use crate::domain::claim_mapper::{ClaimTarget, add_mapped_claims};
+use crate::domain::client::ClientId;
 use crate::domain::openid::{
     BearerRefusal, PersonClaims, PublishedKey, check_access_token, userinfo_claims,
 };
@@ -53,6 +56,8 @@ pub struct UserInfoPorts {
     pub register: AccessTokenRegister,
     /// The person's groups, for the scope `groups`.
     pub memberships: Arc<dyn PersonMemberships>,
+    /// The claims the mappers of the token's client add.
+    pub mapping: ClaimMapping,
     /// The time.
     pub clock: Arc<dyn Clock>,
 }
@@ -163,10 +168,24 @@ impl UserInfoService {
                 }),
             groups,
         };
-        Ok(Ok(userinfo_claims(
-            &checked.subject,
-            &checked.scopes,
-            &person,
-        )))
+        let mut claims = userinfo_claims(&checked.subject, &checked.scopes, &person);
+        if let Ok(client_id) = checked.client_id.parse::<ClientId>() {
+            let mapped = self
+                .ports
+                .mapping
+                .read(
+                    tenant,
+                    MappedToken {
+                        client_id,
+                        user_id: user.id(),
+                        scopes: &checked.scopes,
+                        organization: checked.organization,
+                    },
+                    &[ClaimTarget::UserInfo],
+                )
+                .await?;
+            add_mapped_claims(&mut claims, &mapped.of(ClaimTarget::UserInfo));
+        }
+        Ok(Ok(claims))
     }
 }

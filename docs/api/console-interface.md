@@ -79,6 +79,11 @@ Every route of the [administration interface](admin-api.md#routes) exists here a
 | `DELETE /clients/{client_id}/secrets/{secret_id}` | `applications:write` |
 | `POST /clients/{client_id}/keys` | `applications:write` |
 | `DELETE /clients/{client_id}/keys/{key_id}` | `applications:write` |
+| `GET /clients/{client_id}/claim-mappers` | `applications:read` |
+| `POST /clients/{client_id}/claim-mappers` | `applications:write` |
+| `GET /clients/{client_id}/claim-mappers/{claim_mapper_id}` | `applications:read` |
+| `PUT /clients/{client_id}/claim-mappers/{claim_mapper_id}` | `applications:write` |
+| `DELETE /clients/{client_id}/claim-mappers/{claim_mapper_id}` | `applications:write` |
 | `GET /resource-servers` | `applications:read` |
 | `POST /resource-servers` | `applications:write` |
 | `GET /resource-servers/{resource_server_id}` | `applications:read` |

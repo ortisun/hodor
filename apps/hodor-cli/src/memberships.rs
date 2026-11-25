@@ -186,7 +186,7 @@ async fn tenant_of(database: &Database, slug: &str) -> Result<TenantContext, Dom
     ))
 }
 
-fn groups(database: &Database) -> GroupService {
+pub(crate) fn groups(database: &Database) -> GroupService {
     GroupService::new(
         Arc::new(database.clone()),
         Arc::new(PgGroupRepository),

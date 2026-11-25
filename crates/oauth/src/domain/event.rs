@@ -4,6 +4,7 @@
 use crate::domain::application::ApplicationId;
 use crate::domain::authorization::GrantId;
 use crate::domain::backchannel::LogoutDeliveryId;
+use crate::domain::claim_mapper::ClaimMapperId;
 use crate::domain::client::ClientId;
 use crate::domain::refresh::RefreshFamilyId;
 use crate::domain::resource_server::ResourceServerId;
@@ -241,6 +242,41 @@ pub enum OauthEvent {
         #[serde(with = "time::serde::rfc3339")]
         expires_at: Timestamp,
     },
+    /// A claim mapper was created.
+    ClaimMapperCreated {
+        /// The mapper.
+        claim_mapper_id: ClaimMapperId,
+        /// Its client.
+        client_id: ClientId,
+        /// The claim it writes.
+        claim: String,
+        /// The tokens it writes into.
+        targets: Vec<&'static str>,
+        /// The kind of its source; never a constant's value.
+        source: &'static str,
+    },
+    /// A claim mapper was replaced.
+    ClaimMapperChanged {
+        /// The mapper.
+        claim_mapper_id: ClaimMapperId,
+        /// Its client.
+        client_id: ClientId,
+        /// The claim it writes.
+        claim: String,
+        /// The tokens it writes into.
+        targets: Vec<&'static str>,
+        /// The kind of its source; never a constant's value.
+        source: &'static str,
+    },
+    /// A claim mapper was deleted.
+    ClaimMapperDeleted {
+        /// The mapper.
+        claim_mapper_id: ClaimMapperId,
+        /// Its client.
+        client_id: ClientId,
+        /// The claim it wrote.
+        claim: String,
+    },
     /// An access token was revoked. Never carries the token.
     AccessTokenRevoked {
         /// The client it was issued to.
@@ -293,6 +329,9 @@ impl DomainEvent for OauthEvent {
             Self::RefreshTokenFamilyStarted { .. } => "oauth.refresh_token_family_started",
             Self::RefreshTokenRotated { .. } => "oauth.refresh_token_rotated",
             Self::RefreshTokenFamilyRevoked { .. } => "oauth.refresh_token_family_revoked",
+            Self::ClaimMapperCreated { .. } => "oauth.claim_mapper_created",
+            Self::ClaimMapperChanged { .. } => "oauth.claim_mapper_changed",
+            Self::ClaimMapperDeleted { .. } => "oauth.claim_mapper_deleted",
             Self::AccessTokenRevoked { .. } => "oauth.access_token_revoked",
             Self::TokenExchanged { .. } => "oauth.token_exchanged",
             Self::BackchannelLogoutSetAside { .. } => "oauth.backchannel_logout_set_aside",

@@ -102,6 +102,11 @@ It needs `HODOR_DATABASE_URL`, like the tenant commands.
 | `DELETE /clients/{client_id}/secrets/{secret_id}` | `applications:write` | End one of its secrets at once |
 | `POST /clients/{client_id}/keys` | `applications:write` | Add a public key for `private_key_jwt` |
 | `DELETE /clients/{client_id}/keys/{key_id}` | `applications:write` | Remove one of its keys |
+| `GET /clients/{client_id}/claim-mappers` | `applications:read` | List a client's claim mappers |
+| `POST /clients/{client_id}/claim-mappers` | `applications:write` | Add a claim mapper to a client |
+| `GET /clients/{client_id}/claim-mappers/{claim_mapper_id}` | `applications:read` | Read one claim mapper |
+| `PUT /clients/{client_id}/claim-mappers/{claim_mapper_id}` | `applications:write` | Replace a claim mapper |
+| `DELETE /clients/{client_id}/claim-mappers/{claim_mapper_id}` | `applications:write` | Delete a claim mapper |
 | `GET /resource-servers` | `applications:read` | List the tenant's resource servers |
 | `POST /resource-servers` | `applications:write` | Register the resource server of an application |
 | `GET /resource-servers/{resource_server_id}` | `applications:read` | Read one resource server |
@@ -557,6 +562,43 @@ A resource server:
 | Someone else changed it at the same moment | `409` | `oauth.application_modified_concurrently`, `oauth.client_modified_concurrently`, `oauth.resource_server_modified_concurrently` |
 
 What an administrator does here is in the audit log, through [the events of the OAuth context](../architecture/contexts/oauth.md#events), which never carry a secret or its hash.
+
+### Claim mappers
+
+A claim mapper adds one claim to the tokens of one client. What it may read, the names it may not use and the bound on what a client's mappers add to a token are in [claim mappers](../architecture/contexts/oauth.md#claim-mappers), which this interface translates.
+
+```json
+{
+  "id": "0193f1f0-…",
+  "client_id": "0193f1d0-…",
+  "claim": "finance_member",
+  "targets": ["id_token", "access_token"],
+  "scope": null,
+  "source": { "kind": "group_member", "group_id": "0193f0a0-…" },
+  "created_at": "2026-11-25T14:03:11Z",
+  "updated_at": "2026-11-25T14:03:11Z"
+}
+```
+
+`source` is one of:
+
+| `kind` | Other members |
+|---|---|
+| `attribute` | `attribute`: `display_name`, `username`, `email`, `email_verified` or `locale` |
+| `groups` | None |
+| `group_member` | `group_id`: a group of the tenant |
+| `organization` | `attribute`: `id` or `name` |
+| `constant` | `value`: any JSON value but `null`, at most 1024 bytes |
+
+`POST /clients/{client_id}/claim-mappers` with `claim`, `targets`, `source` and, optionally, `scope` answers `201` with the mapper. `PUT /clients/{client_id}/claim-mappers/{claim_mapper_id}` takes the same body and replaces the mapper; the result is checked against every rule again, with the client's other mappers. `GET /clients/{client_id}/claim-mappers` answers `{ "items": [ … ] }`, by claim name; a client has at most 20. `DELETE /clients/{client_id}/claim-mappers/{claim_mapper_id}` answers `204`.
+
+| Situation | Status | Code |
+|---|---|---|
+| A value breaks its rule, a name is reserved, or a group is not one of the tenant's | `422` | `oauth.claim_mapper_name_invalid`, `oauth.claim_mapper_name_reserved`, `oauth.claim_mapper_targets_invalid`, `oauth.claim_mapper_source_invalid`, `oauth.claim_mapper_scope_not_allowed`, `oauth.claim_mapper_group_unknown` |
+| The mappers of the client would add more than 4096 bytes to one target in the worst case | `422` | `oauth.claim_mapper_token_too_large` |
+| Another mapper of the client has the claim, or the client has 20 | `409` | `oauth.claim_mapper_name_taken`, `oauth.claim_mappers_too_many` |
+| No such client or mapper in this tenant, or a mapper of another client | `404` | `oauth.client_not_found`, `oauth.claim_mapper_not_found` |
+| Someone else changed the mapper at the same moment | `409` | `oauth.claim_mapper_modified_concurrently` |
 
 ### Assurance levels
 

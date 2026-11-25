@@ -229,8 +229,17 @@ impl TokenService {
             .token_policy
             .access_token
             .min(subject.expires_at - now);
+        // A token made by exchange carries no mapped claim, of the
+        // person's client or of the agent's.
         let signed = match self
-            .sign_living(tenant, issuer, client, &token_subject, lifetime)
+            .sign_living(
+                tenant,
+                issuer,
+                client,
+                &token_subject,
+                lifetime,
+                &serde_json::Map::new(),
+            )
             .await?
         {
             Ok(signed) => signed,

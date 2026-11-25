@@ -65,6 +65,9 @@ Commands, as typed, from the clap enums in `main.rs`:
 | `hodor-cli client list` | `--tenant`, `--application` | `ApplicationService::clients`; one line `<id> <status> <type> <method> <name>` each |
 | `hodor-cli client rotate-secret` | `--tenant`, `--id`, `--lifetime-days` (default 365), `--keep-previous-days` (default 7) | `ApplicationService::rotate_client_secret`; prints `secret <value>` and `expires <time>`, once |
 | `hodor-cli client disable` / `enable` | `--tenant`, `--id` | `ApplicationService::set_client_status`; prints `client <id> <status>` |
+| `hodor-cli client mapper add` | `--tenant`, `--client`, `--claim`, `--target` (repeatable, required), `--source`, `--attribute`, `--group`, `--value` (JSON), `--scope` | The group of `group_member` through `GroupService::get` (`memberships::groups`), then `ClaimMapperService::create`; prints `mapper <id>` (`applications.rs:run_mapper`) |
+| `hodor-cli client mapper list` | `--tenant`, `--client` | `ClaimMapperService::mappers`; one line `<id> <claim> <targets, comma-separated> <source> <scope or ->` each, the source as `attribute:<name>`, `groups`, `group_member:<group>`, `organization:<attribute>` or `constant` |
+| `hodor-cli client mapper remove` | `--tenant`, `--client`, `--id` | `ClaimMapperService::delete`; prints `removed <id>` |
 | `hodor-cli resource-server add` | `--tenant`, `--application`, `--audience`, `--name`, `--scope name=description` (repeatable) | `ApplicationService::create_resource_server`; prints `resource-server <id> <audience>` (`applications.rs:run_resource_server`) |
 | `hodor-cli resource-server list` | `--tenant` | `ApplicationService::resource_servers`; one line `<id> <audience> <name> [<scopes>]` each |
 | `hodor-cli totp enroll` | `--tenant`, `--login`; keys from `HODOR_SECRET_KEYS` | `TotpService::begin_enrollment`, issuer the tenant's display name; prints `secret <Base32>` and `address <otpauth://…>` (`TotpCommand::Enroll`, `run_totp`) |

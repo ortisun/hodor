@@ -120,6 +120,14 @@ Adapters implemented here:
   clock)`) implements `hodor_oauth::api::PersonMemberships` over
   `OrganizationService::organizations_of` (a member when the organization
   is among the person's) and `GroupService::effective_groups`.
+- `ServerClaimSources` (`standing.rs`, `ServerClaimSources::over(database,
+  clock)`) implements `hodor_oauth::api::PersonClaimSources` over
+  `IdentityService::get` (the display name, the primary username and
+  email address, whether it is verified, the locale; nothing for an
+  unknown user) and `OrganizationService::get` (the name, or none).
+  `claim_mapping` wires both with `PgClaimMapperStore` into the
+  `ClaimMapping` of the token endpoint and of UserInfo; `administration`
+  gives `AdminState.claim_mappers` its `ClaimMapperService`.
 
 Wiring functions: `interaction` (Argon2id hashing, identity, credential,
 WebAuthn with the relying party of `HODOR_PUBLIC_URL`, session, attempt
