@@ -468,6 +468,10 @@ fn discovery_names_only_what_is_built() {
     );
     assert_eq!(document["response_types_supported"], json!(["code"]));
     assert_eq!(
+        document["response_modes_supported"],
+        json!(["query", "form_post"])
+    );
+    assert_eq!(
         document["subject_types_supported"],
         json!(["public", "pairwise"])
     );

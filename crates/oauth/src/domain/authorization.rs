@@ -13,6 +13,7 @@ use crate::domain::request_object::{
     RequestObjectCheck, RequestObjectRefusal, check_request_object, unchecked_claims,
 };
 use crate::domain::resource_server::{OPENID_SCOPES, ResourceServer};
+use crate::domain::response::{ResponseMode, ResponseType, error_mode};
 use crate::domain::text::is_scope;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -178,6 +179,10 @@ pub struct AuthorizationRequest {
     /// `org_id`. The person must be a member of it.
     #[serde(default)]
     pub organization: Option<OrganizationId>,
+    /// Where the answer goes. A request kept before response modes existed
+    /// reads as the query.
+    #[serde(default)]
+    pub response_mode: ResponseMode,
 }
 
 /// An error that may be sent back to the client at its redirect address.
@@ -191,6 +196,8 @@ pub struct AuthorizationError {
     pub description: &'static str,
     /// The `state` of the request, when it had one that could be read.
     pub state: Option<String>,
+    /// Where the parameters go: the mode the answer would have had.
+    pub mode: ResponseMode,
 }
 
 /// Why a request is refused.
@@ -276,23 +283,32 @@ fn refused_object(
     let from_outside = outside
         .once("redirect_uri")
         .filter(|uri| client.accepts_redirect_uri(uri))
-        .map(|uri| (uri.to_owned(), readable(outside.once("state"))));
+        .map(|uri| {
+            (
+                uri.to_owned(),
+                readable(outside.once("state")),
+                error_mode(outside.once("response_type"), outside.once("response_mode")),
+            )
+        });
     let target = from_outside.or_else(|| {
         let claims = unchecked_claims(object?)?;
         let uri = claims.get("redirect_uri")?.as_str()?;
+        let text = |name: &str| claims.get(name).and_then(serde_json::Value::as_str);
         client.accepts_redirect_uri(uri).then(|| {
             (
                 uri.to_owned(),
-                readable(claims.get("state").and_then(serde_json::Value::as_str)),
+                readable(text("state")),
+                error_mode(text("response_type"), text("response_mode")),
             )
         })
     });
     match target {
-        Some((redirect_uri, state)) => AuthorizationRefusal::Redirect(AuthorizationError {
+        Some((redirect_uri, state, mode)) => AuthorizationRefusal::Redirect(AuthorizationError {
             redirect_uri,
             error: refusal.error(),
             description: refusal.description(),
             state,
+            mode,
         }),
         None => AuthorizationRefusal::NotRedirectable("oauth.authorization_request_object_invalid"),
     }
@@ -357,18 +373,23 @@ fn check_parameters(
         }
     };
 
-    // From here on, errors go back to the client. Its state goes with
-    // them when it can be read.
+    // From here on, errors go back to the client, in the mode the answer
+    // would have had. Its state goes with them when it can be read.
     let state = parameters
         .once("state")
         .filter(|value| value.len() <= MAX_OPAQUE_LENGTH && is_printable(value))
         .map(str::to_owned);
+    let mode = error_mode(
+        parameters.once("response_type"),
+        parameters.once("response_mode"),
+    );
     let refuse = |error: &'static str, description: &'static str| {
         AuthorizationRefusal::Redirect(AuthorizationError {
             redirect_uri: redirect_uri.clone(),
             error,
             description,
             state: state.clone(),
+            mode,
         })
     };
     let invalid = |description: &'static str| refuse("invalid_request", description);
@@ -382,22 +403,32 @@ fn check_parameters(
             "references to a request object are not supported",
         ));
     }
-    if parameters
-        .once("response_mode")
-        .is_some_and(|mode| mode != "query")
-    {
-        return Err(invalid("the only response mode is query"));
-    }
-    match parameters.once("response_type") {
+    let response_type = match parameters.once("response_type") {
         None => return Err(invalid("response_type is required")),
-        Some("code") => {}
-        Some(_) => {
-            return Err(refuse(
-                "unsupported_response_type",
-                "the only response type is code",
-            ));
-        }
-    }
+        Some(given) => match ResponseType::read(given) {
+            Some(kind) => kind,
+            None => {
+                return Err(refuse(
+                    "unsupported_response_type",
+                    "the only response type is code",
+                ));
+            }
+        },
+    };
+    let response_mode = match parameters.once("response_mode") {
+        None => response_type.default_mode(),
+        Some(given) => match ResponseMode::read(given) {
+            Some(asked) if response_type.allows(asked) => asked,
+            Some(_) => {
+                return Err(invalid(
+                    "the response type may not be answered in this response mode",
+                ));
+            }
+            None => {
+                return Err(invalid("the response modes are query and form_post"));
+            }
+        },
+    };
 
     let code_challenge = match (
         parameters.once("code_challenge"),
@@ -576,6 +607,7 @@ fn check_parameters(
         acr_values,
         first_party: application.snapshot().settings.first_party,
         organization,
+        response_mode,
     })
 }
 

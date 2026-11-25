@@ -2,7 +2,8 @@
 // OpenID Provider plans of the OpenID conformance suite against Hodor, then
 // the Basic and Back-Channel plans again with pairwise clients, in the stack
 // of compose.yaml, and fails unless every test ends as
-// docs/operations/conformance.md expects.
+// docs/operations/conformance.md expects. The Form Post plan of the code
+// flow runs when asked for with CONFORMANCE_PLANS.
 //
 // NOT FOR ANYTHING REAL: the person, the clients and their secrets are made
 // here for the run and written to the console.
@@ -17,7 +18,9 @@
 // Hodor's to show an error.
 //
 // Environment: CONFORMANCE_ONLY (comma-separated test names, to run only
-// those), CONFORMANCE_REPORT (a file to write the results to as JSON).
+// those), CONFORMANCE_REPORT (a file to write the results to as JSON),
+// CONFORMANCE_PLANS (comma-separated names of PLANS below, to run only
+// those; the plans of continuous integration unless given).
 
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -50,6 +53,18 @@ const BACKCHANNEL_LOGOUT = `http://${RELAY}/test/a/${ALIAS}/backchannel_logout`;
 const SECTOR_DOCUMENT_HOST = "sector-document:8080";
 const SECTOR_IDENTIFIER_URI = `http://${SECTOR_DOCUMENT_HOST}/redirect_uris.json`;
 const ONLY = (process.env.CONFORMANCE_ONLY ?? "").split(",").filter((name) => name !== "");
+// The plans this script can run, by a short name. Continuous integration
+// runs the first five; the Form Post plan of the code flow runs when named.
+const PLANS = ["basic", "config", "backchannel", "basic-pairwise", "backchannel-pairwise", "formpost-basic"];
+const CONTINUOUS_INTEGRATION_PLANS = PLANS.slice(0, 5);
+const CHOSEN = (process.env.CONFORMANCE_PLANS ?? CONTINUOUS_INTEGRATION_PLANS.join(","))
+  .split(",")
+  .filter((name) => name !== "");
+for (const name of CHOSEN) {
+  if (!PLANS.includes(name)) {
+    throw new Error(`no plan is named ${name}; the plans are ${PLANS.join(", ")}`);
+  }
+}
 
 // Both servers show certificates of their own making.
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
@@ -364,31 +379,41 @@ async function main() {
       // in the form from here.
       client_secret_post: clients.post,
     };
-    const results = [
-      ...(await runPlan("oidcc-basic-certification-test-plan", config,
-        { server_metadata: "discovery", client_registration: "static_client" }, browser)),
+    const plans = {
+      basic: () => runPlan("oidcc-basic-certification-test-plan", config,
+        { server_metadata: "discovery", client_registration: "static_client" }, browser),
       // This plan sets its own variants.
-      ...(await runPlan("oidcc-config-certification-test-plan", config, undefined, browser)),
+      config: () => runPlan("oidcc-config-certification-test-plan", config, undefined, browser),
       // The client of this plan is the one with a back-channel logout
       // address; the plan sets the rest of its variants.
-      ...(await runPlan("oidcc-backchannel-rp-initiated-logout-certification-test-plan",
+      backchannel: () => runPlan("oidcc-backchannel-rp-initiated-logout-certification-test-plan",
         { ...config, client: clients.backchannel, client2: undefined, client_secret_post: undefined },
-        { client_registration: "static_client", response_type: "code" }, browser)),
+        { client_registration: "static_client", response_type: "code" }, browser),
       // The pairwise configuration, the acceptance of Issue-98: the same
       // plans with clients that know the person by an identifier of their
       // sector. The suite checks that UserInfo, a second sign-in and the
       // logout token give the `sub` and `sid` of the ID token.
-      ...(await runPlan("oidcc-basic-certification-test-plan",
+      "basic-pairwise": () => runPlan("oidcc-basic-certification-test-plan",
         { ...config, client: clients.pairwise.first, client2: clients.pairwise.second,
           client_secret_post: clients.pairwise.post },
         { server_metadata: "discovery", client_registration: "static_client" }, browser,
-        "oidcc-basic-certification-test-plan (pairwise)")),
-      ...(await runPlan("oidcc-backchannel-rp-initiated-logout-certification-test-plan",
+        "oidcc-basic-certification-test-plan (pairwise)"),
+      "backchannel-pairwise": () => runPlan(
+        "oidcc-backchannel-rp-initiated-logout-certification-test-plan",
         { ...config, client: clients.pairwise.backchannel, client2: undefined,
           client_secret_post: undefined },
         { client_registration: "static_client", response_type: "code" }, browser,
-        "oidcc-backchannel-rp-initiated-logout-certification-test-plan (pairwise)")),
-    ];
+        "oidcc-backchannel-rp-initiated-logout-certification-test-plan (pairwise)"),
+      // Issue-129: the code flow of the Basic plan, every answer posted by
+      // Hodor's page of `form_post`. The Implicit and Hybrid flows follow
+      // their response types (Issues 127 and 128).
+      "formpost-basic": () => runPlan("oidcc-formpost-basic-certification-test-plan", config,
+        { server_metadata: "discovery", client_registration: "static_client" }, browser),
+    };
+    const results = [];
+    for (const name of PLANS.filter((plan) => CHOSEN.includes(plan))) {
+      results.push(...(await plans[name]()));
+    }
     if (process.env.CONFORMANCE_REPORT) {
       writeFileSync(process.env.CONFORMANCE_REPORT, JSON.stringify(results, null, 2));
     }

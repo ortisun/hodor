@@ -132,6 +132,22 @@ watched page and the steps a person repeats.
     code at once; withdrawing the application on the account page makes it
     ask again. A person who denies sends the application `access_denied`,
     and the consent page then has nothing to answer.
+  - `form-post.spec.ts` - each test in a tenant of its own (`newTenant()`)
+    with a person registered and signed in there, and a first-party
+    application with a public client registered by `hodor-cli application
+    add --first-party` and `client add`; the application's address,
+    `https://shop.example.test/callback`, is answered by the test
+    (`page.route`). Asked with `response_mode=form_post` and a `state` that
+    would break out of an attribute, Hodor answers with its page of
+    `form_post` (status 200, a policy of `default-src 'none'` and a
+    `script-src` by hash, `no-store`, `no-referrer`), which posts by
+    itself, with no violation of its policy, exactly `code`, `state` as
+    given and `iss`, as a form and without `Referer`. In a browser context
+    without JavaScript (`javaScriptEnabled: false`, the signed-in context's
+    `storageState`), the page shows "If you are not taken back to the
+    application, continue.", and its `Continue` button, reached by `Tab` and pressed with `Enter`, posts the
+    same three. A scope the client may not ask for is posted back as
+    `invalid_scope` with the state.
   - `step-up.spec.ts` - an application of the tenant, registered with
     `hodor-cli application add --first-party` and `client add` after
     `keys rotate`, waits for the browser at a page of its own on
@@ -180,7 +196,7 @@ watched page and the steps a person repeats.
   `HODOR_TENANT` with open registration that offers the three development
   providers (commands in `stack.ts:HELP`). Otherwise `checkTheStack` stops
   the run before any test. `totp.spec.ts`, `consent.spec.ts`,
-  `step-up.spec.ts`, `email-sign-in.spec.ts` and `enrollment.spec.ts` also
+  `form-post.spec.ts`, `step-up.spec.ts`, `email-sign-in.spec.ts` and `enrollment.spec.ts` also
   need `docker compose` on the machine that runs the
   tests, to run `hodor-cli` in the stack.
 - A test reads the messages to an address by their number, `mailTo(address,

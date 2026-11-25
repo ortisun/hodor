@@ -165,8 +165,13 @@ routes and the whole router.
 | GET | `/authorize/resume` | `resume` (takes the pending request of the `__Secure-hodor_authorization` cookie once, and removes the cookie unless it keeps the request again to ask for consent) |
 
 A request whose client or redirect address is not trusted gets Hodor's own
-HTML page with status `400` and the reason's code (`error_page`); every
-other answer is a `302`. The issuer sent as `iss` is
+HTML page with status `400` and the reason's code (`error_page`). Every
+answer to the client, a code or an error, goes through `answer_at(uri,
+mode, parameters)`, in the request's `response_mode` (an error in its
+`AuthorizationError::mode`): `Query` is a `302` with the parameters added
+to the address's query (`redirect_to`, which logout uses too, is
+`answer_at` in the query); `FormPost` is the page of
+`form_post::form_post_page`. Every other answer is a `302`. The issuer sent as `iss` is
 `{public_url}/t/{slug}`. The cookie `__Secure-hodor_authorization` is
 `Path=/t/{slug}`, `SameSite=Strict`, ten minutes; a completed sign-in of
 the interaction interface adds `"continue":
@@ -178,6 +183,21 @@ asks `ConsentService::must_ask`: a request that must ask is kept with
 that waited for consent is answered by its answer at `resume`, for the
 session it was asked in; any other session, or no answer, is
 `access_denied`.
+
+The page of `form_post` (`form_post.rs`, crate-visible
+`form_post_page(uri, parameters)`, `SUBMIT_SCRIPT`,
+`FORM_POST_CONTENT_SECURITY_POLICY`): status `200`, one form posting to
+`uri`, one hidden field per parameter, every name, value and the address
+written with `&`, `<`, `>`, `"` and `'` as character references, a
+sentence and a button without a name in the form (not in `noscript`, so a
+browser that did not run the script can still go on), and the one script
+`document.forms[0].submit();`. Headers: `Content-Type: text/html;
+charset=utf-8`, `Cache-Control: no-store`, `Pragma: no-cache`,
+`Referrer-Policy: no-referrer`, and the policy `default-src 'none';
+script-src 'sha256-…'` (the hash of `SUBMIT_SCRIPT`, which a unit test
+recomputes), `base-uri 'none'; frame-ancestors 'none';
+require-trusted-types-for 'script'; trusted-types 'none'`, without
+`form-action`, which browsers check again at the redirects after the post.
 
 `token_routes` (`token.rs`), merged with `authorization_routes` under the
 same mount point `/t/{slug}/oauth2`:

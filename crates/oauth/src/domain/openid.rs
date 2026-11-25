@@ -8,6 +8,7 @@ use crate::domain::authorization::AuthorizationCode;
 use crate::domain::binding::{CONFIRMATION_CLAIM, CertificateThumbprint, check_confirmation};
 use crate::domain::client::{ClientId, IdTokenAlgorithm, RequestObjectAlgorithm};
 use crate::domain::resource_server::GROUPS_SCOPE;
+use crate::domain::response::{ResponseMode, ResponseType};
 use crate::domain::token::decode_json;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -499,8 +500,8 @@ pub fn discovery_document(issuer: &str, acr_values: &[&str]) -> Value {
         "revocation_endpoint": format!("{issuer}/oauth2/revoke"),
         "introspection_endpoint": format!("{issuer}/oauth2/introspect"),
         "end_session_endpoint": format!("{issuer}/oauth2/logout"),
-        "response_types_supported": ["code"],
-        "response_modes_supported": ["query"],
+        "response_types_supported": ResponseType::ALL.map(ResponseType::as_str),
+        "response_modes_supported": ResponseMode::ALL.map(ResponseMode::as_str),
         "grant_types_supported": crate::domain::token::SUPPORTED_GRANT_TYPES,
         "code_challenge_methods_supported": ["S256"],
         // `spiffe_jwt` follows draft-ietf-oauth-spiffe-client-auth-03,

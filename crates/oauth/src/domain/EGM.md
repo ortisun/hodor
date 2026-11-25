@@ -76,16 +76,29 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
 - `resource_server.rs`: `ResourceServerId`; `Audience::parse`;
   `ScopeDefinition`; `ResourceServerSettings`; `ResourceServer` with
   `create`, `change`, `defines`; `OPENID_SCOPES`.
+- `response.rs`: what the authorization endpoint answers with, and where.
+  `ResponseType` (`Code` only; `read`, `as_str`, `ALL`, `default_mode`,
+  `allows(mode)`), `ResponseMode` (`Query`, the default, and `FormPost`,
+  serialized as `query` and `form_post`; `read` answers `None` for any
+  other name; `as_str`, `ALL`, which discovery lists), and
+  `error_mode(response_type, response_mode)`: the mode an error goes back
+  in, the one named when offered and allowed by the type, else the type's
+  default, else the query. Its cases are in the module's own tests.
 - `authorization.rs`: the authorization endpoint. `AuthorizationParameters`
   (pairs as received, empty values dropped; `client_id` is the one given,
   or the request object's when none is); `check_request(parameters,
   client, application, servers, objects)`, the checks of the specification
   in their order, answering `NotRedirectable(code)` until the client and its
-  redirect address are trusted and `Redirect(AuthorizationError)` after; a
+  redirect address are trusted and `Redirect(AuthorizationError)` after,
+  whose `mode` is `error_mode` of the request's type and mode; an unknown
+  `response_mode`, or one the type does not allow, is `invalid_request`
+  after the type is read; a
   request with `request` is checked by `check_request_object` first, its
   refusal sent to the redirect address outside or inside it when that is
-  one of the client's, otherwise `oauth.authorization_request_object_invalid`;
-  `AuthorizationRequest` (serializable, stored while the person signs in)
+  one of the client's, in the mode named beside that address, otherwise
+  `oauth.authorization_request_object_invalid`;
+  `AuthorizationRequest` (serializable, stored while the person signs in;
+  `response_mode` reads as `Query` when a stored request lacks it)
   with `counting(proofs, now, received_at)`, `decide(signed_in, counting, enough) -> SessionDecision`
   (`Issue`, `SignIn`, `StepUp { carried }`, `LoginRequired`) and
   `signed_in_as_asked`; `SignedInPerson` carries the `acr` the code and its
@@ -155,7 +168,8 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   with the `jti` and `client_id` the register is asked with), `PersonClaims`
   and `userinfo_claims` (the claims of `profile` and `email`), and
   `discovery_document(issuer, acr_values)`, which names the revocation and introspection
-  endpoints and their methods. Its cases are in `openid/tests.rs`.
+  endpoints and their methods, and the response types and modes of
+  `ResponseType::ALL` and `ResponseMode::ALL`. Its cases are in `openid/tests.rs`.
 - `introspection.rs`: revocation and introspection. `TokenQuery::parse`
   (`token` required, a parameter twice or more than one way of proving who
   the client is `invalid_request`, no client named `invalid_client`),

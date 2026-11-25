@@ -1352,6 +1352,23 @@ async fn an_applications_codes_tokens_clients_and_consents_mean_nothing_in_anoth
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(location, None, "nothing is sent to the client's address");
+    // Nor posted to it, when the request asks for `form_post`.
+    let (status, location, page) = stranger
+        .navigate(
+            Method::GET,
+            &authorize_path_with(globex.slug, &acme_client, &[("response_mode", "form_post")]),
+            None,
+        )
+        .await;
+    assert_eq!((status, location), (StatusCode::BAD_REQUEST, None));
+    assert!(
+        page.contains("oauth.authorization_client_unknown"),
+        "{page}"
+    );
+    assert!(
+        !page.contains("<form") && !page.contains(REDIRECT),
+        "{page}"
+    );
 
     // In Acme, the person agrees and the application gets a code.
     let mut browser = Browser::not_following(&world.server);

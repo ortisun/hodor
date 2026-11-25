@@ -460,6 +460,127 @@ fn the_state_goes_back_with_an_error_when_it_can_be_read() {
 }
 
 #[test]
+fn a_request_is_answered_in_the_mode_it_names_or_in_the_query() {
+    let setting = setting();
+    let base = good(&setting.client);
+    let named = |mode: Option<&str>| {
+        check(&setting, with(base.clone(), "response_mode", mode))
+            .expect("accepted")
+            .response_mode
+    };
+    assert_eq!(named(None), ResponseMode::Query);
+    assert_eq!(named(Some("query")), ResponseMode::Query);
+    assert_eq!(named(Some("form_post")), ResponseMode::FormPost);
+}
+
+#[test]
+fn a_mode_hodor_does_not_offer_is_refused_in_the_mode_of_the_type() {
+    let setting = setting();
+    let base = good(&setting.client);
+    for mode in [
+        "fragment",
+        "jwt",
+        "query.jwt",
+        "form_post.jwt",
+        "FORM_POST",
+        "anything",
+    ] {
+        match check(&setting, with(base.clone(), "response_mode", Some(mode))) {
+            Err(AuthorizationRefusal::Redirect(error)) => {
+                assert_eq!(error.error, "invalid_request", "{mode}");
+                assert_eq!(
+                    error.description, "the response modes are query and form_post",
+                    "{mode}"
+                );
+                assert_eq!(error.mode, ResponseMode::Query, "{mode}");
+                assert_eq!(error.state.as_deref(), Some("xyz"));
+            }
+            other => panic!("{mode}: {other:?}"),
+        }
+    }
+    // Given twice, it is refused like any parameter given twice.
+    let mut twice = base;
+    twice.push(("response_mode".to_owned(), "form_post".to_owned()));
+    twice.push(("response_mode".to_owned(), "query".to_owned()));
+    assert_eq!(error_of(check(&setting, twice)), "invalid_request");
+}
+
+#[test]
+fn every_error_after_the_address_is_trusted_comes_in_the_mode_asked_for() {
+    let setting = setting();
+    let form_post = with(good(&setting.client), "response_mode", Some("form_post"));
+    let cases: Vec<(&str, Pairs, &str)> = vec![
+        (
+            "a type Hodor does not answer",
+            with(form_post.clone(), "response_type", Some("token")),
+            "unsupported_response_type",
+        ),
+        (
+            "no type",
+            with(form_post.clone(), "response_type", None),
+            "invalid_request",
+        ),
+        (
+            "a scope the client may not ask for",
+            with(form_post.clone(), "scope", Some("openid admin")),
+            "invalid_scope",
+        ),
+        (
+            "a plain challenge",
+            with(form_post.clone(), "code_challenge_method", Some("plain")),
+            "invalid_request",
+        ),
+        (
+            "an unknown prompt",
+            with(form_post, "prompt", Some("always")),
+            "invalid_request",
+        ),
+    ];
+    for (case, pairs, expected) in cases {
+        match check(&setting, pairs) {
+            Err(AuthorizationRefusal::Redirect(error)) => {
+                assert_eq!(error.error, expected, "{case}");
+                assert_eq!(error.mode, ResponseMode::FormPost, "{case}");
+                assert_eq!(error.state.as_deref(), Some("xyz"), "{case}");
+            }
+            other => panic!("{case}: {other:?}"),
+        }
+    }
+    // Before the address is trusted, nothing goes to it in any mode.
+    assert_eq!(
+        page_of(check(
+            &setting,
+            with(
+                with(good(&setting.client), "response_mode", Some("form_post")),
+                "redirect_uri",
+                Some("https://attacker.example/callback"),
+            ),
+        )),
+        "oauth.authorization_redirect_uri_unregistered"
+    );
+}
+
+#[test]
+fn a_request_kept_before_response_modes_existed_reads_as_the_query() {
+    let setting = setting();
+    let request = check(
+        &setting,
+        with(good(&setting.client), "response_mode", Some("form_post")),
+    )
+    .expect("accepted");
+    let mut written = serde_json::to_value(&request).expect("written");
+    assert_eq!(written["response_mode"], "form_post");
+    let read: AuthorizationRequest = serde_json::from_value(written.clone()).expect("read");
+    assert_eq!(read.response_mode, ResponseMode::FormPost);
+    written
+        .as_object_mut()
+        .expect("an object")
+        .remove("response_mode");
+    let read: AuthorizationRequest = serde_json::from_value(written).expect("read");
+    assert_eq!(read.response_mode, ResponseMode::Query);
+}
+
+#[test]
 fn parameters_without_a_value_are_as_if_omitted_and_unknown_ones_are_ignored() {
     let setting = setting();
     let mut pairs = good(&setting.client);

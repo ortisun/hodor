@@ -3412,6 +3412,7 @@ async fn agreed(world: &World, user: UserId, client: &str) {
         acr_values: None,
         first_party: false,
         organization: None,
+        response_mode: hodor_oauth::api::ResponseMode::Query,
     };
     let person = hodor_oauth::api::SignedInPerson {
         user_id: user,

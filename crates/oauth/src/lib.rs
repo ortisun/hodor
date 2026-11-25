@@ -132,6 +132,7 @@ pub mod api {
         Audience, OPENID_SCOPES, ResourceServer, ResourceServerId, ResourceServerSettings,
         ResourceServerSnapshot, ScopeDefinition,
     };
+    pub use crate::domain::response::{ResponseMode, ResponseType, error_mode};
     pub use crate::domain::secret::{
         ClientSecret, ClientSecretHash, ClientSecretId, ClientSecretValue,
     };

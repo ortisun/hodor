@@ -15,7 +15,7 @@ use hodor_oauth::api::{
     ApplicationPorts, ApplicationService, ApplicationSettings, AuthenticationMethod,
     AuthorizationCodePorts, AuthorizationCodeService, AuthorizationError, AuthorizationParameters,
     AuthorizationRefusal, ClientId, ClientSettings, ClientType, CreateClient, GrantType,
-    RequestObjectAlgorithm,
+    RequestObjectAlgorithm, ResponseMode,
 };
 use hodor_oauth::testing::{
     DistinctRandom, FakeVerifier, InMemoryAuthorizationCodes, InMemoryAuthorizationRequests,
@@ -187,6 +187,7 @@ fn refused_object(description: &'static str) -> AuthorizationRefusal {
         error: "invalid_request_object",
         description,
         state: None,
+        mode: ResponseMode::Query,
     })
 }
 

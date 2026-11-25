@@ -1,10 +1,12 @@
 //! The authorization endpoint of OAuth 2.x: where a client sends a
-//! person's browser to ask for an authorization code.
+//! person's browser to ask for an authorization code, answered in the
+//! query or with the page of `form_post`.
 //!
 //! Specified in `docs/architecture/contexts/oauth.md`, "Authorization
 //! endpoint". These handlers translate between HTTP and the OAuth and
 //! session contexts; the rules are the OAuth context's.
 
+use crate::form_post::form_post_page;
 use crate::interaction::{
     SESSION_COOKIE, SIGN_IN_COOKIE_SECONDS, cookie, set_cookie, sign_in_cookie,
 };
@@ -23,7 +25,7 @@ use hodor_kernel::{Actor, Caller, CorrelationId, TenantContext, Timestamp};
 use hodor_oauth::api::{
     AuthorizationCodeService, AuthorizationError, AuthorizationParameters, AuthorizationRefusal,
     AuthorizationRequest, ConsentAnswer, ConsentService, PENDING_LIFETIME, PendingAuthorizationId,
-    Proof, SessionDecision, SignedInPerson,
+    Proof, ResponseMode, SessionDecision, SignedInPerson,
 };
 use hodor_session::api::{Assurance, ClientInfo, Session, SessionService};
 use hodor_tenant::api::{AssuranceLevels, AssuranceRequirement, TenantService};
@@ -102,11 +104,21 @@ pub(crate) fn error_page(code: &'static str) -> Response {
 
 /// Sends the browser to `uri` with `parameters` added to its query.
 pub(crate) fn redirect_to(uri: &str, parameters: &[(&str, &str)]) -> Response {
+    answer_at(uri, ResponseMode::Query, parameters)
+}
+
+/// Gives the client `parameters` at `uri` in the response mode `mode`:
+/// added to its query by a redirect, or posted by the page of `form_post`.
+pub(crate) fn answer_at(uri: &str, mode: ResponseMode, parameters: &[(&str, &str)]) -> Response {
+    let separator = match mode {
+        ResponseMode::FormPost => return form_post_page(uri, parameters),
+        ResponseMode::Query if uri.contains('?') => '&',
+        ResponseMode::Query => '?',
+    };
     let mut query = form_urlencoded::Serializer::new(String::new());
     for (name, value) in parameters {
         query.append_pair(name, value);
     }
-    let separator = if uri.contains('?') { '&' } else { '?' };
     let location = format!("{uri}{separator}{}", query.finish());
     match HeaderValue::from_str(&location) {
         Ok(location) => {
@@ -128,7 +140,7 @@ fn redirect_error(error: &AuthorizationError, issuer: &str) -> Response {
         parameters.push(("state", state));
     }
     parameters.push(("iss", issuer));
-    redirect_to(&error.redirect_uri, &parameters)
+    answer_at(&error.redirect_uri, error.mode, &parameters)
 }
 
 fn error_for(
@@ -141,6 +153,7 @@ fn error_for(
         error,
         description,
         state: request.state.clone(),
+        mode: request.response_mode,
     }
 }
 
@@ -266,7 +279,7 @@ async fn issue(
                 parameters.push(("state", value));
             }
             parameters.push(("iss", &issuer));
-            redirect_to(&request.redirect_uri, &parameters)
+            answer_at(&request.redirect_uri, request.response_mode, &parameters)
         }
         Err(error) => Problem::from(error).into_response(),
     }
