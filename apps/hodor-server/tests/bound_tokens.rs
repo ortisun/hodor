@@ -658,6 +658,66 @@ async fn a_public_client_s_tokens_and_refresh_tokens_are_bound_and_userinfo_chec
 }
 
 #[tokio::test]
+async fn a_bound_token_gets_no_signed_userinfo_answer_without_its_certificate() {
+    let world = behind_proxy("client-cert").await;
+    let (public, _) = world
+        .client(json!({
+            "name": "Shop app",
+            "type": "public",
+            "grant_types": ["authorization_code"],
+            "redirect_uris": [REDIRECT],
+            "allowed_scopes": ["openid", "read"],
+            "tls_client_certificate_bound_access_tokens": true,
+            "userinfo_signed_response_alg": "EdDSA",
+        }))
+        .await;
+    let public = (public, None);
+    let mine = certificate("app");
+    let other = certificate("thief");
+    let mut browser = Browser::not_following(&world.server);
+    let (status, answer) = browser.sign_in("acme", "root@example.com", PASSWORD).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    let code = world.code(&mut browser, &public.0, "openid read").await;
+    let redeem = [
+        ("grant_type", "authorization_code"),
+        ("code", code.as_str()),
+        ("redirect_uri", REDIRECT),
+        ("code_verifier", VERIFIER),
+    ];
+    let (status, tokens) = world
+        .oauth("token", &public, &redeem, &client_cert(&mine))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{tokens}");
+    let access = tokens["access_token"].as_str().expect("a token").to_owned();
+
+    // The certificate is checked before anything is signed: without it, or
+    // with another, the same refusal as for a JSON answer, and no answer.
+    refused_as_invalid(&world.userinfo(&access, &None).await);
+    refused_as_invalid(&world.userinfo(&access, &client_cert(&other)).await);
+
+    // With it, the answer signed with the client's algorithm.
+    let (name, value) = client_cert(&mine).expect("a header");
+    let response = Client::new()
+        .get(format!("{}/t/acme/oauth2/userinfo", world.server.base))
+        .bearer_auth(&access)
+        .header(name, value)
+        .send()
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["content-type"], "application/jwt");
+    let signed = response.text().await.expect("body");
+    let header: Value = serde_json::from_slice(
+        &URL_SAFE_NO_PAD
+            .decode(signed.split('.').next().expect("a header"))
+            .expect("base64url"),
+    )
+    .expect("JSON");
+    assert_eq!(header["alg"], "EdDSA");
+    assert_eq!(claims_of(&signed)["sub"], claims_of(&access)["sub"]);
+}
+
+#[tokio::test]
 async fn token_exchange_checks_the_subject_token_and_the_actor_token() {
     let world = behind_proxy("client-cert").await;
     let (public, _) = world
