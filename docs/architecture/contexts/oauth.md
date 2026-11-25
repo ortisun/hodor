@@ -1603,28 +1603,28 @@ Administrators reach them through [the administration interface](../../api/admin
 
 | Item | Planned in |
 |---|---|
-| Front-channel logout: telling the applications of a session that it ended through the person's browser | Not planned: [Milestone 9](../../product/epics.md#explicitly-not-in-milestone-9) leaves it out, and [back-channel logout](#back-channel-logout) needs no browser |
+| Front-channel logout: telling the applications of a session that it ended through the person's browser | 0.5.0, [Milestone 16](../../product/epics.md#milestone-16-sign-out-and-session-state-through-the-browser-and-the-openid-connect-certification), with session management ([Decision 0050](../../decisions/0050-logout-and-session-state-in-the-browser.md)) |
 | A logout token when a session runs out by itself, idle or at its absolute end: only a session that is ended on purpose is told | When an application needs it ([Decision 0037](../../decisions/0037-back-channel-logout.md)) |
 | Listing logout deliveries and delivering a set-aside one again, from the administration interface | Not scheduled |
 | The back-channel logout address in the console's client screens: it is set through the administration interface and the command-line tool | Not scheduled |
-| Back-channel logout to a client that registers itself: there is no dynamic client registration | With dynamic client registration |
+| Back-channel logout to a client that registers itself: there is no dynamic client registration | 0.5.0, [Milestone 15](../../product/epics.md#milestone-15-clients-that-register-themselves) |
 | Sending the person back to the application when they choose to stay signed in at the logout question | When an application asks for it |
 | `logout_hint`, which names who to sign out | Not used: a browser holds one session per tenant |
 | An `id_token_hint` signed by a key that has left the tenant's key set: it is refused, and the application can send `client_id` instead, which asks the person | When it matters |
 | Limits on the number of requests to the token, revocation and introspection endpoints, per client and per address ([limits](#limits)) | With the other limits per address, before any deployment behind a load balancer |
 | The metadata at the address RFC 8414 prefers for an issuer with a path, `/.well-known/oauth-authorization-server/t/{slug}`: it is outside the tenant's addresses, so only the address after the issuer is served | When a client needs it |
 | Calling UserInfo from a browser on another origin | With origins in the client settings |
-| The person's claims in the ID token when asked for with the `claims` parameter | Not planned for 0.2.0 |
+| The person's claims in the ID token when asked for with the `claims` parameter | 0.5.0, [Milestone 13](../../product/epics.md#milestone-13-requests-that-say-what-they-need) ([Decision 0047](../../decisions/0047-claims-and-the-person-s-claims.md)) |
 | More than one `resource` in a refresh or client credentials request: a parameter may be given once | With resource indicators given more than once at the token endpoint |
 | Calling the token endpoint from a browser on another origin: clients have no registered origins yet, so no cross-origin headers are sent | With origins in the client settings |
-| Client assertions signed with `ES384` or `EdDSA`, which client keys on P-384 and Ed25519 would need | When the kernel's signature checking covers them |
-| Asking for an `acr` with the `claims` parameter. `acr_values` is the way to ask | Not planned for 0.2.0 |
+| Client assertions signed with `ES384` or `EdDSA`, which client keys on P-384 and Ed25519 would need | `EdDSA` with 0.5.0, [Issue-130](../../product/epics.md#slice-signed-answers-epic-34); `ES384` when the kernel's signature checking covers it |
+| Asking for an `acr` with the `claims` parameter. `acr_values` is the way to ask | 0.5.0, [Milestone 13](../../product/epics.md#milestone-13-requests-that-say-what-they-need) |
 | A page where a person sees the history of their consents | The account console, Phase 2 |
 | Limits on requests to the authorization endpoint per address | With the other limits per address, before any deployment behind a load balancer |
-| Request objects (`request`, `request_uri`) and pushed authorization requests | Phase 4, after 0.2.0 |
+| Request objects (`request`, `request_uri`) and pushed authorization requests | 0.5.0, [Milestone 13](../../product/epics.md#milestone-13-requests-that-say-what-they-need) ([Decision 0045](../../decisions/0045-request-objects-and-pushed-requests.md)) |
 | Fetching a sector identifier address again after the client was saved | Not planned: only its host is used ([Decision 0040](../../decisions/0040-pairwise-subjects.md)) |
 | Finding a person by a pairwise identifier outside a token's record, for the Authorization API or a resource server | Not planned: it would undo what the identifier hides ([Decision 0040](../../decisions/0040-pairwise-subjects.md)) |
-| A pairwise client that registers itself, and the suite's pairwise tests, which need it: there is no dynamic client registration | With dynamic client registration |
+| A pairwise client that registers itself, and the suite's pairwise tests, which need it: there is no dynamic client registration | 0.5.0, [Milestone 15](../../product/epics.md#milestone-15-clients-that-register-themselves) ([Decision 0049](../../decisions/0049-dynamic-client-registration.md)) |
 | Claims mapped from custom attributes of a person, and from what SCIM keeps of them, such as the department | With custom attributes in the identity context |
 | Managing claim mappers from the admin console | With the console pages of clients |
 | Opaque access tokens chosen per client | Not planned for 0.2.0 |
@@ -1639,3 +1639,5 @@ Administrators reach them through [the administration interface](../../api/admin
 | Binding a client to a SPIFFE identifier from the command-line tool and the console: the administration interface does it | Issue-109 |
 | `spiffe_x509`, `tls_client_auth` and `linkerd_identity`: the identity a proxy forwards | Issue-107 |
 | `spiffe_wit`, the draft's workload identity tokens | Not scheduled |
+| Every other response type than `code`, and the response modes `fragment`, `form_post` and JWT Secured Authorization Response Mode | 0.5.0, [Milestone 14](../../product/epics.md#milestone-14-answers-through-the-browser), and 0.6.0, [Milestone 18](../../product/epics.md#milestone-18-fapi-20-message-signing-and-fapi-10-advanced) ([Decision 0046](../../decisions/0046-responses-through-the-browser.md)) |
+| DPoP, security profiles for FAPI, JWT introspection responses, encryption, and client-initiated backchannel authentication | 0.6.0, [Milestones 17 to 19](../../product/epics.md#milestone-17-fapi-20-security-profile) ([Decision 0044](../../decisions/0044-what-0.5.0-and-0.6.0-hold.md)) |

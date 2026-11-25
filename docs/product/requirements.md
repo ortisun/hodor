@@ -95,11 +95,22 @@ Priority: **Blocker** blocks the phase, **Expected** is expected in the phase, *
 | Requirement-OAuth-16 | Token Exchange and JWT Bearer | RFC 8693, 7523 | 5 | Expected |
 | Requirement-OAuth-17 | Resource Indicators and audience restriction | RFC 8707 | 2 | Expected |
 | Requirement-OAuth-18 | Rich Authorization Requests | RFC 9396 | 5 | Optional |
-| Requirement-OAuth-19 | Dynamic Client Registration, protected by an initial access token | RFC 7591, 7592 | 4 | Optional |
+| Requirement-OAuth-19 | Dynamic Client Registration, off per tenant until allowed by an initial access token, a software statement or open registration within a policy | RFC 7591, 7592, OpenID Connect Dynamic Client Registration | 4 | Optional |
 | Requirement-OAuth-20 | Front-Channel Logout and Session Management (iframe) | OpenID Connect | 6 | Optional |
 | Requirement-OAuth-21 | Claims mappers configurable per client | — | 2 | Expected |
 | Requirement-OAuth-22 | Application and client management: types, exact redirect URIs, origins, grants, secrets with rotation | — | 2 | Blocker |
 | Requirement-OAuth-23 | A client certificate forwarded by a trusted proxy in `Client-Cert` and `Client-Cert-Chain`, read only from a connection of a trusted proxy | RFC 9440 | 6 | Expected |
+| Requirement-OAuth-24 | Request objects by value and by reference, signed or, for a client that asks, unsigned | OpenID Connect Core §6, RFC 9101 | 4 | Expected |
+| Requirement-OAuth-25 | The `claims` parameter, `claims_locales`, `display`, `id_token_hint` at the authorization endpoint, `prompt=create`, and the access token in a form body at UserInfo | OpenID Connect Core §5.5, Initiating User Registration via OpenID Connect, RFC 6750 §2.2 | 2 | Expected |
+| Requirement-OAuth-26 | The response types `id_token`, `code id_token` and `none` per client, and those that return an access token only for a client an administrator marks; the response modes `fragment` and `form_post` | OAuth 2.0 Multiple Response Type Encoding Practices, OAuth 2.0 Form Post Response Mode | 4 | Expected |
+| Requirement-OAuth-27 | JWT Secured Authorization Response Mode | JARM | 4 | Expected |
+| Requirement-OAuth-28 | Encrypted ID tokens, UserInfo answers, authorization responses and introspection answers, and encrypted request objects | RFC 7516, OpenID Connect Core §10.2 | 4 | Optional |
+| Requirement-OAuth-29 | Signed UserInfo answers, and ID tokens and answers signed with `PS256` and `EdDSA` as well as `ES256` and `RS256` | OpenID Connect Core §5.3.2 | 4 | Expected |
+| Requirement-OAuth-30 | JWT introspection responses | RFC 9701 | 4 | Expected |
+| Requirement-OAuth-31 | Security profiles per client: FAPI 1.0 Advanced, FAPI 2.0 Security Profile and FAPI 2.0 Message Signing, checked when the client is saved and at every request | FAPI | 4 | Expected |
+| Requirement-OAuth-32 | Client-initiated backchannel authentication in poll, ping and push modes, and its FAPI profile | OpenID Connect Client-Initiated Backchannel Authentication Core, FAPI-CIBA | 4 | Expected |
+| Requirement-OAuth-33 | Third-party initiated login: a client's `initiate_login_uri`, from which the account page starts a sign-in at the client | OpenID Connect Core §4 | 4 | Optional |
+| Requirement-OAuth-34 | Mutual TLS for clients that are not workloads: a tenant's authorities for client certificates, subject name matching, self-signed certificates, endpoint aliases | RFC 8705 | 4 | Expected |
 
 ### Federation (`federation`)
 
@@ -227,6 +238,7 @@ The reasoning behind these requirements, and how the console shows them, is in [
 | Requirement-Operations-06 | Works with PostgreSQL alone; a missing Redis degrades performance, not functionality |
 | Requirement-Operations-07 | Configuration by file and environment variables, validated at startup |
 | Requirement-Operations-08 | Runs inside a service mesh, Istio and Linkerd at least, with every client still limited apart and the probes, egress and network policy documented |
+| Requirement-Operations-09 | Every OpenID certification profile Hodor claims passes the OpenID conformance suite in continuous integration against the image, and what the owner needs to certify each released version is kept ready ([how certification is obtained](../operations/certification.md)) |
 
 ### Observability
 

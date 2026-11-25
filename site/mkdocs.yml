@@ -140,6 +140,7 @@ nav:
       - Deployment: operations/deployment.md
       - Keys in OpenBao: operations/keys-in-openbao.md
       - OpenID conformance: operations/conformance.md
+      - OpenID certification: operations/certification.md
   - Examples:
       - examples/README.md
       - examples/first-tenant-and-administrator.md
@@ -240,6 +241,17 @@ nav:
       - decisions/0040-pairwise-subjects.md
       - decisions/0041-claim-mappers.md
       - decisions/0042-trust-domains.md
+      - decisions/0044-what-0.5.0-and-0.6.0-hold.md
+      - decisions/0045-request-objects-and-pushed-requests.md
+      - decisions/0046-responses-through-the-browser.md
+      - decisions/0047-claims-and-the-person-s-claims.md
+      - decisions/0048-encryption.md
+      - decisions/0049-dynamic-client-registration.md
+      - decisions/0050-logout-and-session-state-in-the-browser.md
+      - decisions/0051-conformance-runs-and-certification.md
+      - decisions/0052-security-profiles.md
+      - decisions/0053-dpop.md
+      - decisions/0054-backchannel-authentication.md
       - decisions/0055-spiffe-jwt-client-authentication.md
   - Contributing:
       - development/conventions.md
