@@ -777,6 +777,8 @@ async fn a_client_change_replaces_its_secrets_and_keys(ports: Ports<'_>) {
     settings.userinfo_algorithm = Some(crate::api::IdTokenAlgorithm::EdDsa);
     // And it signs its request objects with PS256 only, which is kept.
     settings.request_object_algorithm = Some(crate::api::RequestObjectAlgorithm::Ps256);
+    // And it must push its requests, which is kept.
+    settings.require_pushed_requests = true;
     // And it becomes pairwise, its redirect addresses of two hosts put in
     // one sector by its sector identifier address, both kept.
     settings.subject_type = crate::api::SubjectType::Pairwise;
@@ -824,6 +826,7 @@ async fn a_client_change_replaces_its_secrets_and_keys(ports: Ports<'_>) {
         stored.snapshot().settings.userinfo_algorithm,
         Some(crate::api::IdTokenAlgorithm::EdDsa)
     );
+    assert!(stored.snapshot().settings.require_pushed_requests);
     assert_eq!(stored.subject_type(), crate::api::SubjectType::Pairwise);
     assert_eq!(stored.sector().as_deref(), Some("sector.example.org"));
     assert_eq!(stored.default_max_age(), Some(600));

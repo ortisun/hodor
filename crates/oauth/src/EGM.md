@@ -31,6 +31,13 @@ follows is `docs/architecture/contexts/oauth.md`.
     `LogoutOutcome`; `PairwiseSubjects`, `PairwisePorts`, given to
     `TokenService`, `LogoutService` and `BackChannelLogoutSender` with
     `with_pairwise_subjects`; `ApplicationService::with_sector_documents`.
+  - Pushed authorization requests' domain: `PushedRequestPolicy`,
+    `PushedRequest`, `PushedAnswer`, `PushedAuthorization`, `ReferenceHash`,
+    `RequestReference`, `Reference`, `check_reference`,
+    `check_pushed_request`, `pushed_lifetime`, `REFERENCE_PREFIX`,
+    `MAX_PUSHED_PER_CLIENT`, `DEFAULT_PUSHED_LIFETIME`,
+    `SHORTEST_PUSHED_LIFETIME`, `LONGEST_PUSHED_LIFETIME`; with
+    `TokenService::push` and `AuthorizationCodeService::push`.
   - Pairwise subject identifiers' domain: `SubjectType`, `PairwiseSecret`
     (with `subject` and `session`), `host_of`, `sector_of`,
     `check_sector_identifier_uri`, `check_sector_document`,
@@ -143,8 +150,10 @@ follows is `docs/architecture/contexts/oauth.md`.
     `InMemoryGrants::new(&clients)`,
     `InMemoryAuthorizationCodes::new(&grants)`, which refuse a row whose
     client or grant the tenant does not have; `AuthorizationStorePorts` and
-    `run_authorization_contract(ports)`; `InMemoryGrants::all(tenant)` for
-    tests that look behind the use cases.
+    `run_authorization_contract(ports)`, pushed requests taken once by
+    their client only and at most five kept per client among its cases;
+    `InMemoryGrants::all(tenant)` and `InMemoryAuthorizationRequests::pushed(tenant)`
+    for tests that look behind the use cases.
   - `testing/token.rs`: `InMemoryClientAssertions::new(&clients)`;
     `FakeVerifier` and `fake_signature`, a stand-in for signature checking
     in tests only; `AssertionStorePorts` and `run_assertion_contract(ports)`.

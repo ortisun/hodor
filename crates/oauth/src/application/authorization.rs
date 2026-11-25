@@ -10,12 +10,18 @@ use crate::application::userinfo::published_keys;
 use crate::domain::authorization::{
     AuthorizationCode, AuthorizationParameters, AuthorizationRefusal, AuthorizationRequest,
     BrowserSecret, CodeHash, CodePresentation, CodeRefusal, CodeValue, Grant, PendingAuthorization,
-    PendingAuthorizationId, SignedInPerson, check_request,
+    PendingAuthorizationId, SignedInPerson, check_request, trusted_client,
 };
+use crate::domain::client::Client;
 use crate::domain::consent::ConsentWait;
 use crate::domain::event::OauthEvent;
 use crate::domain::logout::check_id_token_hint;
+use crate::domain::pushed::{
+    MAX_PUSHED_PER_CLIENT, PushedAnswer, PushedAuthorization, PushedRequestPolicy, Reference,
+    ReferenceHash, check_pushed_request, check_reference, pushed_lifetime,
+};
 use crate::domain::request_object::RequestObjectCheck;
+use crate::domain::token::TokenError;
 use hodor_kernel::{
     Caller, Clock, Digest, DomainError, EventEnvelope, EventMetadata, RandomSource,
     SignatureVerifier, TenantContext, Timestamp, UnitOfWork, UnitOfWorkFactory, UserId,
@@ -162,7 +168,10 @@ impl AuthorizationCodeService {
     }
 
     /// Checks a request against the client it names in this tenant, whose
-    /// issuer is `issuer`, its request object first when it has one.
+    /// issuer is `issuer`, its request object first when it has one. A
+    /// request that names a pushed request by reference takes that pushed
+    /// request, once, and is it. `policy` is the tenant's: whether every
+    /// client must push its requests.
     ///
     /// # Errors
     ///
@@ -173,7 +182,9 @@ impl AuthorizationCodeService {
         tenant: &TenantContext,
         issuer: &str,
         parameters: &AuthorizationParameters,
+        policy: &PushedRequestPolicy,
     ) -> Result<Result<AuthorizationRequest, AuthorizationRefusal>, DomainError> {
+        let now = self.ports.clock.now();
         let mut uow = self.ports.units_of_work.begin(tenant).await?;
         let client = match parameters.client_id() {
             Some(id) => self.ports.clients.get(uow.as_mut(), id).await?,
@@ -188,6 +199,31 @@ impl AuthorizationCodeService {
             }
             None => None,
         };
+        let reference = parameters.reference();
+        if reference != Reference::Absent {
+            let client = match trusted_client(parameters, client.as_ref(), application.as_ref()) {
+                Ok((client, _)) => client,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
+            let hash = match reference {
+                Reference::Pushed(value) => {
+                    ReferenceHash::of_presented(value, self.ports.digest.as_ref())
+                }
+                Reference::Absent | Reference::Address | Reference::Unknown => None,
+            };
+            let taken = match hash {
+                Some(hash) => {
+                    self.ports
+                        .requests
+                        .take_pushed(uow.as_mut(), client.id(), &hash)
+                        .await?
+                }
+                None => None,
+            };
+            // Taken for good, whatever the answer: a reference is used once.
+            uow.commit().await?;
+            return Ok(check_reference(parameters, client, taken, now));
+        }
         let servers = if client.is_some() {
             self.ports.resource_servers.list(uow.as_mut()).await?
         } else {
@@ -200,9 +236,10 @@ impl AuthorizationCodeService {
             &servers,
             RequestObjectCheck {
                 issuer,
-                now: self.ports.clock.now(),
+                now,
                 verifier: self.ports.verifier.as_ref(),
             },
+            policy.requires(client.as_ref()),
         ))
     }
 
@@ -270,6 +307,88 @@ impl AuthorizationCodeService {
             Err(error) if error.code() == "oauth.pairwise_unavailable" => Ok(false),
             Err(error) => Err(error),
         }
+    }
+
+    /// Checks a request `client` pushed, the client that proved who it is
+    /// at this tenant, whose issuer is `issuer`, its `id_token_hint`
+    /// included, and keeps it for the life `policy` gives, beside at most
+    /// four others of the client. The client gets the reference.
+    ///
+    /// # Errors
+    ///
+    /// The outer error is a failure of storage; the inner one is the
+    /// refusal, to be answered as JSON.
+    pub async fn push(
+        &self,
+        tenant: &TenantContext,
+        issuer: &str,
+        client: &Client,
+        parameters: AuthorizationParameters,
+        policy: &PushedRequestPolicy,
+    ) -> Result<Result<PushedAnswer, TokenError>, DomainError> {
+        let now = self.ports.clock.now();
+        let mut uow = self.ports.units_of_work.begin(tenant).await?;
+        let Some(application) = self
+            .ports
+            .applications
+            .get(uow.as_mut(), client.application_id())
+            .await?
+        else {
+            return Ok(Err(TokenError::invalid_client("the client is unknown")));
+        };
+        let servers = self.ports.resource_servers.list(uow.as_mut()).await?;
+        let request = match check_pushed_request(
+            parameters,
+            client,
+            &application,
+            &servers,
+            RequestObjectCheck {
+                issuer,
+                now,
+                verifier: self.ports.verifier.as_ref(),
+            },
+        ) {
+            Ok(request) => request,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        // Nothing was written: the reads end here, and the hint is checked
+        // now, as every other check, since the pushed request keeps only
+        // the `sub` it names.
+        drop(uow);
+        let request = match self.check_hint(tenant, issuer, request).await? {
+            Ok(request) => request,
+            Err((refusal, reason)) => {
+                let (error, description) = match refusal {
+                    AuthorizationRefusal::Redirect(error) => (error.error, error.description),
+                    AuthorizationRefusal::NotRedirectable(_) => {
+                        ("invalid_request", "the id_token_hint is refused")
+                    }
+                };
+                return Ok(Err(TokenError {
+                    error,
+                    description,
+                    reason,
+                }));
+            }
+        };
+        let mut uow = self.ports.units_of_work.begin(tenant).await?;
+        let lifetime = pushed_lifetime(policy);
+        let (pushed, reference) = PushedAuthorization::push(
+            request,
+            lifetime,
+            now,
+            self.ports.random.as_ref(),
+            self.ports.digest.as_ref(),
+        );
+        self.ports
+            .requests
+            .push(uow.as_mut(), &pushed, MAX_PUSHED_PER_CLIENT)
+            .await?;
+        uow.commit().await?;
+        Ok(Ok(PushedAnswer {
+            reference,
+            expires_in: lifetime.whole_seconds(),
+        }))
     }
 
     /// Keeps a checked request while its person signs in. The browser gets

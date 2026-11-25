@@ -46,7 +46,7 @@ use hodor_oauth::api::{ApplicationService, ClientId, ConsentActor, ConsentServic
 use hodor_session::api::{Session, SessionId, SessionService};
 use hodor_tenant::api::{
     AssuranceLevel, AssuranceLevels, AssuranceRequirement, Deprovisioning, EmailSignInPolicy,
-    TenantService,
+    PushedRequestPolicy, TenantService,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -345,6 +345,16 @@ pub const ADMIN_OPERATIONS: &[(&str, &str, Permission)] = &[
     ("PUT", "/scim-deprovisioning", Permission::UsersWrite),
     ("GET", "/email-sign-in", Permission::UsersRead),
     ("PUT", "/email-sign-in", Permission::UsersWrite),
+    (
+        "GET",
+        "/pushed-authorization-requests",
+        Permission::ApplicationsRead,
+    ),
+    (
+        "PUT",
+        "/pushed-authorization-requests",
+        Permission::ApplicationsWrite,
+    ),
     ("GET", "/assurance-levels", Permission::AssuranceLevelsRead),
     ("PUT", "/assurance-levels", Permission::AssuranceLevelsWrite),
     ("GET", "/decision-log", Permission::DecisionsRead),
@@ -836,6 +846,10 @@ fn shared_routes() -> Router<Shared> {
             "/email-sign-in",
             get(read_email_sign_in).put(set_email_sign_in),
         )
+        .route(
+            "/pushed-authorization-requests",
+            get(read_pushed_requests).put(set_pushed_requests),
+        )
         .merge(applications::routes())
         .merge(claim_mappers::routes())
         .merge(client_registration::routes())
@@ -1044,6 +1058,86 @@ async fn set_email_sign_in(
                 .map_err(failed)?;
             Ok(Json(EmailSignInBody::from(
                 changed.snapshot().settings.authentication.email_sign_in,
+            ))
+            .into_response())
+        }
+        .await,
+    )
+}
+
+/// The tenant's pushed authorization request policy, as the interface
+/// writes it: both fields, always.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PushedRequestsBody {
+    lifetime_seconds: u16,
+    required: bool,
+}
+
+impl From<PushedRequestPolicy> for PushedRequestsBody {
+    fn from(policy: PushedRequestPolicy) -> Self {
+        Self {
+            lifetime_seconds: policy.lifetime_seconds,
+            required: policy.required,
+        }
+    }
+}
+
+async fn read_pushed_requests(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+) -> Response {
+    respond(
+        async {
+            authorize(
+                &state,
+                &tenant,
+                &headers,
+                "GET",
+                "/pushed-authorization-requests",
+            )
+            .await?;
+            let found = state.tenants.get(&tenant).await.map_err(failed)?;
+            Ok(Json(PushedRequestsBody::from(
+                found.snapshot().settings.pushed_requests,
+            ))
+            .into_response())
+        }
+        .await,
+    )
+}
+
+async fn set_pushed_requests(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+    bytes: Bytes,
+) -> Response {
+    respond(
+        async {
+            let caller = authorize(
+                &state,
+                &tenant,
+                &headers,
+                "PUT",
+                "/pushed-authorization-requests",
+            )
+            .await?;
+            let asked: PushedRequestsBody = body(&bytes)?;
+            let found = state.tenants.get(&tenant).await.map_err(failed)?;
+            let mut settings = found.snapshot().settings.clone();
+            settings.pushed_requests = PushedRequestPolicy {
+                lifetime_seconds: asked.lifetime_seconds,
+                required: asked.required,
+            };
+            let changed = state
+                .tenants
+                .change_settings(&tenant, settings, caller)
+                .await
+                .map_err(failed)?;
+            Ok(Json(PushedRequestsBody::from(
+                changed.snapshot().settings.pushed_requests,
             ))
             .into_response())
         }

@@ -410,6 +410,8 @@ struct ClientBody {
     userinfo_signed_response_alg: Option<&'static str>,
     /// How it signs its request objects, or `null` when none is chosen.
     request_object_signing_alg: Option<&'static str>,
+    /// Whether every request of it must be pushed first.
+    require_pushed_authorization_requests: bool,
     /// Where its logout tokens are sent, or `null`.
     backchannel_logout_uri: Option<String>,
     backchannel_logout_session_required: bool,
@@ -464,6 +466,7 @@ impl From<&Client> for ClientBody {
             request_object_signing_alg: settings
                 .request_object_algorithm
                 .map(RequestObjectAlgorithm::as_str),
+            require_pushed_authorization_requests: settings.require_pushed_requests,
             backchannel_logout_uri: settings.backchannel_logout_uri.clone(),
             backchannel_logout_session_required: settings.backchannel_logout_session_required,
             subject_type: settings.subject_type.as_str(),
@@ -547,6 +550,7 @@ struct NewClientBody {
     id_token_signed_response_alg: Option<String>,
     userinfo_signed_response_alg: Option<String>,
     request_object_signing_alg: Option<String>,
+    require_pushed_authorization_requests: Option<bool>,
     backchannel_logout_uri: Option<String>,
     backchannel_logout_session_required: Option<bool>,
     subject_type: Option<String>,
@@ -598,6 +602,7 @@ struct ClientChangesBody {
     /// Left out: unchanged; `null`: none chosen; a name: replaced.
     #[serde(default, deserialize_with = "present")]
     request_object_signing_alg: Option<Option<String>>,
+    require_pushed_authorization_requests: Option<bool>,
     /// Left out: unchanged; `null`: removed; an address: replaced.
     #[serde(default, deserialize_with = "present")]
     backchannel_logout_uri: Option<Option<String>>,
@@ -811,6 +816,8 @@ async fn create_client(
                 settings.request_object_algorithm =
                     Some(RequestObjectAlgorithm::parse(&algorithm).map_err(failed)?);
             }
+            settings.require_pushed_requests =
+                new.require_pushed_authorization_requests.unwrap_or(false);
             settings.backchannel_logout_uri = new.backchannel_logout_uri;
             settings.backchannel_logout_session_required =
                 new.backchannel_logout_session_required.unwrap_or(false);
@@ -953,6 +960,9 @@ async fn change_client(
                         Some(RequestObjectAlgorithm::parse(&algorithm).map_err(failed)?)
                     }
                 },
+                require_pushed_requests: changes
+                    .require_pushed_authorization_requests
+                    .unwrap_or(now.require_pushed_requests),
                 backchannel_logout_uri: changes
                     .backchannel_logout_uri
                     .unwrap_or(now.backchannel_logout_uri),

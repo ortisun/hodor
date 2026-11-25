@@ -582,6 +582,9 @@ pub struct ClientSettings {
     pub userinfo_algorithm: Option<IdTokenAlgorithm>,
     /// How it signs its request objects, if it named an algorithm.
     pub request_object_algorithm: Option<RequestObjectAlgorithm>,
+    /// Whether every request of it must be pushed first, its
+    /// `require_pushed_authorization_requests` of RFC 9126.
+    pub require_pushed_requests: bool,
     /// Where its logout tokens are sent when a session it signed a person
     /// in with ends, if anywhere.
     pub backchannel_logout_uri: Option<String>,
@@ -840,6 +843,7 @@ impl ClientSettings {
             id_token_algorithm: IdTokenAlgorithm::default(),
             userinfo_algorithm: None,
             request_object_algorithm: None,
+            require_pushed_requests: false,
             backchannel_logout_uri: None,
             backchannel_logout_session_required: false,
             subject_type: SubjectType::Public,
@@ -1047,6 +1051,7 @@ impl ClientSettings {
             id_token_algorithm: self.id_token_algorithm,
             userinfo_algorithm: self.userinfo_algorithm,
             request_object_algorithm: self.request_object_algorithm,
+            require_pushed_requests: self.require_pushed_requests,
             backchannel_logout_uri: self.backchannel_logout_uri,
             backchannel_logout_session_required: self.backchannel_logout_session_required,
             subject_type: self.subject_type,

@@ -155,6 +155,7 @@ fn check(
         Some(&setting.application),
         &setting.servers,
         objects(),
+        false,
     )
 }
 
@@ -188,6 +189,44 @@ fn a_good_request_is_accepted_with_what_it_asked_for() {
 }
 
 #[test]
+fn a_client_that_must_push_its_requests_is_refused_without_one() {
+    let setting = setting();
+    let refused = |pairs: Vec<(String, String)>| {
+        check_request(
+            &AuthorizationParameters::from_pairs(pairs),
+            Some(&setting.client),
+            Some(&setting.application),
+            &setting.servers,
+            objects(),
+            true,
+        )
+    };
+    let result = refused(good(&setting.client));
+    match &result {
+        Err(AuthorizationRefusal::Redirect(error)) => {
+            assert_eq!(
+                error.description,
+                "this client must push its authorization requests"
+            );
+            assert_eq!(error.state.as_deref(), Some("xyz"));
+        }
+        other => panic!("expected an error at the redirect address, got {other:?}"),
+    }
+    assert_eq!(error_of(result), "invalid_request");
+    // Until its address is trusted, nothing is sent there.
+    assert_eq!(
+        page_of(refused(with(
+            good(&setting.client),
+            "redirect_uri",
+            Some("https://elsewhere.example.com/callback")
+        ))),
+        "oauth.authorization_redirect_uri_unregistered"
+    );
+    // The same request is accepted when nothing requires it.
+    assert!(check(&setting, good(&setting.client)).is_ok());
+}
+
+#[test]
 fn nothing_is_sent_to_an_address_that_is_not_trusted() {
     let setting = setting();
     let unknown = "oauth.authorization_client_unknown";
@@ -216,6 +255,7 @@ fn nothing_is_sent_to_an_address_that_is_not_trusted() {
             None,
             &[],
             objects(),
+            false,
         )),
         unknown,
         "a client of another tenant is not found here"
@@ -230,6 +270,7 @@ fn nothing_is_sent_to_an_address_that_is_not_trusted() {
         Some(&setting.application),
         &setting.servers,
         objects(),
+        false,
     );
     assert_eq!(page_of(result), unknown);
     let mut application = setting.application.clone();
@@ -240,6 +281,7 @@ fn nothing_is_sent_to_an_address_that_is_not_trusted() {
         Some(&application),
         &setting.servers,
         objects(),
+        false,
     );
     assert_eq!(page_of(result), unknown);
 
@@ -307,9 +349,9 @@ fn every_malformed_request_is_refused_for_its_own_reason() {
             "invalid_request_object",
         ),
         (
-            "a request object by reference",
+            "a reference beside the request it would name",
             with(base.clone(), "request_uri", Some("urn:x")),
-            "request_uri_not_supported",
+            "invalid_request",
         ),
         (
             "no challenge from a public client",

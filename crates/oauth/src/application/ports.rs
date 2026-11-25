@@ -13,6 +13,7 @@ use crate::domain::initial_access_token::{
     InitialAccessToken, InitialAccessTokenHash, InitialAccessTokenId,
 };
 use crate::domain::introspection::AccessTokenRecord;
+use crate::domain::pushed::{PushedAuthorization, ReferenceHash};
 use crate::domain::refresh::{
     RefreshAsk, RefreshFamily, RefreshFamilyId, RefreshTokenHash, RefreshTokenRecord,
 };
@@ -250,6 +251,35 @@ pub trait AuthorizationRequestStore: Send + Sync {
         id: PendingAuthorizationId,
         answer: ConsentAnswer,
     ) -> Result<bool, DomainError>;
+
+    /// Stores a pushed request. The oldest pushed requests of its client
+    /// are removed first, so that at most `keep` wait, this one included;
+    /// two pushes of one client at the same moment keep the bound too.
+    ///
+    /// # Errors
+    ///
+    /// Returns `oauth.client_not_found` if the tenant has no such client.
+    async fn push(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        pushed: &PushedAuthorization,
+        keep: usize,
+    ) -> Result<(), DomainError>;
+
+    /// Takes the pushed request of `client` whose reference has this hash:
+    /// removes it and answers it, only if this call removed it, so that of
+    /// two uses at the same moment exactly one has it. An expired one is
+    /// taken too. A request of another client stays where it is.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn take_pushed(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        client: ClientId,
+        hash: &ReferenceHash,
+    ) -> Result<Option<PushedAuthorization>, DomainError>;
 }
 
 /// Stores grants.

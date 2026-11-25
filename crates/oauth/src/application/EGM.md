@@ -16,7 +16,7 @@ tenant and records its events in it.
 | `ApplicationStore` | `insert`, `update` (version checked), `get`, `list` (oldest first) |
 | `ClientStore` | `insert` (`oauth.application_not_found` for an application the tenant does not have), `update` (version checked; replaces secrets and keys), `get`, `list_for_application` (oldest first), `bound_to` (the clients bound to a `WorkloadIdentity`, oldest first); `insert` and `update` refuse a client whose identity a client of another principal holds (`oauth.client_spiffe_id_taken`, `oauth.client_linkerd_identity_taken`, Decision 0058) |
 | `ResourceServerStore` | `insert` (`oauth.audience_taken`, `oauth.application_has_resource_server`, `oauth.application_not_found`), `update` (version checked; replaces the scopes), `get`, `find_by_audience` (exact), `find_by_application` (the application's one, if any), `list` (oldest first) |
-| `AuthorizationRequestStore` | `insert` (`oauth.client_not_found`), `get`, `remove` (answers whether this call removed it), `answer` (records the answer of a request that waits for consent and has none; answers whether this call recorded it) |
+| `AuthorizationRequestStore` | `insert` (`oauth.client_not_found`), `get`, `remove` (answers whether this call removed it; never a pushed request), `answer` (records the answer of a request that waits for consent and has none; answers whether this call recorded it), `push(uow, pushed, keep)` (removes the oldest pushed requests of its client beyond `keep - 1`, then stores it; `oauth.client_not_found`), `take_pushed(uow, client, hash)` (removes and answers the pushed request of that client with that reference hash, only if this call removed it; an expired one too) |
 | `GrantStore` | `insert` (`oauth.client_not_found`), `get`, `update` (status and revocation; `oauth.grant_not_found`), `list_active_for(user, client)`, `list_active_of(user)` (every client, oldest first) |
 | `ConsentStore` | `get(user, client)` (withdrawn and expired included), `save` (replaces; `oauth.client_not_found`), `list_standing(user, now)` (newest first), `record` (a history entry; `oauth.client_not_found`) |
 | `AuthorizationCodeStore` | `insert` (`oauth.grant_not_found`), `find` (by hash), `redeem` (only if not redeemed; answers whether this call redeemed it) |
@@ -73,10 +73,27 @@ clients, resource_servers, digest, random, clock })`:
 applications, clients, resource_servers, requests, grants, codes,
 memberships, verifier, digest, random, clock })`:
 
-- `check(tenant, issuer, parameters)`: loads the client the request names
-  in this tenant, its application and the tenant's resource servers, and
-  runs `check_request`, a request object checked against `issuer`, the
-  clock and `verifier`, the kernel's `SignatureVerifier`. The outer `Result` is storage; the inner one the refusal.
+- `check(tenant, issuer, parameters, policy)`: loads the client the request
+  names in this tenant and its application. With `request_uri`
+  (`parameters.reference()`), the client must be trusted
+  (`trusted_client`); a reference of Hodor's shape is hashed
+  (`ReferenceHash::of_presented`) and its pushed request taken for that
+  client (`take_pushed`), committed whatever comes next, and
+  `check_reference` answers. Otherwise it loads the tenant's resource
+  servers and runs `check_request`, a request object checked against
+  `issuer`, the clock and `verifier`, the kernel's `SignatureVerifier`, with
+  `pushed_only` when `policy` (`PushedRequestPolicy`, the tenant's) or the
+  client requires pushed requests. The outer `Result` is storage; the inner
+  one the refusal.
+- `push(tenant, issuer, client, parameters, policy)`: for a client that
+  already proved who it is, runs `check_pushed_request` against its
+  application and the tenant's resource servers and `check_hint` on what
+  it gives (a refused hint is `invalid_request`), then keeps the request,
+  its response mode and the hint's `sub` with it,
+  with `PushedAuthorization::push` for `pushed_lifetime(policy)` and
+  `AuthorizationRequestStore::push` with `MAX_PUSHED_PER_CLIENT`; answers a
+  `PushedAnswer` (the reference, once, and `expires_in`), or the
+  `TokenError` to answer as JSON.
 - `with_id_token_hints(keys)` and `with_pairwise_subjects(pairwise)`
   (Issue-125). `check_hint(tenant, issuer, request)`: when the checked
   request holds `given_hint`, the `id_token_hint` its parameters gave
@@ -306,6 +323,11 @@ in the caller's unit of work, with one `oauth.access_token_revoked` each.
   `read_access_token` and, when it is this client's, its record is revoked
   with `oauth.access_token_revoked`. Any other token does nothing; the
   answer is the same.
+- `TokenService::push(tenant, issuer, endpoint, request, policy)`
+  (`pushed.rs`): authenticates the client of a `PushedRequest` as `token`
+  does, with `endpoint`, the pushed request endpoint's address, also
+  accepted as an assertion's audience, then hands the parameters to
+  `AuthorizationCodeService::push`.
 - `TokenService::introspect(tenant, issuer, endpoint, query)`: a public
   client is `invalid_client`. A refresh token of this client is active when
   it is the newest of a standing family, its grant is active and the

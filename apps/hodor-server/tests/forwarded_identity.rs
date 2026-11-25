@@ -549,6 +549,25 @@ async fn an_rfc_9440_certificate_with_its_chain_proves_a_tls_client_auth_client(
         )
         .await;
     assert_eq!(answer, json!({ "active": false }));
+
+    // So does the pushed request endpoint: proven by its certificate, the
+    // client is told only that it may not use the authorization code.
+    let pushed = [
+        ("response_type", "code"),
+        ("redirect_uri", "https://web.example/callback"),
+        ("scope", "read"),
+    ];
+    let (status, answer) = world
+        .oauth("par", &by_uri, &pushed, &with_chain(&leaf))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{answer}");
+    assert_eq!(answer["error"], "unauthorized_client", "{answer}");
+    refused(&world.oauth("par", &by_uri, &pushed, &[]).await);
+    refused(
+        &world
+            .oauth("par", &by_uri, &pushed, &with_chain(&stranger))
+            .await,
+    );
 }
 
 #[tokio::test]

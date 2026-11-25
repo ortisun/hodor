@@ -353,7 +353,12 @@ async fn signed_in_as(
     );
     let request = world
         .codes
-        .check(tenant, "https://hodor.example.com/t/acme", &parameters)
+        .check(
+            tenant,
+            "https://hodor.example.com/t/acme",
+            &parameters,
+            &hodor_oauth::api::PushedRequestPolicy::default(),
+        )
         .await
         .expect("storage")
         .expect("a valid request");
@@ -1084,7 +1089,12 @@ async fn code_form(
     );
     let request = world
         .codes
-        .check(tenant, ISSUER, &parameters)
+        .check(
+            tenant,
+            ISSUER,
+            &parameters,
+            &hodor_oauth::api::PushedRequestPolicy::default(),
+        )
         .await
         .expect("storage")
         .expect("a valid request");

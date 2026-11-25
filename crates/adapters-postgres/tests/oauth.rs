@@ -695,7 +695,12 @@ async fn of_two_redemptions_at_the_same_moment_one_wins_and_the_grant_is_revoked
         .map(|(k, v)| (k.to_owned(), v)),
     );
     let request = service
-        .check(&tenant, "https://hodor.example.com/t/acme", &parameters)
+        .check(
+            &tenant,
+            "https://hodor.example.com/t/acme",
+            &parameters,
+            &hodor_oauth::api::PushedRequestPolicy::default(),
+        )
         .await
         .expect("storage")
         .expect("accepted");
@@ -1570,4 +1575,271 @@ async fn the_database_binds_tokens_only_where_a_certificate_can_come() {
     .await
     .expect("constraint");
     assert!(shape.contains("32"), "{shape}");
+}
+
+#[tokio::test]
+async fn a_pushed_request_brought_twice_at_the_same_moment_is_used_once() {
+    use hodor_oauth::api::{
+        AuthorizationCodePorts, AuthorizationCodeService, AuthorizationParameters,
+        PushedRequestPolicy, s256_challenge,
+    };
+
+    let database = TestDatabase::start().await;
+    let clock = Arc::new(FixedClock::at(
+        Timestamp::UNIX_EPOCH + Duration::days(20_000),
+    ));
+    let units = Arc::new(database.app().clone());
+    let applications = ApplicationService::new(ApplicationPorts {
+        units_of_work: units.clone(),
+        applications: Arc::new(PgApplicationStore),
+        clients: Arc::new(PgClientStore),
+        resource_servers: Arc::new(PgResourceServerStore),
+        digest: Arc::new(FakeDigest),
+        random: Arc::new(DistinctRandom),
+        clock: clock.clone(),
+    });
+    let service = AuthorizationCodeService::new(AuthorizationCodePorts {
+        units_of_work: units.clone(),
+        applications: Arc::new(PgApplicationStore),
+        clients: Arc::new(PgClientStore),
+        resource_servers: Arc::new(PgResourceServerStore),
+        requests: Arc::new(PgAuthorizationRequestStore),
+        grants: Arc::new(PgGrantStore),
+        codes: Arc::new(PgAuthorizationCodeStore),
+        memberships: Arc::new(MembershipsOf::default()),
+        verifier: Arc::new(hodor_oauth::testing::FakeVerifier),
+        digest: Arc::new(FakeDigest),
+        random: Arc::new(DistinctRandom),
+        clock: clock.clone(),
+    });
+    let tenant = TenantContext::assume(TenantId::generate());
+    let application = applications
+        .create_application(
+            &tenant,
+            ApplicationSettings {
+                name: "Payroll".to_owned(),
+                first_party: true,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("application");
+    let mut settings = ClientSettings::new(
+        "Payroll mobile",
+        ClientType::Public,
+        vec![GrantType::AuthorizationCode],
+        vec!["com.example.payroll:/callback".to_owned()],
+    );
+    settings.allowed_scopes = vec!["openid".to_owned()];
+    let (client, _) = applications
+        .create_client(
+            &tenant,
+            CreateClient {
+                application_id: application.id(),
+                client_type: ClientType::Public,
+                settings,
+                secret_lifetime: None,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("client");
+    let challenge = s256_challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk", &FakeDigest);
+    let policy = PushedRequestPolicy::default();
+    let pushed = || {
+        AuthorizationParameters::from_pairs(
+            [
+                ("response_type", "code"),
+                ("redirect_uri", "com.example.payroll:/callback"),
+                ("scope", "openid"),
+                ("code_challenge", challenge.as_str()),
+                ("code_challenge_method", "S256"),
+            ]
+            .into_iter()
+            .map(|(name, value)| (name.to_owned(), value.to_owned())),
+        )
+    };
+    let answer = service
+        .push(
+            &tenant,
+            "https://hodor.example.com/t/acme",
+            &client,
+            pushed(),
+            &policy,
+        )
+        .await
+        .expect("storage")
+        .expect("pushed");
+    let brought = AuthorizationParameters::from_pairs([
+        ("client_id".to_owned(), client.id().to_string()),
+        (
+            "request_uri".to_owned(),
+            answer.reference.expose().to_owned(),
+        ),
+    ]);
+    let attempts = (0..8).map(|_| {
+        service.check(
+            &tenant,
+            "https://hodor.example.com/t/acme",
+            &brought,
+            &policy,
+        )
+    });
+    let mut used = 0;
+    for outcome in futures_like_join(attempts).await {
+        if outcome.expect("storage").is_ok() {
+            used += 1;
+        }
+    }
+    assert_eq!(used, 1, "of eight uses at once, exactly one has it");
+
+    // The reference is in the database only as its hash, and nothing of
+    // the request waits once it is used.
+    let everything: Option<String> = sqlx::query_scalar(
+        "SELECT string_agg(to_jsonb(t)::text, '') FROM oauth.authorization_request t",
+    )
+    .fetch_one(database.owner())
+    .await
+    .expect("dump");
+    assert_eq!(everything, None, "taken");
+
+    // A client keeps at most five waiting, on PostgreSQL too.
+    let mut references = Vec::new();
+    for second in 0..6 {
+        clock.advance(Duration::seconds(second));
+        references.push(
+            service
+                .push(
+                    &tenant,
+                    "https://hodor.example.com/t/acme",
+                    &client,
+                    pushed(),
+                    &policy,
+                )
+                .await
+                .expect("storage")
+                .expect("pushed")
+                .reference
+                .expose()
+                .to_owned(),
+        );
+    }
+    let waiting: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM oauth.authorization_request WHERE reference_hash IS NOT NULL",
+    )
+    .fetch_one(database.owner())
+    .await
+    .expect("count");
+    assert_eq!(waiting, 5);
+    let dump: String = sqlx::query_scalar(
+        "SELECT string_agg(to_jsonb(t)::text, '') FROM oauth.authorization_request t",
+    )
+    .fetch_one(database.owner())
+    .await
+    .expect("dump");
+    assert!(
+        references
+            .iter()
+            .all(|reference| !dump.contains(reference.as_str())),
+        "no reference is stored"
+    );
+}
+
+/// Drives the futures at once, on this task, and answers their outputs in
+/// order.
+async fn futures_like_join<F: std::future::Future>(
+    futures: impl Iterator<Item = F>,
+) -> Vec<F::Output> {
+    let mut set = Vec::new();
+    for future in futures {
+        set.push(Box::pin(future));
+    }
+    let mut outputs: Vec<Option<F::Output>> = set.iter().map(|_| None).collect();
+    std::future::poll_fn(|context| {
+        let mut pending = false;
+        for (future, output) in set.iter_mut().zip(outputs.iter_mut()) {
+            if output.is_none() {
+                match future.as_mut().poll(context) {
+                    std::task::Poll::Ready(value) => *output = Some(value),
+                    std::task::Poll::Pending => pending = true,
+                }
+            }
+        }
+        if pending {
+            std::task::Poll::Pending
+        } else {
+            std::task::Poll::Ready(())
+        }
+    })
+    .await;
+    outputs.into_iter().flatten().collect()
+}
+
+#[tokio::test]
+async fn the_database_keeps_a_pending_request_bound_one_way() {
+    let database = TestDatabase::start().await;
+    let tenant = sqlx::types::Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO oauth.application VALUES ($1, $1, 'Billing', false, 'enabled', now(), now(), 0)",
+    )
+    .bind(tenant)
+    .execute(database.owner())
+    .await
+    .expect("application");
+    sqlx::query(
+        "INSERT INTO oauth.client VALUES ($1, $1, $1, 'Web', 'public', 'none',
+             ARRAY['authorization_code'], ARRAY['https://billing.example.com/callback'],
+             ARRAY[]::text[], true, 300, 300, 2592000, 604800, 'enabled', now(), now(), 0)",
+    )
+    .bind(tenant)
+    .execute(database.owner())
+    .await
+    .expect("client");
+    let require: bool = sqlx::query_scalar(
+        "SELECT require_pushed_authorization_requests FROM oauth.client WHERE id = $1",
+    )
+    .bind(tenant)
+    .fetch_one(database.owner())
+    .await
+    .expect("read");
+    assert!(!require, "a client made before it is not required to push");
+    let insert = |secret: Option<Vec<u8>>, reference: Option<Vec<u8>>, seconds: i32| {
+        sqlx::query(
+            "INSERT INTO oauth.authorization_request
+                 (tenant_id, id, secret_hash, reference_hash, client_id, request, received_at,
+                  expires_at)
+             VALUES ($1, gen_random_uuid(), $2, $3, $1, '{}', now(),
+                     now() + $4 * interval '1 second')",
+        )
+        .bind(tenant)
+        .bind(secret)
+        .bind(reference)
+        .bind(seconds)
+        .execute(database.owner())
+    };
+    let hash = || vec![7_u8; 32];
+    assert!(insert(Some(hash()), None, 600).await.is_ok(), "a browser's");
+    assert!(
+        insert(None, Some(vec![8_u8; 32]), 600).await.is_ok(),
+        "a pushed one"
+    );
+    assert!(insert(None, None, 60).await.is_err(), "bound to nothing");
+    assert!(
+        insert(Some(hash()), Some(vec![9_u8; 32]), 60)
+            .await
+            .is_err(),
+        "bound both ways"
+    );
+    assert!(
+        insert(None, Some(vec![10_u8; 31]), 60).await.is_err(),
+        "a hash of another length"
+    );
+    assert!(
+        insert(None, Some(vec![11_u8; 32]), 601).await.is_err(),
+        "a pushed request past 600 seconds"
+    );
+    assert!(
+        insert(None, Some(vec![8_u8; 32]), 60).await.is_err(),
+        "a reference names one request of its tenant"
+    );
 }

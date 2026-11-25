@@ -153,6 +153,32 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   `SUPPORTED_GRANT_TYPES`, the grants the discovery document names; and,
   inside the crate, `access_token_header`, `decode_json`, `signing_input`
   and `compact`. Its cases are in `token/tests.rs`.
+- `pushed.rs`: pushed authorization requests (RFC 9126).
+  `PushedRequestPolicy { lifetime, required }` (the tenant's, read by the
+  HTTP layer; `requires(client)` adds the client's
+  `require_pushed_requests`); `pushed_lifetime` keeps it within
+  `SHORTEST_PUSHED_LIFETIME` and `LONGEST_PUSHED_LIFETIME` (10 and 600
+  seconds, `DEFAULT_PUSHED_LIFETIME` 60); `ReferenceHash` (`of_presented`
+  only for `REFERENCE_PREFIX` followed by 43 base64url characters);
+  `RequestReference`, redacted; `PushedAuthorization` with `push(request,
+  lifetime, now, random, digest)` and `is_live_at`;
+  `AuthorizationParameters::reference()`, a `Reference` (`Absent`,
+  `Pushed`, `Address` for `https://`, `Unknown`); `check_reference(outside,
+  client, taken, now)`, the pushed request as the request, with
+  `invalid_request_uri`, `request_uri_not_supported` or `invalid_request`
+  at the redirect address outside when it is the client's, in the
+  `error_mode` of what is outside, otherwise
+  `oauth.authorization_request_uri_invalid`, and `response_type` and
+  `scope` repeated outside checked against the pushed request, refused in
+  its own response mode;
+  `PushedRequest::parse(basic, pairs)` (a parameter twice but `resource`
+  is `invalid_request`; the client by `presented_client`; the
+  authentication parameters left out of the request);
+  `check_pushed_request(parameters, client, application, servers,
+  objects)`, `check_request` for the client that proved who it is, its
+  refusals as a `TokenError` (`unauthorized_client`, `invalid_request`,
+  `invalid_request_object`, or the endpoint's own `error`); `PushedAnswer`
+  and `MAX_PUSHED_PER_CLIENT` (5). Its cases are in `pushed/tests.rs`.
 - `request_object.rs`: request objects (OpenID Connect Core, section 6,
   and RFC 9101). `check_request_object(object, client, outside, check)`:
   `request_uri` beside it, the size (`MAX_REQUEST_OBJECT_BYTES`, 16

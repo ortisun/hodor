@@ -631,3 +631,64 @@ async fn a_client_is_told_how_its_id_tokens_and_userinfo_answers_are_signed() {
         .expect("count");
     assert_eq!(count, 5, "the refused clients were not made");
 }
+
+#[tokio::test]
+async fn a_client_is_made_to_push_its_requests() {
+    let database = TestDatabase::start().await;
+    let created = run(
+        &database,
+        &["tenant", "create", "--slug", "acme", "--name", "Acme"],
+    );
+    assert!(created.status.success(), "{created:?}");
+    let added = run(
+        &database,
+        &[
+            "application",
+            "add",
+            "--tenant",
+            "acme",
+            "--name",
+            "Billing",
+            "--first-party",
+        ],
+    );
+    let application = value(&added, "application");
+    let client = |extra: &[&str]| {
+        let mut arguments = vec![
+            "client",
+            "add",
+            "--tenant",
+            "acme",
+            "--application",
+            &application,
+            "--name",
+            "Billing web site",
+            "--type",
+            "confidential",
+            "--grant",
+            "authorization_code",
+            "--redirect-uri",
+            "https://billing.example.com/callback",
+        ];
+        arguments.extend_from_slice(extra);
+        run(&database, &arguments)
+    };
+    let stored = |id: String| {
+        let database = &database;
+        async move {
+            sqlx::query_scalar::<_, bool>(
+                "SELECT require_pushed_authorization_requests FROM oauth.client WHERE id = $1::uuid",
+            )
+            .bind(id)
+            .fetch_one(database.owner())
+            .await
+            .expect("client")
+        }
+    };
+    let plain = client(&[]);
+    assert!(plain.status.success(), "{plain:?}");
+    assert!(!stored(value(&plain, "client")).await, "not unless asked");
+    let strict = client(&["--require-pushed-authorization-requests"]);
+    assert!(strict.status.success(), "{strict:?}");
+    assert!(stored(value(&strict, "client")).await);
+}

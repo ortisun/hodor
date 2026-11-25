@@ -87,6 +87,7 @@ fn check(
             now: MOMENT,
             verifier: &crate::testing::FakeVerifier,
         },
+        false,
     )
 }
 

@@ -213,6 +213,7 @@ fn check(
         Some(&setting.application),
         &setting.servers,
         objects(),
+        false,
     )
 }
 
@@ -840,6 +841,7 @@ fn an_object_for_an_unknown_client_is_never_checked() {
             None,
             &[],
             objects(),
+            false,
         ),
         Err(AuthorizationRefusal::NotRedirectable(
             "oauth.authorization_client_unknown"
@@ -856,6 +858,7 @@ fn an_object_for_an_unknown_client_is_never_checked() {
             Some(&application),
             &[],
             objects(),
+            false,
         ),
         Err(AuthorizationRefusal::Redirect(
             crate::domain::authorization::AuthorizationError {

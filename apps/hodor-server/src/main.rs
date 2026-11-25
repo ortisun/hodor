@@ -873,6 +873,7 @@ fn token(
     .with_certificate_check(Arc::new(X509CertificateCheck));
     Ok(TokenState {
         tokens,
+        tenants: tenant_service(database),
         public_url: config.public_url.clone(),
     })
 }
