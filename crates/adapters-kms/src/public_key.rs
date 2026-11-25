@@ -1,7 +1,8 @@
-//! The public keys OpenBao answers: PEM documents of a
-//! SubjectPublicKeyInfo (RFC 5280, section 4.1), read into the numbers the
-//! keys context keeps. Only the two shapes Hodor makes are accepted: a
-//! P-256 point, and an RSA key of 2048 bits.
+//! The public keys OpenBao answers, read into the numbers the keys context
+//! keeps: PEM documents of a SubjectPublicKeyInfo (RFC 5280, section 4.1)
+//! for ECDSA and RSA, and the key's own 32 bytes in base64 for Ed25519.
+//! Only the three shapes Hodor makes are accepted: a P-256 point, an RSA
+//! key of 2048 bits, and an Ed25519 key.
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
@@ -67,10 +68,26 @@ fn pem(text: &str) -> Option<Vec<u8>> {
     STANDARD.decode(joined).ok()
 }
 
-/// Reads a PEM public key OpenBao answered: an RSA key of 2048 bits when
-/// `rsa`, a P-256 key otherwise. `None` for anything else, a key of the
-/// other kind included.
-pub(crate) fn read(text: &str, rsa: bool) -> Option<PublicKey> {
+/// The shape of a public key Hodor asks OpenBao for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Shape {
+    /// A point on P-256, in PEM.
+    P256,
+    /// An RSA key of 2048 bits, in PEM.
+    Rsa,
+    /// An Ed25519 key: its 32 bytes in base64, which is how OpenBao
+    /// answers the public key of a key of type `ed25519`.
+    Ed25519,
+}
+
+/// Reads a public key OpenBao answered, of the shape asked. `None` for
+/// anything else, a key of another shape included.
+pub(crate) fn read(text: &str, shape: Shape) -> Option<PublicKey> {
+    if shape == Shape::Ed25519 {
+        let key = STANDARD.decode(text.trim()).ok()?;
+        return (key.len() == 32).then_some(PublicKey::Ed25519 { x: key });
+    }
+    let rsa = shape == Shape::Rsa;
     let der = pem(text)?;
     let info = only(&der, SEQUENCE)?;
     let (tag, algorithm, rest) = element(info)?;
@@ -155,25 +172,47 @@ mod tests {
 
     #[test]
     fn a_p256_key_is_read_into_its_point() {
-        let Some(PublicKey::P256 { x, y }) = read(P256_KEY, false) else {
+        let Some(PublicKey::P256 { x, y }) = read(P256_KEY, Shape::P256) else {
             panic!("a P-256 key");
         };
         assert_eq!((x.len(), y.len()), (32, 32));
         assert_eq!(x[..4], [0xf1, 0xe7, 0xe2, 0x75]);
-        assert_eq!(read(P256_KEY, true), None, "not an RSA key");
+        assert_eq!(read(P256_KEY, Shape::Rsa), None, "not an RSA key");
+        assert_eq!(read(P256_KEY, Shape::Ed25519), None, "not an Ed25519 key");
     }
 
     #[test]
     fn an_rsa_key_of_2048_bits_is_read_into_its_numbers() {
-        let Some(PublicKey::Rsa { modulus, exponent }) = read(&rsa_key(256), true) else {
+        let Some(PublicKey::Rsa { modulus, exponent }) = read(&rsa_key(256), Shape::Rsa) else {
             panic!("an RSA key");
         };
         assert_eq!(modulus.len(), 256);
         assert_eq!(modulus[0], 0xc0);
         assert_eq!(exponent, [1, 0, 1]);
-        assert_eq!(read(&rsa_key(256), false), None, "not a P-256 key");
-        assert_eq!(read(&rsa_key(128), true), None, "1024 bits");
-        assert_eq!(read(&rsa_key(384), true), None, "3072 bits");
+        assert_eq!(read(&rsa_key(256), Shape::P256), None, "not a P-256 key");
+        assert_eq!(read(&rsa_key(128), Shape::Rsa), None, "1024 bits");
+        assert_eq!(read(&rsa_key(384), Shape::Rsa), None, "3072 bits");
+    }
+
+    /// An Ed25519 key as OpenBao 2.7.2 answered it.
+    const ED25519_KEY: &str = "ZkHsesCL3A/mWHHe+o/lYfBnk0D4cJDl3RbyALxrQoQ=";
+
+    #[test]
+    fn an_ed25519_key_is_read_from_its_32_bytes_in_base64() {
+        let Some(PublicKey::Ed25519 { x }) = read(ED25519_KEY, Shape::Ed25519) else {
+            panic!("an Ed25519 key");
+        };
+        assert_eq!(x.len(), 32);
+        assert_eq!(x[..4], [0x66, 0x41, 0xec, 0x7a]);
+        assert_eq!(read(ED25519_KEY, Shape::P256), None, "not a PEM document");
+        assert_eq!(read(P256_KEY, Shape::Ed25519), None, "a PEM document");
+        for bad in [
+            "",
+            "ZkHsesCL3A/mWHHe+o/lYfBnk0D4cJDl3RbyALxrQo==",
+            "not base64!",
+        ] {
+            assert_eq!(read(bad, Shape::Ed25519), None, "{bad}");
+        }
     }
 
     #[test]
@@ -186,7 +225,7 @@ mod tests {
             &P256_KEY.replace("MFkw", "MFow"),
             &cut,
         ] {
-            assert_eq!(read(bad, false), None, "{bad}");
+            assert_eq!(read(bad, Shape::P256), None, "{bad}");
         }
     }
 }

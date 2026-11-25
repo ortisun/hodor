@@ -1051,6 +1051,60 @@ async fn the_database_keeps_request_object_algorithms_to_those_named() {
 }
 
 #[tokio::test]
+async fn the_database_keeps_signing_algorithms_of_answers_to_those_named() {
+    let database = TestDatabase::start().await;
+    let tenant = sqlx::types::Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO oauth.application VALUES ($1, $1, 'Billing', false, 'enabled', now(), now(), 0)",
+    )
+    .bind(tenant)
+    .execute(database.owner())
+    .await
+    .expect("application");
+    let insert = |id_token: &str, userinfo: Option<&str>| {
+        sqlx::query(
+            "INSERT INTO oauth.client (tenant_id, id, application_id, name, client_type,
+                 authentication_method, grant_types, redirect_uris, allowed_scopes, require_pkce,
+                 access_token_seconds, id_token_seconds, refresh_token_seconds,
+                 refresh_idle_seconds, status, created_at, updated_at, version,
+                 id_token_algorithm, userinfo_signed_response_alg)
+             VALUES ($1, gen_random_uuid(), $1, 'Web', 'confidential', 'client_secret_basic',
+                 ARRAY['authorization_code'], ARRAY['https://billing.example.com/callback'],
+                 ARRAY[]::text[], true, 300, 300, 2592000, 604800, 'enabled', now(), now(), 0,
+                 $2, $3)",
+        )
+        .bind(tenant)
+        .bind(id_token.to_owned())
+        .bind(userinfo.map(str::to_owned))
+        .execute(database.owner())
+    };
+    for algorithm in ["ES256", "RS256", "PS256", "EdDSA"] {
+        insert(algorithm, None)
+            .await
+            .expect("a known ID token algorithm, UserInfo in JSON");
+        insert("ES256", Some(algorithm))
+            .await
+            .expect("a known UserInfo algorithm");
+    }
+    for refused in ["HS256", "none", "ES384", "Ed25519", "eddsa", ""] {
+        assert!(insert(refused, None).await.is_err(), "ID token {refused}");
+        assert!(
+            insert("ES256", Some(refused)).await.is_err(),
+            "UserInfo {refused}"
+        );
+    }
+    // Null is UserInfo in JSON, the value of every client made before the
+    // column existed.
+    let json: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM oauth.client WHERE userinfo_signed_response_alg IS NULL",
+    )
+    .fetch_one(database.owner())
+    .await
+    .expect("count");
+    assert_eq!(json, 4);
+}
+
+#[tokio::test]
 async fn the_database_keeps_subject_types_and_sector_addresses_to_their_rules() {
     let database = TestDatabase::start().await;
     let tenant = sqlx::types::Uuid::now_v7();

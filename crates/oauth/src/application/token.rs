@@ -40,6 +40,38 @@ use std::fmt;
 use std::sync::Arc;
 use time::Duration;
 
+/// Signs `message` with the tenant's active key of `algorithm`. A tenant
+/// that has none, because it was made a moment ago or has never signed
+/// with the algorithm, gets its first one at once from the keys context,
+/// as rotation would have given it. `None` only if even then there is no
+/// key to sign with.
+///
+/// # Errors
+///
+/// Returns an error if storage fails or the key provider cannot sign.
+pub(crate) async fn signed_with_active_key<F>(
+    keys: &KeyService,
+    tenant: &TenantContext,
+    algorithm: KeyAlgorithm,
+    message: F,
+) -> Result<Option<(Vec<u8>, Signature)>, DomainError>
+where
+    F: Fn(KeyVersionId) -> Vec<u8> + Send + Sync,
+{
+    match keys.sign_naming_key(tenant, algorithm, &message).await {
+        Ok(signed) => return Ok(Some(signed)),
+        Err(error) if error.code() == "keys.no_active_version" => {}
+        Err(error) => return Err(error),
+    }
+    keys.ensure_active(tenant, algorithm, Caller::system())
+        .await?;
+    match keys.sign_naming_key(tenant, algorithm, &message).await {
+        Ok(signed) => Ok(Some(signed)),
+        Err(error) if error.code() == "keys.no_active_version" => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 /// The ports [`TokenService`] works through.
 #[derive(Clone)]
 pub struct TokenPorts {
@@ -635,11 +667,8 @@ impl TokenService {
         })
     }
 
-    /// Signs `message` with the tenant's active key of `algorithm`. A tenant
-    /// that has none, because it was made a moment ago or has never signed
-    /// with the algorithm, gets its first one at once from the keys
-    /// context, as rotation would have given it. `None` only if even then
-    /// there is no key to sign with.
+    /// Signs `message` with the tenant's active key of `algorithm`, as
+    /// [`signed_with_active_key`] does.
     async fn signed<F>(
         &self,
         tenant: &TenantContext,
@@ -649,19 +678,7 @@ impl TokenService {
     where
         F: Fn(KeyVersionId) -> Vec<u8> + Send + Sync,
     {
-        let keys = &self.ports.keys;
-        match keys.sign_naming_key(tenant, algorithm, &message).await {
-            Ok(signed) => return Ok(Some(signed)),
-            Err(error) if error.code() == "keys.no_active_version" => {}
-            Err(error) => return Err(error),
-        }
-        keys.ensure_active(tenant, algorithm, Caller::system())
-            .await?;
-        match keys.sign_naming_key(tenant, algorithm, &message).await {
-            Ok(signed) => Ok(Some(signed)),
-            Err(error) if error.code() == "keys.no_active_version" => Ok(None),
-            Err(error) => Err(error),
-        }
+        signed_with_active_key(&self.ports.keys, tenant, algorithm, message).await
     }
 
     pub(crate) fn record(

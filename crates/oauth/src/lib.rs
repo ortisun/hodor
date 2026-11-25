@@ -52,7 +52,7 @@ pub mod api {
         CreateResourceServer, RotateSecret,
     };
     pub use crate::application::token::{IssuedTokens, Issuer, TokenPorts, TokenService};
-    pub use crate::application::userinfo::{UserInfoPorts, UserInfoService};
+    pub use crate::application::userinfo::{UserInfoAnswer, UserInfoPorts, UserInfoService};
     pub use crate::domain::application::{
         Application, ApplicationId, ApplicationSettings, ApplicationSnapshot, MAX_APPLICATIONS,
         Status,

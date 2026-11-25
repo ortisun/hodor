@@ -117,9 +117,14 @@ pub(crate) enum ClientCommand {
         /// does.
         #[arg(long)]
         without_pkce: bool,
-        /// How its ID tokens are signed: `ES256` unless given, or `RS256`.
+        /// How its ID tokens are signed: `ES256` unless given, or `RS256`,
+        /// `PS256` or `EdDSA`.
         #[arg(long)]
         id_token_algorithm: Option<String>,
+        /// How its UserInfo answers are signed: `ES256`, `RS256`, `PS256`
+        /// or `EdDSA`. Answered in JSON, unsigned, unless given.
+        #[arg(long)]
+        userinfo_signed_response_alg: Option<String>,
         /// How it signs its request objects: `ES256`, `RS256` or `PS256`,
         /// which accepts only that one, or `none`, which accepts only
         /// unsigned objects. Any of the three unless given.
@@ -485,6 +490,7 @@ pub(crate) async fn run_client(
             secret_days,
             without_pkce,
             id_token_algorithm,
+            userinfo_signed_response_alg,
             request_object_signing_alg,
             backchannel_logout_uri,
             backchannel_logout_session_required,
@@ -527,6 +533,10 @@ pub(crate) async fn run_client(
             settings.require_pkce = !without_pkce;
             if let Some(algorithm) = id_token_algorithm {
                 settings.id_token_algorithm = IdTokenAlgorithm::parse(&algorithm)?;
+            }
+            if let Some(algorithm) = userinfo_signed_response_alg {
+                settings.userinfo_algorithm =
+                    Some(IdTokenAlgorithm::parse_for_userinfo(&algorithm)?);
             }
             if let Some(algorithm) = request_object_signing_alg {
                 settings.request_object_algorithm =

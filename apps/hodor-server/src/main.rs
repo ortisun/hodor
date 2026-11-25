@@ -896,6 +896,8 @@ fn userinfo(config: &Config, database: &Database, keys: KeyService) -> UserInfoS
     let clock = Arc::new(SystemClock);
     UserInfoState {
         userinfo: UserInfoService::new(UserInfoPorts {
+            units_of_work: Arc::new(database.clone()),
+            clients: Arc::new(PgClientStore),
             keys,
             verifier: Arc::new(AwsLcVerifier),
             identity: IdentityService::new(

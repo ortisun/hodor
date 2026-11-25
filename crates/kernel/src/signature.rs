@@ -4,8 +4,8 @@
 //! in the kernel because several contexts check statements signed by
 //! someone else: federation today, tokens presented by clients later.
 
-/// The signature algorithms Hodor accepts from others. There is no way to
-/// name `none` or a shared-secret algorithm here.
+/// The signature algorithms Hodor checks. There is no way to name `none`
+/// or a shared-secret algorithm here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SignatureAlgorithm {
     /// RSA with PKCS#1 v1.5 padding and SHA-256.
@@ -14,11 +14,17 @@ pub enum SignatureAlgorithm {
     Ps256,
     /// ECDSA on the P-256 curve with SHA-256.
     Es256,
+    /// EdDSA on the Ed25519 curve (RFC 8037). Checked for the signatures
+    /// of a tenant's own keys; [`SignatureAlgorithm::from_name`] does not
+    /// read it from another's header.
+    EdDsa,
 }
 
 impl SignatureAlgorithm {
-    /// Reads the name used in a signed statement's header. Any other
-    /// name is refused by not being one of these.
+    /// Reads the name used in a signed statement's header, for the
+    /// algorithms Hodor accepts from others: `RS256`, `PS256` and `ES256`.
+    /// Any other name is refused by not being one of these, `EdDSA` too:
+    /// no key Hodor reads from another is an Ed25519 key yet.
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
         match name {
@@ -37,6 +43,7 @@ impl SignatureAlgorithm {
             (self, key),
             (Self::Rs256 | Self::Ps256, PublicKey::Rsa { .. })
                 | (Self::Es256, PublicKey::P256 { .. })
+                | (Self::EdDsa, PublicKey::Ed25519 { .. })
         )
     }
 }
@@ -57,6 +64,11 @@ pub enum PublicKey {
         x: Vec<u8>,
         /// The y coordinate, 32 bytes.
         y: Vec<u8>,
+    },
+    /// An Ed25519 public key.
+    Ed25519 {
+        /// The key, 32 bytes, as RFC 8032 writes it.
+        x: Vec<u8>,
     },
 }
 

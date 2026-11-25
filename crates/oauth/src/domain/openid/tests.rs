@@ -510,6 +510,17 @@ fn discovery_names_only_what_is_built() {
         ]),
         "a public client may not introspect"
     );
+    // Every algorithm a client may choose for what Hodor signs for it.
+    for member in [
+        "id_token_signing_alg_values_supported",
+        "userinfo_signing_alg_values_supported",
+    ] {
+        assert_eq!(
+            document[member],
+            json!(["ES256", "RS256", "PS256", "EdDSA"]),
+            "{member}"
+        );
+    }
     assert_eq!(document["request_parameter_supported"], json!(true));
     assert_eq!(
         document["request_object_signing_alg_values_supported"],
@@ -591,5 +602,34 @@ fn the_metadata_page_names_the_version_of_the_spiffe_draft() {
             .as_array()
             .expect("a list")
             .contains(&json!("spiffe_jwt"))
+    );
+}
+
+#[test]
+fn a_signed_userinfo_answer_holds_the_claims_with_iss_and_aud_and_no_expiry() {
+    let claims = json!({"sub": "248289761001", "name": "Ana Lima", "email": "ana@example.com"});
+    let signed = signed_userinfo_claims(claims, "https://hodor.example.com/t/acme", "client-1");
+    assert_eq!(
+        signed,
+        json!({
+            "sub": "248289761001",
+            "name": "Ana Lima",
+            "email": "ana@example.com",
+            "iss": "https://hodor.example.com/t/acme",
+            "aud": "client-1",
+        })
+    );
+    for absent in ["exp", "iat", "nonce", "typ"] {
+        assert!(signed.get(absent).is_none(), "{absent}");
+    }
+    // The header names the algorithm and the key, and is no ID token's.
+    let header = userinfo_header("EdDSA", "0193a0b2-0000-7000-8000-000000000001");
+    assert_eq!(
+        header,
+        json!({"alg": "EdDSA", "kid": "0193a0b2-0000-7000-8000-000000000001"})
+    );
+    assert_ne!(
+        header,
+        id_token_header("EdDSA", "0193a0b2-0000-7000-8000-000000000001")
     );
 }

@@ -217,6 +217,7 @@ async fn the_openbao_provider_passes_the_contract_of_a_key_provider() {
             KeyAlgorithm::Es256,
             KeyAlgorithm::Rs256,
             KeyAlgorithm::Ps256,
+            KeyAlgorithm::EdDsa,
         ],
         data: false,
     })
@@ -231,6 +232,8 @@ async fn a_key_is_made_in_transit_named_for_its_tenant_and_version_and_never_exp
     for (algorithm, kind) in [
         (KeyAlgorithm::Es256, "ecdsa-p256"),
         (KeyAlgorithm::Rs256, "rsa-2048"),
+        (KeyAlgorithm::Ps256, "rsa-2048"),
+        (KeyAlgorithm::EdDsa, "ed25519"),
     ] {
         let version = made_by(&provider, &tenant, algorithm).await;
         assert_eq!(version.snapshot().provider, "openbao");
@@ -310,6 +313,22 @@ async fn hodors_policy_never_lets_the_private_part_of_a_key_out() {
             format!("hodor-transit/keys/{other}"),
             Some(json!({"type": "aes256-gcm96"})),
         ),
+        // Of the types Transit makes, only the three Hodor signs with.
+        (
+            "POST",
+            format!("hodor-transit/keys/{other}"),
+            Some(json!({"type": "ecdsa-p384"})),
+        ),
+        (
+            "POST",
+            format!("hodor-transit/keys/{other}"),
+            Some(json!({"type": "rsa-4096"})),
+        ),
+        (
+            "POST",
+            format!("hodor-transit/keys/{other}"),
+            Some(json!({"type": "ed25519", "exportable": true})),
+        ),
         (
             "POST",
             format!("hodor-transit/encrypt/{name}"),
@@ -370,6 +389,7 @@ async fn a_key_under_the_name_that_hodor_would_not_have_made_is_refused() {
     let tenant = tenant();
     let cases = [
         ("of another type", json!({"type": "rsa-2048"})),
+        ("an Ed25519 key", json!({"type": "ed25519"})),
         (
             "exportable",
             json!({"type": "ecdsa-p256", "exportable": true}),
@@ -390,6 +410,20 @@ async fn a_key_under_the_name_that_hodor_would_not_have_made_is_refused() {
             .expect_err(case);
         assert_eq!(error.code(), "keys.provider_failed", "{case}");
     }
+    // And the other way: a P-256 key under the name of an EdDSA version.
+    let version = KeyVersionId::generate();
+    let name = OpenBaoKeyProvider::key_name(&tenant, version);
+    bao.root(
+        "POST",
+        &format!("hodor-transit/keys/{name}"),
+        json!({"type": "ecdsa-p256"}),
+    )
+    .await;
+    let error = provider
+        .generate(&tenant, version, KeyAlgorithm::EdDsa)
+        .await
+        .expect_err("not an Ed25519 key");
+    assert_eq!(error.code(), "keys.provider_failed");
     let rotated = KeyVersionId::generate();
     let name = OpenBaoKeyProvider::key_name(&tenant, rotated);
     bao.root(

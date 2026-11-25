@@ -219,6 +219,7 @@ mod tests {
                 y: vec![2; 32],
             }),
             KeyAlgorithm::A256Gcm => None,
+            KeyAlgorithm::EdDsa => Some(PublicKey::Ed25519 { x: vec![3; 32] }),
             _ => Some(PublicKey::Rsa {
                 modulus: vec![1; 256],
                 exponent: vec![1, 0, 1],

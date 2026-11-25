@@ -222,6 +222,7 @@ mod tests {
                 x: vec![1; 32],
                 y: vec![2; 32],
             },
+            KeyAlgorithm::EdDsa => PublicKey::Ed25519 { x: vec![3; 32] },
             _ => PublicKey::Rsa {
                 modulus: vec![1; 256],
                 exponent: vec![1, 0, 1],

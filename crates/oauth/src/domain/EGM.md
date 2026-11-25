@@ -17,8 +17,13 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   `SpiffeX509` and `LinkerdIdentity`; `uses_workload_identity`, either);
   `ClientSettings::workload_identity()`; `GrantType`;
   `IdTokenAlgorithm`
-  (`Es256` by default or `Rs256`, `key_algorithm`, listed by `ALL` in
-  discovery); `RequestObjectAlgorithm` (`Es256`, `Rs256`, `Ps256`, `None`;
+  (`Es256` by default, `Rs256`, `Ps256` or `EdDsa`; `key_algorithm`,
+  `signature`, `from_name`, `parse` with
+  `oauth.client_id_token_algorithm_invalid` and `parse_for_userinfo` with
+  `oauth.client_userinfo_algorithm_invalid`; listed by `ALL` in discovery
+  for ID tokens and UserInfo), kept as `ClientSettings::id_token_algorithm`
+  and, for signed UserInfo answers, `ClientSettings::userinfo_algorithm`,
+  none by default; `RequestObjectAlgorithm` (`Es256`, `Rs256`, `Ps256`, `None`;
   `parse`, `as_str`, `signature`, listed by `ALL` in discovery), kept as
   `ClientSettings::request_object_algorithm`, none chosen by default;
   `TokenPolicy` with
@@ -178,12 +183,17 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   audience, a person as `sub` and the
   `openid` scope, for UserInfo; `BearerRefusal`, `CheckedAccessToken`
   with the `jti` and `client_id` the register is asked with), `PersonClaims`
-  and `userinfo_claims` (the claims of `profile` and `email`), and
+  and `userinfo_claims` (the claims of `profile` and `email`),
+  `signed_userinfo_claims` and `userinfo_header` (crate-visible: a signed
+  UserInfo answer adds `iss` and `aud`, and its header has `alg` and `kid`
+  and no `typ`), and
   `discovery_document(issuer, acr_values)`, which names the revocation and introspection
-  endpoints and their methods, and the response types and modes of
-  `ResponseType::ALL` and `ResponseMode::ALL`, and `display_values_supported`;
-  `with_registration(document, open)` and `prompt_values_supported(open)`
-  add `create` for a tenant open to registration. Its cases are in `openid/tests.rs`.
+  endpoints and their methods, the response types and modes of
+  `ResponseType::ALL` and `ResponseMode::ALL`, `display_values_supported`, and
+  the four `IdTokenAlgorithm`s as `id_token_signing_alg_values_supported` and
+  `userinfo_signing_alg_values_supported`; `with_registration(document, open)`
+  and `prompt_values_supported(open)` add `create` for a tenant open to
+  registration. Its cases are in `openid/tests.rs`.
 - `introspection.rs`: revocation and introspection. `TokenQuery::parse`
   (`token` required, a parameter twice or more than one way of proving who
   the client is `invalid_request`, no client named `invalid_client`),
@@ -207,8 +217,8 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   `FAMILY_SECRET_PURPOSE`, `DEFAULT_RETRY_WINDOW`, `LONGEST_RETRY_WINDOW`.
   Its cases are in `refresh/tests.rs`.
 - `logout.rs`: logout initiated by the relying party. `LogoutParameters`,
-  `check_id_token_hint` (an ID token of the tenant, signature checked,
-  expiry not; `sub` and `sid` read as text), `IdTokenHint`, `check_shape`
+  `check_id_token_hint` (an ID token of the tenant, `typ` `JWT` and `alg`
+  one of the four `IdTokenAlgorithm`s, signature checked, expiry not; `sub` and `sid` read as text), `IdTokenHint`, `check_shape`
   and `check_request` (crate-visible; the codes are in `refusal`),
   `LogoutRequest::decide` over a `KnownSession` (`Finish`, `EndSession`
   only for a `GET` whose hint's `sub` and `sid` are the browser's session

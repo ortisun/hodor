@@ -98,7 +98,8 @@ surface through `pub mod api`.
     stores.
   - `ProviderPorts<'a> { provider, verifier, signing, data }` and
     `run_provider_contract(ports)`: the contract every key provider passes
-    (both encodings checked with the public key by `verifier`, two keys never
+    (both encodings checked with the public key by `verifier`, an EdDSA
+    signature the same 64 bytes in both, two keys never
     equal, material refused for another tenant, version, algorithm, when
     changed and for another provider, one use refused for the other, data
     keys or their refusal). `made_by`, `with_material` and `der_to_jose`

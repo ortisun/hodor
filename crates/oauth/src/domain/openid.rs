@@ -507,6 +507,31 @@ pub fn with_registration(mut document: Value, registration_open: bool) -> Value 
     document
 }
 
+/// The header of a signed UserInfo answer: `alg` and `kid`, and no `typ`.
+/// The answer is not an ID token, and nothing that checks one, the
+/// end-session endpoint's hint among them, takes it for one. See
+/// `docs/architecture/contexts/oauth.md`, "Signed UserInfo answers".
+#[must_use]
+pub(crate) fn userinfo_header(algorithm: &str, key_id: &str) -> Value {
+    json!({"alg": algorithm, "kid": key_id})
+}
+
+/// The claims of a signed UserInfo answer: those of the JSON answer, then
+/// `iss`, the tenant's issuer, and `aud`, the client, as OpenID Connect
+/// Core asks (section 5.3.2). No `exp` and no `iat`: the answer is read
+/// once, as the JSON one is, and a check of an ID token refuses it for
+/// lacking them.
+#[must_use]
+pub(crate) fn signed_userinfo_claims(claims: Value, issuer: &str, client_id: &str) -> Value {
+    let mut claims = match claims {
+        Value::Object(claims) => claims,
+        _ => Map::new(),
+    };
+    claims.insert("iss".to_owned(), json!(issuer));
+    claims.insert("aud".to_owned(), json!(client_id));
+    Value::Object(claims)
+}
+
 /// The tenant's discovery document (OpenID Connect Discovery 1.0 and RFC
 /// 8414). It names only what is built; a tenant open to registration adds
 /// `create` through [`with_registration`].
@@ -540,6 +565,10 @@ pub fn discovery_document(issuer: &str, acr_values: &[&str]) -> Value {
         ],
         "introspection_endpoint_auth_signing_alg_values_supported": ["ES256", "RS256", "PS256"],
         "id_token_signing_alg_values_supported": IdTokenAlgorithm::ALL.map(IdTokenAlgorithm::as_str),
+        // Signed UserInfo answers; `none` is not named, since a client that
+        // wants no signature gets JSON.
+        "userinfo_signing_alg_values_supported":
+            IdTokenAlgorithm::ALL.map(IdTokenAlgorithm::as_str),
         "subject_types_supported": ["public", "pairwise"],
         "scopes_supported": ["openid", "profile", "email", "groups"],
         "claims_supported": [

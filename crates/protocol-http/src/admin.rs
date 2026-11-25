@@ -2415,7 +2415,7 @@ async fn key_set_action(
                     problem(
                         StatusCode::UNPROCESSABLE_ENTITY,
                         "keys.algorithm_unsuitable",
-                        "the algorithm does not sign: ES256, RS256 or PS256",
+                        "the algorithm does not sign: ES256, RS256, PS256 or EdDSA",
                     )
                 })?,
             };

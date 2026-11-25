@@ -186,6 +186,9 @@ pub(crate) fn verifying_key_of(jwk: &str, algorithm: SignatureAlgorithm) -> Opti
         SignatureAlgorithm::Es256 => "ES256",
         SignatureAlgorithm::Rs256 => "RS256",
         SignatureAlgorithm::Ps256 => "PS256",
+        // No client key is read for EdDSA yet: the kernel checks it for a
+        // tenant's own keys only.
+        SignatureAlgorithm::EdDsa => return None,
     };
     if key
         .get("alg")

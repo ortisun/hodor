@@ -9,8 +9,8 @@ use aws_lc_rs::encoding::AsDer as _;
 use aws_lc_rs::rand::SystemRandom;
 use aws_lc_rs::rsa::KeySize;
 use aws_lc_rs::signature::{
-    ECDSA_P256_SHA256_ASN1_SIGNING, ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, KeyPair as _,
-    RSA_PKCS1_SHA256, RSA_PSS_SHA256, RsaEncoding, RsaKeyPair,
+    ECDSA_P256_SHA256_ASN1_SIGNING, ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, Ed25519KeyPair,
+    KeyPair as _, RSA_PKCS1_SHA256, RSA_PSS_SHA256, RsaEncoding, RsaKeyPair,
 };
 use hodor_kernel::{DomainError, PublicKey, SealedSecret, Secret, TenantContext};
 use hodor_keys::api::{
@@ -129,6 +129,20 @@ fn generate_rsa() -> Result<(PublicKey, Secret<Vec<u8>>), DomainError> {
     Ok((public, Secret::new(document.as_ref().to_vec())))
 }
 
+fn generate_ed25519() -> Result<(PublicKey, Secret<Vec<u8>>), DomainError> {
+    let pair =
+        Ed25519KeyPair::generate().map_err(|_| failed("an Ed25519 key could not be made"))?;
+    let document = pair
+        .to_pkcs8v1()
+        .map_err(|_| failed("an Ed25519 key could not be written"))?;
+    let public = pair.public_key().as_ref();
+    if public.len() != 32 {
+        return Err(failed("the Ed25519 public key has an unexpected size"));
+    }
+    let public = PublicKey::Ed25519 { x: public.to_vec() };
+    Ok((public, Secret::new(document.as_ref().to_vec())))
+}
+
 fn generate_data_key() -> Result<Secret<Vec<u8>>, DomainError> {
     let mut key = vec![0_u8; DATA_KEY_BYTES];
     aws_lc_rs::rand::fill(&mut key).map_err(|_| failed("no random bytes for a data key"))?;
@@ -159,6 +173,10 @@ impl KeyProvider for LocalKeyProvider {
             }
             KeyAlgorithm::Rs256 | KeyAlgorithm::Ps256 => {
                 let (public, key) = generate_rsa()?;
+                (Some(public), key)
+            }
+            KeyAlgorithm::EdDsa => {
+                let (public, key) = generate_ed25519()?;
                 (Some(public), key)
             }
             KeyAlgorithm::A256Gcm => (None, generate_data_key()?),
@@ -213,6 +231,13 @@ impl KeyProvider for LocalKeyProvider {
                 })
                 .await
                 .map_err(|_| unusable("the signature could not be made"))?
+            }
+            KeyAlgorithm::EdDsa => {
+                // RFC 8032 writes one signature, 64 bytes, in tokens and in
+                // certificates alike: both encodings are the same.
+                let pair = Ed25519KeyPair::from_pkcs8(key.expose())
+                    .map_err(|_| unusable("the key is not an Ed25519 key"))?;
+                Ok(pair.sign(message).as_ref().to_vec())
             }
             KeyAlgorithm::A256Gcm => Err(unusable("a data key does not sign")),
         }

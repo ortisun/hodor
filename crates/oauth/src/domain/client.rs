@@ -44,8 +44,11 @@ const MAX_ACR_VALUE_LENGTH: usize = 128;
 /// as `acr_values` at the authorization endpoint.
 const MAX_ACR_VALUES_LENGTH: usize = 255;
 
-/// How a client's ID tokens are signed: its `id_token_signed_response_alg`
-/// of OpenID Connect Registration.
+/// How Hodor signs what it answers a client: its ID tokens, its
+/// `id_token_signed_response_alg` of OpenID Connect Registration, and its
+/// UserInfo answers, its `userinfo_signed_response_alg`. Every one is an
+/// algorithm each tenant can sign with: both key providers make keys of
+/// all four. See `docs/architecture/contexts/oauth.md`, "The ID token".
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum IdTokenAlgorithm {
     /// ECDSA on P-256, the algorithm Hodor signs with unless told otherwise
@@ -55,19 +58,20 @@ pub enum IdTokenAlgorithm {
     /// RSA with PKCS#1 version 1.5 padding, which every OpenID Provider must
     /// offer and every relying party understands.
     Rs256,
+    /// RSA with PSS padding, which FAPI asks for instead of `RS256`.
+    Ps256,
+    /// EdDSA on Ed25519 (RFC 8037).
+    EdDsa,
 }
 
 impl IdTokenAlgorithm {
     /// Every algorithm a client may choose, as discovery lists them.
-    pub const ALL: [Self; 2] = [Self::Es256, Self::Rs256];
+    pub const ALL: [Self; 4] = [Self::Es256, Self::Rs256, Self::Ps256, Self::EdDsa];
 
     /// The name JSON Web Signature gives it, which is also the stored name.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Es256 => "ES256",
-            Self::Rs256 => "RS256",
-        }
+        self.key_algorithm().as_str()
     }
 
     /// The key that signs with it.
@@ -76,23 +80,60 @@ impl IdTokenAlgorithm {
         match self {
             Self::Es256 => KeyAlgorithm::Es256,
             Self::Rs256 => KeyAlgorithm::Rs256,
+            Self::Ps256 => KeyAlgorithm::Ps256,
+            Self::EdDsa => KeyAlgorithm::EdDsa,
         }
     }
 
-    /// Reads the name JSON Web Signature gives it.
+    /// The signature it makes, as signatures are checked.
+    #[must_use]
+    pub const fn signature(self) -> SignatureAlgorithm {
+        match self {
+            Self::Es256 => SignatureAlgorithm::Es256,
+            Self::Rs256 => SignatureAlgorithm::Rs256,
+            Self::Ps256 => SignatureAlgorithm::Ps256,
+            Self::EdDsa => SignatureAlgorithm::EdDsa,
+        }
+    }
+
+    /// The algorithm of this name, if a client may choose it.
+    #[must_use]
+    pub fn from_name(value: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|algorithm| algorithm.as_str() == value)
+    }
+
+    /// Reads the name JSON Web Signature gives it, for a client's ID
+    /// tokens.
     ///
     /// # Errors
     ///
     /// Returns `oauth.client_id_token_algorithm_invalid` for any other name.
     pub fn parse(value: &str) -> Result<Self, DomainError> {
-        match value {
-            "ES256" => Ok(Self::Es256),
-            "RS256" => Ok(Self::Rs256),
-            _ => Err(DomainError::invalid(
+        Self::from_name(value).ok_or_else(|| {
+            DomainError::invalid(
                 "oauth.client_id_token_algorithm_invalid",
-                "a client's ID tokens are signed with `ES256` or `RS256`",
-            )),
-        }
+                "a client's ID tokens are signed with `ES256`, `RS256`, `PS256` or `EdDSA`",
+            )
+        })
+    }
+
+    /// Reads the name JSON Web Signature gives it, for a client's UserInfo
+    /// answers. `none` is not one: a client that wants no signature gets
+    /// JSON.
+    ///
+    /// # Errors
+    ///
+    /// Returns `oauth.client_userinfo_algorithm_invalid` for any other name.
+    pub fn parse_for_userinfo(value: &str) -> Result<Self, DomainError> {
+        Self::from_name(value).ok_or_else(|| {
+            DomainError::invalid(
+                "oauth.client_userinfo_algorithm_invalid",
+                "a client's UserInfo answers are signed with `ES256`, `RS256`, `PS256` or \
+                 `EdDSA`, or not signed at all",
+            )
+        })
     }
 }
 
@@ -537,6 +578,8 @@ pub struct ClientSettings {
     pub require_pkce: bool,
     /// How its ID tokens are signed.
     pub id_token_algorithm: IdTokenAlgorithm,
+    /// How its UserInfo answers are signed, or `None` for answers in JSON.
+    pub userinfo_algorithm: Option<IdTokenAlgorithm>,
     /// How it signs its request objects, if it named an algorithm.
     pub request_object_algorithm: Option<RequestObjectAlgorithm>,
     /// Where its logout tokens are sent when a session it signed a person
@@ -795,6 +838,7 @@ impl ClientSettings {
             allowed_scopes: Vec::new(),
             require_pkce: true,
             id_token_algorithm: IdTokenAlgorithm::default(),
+            userinfo_algorithm: None,
             request_object_algorithm: None,
             backchannel_logout_uri: None,
             backchannel_logout_session_required: false,
@@ -1001,6 +1045,7 @@ impl ClientSettings {
             allowed_scopes,
             require_pkce: self.require_pkce,
             id_token_algorithm: self.id_token_algorithm,
+            userinfo_algorithm: self.userinfo_algorithm,
             request_object_algorithm: self.request_object_algorithm,
             backchannel_logout_uri: self.backchannel_logout_uri,
             backchannel_logout_session_required: self.backchannel_logout_session_required,
@@ -1855,20 +1900,66 @@ mod tests {
     }
 
     #[test]
-    fn an_id_token_algorithm_is_es256_unless_rs256_is_chosen() {
+    fn an_id_token_algorithm_is_es256_unless_another_of_the_four_is_chosen() {
         assert_eq!(IdTokenAlgorithm::default(), IdTokenAlgorithm::Es256);
+        assert_eq!(
+            IdTokenAlgorithm::ALL.map(IdTokenAlgorithm::as_str),
+            ["ES256", "RS256", "PS256", "EdDSA"]
+        );
         for algorithm in IdTokenAlgorithm::ALL {
             assert_eq!(IdTokenAlgorithm::parse(algorithm.as_str()), Ok(algorithm));
+            assert_eq!(
+                IdTokenAlgorithm::parse_for_userinfo(algorithm.as_str()),
+                Ok(algorithm)
+            );
+            // Each signs with a key of its own algorithm, which every
+            // provider makes, and checks as that algorithm.
+            assert_eq!(
+                algorithm.key_algorithm().as_str(),
+                algorithm.as_str(),
+                "one name"
+            );
+            assert_eq!(
+                algorithm.key_algorithm().signature(),
+                Some(algorithm.signature())
+            );
         }
-        assert_eq!(IdTokenAlgorithm::Rs256.key_algorithm(), KeyAlgorithm::Rs256);
-        for refused in ["PS256", "HS256", "none", "rs256", ""] {
+        assert_eq!(IdTokenAlgorithm::Ps256.key_algorithm(), KeyAlgorithm::Ps256);
+        assert_eq!(IdTokenAlgorithm::EdDsa.key_algorithm(), KeyAlgorithm::EdDsa);
+        // Algorithms no tenant signs with: never saved.
+        for refused in [
+            "HS256", "none", "None", "rs256", "ES384", "RS512", "Ed25519", "Ed448", "EDDSA", "",
+        ] {
             assert_eq!(
                 IdTokenAlgorithm::parse(refused)
                     .expect_err("refused")
                     .code(),
                 "oauth.client_id_token_algorithm_invalid"
             );
+            assert_eq!(
+                IdTokenAlgorithm::parse_for_userinfo(refused)
+                    .expect_err("refused")
+                    .code(),
+                "oauth.client_userinfo_algorithm_invalid"
+            );
         }
+    }
+
+    #[test]
+    fn userinfo_answers_are_json_unless_an_algorithm_is_chosen() {
+        assert_eq!(web().userinfo_algorithm, None);
+        let mut settings = web();
+        settings.userinfo_algorithm = Some(IdTokenAlgorithm::EdDsa);
+        settings.id_token_algorithm = IdTokenAlgorithm::Ps256;
+        let (client, _) = create(ClientType::Confidential, settings).expect("valid");
+        assert_eq!(
+            client.snapshot().settings.userinfo_algorithm,
+            Some(IdTokenAlgorithm::EdDsa)
+        );
+        assert_eq!(
+            client.snapshot().settings.id_token_algorithm,
+            IdTokenAlgorithm::Ps256
+        );
     }
 
     #[test]

@@ -142,7 +142,7 @@ async fn read(
 fn coordinates(key: &PublicKey) -> Result<(&[u8], &[u8]), DomainError> {
     match key {
         PublicKey::P256 { x, y } => Ok((x, y)),
-        PublicKey::Rsa { .. } => Err(DomainError::internal(
+        PublicKey::Rsa { .. } | PublicKey::Ed25519 { .. } => Err(DomainError::internal(
             "keys.stored_data_invalid",
             "an authority's key is on P-256",
         )),

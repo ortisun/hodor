@@ -224,6 +224,89 @@ async fn the_database_refuses_rows_that_break_the_rules() {
     }
 }
 
+/// A pending signing version with its public key given as the five
+/// columns: P-256 x and y, RSA modulus and exponent, and Ed25519.
+async fn insert_signing(
+    database: &TestDatabase,
+    tenant: &TenantContext,
+    algorithm: &str,
+    public_key: &str,
+) -> Result<(), sqlx::Error> {
+    let mut tx = database.app().begin(tenant).await.expect("begin");
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "INSERT INTO keys.key_version
+             (tenant_id, id, key_use, algorithm, state, provider, key_material,
+              public_p256_x, public_p256_y, public_rsa_modulus, public_rsa_exponent,
+              public_ed25519, created_at)
+         VALUES ($1, gen_random_uuid(), 'sig', '{algorithm}', 'pending', 'local', '\\x01',
+                 {public_key}, now())"
+    )))
+    .bind(tenant.tenant_id().as_uuid())
+    .execute(tx.connection())
+    .await?;
+    tx.commit().await
+}
+
+#[tokio::test]
+async fn an_eddsa_version_holds_its_ed25519_key_and_nothing_else() {
+    let database = TestDatabase::start().await;
+    let tenant = TenantContext::assume(TenantId::generate());
+    let ed25519 = "NULL, NULL, NULL, NULL, decode(repeat('03', 32), 'hex')";
+    insert_signing(&database, &tenant, "EdDSA", ed25519)
+        .await
+        .expect("an Ed25519 key of 32 bytes");
+    let p256 = "decode(repeat('01', 32), 'hex'), decode(repeat('02', 32), 'hex'), NULL, NULL";
+    let rsa = "NULL, NULL, decode(repeat('01', 256), 'hex'), '\\x010001'";
+    let extra = "decode(repeat('03', 32), 'hex')";
+    let cases: [(&str, String, &str); 8] = [
+        (
+            "EdDSA",
+            "NULL, NULL, NULL, NULL, decode(repeat('03', 31), 'hex')".to_owned(),
+            "31 bytes",
+        ),
+        ("EdDSA", "NULL, NULL, NULL, NULL, NULL".to_owned(), "no key"),
+        ("EdDSA", format!("{p256}, NULL"), "a P-256 key"),
+        ("EdDSA", format!("{p256}, {extra}"), "a P-256 key besides"),
+        ("ES256", ed25519.to_owned(), "an Ed25519 key for ES256"),
+        (
+            "ES256",
+            format!("{p256}, {extra}"),
+            "an Ed25519 key besides a P-256 one",
+        ),
+        (
+            "RS256",
+            format!("{rsa}, {extra}"),
+            "an Ed25519 key besides an RSA one",
+        ),
+        (
+            "Ed25519",
+            ed25519.to_owned(),
+            "an algorithm by another name",
+        ),
+    ];
+    for (algorithm, public_key, case) in cases {
+        assert!(
+            insert_signing(&database, &tenant, algorithm, &public_key)
+                .await
+                .is_err(),
+            "{case} must be refused"
+        );
+    }
+    // And no Ed25519 key in the data key set.
+    let mut tx = database.app().begin(&tenant).await.expect("begin");
+    let refused = sqlx::query(
+        "INSERT INTO keys.key_version
+             (tenant_id, id, key_use, algorithm, state, provider, key_material,
+              public_ed25519, created_at)
+         VALUES ($1, gen_random_uuid(), 'data', 'EdDSA', 'pending', 'local', '\\x01',
+                 decode(repeat('03', 32), 'hex'), now())",
+    )
+    .bind(tenant.tenant_id().as_uuid())
+    .execute(tx.connection())
+    .await;
+    assert!(refused.is_err(), "EdDSA in the data key set");
+}
+
 #[tokio::test]
 async fn the_application_cannot_delete_a_version() {
     let database = TestDatabase::start().await;
