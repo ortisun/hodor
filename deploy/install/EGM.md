@@ -33,6 +33,7 @@ A Secret `hodor-evaluation`, a PostgreSQL StatefulSet `hodor-evaluation-database
 
 - No password, key or token is written in a file of this directory, except in `helm/evaluation.yaml`, which says so at its top.
 - Only the migrations hold the owner's connection address: the service `migrate` in Compose, the init container `migrate` in the chart.
+- The worker gets the same `HODOR_PUBLIC_URL` as the server, in Compose from `.env` and in the chart from `hodor.publicUrl`: it names the issuer of the logout tokens it sends.
 - The migrations finish before a server or a worker starts: `depends_on` with `service_completed_successfully` in Compose, the Helm hook in the chart.
 - `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` is never set here.
 - The Hodor containers run as a user that is not root, with a read-only root file system and every capability dropped, in both packages.

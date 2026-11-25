@@ -16,7 +16,16 @@ address.
 - `shared.ts:PageProps` - `{ tenant, client: Client, text: Messages, go(page,
   notice?), leave(url), path(page) }`.
 - `shared.ts:asFailure(thrown): Failure` - a thrown `Failure` as is, anything
-  else as `new Failure(null, 500)`.
+  else as `new Failure(null, 500)`. `shared.ts:grouped(secret)` writes the
+  key of an authenticator application in groups of four, for `SecurityPage`
+  and `SignInPage`.
+- `SignInLinkPage.tsx:SignInLinkPage({ ...PageProps, token })` - the page a
+  link to sign in opens. Without a token it says `text.signInLinkRefused` and
+  asks nothing. Otherwise `client.currentSignIn()`: `null` shows
+  `text.signInLinkElsewhere` and sends nothing; else
+  `client.submitEmailLink(token)`, `completed` goes to `continueTo` or
+  `account`, `pending` to `sign-in`, anything else, `404`, `409` and `422`
+  show `text.signInLinkRefused`; other failures are described.
 - `SignInPage.tsx:SignInPage({ ...PageProps, notice, signInAgain?,
   loginHint? })` - the identifier field starts with `loginHint`. On mount calls
   `client.providers()` and `findOut`: `client.session()` (someone signed in
@@ -30,7 +39,16 @@ address.
     `conditionalMediationAvailable()`, a conditional request that offers the
     browser's passkeys in the field, aborted when the step is left, the
     identifier is submitted or the button is pressed; plus one `Action` per
-    offered provider (`text.continueWith(displayName)`). A provider with
+    offered provider (`text.continueWith(displayName)`). When
+    `client.alternatives()` names `email_code` or `email_link`, an `Action`
+    `text.emailMeACode` or `text.emailMeALink` asks
+    `client.askByEmail(method, identifier, text.locale)` (nothing typed shows
+    `text.typeAddressFirst` and sends nothing; the passkey offer is stopped
+    first, and a `transaction_modified_concurrently` is asked once more);
+    then, while the step stays `identifier`, a code form
+    (`text.emailCodeLabel`, `autocomplete="one-time-code"`) that calls
+    `client.submitEmailCode`, or the notice `text.emailLinkSent`, each with a
+    way to ask again and to use another address. A provider with
     `isDirectory` shows a username and password form here that calls
     `client.signInWithDirectory(alias, identifier, password)`; any other
     calls `client.chooseProvider(alias)` and passes the answer to `leave`.
@@ -55,6 +73,24 @@ address.
     WebAuthn is told `text.securityKeyUnavailable`. It also offers "use a
     recovery code instead", the same recovery code form, with "use the
     security key instead" to go back.
+  - `enrollment` - `text.enrollLead`, then what `client.enrollmentKinds()`
+    lists, read when the step is shown: an `Action` `text.setUpApplication`
+    that calls `client.beginApplicationEnrollment()` and shows the `QrCode`
+    of its `uri`, the secret `grouped`, one code field (`text.totpLabel`,
+    `autocomplete="one-time-code"`) sent with
+    `client.finishApplicationEnrollment`, `text.confirmAndSignIn` and
+    `text.chooseAnotherWay` back to the choice (a rejection keeps the QR
+    code); in a browser with WebAuthn, a key name field and `Action`s
+    `text.addSecurityKey` and `text.addPasskey` that call
+    `client.beginKeyEnrollment(passkey)`, `askToCreate`, and
+    `client.finishKeyEnrollment(registration, name)` (no answer shows
+    `text.keyNoAnswer` and sends nothing; a blank name is
+    `text.defaultKeyName` or `text.defaultPasskeyName`); nothing offered shows
+    `text.nothingToSetUp`; and "use another address". No way to go on without
+    a factor.
+  - An answer with `recoveryCodes` shows only them (`text.codesTitle`,
+    `text.codesLead`), until `text.codesKept` is pressed; the answer then goes
+    on as any other (`keeping`).
   - Any other step - `text.unknownStep` and "start again".
   - Answer `completed` means `go("account")`; `failed` shows `signInEnded`;
     `rejected` shows `rejected` and `attemptsLeft`. "Start again" and "use
@@ -130,7 +166,9 @@ address.
   `signInExpired`; `OUT_OF_STEP` (`authentication.unexpected_step`,
   `authentication.transaction_modified_concurrently`,
   `request.csrf_token_invalid`) asks the server again where the sign-in
-  stands. The typed password is cleared after every answer.
+  stands; `authentication.enrollment_not_needed` starts a new sign-in and
+  shows `text.enrollmentNotNeeded`. The typed password is cleared after every
+  answer.
 - `ComingBackPage` sends the person back to sign-in with `provider-refused`
   on statuses 404, 409 and 422, and shows the failure on any other.
 - `AskPage` shows the same "check your mailbox" answer whatever the address

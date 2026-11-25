@@ -36,7 +36,7 @@ This context defines no domain events of its own.
   (`record.rs:DOMAIN`).
 - `computed_hash` covers, in order: the separator, the tenant identifier,
   sequence, event identifier, action, `occurred_at` in microseconds, actor
-  text (`user:<id>`, `system` or `anonymous`), correlation identifier, the
+  text (`user:<id>`, `client:<id>`, `system` or `anonymous`), correlation identifier, the
   canonical JSON of `details`, and `previous_hash`; each field is preceded by
   its length. It does not cover `recorded_at` or the record's own hash. The
   tenant is hashed but not stored in the record

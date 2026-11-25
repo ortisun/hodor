@@ -145,9 +145,11 @@ impl Authenticator for Passkey {
         &self,
         _tenant: &TenantContext,
         _transaction: &AuthTransaction,
+        _asked: &ExternalInput,
     ) -> Result<Option<StepChallenge>, DomainError> {
         Ok(Some(StepChallenge {
-            challenge: [7; 32],
+            challenge: Some([7; 32]),
+            enrollment: None,
             options: json!({ "allowCredentials": [] }),
         }))
     }
@@ -215,8 +217,12 @@ impl World {
         transaction: &mut AuthTransaction,
         step: &str,
     ) -> Result<serde_json::Value, DomainError> {
+        let asked = ExternalInput {
+            step: step.to_owned(),
+            fields: Vec::new(),
+        };
         self.engine
-            .challenge(&self.tenant, &self.flow, transaction, step, START)
+            .challenge(&self.tenant, &self.flow, transaction, &asked, START)
             .await
     }
 

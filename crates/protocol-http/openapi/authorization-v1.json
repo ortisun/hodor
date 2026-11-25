@@ -353,6 +353,10 @@
           "context": {
             "$ref": "#/components/schemas/Attributes",
             "description": "Attributes of the moment."
+          },
+          "organization": {
+            "type": "string",
+            "description": "The organization the request is made in, by its identifier, as the org_id of the person's token says. Roles scoped to it then count while the person is a member."
           }
         }
       },

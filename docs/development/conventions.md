@@ -125,6 +125,7 @@ Branching follows Gitflow.
 | `feature/<name>` | One piece of work | `develop` | `develop` |
 | `release/<version>` | Stabilizing a release | `develop` | `main` and `develop` |
 | `hotfix/<name>` | An urgent fix to a release | `main` | `main` and `develop` |
+| `dependabot/<…>` | An update of the GitHub Actions, proposed by Dependabot ([the supply chain](../security/supply-chain.md#github-actions)) | `develop` | `develop` |
 
 ### Pull requests
 
@@ -137,7 +138,8 @@ Branching follows Gitflow.
 ### Releases
 
 - **Versions follow Semantic Versioning.** Before 1.0.0, versions are `0.<minor>.<patch>`, and a minor version may break what came before; the changelog says what breaks. From 1.0.0 on, a change that breaks what came before raises the major version.
-- **0.2.0 held three parts.** The owner chose to release 0.2.0 once the OAuth 2.x authorization server and OpenID Provider, multi-factor authentication with passkeys and step-up, and the authorization engine with Open Policy Agent were built ([Decision 0023](../decisions/0023-what-0.2.0-holds.md)). What the next versions hold is the owner's choice, recorded in the roadmap before the work starts.
+- **0.2.0 held three parts.** The owner chose to release 0.2.0 once the OAuth 2.x authorization server and OpenID Provider, multi-factor authentication with passkeys and step-up, and the authorization engine with Open Policy Agent were built ([Decision 0023](../decisions/0023-what-0.2.0-holds.md)).
+- **0.3.0 holds four parts.** They are what a deployment behind a load balancer needs; groups, organizations and SCIM; workloads, agents and webhooks; and what 0.2.0 left out ([Decision 0027](../decisions/0027-what-0.3.0-holds.md)). What the next versions hold is the owner's choice, recorded in the roadmap before the work starts.
 - **One version for everything that ships.** It is the `version` of the Cargo workspace, which every crate and application takes, the version of the container image, and the `version` and `appVersion` of the Helm chart; continuous integration fails when the chart and the workspace differ. The page applications are built into the image and carry no version of their own.
 - **The changelog is `CHANGELOG.md`**, in the form of [Keep a Changelog](https://keepachangelog.com/): one section per version, newest first, with what was added, changed, fixed and removed, in words a person running Hodor understands. What is built and not yet released is under *Unreleased*, at the top; a pull request that changes what a person running Hodor sees adds its line there. Cutting a release turns *Unreleased* into the section of its version.
 - **A release says what it is not ready for.** When it cannot hold real accounts, its section of the changelog and its notes say what stands in the way, from the [progress](../product/progress.md) page, and it is published as a pre-release.
@@ -148,7 +150,7 @@ A release is cut in these steps:
 1. Turn *Unreleased* in `CHANGELOG.md` into the section of the version, with its date, and set the version, through a pull request into `develop`.
 2. Cut `release/<version>` from `develop`. Only fixes go into it from then on.
 3. Open a pull request from `release/<version>` into `main`. It is merged with a **merge commit**, not squashed, so that `main` and `develop` keep one history, and only when continuous integration is green on its head.
-4. Tag the merge commit on `main` as `v<version>`, an annotated tag whose message is `v<version>`, and publish a release named `v<version>` from that tag, with its section of the changelog as notes.
+4. Tag the merge commit on `main` as `v<version>`, an annotated tag whose message is `v<version>`, and publish a release named `v<version>` from that tag, with its section of the changelog as notes. Pushing the tag publishes the image and the chart; wait for the workflow `Release` to pass, and say in the notes where they are ([what a release publishes](../security/supply-chain.md#what-a-release-publishes)). The first time, the GitHub container registry makes the two packages private: the owner makes `hodor` and `charts/hodor` public once, in their package settings.
 5. Merge `release/<version>` back into `develop` with a pull request and a merge commit, if the release branch received any commit, as it does when the version is set on it.
 
 ## 6. Definition of done
@@ -157,7 +159,7 @@ A change is done when:
 
 1. The documentation describes it, and was updated before the code.
 2. The business rules have tests, and the tests pass.
-3. `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test`, `cargo deny check` and `cargo machete` pass.
+3. `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test`, `cargo deny check` and `cargo machete` pass, and so do the checks of [the supply chain](../security/supply-chain.md) when a workflow or a `package-lock.json` changed.
 4. The dependency rules in [crates.md](../architecture/crates.md) hold (checked by the architecture test).
 5. Tenant isolation holds for any new table or port (checked by the schema rules and the contract tests).
 6. Nothing sensitive can reach a log, a trace or an error message.

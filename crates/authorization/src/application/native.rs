@@ -3,21 +3,23 @@
 //! needs nothing outside this context.
 //!
 //! See `docs/architecture/contexts/authorization.md`, "How the native
-//! engine decides" and "Caching and the role revision".
+//! engine decides", "Caching and the role revision" and "How entries
+//! decide".
 
 use crate::application::engine::{
     AuthorizationEngine, EngineCapabilities, EvaluationInput, PolicySelection, PolicySimulator,
     SimulationAnswer,
 };
 use crate::application::ports::{
-    CompiledCondition, ConditionLanguage, NativeRoleStore, RoleAssignmentStore,
+    AccessListStore, CompiledCondition, ConditionLanguage, NativeRoleStore, RoleAssignmentStore,
 };
+use crate::domain::access_list::{MATCHING_ENTRY, MAX_ENTRIES_PER_DECISION, principals_of};
 use crate::domain::condition::{Condition, ConditionInput};
 use crate::domain::decision::{
     EngineAnswer, EngineId, PolicyReference, PolicyRevision, ReasonCode,
 };
 use crate::domain::native::{Grant, PermissionName, RoleGraph, RoleKey, grant_applies, grants_of};
-use crate::domain::request::{Namespace, Subject};
+use crate::domain::request::{Attributes, Namespace, Subject};
 use crate::domain::role::Effect;
 use hodor_kernel::{Clock, DomainError, TenantContext, TenantId, UnitOfWorkFactory};
 use std::collections::{BTreeMap, BTreeSet};
@@ -72,6 +74,7 @@ pub struct NativeEngine {
     assignments: Arc<dyn RoleAssignmentStore>,
     roles: Option<(Arc<dyn NativeRoleStore>, Arc<dyn Clock>)>,
     conditions: Option<Arc<dyn ConditionLanguage>>,
+    access_lists: Option<Arc<dyn AccessListStore>>,
     cache: Arc<Mutex<Cache>>,
 }
 
@@ -80,6 +83,7 @@ impl std::fmt::Debug for NativeEngine {
         f.debug_struct("NativeEngine")
             .field("tenant_roles", &self.roles.is_some())
             .field("conditions", &self.conditions.is_some())
+            .field("access_lists", &self.access_lists.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -99,6 +103,7 @@ impl NativeEngine {
             assignments,
             roles: Some((roles, clock)),
             conditions: None,
+            access_lists: None,
             cache: Arc::default(),
         }
     }
@@ -109,6 +114,15 @@ impl NativeEngine {
     #[must_use]
     pub fn with_condition_language(mut self, language: Arc<dyn ConditionLanguage>) -> Self {
         self.conditions = Some(language);
+        self
+    }
+
+    /// The same engine, reading the tenant's access control lists before
+    /// roles for a request that names a resource. Without it, only roles
+    /// decide.
+    #[must_use]
+    pub fn with_access_lists(mut self, entries: Arc<dyn AccessListStore>) -> Self {
+        self.access_lists = Some(entries);
         self
     }
 
@@ -124,6 +138,7 @@ impl NativeEngine {
             assignments,
             roles: None,
             conditions: None,
+            access_lists: None,
             cache: Arc::default(),
         }
     }
@@ -183,18 +198,61 @@ impl NativeEngine {
         let request = &input.request;
         let mut uow = self.units_of_work.begin(tenant).await?;
         let revision = store.revision(uow.as_mut()).await?;
-        let key = (tenant.tenant_id(), request.subject.clone());
-        let kept = self
-            .cache()
-            .get(&key)
-            .filter(|cached| cached.revision == revision)
-            .map(|cached| Arc::clone(&cached.grants));
-        let grants = if let Some(grants) = kept {
-            grants
-        } else {
-            let assignments = store.assignments_of(uow.as_mut(), &request.subject).await?;
-            let graph = RoleGraph::new(store.roles(uow.as_mut()).await?);
-            let grants = Arc::new(self.compiled(grants_of(&assignments, &graph)));
+        let policy_version = Some(PolicyRevision::parse(&revision.to_string())?);
+        // The subject, and for a user every group Hodor resolved for them:
+        // each is a principal whose entries and assignments count.
+        let principals = principals_of(
+            &request.subject,
+            &listed(&input.subject_attributes, "groups"),
+        );
+        let permission = PermissionName::of(request.resource.kind(), &request.action);
+        // An entry of the resource the request names allows before roles
+        // are read. Entries are never cached.
+        if let (Some(entries), Some(resource_id)) = (&self.access_lists, request.resource.id()) {
+            let allowing = entries
+                .allowing(
+                    uow.as_mut(),
+                    &request.namespace,
+                    &permission,
+                    resource_id,
+                    &principals,
+                    MAX_ENTRIES_PER_DECISION,
+                )
+                .await?;
+            if !allowing.is_empty() {
+                let matched_policies = allowing
+                    .iter()
+                    .map(|entry| PolicyReference::parse(&entry.reference()))
+                    .collect::<Result<_, _>>()?;
+                return Ok(EngineAnswer {
+                    effect: Effect::Allow,
+                    reason: ReasonCode::of(MATCHING_ENTRY),
+                    policy_version,
+                    matched_policies,
+                });
+            }
+        }
+        let mut grants: Vec<Arc<Vec<CompiledGrant>>> = Vec::with_capacity(principals.len());
+        let mut graph: Option<RoleGraph> = None;
+        for principal in principals {
+            let key = (tenant.tenant_id(), principal.clone());
+            let kept = self
+                .cache()
+                .get(&key)
+                .filter(|cached| cached.revision == revision)
+                .map(|cached| Arc::clone(&cached.grants));
+            if let Some(kept) = kept {
+                grants.push(kept);
+                continue;
+            }
+            let assignments = store.assignments_of(uow.as_mut(), &principal).await?;
+            if graph.is_none() {
+                graph = Some(RoleGraph::new(store.roles(uow.as_mut()).await?));
+            }
+            let roles = graph
+                .as_ref()
+                .map_or_else(Vec::new, |graph| grants_of(&assignments, graph));
+            let compiled = Arc::new(self.compiled(roles));
             let mut cache = self.cache();
             if cache.len() >= CACHE_CAPACITY {
                 cache.clear();
@@ -203,26 +261,36 @@ impl NativeEngine {
                 key,
                 Cached {
                     revision,
-                    grants: Arc::clone(&grants),
+                    grants: Arc::clone(&compiled),
                 },
             );
-            grants
-        };
+            grants.push(compiled);
+        }
+        // The organization of the request counts only for a member of it.
+        let organization = request
+            .context
+            .organization
+            .as_ref()
+            .filter(|organization| {
+                listed(&input.subject_attributes, "organizations")
+                    .iter()
+                    .any(|member_of| member_of == organization.as_str())
+            });
         let now = clock.now();
-        let permission = PermissionName::of(request.resource.kind(), &request.action);
         let applying: Vec<&CompiledGrant> = grants
             .iter()
+            .flat_map(|of_principal| of_principal.iter())
             .filter(|compiled| {
                 grant_applies(
                     &compiled.grant,
                     &request.namespace,
                     &permission,
                     request.context.application.as_ref(),
+                    organization,
                     now,
                 )
             })
             .collect();
-        let policy_version = Some(PolicyRevision::parse(&revision.to_string())?);
         if applying.is_empty() {
             return Ok(denied(ReasonCode::NO_MATCHING_ROLE, policy_version));
         }
@@ -409,10 +477,14 @@ fn simulation_trace(input: &EvaluationInput, answer: &EngineAnswer) -> Vec<Strin
         request.resource.kind()
     )];
     if answer.matched_policies.is_empty() {
-        trace.push("no role of the subject decided".to_owned());
+        trace.push("no entry and no role of the subject decided".to_owned());
     }
     for policy in &answer.matched_policies {
-        trace.push(format!("the role {} decided", policy.as_str()));
+        if policy.as_str().starts_with("entry:") {
+            trace.push(format!("the {} decided", policy.as_str()));
+        } else {
+            trace.push(format!("the role {} decided", policy.as_str()));
+        }
     }
     trace.push(format!(
         "the answer is {} for the reason {}",
@@ -424,4 +496,20 @@ fn simulation_trace(input: &EvaluationInput, answer: &EngineAnswer) -> Vec<Strin
         answer.reason.as_str()
     ));
     trace
+}
+
+/// The strings of a list attribute Hodor resolved, such as a user's
+/// `groups`; nothing when it is absent or not a list of strings.
+fn listed(attributes: &Attributes, name: &str) -> Vec<String> {
+    attributes
+        .get(name)
+        .and_then(serde_json::Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
 }

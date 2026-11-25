@@ -10,7 +10,8 @@ use crate::api::{
 };
 use hodor_kernel::random::testing::FakeDigest;
 use hodor_kernel::{
-    DomainError, TenantContext, TenantId, Timestamp, UnitOfWork, UnitOfWorkFactory, UserId,
+    DomainError, OrganizationId, TenantContext, TenantId, Timestamp, UnitOfWork, UnitOfWorkFactory,
+    UserId,
 };
 use hodor_session::api::SessionId;
 use std::collections::BTreeMap;
@@ -186,6 +187,23 @@ impl GrantStore for InMemoryGrants {
             .map(|(_, grant)| grant.clone())
             .collect())
     }
+
+    async fn list_active_of(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        user: UserId,
+    ) -> Result<Vec<Grant>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let mut found: Vec<Grant> = lock(&self.rows)
+            .iter()
+            .filter(|((owner, _), grant)| {
+                *owner == tenant && grant.user_id == user && grant.status == GrantStatus::Active
+            })
+            .map(|(_, grant)| grant.clone())
+            .collect();
+        found.sort_by_key(|grant| (grant.created_at, grant.id));
+        Ok(found)
+    }
 }
 
 /// The codes of every tenant, by tenant and hash.
@@ -335,6 +353,7 @@ fn request_for(client_id: ClientId) -> AuthorizationRequest {
         ui_locales: Some("pt-BR en".to_owned()),
         acr_values: Some("urn:hodor:mfa".to_owned()),
         first_party: true,
+        organization: None,
     }
 }
 
@@ -541,7 +560,8 @@ async fn the_active_grants_of_a_person_for_a_client_are_listed(ports: Authorizat
     let someone = person();
     let request = request_for(client.id());
     let first = Grant::make(&request, &someone, moment());
-    let second = Grant::make(&request, &someone, moment());
+    let mut second = Grant::make(&request, &someone, moment());
+    second.organization = Some(OrganizationId::generate());
     let mut revoked = Grant::make(&request, &someone, moment());
     revoked.revoke("code_reused", moment());
     let another_person = Grant::make(&request, &person(), moment());
@@ -557,6 +577,16 @@ async fn the_active_grants_of_a_person_for_a_client_are_listed(ports: Authorizat
     uow.commit().await.expect("commit");
 
     let mut uow = ports.units_of_work.begin(&tenant).await.expect("begin");
+    assert_eq!(
+        ports
+            .grants
+            .get(uow.as_mut(), second.id)
+            .await
+            .expect("get")
+            .as_ref(),
+        Some(&second),
+        "a grant reads back as it was stored, its organization included"
+    );
     let mut listed: Vec<GrantId> = ports
         .grants
         .list_active_for(uow.as_mut(), someone.user_id, client.id())
@@ -569,6 +599,21 @@ async fn the_active_grants_of_a_person_for_a_client_are_listed(ports: Authorizat
     let mut expected = vec![first.id, second.id];
     expected.sort();
     assert_eq!(listed, expected);
+    let mut of_person: Vec<GrantId> = ports
+        .grants
+        .list_active_of(uow.as_mut(), someone.user_id)
+        .await
+        .expect("list")
+        .into_iter()
+        .map(|grant| grant.id)
+        .collect();
+    of_person.sort();
+    let mut expected = vec![first.id, second.id, another_client.id];
+    expected.sort();
+    assert_eq!(
+        of_person, expected,
+        "every client's active grants of the person"
+    );
     drop(uow);
 
     let elsewhere = self::tenant();
@@ -581,6 +626,15 @@ async fn the_active_grants_of_a_person_for_a_client_are_listed(ports: Authorizat
             .expect("list")
             .is_empty(),
         "another tenant sees none"
+    );
+    assert!(
+        ports
+            .grants
+            .list_active_of(uow.as_mut(), someone.user_id)
+            .await
+            .expect("list")
+            .is_empty(),
+        "another tenant sees none of the person's grants"
     );
 }
 

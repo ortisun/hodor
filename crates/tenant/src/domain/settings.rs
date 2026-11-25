@@ -344,6 +344,77 @@ pub struct AuthenticationPolicy {
     /// before they existed read as the default.
     #[serde(default)]
     pub assurance_levels: AssuranceLevels,
+    /// Whether people may sign in with a code or a link by email.
+    /// Settings stored before this policy existed read as the default.
+    #[serde(default)]
+    pub email_sign_in: EmailSignInPolicy,
+}
+
+/// Whether people of the tenant may sign in with a code or a link sent to
+/// their address, each on its own. Both are off by default. Specified in
+/// `docs/architecture/contexts/tenant.md`, "Email sign-in policy".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct EmailSignInPolicy {
+    /// A code sent to the address.
+    #[serde(default)]
+    pub code: bool,
+    /// A link sent to the address, opened in the browser that asked.
+    #[serde(default)]
+    pub link: bool,
+}
+
+/// The bound on how deep groups may be nested.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupPolicy {
+    /// The deepest a group may be: the longest chain of groups inside it,
+    /// counting itself.
+    pub max_depth: u8,
+}
+
+impl Default for GroupPolicy {
+    fn default() -> Self {
+        Self { max_depth: 5 }
+    }
+}
+
+impl GroupPolicy {
+    fn validate(&self) -> Result<(), DomainError> {
+        if !(1..=10).contains(&self.max_depth) {
+            return Err(invalid("the depth of groups must be between 1 and 10"));
+        }
+        Ok(())
+    }
+}
+
+/// What deprovisioning a person through SCIM does to them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Deprovisioning {
+    /// Deactivate them: they can be restored.
+    #[default]
+    Deactivate,
+    /// Deactivate them and mark them Deleted: they are erased.
+    Delete,
+}
+
+impl Deprovisioning {
+    /// The name the policy is stored and written under.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Deactivate => "deactivate",
+            Self::Delete => "delete",
+        }
+    }
+}
+
+/// What the tenant's SCIM server does. Specified in
+/// `docs/architecture/contexts/tenant.md`, "SCIM deprovisioning policy".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ProvisioningPolicy {
+    /// What deprovisioning a person does.
+    #[serde(default)]
+    pub deprovisioning: Deprovisioning,
 }
 
 /// All the policies of one tenant.
@@ -361,6 +432,14 @@ pub struct TenantSettings {
     /// policy existed read as the default.
     #[serde(default)]
     pub authentication: AuthenticationPolicy,
+    /// How deep groups may be nested. Settings stored before this policy
+    /// existed read as the default.
+    #[serde(default)]
+    pub groups: GroupPolicy,
+    /// What the SCIM server does. Settings stored before this policy
+    /// existed read as the default.
+    #[serde(default)]
+    pub provisioning: ProvisioningPolicy,
 }
 
 impl TenantSettings {
@@ -373,6 +452,7 @@ impl TenantSettings {
         self.password.validate()?;
         self.session.validate()?;
         self.lockout.validate()?;
+        self.groups.validate()?;
         self.authentication.assurance_levels.validate()
     }
 }
@@ -411,6 +491,70 @@ mod tests {
             .remove("authentication");
         let read: TenantSettings = serde_json::from_value(stored).expect("still reads");
         assert_eq!(read, TenantSettings::default());
+    }
+
+    #[test]
+    fn the_depth_of_groups_is_five_by_default_and_bounded() {
+        let mut settings = TenantSettings::default();
+        assert_eq!(settings.groups.max_depth, 5);
+        let mut stored = serde_json::to_value(&settings).expect("serializes");
+        stored.as_object_mut().expect("an object").remove("groups");
+        let read: TenantSettings = serde_json::from_value(stored).expect("older settings read");
+        assert_eq!(
+            read.groups.max_depth, 5,
+            "settings stored before the policy read as the default"
+        );
+        for depth in [0, 11] {
+            settings.groups.max_depth = depth;
+            assert!(settings.validate().is_err(), "{depth}");
+        }
+        settings.groups.max_depth = 10;
+        settings.validate().expect("valid");
+    }
+
+    #[test]
+    fn deprovisioning_deactivates_by_default_and_is_stored_by_name() {
+        let mut settings = TenantSettings::default();
+        assert_eq!(
+            settings.provisioning.deprovisioning,
+            Deprovisioning::Deactivate
+        );
+        let mut stored = serde_json::to_value(&settings).expect("serializes");
+        stored
+            .as_object_mut()
+            .expect("an object")
+            .remove("provisioning");
+        let read: TenantSettings = serde_json::from_value(stored).expect("older settings read");
+        assert_eq!(read.provisioning.deprovisioning, Deprovisioning::Deactivate);
+        settings.provisioning.deprovisioning = Deprovisioning::Delete;
+        let stored = serde_json::to_value(&settings).expect("serializes");
+        assert_eq!(stored["provisioning"]["deprovisioning"], "delete");
+    }
+
+    #[test]
+    fn signing_in_by_email_is_off_by_default_and_read_from_older_settings() {
+        let mut settings = TenantSettings::default();
+        assert_eq!(
+            settings.authentication.email_sign_in,
+            EmailSignInPolicy {
+                code: false,
+                link: false
+            }
+        );
+        let mut stored = serde_json::to_value(&settings).expect("serializes");
+        stored["authentication"]
+            .as_object_mut()
+            .expect("an object")
+            .remove("email_sign_in");
+        let read: TenantSettings = serde_json::from_value(stored).expect("older settings read");
+        assert_eq!(read, TenantSettings::default());
+        settings.authentication.email_sign_in.link = true;
+        let stored = serde_json::to_value(&settings).expect("serializes");
+        assert_eq!(
+            stored["authentication"]["email_sign_in"],
+            serde_json::json!({ "code": false, "link": true })
+        );
+        settings.validate().expect("valid");
     }
 
     #[test]

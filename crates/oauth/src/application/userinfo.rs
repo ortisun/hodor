@@ -1,10 +1,15 @@
 //! UserInfo: the claims of the person an access token was issued for.
 
+use crate::application::claim_mapper::{ClaimMapping, MappedToken};
 use crate::application::introspection::AccessTokenRegister;
+use crate::application::ports::PersonMemberships;
+use crate::domain::claim_mapper::{ClaimTarget, add_mapped_claims};
+use crate::domain::client::ClientId;
 use crate::domain::openid::{
     BearerRefusal, PersonClaims, PublishedKey, check_access_token, userinfo_claims,
 };
-use hodor_identity::api::{IdentifierKind, IdentityService, UserStatus};
+use crate::domain::resource_server::GROUPS_SCOPE;
+use hodor_identity::api::{IdentifierKind, IdentityService};
 use hodor_kernel::{
     Clock, DomainError, ErrorKind, SignatureAlgorithm, SignatureVerifier, TenantContext,
 };
@@ -49,6 +54,10 @@ pub struct UserInfoPorts {
     pub identity: IdentityService,
     /// Whether the token is still in force.
     pub register: AccessTokenRegister,
+    /// The person's groups, for the scope `groups`.
+    pub memberships: Arc<dyn PersonMemberships>,
+    /// The claims the mappers of the token's client add.
+    pub mapping: ClaimMapping,
     /// The time.
     pub clock: Arc<dyn Clock>,
 }
@@ -104,17 +113,20 @@ impl UserInfoService {
             Ok(checked) => checked,
             Err(refusal) => return Ok(Err(refusal)),
         };
-        if !self
+        // The person is the one of the token's grant, never read from its
+        // `sub`, which a pairwise client's token gives as a pairwise
+        // identifier.
+        let Some(person) = self
             .ports
             .register
-            .in_force(tenant, &checked.token_id, &checked.client_id)
+            .person_in_force(tenant, &checked.token_id, &checked.client_id)
             .await?
-        {
+        else {
             return Ok(Err(BearerRefusal::InvalidToken(
-                "the token is not in force",
+                "the token is not in force, or is about no person",
             )));
-        }
-        let user = match self.ports.identity.get(tenant, checked.user_id).await {
+        };
+        let user = match self.ports.identity.get(tenant, person).await {
             Ok(user) => user,
             Err(error) if error.kind() == ErrorKind::NotFound => {
                 return Ok(Err(BearerRefusal::InvalidToken(
@@ -123,10 +135,22 @@ impl UserInfoService {
             }
             Err(error) => return Err(error),
         };
-        if user.status() != UserStatus::Active {
-            return Ok(Err(BearerRefusal::InvalidToken("the person is not active")));
+        // Only an active person: a service account or an agent has no
+        // claims of a person to read.
+        if !user.may_sign_in() {
+            return Ok(Err(BearerRefusal::InvalidToken(
+                "the user is not an active person",
+            )));
         }
         let snapshot = user.snapshot();
+        let groups = if checked.scopes.iter().any(|scope| scope == GROUPS_SCOPE) {
+            self.ports
+                .memberships
+                .effective_groups(tenant, person)
+                .await?
+        } else {
+            Vec::new()
+        };
         let person = PersonClaims {
             name: snapshot.profile.display_name.clone(),
             preferred_username: user
@@ -142,11 +166,26 @@ impl UserInfoService {
                         identifier.is_verified(),
                     )
                 }),
+            groups,
         };
-        Ok(Ok(userinfo_claims(
-            checked.user_id,
-            &checked.scopes,
-            &person,
-        )))
+        let mut claims = userinfo_claims(&checked.subject, &checked.scopes, &person);
+        if let Ok(client_id) = checked.client_id.parse::<ClientId>() {
+            let mapped = self
+                .ports
+                .mapping
+                .read(
+                    tenant,
+                    MappedToken {
+                        client_id,
+                        user_id: user.id(),
+                        scopes: &checked.scopes,
+                        organization: checked.organization,
+                    },
+                    &[ClaimTarget::UserInfo],
+                )
+                .await?;
+            add_mapped_claims(&mut claims, &mapped.of(ClaimTarget::UserInfo));
+        }
+        Ok(Ok(claims))
     }
 }

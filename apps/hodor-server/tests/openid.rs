@@ -11,24 +11,29 @@ use hodor_adapters_crypto::{
 };
 use hodor_adapters_postgres::testing::TestDatabase;
 use hodor_adapters_postgres::{
-    PgApplicationStore, PgClientStore, PgKeyStore, PgPasswordStore, PgResourceServerStore,
-    PgTenantDirectory, PgTenantRepository, PgUserRepository,
+    PgApplicationStore, PgClaimMapperStore, PgClientStore, PgGroupPolicy, PgGroupRepository,
+    PgInvitationRepository, PgKeyStore, PgOrganizationRepository, PgPasswordStore,
+    PgResourceServerStore, PgTenantDirectory, PgTenantRepository, PgUserRepository,
 };
 use hodor_credential::api::{CredentialService, NewPassword, PasswordRules};
-use hodor_identity::api::{CreateUser, IdentifierKind, IdentityService, Profile, UserKind};
+use hodor_identity::api::{
+    CreateUser, GroupMember, GroupService, IdentifierKind, IdentityService, OrganizationService,
+    Profile, UserKind,
+};
 use hodor_kernel::{Caller, Digest as _, Secret, SystemClock, TenantContext};
 use hodor_keys::api::{KeyAlgorithm, KeyService, RotationPolicy};
 use hodor_oauth::api::{
-    ApplicationPorts, ApplicationService, ApplicationSettings, AuthenticationMethod, ClientId,
+    ApplicationPorts, ApplicationService, ApplicationSettings, AuthenticationMethod,
+    ClaimMapperPorts, ClaimMapperService, ClaimMapperSettings, ClaimSource, ClaimTarget, ClientId,
     ClientSettings, ClientType, CreateClient, CreateResourceServer, GrantType, IdTokenAlgorithm,
-    ResourceServerSettings, ScopeDefinition, s256_challenge,
+    PersonAttribute, ResourceServerSettings, ScopeDefinition, s256_challenge,
 };
 use hodor_tenant::api::{CreateTenant, TenantService};
 use jsonwebtoken::jwk::JwkSet;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
 use reqwest::{Method, StatusCode};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 mod support;
@@ -195,7 +200,7 @@ async fn tenant_signing_with(
     );
     settings.authentication_method = AuthenticationMethod::None;
     settings.id_token_algorithm = id_token_algorithm;
-    settings.allowed_scopes = ["openid", "profile", "email", "payroll:read"]
+    settings.allowed_scopes = ["openid", "profile", "email", "groups", "payroll:read"]
         .map(str::to_owned)
         .to_vec();
     let (client, _) = applications
@@ -332,6 +337,22 @@ async fn the_discovery_document_names_what_answers() {
     assert_eq!(documents[0], documents[1], "one document at both addresses");
     let document = &documents[0];
     assert_eq!(document["issuer"], issuer("acme"));
+    // Back-channel logout is offered, and every logout token carries `sid`.
+    assert_eq!(document["backchannel_logout_supported"], true);
+    assert_eq!(document["backchannel_logout_session_supported"], true);
+    assert!(
+        document["scopes_supported"]
+            .as_array()
+            .is_some_and(|scopes| scopes.contains(&Value::from("groups")))
+    );
+    for claim in ["org_id", "groups"] {
+        assert!(
+            document["claims_supported"]
+                .as_array()
+                .is_some_and(|claims| claims.contains(&Value::from(claim))),
+            "{claim}"
+        );
+    }
 
     // Every endpoint it names is there. The server is reached at its own
     // address, the document names the public one.
@@ -413,7 +434,12 @@ async fn the_discovery_document_names_what_answers() {
         .iter()
         .filter_map(Value::as_str)
         .collect();
-    for grant in ["authorization_code", "refresh_token", "client_credentials"] {
+    for grant in [
+        "authorization_code",
+        "refresh_token",
+        "client_credentials",
+        "urn:ietf:params:oauth:grant-type:token-exchange",
+    ] {
         let response = http
             .post(local(&document["token_endpoint"]))
             .header("content-type", "application/x-www-form-urlencoded")
@@ -589,6 +615,99 @@ async fn an_application_learns_who_signed_in_and_reads_their_claims() {
 
 /// Who Ana is in a tenant, by its slug.
 #[tokio::test]
+async fn a_token_names_the_organization_and_the_groups_of_the_person() {
+    let database = TestDatabase::start().await;
+    let client_id = tenant(&database, "acme").await;
+    let (tenant, ana) = ana_of(&database, "acme").await;
+    let units = || Arc::new(database.app().clone());
+    let clock = Arc::new(SystemClock);
+    let groups = GroupService::new(
+        units(),
+        Arc::new(PgGroupRepository),
+        Arc::new(PgUserRepository),
+        Arc::new(PgGroupPolicy),
+        clock.clone(),
+    );
+    let staff = groups
+        .create(&tenant, "staff", None, Caller::system())
+        .await
+        .expect("group")
+        .id();
+    let finance = groups
+        .create(&tenant, "finance", None, Caller::system())
+        .await
+        .expect("group")
+        .id();
+    groups
+        .add_member(
+            &tenant,
+            staff,
+            GroupMember::Group(finance),
+            Caller::system(),
+        )
+        .await
+        .expect("nested");
+    groups
+        .add_member(&tenant, finance, GroupMember::User(ana), Caller::system())
+        .await
+        .expect("member");
+    let organizations = OrganizationService::new(
+        units(),
+        Arc::new(PgOrganizationRepository),
+        Arc::new(PgInvitationRepository),
+        Arc::new(PgUserRepository),
+        clock,
+    );
+    let initech = organizations
+        .create(&tenant, "Initech", None, Caller::system())
+        .await
+        .expect("organization")
+        .id();
+    organizations
+        .add_member(&tenant, initech, ana, BTreeSet::new(), Caller::system())
+        .await
+        .expect("member");
+    let server = server(&database).await;
+    let mut browser = Browser::not_following(&server);
+    browser.sign_in("acme", "ana@example.com", PASSWORD).await;
+
+    let named = initech.to_string();
+    let code = code(
+        &mut browser,
+        "acme",
+        &authorize_query(
+            client_id,
+            "openid groups",
+            &[("organization", named.as_str())],
+        ),
+    )
+    .await;
+    let answer = redeem(&server, "acme", client_id, &code).await;
+    let access = claims_of(answer["access_token"].as_str().expect("an access token"));
+    assert_eq!(access["org_id"], named);
+    let mut expected = vec![staff.to_string(), finance.to_string()];
+    expected.sort();
+    assert_eq!(
+        access["groups"],
+        serde_json::json!(expected),
+        "her own group and the one that holds it"
+    );
+    let identity = claims_of(answer["id_token"].as_str().expect("an ID token"));
+    assert_eq!(identity["org_id"], named);
+    assert!(identity.get("groups").is_none());
+
+    let info = userinfo(
+        &server,
+        "acme",
+        Method::GET,
+        answer["access_token"].as_str(),
+    )
+    .await;
+    assert_eq!(info.status, StatusCode::OK);
+    assert_eq!(info.body["groups"], serde_json::json!(expected));
+}
+
+#[tokio::test]
 async fn a_client_that_asks_for_rs256_gets_id_tokens_from_the_published_rsa_key() {
     let database = TestDatabase::start().await;
     let client_id = tenant_signing_with(&database, "acme", IdTokenAlgorithm::Rs256).await;
@@ -695,6 +814,160 @@ async fn ana_of(database: &TestDatabase, slug: &str) -> (TenantContext, hodor_ke
         .expect("Ana")
         .id();
     (tenant, ana)
+}
+
+#[tokio::test]
+async fn a_claim_mapper_puts_a_group_into_the_id_token_until_the_person_leaves_it() {
+    let database = TestDatabase::start().await;
+    let client_id = tenant(&database, "acme").await;
+    let (tenant, ana) = ana_of(&database, "acme").await;
+    let units = || Arc::new(database.app().clone());
+    let clock = Arc::new(SystemClock);
+    let groups = GroupService::new(
+        units(),
+        Arc::new(PgGroupRepository),
+        Arc::new(PgUserRepository),
+        Arc::new(PgGroupPolicy),
+        clock.clone(),
+    );
+    let finance = groups
+        .create(&tenant, "finance", None, Caller::system())
+        .await
+        .expect("group")
+        .id();
+    groups
+        .add_member(&tenant, finance, GroupMember::User(ana), Caller::system())
+        .await
+        .expect("member");
+    let mappers = ClaimMapperService::new(ClaimMapperPorts {
+        units_of_work: units(),
+        clients: Arc::new(PgClientStore),
+        mappers: Arc::new(PgClaimMapperStore),
+        clock,
+    });
+    for settings in [
+        ClaimMapperSettings {
+            claim: "in_finance".to_owned(),
+            targets: vec![ClaimTarget::IdToken, ClaimTarget::UserInfo],
+            scope: None,
+            source: ClaimSource::GroupMember(finance),
+        },
+        ClaimMapperSettings {
+            claim: "teams".to_owned(),
+            targets: vec![ClaimTarget::IdToken],
+            scope: None,
+            source: ClaimSource::Groups,
+        },
+        ClaimMapperSettings {
+            claim: "login".to_owned(),
+            targets: vec![ClaimTarget::AccessToken, ClaimTarget::UserInfo],
+            scope: Some("profile".to_owned()),
+            source: ClaimSource::Attribute(PersonAttribute::Username),
+        },
+    ] {
+        mappers
+            .create(&tenant, client_id, settings, Caller::system())
+            .await
+            .expect("a mapper");
+    }
+    let refused = mappers
+        .create(
+            &tenant,
+            client_id,
+            ClaimMapperSettings {
+                claim: "acr".to_owned(),
+                targets: vec![ClaimTarget::IdToken],
+                scope: None,
+                source: ClaimSource::Constant(Value::from("urn:hodor:acr:mfa")),
+            },
+            Caller::system(),
+        )
+        .await
+        .expect_err("a name Hodor sets");
+    assert_eq!(refused.code(), "oauth.claim_mapper_name_reserved");
+
+    let server = server(&database).await;
+    let mut browser = Browser::not_following(&server);
+    browser.sign_in("acme", "ana@example.com", PASSWORD).await;
+    let signed_in = code(
+        &mut browser,
+        "acme",
+        &authorize_query(client_id, "openid profile", &[("nonce", NONCE)]),
+    )
+    .await;
+    let answer = redeem(&server, "acme", client_id, &signed_in).await;
+
+    // The application checks the ID token with a library of its own, and
+    // reads the group in it.
+    let keys: JwkSet = reqwest::get(format!("{}/t/acme/oauth2/jwks", server.base))
+        .await
+        .expect("key set")
+        .json()
+        .await
+        .expect("JSON");
+    let id_token = answer["id_token"].as_str().expect("an ID token");
+    let header = decode_header(id_token).expect("header");
+    let key = keys
+        .find(header.kid.as_deref().expect("kid"))
+        .expect("a published key");
+    let mut validation = Validation::new(Algorithm::ES256);
+    validation.set_audience(&[client_id.to_string()]);
+    validation.set_issuer(&[issuer("acme")]);
+    let checked = decode::<Value>(
+        id_token,
+        &DecodingKey::from_jwk(key).expect("key"),
+        &validation,
+    )
+    .expect("a valid ID token")
+    .claims;
+    assert_eq!(checked["in_finance"], true);
+    assert_eq!(checked["teams"], serde_json::json!([finance.to_string()]));
+    assert_eq!(checked["sub"], ana.to_string(), "Hodor's own claims stay");
+    assert!(
+        checked.get("login").is_none(),
+        "not a target of the ID token"
+    );
+    let access = claims_of(answer["access_token"].as_str().expect("an access token"));
+    assert_eq!(access["login"], "ana.lima");
+    assert!(
+        access.get("in_finance").is_none(),
+        "not a target of the access token"
+    );
+    let info = userinfo(
+        &server,
+        "acme",
+        Method::GET,
+        answer["access_token"].as_str(),
+    )
+    .await;
+    assert_eq!(info.status, StatusCode::OK);
+    assert_eq!(info.body["in_finance"], true);
+    assert_eq!(info.body["login"], "ana.lima");
+    assert_eq!(info.body["name"], "Ana Lima", "UserInfo's own claims stay");
+
+    // Taken out of the group, Ana loses it from the next token.
+    groups
+        .remove_member(&tenant, finance, GroupMember::User(ana), Caller::system())
+        .await
+        .expect("removed");
+    let info = userinfo(
+        &server,
+        "acme",
+        Method::GET,
+        answer["access_token"].as_str(),
+    )
+    .await;
+    assert_eq!(info.body["in_finance"], false, "UserInfo reads it again");
+    let next = code(
+        &mut browser,
+        "acme",
+        &authorize_query(client_id, "openid", &[]),
+    )
+    .await;
+    let answer = redeem(&server, "acme", client_id, &next).await;
+    let identity = claims_of(answer["id_token"].as_str().expect("an ID token"));
+    assert_eq!(identity["in_finance"], false);
+    assert_eq!(identity["teams"], serde_json::json!([]));
 }
 
 /// Gives Ana an authenticator application, with the server's own way of
@@ -969,4 +1242,205 @@ async fn max_age_asks_again_for_the_password_and_not_for_the_identifier() {
     let auth_time = id_token["auth_time"].as_i64().expect("auth_time");
     let issued = id_token["iat"].as_i64().expect("iat");
     assert!(issued - auth_time <= 5, "the person proved it just now");
+}
+
+/// Makes a tenant require a second factor of everyone who signs in.
+async fn require_second_factor(database: &TestDatabase, slug: &str) {
+    let (tenant, _) = ana_of(database, slug).await;
+    let tenants = TenantService::new(
+        Arc::new(database.app().clone()),
+        Arc::new(PgTenantRepository),
+        Arc::new(PgTenantDirectory::new(database.app().clone())),
+        Arc::new(SystemClock),
+    );
+    let mut settings = tenants
+        .get(&tenant)
+        .await
+        .expect("tenant")
+        .snapshot()
+        .settings
+        .clone();
+    settings.authentication.second_factor = hodor_tenant::api::SecondFactorPolicy::Required;
+    tenants
+        .change_settings(&tenant, settings, Caller::system())
+        .await
+        .expect("changed");
+}
+
+/// How many rows of `table` of the tenant hold `text` anywhere.
+async fn rows_holding(database: &TestDatabase, table: &str, text: &str) -> i64 {
+    // The table is one of this file's own names, never input.
+    sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "SELECT count(*) FROM {table} AS row WHERE strpos(row_to_json(row)::text, $1) > 0"
+    )))
+    .bind(text)
+    .fetch_one(database.owner())
+    .await
+    .expect("count")
+}
+
+#[tokio::test]
+async fn under_the_policy_a_person_with_no_factor_sets_up_an_application_while_signing_in() {
+    use hodor_adapters_crypto::AwsLcHmacSha1;
+    use hodor_credential::api::totp_code_at;
+
+    let database = TestDatabase::start().await;
+    let client_id = tenant(&database, "acme").await;
+    require_second_factor(&database, "acme").await;
+    let (tenant_context, ana) = ana_of(&database, "acme").await;
+    let server = server(&database).await;
+    let mut browser = Browser::not_following(&server);
+
+    // An application sends Ana to sign in; she has no second factor.
+    let (status, location, body) = browser
+        .navigate(
+            Method::GET,
+            &format!(
+                "/t/acme/oauth2/authorize?{}",
+                authorize_query(client_id, "openid", &[("nonce", NONCE)])
+            ),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::FOUND, "{body}");
+    assert!(
+        location
+            .expect("a redirect")
+            .starts_with("/t/acme/account/sign-in?"),
+    );
+    let (status, waiting) = browser.sign_in("acme", "ana@example.com", PASSWORD).await;
+    assert_eq!(status, StatusCode::OK, "{waiting}");
+    assert_eq!(
+        (waiting["status"].as_str(), waiting["step"].as_str()),
+        (Some("pending"), Some("enrollment")),
+        "{waiting}"
+    );
+    let (_, kinds) = browser
+        .send(
+            Method::GET,
+            "/t/acme/interaction/sign-in/steps/enrollment/kinds",
+            None,
+        )
+        .await;
+    assert_eq!(
+        kinds["kinds"],
+        serde_json::json!(["authenticator_application", "security_key", "passkey"])
+    );
+
+    // She scans the QR code; the test reads the secret it holds.
+    let (status, begun) = browser
+        .send(
+            Method::POST,
+            "/t/acme/interaction/sign-in/steps/enrollment/options",
+            Some(serde_json::json!({ "kind": "authenticator_application" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{begun}");
+    let shown = begun["secret"].as_str().expect("secret").to_owned();
+    assert_eq!(
+        begun["uri"],
+        format!(
+            "otpauth://totp/acme:ana%40example.com?secret={shown}&issuer=acme&algorithm=SHA1&digits=6&period=30"
+        )
+    );
+    // The sign-in keeps which enrollment it began; no row anywhere holds
+    // the secret as it was shown.
+    let (kind, id): (Option<String>, Option<sqlx::types::Uuid>) = sqlx::query_as(
+        "SELECT enrollment_kind, enrollment_id FROM authentication.transaction
+         WHERE tenant_id = $1 AND candidate_user_id = $2",
+    )
+    .bind(tenant_context.tenant_id().as_uuid())
+    .bind(ana.as_uuid())
+    .fetch_one(database.owner())
+    .await
+    .expect("the transaction");
+    assert_eq!(kind.as_deref(), Some("authenticator_application"));
+    let id = id.expect("the enrollment");
+    let pending: String =
+        sqlx::query_scalar("SELECT status FROM credential.totp WHERE tenant_id = $1 AND id = $2")
+            .bind(tenant_context.tenant_id().as_uuid())
+            .bind(id)
+            .fetch_one(database.owner())
+            .await
+            .expect("the enrollment");
+    assert_eq!(pending, "pending");
+    for table in ["authentication.transaction", "credential.totp"] {
+        assert_eq!(rows_holding(&database, table, &shown).await, 0, "{table}");
+    }
+
+    let secret = base32(&shown);
+    let code = totp_code_at(
+        &AwsLcHmacSha1,
+        &secret,
+        hodor_kernel::Clock::now(&SystemClock),
+    );
+    let (status, done) = browser
+        .send(
+            Method::POST,
+            "/t/acme/interaction/sign-in/steps/enrollment",
+            Some(serde_json::json!({ "code": code })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{done}");
+    assert_eq!(done["status"], "completed", "{done}");
+    let codes: Vec<String> = done["recovery_codes"]
+        .as_array()
+        .expect("recovery codes, once")
+        .iter()
+        .map(|code| code.as_str().expect("a code").to_owned())
+        .collect();
+    assert_eq!(codes.len(), 10);
+    for code in &codes {
+        assert_eq!(
+            rows_holding(&database, "credential.recovery_code", code).await,
+            0,
+            "a recovery code is kept only as its hash"
+        );
+    }
+    let (_, who) = browser
+        .send(Method::GET, "/t/acme/interaction/session", None)
+        .await;
+    assert_eq!(who["assurance"], "multi_factor", "{who}");
+    assert_eq!(
+        who["methods"],
+        serde_json::json!(["password", "enrollment"])
+    );
+
+    // The application's tokens say multi-factor.
+    let resume = done["continue"].as_str().expect("continue").to_owned();
+    let (status, location, body) = browser.navigate(Method::GET, &resume, None).await;
+    assert_eq!(status, StatusCode::FOUND, "{body}");
+    let answer = query_of(&location.expect("a redirect"));
+    let tokens = redeem(&server, "acme", client_id, &answer["code"]).await;
+    let id_token = claims_of(tokens["id_token"].as_str().expect("ID token"));
+    assert_eq!(id_token["acr"], "urn:hodor:acr:mfa");
+    assert_eq!(id_token["amr"], serde_json::json!(["pwd", "mfa"]));
+    let access_token = claims_of(tokens["access_token"].as_str().expect("access token"));
+    assert_eq!(access_token["acr"], "urn:hodor:acr:mfa");
+
+    // The audit trail has the enrollment, and the next sign-in asks for
+    // the code of the application set up.
+    let enrolled: Vec<Value> = sqlx::query_scalar(
+        "SELECT payload FROM platform.outbox
+         WHERE tenant_id = $1 AND event_type = 'authentication.second_factor_enrolled'",
+    )
+    .bind(tenant_context.tenant_id().as_uuid())
+    .fetch_all(database.owner())
+    .await
+    .expect("events");
+    assert_eq!(
+        enrolled,
+        [serde_json::json!({ "user_id": ana, "kind": "authenticator_application" })]
+    );
+    let mut later = Browser::not_following(&server);
+    let (_, waiting) = later.sign_in("acme", "ana@example.com", PASSWORD).await;
+    assert_eq!(waiting["step"], "totp", "{waiting}");
+    let (_, done) = later
+        .send(
+            Method::POST,
+            "/t/acme/interaction/sign-in/steps/totp",
+            Some(serde_json::json!({ "code": next_code(&secret) })),
+        )
+        .await;
+    assert_eq!(done["status"], "completed", "{done}");
 }

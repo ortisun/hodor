@@ -32,11 +32,12 @@ The final image runs as `nonroot:nonroot`, exposes `8080` and `9090`, sets `HODO
 | `mail` | `axllent/mailpit:v1.27` | accepts every message on SMTP port 1025 and delivers none; web page on 8025 | `HODOR_MAIL_PORT`, 8025 |
 | `provider` | `node:24-bookworm-slim` | `node /provider.mjs`, mounted read-only from `../dev-provider/provider.mjs`, with `PORT`, `ISSUER=http://provider:9400`, `BROWSER_URL`, `CLIENT_ID`, `CLIENT_SECRET`; health check fetches `/health` | `HODOR_PROVIDER_PORT`, 9400 |
 | `saml-provider` | `node:24-bookworm-slim` | `node /saml-provider/saml-provider.mjs`, the whole `../dev-saml-provider` directory mounted read-only, with `PORT`, `ENTITY_ID=urn:hodor:development-saml-provider`, `BROWSER_URL`; health check fetches `/health` | `HODOR_SAML_PROVIDER_PORT`, 9500 |
+| `webhook-receiver` | `node:24-bookworm-slim` | `node /receiver.mjs`, `../dev-webhook-receiver/receiver.mjs` mounted read-only, with `PORT=9600`; health check fetches `/health` | `HODOR_WEBHOOK_RECEIVER_PORT`, 9600 |
 | `directory` | `osixia/openldap:1.5.0` | LDAP directory for `example.org` with a read-only user `readonly`, transport security off (`LDAP_TLS: "false"`), seeded from `../dev-directory/people.ldif`; health check `ldapwhoami` as the read-only user | none (inside the stack only) |
 | `server` | `hodor:dev` (default entrypoint `hodor-server`) | the server, as database role `hodor_server`; health check `hodor-cli probe --addr 127.0.0.1:9090 --path /readyz` | `HODOR_HTTP_PORT`, 8080; `HODOR_OPS_PORT`, 9090 |
 | `worker` | `hodor:dev`, entrypoint `hodor-worker` | the worker, as `hodor_worker` and `hodor_worker_platform`, sending mail to `smtp://mail:1025`; same `probe` health check | none |
 
-Environment the stack gives the server: `HODOR_DATABASE_URL`, `HODOR_PUBLIC_URL` (`http://localhost:${HODOR_HTTP_PORT:-8080}`), `HODOR_SECRET_KEYS` (a placeholder key that encrypts identity provider secrets and wraps the signing keys in this stack only), `HODOR_OPEN_POLICY_AGENT_ADDRESS` (`http://policy-agent:8181`, where the demonstration of Milestone 5 starts a shared instance; nothing answers there otherwise), `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` (`provider:9400`, the browser address of `provider`, `directory:389`, the browser address of `saml-provider`), `HODOR_DIRECTORY_HOSTS` (`directory:389`), `HODOR_LOG_FORMAT=pretty`, `HODOR_OTLP_METRICS_ENDPOINT`, `HODOR_OTLP_TRACES_ENDPOINT`. The worker gets `HODOR_SECRET_KEYS` too, the same placeholder, to make the tenants' signing keys, and additionally `HODOR_PLATFORM_DATABASE_URL`, `HODOR_SMTP_URL` and `HODOR_MAIL_FROM`.
+Environment the stack gives the server: `HODOR_DATABASE_URL`, `HODOR_PUBLIC_URL` (`http://localhost:${HODOR_HTTP_PORT:-8080}`), `HODOR_SECRET_KEYS` (a placeholder key that encrypts identity provider secrets and wraps the signing keys in this stack only), `HODOR_OPEN_POLICY_AGENT_ADDRESS` (`http://policy-agent:8181`, where the demonstration of Milestone 5 starts a shared instance; nothing answers there otherwise), `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` (`provider:9400`, the browser address of `provider`, `directory:389`, the browser address of `saml-provider`, `webhook-receiver:9600`), `HODOR_DIRECTORY_HOSTS` (`directory:389`), `HODOR_LOG_FORMAT=pretty`, `HODOR_OTLP_METRICS_ENDPOINT`, `HODOR_OTLP_TRACES_ENDPOINT`. The worker gets `HODOR_SECRET_KEYS` too, the same placeholder, to make the tenants' signing keys, `HODOR_PUBLIC_URL`, the server's, to name the issuer of logout tokens, and additionally `HODOR_PLATFORM_DATABASE_URL`, `HODOR_SMTP_URL`, `HODOR_MAIL_FROM`, `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` (`webhook-receiver:9600`), `HODOR_WEBHOOK_MAX_ATTEMPTS=3` and `HODOR_WEBHOOK_FIRST_RETRY_MS=1000`, so that a failing delivery is set aside within seconds.
 
 Named volumes: `postgres-data`, `victoriametrics-data`, `victoriatraces-data`.
 
@@ -52,7 +53,7 @@ Named volumes: `postgres-data`, `victoriametrics-data`, `victoriatraces-data`.
 - The binaries: [hodor-server](../../apps/hodor-server/EGM.md), [hodor-worker](../../apps/hodor-worker/EGM.md), [hodor-cli](../../apps/hodor-cli/EGM.md).
 - The migrations that `migrate` applies and that expect these roles: [migrations](../../migrations/EGM.md).
 - The administration console built into the image: [admin-console](../../frontend/admin-console/EGM.md).
-- The development identity providers mounted into the stack: [dev-provider](../dev-provider/EGM.md), [dev-saml-provider](../dev-saml-provider/EGM.md).
+- The development identity providers mounted into the stack: [dev-provider](../dev-provider/EGM.md), [dev-saml-provider](../dev-saml-provider/EGM.md); and the development receiver of webhooks, [dev-webhook-receiver](../dev-webhook-receiver/EGM.md).
 - The demonstrations that drive the running stack: [demo](../demo/EGM.md).
 
 ## Invariants
@@ -83,4 +84,4 @@ python3 deploy/demo/demo.py
 python3 deploy/demo/external_identities.py
 ```
 
-The `server` and `worker` health checks (`hodor-cli probe ... --path /readyz`) and the `postgres`, `provider`, `saml-provider` and `directory` health checks are what `up --wait` waits on.
+The `server` and `worker` health checks (`hodor-cli probe ... --path /readyz`) and the `postgres`, `provider`, `saml-provider`, `webhook-receiver` and `directory` health checks are what `up --wait` waits on.

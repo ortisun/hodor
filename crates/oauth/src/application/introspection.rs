@@ -4,32 +4,40 @@
 //! Specified in `docs/architecture/contexts/oauth.md`, "Revocation,
 //! introspection and metadata".
 
-use crate::application::ports::{AccessTokenRecordStore, GrantStore, RefreshTokenStore};
+use crate::application::pairwise::subject_for;
+use crate::application::ports::{
+    AccessTokenRecordStore, GrantStore, PersonStanding, RefreshTokenStore,
+};
 use crate::application::token::{Issuer, TokenService};
 use crate::application::userinfo::published_keys;
 use crate::domain::authorization::GrantStatus;
 use crate::domain::client::{Client, ClientType};
 use crate::domain::event::OauthEvent;
+use crate::domain::exchange::MAX_ACTORS;
 use crate::domain::introspection::{
-    ActiveRefreshToken, REVOKED_BY_CLIENT, TokenQuery, active_access_token, active_refresh_token,
-    inactive,
+    AccessTokenRecord, ActiveRefreshToken, REVOKED_BY_CLIENT, TokenQuery, active_access_token,
+    active_refresh_token, inactive,
 };
 use crate::domain::openid::read_access_token;
 use crate::domain::refresh::{FamilyStatus, RefreshTokenHash};
 use crate::domain::token::TokenError;
-use hodor_kernel::{Actor, Caller, CorrelationId, DomainError, TenantContext, UnitOfWorkFactory};
+use hodor_kernel::{
+    Actor, Caller, Clock, CorrelationId, DomainError, EventEnvelope, EventMetadata, TenantContext,
+    UnitOfWork, UnitOfWorkFactory, UserId,
+};
 use serde_json::Value;
 use std::fmt;
 use std::sync::Arc;
 
-/// Whether access tokens are still in force: the register, and the grants
-/// and refresh token families its records name.
+/// Whether access tokens are still in force: the register, and the grants,
+/// refresh token families and workloads its records name.
 #[derive(Clone)]
 pub struct AccessTokenRegister {
     units_of_work: Arc<dyn UnitOfWorkFactory>,
     access_tokens: Arc<dyn AccessTokenRecordStore>,
     grants: Arc<dyn GrantStore>,
     refresh_tokens: Arc<dyn RefreshTokenStore>,
+    standing: Arc<dyn PersonStanding>,
 }
 
 impl fmt::Debug for AccessTokenRegister {
@@ -47,18 +55,21 @@ impl AccessTokenRegister {
         access_tokens: Arc<dyn AccessTokenRecordStore>,
         grants: Arc<dyn GrantStore>,
         refresh_tokens: Arc<dyn RefreshTokenStore>,
+        standing: Arc<dyn PersonStanding>,
     ) -> Self {
         Self {
             units_of_work,
             access_tokens,
             grants,
             refresh_tokens,
+            standing,
         }
     }
 
     /// Whether the access token `token_id`, which says it was issued to
-    /// `client_id`, is still in force: recorded, not revoked, and its grant
-    /// and family still active.
+    /// `client_id`, is still in force: recorded, not revoked, its grant
+    /// and family still active, and the workload it was issued for, if
+    /// any, still one that may act.
     ///
     /// # Errors
     ///
@@ -69,26 +80,176 @@ impl AccessTokenRegister {
         token_id: &str,
         client_id: &str,
     ) -> Result<bool, DomainError> {
-        let mut uow = self.units_of_work.begin(tenant).await?;
-        let Some(record) = self.access_tokens.find(uow.as_mut(), token_id).await? else {
+        let Some(record) = self.record_in_force(tenant, token_id).await? else {
             return Ok(false);
         };
-        if record.revoked_at.is_some() || record.client_id.to_string() != client_id {
+        if record.client_id.to_string() != client_id {
             return Ok(false);
+        }
+        // A token made by exchange is in force only while the token it
+        // came from is, and that one while its own is, a bounded chain.
+        let mut parent = record.parent_token_id;
+        for _ in 0..=MAX_ACTORS {
+            let Some(id) = parent else {
+                return Ok(true);
+            };
+            let Some(record) = self.record_in_force(tenant, &id).await? else {
+                return Ok(false);
+            };
+            parent = record.parent_token_id;
+        }
+        Ok(false)
+    }
+
+    /// The record of `token_id` if it stands by itself: recorded, not
+    /// revoked, its grant and family active, and its principal one that
+    /// may act.
+    async fn record_in_force(
+        &self,
+        tenant: &TenantContext,
+        token_id: &str,
+    ) -> Result<Option<AccessTokenRecord>, DomainError> {
+        let mut uow = self.units_of_work.begin(tenant).await?;
+        let Some(record) = self.access_tokens.find(uow.as_mut(), token_id).await? else {
+            return Ok(None);
+        };
+        if record.revoked_at.is_some() {
+            return Ok(None);
         }
         if let Some(grant) = record.grant_id {
             let grant = self.grants.get(uow.as_mut(), grant).await?;
             if !grant.is_some_and(|grant| grant.status == GrantStatus::Active) {
-                return Ok(false);
+                return Ok(None);
             }
         }
         if let Some(family) = record.family_id {
             let family = self.refresh_tokens.get(uow.as_mut(), family).await?;
             if !family.is_some_and(|family| family.status == FamilyStatus::Active) {
-                return Ok(false);
+                return Ok(None);
             }
         }
-        Ok(true)
+        drop(uow);
+        if let Some(principal) = record.principal_id
+            && self
+                .standing
+                .workload_that_may_act(tenant, principal)
+                .await?
+                .is_none()
+        {
+            return Ok(None);
+        }
+        Ok(Some(record))
+    }
+
+    /// The person the access token `token_id` was issued for, if it is in
+    /// force for `client_id` and its record names a grant: the grant's
+    /// person. A token is about a person through its record, never through
+    /// its `sub`, which for a pairwise client is no user identifier. None
+    /// for a token not in force, and for one without a grant, such as a
+    /// token of client credentials.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    pub async fn person_in_force(
+        &self,
+        tenant: &TenantContext,
+        token_id: &str,
+        client_id: &str,
+    ) -> Result<Option<UserId>, DomainError> {
+        if !self.in_force(tenant, token_id, client_id).await? {
+            return Ok(None);
+        }
+        let mut uow = self.units_of_work.begin(tenant).await?;
+        let Some(record) = self.access_tokens.find(uow.as_mut(), token_id).await? else {
+            return Ok(None);
+        };
+        let Some(grant) = record.grant_id else {
+            return Ok(None);
+        };
+        Ok(self
+            .grants
+            .get(uow.as_mut(), grant)
+            .await?
+            .map(|grant| grant.user_id))
+    }
+
+    /// The record of `token_id`, whatever its state, for an exchange that
+    /// copies its grant and family.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    pub(crate) async fn record(
+        &self,
+        tenant: &TenantContext,
+        token_id: &str,
+    ) -> Result<Option<AccessTokenRecord>, DomainError> {
+        let mut uow = self.units_of_work.begin(tenant).await?;
+        self.access_tokens.find(uow.as_mut(), token_id).await
+    }
+}
+
+/// Revokes the access tokens issued for a service account or an agent, when
+/// it is disabled or deleted.
+#[derive(Clone)]
+pub struct WorkloadTokens {
+    access_tokens: Arc<dyn AccessTokenRecordStore>,
+    clock: Arc<dyn Clock>,
+}
+
+impl fmt::Debug for WorkloadTokens {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WorkloadTokens").finish_non_exhaustive()
+    }
+}
+
+impl WorkloadTokens {
+    /// The use case on the register's store.
+    #[must_use]
+    pub fn new(access_tokens: Arc<dyn AccessTokenRecordStore>, clock: Arc<dyn Clock>) -> Self {
+        Self {
+            access_tokens,
+            clock,
+        }
+    }
+
+    /// Revokes every access token issued for `principal` that is not
+    /// revoked yet, with `reason`, in the caller's unit of work, and
+    /// records `oauth.access_token_revoked` for each. Answers how many.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails. After an error the unit of work
+    /// must be abandoned.
+    pub async fn revoke_in(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        principal: UserId,
+        reason: &'static str,
+        caller: Caller,
+    ) -> Result<usize, DomainError> {
+        let now = self.clock.now();
+        let revoked = self
+            .access_tokens
+            .revoke_for_principal(uow, principal, now, reason)
+            .await?;
+        let tenant = uow.tenant().tenant_id();
+        for (client_id, token_id) in &revoked {
+            let metadata = EventMetadata::new(
+                tenant,
+                caller.actor,
+                caller.correlation_id,
+                self.clock.as_ref(),
+            );
+            let event = OauthEvent::AccessTokenRevoked {
+                client_id: *client_id,
+                token_id: token_id.clone(),
+                reason,
+            };
+            uow.record_event(EventEnvelope::new(metadata, &event)?);
+        }
+        Ok(revoked.len())
     }
 }
 
@@ -101,7 +262,14 @@ impl TokenService {
             self.ports.access_tokens.clone(),
             self.ports.grants.clone(),
             self.ports.refresh_tokens.clone(),
+            self.ports.standing.clone(),
         )
+    }
+
+    /// Revoking the tokens of workloads, on the service's own store.
+    #[must_use]
+    pub fn workload_tokens(&self) -> WorkloadTokens {
+        WorkloadTokens::new(self.ports.access_tokens.clone(), self.ports.clock.clone())
     }
 
     /// Answers a request to the revocation endpoint at `endpoint`. Whatever
@@ -307,7 +475,8 @@ impl TokenService {
             &ActiveRefreshToken {
                 scopes: &family.scopes,
                 client_id: family.client_id,
-                subject: family.user_id.to_string(),
+                subject: subject_for(self.pairwise.as_ref(), tenant, client, family.user_id)
+                    .await?,
                 expires_at: family.expires_at.min(idle_ends),
                 issued_at: record.issued_at,
             },

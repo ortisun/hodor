@@ -59,7 +59,7 @@ npx playwright install chromium
 npm run browser-tests
 ```
 
-`HODOR_URL`, `HODOR_MAIL_URL`, `HODOR_TENANT` and `HODOR_PROVIDER` point the tests at a stack on other ports, at another tenant or at a provider under another alias; they default to `http://localhost:8080`, `http://localhost:8025`, `acme` and `development`. The tests create new people on every run and remove nothing.
+`HODOR_URL`, `HODOR_MAIL_URL`, `HODOR_TENANT` and `HODOR_PROVIDER` point the tests at a stack on other ports, at another tenant or at a provider under another alias; they default to `http://localhost:8080`, `http://localhost:8025`, `acme` and `development`. The tests create new people on every run and remove nothing. The tests of signing in by email and of setting up a second factor during a sign-in each make a tenant of their own with `hodor-cli`, `browser-` and eight characters, so that the policy they turn on touches no other test; those tenants are not removed either.
 
 Every run asks for about ten links, and a tenant limits how many may be asked for from one address: fifty in fifteen minutes by default, with waits that grow. After several runs in a row the tests stop before they start and say so. Wait, or create another tenant with open registration and name it in `HODOR_TENANT`.
 
@@ -76,11 +76,13 @@ docker compose -f deploy/docker/compose.yaml up --build --wait
 | `postgres` | PostgreSQL 17, with the database roles created on first start | internal only |
 | `migrate` | Runs `hodor-cli migrate` once and exits | — |
 | `system-tenant` | Runs `hodor-cli tenant create-system` once and exits. It creates the system tenant unless it exists | — |
-| `server` | `hodor-server`, with the hosted pages | <http://localhost:8080>, health on <http://localhost:9090/readyz> |
-| `worker` | `hodor-worker`, writing the audit log and delivering email | internal only |
+| `server` | `hodor-server`, with the hosted pages. It trusts every private address as a [proxy](../api/api-spec.md#the-client-address), as the Docker installation does, so a forwarded header from this machine or another container is believed. Never do that where the port is reachable from elsewhere | <http://localhost:8080>, health on <http://localhost:9090/readyz> |
+| `edge` | A web server in front of the server, as a load balancer would be: it keeps the `X-Forwarded-For` it receives from this machine and adds the address it saw. [The demonstration of Milestone 6](../operations/quick-start.md#the-demonstration-of-milestone-6) goes through it | <http://localhost:8081> |
+| `worker` | `hodor-worker`, writing the audit log and delivering email and webhooks. It waits one second after a webhook's first failed attempt and sets a delivery aside after three, so that [the demonstration of Milestone 8](../operations/quick-start.md#the-demonstration-of-milestone-8) sees it in seconds | internal only |
 | `mail` | A mail server for development. It accepts every message and delivers none: what Hodor sends can be read in its web page | <http://localhost:8025> |
 | `provider` | [The development identity provider](#the-development-identity-provider), which lets anyone sign in as anyone | <http://localhost:9400> |
 | `saml-provider` | [The development SAML identity provider](#the-development-saml-identity-provider), which lets anyone sign in as anyone too | <http://localhost:9500> |
+| `webhook-receiver` | [The development receiver of webhooks](#the-development-receiver-of-webhooks), which keeps what it is sent | <http://localhost:9600> |
 | `directory` | [The development directory](#the-development-directory), OpenLDAP with one person in it | internal only |
 | `victoriametrics` | Metrics backend; the server and the worker push to it over OTLP | <http://localhost:8428/vmui> |
 | `victoriatraces` | Traces backend; the server and the worker push to it over OTLP | <http://localhost:10428/select/vmui> |
@@ -88,7 +90,7 @@ docker compose -f deploy/docker/compose.yaml up --build --wait
 If one of those ports is taken on your machine, choose others:
 
 ```bash
-HODOR_HTTP_PORT=18080 HODOR_OPS_PORT=19090 HODOR_VM_PORT=18428 HODOR_TRACES_PORT=20428 HODOR_MAIL_PORT=18025 HODOR_PROVIDER_PORT=19400 HODOR_SAML_PROVIDER_PORT=19500 docker compose -f deploy/docker/compose.yaml up --build --wait
+HODOR_HTTP_PORT=18080 HODOR_EDGE_PORT=18081 HODOR_OPS_PORT=19090 HODOR_VM_PORT=18428 HODOR_TRACES_PORT=20428 HODOR_MAIL_PORT=18025 HODOR_PROVIDER_PORT=19400 HODOR_SAML_PROVIDER_PORT=19500 HODOR_WEBHOOK_RECEIVER_PORT=19600 docker compose -f deploy/docker/compose.yaml up --build --wait
 ```
 
 Set the same variables for every later `docker compose` command on that stack. The commands on this page pass `--no-deps` to `run`, so that running the command-line tool never restarts a service of the stack.
@@ -130,6 +132,8 @@ Every setting is a command-line flag with an environment variable of the same me
 | `HODOR_OTLP_TRACES_ENDPOINT` | unset | Full URL of the OTLP/HTTP traces endpoint; unset disables export. For VictoriaTraces: `http://<host>:10428/insert/opentelemetry/v1/traces` |
 | `HODOR_OTLP_METRICS_ENDPOINT` | unset | Full URL of the OTLP/HTTP metrics endpoint. For VictoriaMetrics: `http://<host>:8428/opentelemetry/v1/metrics` |
 | `HODOR_SHUTDOWN_DRAIN_SECONDS` | `5` | How long to keep serving after a stop signal while readiness fails |
+| `HODOR_TRUSTED_PROXIES` | empty | Address ranges of the load balancers and web servers whose forwarded header is read, separated by commas. Empty: the client address is always the connection's. See [the client address](../api/api-spec.md#the-client-address) |
+| `HODOR_FORWARDED_HEADER` | `x-forwarded-for` | The header trusted proxies write: `x-forwarded-for` or `forwarded` |
 | `HODOR_PUBLIC_URL` | `http://localhost:8080` | The address people reach this installation at, without a path. Links in messages start with it |
 | `HODOR_SECRET_KEYS` | unset | The keys that keep secrets [encrypted at rest](../security/secrets-at-rest.md#root-keys) and wrap the tenants' [signing keys](../architecture/contexts/keys.md#the-local-provider). Unset: no identity provider can be used, and none is offered; the key set is not published and keys cannot be managed |
 | `HODOR_KEY_OVERLAP_HOURS` | `24` | How long a replaced signing key stays published when an administrator rotates by hand. See [the rotation policy](../architecture/contexts/keys.md#the-rotation-policy) |
@@ -164,9 +168,11 @@ The worker connects to the database twice, with different roles: as a member of 
 | `HODOR_MAIL_FROM` | — (required with `HODOR_SMTP_URL`) | The address messages are sent from, for example `Hodor <no-reply@example.com>` |
 | `HODOR_MAIL_BATCH_SIZE` | `50` | Most messages handled per pass |
 | `HODOR_MAIL_POLL_INTERVAL_MS` | `1000` | Pause between passes when there is no message to deliver |
-| `HODOR_CLEANUP_INTERVAL_MS` | `60000` | Pause between passes of the cleanup jobs: removing [pending authorizations](../architecture/contexts/federation.md#the-pending-authorization) that expired |
+| `HODOR_CLEANUP_INTERVAL_MS` | `60000` | Pause between passes of [the cleanup jobs](../operations/deployment.md#cleanup), which remove rows that stopped being useful |
+| `HODOR_CLEANUP_RETENTION_DAYS` | empty | Retentions that differ from the defaults, as `kind=days` pairs separated by commas, such as `sessions=30,messages=90`. See [cleanup](../operations/deployment.md#cleanup) |
 | `HODOR_CLEANUP_BATCH_SIZE` | `500` | Most rows a cleanup job removes in one tenant per pass |
-| `HODOR_SECRET_KEYS` | unset | The same keys as the server's. Unset: [keys do not rotate](../architecture/contexts/keys.md#two-workers-one-rotation), and no tenant gets a signing key |
+| `HODOR_SECRET_KEYS` | unset | The same keys as the server's. Unset: [keys do not rotate](../architecture/contexts/keys.md#two-workers-one-rotation), no tenant gets a signing key, and no webhook or logout token is sent |
+| `HODOR_PUBLIC_URL` | unset | The same address as the server's, without a path. It names the issuer of [logout tokens](../architecture/contexts/oauth.md#back-channel-logout). Unset: no logout token is sent |
 | `HODOR_KEY_ROTATION_DAYS`, `HODOR_KEY_PUBLICATION_HOURS`, `HODOR_KEY_OVERLAP_HOURS` | `90`, `24`, `24` | [The rotation policy](../architecture/contexts/keys.md#the-rotation-policy): how long a signing key signs, how long its successor is published before it signs, how long it stays published after |
 | `HODOR_KEY_ROTATION_INTERVAL_MS` | `600000` | Pause between passes of the rotation job |
 | `HODOR_OPEN_POLICY_AGENT_BINARY` | unset; the image sets `/usr/local/bin/opa` | The `opa` 1.10.1 binary that [checks, tests and simulates policy versions](../architecture/contexts/authorization.md#what-the-worker-runs). The worker does not start with one of another version. Unset: no version is checked, so none can be published |
@@ -174,6 +180,17 @@ The worker connects to the database twice, with different roles: as a member of 
 | `HODOR_POLICY_CHECK_TIME_LIMIT_SECONDS` | `30` | The longest one run of the binary may take; a version whose run takes longer is rejected |
 | `HODOR_POLICY_CHECK_MEMORY_MEBIBYTES` | `256` | What `GOMEMLIMIT` asks a run to stay under. The hard bound is the worker container's memory limit |
 | `HODOR_POLICY_CHECK_INTERVAL_MS` | `2000` | Pause between passes of the policy check job |
+| `HODOR_WEBHOOK_MAX_ATTEMPTS` | `8` | [Attempts](../architecture/contexts/webhooks.md#deliveries) before a webhook delivery is set aside, 1 to 20 |
+| `HODOR_WEBHOOK_FIRST_RETRY_MS` | `30000` | The wait after a delivery's first failed attempt; each next wait is twice as long, up to one hour |
+| `HODOR_WEBHOOK_TIME_LIMIT_SECONDS` | `10` | The longest one attempt may take, 1 to 30 |
+| `HODOR_WEBHOOK_IN_FLIGHT_PER_ENDPOINT` | `4` | Deliveries leased at once to one endpoint, across every worker, 1 to 32 |
+| `HODOR_WEBHOOK_CONCURRENCY` | `32` | Deliveries this worker sends at once, 1 to 256 |
+| `HODOR_WEBHOOK_POLL_INTERVAL_MS` | `1000` | Pause between passes when no delivery is due |
+| `HODOR_BACKCHANNEL_LOGOUT_MAX_ATTEMPTS` | `8` | [Attempts](../architecture/contexts/oauth.md#deliveries-and-retries) before a logout delivery is set aside, 1 to 20 |
+| `HODOR_BACKCHANNEL_LOGOUT_FIRST_RETRY_MS` | `30000` | The wait after a logout delivery's first failed attempt; each next wait is twice as long, up to one hour |
+| `HODOR_BACKCHANNEL_LOGOUT_TIME_LIMIT_SECONDS` | `10` | The longest one attempt may take, 1 to 30 |
+| `HODOR_BACKCHANNEL_LOGOUT_POLL_INTERVAL_MS` | `1000` | Pause between passes when no logout delivery is due |
+| `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` | empty | As for the server: hosts with their ports that webhooks and logout tokens may reach over plain HTTP without the address check. Never set anywhere real |
 | `HODOR_LOG_FORMAT`, `HODOR_LOG_FILTER`, `HODOR_OTLP_TRACES_ENDPOINT`, `HODOR_OTLP_METRICS_ENDPOINT` | as for the server | Telemetry |
 
 ### `hodor-cli`
@@ -251,6 +268,18 @@ docker compose -f deploy/docker/compose.yaml run --rm --no-deps --entrypoint /us
 ```
 
 The sign-in page then offers "Continue with Development SAML provider". The Compose file names `localhost:9500` in `HODOR_OUTBOUND_DEVELOPMENT_HOSTS`, which lets its single sign-on address be plain HTTP; that does not belong anywhere real either. Hodor's metadata for it is at <http://localhost:8080/t/acme/interaction/sign-in/providers/corp/saml/metadata>.
+
+### The development receiver of webhooks
+
+The stack has a receiver of webhooks, `deploy/dev-webhook-receiver/receiver.mjs`, one file for Node.js with no dependencies. It answers every `POST` with `204` and keeps the last 500 it got, with their headers and bodies, and `GET /received` shows them as JSON, the oldest first; `?path=<path>` keeps those sent to one path, and `?webhook-id=<id>` those of one event. It checks nothing: checking the signature is the receiver's part that [the demonstration of Milestone 8](../operations/quick-start.md#the-demonstration-of-milestone-8) plays. It keeps the logout tokens the worker posts to an application's back-channel logout address in the same way, a form rather than JSON: [the demonstration of Milestone 9](../operations/quick-start.md#the-demonstration-of-milestone-9) gives its two applications addresses there, `http://webhook-receiver:9600/<tenant>/<application>`, and checks the tokens itself. Hodor reaches it as `webhook-receiver:9600`, which the Compose file names in `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` of the server and the worker; a browser or a script on this machine reaches it as `localhost:9600`, or the port in `HODOR_WEBHOOK_RECEIVER_PORT`.
+
+Register it for a tenant:
+
+```bash
+docker compose -f deploy/docker/compose.yaml run --rm --no-deps --entrypoint /usr/local/bin/hodor-cli -e HODOR_DATABASE_URL=postgres://hodor_server:dev-server@postgres:5432/hodor server webhook add --tenant acme --url http://webhook-receiver:9600/hodor --event session.started
+```
+
+The command prints the endpoint's secret once. The service `server` already holds the stack's `HODOR_SECRET_KEYS` and development exception, which the command needs.
 
 ### The first administrator
 

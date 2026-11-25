@@ -29,8 +29,10 @@ hodor-notification.workspace = true
 hodor-oauth.workspace = true
 hodor-observability.workspace = true
 hodor-protocol-http.workspace = true
+hodor-provisioning.workspace = true
 hodor-session.workspace = true
 hodor-tenant.workspace = true
+hodor-webhooks.workspace = true
 serde_json.workspace = true
 time.workspace = true
 tokio.workspace = true
@@ -45,6 +47,8 @@ form_urlencoded.workspace = true
 jsonwebtoken = { workspace = true, features = ["aws_lc_rs"] }
 hodor-adapters-postgres = { workspace = true, features = ["testing"] }
 hodor-kernel = { workspace = true, features = ["testing"] }
+# The doubles of the OAuth ports the tests do not exercise.
+hodor-oauth = { workspace = true, features = ["testing"] }
 reqwest = { workspace = true, features = ["json"] }
 serde_json.workspace = true
 sqlx.workspace = true

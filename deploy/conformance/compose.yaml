@@ -13,6 +13,11 @@
 # it alike:
 #   https://hodor.localhost:8453        Hodor, behind a web server with its own certificate
 #   https://localhost.emobix.co.uk:8443 the suite (a public name that points to 127.0.0.1)
+#
+# Inside it, the worker sends logout tokens to the suite through
+# `suite-relay`, at http://suite-relay:8080, and `hodor-cli` reads the
+# sector identifier document of a pairwise client from `sector-document`,
+# at http://sector-document:8080.
 
 name: hodor-conformance
 
@@ -87,6 +92,13 @@ services:
       HODOR_DATABASE_URL: postgres://hodor_worker:dev-worker@postgres:5432/hodor
       HODOR_PLATFORM_DATABASE_URL: postgres://hodor_worker_platform:dev-worker@postgres:5432/hodor
       HODOR_SECRET_KEYS: conformance:gV8TjmTiZoYOlhsN4OdTTiWMwWa1t/o5RPNGCdbBNro=
+      # The server's address: the issuer of the logout tokens.
+      HODOR_PUBLIC_URL: https://hodor.localhost:8453
+      # The suite's back-channel logout address is reached through the
+      # relay below, at a private address over plain HTTP. Never anywhere
+      # real.
+      HODOR_OUTBOUND_DEVELOPMENT_HOSTS: suite-relay:8080
+      HODOR_BACKCHANNEL_LOGOUT_POLL_INTERVAL_MS: "250"
       HODOR_SMTP_URL: smtp://mail:1025
       HODOR_MAIL_FROM: Hodor <no-reply@hodor.localhost>
     depends_on:
@@ -107,6 +119,33 @@ services:
     depends_on:
       hodor:
         condition: service_healthy
+
+  # Between the worker and the suite's back-channel logout address. The
+  # suite takes logout tokens over HTTPS only, behind a certificate of its
+  # own making, which the worker's guarded client rightly refuses; this
+  # web server takes them over plain HTTP and passes them on without
+  # checking that certificate.
+  suite-relay:
+    image: caddy:2.10-alpine
+    command: ["caddy", "reverse-proxy", "--from", "http://:8080", "--to", "https://localhost.emobix.co.uk:8443", "--change-host-header", "--insecure"]
+    depends_on:
+      - suite-https
+
+  # The sector identifier address of the second pairwise client: the JSON
+  # array of the suite's redirect address, whatever the path. Its host,
+  # `sector-document`, is that client's sector. `hodor-cli` fetches it once,
+  # when it makes the client, under the development exception.
+  sector-document:
+    image: caddy:2.10-alpine
+    command:
+      - caddy
+      - respond
+      - --listen
+      - ":8080"
+      - --header
+      - "Content-Type: application/json"
+      - --body
+      - '["https://localhost.emobix.co.uk:8443/test/a/hodor/callback"]'
 
   mongodb:
     image: mongo:6.0.13

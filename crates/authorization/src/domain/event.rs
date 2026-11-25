@@ -88,6 +88,36 @@ pub enum AuthorizationEvent {
         /// The application it was scoped to; nothing for the whole tenant.
         application: Option<String>,
     },
+    /// An entry of an access control list was granted.
+    AccessEntryGranted {
+        /// The entry's identifier.
+        entry: String,
+        /// The resource server.
+        namespace: String,
+        /// The permission it gives.
+        permission: String,
+        /// The resource's identifier.
+        resource: String,
+        /// `user`, `client` or `group`.
+        principal_kind: &'static str,
+        /// The principal's identifier.
+        principal: String,
+    },
+    /// An entry of an access control list was removed.
+    AccessEntryRemoved {
+        /// The entry's identifier.
+        entry: String,
+        /// The resource server.
+        namespace: String,
+        /// The permission it gave.
+        permission: String,
+        /// The resource's identifier.
+        resource: String,
+        /// `user`, `client` or `group`.
+        principal_kind: &'static str,
+        /// The principal's identifier.
+        principal: String,
+    },
     /// A failure allowed, because the binding lets the action fail open.
     FailedOpen {
         /// The resource server.
@@ -125,6 +155,8 @@ impl DomainEvent for AuthorizationEvent {
             Self::RoleRemoved { .. } => "authorization.role_removed",
             Self::PrincipalRoleAssigned { .. } => "authorization.principal_role_assigned",
             Self::PrincipalRoleRevoked { .. } => "authorization.principal_role_revoked",
+            Self::AccessEntryGranted { .. } => "authorization.access_entry_granted",
+            Self::AccessEntryRemoved { .. } => "authorization.access_entry_removed",
             Self::FailedOpen { .. } => "authorization.failed_open",
             Self::DecisionLogChanged { .. } => "authorization.decision_log_changed",
         }

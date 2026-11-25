@@ -74,8 +74,10 @@ Boundaries: internet → edge; edge → application; application → data; appli
 | Threat-General-12 | Elevation of privilege | Clickjacking on login and consent | `frame-ancestors 'none'` |
 | Threat-General-13 | Tampering | SSRF through configured URLs (JWKS, discovery, webhooks, `request_uri`, logout URIs) | One outbound client: HTTPS only, DNS resolution pinned and checked against private, loopback, link-local and metadata ranges, no redirects by default, size and time limits |
 | Threat-General-14 | Spoofing | Session fixation and hijacking | Session identifier rotated at login and step-up; cookie flags; server-side revocation; device binding signal |
-| Threat-General-15 | Tampering | Dependency compromise | `cargo deny`, `cargo audit`, lockfile, vendored sources policy, pinned continuous integration actions, signed releases, software bill of materials |
+| Threat-General-15 | Tampering | Dependency compromise | [The supply chain](supply-chain.md): `cargo deny`, `cargo audit`, lockfile, vendored sources policy, `npm audit` and licenses of npm packages, continuous integration actions pinned by commit, signed releases, software bill of materials |
 | Threat-General-16 | Elevation of privilege | Open redirect | Redirect targets are registered values or server-stored references, never request input |
+| Threat-General-17 | Spoofing | A client writes a forwarded header to escape the limits on its address, or to put another address in the audit log | Forwarded headers read only from connections of proxies the operator names, one header only, read from the nearest end, the first address that is not a trusted proxy taken; anything unreadable falls back to the connection's address ([the client address](../api/api-spec.md#the-client-address)) |
+| Threat-General-18 | Spoofing | A link to sign in, asked for with someone else's address, opened by its owner and signing in the browser of whoever asked; a code or a link guessed, or used twice | The code or the link is good only within the sign-in that asked for it, which only its browser can continue; one conditional update uses it once; attempts counted with the lockout of the address asked about; ten minutes of life; the answer to asking is the same for every address ([the authentication context](../architecture/contexts/authentication.md#signing-in-with-a-code-or-a-link-by-email)) |
 
 ## OAuth 2.x
 
@@ -159,6 +161,23 @@ SAML is the highest-risk protocol in the plan because of XML Signature. See the 
 | Threat-PolicyAgent-09 | Unauthenticated Open Policy Agent API | Token or mTLS; network policy restricts access to Hodor |
 | Threat-PolicyAgent-10 | Decision cache returns a stale allow | Cache off by default; keyed by revision; short time to live; flushed on publish |
 
+## SCIM
+
+A SCIM client writes a tenant's people and groups: the [provisioning context](../architecture/contexts/provisioning.md).
+
+| Identifier | Threat | Control |
+|---|---|---|
+| Threat-Provisioning-01 | A SCIM client of one tenant reads or writes another tenant's users or groups | The token is checked against the tenant's own issuer and keys; every read and write is inside the tenant of the URL under row-level security; another tenant's identifiers are answered as ones that do not exist, and refused as members |
+| Threat-Provisioning-02 | A revoked or stolen SCIM token keeps working | The register of access tokens is read on every request, so a revoked token is refused at once; tokens are short-lived; the scope `scim` is given only to clients a tenant registers for it |
+| Threat-Provisioning-03 | An email address set through SCIM is taken as verified, so a SCIM client can give a person an address nobody proved they control, and with it messages sent there and a way to be found at sign-in | Accepted, and the tenant's choice: SCIM is the tenant's own system of record speaking, and opening it is a resource server and a client the tenant's administrator registers. Every address set is recorded with the client as actor. An address another user of the tenant has is refused, so SCIM cannot take over an existing account by its address |
+| Threat-Provisioning-04 | A filter as denial of service: very long, deeply nested, or with many comparisons | The parser refuses more than 1000 characters before reading, and more than 10 levels or 20 comparisons while reading; filterable attributes are a fixed set; pages hold at most 200 resources |
+| Threat-Provisioning-05 | SQL injection through a filter | A filter is compiled into SQL whose every value is a bound parameter and whose every attribute is one of a fixed set of expressions; nothing of the filter's text reaches the statement |
+| Threat-Provisioning-06 | A large request as denial of service | Bodies are limited to 64 kibibytes; a group takes at most 1000 members in one request; each text attribute at most 256 characters |
+| Threat-Provisioning-07 | What SCIM keeps of a person leaks through events or the audit log | Events carry identifiers only, never a department, a name or an address |
+| Threat-Provisioning-08 | A bulk request or a `PATCH` as denial of service | A bulk request holds at most 100 operations in at most one mebibyte, refused whole past either; a `PATCH` at most 100 operations; each value filter of a path keeps the bounds of filters |
+| Threat-Provisioning-09 | A person who left keeps access after their directory deprovisioned them | Deprovisioning ends every session and revokes every grant of the person in the same transaction; refresh tokens and sessions also check, at use, that the person may still sign in |
+| Threat-Provisioning-10 | A SCIM client overwrites a change it never saw | Versions with `If-Match`: a change for a stale version is refused with `412`; a user's own optimistic lock refuses the second of two changes made at the same moment |
+
 ## Multi-tenancy
 
 | Identifier | Threat | Control |
@@ -200,6 +219,18 @@ SAML is the highest-risk protocol in the plan because of XML Signature. See the 
 | Threat-Authorization-08 | Self-escalation by an administrator | A principal cannot grant permissions it does not hold; segregation-of-duty rules on role assignment |
 | Threat-Authorization-09 | Simulation used to probe production data | Separate scope; simulation is audited; no real decision record |
 
+## Webhooks
+
+| Identifier | Threat | Control |
+|---|---|---|
+| Threat-Webhooks-01 | An endpoint registered at a private address, or a name that resolves to one later, makes the worker call inside the network | The address is checked when it is registered and again by the guarded client at every attempt, on the resolution it connects with; HTTPS only; redirects not followed ([outbound HTTP](outbound-http.md)) |
+| Threat-Webhooks-02 | A tenant receives another tenant's events | Deliveries are made in the event's tenant from that tenant's endpoints, under row-level security; the body names the tenant |
+| Threat-Webhooks-03 | A forged or replayed request is taken for one of Hodor's | Standard Webhooks signature over the identifier, the timestamp and the body, with a secret per endpoint; receivers refuse an old timestamp |
+| Threat-Webhooks-04 | The signing secret leaks from the database or from the interface | Sealed with the tenant's data key; shown once, never read back; rotated with an overlap |
+| Threat-Webhooks-05 | An event carries personal data or a secret to a third party | Only the types of a reviewed catalog are published, and events carry identifiers by the rule of every context |
+| Threat-Webhooks-06 | A slow or dead endpoint exhausts the worker or holds up other tenants | No transaction is held during a request; a time limit per attempt; at most a few deliveries in flight per endpoint; deliveries set aside after a bound |
+| Threat-Webhooks-07 | A tenant makes Hodor send a flood of requests | At most 20 endpoints; one delivery per endpoint and event; a bound on attempts and growing waits |
+
 ## Residual risks
 
 | Risk | Status |
@@ -208,3 +239,4 @@ SAML is the highest-risk protocol in the plan because of XML Signature. See the 
 | SMS one-time password interception (SIM swap) | Inherent; SMS is offered as low assurance and excluded from high `acr` |
 | Phishing of passwords and TOTP | Reduced by passkeys; not eliminated while phishable factors are enabled |
 | Compromised upstream identity provider | Limited by claim allow-lists and per-provider multi-factor authentication policy; cannot be eliminated |
+| Whoever holds the first factor of a person who never set up a second one binds a factor of their own while signing in, under a policy that requires one ([enrolling during a sign-in](../architecture/contexts/authentication.md#enrolling-a-second-factor-during-a-sign-in)) | Inherent in trust on first use; the enrollment is in the audit log, and a tenant that cannot accept it has its people enroll before turning the policy on ([Decision 0039](../decisions/0039-enrolling-during-a-sign-in.md)) |

@@ -1,6 +1,7 @@
 //! Domain model of the credential context.
 
 pub(crate) mod access_token;
+pub(crate) mod api_key;
 pub(crate) mod event;
 pub(crate) mod password;
 pub(crate) mod recovery_code;

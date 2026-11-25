@@ -1,7 +1,9 @@
 //! The guarded client.
 
 use crate::address::is_public;
-use hodor_kernel::{DomainError, ErrorKind, HttpClient, HttpMethod, HttpRequest, HttpResponse};
+use hodor_kernel::{
+    DestinationCheck, DomainError, ErrorKind, HttpClient, HttpMethod, HttpRequest, HttpResponse,
+};
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use reqwest::redirect::Policy;
 use reqwest::{Client, Url};
@@ -209,6 +211,45 @@ impl HttpClient for GuardedHttpClient {
         let url = Url::parse(&request.url).map_err(|_| url_invalid())?;
         let client = self.client_for(&url)?;
         exchange(client, url, request, &self.policy).await
+    }
+}
+
+#[async_trait::async_trait]
+impl DestinationCheck for GuardedHttpClient {
+    async fn check(&self, url: &str) -> Result<(), DomainError> {
+        let url = Url::parse(url).map_err(|_| url_invalid())?;
+        let client = self.client_for(&url)?;
+        if std::ptr::eq(client, &self.development) {
+            return Ok(());
+        }
+        let Some(name) = url.host_str() else {
+            return Err(url_invalid());
+        };
+        // An address written as numbers was checked by `client_for`.
+        if name
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .parse::<IpAddr>()
+            .is_ok()
+        {
+            return Ok(());
+        }
+        let port = url.port_or_known_default().unwrap_or(443);
+        let found: Vec<SocketAddr> = tokio::net::lookup_host((name, port))
+            .await
+            .map_err(|_| unreachable())?
+            .collect();
+        if found.is_empty() {
+            return Err(unreachable());
+        }
+        if found.iter().any(|address| !is_public(address.ip())) {
+            tracing::warn!(
+                host = name,
+                "address refused: the name does not resolve to public addresses only"
+            );
+            return Err(forbidden());
+        }
+        Ok(())
     }
 }
 

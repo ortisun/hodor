@@ -924,3 +924,124 @@ async fn the_native_engine_simulates_against_what_is_published_only() {
         world.events()
     );
 }
+
+impl World {
+    /// The answer for a subject Hodor resolved with `attributes`.
+    async fn answer_with(
+        &self,
+        request: AuthorizationRequest,
+        attributes: &[(&str, serde_json::Value)],
+    ) -> hodor_authorization::api::EngineAnswer {
+        let attributes = Attributes::new(
+            attributes
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), value.clone())),
+        )
+        .expect("attributes");
+        self.engine
+            .evaluate(
+                &self.tenant,
+                &EvaluationInput {
+                    request,
+                    subject_attributes: attributes,
+                    time_limit: Duration::from_millis(200),
+                },
+            )
+            .await
+            .expect("answer")
+    }
+}
+
+fn in_organization(mut request: AuthorizationRequest, organization: &str) -> AuthorizationRequest {
+    request.context.organization = Some(
+        hodor_authorization::api::OrganizationReference::parse(organization).expect("organization"),
+    );
+    request
+}
+
+#[tokio::test]
+async fn a_role_given_to_a_group_is_held_by_the_users_in_it() {
+    let world = world();
+    world.documents().await;
+    let finance = Subject::new(SubjectKind::Group, "finance-group").expect("group");
+    world
+        .assign(&finance, key(DOCUMENTS, "editor"), AssignmentScope::Tenant)
+        .await;
+    let ana = user("ana");
+    let reading = request(DOCUMENTS, &ana, "document", "read");
+
+    let member = world
+        .answer_with(
+            reading.clone(),
+            &[("groups", serde_json::json!(["finance-group"]))],
+        )
+        .await;
+    assert_eq!(
+        member.effect,
+        Effect::Allow,
+        "through the group, and the role it includes"
+    );
+    assert_eq!(member.matched_policies.len(), 1);
+    let outside = world
+        .answer_with(reading.clone(), &[("groups", serde_json::json!([]))])
+        .await;
+    assert_eq!(
+        outside.effect,
+        Effect::Deny,
+        "taken out of the group: nothing through it"
+    );
+    let nothing = world.answer_with(reading, &[]).await;
+    assert_eq!(nothing.effect, Effect::Deny);
+
+    // A client is not in groups, whatever its attributes say.
+    let client = Subject::new(SubjectKind::Client, "billing").expect("client");
+    let asking = request(DOCUMENTS, &client, "document", "read");
+    let answer = world
+        .answer_with(asking, &[("groups", serde_json::json!(["finance-group"]))])
+        .await;
+    assert_eq!(answer.effect, Effect::Deny);
+}
+
+#[tokio::test]
+async fn a_role_scoped_to_an_organization_counts_for_its_members_in_it() {
+    let world = world();
+    world.documents().await;
+    let ana = user("ana");
+    let acme =
+        hodor_authorization::api::OrganizationReference::parse("acme").expect("organization");
+    world
+        .assign(
+            &ana,
+            key(DOCUMENTS, "viewer"),
+            AssignmentScope::Organization(acme),
+        )
+        .await;
+    let reading = request(DOCUMENTS, &ana, "document", "read");
+    let member = [("organizations", serde_json::json!(["acme"]))];
+
+    let inside = world
+        .answer_with(in_organization(reading.clone(), "acme"), &member)
+        .await;
+    assert_eq!(inside.effect, Effect::Allow);
+    let elsewhere = world
+        .answer_with(in_organization(reading.clone(), "globex"), &member)
+        .await;
+    assert_eq!(elsewhere.effect, Effect::Deny, "another organization");
+    let unnamed = world.answer_with(reading.clone(), &member).await;
+    assert_eq!(
+        unnamed.effect,
+        Effect::Deny,
+        "a request that names no organization"
+    );
+    let left = world
+        .answer_with(
+            in_organization(reading, "acme"),
+            &[("organizations", serde_json::json!([]))],
+        )
+        .await;
+    assert_eq!(
+        left.effect,
+        Effect::Deny,
+        "a person who left the organization"
+    );
+}

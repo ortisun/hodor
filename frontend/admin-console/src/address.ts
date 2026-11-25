@@ -12,7 +12,17 @@ export type Screen =
   | { name: "applications" }
   | { name: "application"; id: string }
   | { name: "client"; id: string }
-  | { name: "authorization" };
+  | { name: "authorization" }
+  | { name: "groups" }
+  | { name: "group"; id: string }
+  | { name: "organizations" }
+  | { name: "organization"; id: string }
+  | { name: "serviceAccounts" }
+  | { name: "serviceAccount"; id: string }
+  | { name: "agents" }
+  | { name: "agent"; id: string }
+  | { name: "webhooks" }
+  | { name: "webhook"; id: string };
 
 export interface Place {
   tenant: string;
@@ -70,6 +80,36 @@ function screenOf(rest: string[]): Screen | null {
   if (first === "clients" && second !== undefined && more.length === 0 && isIdentifier(second)) {
     return { name: "client", id: second.toLowerCase() };
   }
+  if (first === "groups" && second === undefined) {
+    return { name: "groups" };
+  }
+  if (first === "groups" && second !== undefined && more.length === 0 && isIdentifier(second)) {
+    return { name: "group", id: second.toLowerCase() };
+  }
+  if (first === "organizations" && second === undefined) {
+    return { name: "organizations" };
+  }
+  if (first === "organizations" && second !== undefined && more.length === 0 && isIdentifier(second)) {
+    return { name: "organization", id: second.toLowerCase() };
+  }
+  if (first === "service-accounts" && second === undefined) {
+    return { name: "serviceAccounts" };
+  }
+  if (first === "service-accounts" && second !== undefined && more.length === 0 && isIdentifier(second)) {
+    return { name: "serviceAccount", id: second.toLowerCase() };
+  }
+  if (first === "agents" && second === undefined) {
+    return { name: "agents" };
+  }
+  if (first === "agents" && second !== undefined && more.length === 0 && isIdentifier(second)) {
+    return { name: "agent", id: second.toLowerCase() };
+  }
+  if (first === "webhooks" && second === undefined) {
+    return { name: "webhooks" };
+  }
+  if (first === "webhooks" && second !== undefined && more.length === 0 && isIdentifier(second)) {
+    return { name: "webhook", id: second.toLowerCase() };
+  }
   return null;
 }
 
@@ -97,6 +137,26 @@ export function pathOf(tenant: string, screen: Screen): string {
       return `${base}/clients/${screen.id}`;
     case "authorization":
       return `${base}/authorization`;
+    case "groups":
+      return `${base}/groups`;
+    case "group":
+      return `${base}/groups/${screen.id}`;
+    case "organizations":
+      return `${base}/organizations`;
+    case "organization":
+      return `${base}/organizations/${screen.id}`;
+    case "serviceAccounts":
+      return `${base}/service-accounts`;
+    case "serviceAccount":
+      return `${base}/service-accounts/${screen.id}`;
+    case "agents":
+      return `${base}/agents`;
+    case "agent":
+      return `${base}/agents/${screen.id}`;
+    case "webhooks":
+      return `${base}/webhooks`;
+    case "webhook":
+      return `${base}/webhooks/${screen.id}`;
   }
 }
 

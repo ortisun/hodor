@@ -1,8 +1,9 @@
 //! The flow engine, driven with stand-in authenticators.
 
 use hodor_authentication::api::{
-    AuthFlow, AuthTransaction, Authenticator, AuthenticatorTraits, Condition, ExternalInput,
-    Factor, FlowEngine, FlowStep, Progress, Requirement, StepInput, StepOutcome, TransactionState,
+    AuthFlow, AuthTransaction, Authenticator, AuthenticatorTraits, BegunEnrollment, Condition,
+    Enrolled, EnrollmentKind, ExternalInput, Factor, FlowEngine, FlowStep, Progress, Requirement,
+    StepChallenge, StepInput, StepOutcome, Submitted, TransactionState,
 };
 use hodor_kernel::{DomainError, ErrorKind, Secret, TenantContext, TenantId, Timestamp, UserId};
 use hodor_session::api::{Assurance, ClientInfo};
@@ -1474,4 +1475,256 @@ async fn a_substitute_is_accepted_only_while_its_step_waits() {
         .expect_err("the sign-in waits for the password");
     assert_eq!(error.code(), "authentication.unexpected_step");
     assert_eq!(transaction, before, "a refused substitute changes nothing");
+}
+
+/// A step that sets up a second factor, as the enrollment step does:
+/// asking for its challenge begins something, which the transaction
+/// keeps, and the field `code` holding "1234" finishes it.
+struct Binder;
+
+#[async_trait::async_trait]
+impl Authenticator for Binder {
+    fn kind(&self) -> &'static str {
+        "bind"
+    }
+
+    fn traits(&self) -> AuthenticatorTraits {
+        AuthenticatorTraits {
+            identifies: false,
+            factor: Some(Factor::Possession),
+            second_factor: None,
+            method: Some("bind"),
+        }
+    }
+
+    async fn perform(
+        &self,
+        _tenant: &TenantContext,
+        transaction: &AuthTransaction,
+        input: &StepInput,
+    ) -> Result<StepOutcome, DomainError> {
+        let right = matches!(
+            input,
+            StepInput::External(external)
+                if external.field("code").is_some_and(|code| code.expose() == "1234")
+        );
+        Ok(if right && transaction.begun_enrollment().is_some() {
+            StepOutcome::Enrolled(Enrolled {
+                kind: EnrollmentKind::AuthenticatorApplication,
+                recovery_codes: vec![Secret::from("7K2M-QX9D-4HVN-R8TA".to_owned())],
+            })
+        } else {
+            StepOutcome::Rejected
+        })
+    }
+
+    async fn challenge(
+        &self,
+        _tenant: &TenantContext,
+        _transaction: &AuthTransaction,
+        _asked: &ExternalInput,
+    ) -> Result<Option<StepChallenge>, DomainError> {
+        Ok(Some(StepChallenge {
+            challenge: None,
+            enrollment: Some(BegunEnrollment::AuthenticatorApplication(
+                hodor_credential::api::TotpId::generate(),
+            )),
+            options: serde_json::json!({ "secret": "JBSWY3DPEHPK3PXP" }),
+        }))
+    }
+}
+
+fn world_with_enrollment(demanded: Assurance) -> World {
+    let mut world = world();
+    world.engine = world.engine.with(Arc::new(Binder));
+    world.flow = AuthFlow::built_in().with_step("bind", "bind", WHEN_NOT_REACHED);
+    world.demanded = demanded;
+    world
+}
+
+fn asked(step: &str) -> ExternalInput {
+    ExternalInput {
+        step: step.to_owned(),
+        fields: Vec::new(),
+    }
+}
+
+#[tokio::test]
+async fn an_enrollment_keeps_what_it_began_through_a_rejection_and_hands_back_what_it_put_in_use() {
+    let world = world_with_enrollment(Assurance::MultiFactor);
+    world.engine.validate(&world.flow).expect("valid");
+    let (mut transaction, progress) = through_the_password(&world).await;
+    assert_eq!(
+        progress,
+        Progress::Next {
+            step: "bind".to_owned()
+        }
+    );
+    assert_eq!(transaction.begun_enrollment(), None);
+
+    world
+        .engine
+        .challenge(
+            &world.tenant,
+            &world.flow,
+            &mut transaction,
+            &asked("bind"),
+            START,
+        )
+        .await
+        .expect("begin");
+    let begun = transaction.begun_enrollment().expect("kept");
+    assert_eq!(begun.kind(), EnrollmentKind::AuthenticatorApplication);
+    assert_eq!(transaction.challenge(), None, "nothing else is kept");
+
+    // A mistyped code does not spend what was begun.
+    let progress = world
+        .submit(&mut transaction, code("bind", "9999"), START)
+        .await
+        .expect("mistyped");
+    assert_eq!(progress, Progress::Rejected { attempts_left: 4 });
+    assert_eq!(transaction.begun_enrollment(), Some(begun));
+
+    let Submitted { progress, enrolled } = world
+        .engine
+        .submit_step(
+            &world.tenant,
+            &world.flow,
+            &mut transaction,
+            &code("bind", "1234"),
+            world.demanded,
+            START,
+        )
+        .await
+        .expect("finish");
+    assert_eq!(progress, Progress::ReadyToComplete);
+    let enrolled = enrolled.expect("what was put in use");
+    assert_eq!(enrolled.kind, EnrollmentKind::AuthenticatorApplication);
+    assert_eq!(enrolled.recovery_codes.len(), 1);
+    assert_eq!(
+        transaction.begun_enrollment(),
+        None,
+        "emptied once satisfied"
+    );
+    assert_eq!(
+        transaction.snapshot().satisfied_methods,
+        ["password", "bind"]
+    );
+    assert_eq!(
+        world.engine.assurance(&transaction),
+        Some(Assurance::MultiFactor)
+    );
+}
+
+#[tokio::test]
+async fn an_enrollment_step_is_never_begun_before_the_first_factor() {
+    let world = world_with_enrollment(Assurance::MultiFactor);
+    let mut transaction = world.begin();
+    for typed in [None, Some("ana")] {
+        if let Some(typed) = typed {
+            world
+                .submit(&mut transaction, identifier(typed), START)
+                .await
+                .expect("identifier");
+        }
+        let before = transaction.clone();
+        let error = world
+            .engine
+            .challenge(
+                &world.tenant,
+                &world.flow,
+                &mut transaction,
+                &asked("bind"),
+                START,
+            )
+            .await
+            .expect_err("not yet");
+        assert_eq!(error.code(), "authentication.unexpected_step");
+        let error = world
+            .submit(&mut transaction, code("bind", "1234"), START)
+            .await
+            .expect_err("not yet");
+        assert_eq!(error.code(), "authentication.unexpected_step");
+        assert_eq!(transaction, before, "nothing was begun or recorded");
+    }
+}
+
+#[tokio::test]
+async fn an_enrollment_step_is_passed_over_once_the_first_factor_is_enough() {
+    let world = world_with_enrollment(Assurance::SingleFactor);
+    let (transaction, progress) = through_the_password(&world).await;
+    assert_eq!(progress, Progress::ReadyToComplete);
+    assert_eq!(transaction.snapshot().satisfied_methods, ["password"]);
+}
+
+#[tokio::test]
+async fn an_enrollment_step_cannot_be_completed_without_finishing_it() {
+    let world = world_with_enrollment(Assurance::MultiFactor);
+    let (mut transaction, _) = through_the_password(&world).await;
+    // Nothing begun: even the right code is a rejection.
+    assert_eq!(
+        world
+            .submit(&mut transaction, code("bind", "1234"), START)
+            .await
+            .expect("nothing begun"),
+        Progress::Rejected { attempts_left: 4 }
+    );
+    // No other step is taken in its place.
+    let error = world
+        .submit(&mut transaction, password("right"), START)
+        .await
+        .expect_err("the password again");
+    assert_eq!(error.code(), "authentication.unexpected_step");
+    assert!(!transaction.all_steps_satisfied(&world.flow));
+    assert!(
+        transaction.clone().complete(&world.flow, START).is_err(),
+        "a sign-in waiting at the enrollment cannot be completed"
+    );
+}
+
+/// An alternative that answers as an enrollment, which only a step may.
+struct EnrollingAlternative;
+
+#[async_trait::async_trait]
+impl Authenticator for EnrollingAlternative {
+    fn kind(&self) -> &'static str {
+        "enrolling-outside"
+    }
+
+    fn traits(&self) -> AuthenticatorTraits {
+        AuthenticatorTraits {
+            identifies: true,
+            factor: Some(Factor::Knowledge),
+            second_factor: None,
+            method: Some("enrolling-outside"),
+        }
+    }
+
+    async fn perform(
+        &self,
+        _tenant: &TenantContext,
+        _transaction: &AuthTransaction,
+        _input: &StepInput,
+    ) -> Result<StepOutcome, DomainError> {
+        Ok(StepOutcome::Enrolled(Enrolled {
+            kind: EnrollmentKind::SecurityKey,
+            recovery_codes: Vec::new(),
+        }))
+    }
+}
+
+#[tokio::test]
+async fn an_alternative_that_answers_as_an_enrollment_misbehaves() {
+    let mut world = world();
+    world.engine = world.engine.with(Arc::new(EnrollingAlternative));
+    world.flow = AuthFlow::built_in().with_alternative("enrolling-outside", "enrolling-outside");
+    world.engine.validate(&world.flow).expect("valid");
+    let mut transaction = world.begin();
+    let before = transaction.clone();
+    let error = world
+        .submit(&mut transaction, code("enrolling-outside", "1234"), START)
+        .await
+        .expect_err("misbehaved");
+    assert_eq!(error.code(), "authentication.authenticator_misbehaved");
+    assert_eq!(transaction, before);
 }

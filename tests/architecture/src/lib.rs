@@ -68,6 +68,7 @@ const RULES: &[Rule] = &[
     context("hodor-audit", &["hodor-kernel"]),
     context("hodor-notification", &["hodor-kernel"]),
     context("hodor-authorization", &["hodor-kernel"]),
+    context("hodor-webhooks", &["hodor-kernel"]),
     // Layer 2: orchestrating contexts.
     context(
         "hodor-authentication",
@@ -127,10 +128,12 @@ const RULES: &[Rule] = &[
             "hodor-authentication",
             "hodor-federation",
             "hodor-oauth",
+            "hodor-provisioning",
             "hodor-authorization",
             "hodor-authorization-opa",
             "hodor-audit",
             "hodor-notification",
+            "hodor-webhooks",
         ],
     ),
     adapter(
@@ -151,6 +154,7 @@ const RULES: &[Rule] = &[
             "hodor-keys",
             "hodor-oauth",
             "hodor-authorization-opa",
+            "hodor-webhooks",
         ],
     ),
     adapter("hodor-adapters-kms", &["hodor-kernel", "hodor-keys"]),
@@ -176,10 +180,12 @@ const RULES: &[Rule] = &[
             "hodor-authentication",
             "hodor-federation",
             "hodor-oauth",
+            "hodor-provisioning",
             "hodor-authorization",
             "hodor-authorization-opa",
             "hodor-audit",
             "hodor-keys",
+            "hodor-webhooks",
         ],
     ),
     // Layer 5: composition roots.

@@ -18,6 +18,14 @@ All paths are relative to the tenant: `https://{host}/t/{slug}`. Requests and re
 | `POST /interaction/sign-in/steps/recovery_code` | Submit one of the person's recovery codes, while the sign-in waits for the `webauthn` or the `totp` step |
 | `POST /interaction/sign-in/steps/passkey/options` | Ask for the challenge of signing in with a passkey |
 | `POST /interaction/sign-in/steps/passkey` | Submit what the passkey answered, in place of the identifier and the password |
+| `GET /interaction/sign-in/alternatives` | The ways to sign in, other than the identifier and the password, that the tenant offers |
+| `POST /interaction/sign-in/steps/email_code/send` | Ask for a code by email, in place of the identifier and the password |
+| `POST /interaction/sign-in/steps/email_code` | Submit the code |
+| `POST /interaction/sign-in/steps/email_link/send` | Ask for a link by email, in place of the identifier and the password |
+| `POST /interaction/sign-in/steps/email_link` | Submit the token of the link |
+| `GET /interaction/sign-in/steps/enrollment/kinds` | What a person may set up at the enrollment step in this installation |
+| `POST /interaction/sign-in/steps/enrollment/options` | Begin setting up a second factor, at the enrollment step |
+| `POST /interaction/sign-in/steps/enrollment` | Finish setting it up: the code of the application, or what the authenticator answered |
 | `DELETE /interaction/sign-in` | Abandon the sign-in |
 | `GET /interaction/session` | Say who is signed in |
 
@@ -42,6 +50,7 @@ Every response about a sign-in has the same shape:
 | `attempts_left` | When `rejected` | How many more rejections this sign-in tolerates |
 | `csrf_token` | When `pending` or `rejected` | The value to send back in the `X-CSRF-Token` header |
 | `continue` | When `completed`, and the browser holds a pending [authorization request](../architecture/contexts/oauth.md#signing-in-and-coming-back) of this tenant | The address of Hodor's own to go to next, `/t/{slug}/oauth2/authorize/resume`, instead of the account page |
+| `recovery_codes` | When the answer satisfied the [enrollment step](#enrolling-a-second-factor-during-a-sign-in) and a new set of recovery codes was made with the factor | The codes, once: `["7K2M-QX9D-4HVN-R8TA", …]`. The pages show them before going on |
 
 | Status | HTTP status | What the pages do |
 |---|---|---|
@@ -66,6 +75,9 @@ While the sign-in waits for `webauthn` or for `totp`, a recovery code can be sub
 | `webauthn` | `{ "credential_id": "…", "client_data": "…", "authenticator_data": "…", "signature": "…", "user_handle": "…" }`, each the bytes the authenticator gave, in base64url without padding. `user_handle` may be left out or `null` |
 | `recovery_code` | `{ "code": "7K2M-QX9D-4HVN-R8TA" }` |
 | `passkey` | The same as `webauthn`, and `user_handle` is needed: an answer without it is a rejection |
+| `email_code` | `{ "code": "123456" }` |
+| `email_link` | `{ "token": "…" }`, the 64 hexadecimal characters after `#token=` in the link |
+| `enrollment` | `{ "code": "123456" }` for an authenticator application; for a security key or a passkey, what `navigator.credentials.create` answered, as when [registering a WebAuthn credential](#registering-a-webauthn-credential): `{ "client_data": "…", "attestation_object": "…", "transports": ["usb"], "discoverable": true, "name": "Blue key" }` |
 
 Submitting a step other than the one the sign-in is waiting for, or than one of its substitutes, is an error (`422`, `authentication.unexpected_step`), and changes nothing.
 
@@ -120,6 +132,95 @@ The pages pass them to `navigator.credentials.get`, either when the person press
 
 A wrong answer, an answer without a user handle or without user verification, a passkey of another tenant or of a user who may not sign in is a rejection: `200` with `"status": "rejected"`, and the sign-in goes on waiting for the identifier.
 
+### Signing in with a code or a link by email
+
+A tenant may let people sign in with [a code or a link sent to their address](../architecture/contexts/authentication.md#signing-in-with-a-code-or-a-link-by-email), each turned on by [its policy](../architecture/contexts/tenant.md#email-sign-in-policy). Like a passkey, they take the place of the identifier and the password, only while the sign-in is waiting for the `identifier` step.
+
+`GET /interaction/sign-in/alternatives` needs no sign-in and answers with the alternatives the tenant offers, in the order of the flow:
+
+```json
+{ "alternatives": ["passkey", "email_code", "email_link"] }
+```
+
+`email_code` and `email_link` are in the list only when the tenant turned them on; `passkey` always is; `external` is when the installation has identity providers, and [the list of providers](#signing-in-through-an-identity-provider) says which.
+
+**Asking.** `POST /interaction/sign-in/steps/email_code/send`, or `/email_link/send`, with the sign-in cookie, the CSRF token and the address:
+
+```json
+{ "email": "ana@example.com", "locale": "pt-BR" }
+```
+
+`locale` is optional: the language of the message when the person has none of their own. The answer is `202` with `{ "status": "accepted" }`, the same whether the address has an account, has one that may not sign in, or is not an address at all. Asking again replaces what was sent before.
+
+**A code.** The page asks for the code and sends it to `POST /interaction/sign-in/steps/email_code`. The answer has [the shape of every sign-in response](#what-a-sign-in-response-looks-like): `completed`, or `pending` with the next step when the person has a second factor, or `rejected`, which leaves the code good for another try.
+
+**A link.** The link opens the page `/t/{slug}/account/sign-in-link#token={token}`. The page sends the token to `POST /interaction/sign-in/steps/email_link`, with the sign-in cookie and the CSRF token of the browser it opened in, which it reads first with `GET /interaction/sign-in`. Only the browser that asked has the sign-in the link belongs to: in any other, `GET /interaction/sign-in` answers `404` and nothing is sent, or the token is rejected by the other sign-in.
+
+| Situation | Status | Code |
+|---|---|---|
+| The tenant has not turned the method on | `403` | `authentication.method_not_offered` |
+| The sign-in has gone past the `identifier` step | `422` | `authentication.unexpected_step` |
+| Too much was asked about this address or from this address, or attempts on it are being limited | `429`, with `Retry-After` | `authentication.too_many_attempts` |
+| The same code or link was accepted for this sign-in by another request at the same moment | `409` | `authentication.transaction_modified_concurrently` |
+| The body is not of the expected shape | `400`, `415` or `422` | — |
+
+A wrong code, a code that was used, expired or replaced, a code for an address that belongs to nobody, a token for a code or a code for a link, and a code or a link presented before anything was asked for are all a rejection: `200` with `"status": "rejected"`, and the sign-in goes on waiting for the identifier. Five rejections end the sign-in.
+
+### Enrolling a second factor during a sign-in
+
+Under a tenant that requires a second factor, a person who has none is asked, after the first factor, to [set one up](../architecture/contexts/authentication.md#enrolling-a-second-factor-during-a-sign-in): the answer names the step `enrollment`. Every request below carries the sign-in cookie and, those that change something, the CSRF token, as for every step.
+
+`GET /interaction/sign-in/steps/enrollment/kinds` needs no sign-in and answers with what can be set up here, in the order the pages offer it:
+
+```json
+{ "kinds": ["authenticator_application", "security_key", "passkey"] }
+```
+
+`authenticator_application` is in the list only where the installation can keep secrets (`HODOR_SECRET_KEYS`).
+
+**Beginning.** `POST /interaction/sign-in/steps/enrollment/options` with the kind the person chose:
+
+```json
+{ "kind": "authenticator_application" }
+```
+
+answers `200`, once, with the secret, as the [security page's enrollment](#the-authenticator-application) does:
+
+```json
+{
+  "kind": "authenticator_application",
+  "secret": "JBSWY3DPEHPK3PXP…",
+  "uri": "otpauth://totp/Acme:ana%40example.com?secret=JBSW…&issuer=Acme&algorithm=SHA1&digits=6&period=30"
+}
+```
+
+With `{ "kind": "security_key" }` or `{ "kind": "passkey" }` it answers `200` with the options for `navigator.credentials.create`, as [registering a WebAuthn credential](#registering-a-webauthn-credential) does, without a `registration_id`: the sign-in keeps it.
+
+```json
+{ "kind": "security_key", "public_key": { "rp": { "id": "id.example.com", "name": "Hodor" }, "challenge": "Zm9v…", … } }
+```
+
+Beginning again replaces what was begun: a new secret, or a new registration. A page reloaded after beginning cannot have the secret again, and begins again.
+
+**Finishing.** `POST /interaction/sign-in/steps/enrollment` with the code the application shows, `{ "code": "123456" }`, or with what the authenticator answered (see [request bodies](#request-bodies)). The answer has [the shape of every sign-in response](#what-a-sign-in-response-looks-like): `completed`, with the session cookie and, when a new set was made, `recovery_codes`; or `rejected`, with `step` still `enrollment`.
+
+```json
+{
+  "status": "completed",
+  "recovery_codes": ["7K2M-QX9D-4HVN-R8TA", "…"],
+  "continue": "/t/acme/oauth2/authorize/resume"
+}
+```
+
+| Situation | Status | Code |
+|---|---|---|
+| The sign-in is not waiting for the `enrollment` step, which it reaches only after the first factor | `422` | `authentication.unexpected_step` |
+| The person has a second factor by now | `409` | `authentication.enrollment_not_needed` |
+| The kind is not one of the three, or the installation offers no authenticator application | `422` or `404` | `request.invalid_body`, `credential.totp_unavailable` |
+| The body is not of the expected shape | `400`, `415` or `422` | — |
+
+A wrong code, an enrollment older than ten minutes or begun again by something else since, nothing begun, a body for the other kind, an answer that fails [the checks of a registration](../architecture/contexts/credential.md#registering-a-credential), and a person who may no longer sign in are all a rejection: `200` with `"status": "rejected"`. After a rejected code the same code can be typed again; after a rejected answer of a key, the page begins again. Five rejections end the sign-in. There is no request that passes over the step.
+
 ### Errors
 
 | Situation | Status | Code |
@@ -128,7 +229,9 @@ A wrong answer, an answer without a user handle or without user verification, a 
 | The sign-in has ended | `409` | `authentication.transaction_not_active` |
 | Another request advanced the sign-in at the same moment | `409` | `authentication.transaction_modified_concurrently` |
 | The wrong step was submitted | `422` | `authentication.unexpected_step` |
-| Attempts are being limited, on the password or the code | `429`, with `Retry-After` | `authentication.too_many_attempts` |
+| Attempts are being limited, on the password or a code | `429`, with `Retry-After` | `authentication.too_many_attempts` |
+| The tenant has not turned this way of signing in on | `403` | `authentication.method_not_offered` |
+| The person, at the enrollment step, has a second factor by now | `409` | `authentication.enrollment_not_needed` |
 | The server is too busy to check a password | `503`, with `Retry-After` when known | `credential.hashing_overloaded` |
 | The CSRF token is missing or wrong | `403` | `request.csrf_token_invalid` |
 | The request comes from another site | `403` | `request.cross_origin` |
@@ -571,15 +674,42 @@ These requests carry no cookie and no CSRF token: there is nothing of the person
 
 Neither completion signs the person in. The pages send them to sign in.
 
+## Accepting an invitation
+
+These requests are made by whoever holds the link of an [invitation to an organization](../architecture/contexts/authentication.md#invitations-to-an-organization). The token is the one the link carries after `#`.
+
+| Method and path | Body | Answer |
+|---|---|---|
+| `POST /interaction/invitations/describe` | `{ "token": "…" }` | `200` with what the invitation is for |
+| `POST /interaction/invitations/accept` | `{ "token": "…", "password": "…", "display_name": "Ana" }` | `204` |
+
+Describing answers:
+
+```json
+{ "organization_name": "Acme", "email": "ana@example.com", "has_account": true, "expires_at": "2026-12-01T12:00:00Z" }
+```
+
+Accepting has two forms. Without a session cookie, it creates an account for an address that has none, and `password` is required; `display_name` is optional. With the session cookie of the user who has the invited address, it carries the session's CSRF token and no password, and makes that user a member.
+
+| Situation | Status | Code |
+|---|---|---|
+| The token is unknown, accepted, withdrawn or expired | `404` | `identity.invitation_invalid` |
+| No session, and the address has an account | `409` | `authentication.invitation_needs_sign_in` |
+| A session, but its user does not have the invited address | `403` | `authentication.invitation_for_someone_else` |
+| No session, and no password given | `422` | `request.invalid_body` |
+| The password is not acceptable. The invitation stays good | `422` | the credential context's code |
+| The server is too busy to hash a password | `503` | `credential.hashing_overloaded` |
+
+Neither form signs the person in.
+
 ## Where requests come from
 
-The address recorded for a sign-in, and used to limit attempts, is the address of the connection the server sees. Behind a load balancer that is the load balancer's address, which would make every person share one attempt limit. Trusting a forwarded address from named proxies is not built yet; until it is, Hodor must be reached directly or the address limit must be understood as shared.
+The address recorded for a sign-in, and used to limit attempts, is the [client address](api-spec.md#the-client-address). It is the address of the connection, or the address a trusted proxy forwarded. Behind a load balancer that is not named as a trusted proxy, every person shares the load balancer's address and so one attempt limit.
 
 ## Not built yet
 
 | Item | Planned in |
 |---|---|
-| Trusting a forwarded client address from named proxies | Before any deployment behind a load balancer |
 | Limiting requests per address on these paths, beyond the attempt limits of the password step | Later in Phase 1 |
 | The `__Host-` cookie variant for a tenant's own host | Phase 3 |
 | The history of a person's consents in the account pages | The account console, Phase 2 |

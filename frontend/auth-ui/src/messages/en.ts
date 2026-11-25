@@ -37,6 +37,28 @@ export const en = {
   securityKeyUnavailable: "This browser cannot use security keys. Sign in from another browser.",
   signInWithPasskey: "Sign in with a passkey",
   passkeyNoAnswer: "The passkey did not answer. Try again, or type your email address or username.",
+  emailMeACode: "Email me a code",
+  emailMeALink: "Email me a link",
+  typeAddressFirst: "Type your email address first.",
+  emailCodeSent: (email: string) => `If ${email} has an account here, we sent it a code.`,
+  emailCodeLabel: "Code from the message",
+  emailCodeHint: "Six digits. The code works once, for ten minutes.",
+  emailLinkSent: (email: string) =>
+    `If ${email} has an account here, we sent it a link. Open it in this browser within ten minutes.`,
+  sendAnotherCode: "Send another code",
+  sendAnotherLink: "Send another link",
+  signInLinkTitle: "Signing you in",
+  signInLinkElsewhere:
+    "This link works only in the browser where it was asked for, within ten minutes. Open it there, or sign in here.",
+  signInLinkRefused: "That link did not work. It may have been used already, or have expired.",
+  methodNotOffered: "This way of signing in is not offered here.",
+  enrollLead:
+    "Your organization requires a second factor, and you have none yet. Set one up to finish signing in. Every later sign-in asks for it.",
+  enrollKeysLead: "Or use a security key, or a passkey kept by this device or your phone.",
+  confirmAndSignIn: "Confirm and sign in",
+  chooseAnotherWay: "Choose another way",
+  nothingToSetUp: "This browser cannot set up a second factor here. Sign in from another browser.",
+  enrollmentNotNeeded: "You have a second factor now. Sign in again to use it.",
 
   registerTitle: "Create an account",
   registerLead: "Give your email address. A message will bring you a link to finish.",
@@ -57,6 +79,15 @@ export const en = {
   createAccount: "Create the account",
   linkInvalidTitle: "This link cannot be used",
   linkInvalid: "The link was already used or has expired.",
+  acceptInvitationTitle: (organization: string) => `Join ${organization}`,
+  invitationFor: (email: string) => `This invitation was sent to ${email}.`,
+  invitationNewAccount: "Choose a password to create your account and join.",
+  createAccountAndJoin: "Create the account and join",
+  join: "Join",
+  invitationSignIn: (email: string) => `Sign in as ${email}, then open the link in the message again.`,
+  invitationOtherAccount: (email: string) =>
+    `You are signed in with another account. Sign out, sign in as ${email}, then open the link in the message again.`,
+  invitationHasAccount: "Sign in to join: this address already has an account.",
   askForNewRegistrationLink: "Ask for a new link to register",
   askForNewRecoveryLink: "Ask for a new link",
 
@@ -85,6 +116,7 @@ export const en = {
   consentScopeEmail: "See your email address",
   consentScopeAddress: "See your postal address",
   consentScopePhone: "See your phone number",
+  consentScopeGroups: "See the groups you are in",
   consentScopeOfResource: (description: string, resourceServer: string) =>
     resourceServer === "" ? description : `${description} (${resourceServer})`,
   consentAllow: "Allow",

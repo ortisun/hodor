@@ -108,6 +108,23 @@ define_id!(
     UserId
 );
 define_id!(
+    /// Identifies a group of users of a tenant. It lives here, not in the
+    /// identity context, because other contexts give things to groups.
+    GroupId
+);
+define_id!(
+    /// Identifies an organization of a tenant. It lives here because tokens
+    /// carry it and roles are scoped to it.
+    OrganizationId
+);
+define_id!(
+    /// Identifies a client of OAuth that causes an event by itself, with
+    /// no user behind it, as a SCIM client does. Written as the same UUID
+    /// as the client's `client_id`. It lives here because events of any
+    /// context may name such an actor.
+    ClientActorId
+);
+define_id!(
     /// Identifies one domain event; handlers deduplicate on it.
     EventId
 );

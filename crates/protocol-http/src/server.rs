@@ -1,5 +1,6 @@
 //! Assembly of the public router and the serving loop.
 
+use crate::client_address::TrustedProxies;
 use crate::problem::Problem;
 use crate::request::request_context;
 use crate::tenant::{TenantResolver, resolve_tenant};
@@ -30,6 +31,10 @@ pub struct Limits {
     /// posts, its status or its decisions, which may name many bundles or
     /// hold many decisions.
     pub max_policy_agent_report_bytes: usize,
+    /// Largest accepted body of a SCIM bulk request. Twice the bound the
+    /// SCIM server answers itself, with its own error, so that a body a
+    /// little past that bound is refused as SCIM says.
+    pub max_scim_bulk_bytes: usize,
     /// Longest time a request may take before it is answered with 408.
     pub request_timeout: Duration,
 }
@@ -40,6 +45,7 @@ impl Default for Limits {
             max_body_bytes: 64 * 1024,
             max_saml_response_bytes: 2 * hodor_federation::api::MAX_SAML_POSTED_BYTES,
             max_policy_agent_report_bytes: 1024 * 1024,
+            max_scim_bulk_bytes: 2 * hodor_provisioning::api::MAX_BULK_BYTES,
             request_timeout: Duration::from_secs(30),
         }
     }
@@ -65,6 +71,24 @@ pub fn public_router(
     site_routes: Router,
     limits: Limits,
 ) -> Router {
+    public_router_behind(
+        resolver,
+        tenant_routes,
+        site_routes,
+        limits,
+        TrustedProxies::none(),
+    )
+}
+
+/// Builds the router for the public listener, as [`public_router`] does,
+/// reading the client address that `proxies` forward.
+pub fn public_router_behind(
+    resolver: Arc<dyn TenantResolver>,
+    tenant_routes: Router,
+    site_routes: Router,
+    limits: Limits,
+    proxies: TrustedProxies,
+) -> Router {
     let tenant_routes = tenant_routes
         .fallback(route_not_found)
         .layer(middleware::from_fn_with_state(resolver, resolve_tenant));
@@ -77,7 +101,8 @@ pub fn public_router(
             limits
                 .max_body_bytes
                 .max(limits.max_saml_response_bytes)
-                .max(limits.max_policy_agent_report_bytes),
+                .max(limits.max_policy_agent_report_bytes)
+                .max(limits.max_scim_bulk_bytes),
         ))
         .layer(middleware::from_fn_with_state(limits, limit_bodies))
         .layer(TimeoutLayer::with_status_code(
@@ -86,7 +111,10 @@ pub fn public_router(
         ))
         // Outermost, so that every response, including those produced by
         // the layers above, carries the request identifier and security headers.
-        .layer(middleware::from_fn(request_context))
+        .layer(middleware::from_fn_with_state(
+            Arc::new(proxies),
+            request_context,
+        ))
 }
 
 /// Whether a request posts a SAML response to an assertion consumer
@@ -106,6 +134,13 @@ fn posts_a_policy_agent_report(request: &Request) -> bool {
     request.method() == Method::POST && (path == "/opa/status" || path == "/opa/logs")
 }
 
+/// Whether a request posts a SCIM bulk request:
+/// `POST /t/{slug}/scim/v2/Bulk`.
+fn posts_a_scim_bulk_request(request: &Request) -> bool {
+    let path = request.uri().path();
+    request.method() == Method::POST && path.starts_with("/t/") && path.ends_with("/scim/v2/Bulk")
+}
+
 /// Refuses a body larger than the limit of its request, whether it says
 /// its length or not: `max_body_bytes` for every request, the larger
 /// `max_saml_response_bytes` for a posted SAML response only, and
@@ -115,6 +150,8 @@ async fn limit_bodies(State(limits): State<Limits>, request: Request, next: Next
         limits.max_saml_response_bytes
     } else if posts_a_policy_agent_report(&request) {
         limits.max_policy_agent_report_bytes
+    } else if posts_a_scim_bulk_request(&request) {
+        limits.max_scim_bulk_bytes
     } else {
         limits.max_body_bytes
     };

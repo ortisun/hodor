@@ -5,6 +5,7 @@ use crate::domain::application::{Application, ApplicationId};
 use crate::domain::authorization::{
     AuthorizationCode, CodeHash, Grant, GrantId, PendingAuthorization, PendingAuthorizationId,
 };
+use crate::domain::claim_mapper::{ClaimMapper, ClaimMapperId, PersonAttributes};
 use crate::domain::client::{Client, ClientId};
 use crate::domain::consent::{Consent, ConsentAnswer, ConsentHistoryEntry};
 use crate::domain::introspection::AccessTokenRecord;
@@ -12,7 +13,9 @@ use crate::domain::refresh::{
     RefreshAsk, RefreshFamily, RefreshFamilyId, RefreshTokenHash, RefreshTokenRecord,
 };
 use crate::domain::resource_server::{Audience, ResourceServer, ResourceServerId};
-use hodor_kernel::{DomainError, TenantContext, Timestamp, UnitOfWork, UserId};
+use hodor_kernel::{
+    DomainError, GroupId, OrganizationId, TenantContext, Timestamp, UnitOfWork, UserId,
+};
 use hodor_session::api::SessionId;
 
 /// Stores applications.
@@ -255,6 +258,17 @@ pub trait GrantStore: Send + Sync {
         user: UserId,
         client: ClientId,
     ) -> Result<Vec<Grant>, DomainError>;
+
+    /// The active grants of a person, for every client, oldest first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn list_active_of(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        user: UserId,
+    ) -> Result<Vec<Grant>, DomainError>;
 }
 
 /// Stores consents and their history.
@@ -479,6 +493,21 @@ pub trait AccessTokenRecordStore: Send + Sync {
         reason: &str,
     ) -> Result<bool, DomainError>;
 
+    /// Revokes, at `at` for `reason`, every record of a token issued for
+    /// `principal` that is not revoked yet. Returns the client and the
+    /// `jti` of each record this call revoked.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn revoke_for_principal(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        principal: UserId,
+        at: Timestamp,
+        reason: &str,
+    ) -> Result<Vec<(ClientId, String)>, DomainError>;
+
     /// Removes up to `batch` records of tokens that had expired at `now`.
     /// Returns how many it removed.
     ///
@@ -515,4 +544,183 @@ pub trait PersonStanding: Send + Sync {
     ///
     /// Returns an error if storage fails.
     async fn may_sign_in(&self, tenant: &TenantContext, user: UserId) -> Result<bool, DomainError>;
+
+    /// The kind of `principal`, `service_account` or `agent`, if it is a
+    /// workload of the tenant that may act: one that is active. None for a
+    /// person, a workload that may not act, a user of another tenant and
+    /// an identifier of nobody.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn workload_that_may_act(
+        &self,
+        tenant: &TenantContext,
+        principal: UserId,
+    ) -> Result<Option<&'static str>, DomainError>;
+}
+
+/// What the OAuth context needs to know of the groups and organizations of
+/// a person, from the identity context.
+#[async_trait::async_trait]
+pub trait PersonMemberships: Send + Sync {
+    /// Whether `user` is a member of `organization`. An organization the
+    /// tenant does not have has no members.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn is_member(
+        &self,
+        tenant: &TenantContext,
+        user: UserId,
+        organization: OrganizationId,
+    ) -> Result<bool, DomainError>;
+
+    /// The effective groups of `user`: those they are in directly and those
+    /// that hold one of them, sorted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn effective_groups(
+        &self,
+        tenant: &TenantContext,
+        user: UserId,
+    ) -> Result<Vec<GroupId>, DomainError>;
+}
+
+/// Keeps a tenant's pairwise secret, sealed. A tenant has at most one, and
+/// it is never replaced.
+#[async_trait::async_trait]
+pub trait PairwiseSecretStore: Send + Sync {
+    /// The tenant's sealed pairwise secret, if it has one.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn find(
+        &self,
+        uow: &mut dyn UnitOfWork,
+    ) -> Result<Option<hodor_kernel::SealedSecret>, DomainError>;
+
+    /// Stores `sealed` as the tenant's pairwise secret unless the tenant
+    /// has one already, in which case nothing is changed. Of two calls at
+    /// the same moment, exactly one stores its secret.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn insert_unless_present(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        sealed: &hodor_kernel::SealedSecret,
+        created_at: Timestamp,
+    ) -> Result<(), DomainError>;
+}
+
+/// Stores the claim mappers of clients.
+#[async_trait::async_trait]
+pub trait ClaimMapperStore: Send + Sync {
+    /// Locks the client's row until the unit of work ends, so that the
+    /// mappers of one client are changed one change at a time. Answers
+    /// whether the tenant has the client.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn lock_client(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        client_id: ClientId,
+    ) -> Result<bool, DomainError>;
+
+    /// Stores a new mapper of a client of the tenant.
+    ///
+    /// # Errors
+    ///
+    /// Returns `oauth.client_not_found` if the tenant has no such client,
+    /// and `oauth.claim_mapper_name_taken` if the client has a mapper of
+    /// the claim, without regard to case.
+    async fn insert(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        mapper: &ClaimMapper,
+    ) -> Result<(), DomainError>;
+
+    /// Stores a replaced mapper, if its stored version is the one it was
+    /// read with. The stored version becomes one more.
+    ///
+    /// # Errors
+    ///
+    /// Returns `oauth.claim_mapper_modified_concurrently` otherwise, and
+    /// `oauth.claim_mapper_name_taken` as for `insert`.
+    async fn update(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        mapper: &ClaimMapper,
+    ) -> Result<(), DomainError>;
+
+    /// Deletes a mapper. Answers whether there was one.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn delete(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        client_id: ClientId,
+        id: ClaimMapperId,
+    ) -> Result<bool, DomainError>;
+
+    /// The mapper of the client with this identifier, if there is one.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn get(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        client_id: ClientId,
+        id: ClaimMapperId,
+    ) -> Result<Option<ClaimMapper>, DomainError>;
+
+    /// Every mapper of the client, by claim name.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn list_for_client(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        client_id: ClientId,
+    ) -> Result<Vec<ClaimMapper>, DomainError>;
+}
+
+/// What the claim mappers read of a person and an organization, from the
+/// identity context.
+#[async_trait::async_trait]
+pub trait PersonClaimSources: Send + Sync {
+    /// The attributes of `user`; none of them for a user the tenant does
+    /// not have.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn attributes(
+        &self,
+        tenant: &TenantContext,
+        user: UserId,
+    ) -> Result<PersonAttributes, DomainError>;
+
+    /// The name of `organization`, if the tenant has it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn organization_name(
+        &self,
+        tenant: &TenantContext,
+        organization: OrganizationId,
+    ) -> Result<Option<String>, DomainError>;
 }

@@ -2,7 +2,7 @@
 
 ## Overview
 
-The shared kernel crate (package `hodor-kernel`). Its manifest describes it as "identifiers, tenant context, events and errors used by every bounded context" (`Cargo.toml` `description`). It also defines the port traits that the adapter crates implement: `Clock`, `RandomSource`, `Digest`, `SecretBox`, `SignatureVerifier`, `HttpClient`, `UnitOfWork`, `UnitOfWorkFactory` and `EventHandler`.
+The shared kernel crate (package `hodor-kernel`). Its manifest describes it as "identifiers, tenant context, events and errors used by every bounded context" (`Cargo.toml` `description`). It also defines the port traits that the adapter crates implement: `Clock`, `RandomSource`, `Digest`, `SecretBox`, `SignatureVerifier`, `HttpClient`, `DestinationCheck`, `UnitOfWork`, `UnitOfWorkFactory` and `EventHandler`.
 
 ## Subdirectories & Boundaries
 

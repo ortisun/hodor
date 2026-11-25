@@ -11,8 +11,11 @@ modules are private; other crates use the `api` module.
 ## Interface
 
 - `lib.rs: pub mod api` re-exports:
-  - Port: `UserRepository`.
-  - Use cases: `CreateUser`, `IdentityService`.
+  - Ports: `UserRepository`, `GroupRepository`, `GroupPolicy`, `OrganizationRepository`, `WorkloadRepository`, `WorkloadAccess`.
+  - Use cases: `CreateUser`, `IdentityService` (with `with_groups` and `with_organizations`, which take a user marked Deleted out of every group and organization), `GroupService`, `OrganizationService`, `WorkloadService` with `CreateWorkload` and `ChangeWorkload`, and the revocation reasons `WORKLOAD_DISABLED` and `WORKLOAD_DELETED`.
+  - Service accounts and agents: `Workload`, `WorkloadStatus`, `WorkloadEvent`, `MAX_WORKLOAD_OWNERS` and the pure rules `checked_owners` and `workload_profile`.
+  - Organizations: `Organization`, `OrganizationName`, `OrganizationSnapshot`, `OrganizationEvent`, `Unit`, `UnitId`, `UnitKind`, `UnitChange`, `Membership`, `Tree`, `MAX_UNIT_LEVELS` and the pure rule `check_placement`.
+  - Groups: `Group`, `GroupEvent`, `GroupMember`, `GroupName`, `GroupSnapshot`, `MAX_NAME_CHARACTERS`, `MAX_DESCRIPTION_CHARACTERS`, and the pure rules `check_nesting`, `depth`, `effective_groups`.
   - Events: `UserEvent`.
   - Identifiers: `IdentifierId`, `IdentifierKind`, `LoginIdentifier`, `NormalizedIdentifier`.
   - Users: `Profile`, `User`, `UserKind`, `UserSnapshot`, `UserStatus`.
@@ -20,9 +23,12 @@ modules are private; other crates use the `api` module.
   - `InMemoryUsers`: an in-memory `UserRepository`.
   - `Ports<'a> { units_of_work, users }`: the ports under test.
   - `run_contract(ports)`: the contract suite every `UserRepository` must pass. The module documentation says the in-memory fake and the PostgreSQL adapter both run it.
+  - `InMemoryGroups`, `FixedGroupPolicy(depth)`, `GroupPorts<'a> { units_of_work, users, groups }` and `run_group_contract(ports)`: the same for groups.
+  - `InMemoryOrganizations`, `OrganizationPorts<'a> { units_of_work, users, organizations }` and `run_organization_contract(ports)`: the same for organizations.
+  - `InMemoryWorkloads::over(users)`, `WorkloadPorts<'a> { units_of_work, users, workloads }` and `run_workload_contract(ports)`: the same for the owners of service accounts and agents; the in-memory store lists from the `InMemoryUsers` it is given. `RecordingWorkloadAccess` remembers each `(tenant, workload, reason)` it was asked to end, for use case tests.
 - Subdirectories:
-  - [application](./application/EGM.md): `IdentityService` use cases and the `UserRepository` port.
-  - [domain](./domain/EGM.md): the `User` aggregate, login identifiers and `UserEvent`.
+  - [application](./application/EGM.md): `IdentityService`, `GroupService`, `OrganizationService` and `WorkloadService` use cases and their ports.
+  - [domain](./domain/EGM.md): the `User` aggregate, login identifiers, groups, organizations, workloads and their events.
 
 ## Invariants
 

@@ -36,6 +36,13 @@ use cases that drive this model are described in
   - `from_snapshot`, `snapshot`, `id`, `user_id`.
   - `is_good_at(now)`, `revoke(now) -> Option<AccessTokenEvent>`, `issued_event()`.
 
+### `api_key.rs`
+
+- `ApiKeySecret`: `hodor_ak_` and 64 lowercase hexadecimal characters from 32 random bytes; `expose()`; redacted in `Debug`. `looks_like_api_key(value)` tells the shape; `ApiKeyHash::of_presented` hashes only a value of that shape.
+- `ApiKeySettings { name, scopes, application: Option<KeyApplicationId> }` with `checked()`: a name of 1 to 100 characters without control characters (`credential.api_key_name_invalid`), 1 to 50 printable scopes, repeats dropped (`credential.api_key_scopes_invalid`). Which names are scopes is the authorization context's rule (`check_key_scopes`).
+- `ApiKey`: `create(holder, settings, lifetime, now, random, digest) -> (ApiKey, ApiKeySecret, ApiKeyEvent)` with a lifetime of 1 to 365 days (`credential.api_key_lifetime_invalid`); `hint` keeps the last four characters; `status_at(now)` is `Active`, `Expired` or `Revoked`; `rotate(lifetime, overlap, now, random, digest)` refuses a replaced, revoked or expired key (`credential.api_key_not_rotatable`) and an overlap past 30 days (`credential.api_key_overlap_invalid`), shortens the old key to `min(expiry, now + overlap)` and names the new one in `replaced_by`; `revoke(reason, now)` is final.
+- `ApiKeyEvent`: `Created` (`holder_id`, `api_key_id`, `scopes`, `expires_at`), `Rotated` (`holder_id`, `api_key_id`, `replaced_by`, `old_expires_at`, `expires_at`), `Revoked` (`holder_id`, `api_key_id`, `reason`), as `credential.api_key_created`, `credential.api_key_rotated` and `credential.api_key_revoked`. None carries the key, its hash or its hint.
+
 ### `totp.rs`
 
 - `TotpId`: defined with `hodor_kernel::define_id!`.
@@ -43,7 +50,7 @@ use cases that drive this model are described in
 - Crate-private functions: `step_at(moment)`, `code_from_mac(&[u8; 20]) -> u32` (the dynamic truncation of RFC 4226), `parse_code(typed) -> Option<u32>` (six digits once spaces are taken out), `candidate_steps(moment)` (the step before, the current one and the one after).
 - `TotpStatus`: `Pending` or `Active`; `as_str`, `parse`.
 - `TotpSnapshot { id, user_id, status, sealed_secret, created_at, confirmed_at, last_used_step }` and `Totp`: `begin(user_id, sealed, now)`, `from_snapshot`, `snapshot`, `id`, `can_be_confirmed_at(now)`, `confirm(step, now) -> TotpEvent`, `accepts_step(step)` (later than the last step used).
-- `TotpEnrollment::new(secret, issuer, account)`: `secret()` in Base32 without padding and `address()` (`otpauth://totp/…?secret=…&issuer=…&algorithm=SHA1&digits=6&period=30`). Its `Debug` prints nothing of either.
+- `TotpEnrollment::new(id, secret, issuer, account)`: `id()`, the enrollment it is the secret of, `secret()` in Base32 without padding and `address()` (`otpauth://totp/…?secret=…&issuer=…&algorithm=SHA1&digits=6&period=30`). Its `Debug` prints nothing of either.
 - `TotpEvent`: `Enrolled { user_id }` (`credential.totp_enrolled`) and `Removed { user_id }` (`credential.totp_removed`).
 ### `webauthn/` (Decision 0024)
 

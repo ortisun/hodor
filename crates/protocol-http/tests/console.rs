@@ -79,8 +79,18 @@ fn applications(
 ) -> (
     hodor_oauth::api::ApplicationService,
     hodor_oauth::api::ConsentService,
+    hodor_oauth::api::ClaimMapperService,
 ) {
     let stores = hodor_oauth::testing::InMemoryStores::default();
+    let claim_mappers =
+        hodor_oauth::api::ClaimMapperService::new(hodor_oauth::api::ClaimMapperPorts {
+            units_of_work: Arc::new(units_of_work.clone()),
+            clients: Arc::new(stores.clients.clone()),
+            mappers: Arc::new(hodor_oauth::testing::InMemoryClaimMappers::new(
+                &stores.clients,
+            )),
+            clock: clock.clone(),
+        });
     let consents = hodor_oauth::testing::consent_service(
         Arc::new(units_of_work.clone()),
         &stores,
@@ -96,7 +106,7 @@ fn applications(
             random: Arc::new(hodor_oauth::testing::DistinctRandom),
             clock,
         });
-    (applications, consents)
+    (applications, consents, claim_mappers)
 }
 
 /// The use cases of people's factors on in-memory stores, with
@@ -158,6 +168,7 @@ fn authorization_services(
     hodor_authorization::api::RoleService,
     hodor_authorization::api::EvaluationService,
     hodor_authorization_opa::api::PolicyService,
+    hodor_authorization::api::AccessListService,
 ) {
     use hodor_authorization::testing::{
         InMemoryEngineBindings, InMemoryNativeRoles, StaticSubjectAttributes,
@@ -174,7 +185,8 @@ fn authorization_services(
         Arc::new(assignments.clone()),
         Arc::new(roles.clone()),
         clock.clone(),
-    );
+    )
+    .with_access_lists(Arc::new(roles.clone()));
     let mut registry = hodor_authorization::api::EngineRegistry::new();
     registry.register(Arc::new(engine)).expect("register");
     let evaluation = hodor_authorization::api::EvaluationService::new(
@@ -205,9 +217,15 @@ fn authorization_services(
         clock.clone(),
     );
     (
-        hodor_authorization::api::RoleService::new(units(), Arc::new(roles), clock),
+        hodor_authorization::api::RoleService::new(units(), Arc::new(roles.clone()), clock.clone()),
         evaluation,
         policies,
+        hodor_authorization::api::AccessListService::new(
+            units(),
+            Arc::new(roles.clone()),
+            Arc::new(roles),
+            clock,
+        ),
     )
 }
 
@@ -217,7 +235,8 @@ fn world() -> World {
     let digest = Arc::new(FakeDigest);
     let units = || Arc::new(units_of_work.clone());
 
-    let identity = IdentityService::new(units(), Arc::new(InMemoryUsers::default()), clock.clone());
+    let users = Arc::new(InMemoryUsers::default());
+    let identity = IdentityService::new(units(), users.clone(), clock.clone());
     let tokens = AccessTokenService::new(
         units(),
         Arc::new(InMemoryAccessTokens::default()),
@@ -248,6 +267,19 @@ fn world() -> World {
     let globex = TenantContext::assume(TenantId::generate());
     let oauth = applications(&units_of_work, clock.clone());
     let authorization_parts = authorization_services(&units_of_work, clock.clone());
+    let tenants = TenantService::new(
+        Arc::new(units_of_work.clone()),
+        Arc::new(InMemoryTenants::default()),
+        Arc::new(InMemoryTenants::default()),
+        clock.clone(),
+    );
+    let groups_and_organizations = memberships(
+        &units_of_work,
+        clock.clone(),
+        users.clone(),
+        &identity,
+        &tenants,
+    );
     let administration = AdminState {
         tokens: tokens.clone(),
         authorization: authorization.clone(),
@@ -259,6 +291,7 @@ fn world() -> World {
         keys: None,
         key_rotation: hodor_keys::api::RotationPolicy::DEFAULT,
         applications: oauth.0,
+        claim_mappers: oauth.2.clone(),
         consents: oauth.1,
         tenants: TenantService::new(
             Arc::new(units_of_work.clone()),
@@ -287,9 +320,31 @@ fn world() -> World {
             clock.clone(),
         ),
         roles: authorization_parts.0,
+        access_lists: authorization_parts.3,
         evaluation: authorization_parts.1,
         policies: Some(authorization_parts.2),
         public_url: "https://auth.example".to_owned(),
+        groups: groups_and_organizations.0,
+        organizations: groups_and_organizations.1,
+        invitations: groups_and_organizations.2,
+        workloads: hodor_identity::api::WorkloadService::new(
+            units(),
+            identity.clone(),
+            Arc::new(hodor_identity::testing::InMemoryWorkloads::over(
+                (*users).clone(),
+            )),
+            Arc::new(hodor_identity::testing::RecordingWorkloadAccess::default()),
+            clock.clone(),
+        ),
+        // Webhooks are tested in `admin.rs`; here they are not configured.
+        webhooks: None,
+        api_keys: hodor_credential::api::ApiKeyService::new(
+            units(),
+            Arc::new(hodor_credential::testing::InMemoryApiKeys::default()),
+            Arc::new(FakeDigest),
+            Arc::new(SequentialRandom::default()),
+            clock.clone(),
+        ),
     };
     let router = public_router(
         Arc::new(Tenants {
@@ -848,4 +903,55 @@ async fn each_interface_knows_people_in_its_own_way_only() {
             .await;
         assert_eq!(reply.status, StatusCode::NOT_FOUND, "{path}");
     }
+}
+
+/// Groups, organizations and invitations over the given users.
+fn memberships(
+    units_of_work: &InMemoryUnitOfWorkFactory,
+    clock: Arc<FixedClock>,
+    users: Arc<InMemoryUsers>,
+    identity: &IdentityService,
+    tenants: &TenantService,
+) -> (
+    hodor_identity::api::GroupService,
+    hodor_identity::api::OrganizationService,
+    hodor_authentication::api::InvitationService,
+) {
+    let units = || Arc::new(units_of_work.clone());
+    let groups = hodor_identity::api::GroupService::new(
+        units(),
+        Arc::new(hodor_identity::testing::InMemoryGroups::default()),
+        users.clone(),
+        Arc::new(hodor_identity::testing::FixedGroupPolicy(5)),
+        clock.clone(),
+    );
+    let organizations = hodor_identity::api::OrganizationService::new(
+        units(),
+        Arc::new(hodor_identity::testing::InMemoryOrganizations::default()),
+        Arc::new(hodor_identity::testing::InMemoryInvitations::default()),
+        users,
+        clock.clone(),
+    );
+    let invitations = hodor_authentication::api::InvitationService::new(
+        units(),
+        hodor_authentication::api::InvitationContexts {
+            organizations: organizations.clone(),
+            identity: identity.clone(),
+            credentials: hodor_credential::api::CredentialService::new(
+                units(),
+                Arc::new(hodor_credential::testing::InMemoryPasswords::default()),
+                Arc::new(hodor_credential::testing::FakeHasher::default()),
+                clock.clone(),
+            ),
+            tenants: tenants.clone(),
+            notifier: hodor_notification::api::Notifier::new(
+                Arc::new(hodor_notification::testing::InMemoryMessages::default()),
+                clock,
+            ),
+        },
+        Arc::new(FakeDigest),
+        Arc::new(SequentialRandom::default()),
+        "https://auth.example",
+    );
+    (groups, organizations, invitations)
 }

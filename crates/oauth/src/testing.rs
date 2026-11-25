@@ -15,7 +15,10 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use time::Duration;
 
 mod authorization;
+mod backchannel;
+mod claim_mapper;
 mod consent;
+mod pairwise;
 mod refresh;
 mod register;
 mod token;
@@ -23,9 +26,20 @@ pub use authorization::{
     AuthorizationStorePorts, InMemoryAuthorizationCodes, InMemoryAuthorizationRequests,
     InMemoryGrants, run_authorization_contract,
 };
+pub use backchannel::{
+    ClientAnswer, FakeDestinations, FixedIssuer, InMemoryLogoutDeliveries, InMemorySessionClients,
+    LogoutDeliveryStorePorts, RecordingClients, run_logout_delivery_contract,
+};
+pub use claim_mapper::{
+    ClaimMapperStorePorts, ClaimSourcesOf, InMemoryClaimMappers, run_claim_mapper_contract,
+};
 pub use consent::{ConsentStorePorts, InMemoryConsents, consent_service, run_consent_contract};
+pub use pairwise::{
+    FakeHmac, InMemoryPairwiseSecrets, PairwiseSecretStorePorts, SectorDocuments,
+    pairwise_subjects, run_pairwise_secret_contract,
+};
 pub use refresh::{
-    InMemoryRefreshTokens, RefreshStorePorts, StandingOf, run_refresh_token_contract,
+    InMemoryRefreshTokens, MembershipsOf, RefreshStorePorts, StandingOf, run_refresh_token_contract,
 };
 pub use register::{
     AccessTokenRecordStorePorts, InMemoryAccessTokenRecords, run_access_token_record_contract,
@@ -396,6 +410,8 @@ fn client(application_id: ApplicationId, at: Timestamp) -> Client {
         ],
     );
     settings.post_logout_redirect_uris = vec!["https://payroll.example.com/signed-out".to_owned()];
+    settings.backchannel_logout_uri = Some("https://payroll.example.com/backchannel".to_owned());
+    settings.backchannel_logout_session_required = true;
     settings.allowed_scopes = vec!["openid".to_owned(), "payroll:read".to_owned()];
     Client::create(
         application_id,
@@ -651,6 +667,10 @@ async fn a_client_change_replaces_its_secrets_and_keys(ports: Ports<'_>) {
     settings.authentication_method = AuthenticationMethod::PrivateKeyJwt;
     // And its ID tokens are now signed with RS256, which is kept too.
     settings.id_token_algorithm = crate::api::IdTokenAlgorithm::Rs256;
+    // And it becomes pairwise, its redirect addresses of two hosts put in
+    // one sector by its sector identifier address, both kept.
+    settings.subject_type = crate::api::SubjectType::Pairwise;
+    settings.sector_identifier_uri = Some("https://sector.example.org/uris.json".to_owned());
     keyed.change(settings, later).expect("changed");
     for kid in ["second", "first"] {
         let key = ClientKey::parse(
@@ -679,6 +699,8 @@ async fn a_client_change_replaces_its_secrets_and_keys(ports: Ports<'_>) {
         stored.snapshot().settings.id_token_algorithm,
         crate::api::IdTokenAlgorithm::Rs256
     );
+    assert_eq!(stored.subject_type(), crate::api::SubjectType::Pairwise);
+    assert_eq!(stored.sector().as_deref(), Some("sector.example.org"));
     assert_eq!(stored.snapshot().version, 2);
 }
 

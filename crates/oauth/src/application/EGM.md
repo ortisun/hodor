@@ -3,8 +3,8 @@
 ## Overview
 
 The use cases of applications, clients and resource servers, those of the
-authorization endpoint and of the token endpoint, and the storage ports
-they need. Every use case runs in a unit of work bound to one
+authorization endpoint and of the token endpoint, those of back-channel
+logout, and the storage ports they need. Every use case runs in a unit of work bound to one
 tenant and records its events in it.
 
 ## Interface
@@ -17,10 +17,12 @@ tenant and records its events in it.
 | `ClientStore` | `insert` (`oauth.application_not_found` for an application the tenant does not have), `update` (version checked; replaces secrets and keys), `get`, `list_for_application` (oldest first) |
 | `ResourceServerStore` | `insert` (`oauth.audience_taken`, `oauth.application_has_resource_server`, `oauth.application_not_found`), `update` (version checked; replaces the scopes), `get`, `find_by_audience` (exact), `list` (oldest first) |
 | `AuthorizationRequestStore` | `insert` (`oauth.client_not_found`), `get`, `remove` (answers whether this call removed it), `answer` (records the answer of a request that waits for consent and has none; answers whether this call recorded it) |
-| `GrantStore` | `insert` (`oauth.client_not_found`), `get`, `update` (status and revocation; `oauth.grant_not_found`), `list_active_for(user, client)` |
+| `GrantStore` | `insert` (`oauth.client_not_found`), `get`, `update` (status and revocation; `oauth.grant_not_found`), `list_active_for(user, client)`, `list_active_of(user)` (every client, oldest first) |
 | `ConsentStore` | `get(user, client)` (withdrawn and expired included), `save` (replaces; `oauth.client_not_found`), `list_standing(user, now)` (newest first), `record` (a history entry; `oauth.client_not_found`) |
 | `AuthorizationCodeStore` | `insert` (`oauth.grant_not_found`), `find` (by hash), `redeem` (only if not redeemed; answers whether this call redeemed it) |
 | `ClientAssertionStore` | `remember(client, jti, expires_at)` (`oauth.client_not_found`; answers whether this call was the first) |
+| `ClaimMapperStore` | `lock_client` (locks the client's row in the unit of work; answers whether there is one), `insert` (`oauth.client_not_found`, `oauth.claim_mapper_name_taken`), `update` (version checked, `oauth.claim_mapper_modified_concurrently`), `delete` (answers whether there was one), `get(client, id)`, `list_for_client` (by claim name) |
+| `PersonClaimSources` | `attributes(tenant, user)` (none for an unknown user), `organization_name(tenant, organization)` |
 
 ### Service (`service.rs`)
 
@@ -35,6 +37,20 @@ clients, resource_servers, digest, random, clock })`:
   secret once), `change_client`, `rotate_client_secret(RotateSecret)`,
   `revoke_client_secret`, `add_client_key` (the key as JSON),
   `remove_client_key`, `set_client_status`, `client`, `clients`.
+- `with_destinations(check)` gives it the kernel's `DestinationCheck`: a
+  client's back-channel logout address is checked through it when it is
+  set by `create_client`, or new or changed by `change_client`, and the
+  check's `http.*` codes become `oauth.client_backchannel_logout_uri_*`.
+  Without it, any address is refused with
+  `oauth.client_backchannel_logout_uri_forbidden`.
+- `with_sector_documents(http)` gives it the guarded outbound client: a
+  pairwise client's sector identifier address is checked through the
+  `DestinationCheck` and fetched with `GET` (`SECTOR_DOCUMENT_TIME_LIMIT`,
+  at most `MAX_SECTOR_DOCUMENT_BYTES`, 2xx only) by `create_client`, and by
+  `change_client` when the address, the redirect addresses or the subject
+  type change; `check_sector_document` must find every redirect address in
+  it. The codes are `oauth.client_sector_identifier_uri_*`. Without both,
+  any address is refused with `oauth.client_sector_identifier_uri_forbidden`.
 - Resource servers: `create_resource_server(CreateResourceServer)`,
   `change_resource_server`, `resource_server`,
   `resource_server_by_audience` (`oauth.resource_server_not_found` also for
@@ -44,8 +60,8 @@ clients, resource_servers, digest, random, clock })`:
 ### Authorization endpoint (`authorization.rs`)
 
 `AuthorizationCodeService::new(AuthorizationCodePorts { units_of_work,
-applications, clients, resource_servers, requests, grants, codes, digest,
-random, clock })`:
+applications, clients, resource_servers, requests, grants, codes,
+memberships, digest, random, clock })`:
 
 - `check(tenant, parameters)`: loads the client the request names in this
   tenant, its application and the tenant's resource servers, and runs
@@ -55,7 +71,11 @@ random, clock })`:
 - `resume(tenant, id, secret)`: `None` unless the secret is the browser's;
   removes the request (once, even when expired) and returns it while it
   lives.
-- `issue_code(tenant, request, person, caller)`: stores a grant and a code
+- `admits(tenant, request, user)`: true when the request names no
+  organization, or `PersonMemberships::is_member` says the person is in
+  it; the endpoint answers `access_denied` otherwise, before consent.
+- `issue_code(tenant, request, person, caller)`: stores a grant, with the
+  request's organization, and a code
   in one unit of work with `oauth.authorization_code_issued`; returns the
   code once.
 - `redeem_code(tenant, code, presentation, caller)`: every refusal is
@@ -63,12 +83,33 @@ random, clock })`:
   `already_redeemed`, `expired`, `other_client`, ...). A second redemption,
   found as redeemed or lost in the conditional `redeem`, revokes the grant
   (`oauth.grant_revoked`, reason `code_reused`) and commits that.
+- `revoke_grants_of_in(uow, user, reason, caller)`: revokes every active
+  grant of a person, for every client, in the caller's unit of work, with
+  `oauth.grant_revoked` for each; answers how many. Their families and
+  access tokens stop being in force with them. SCIM deprovisioning uses it.
+
+### Claim mappers (`claim_mapper.rs`)
+
+`ClaimMapperService::new(ClaimMapperPorts { units_of_work, clients,
+mappers, clock })`: `create`, `replace` and `delete` lock the client
+(`oauth.client_not_found`), load its mappers and check them together with
+`check_together`, then store and record `oauth.claim_mapper_created`,
+`_changed` or `_deleted`; `mapper` and `mappers` read.
+`ClaimMapping::new(units_of_work, mappers, memberships, sources)` and
+`read(tenant, MappedToken { client_id, user_id, scopes, organization },
+targets)`: the client's mappers, what those that apply need read now (the
+attributes, the effective groups, the organization's name), and the claims
+of each target as `MappedClaims::of(target)`. The token endpoint reads the
+access token and the ID token of a code and the access token of a refresh;
+client credentials and token exchange pass none; UserInfo reads its own.
 
 ### Token endpoint (`token.rs`)
 
 `TokenService::new(TokenPorts { units_of_work, applications, clients,
 resource_servers, grants, assertions, refresh_tokens, access_tokens,
-standing, secrets, codes, keys, verifier, digest, random, clock })`, with `codes` the
+standing, memberships, mapping, secrets, codes, keys, verifier, digest,
+random, clock })`, with `mapping` the `ClaimMapping` of the claim mappers,
+`codes` the
 `AuthorizationCodeService`, `keys` the `KeyService`, `standing` a
 `PersonStanding`, `access_tokens` the `AccessTokenRecordStore` of the
 register and `secrets` the kernel `SecretBox`. The retry window of
@@ -96,24 +137,59 @@ refresh tokens is `DEFAULT_RETRY_WINDOW`, 10 seconds;
     or unknown token is `invalid_grant`. `RefreshFamily::decide` in its own
     unit of work; a refusal that revokes (`OtherClient`, `Reused`) revokes
     the family, and on reuse the grant (`oauth.grant_revoked`), and commits
-    that. Then the grant must be active, `PersonStanding::may_sign_in`, and
-    without offline access `session_is_active`. The family's secret is
+    that. Then the grant must be active, `PersonStanding::may_sign_in`, the
+    person a member of the grant's organization, if any
+    (`PersonMemberships::is_member`), and without offline access
+    `session_is_active`. The family's secret is
     opened and the next token derived. A move is `RefreshTokenStore::advance`
     from the family's generation, with `oauth.refresh_token_rotated`; a move
     lost to another refresh looks the token up again, at most twice. A retry
     answers the derived token only if `RefreshFamily::is_newest`, otherwise
     it is reuse. Records `oauth.access_token_issued` with the user as actor.
-  - `client_credentials`: `unauthorized_client` without that grant; scopes
+  - `client_credentials`: `unauthorized_client` without that grant; a
+    client with a principal is `invalid_client` unless
+    `PersonStanding::workload_that_may_act` answers its kind; scopes
     from `scope`, or every scope the client is allowed that a resource
     server defines; OpenID Connect's scopes are `invalid_scope`; `resource`
-    names one resource server or is `invalid_target`. Records
-    `oauth.client_access_token_issued`. No refresh token.
+    names one resource server or is `invalid_target`. The token's `sub` is
+    the principal when there is one, with `principal_kind`, and the client
+    otherwise. Records `oauth.client_access_token_issued` with the
+    principal. No refresh token.
+  - `urn:ietf:params:oauth:grant-type:token-exchange` (`exchange.rs`,
+    `TokenService::exchange`): the client must have the grant and act as an
+    agent that may act (`workload_that_may_act` answers `agent`); the actor
+    token must be the agent's own, issued to the client, without `act`, in
+    force; the subject token a person's (no `principal_kind`, `sub` not the
+    client), in force with a grant, whose person, found by
+    `AccessTokenRegister::person_in_force` and never from the `sub`,
+    `may_sign_in`, with a chain of fewer than
+    `MAX_ACTORS`; an exchange rule must pair one of its audiences with the
+    one asked, which must be a resource server's; `exchanged_scopes` only
+    narrows. Token refusals are `invalid_request`, the policy's
+    `invalid_target`. The new token is signed with `sign_living` for the
+    smaller of the client's lifetime and what is left of the subject
+    token, carries `act` (`act_claim`) and the subject's `auth_time`, `acr`
+    and `amr`, keeps the subject token's `sub` unchanged, is recorded with
+    the subject's grant and family, the agent as
+    principal and the subject token as parent (`exchanged_from`), and
+    records `oauth.token_exchanged` with the agent as actor. The answer has
+    `issued_token_type`.
   - The access token: claims from `claims_for` with a `TokenSubject`,
+    whose `organization` is the grant's (`org_id`) and whose `groups` are
+    `PersonMemberships::effective_groups` when the scopes hold `groups`,
+    read for every token and left out past `MOST_GROUPS_IN_A_TOKEN`, 100;
     signed with `KeyAlgorithm::DEFAULT_SIGNING` through
     `KeyService::sign_naming_key` so that the header's `kid` is the version
     that signs. `TokenService::signed` makes the tenant's first key of the
     algorithm with `KeyService::ensure_active` when it has none, and only
     when even then nothing signs is it `server_error`.
+  - The person as the client knows them: `subject_for` and `session_for`
+    (`pairwise.rs`) give the user and session identifiers to a public
+    client and, through the `PairwiseSubjects` given with
+    `with_pairwise_subjects`, the pairwise ones to a pairwise client; the
+    access token's `sub` and the ID token's `sub` and `sid` (`IdTokenNames`)
+    are those, from a code and from a refresh. Without it a pairwise client
+    is answered `oauth.pairwise_unavailable`, an error of storage.
   - The ID token, when the scopes hold `openid`: claims from
     `id_token_claims`, signed the same way with the client's ID token
     algorithm (`ClientSettings::id_token_algorithm`, ES256 or RS256) and
@@ -121,15 +197,24 @@ refresh tokens is `DEFAULT_RETRY_WINDOW`, 10 seconds;
   - The register: every access token issued is recorded with
     `AccessTokenRecordStore::record` in the unit of work of its event: the
     code's with its grant, a refresh's with its grant and family, client
-    credentials' with neither.
+    credentials' with neither and with the principal it was issued for.
 
 ### Revocation and introspection (`introspection.rs`)
 
 `AccessTokenRegister::new(units_of_work, access_tokens, grants,
-refresh_tokens)`, also `TokenService::register()`:
+refresh_tokens, standing)`, also `TokenService::register()`:
 `in_force(tenant, token_id, client_id)` is true only when the record
-exists, is not revoked, names that client, and its grant and family, if
-any, are active.
+exists, is not revoked, names that client, its grant and family, if
+any, are active, and its principal, if any, is a workload that may act
+(`PersonStanding::workload_that_may_act`); and then each parent of a token
+made by exchange, up to `MAX_ACTORS` deep, is in force by the same checks.
+`record(tenant, token_id)` reads a record whatever its state, for an
+exchange to copy its grant and family.
+
+`WorkloadTokens::new(access_tokens, clock)`, also
+`TokenService::workload_tokens()`: `revoke_in(uow, principal, reason,
+caller)` revokes every record of the principal that is not revoked yet,
+in the caller's unit of work, with one `oauth.access_token_revoked` each.
 
 - `TokenService::revoke(tenant, issuer, endpoint, query, correlation_id)`:
   authenticates the client as `token` does, with `endpoint` also accepted
@@ -184,15 +269,19 @@ whom a request waited for and their answer.
 ### UserInfo (`userinfo.rs`)
 
 `UserInfoService::new(UserInfoPorts { keys, verifier, identity, register,
-clock })`:
+memberships, clock })`:
 
 - `claims(tenant, issuer, token)`: the outer `Result` is storage; the
   inner one a `BearerRefusal` (`Missing`, `InvalidToken(reason)`,
   `InsufficientScope`). Checks the token with `check_access_token` against
   the tenant's published `ES256` keys, then asks the register: a token not
   in force is `InvalidToken`. Then it reads the person through
-  `IdentityService::get`: an unknown person, or one who is not `Active`, is
-  `InvalidToken`. Answers `userinfo_claims` for the token's scopes.
+  `IdentityService::get`: an unknown user, or one who may not sign in (not
+  `Active`, or a service account or an agent), is `InvalidToken`. The
+  person is the one of the token's grant, through
+  `AccessTokenRegister::person_in_force`, never read from its `sub`.
+  Answers `userinfo_claims` for the token's scopes, with the token's own
+  `sub`.
 - `published_keys(keys, tenant)` (crate-visible): the tenant's published
   signing keys as `PublishedKey`s, shared with logout.
 
@@ -220,13 +309,69 @@ verifier })`:
   (`check_shape`), then the `id_token_hint` against the published keys
   (`check_id_token_hint`), then loads the client named by `client_id` or
   the hint's `aud` with its application and applies `check_request`.
+- `decide(tenant, request, current, by_form)`: what to do with the
+  browser's session; the hint's `sub` and `sid` are compared with the
+  session's person and session as the hint's client knows them
+  (`KnownSession`, from `subject_for` and `session_for`). With
+  `with_pairwise_subjects`; without it a pairwise hint asks the person.
 - `still_returns(tenant, kept)`: whether a `ReturnAddress` kept in the
   browser while the person was asked still holds (`still_returns` of the
   domain).
 
+### Pairwise subject identifiers (`pairwise.rs`)
+
+`PairwiseSubjects::new(PairwisePorts { units_of_work, secrets, secret_box,
+mac, random, clock })`: `subject(tenant, client, user)` and
+`session(tenant, client, session)` answer the user or session identifier
+for a public client, and for a pairwise client `PairwiseSecret::subject`
+and `session` for its sector. The tenant's secret is read with
+`PairwiseSecretStore::find` and opened for `PAIRWISE_SECRET_PURPOSE`; a
+tenant without one gets one, sealed and stored with
+`insert_unless_present` in its own unit of work, then read back so that
+two servers use the one stored first. A secret that does not open is
+`secret.unreadable`, never replaced.
+
+### Back-channel logout (`backchannel/`)
+
+- `ports.rs`: `SessionClients::clients_of(session)` (the clients with a
+  grant made in the session whose scopes hold `openid`, each once);
+  `LogoutDeliveryStore` (`insert`, unique per client and session, answers
+  whether it stored, `oauth.client_not_found`; `get`; `take`, skipping one
+  another unit of work holds; `lock`, waiting; `hold_client`, answering
+  whether the tenant has it; `leased(client, now)`; `update`,
+  `oauth.logout_delivery_not_found`); `DueLogoutDeliveries::due(now,
+  limit)`, across tenants; `TenantIssuer::issuer(tenant)`.
+- `fan_out.rs`: `BackChannelLogoutFanOut::new(sessions, clients,
+  applications, deliveries, clock)`, an `EventHandler` named
+  `oauth_backchannel_logout` for `session.revoked` only. It refuses an
+  event of another tenant than its unit of work
+  (`oauth.tenant_mismatch`), reads `session_id` and `user_id` from the
+  event (`oauth.session_event_unreadable`), and inserts one
+  `LogoutDelivery` per client of the session that has an address and is
+  enabled with its application.
+- `sender.rs`: `BackChannelLogoutSender::new(LogoutSenderPorts {
+  units_of_work, clients, deliveries, due, issuers, keys, http, random,
+  clock }, LogoutDeliverySettings { retry, time_limit, in_flight_per_client
+  })`. `lease_due(limit)` looks at four times `limit` due deliveries and,
+  for each in its tenant, holds the client, takes the delivery, sets it
+  aside at once (with `oauth.backchannel_logout_set_aside`) if the client
+  has no address or is disabled, leaves it if the client has
+  `in_flight_per_client` leased, and otherwise leases it for the time limit
+  and `LEASE_MARGIN`, answering `LogoutLease`s. `send(lease)` signs a
+  logout token (the client's ID token algorithm, `ensure_active` when the
+  tenant has no key of it, a `jti` of 16 random bytes, `sub` and `sid` as
+  the client knows them, through `with_pairwise_subjects`), posts
+  `logout_token=` in a form through `HttpClient` with no transaction open,
+  then records the answer if the delivery `is_as_leased`, answering a
+  `LogoutOutcome`; a signing failure is a failed attempt.
+
 ## Invariants
 
 - A change that changes nothing stores nothing and announces nothing.
+- A logout token is signed for each attempt and kept nowhere; no event
+  carries it or the client's address.
+- No event carries a pairwise identifier: events name people by their user
+  identifier.
 - Not found is `oauth.application_not_found`, `oauth.client_not_found` or
   `oauth.resource_server_not_found`, the same for a row of another tenant.
 
@@ -237,6 +382,8 @@ verifier })`:
   `cargo test -p hodor-oauth --test token`,
   `cargo test -p hodor-oauth --test refresh` and
   `cargo test -p hodor-oauth --test revocation`,
-  `cargo test -p hodor-oauth --test consent`; `cargo test -p hodor-oauth
+  `cargo test -p hodor-oauth --test consent`,
+  `cargo test -p hodor-oauth --test backchannel`,
+  `cargo test -p hodor-oauth --test pairwise`; `cargo test -p hodor-oauth
   --lib openid` for the OpenID Provider's domain and `--lib logout` for
   logout's

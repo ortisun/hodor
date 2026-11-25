@@ -1,12 +1,13 @@
 //! The use cases of the end-session endpoint: checking a logout request,
 //! and checking again, at the finish, where it sends the person back to.
 
+use crate::application::pairwise::{PairwiseSubjects, session_for, subject_for};
 use crate::application::ports::{ApplicationStore, ClientStore};
 use crate::application::userinfo::published_keys;
 use crate::domain::client::ClientId;
 use crate::domain::logout::{
-    LogoutParameters, LogoutRequest, ReturnAddress, check_id_token_hint, check_request,
-    check_shape, refusal, still_returns,
+    CurrentSession, KnownSession, LogoutDecision, LogoutParameters, LogoutRequest, ReturnAddress,
+    check_id_token_hint, check_request, check_shape, refusal, still_returns,
 };
 use hodor_kernel::{DomainError, SignatureVerifier, TenantContext, UnitOfWork, UnitOfWorkFactory};
 use hodor_keys::api::KeyService;
@@ -38,6 +39,7 @@ impl fmt::Debug for LogoutPorts {
 #[derive(Clone)]
 pub struct LogoutService {
     ports: LogoutPorts,
+    pairwise: Option<PairwiseSubjects>,
 }
 
 impl fmt::Debug for LogoutService {
@@ -66,7 +68,71 @@ impl LogoutService {
     /// Wires the use cases to their ports.
     #[must_use]
     pub const fn new(ports: LogoutPorts) -> Self {
-        Self { ports }
+        Self {
+            ports,
+            pairwise: None,
+        }
+    }
+
+    /// Compares the hint of a pairwise client with the pairwise
+    /// identifiers of the browser's session through `pairwise`. Without
+    /// it, the hint of a pairwise client never ends a session by itself:
+    /// the person is asked.
+    #[must_use]
+    pub fn with_pairwise_subjects(mut self, pairwise: PairwiseSubjects) -> Self {
+        self.pairwise = Some(pairwise);
+        self
+    }
+
+    /// What to do with a checked `request`, given the browser's session
+    /// and whether the request came as a form. The hint's `sub` and `sid`
+    /// are compared with the person and the session as the hint's client
+    /// knows them.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    pub async fn decide(
+        &self,
+        tenant: &TenantContext,
+        request: &LogoutRequest,
+        current: Option<CurrentSession>,
+        by_form: bool,
+    ) -> Result<LogoutDecision, DomainError> {
+        let Some(current) = current else {
+            return Ok(request.decide(None, by_form));
+        };
+        let known = match &request.hint {
+            Some(hint) if !by_form => {
+                let mut uow = self.ports.units_of_work.begin(tenant).await?;
+                let client = self.ports.clients.get(uow.as_mut(), hint.client_id).await?;
+                drop(uow);
+                // A client gone since the request was checked: the person
+                // is asked.
+                let Some(client) = client else {
+                    return Ok(LogoutDecision::Ask);
+                };
+                let pairwise = self.pairwise.as_ref();
+                let subject = subject_for(pairwise, tenant, &client, current.user_id).await;
+                let session = session_for(pairwise, tenant, &client, current.session_id).await;
+                match (subject, session) {
+                    (Ok(subject), Ok(session)) => KnownSession { subject, session },
+                    // A pairwise hint this service cannot compare: the
+                    // person is asked.
+                    (Err(error), _) | (_, Err(error))
+                        if error.code() == "oauth.pairwise_unavailable" =>
+                    {
+                        return Ok(LogoutDecision::Ask);
+                    }
+                    (Err(error), _) | (_, Err(error)) => return Err(error),
+                }
+            }
+            _ => KnownSession {
+                subject: current.user_id.to_string(),
+                session: current.session_id.to_string(),
+            },
+        };
+        Ok(request.decide(Some(&known), by_form))
     }
 
     async fn load(

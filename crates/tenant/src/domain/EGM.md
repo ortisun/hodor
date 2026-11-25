@@ -31,15 +31,19 @@ about. The domain is pure; time is passed in. All modules are `pub(crate)` in
 
 ### `settings.rs`
 
-- `TenantSettings { password, session, lockout, registration, authentication }` with
-  `validate()`; `Default`, `Serialize`, `Deserialize`. `authentication` is
-  `#[serde(default)]`, so settings stored before it existed still read.
+- `TenantSettings { password, session, lockout, registration, authentication, groups, provisioning }` with
+  `validate()`; `Default`, `Serialize`, `Deserialize`. `authentication`,
+  `groups` and `provisioning` are `#[serde(default)]`, so settings stored
+  before they existed still read.
+- `ProvisioningPolicy { deprovisioning: Deprovisioning }`, where
+  `Deprovisioning` is `Deactivate` (the default) or `Delete`, stored as
+  `deactivate` and `delete`: what SCIM deprovisioning does.
 - `PasswordPolicy { min_length, max_length, history_depth, reject_breached }`.
 - `SessionPolicy { idle_timeout_seconds, absolute_timeout_seconds }` with
   `idle_timeout()` and `absolute_timeout()` as `time::Duration`.
 - `LockoutPolicy { max_failures, window_seconds, first_lockout_seconds, longest_lockout_seconds }`.
 - `RegistrationPolicy { Closed (default), Open }`, serialized in snake case.
-- `AuthenticationPolicy { second_factor, assurance_levels }`. `assurance_levels`
+- `AuthenticationPolicy { second_factor, assurance_levels, email_sign_in }`. `email_sign_in` is `EmailSignInPolicy { code: bool, link: bool }`, both `false` by default and when absent from stored settings (`#[serde(default)]`). `assurance_levels`
   is `AssuranceLevels` (`settings.rs:AssuranceLevels`), one to three
   `AssuranceLevel { acr, requirement }` with `AssuranceRequirement`
   `SingleFactor < MultiFactor < PhishingResistant` (snake case); `new` sorts

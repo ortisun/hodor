@@ -121,6 +121,13 @@ impl Telemetry {
                 "service.version",
                 config.service_version.clone(),
             ))
+            // Each process its own: two workers, or two replicas of the
+            // server, would otherwise write the same series and overwrite
+            // each other's counts.
+            .with_attribute(KeyValue::new(
+                "service.instance.id",
+                uuid::Uuid::now_v7().to_string(),
+            ))
             .build();
 
         let tracer_provider = config

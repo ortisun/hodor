@@ -3,30 +3,34 @@
 //! tokens.
 
 use crate::application::authorization::AuthorizationCodeService;
+use crate::application::claim_mapper::{ClaimMapping, MappedToken};
+use crate::application::pairwise::{PairwiseSubjects, session_for, subject_for};
 use crate::application::ports::{
     AccessTokenRecordStore, ApplicationStore, ClientAssertionStore, ClientStore, GrantStore,
-    PersonStanding, RefreshTokenStore, ResourceServerStore,
+    PersonMemberships, PersonStanding, RefreshTokenStore, ResourceServerStore,
 };
 use crate::domain::authorization::{CodePresentation, GrantStatus};
+use crate::domain::claim_mapper::{ClaimTarget, add_mapped_claims};
 use crate::domain::client::{AuthenticationMethod, Client, ClientId, GrantType, TokenPolicy};
 use crate::domain::event::OauthEvent;
 use crate::domain::introspection::AccessTokenRecord;
-use crate::domain::openid::{asks_for_openid, id_token_claims, id_token_header};
+use crate::domain::openid::{IdTokenNames, asks_for_openid, id_token_claims, id_token_header};
 use crate::domain::refresh::{
     DEFAULT_RETRY_WINDOW, FAMILY_SECRET_PURPOSE, FamilySecret, LONGEST_RETRY_WINDOW,
     RefreshDecision, RefreshFamily, RefreshRefusal, RefreshTokenHash,
 };
-use crate::domain::resource_server::OPENID_SCOPES;
+use crate::domain::resource_server::{GROUPS_SCOPE, OPENID_SCOPES};
 use crate::domain::token::{
     AssertionAudience, GrantRequest, PresentedClient, TokenError, TokenRequest, TokenSubject,
     access_token_header, assertion_issuer, check_assertion, claims_for, compact, signing_input,
 };
 use hodor_kernel::{
     Actor, Caller, Clock, CorrelationId, Digest, DomainError, EventEnvelope, EventMetadata,
-    RandomSource, Secret, SecretBox, SignatureVerifier, TenantContext, UnitOfWork,
-    UnitOfWorkFactory,
+    GroupId, OrganizationId, RandomSource, Secret, SecretBox, SignatureVerifier, TenantContext,
+    UnitOfWork, UnitOfWorkFactory, UserId,
 };
 use hodor_keys::api::{KeyAlgorithm, KeyService, KeyVersionId, Signature};
+use serde_json::{Map, Value};
 use std::fmt;
 use std::sync::Arc;
 use time::Duration;
@@ -52,6 +56,10 @@ pub struct TokenPorts {
     pub access_tokens: Arc<dyn AccessTokenRecordStore>,
     /// Whether a person's session and account still stand.
     pub standing: Arc<dyn PersonStanding>,
+    /// The person's organizations and groups, for `org_id` and `groups`.
+    pub memberships: Arc<dyn PersonMemberships>,
+    /// The claims the client's mappers add.
+    pub mapping: ClaimMapping,
     /// Seals the secrets of refresh token families.
     pub secrets: Arc<dyn SecretBox>,
     /// Redeems codes.
@@ -88,6 +96,8 @@ pub struct IssuedTokens {
     pub refresh_token: Option<Secret<String>>,
     /// The ID token, when the scopes hold `openid`.
     pub id_token: Option<Secret<String>>,
+    /// What was issued, for a token exchange (RFC 8693, section 2.2.1).
+    pub issued_token_type: Option<&'static str>,
 }
 
 impl fmt::Debug for IssuedTokens {
@@ -111,11 +121,11 @@ pub struct Issuer<'a> {
 }
 
 /// An access token, signed.
-struct SignedAccessToken {
-    token: String,
-    token_id: String,
-    expires_at: hodor_kernel::Timestamp,
-    lifetime: Duration,
+pub(crate) struct SignedAccessToken {
+    pub(crate) token: String,
+    pub(crate) token_id: String,
+    pub(crate) expires_at: hodor_kernel::Timestamp,
+    pub(crate) lifetime: Duration,
 }
 
 /// The use cases of the token endpoint.
@@ -123,6 +133,7 @@ struct SignedAccessToken {
 pub struct TokenService {
     pub(crate) ports: TokenPorts,
     retry_window: Duration,
+    pub(crate) pairwise: Option<PairwiseSubjects>,
 }
 
 impl fmt::Debug for TokenService {
@@ -161,7 +172,17 @@ impl TokenService {
         Self {
             ports,
             retry_window: DEFAULT_RETRY_WINDOW,
+            pairwise: None,
         }
+    }
+
+    /// Names people to pairwise clients through `pairwise`. Without it, a
+    /// pairwise client is answered `server_error` rather than given a
+    /// person's user identifier.
+    #[must_use]
+    pub fn with_pairwise_subjects(mut self, pairwise: PairwiseSubjects) -> Self {
+        self.pairwise = Some(pairwise);
+        self
     }
 
     /// The same, with another retry window for refresh tokens.
@@ -240,6 +261,26 @@ impl TokenService {
                     &client,
                     scope.as_deref(),
                     resource.as_deref(),
+                    correlation_id,
+                )
+                .await
+            }
+            GrantRequest::TokenExchange {
+                subject_token,
+                actor_token,
+                audience,
+                scope,
+            } => {
+                self.exchange(
+                    tenant,
+                    issuer,
+                    &client,
+                    crate::application::exchange::Exchange {
+                        subject_token: subject_token.expose(),
+                        actor_token: actor_token.expose(),
+                        audience: &audience,
+                        scope: scope.as_deref(),
+                    },
                     correlation_id,
                 )
                 .await
@@ -337,15 +378,32 @@ impl TokenService {
         Ok(Ok(client))
     }
 
-    /// Signs an access token about `subject` for `client`.
+    /// Signs an access token about `subject` for `client`, with the claims
+    /// its mappers add.
     async fn sign(
         &self,
         tenant: &TenantContext,
         issuer: Issuer<'_>,
         client: &Client,
         subject: &TokenSubject,
+        mapped: &Map<String, Value>,
     ) -> Result<Result<SignedAccessToken, TokenError>, DomainError> {
         let lifetime = client.snapshot().settings.token_policy.access_token;
+        self.sign_living(tenant, issuer, client, subject, lifetime, mapped)
+            .await
+    }
+
+    /// Signs an access token about `subject` for `client`, living
+    /// `lifetime`, with the claims its mappers add after Hodor's own.
+    pub(crate) async fn sign_living(
+        &self,
+        tenant: &TenantContext,
+        issuer: Issuer<'_>,
+        client: &Client,
+        subject: &TokenSubject,
+        lifetime: time::Duration,
+        mapped: &Map<String, Value>,
+    ) -> Result<Result<SignedAccessToken, TokenError>, DomainError> {
         if lifetime > TokenPolicy::LONGEST_SIGNED_LIFETIME {
             // The token policy refuses such a lifetime; this is a last guard.
             return Ok(Err(TokenError::server_error(
@@ -353,7 +411,7 @@ impl TokenService {
             )));
         }
         let now = self.ports.clock.now();
-        let claims = claims_for(
+        let mut claims = claims_for(
             issuer.issuer,
             subject,
             client.id(),
@@ -361,6 +419,7 @@ impl TokenService {
             now,
             self.ports.random.as_ref(),
         );
+        add_mapped_claims(&mut claims.claims, mapped);
         let algorithm = KeyAlgorithm::DEFAULT_SIGNING;
         let Some((message, signature)) = self
             .signed(tenant, algorithm, |key_id| {
@@ -382,14 +441,22 @@ impl TokenService {
     }
 
     /// Signs the ID token for a redeemed `code`, issued with
-    /// `access_token`.
+    /// `access_token`, naming the person as `subject`, with the claims the
+    /// client's mappers add after Hodor's own.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each is one part of the ID token; grouping them would only rename them"
+    )]
     async fn sign_id_token(
         &self,
         tenant: &TenantContext,
         issuer: Issuer<'_>,
         client: &Client,
         code: &crate::domain::authorization::AuthorizationCode,
+        organization: Option<OrganizationId>,
         access_token: &str,
+        subject: &str,
+        mapped: &Map<String, Value>,
     ) -> Result<Result<Secret<String>, TokenError>, DomainError> {
         let lifetime = client.snapshot().settings.token_policy.id_token;
         if lifetime > TokenPolicy::LONGEST_SIGNED_LIFETIME {
@@ -397,15 +464,22 @@ impl TokenService {
                 "the ID token would outlive the rotation overlap",
             )));
         }
-        let claims = id_token_claims(
+        let session = session_for(self.pairwise.as_ref(), tenant, client, code.session_id).await?;
+        let mut claims = id_token_claims(
             issuer.issuer,
             code,
+            IdTokenNames {
+                subject,
+                session: &session,
+            },
+            organization,
             client.id(),
             lifetime,
             self.ports.clock.now(),
             access_token,
             self.ports.digest.as_ref(),
         );
+        add_mapped_claims(&mut claims, mapped);
         let algorithm = client
             .snapshot()
             .settings
@@ -522,13 +596,43 @@ impl TokenService {
             .grants
             .get(uow.as_mut(), redeemed.grant_id)
             .await?;
-        if !grant.is_some_and(|grant| grant.status == GrantStatus::Active) {
+        let Some(grant) = grant.filter(|grant| grant.status == GrantStatus::Active) else {
             return Ok(Err(TokenError::invalid_grant("the grant was revoked")));
-        }
+        };
         drop(uow);
 
+        // The person as the client knows them: pairwise for a pairwise
+        // client, in the access token as in the ID token.
+        let known_as =
+            subject_for(self.pairwise.as_ref(), tenant, client, redeemed.user_id).await?;
+        let mut subject = TokenSubject::of_code(&redeemed);
+        subject.subject.clone_from(&known_as);
+        subject.organization = grant.organization;
+        subject.groups = self
+            .groups_for(tenant, redeemed.user_id, &redeemed.scopes)
+            .await?;
+        let mapped = self
+            .ports
+            .mapping
+            .read(
+                tenant,
+                MappedToken {
+                    client_id: client.id(),
+                    user_id: redeemed.user_id,
+                    scopes: &redeemed.scopes,
+                    organization: grant.organization,
+                },
+                &[ClaimTarget::AccessToken, ClaimTarget::IdToken],
+            )
+            .await?;
         let signed = match self
-            .sign(tenant, issuer, client, &TokenSubject::of_code(&redeemed))
+            .sign(
+                tenant,
+                issuer,
+                client,
+                &subject,
+                &mapped.of(ClaimTarget::AccessToken),
+            )
             .await?
         {
             Ok(signed) => signed,
@@ -537,7 +641,16 @@ impl TokenService {
 
         let id_token = if asks_for_openid(&redeemed.scopes) {
             match self
-                .sign_id_token(tenant, issuer, client, &redeemed, &signed.token)
+                .sign_id_token(
+                    tenant,
+                    issuer,
+                    client,
+                    &redeemed,
+                    grant.organization,
+                    &signed.token,
+                    &known_as,
+                    &mapped.of(ClaimTarget::IdToken),
+                )
                 .await?
             {
                 Ok(id_token) => Some(id_token),
@@ -609,6 +722,7 @@ impl TokenService {
             scope: redeemed.scopes.join(" "),
             refresh_token: family.map(|(_, first)| first.into_secret()),
             id_token,
+            issued_token_type: None,
         }))
     }
 
@@ -680,27 +794,39 @@ impl TokenService {
         }
     }
 
-    /// Whether the grant, the person and, without offline access, the
-    /// session of `family` still stand.
+    /// Whether the grant, the person, their membership of the grant's
+    /// organization and, without offline access, the session of `family`
+    /// still stand. Answers the grant's organization when they do.
     async fn still_stands(
         &self,
         tenant: &TenantContext,
         family: &RefreshFamily,
-    ) -> Result<Option<TokenError>, DomainError> {
+    ) -> Result<Result<Option<OrganizationId>, TokenError>, DomainError> {
         let mut uow = self.ports.units_of_work.begin(tenant).await?;
         let grant = self.ports.grants.get(uow.as_mut(), family.grant_id).await?;
         drop(uow);
-        if !grant.is_some_and(|grant| grant.status == GrantStatus::Active) {
-            return Ok(Some(TokenError::invalid_grant("the grant was revoked")));
-        }
+        let Some(grant) = grant.filter(|grant| grant.status == GrantStatus::Active) else {
+            return Ok(Err(TokenError::invalid_grant("the grant was revoked")));
+        };
         if !self
             .ports
             .standing
             .may_sign_in(tenant, family.user_id)
             .await?
         {
-            return Ok(Some(TokenError::invalid_grant(
+            return Ok(Err(TokenError::invalid_grant(
                 "the person may no longer sign in",
+            )));
+        }
+        if let Some(organization) = grant.organization
+            && !self
+                .ports
+                .memberships
+                .is_member(tenant, family.user_id, organization)
+                .await?
+        {
+            return Ok(Err(TokenError::invalid_grant(
+                "the person is no longer a member of the organization",
             )));
         }
         if !family.offline
@@ -710,11 +836,31 @@ impl TokenService {
                 .session_is_active(tenant, family.user_id, family.session_id)
                 .await?
         {
-            return Ok(Some(TokenError::invalid_grant(
+            return Ok(Err(TokenError::invalid_grant(
                 "the session the refresh token belongs to has ended",
             )));
         }
-        Ok(None)
+        Ok(Ok(grant.organization))
+    }
+
+    /// The effective groups of `user` when `scopes` hold `groups`, read
+    /// now, so that a person taken out of a group loses it from the next
+    /// token.
+    async fn groups_for(
+        &self,
+        tenant: &TenantContext,
+        user: UserId,
+        scopes: &[String],
+    ) -> Result<Option<Vec<GroupId>>, DomainError> {
+        if !scopes.iter().any(|scope| scope == GROUPS_SCOPE) {
+            return Ok(None);
+        }
+        Ok(Some(
+            self.ports
+                .memberships
+                .effective_groups(tenant, user)
+                .await?,
+        ))
     }
 
     #[allow(
@@ -759,9 +905,10 @@ impl TokenService {
                 Ok(decided) => decided,
                 Err(refusal) => return Ok(Err(refusal)),
             };
-            if let Some(refusal) = self.still_stands(tenant, &family).await? {
-                return Ok(Err(refusal));
-            }
+            let organization = match self.still_stands(tenant, &family).await? {
+                Ok(organization) => organization,
+                Err(refusal) => return Ok(Err(refusal)),
+            };
             let secret = FamilySecret::from_opened(
                 self.ports
                     .secrets
@@ -818,21 +965,53 @@ impl TokenService {
                     asked
                 }
             };
+            let scopes = if asked.scopes.is_empty() {
+                family.scopes.clone()
+            } else {
+                asked.scopes
+            };
+            let groups = self.groups_for(tenant, family.user_id, &scopes).await?;
             let subject = TokenSubject {
-                subject: family.user_id.to_string(),
-                scopes: if asked.scopes.is_empty() {
-                    family.scopes.clone()
-                } else {
-                    asked.scopes
-                },
+                subject: subject_for(self.pairwise.as_ref(), tenant, client, family.user_id)
+                    .await?,
+                scopes,
                 audiences: asked
                     .resource
                     .map_or_else(|| family.audiences.clone(), |resource| vec![resource]),
                 signed_in_at: Some(family.signed_in_at),
                 acr: family.acr.clone(),
                 methods: family.methods.clone(),
+                organization,
+                groups,
+                principal_kind: None,
+                act: None,
+                amr: None,
             };
-            let signed = match self.sign(tenant, issuer, client, &subject).await? {
+            // Read again at every refresh, as the groups are.
+            let mapped = self
+                .ports
+                .mapping
+                .read(
+                    tenant,
+                    MappedToken {
+                        client_id: client.id(),
+                        user_id: family.user_id,
+                        scopes: &subject.scopes,
+                        organization,
+                    },
+                    &[ClaimTarget::AccessToken],
+                )
+                .await?;
+            let signed = match self
+                .sign(
+                    tenant,
+                    issuer,
+                    client,
+                    &subject,
+                    &mapped.of(ClaimTarget::AccessToken),
+                )
+                .await?
+            {
                 Ok(signed) => signed,
                 Err(refusal) => return Ok(Err(refusal)),
             };
@@ -865,6 +1044,7 @@ impl TokenService {
                 scope: subject.scopes.join(" "),
                 refresh_token: Some(next.into_secret()),
                 id_token: None,
+                issued_token_type: None,
             }));
         }
         // Lost the race every time: answered as if the token were reused,
@@ -889,6 +1069,24 @@ impl TokenService {
                 "the client may not use client credentials",
             )));
         }
+        // A client that acts as a workload gets tokens only while the
+        // workload may act. The kind is read once more, for the token.
+        let principal = match client.principal() {
+            None => None,
+            Some(principal) => {
+                let Some(kind) = self
+                    .ports
+                    .standing
+                    .workload_that_may_act(tenant, principal)
+                    .await?
+                else {
+                    return Ok(Err(TokenError::invalid_client(
+                        "the client's service account or agent may not act",
+                    )));
+                };
+                Some((principal, kind))
+            }
+        };
         let mut uow = self.ports.units_of_work.begin(tenant).await?;
         let servers = self.ports.resource_servers.list(uow.as_mut()).await?;
         drop(uow);
@@ -950,14 +1148,26 @@ impl TokenService {
             .map(|server| server.snapshot().audience.as_str().to_owned())
             .collect();
         let subject = TokenSubject {
-            subject: client.id().to_string(),
+            subject: principal.map_or_else(
+                || client.id().to_string(),
+                |(principal, _)| principal.to_string(),
+            ),
             scopes,
             audiences,
             signed_in_at: None,
             acr: None,
             methods: Vec::new(),
+            organization: None,
+            groups: None,
+            principal_kind: principal.map(|(_, kind)| kind.to_owned()),
+            act: None,
+            amr: None,
         };
-        let signed = match self.sign(tenant, issuer, client, &subject).await? {
+        // Nobody signed in: no mapper applies.
+        let signed = match self
+            .sign(tenant, issuer, client, &subject, &Map::new())
+            .await?
+        {
             Ok(signed) => signed,
             Err(refusal) => return Ok(Err(refusal)),
         };
@@ -976,11 +1186,13 @@ impl TokenService {
                     None,
                     None,
                     signed.expires_at,
-                ),
+                )
+                .for_principal(principal.map(|(principal, _)| principal)),
             )
             .await?;
         let event = OauthEvent::ClientAccessTokenIssued {
             client_id: client.id(),
+            principal_id: principal.map(|(principal, _)| principal),
             token_id: signed.token_id.clone(),
             expires_at: signed.expires_at,
         };
@@ -993,6 +1205,7 @@ impl TokenService {
             scope: subject.scopes.join(" "),
             refresh_token: None,
             id_token: None,
+            issued_token_type: None,
         }))
     }
 }

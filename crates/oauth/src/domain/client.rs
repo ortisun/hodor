@@ -1,14 +1,19 @@
 //! Clients: what asks Hodor for tokens on behalf of an application.
 
 use crate::domain::application::{ApplicationId, Status, stored_data_invalid};
+use crate::domain::backchannel::check_backchannel_logout_uri;
 use crate::domain::consent::{
     DEFAULT_CONSENT_LIFETIME, LONGEST_CONSENT_LIFETIME, SHORTEST_CONSENT_LIFETIME,
 };
 use crate::domain::event::OauthEvent;
 use crate::domain::key::{ClientKey, MAX_KEYS};
+use crate::domain::pairwise::{
+    SubjectType, check_sector_identifier_uri, sector_of, sector_required, sector_uri_invalid,
+    subject_type_invalid,
+};
 use crate::domain::secret::{ClientSecret, ClientSecretHash, ClientSecretId, ClientSecretValue};
 use crate::domain::text;
-use hodor_kernel::{Digest, DomainError, RandomSource, Timestamp};
+use hodor_kernel::{Digest, DomainError, RandomSource, Timestamp, UserId};
 use hodor_keys::api::{KeyAlgorithm, RotationPolicy};
 use time::Duration;
 
@@ -178,6 +183,46 @@ pub enum GrantType {
     RefreshToken,
     /// The client gets a token for itself.
     ClientCredentials,
+    /// An agent's client exchanges a person's token for one it holds on
+    /// the person's behalf (RFC 8693).
+    TokenExchange,
+}
+
+/// The name of the token exchange grant, as RFC 8693 writes it.
+pub const TOKEN_EXCHANGE_GRANT: &str = "urn:ietf:params:oauth:grant-type:token-exchange";
+
+/// The most exchange rules a client has.
+pub const MAX_EXCHANGE_RULES: usize = 20;
+
+/// The longest audience of an exchange rule.
+const MAX_EXCHANGE_AUDIENCE_LENGTH: usize = 255;
+
+/// One rule of an agent's client: a subject token that holds
+/// `subject_audience` may be exchanged for a token for `audience`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ExchangeRule {
+    /// An audience the subject token must hold.
+    pub subject_audience: String,
+    /// The audience the new token may be for.
+    pub audience: String,
+}
+
+impl ExchangeRule {
+    /// Whether this rule lets a token for `subject_audiences` become one
+    /// for `audience`.
+    #[must_use]
+    pub fn allows(&self, subject_audiences: &[String], audience: &str) -> bool {
+        self.audience == audience && subject_audiences.contains(&self.subject_audience)
+    }
+}
+
+fn exchange_rules_invalid(reason: &'static str) -> DomainError {
+    DomainError::invalid(
+        "oauth.client_exchange_rules_invalid",
+        "a client with the token exchange grant has 1 to 20 exchange rules, each a pair of \
+         audiences of at most 255 printable characters, and only such a client has them",
+    )
+    .with_detail(reason)
 }
 
 impl GrantType {
@@ -188,6 +233,7 @@ impl GrantType {
             Self::AuthorizationCode => "authorization_code",
             Self::RefreshToken => "refresh_token",
             Self::ClientCredentials => "client_credentials",
+            Self::TokenExchange => TOKEN_EXCHANGE_GRANT,
         }
     }
 
@@ -201,6 +247,7 @@ impl GrantType {
             "authorization_code" => Ok(Self::AuthorizationCode),
             "refresh_token" => Ok(Self::RefreshToken),
             "client_credentials" => Ok(Self::ClientCredentials),
+            TOKEN_EXCHANGE_GRANT => Ok(Self::TokenExchange),
             _ => Err(grants_invalid("the grant is not one Hodor knows")),
         }
     }
@@ -291,8 +338,27 @@ pub struct ClientSettings {
     pub require_pkce: bool,
     /// How its ID tokens are signed.
     pub id_token_algorithm: IdTokenAlgorithm,
+    /// Where its logout tokens are sent when a session it signed a person
+    /// in with ends, if anywhere.
+    pub backchannel_logout_uri: Option<String>,
+    /// Whether it needs `sid` in its logout tokens. Every logout token
+    /// carries it; this records what the client relies on.
+    pub backchannel_logout_session_required: bool,
+    /// How it knows a person: by the user identifier, or by an identifier
+    /// of its sector alone.
+    pub subject_type: SubjectType,
+    /// For a pairwise client, the address whose host is its sector and
+    /// which lists its redirect addresses, if it has one.
+    pub sector_identifier_uri: Option<String>,
     /// How long its tokens live.
     pub token_policy: TokenPolicy,
+    /// The service account or agent it acts as, if any: its tokens are
+    /// then about that workload. Whether the identifier names one is
+    /// checked by whoever binds it, through the identity context.
+    pub principal: Option<UserId>,
+    /// What an agent's client may exchange for which audience; empty
+    /// unless it has the token exchange grant.
+    pub exchange_rules: Vec<ExchangeRule>,
 }
 
 fn redirect_invalid(reason: &'static str) -> DomainError {
@@ -313,7 +379,11 @@ fn post_logout_invalid(reason: impl Into<String>) -> DomainError {
     .with_detail(reason)
 }
 
-fn is_port(value: &str) -> bool {
+fn backchannel_invalid(reason: &'static str) -> DomainError {
+    crate::domain::backchannel::uri_invalid(reason)
+}
+
+pub(crate) fn is_port(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 5
         && value.bytes().all(|b| b.is_ascii_digit())
@@ -433,7 +503,13 @@ impl ClientSettings {
             allowed_scopes: Vec::new(),
             require_pkce: true,
             id_token_algorithm: IdTokenAlgorithm::default(),
+            backchannel_logout_uri: None,
+            backchannel_logout_session_required: false,
+            subject_type: SubjectType::Public,
+            sector_identifier_uri: None,
             token_policy: TokenPolicy::default(),
+            principal: None,
+            exchange_rules: Vec::new(),
         }
     }
 
@@ -470,6 +546,54 @@ impl ClientSettings {
         if grant_types.contains(&GrantType::ClientCredentials) && client_type == ClientType::Public
         {
             return Err(grants_invalid("`client_credentials` for a public client"));
+        }
+        let exchanges = grant_types.contains(&GrantType::TokenExchange);
+        if self.principal.is_some()
+            && (!grant_types.contains(&GrantType::ClientCredentials)
+                || grant_types.iter().any(|grant| {
+                    !matches!(
+                        grant,
+                        GrantType::ClientCredentials | GrantType::TokenExchange
+                    )
+                }))
+        {
+            return Err(grants_invalid(
+                "a client with a principal has `client_credentials`, and may have token \
+                 exchange besides, and no other grant",
+            ));
+        }
+        if exchanges && self.principal.is_none() {
+            return Err(grants_invalid(
+                "the token exchange grant is for a client bound to an agent",
+            ));
+        }
+        let exchange_rules = without_repeats(self.exchange_rules);
+        let well_formed = |audience: &str| {
+            !audience.is_empty()
+                && audience.len() <= MAX_EXCHANGE_AUDIENCE_LENGTH
+                && audience.bytes().all(|b| b.is_ascii_graphic())
+        };
+        match (exchanges, exchange_rules.is_empty()) {
+            (true, true) => {
+                return Err(exchange_rules_invalid(
+                    "a client with the token exchange grant has an exchange rule",
+                ));
+            }
+            (false, false) => {
+                return Err(exchange_rules_invalid(
+                    "a client without the token exchange grant has no exchange rule",
+                ));
+            }
+            _ => {}
+        }
+        if exchange_rules.len() > MAX_EXCHANGE_RULES
+            || !exchange_rules
+                .iter()
+                .all(|rule| well_formed(&rule.subject_audience) && well_formed(&rule.audience))
+        {
+            return Err(exchange_rules_invalid(
+                "at most 20 rules, each a pair of audiences",
+            ));
         }
         let redirect_uris = without_repeats(self.redirect_uris);
         if redirect_uris.len() > MAX_REDIRECT_URIS {
@@ -509,6 +633,40 @@ impl ClientSettings {
                 post_logout_invalid(error.detail().unwrap_or_default().to_owned())
             })?;
         }
+        if let Some(uri) = &self.backchannel_logout_uri {
+            if !has_code {
+                return Err(backchannel_invalid(
+                    "a client without `authorization_code` has no back-channel logout address",
+                ));
+            }
+            check_backchannel_logout_uri(uri)?;
+        } else if self.backchannel_logout_session_required {
+            return Err(backchannel_invalid(
+                "back-channel logout session required needs a back-channel logout address",
+            ));
+        }
+        match self.subject_type {
+            SubjectType::Pairwise => {
+                if !has_code {
+                    return Err(subject_type_invalid(
+                        "only a client with `authorization_code` may be pairwise",
+                    ));
+                }
+                if let Some(uri) = &self.sector_identifier_uri {
+                    check_sector_identifier_uri(uri)?;
+                }
+                if sector_of(self.sector_identifier_uri.as_deref(), &redirect_uris).is_none() {
+                    return Err(sector_required());
+                }
+            }
+            SubjectType::Public => {
+                if self.sector_identifier_uri.is_some() {
+                    return Err(sector_uri_invalid(
+                        "only a pairwise client has a sector identifier address",
+                    ));
+                }
+            }
+        }
         let allowed_scopes = without_repeats(self.allowed_scopes);
         if allowed_scopes.len() > MAX_SCOPES || !allowed_scopes.iter().all(|s| text::is_scope(s)) {
             return Err(DomainError::invalid(
@@ -526,7 +684,13 @@ impl ClientSettings {
             allowed_scopes,
             require_pkce: self.require_pkce,
             id_token_algorithm: self.id_token_algorithm,
+            backchannel_logout_uri: self.backchannel_logout_uri,
+            backchannel_logout_session_required: self.backchannel_logout_session_required,
+            subject_type: self.subject_type,
+            sector_identifier_uri: self.sector_identifier_uri,
             token_policy: self.token_policy.checked()?,
+            principal: self.principal,
+            exchange_rules,
         })
     }
 }
@@ -642,6 +806,12 @@ impl Client {
         self.state.client_type
     }
 
+    /// The service account or agent it acts as, if any.
+    #[must_use]
+    pub const fn principal(&self) -> Option<UserId> {
+        self.state.settings.principal
+    }
+
     /// Whether it gets tokens. The application must be enabled as well.
     #[must_use]
     pub fn is_enabled(&self) -> bool {
@@ -670,6 +840,32 @@ impl Client {
             .any(|registered| registered == presented)
     }
 
+    /// Where its logout tokens are sent, if anywhere.
+    #[must_use]
+    pub fn backchannel_logout_uri(&self) -> Option<&str> {
+        self.state.settings.backchannel_logout_uri.as_deref()
+    }
+
+    /// How the client knows a person.
+    #[must_use]
+    pub const fn subject_type(&self) -> SubjectType {
+        self.state.settings.subject_type
+    }
+
+    /// The client's sector, for a pairwise client: the host its pairwise
+    /// identifiers are made for. None for a public client.
+    #[must_use]
+    pub fn sector(&self) -> Option<String> {
+        let settings = &self.state.settings;
+        match settings.subject_type {
+            SubjectType::Public => None,
+            SubjectType::Pairwise => sector_of(
+                settings.sector_identifier_uri.as_deref(),
+                &settings.redirect_uris,
+            ),
+        }
+    }
+
     /// Whether `presented` is one of its secrets that works at `now`. A
     /// value that does not have the shape of a secret matches nothing.
     #[must_use]
@@ -694,6 +890,7 @@ impl Client {
             client_id: self.state.id,
             application_id: self.state.application_id,
             client_type: self.state.client_type.as_str(),
+            principal_id: self.state.settings.principal,
         }
     }
 
@@ -705,6 +902,7 @@ impl Client {
             client_id: self.state.id,
             application_id: self.state.application_id,
             client_type: self.state.client_type.as_str(),
+            principal_id: self.state.settings.principal,
         }];
         events.extend(
             self.state
@@ -941,6 +1139,85 @@ mod tests {
         )
     }
 
+    #[test]
+    fn a_pairwise_client_signs_people_in_and_has_a_sector() {
+        let pairwise = |settings: ClientSettings| ClientSettings {
+            subject_type: SubjectType::Pairwise,
+            ..settings
+        };
+        // Its sector is the one host of its redirect addresses.
+        let checked = pairwise(web())
+            .checked(ClientType::Confidential)
+            .expect("one host");
+        let (client, _) = create(ClientType::Confidential, checked).expect("client");
+        assert_eq!(client.subject_type(), SubjectType::Pairwise);
+        assert_eq!(client.sector().as_deref(), Some("payroll.example.com"));
+        // A public client has no sector.
+        let (public, _) = create(ClientType::Confidential, web()).expect("public");
+        assert_eq!(public.sector(), None);
+
+        // Two hosts need a sector identifier address, whose host is then
+        // the sector.
+        let mut two_hosts = pairwise(web());
+        two_hosts
+            .redirect_uris
+            .push("https://payroll.example.net/callback".to_owned());
+        let error = two_hosts
+            .clone()
+            .checked(ClientType::Confidential)
+            .expect_err("two hosts");
+        assert_eq!(error.code(), "oauth.client_sector_identifier_uri_required");
+        let named = ClientSettings {
+            sector_identifier_uri: Some("https://sector.example.org/uris.json".to_owned()),
+            ..two_hosts
+        };
+        let (client, _) = create(ClientType::Confidential, named).expect("named");
+        assert_eq!(client.sector().as_deref(), Some("sector.example.org"));
+
+        // So does a private-use scheme.
+        let mobile = ClientSettings::new(
+            "Payroll mobile",
+            ClientType::Public,
+            vec![GrantType::AuthorizationCode],
+            vec!["com.example.payroll:/callback".to_owned()],
+        );
+        let error = pairwise(mobile)
+            .checked(ClientType::Public)
+            .expect_err("no host");
+        assert_eq!(error.code(), "oauth.client_sector_identifier_uri_required");
+
+        // Only a client with `authorization_code` may be pairwise.
+        let service = ClientSettings::new(
+            "Payroll service",
+            ClientType::Confidential,
+            vec![GrantType::ClientCredentials],
+            Vec::new(),
+        );
+        let error = pairwise(service)
+            .checked(ClientType::Confidential)
+            .expect_err("no code");
+        assert_eq!(error.code(), "oauth.client_subject_type_invalid");
+
+        // Only a pairwise client has a sector identifier address, and it
+        // has the form of an address Hodor calls.
+        let public_with_address = ClientSettings {
+            sector_identifier_uri: Some("https://sector.example.org/uris.json".to_owned()),
+            ..web()
+        };
+        let error = public_with_address
+            .checked(ClientType::Confidential)
+            .expect_err("public");
+        assert_eq!(error.code(), "oauth.client_sector_identifier_uri_invalid");
+        let fragment = ClientSettings {
+            sector_identifier_uri: Some("https://sector.example.org/uris.json#x".to_owned()),
+            ..pairwise(web())
+        };
+        let error = fragment
+            .checked(ClientType::Confidential)
+            .expect_err("fragment");
+        assert_eq!(error.code(), "oauth.client_sector_identifier_uri_invalid");
+    }
+
     fn spa() -> ClientSettings {
         ClientSettings::new(
             "Payroll in the browser",
@@ -967,6 +1244,90 @@ mod tests {
 
     fn redirect(value: &str, client_type: ClientType) -> Result<(), DomainError> {
         check_redirect_uri(value, client_type)
+    }
+
+    #[test]
+    fn a_client_with_a_principal_has_client_credentials_and_no_other_grant() {
+        let workload = UserId::generate();
+        let mut service = ClientSettings::new(
+            "Nightly export",
+            ClientType::Confidential,
+            vec![GrantType::ClientCredentials],
+            Vec::new(),
+        );
+        service.principal = Some(workload);
+        let (mut client, _) = create(ClientType::Confidential, service.clone()).expect("valid");
+        assert_eq!(client.principal(), Some(workload));
+        let events = client.created_events();
+        assert!(
+            matches!(&events[0], OauthEvent::ClientCreated { principal_id, .. } if *principal_id == Some(workload)),
+            "{events:?}"
+        );
+
+        // An agent's client may also exchange tokens, with rules.
+        let mut exchanging = service.clone();
+        exchanging.grant_types = vec![GrantType::ClientCredentials, GrantType::TokenExchange];
+        assert_eq!(
+            create(ClientType::Confidential, exchanging.clone())
+                .expect_err("no rule")
+                .code(),
+            "oauth.client_exchange_rules_invalid"
+        );
+        exchanging.exchange_rules = vec![ExchangeRule {
+            subject_audience: "urn:example:assistant".to_owned(),
+            audience: "https://api.example.com".to_owned(),
+        }];
+        let (agent_client, _) =
+            create(ClientType::Confidential, exchanging.clone()).expect("valid");
+        assert!(agent_client.snapshot().settings.exchange_rules[0].allows(
+            &["urn:example:assistant".to_owned()],
+            "https://api.example.com"
+        ));
+        let mut unbound = exchanging.clone();
+        unbound.principal = None;
+        assert_eq!(
+            create(ClientType::Confidential, unbound)
+                .expect_err("no principal")
+                .code(),
+            "oauth.client_grants_invalid"
+        );
+        let mut stray = service.clone();
+        stray.exchange_rules = exchanging.exchange_rules.clone();
+        assert_eq!(
+            create(ClientType::Confidential, stray)
+                .expect_err("rules without the grant")
+                .code(),
+            "oauth.client_exchange_rules_invalid"
+        );
+        assert_eq!(
+            GrantType::parse(TOKEN_EXCHANGE_GRANT).expect("known"),
+            GrantType::TokenExchange
+        );
+
+        let mut bound_web = web();
+        bound_web.principal = Some(workload);
+        assert_eq!(
+            create(ClientType::Confidential, bound_web)
+                .expect_err("refused")
+                .code(),
+            "oauth.client_grants_invalid"
+        );
+
+        // Removing the principal is a change like any other.
+        let mut unbound = service;
+        unbound.principal = None;
+        let events = client.change(unbound, NOW).expect("changed");
+        assert!(
+            matches!(
+                &events[0],
+                OauthEvent::ClientChanged {
+                    principal_id: None,
+                    ..
+                }
+            ),
+            "{events:?}"
+        );
+        assert_eq!(client.principal(), None);
     }
 
     #[test]

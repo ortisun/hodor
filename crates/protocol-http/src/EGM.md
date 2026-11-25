@@ -21,7 +21,7 @@ the set of re-exports in `lib.rs`.
 | --- | --- | --- |
 | `public_router(resolver, tenant_routes, site_routes, limits)` | `server.rs` | Builds the router for the public listener. |
 | `serve(listener, router, shutdown)` | `server.rs` | Serves with `ConnectInfo<SocketAddr>` until `shutdown` resolves, then stops accepting and waits for in-flight requests (`with_graceful_shutdown`). |
-| `Limits` | `server.rs` | `max_body_bytes` (default 64 KiB), `max_saml_response_bytes` (default `2 * hodor_federation::api::MAX_SAML_POSTED_BYTES`), `max_policy_agent_report_bytes` (default 1 MiB), `request_timeout` (default 30 seconds). |
+| `Limits` | `server.rs` | `max_body_bytes` (default 64 KiB), `max_saml_response_bytes` (default `2 * hodor_federation::api::MAX_SAML_POSTED_BYTES`), `max_policy_agent_report_bytes` (default 1 MiB), `max_scim_bulk_bytes` (default twice `hodor_provisioning::api::MAX_BULK_BYTES`, for `POST /t/{slug}/scim/v2/Bulk` only), `request_timeout` (default 30 seconds). |
 | `ops_router(health)`, `Health`, `ReadinessCheck` | `health.rs` | Operations listener. `Health::new(checks)`, `begin_draining`, `is_draining`. `ReadinessCheck` has `name()` and `async check() -> Result<(), String>`. |
 | `TenantResolver`, `ResolvedTenant`, `TenantSlug`, `TenantStatus` | `tenant.rs` | `TenantResolver::resolve(slug) -> Result<Option<ResolvedTenant>, DomainError>`. `ResolvedTenant` holds a `TenantContext` and a `TenantStatus` (`Active` or `Suspended`). `TenantSlug(pub String)` is the slug as it appears in the path. |
 | `Problem` | `problem.rs` | Error response body, `application/problem+json`. `Problem::new(status, code, detail)`, `status()`, `impl From<DomainError>`, `impl IntoResponse`. |
@@ -29,13 +29,14 @@ the set of re-exports in `lib.rs`.
 | `interaction_routes(state)`, `InteractionState` | `interaction.rs` | The interaction interface: browser sign-in, sessions, registration and password recovery. |
 | `authorization_routes(state)`, `AuthorizationState` | `authorize.rs` | The OAuth authorization endpoint: checks a request, issues a code to a signed-in browser whose methods that count (`max_age`) reach the tenant level `acr_values` asks for, starts a step-up of the session when they do not (`AuthenticationService::start_step_up`, giving the browser the sign-in cookie; `unmet_authentication_requirements` when it cannot be reached), or keeps the request while the person signs in, sending them to `/account/sign-in?continue=authorization` with the request's `login_hint` and `ui_locales`. The code carries the `acr` of the tenant's levels the counted methods reach. `AuthorizationState { authorization: AuthorizationCodeService, sessions, authentication: AuthenticationService, tenants: TenantService, public_url }`. |
 | `consent_routes(state)`, `ConsentState` | `consent.rs` | The consent routes of the interaction interface, merged with `interaction_routes` under `/interaction`, behind the origin check: `GET` and `POST /consent` (what the waiting request asks for, the answer; `404 oauth.consent_request_not_found` for any request that is not this browser's, this person's and this session's, or was answered), `GET /consents` and `DELETE /consents/{client_id}` (`404 oauth.consent_not_found`). The two that change something need the session's CSRF token. `ConsentState { consents, sessions, digest }`. |
-| `token_routes(state)`, `TokenState` | `token.rs` | The OAuth token, revocation and introspection endpoints (`/token`, `/revoke`, `/introspect`): each reads the form and the `Basic` credentials, and answers what `TokenService` decides: tokens in the JSON of RFC 6749, an empty `200` for every revocation by a client that proved who it is (RFC 7009), and the JSON of RFC 7662. Every answer carries `no-store`. `TokenState { tokens: TokenService, public_url }`. |
+| `token_routes(state)`, `TokenState` | `token.rs` | The OAuth token, revocation and introspection endpoints (`/token`, `/revoke`, `/introspect`): each reads the form and the `Basic` credentials, and answers what `TokenService` decides: tokens in the JSON of RFC 6749 (with `issued_token_type` for a token exchange, RFC 8693), an empty `200` for every revocation by a client that proved who it is (RFC 7009), and the JSON of RFC 7662. Every answer carries `no-store`. `TokenState { tokens: TokenService, public_url }`. |
 | `userinfo_routes(state)`, `UserInfoState` | `openid.rs` | UserInfo at `GET` and `POST /oauth2/userinfo`, mounted under a tenant: reads `Authorization: Bearer` only and answers what `UserInfoService` decides, with `Cache-Control: no-store`; a refusal is `401` with `WWW-Authenticate: Bearer` (with `error="invalid_token"` when a token was sent) or `403` with `error="insufficient_scope"`. `UserInfoState { userinfo, public_url }`. |
 | `logout_routes(state)`, `LogoutState` | `logout.rs` | The end-session endpoint at `GET` and `POST /oauth2/logout` and `GET /oauth2/logout/finish`, mounted under a tenant. A refused request is the page of `error_page` (status `400`), never a redirect. A `GET` whose hint names the browser's session revokes it (`relying_party_logout`) and forgets the cookie; otherwise, and always for a form, the checked return address is kept in `__Secure-hodor_logout` (`SameSite=Strict`, 600 seconds) and the browser goes to `/account/sign-out`. The finish sends a browser still signed in to `/account`, else to the return address checked again (`LogoutService::still_returns`) with `state`, else to `/account/sign-in?notice=signed-out`. Every answer is `Cache-Control: no-store`. `LogoutState { logout, sessions, public_url }`. |
 | `discovery_routes(DiscoveryState { public_url, tenants })` | `openid.rs` | `GET /.well-known/openid-configuration` and `GET /.well-known/oauth-authorization-server`, mounted under a tenant: the same `discovery_document`, naming the tenant's assurance levels in `acr_values_supported`, with `Cache-Control: public, max-age=300` and `Access-Control-Allow-Origin: *`. |
-| `authorization_api_routes(state)`, `AuthorizationApiState`, `AUTHORIZATION_API_AUDIENCE`, `EVALUATE_SCOPE`, `SIMULATE_SCOPE`, `EXPLAIN_SCOPE`, `AUTHORIZATION_OPENAPI`, `AUTHORIZATION_OPERATIONS` | `authorization_api.rs` | The Authorization API, mounted under a tenant at `/api/v1/authorization`: `POST /evaluate`, `/batch` (at most 100; a request that cannot be read is a problem object in its place) and `/simulate` (`against`: exactly one of `published: true`, `revision`, `draft`), and `GET /openapi.json` (`include_str!("../openapi/authorization-v1.json")`; a unit test holds it and `AUTHORIZATION_OPERATIONS` together). The caller comes from `ResourceAccessService::caller` with the audience `urn:hodor:authorization`, then the route's scope; the namespace is the audience of the token client's application's resource server (`authorization.no_resource_server` when it has none) and the context's application is that application. Bodies are `deny_unknown_fields` (`request.body_invalid`). Answers name `decision` (`ALLOW`, `DENY`, `INDETERMINATE`), `decision_id`, `evaluated_at`, `engine`, `policy_version`, `reason`, and with `authz:explain` `matched_policies` and a simulation's `trace`; every answer carries `no-store`. `AuthorizationApiState { access, evaluation, public_url }`. |
-| `bearer`, `refused`, `not_cached` (crate-visible) | `bearer.rs` | The token of `Authorization: Bearer`; a refusal as `401` with `WWW-Authenticate: Bearer` (`error="invalid_token"` when a token was sent) or `403` with `error="insufficient_scope", scope="…"`, logged with the surface it came from; `Cache-Control: no-store`. Shared by UserInfo and the Authorization API. |
-| `admin_routes(state)`, `AdminState` | `admin.rs` | The administration interface, authenticated by bearer access token. |
+| `authorization_api_routes(state)`, `AuthorizationApiState`, `AUTHORIZATION_API_AUDIENCE`, `EVALUATE_SCOPE`, `SIMULATE_SCOPE`, `EXPLAIN_SCOPE`, `AUTHORIZATION_OPENAPI`, `AUTHORIZATION_OPERATIONS` | `authorization_api.rs` | The Authorization API, mounted under a tenant at `/api/v1/authorization`: `POST /evaluate`, `/batch` (at most 100; a request that cannot be read is a problem object in its place) and `/simulate` (`against`: exactly one of `published: true`, `revision`, `draft`), and `GET /openapi.json` (`include_str!("../openapi/authorization-v1.json")`; a unit test holds it and `AUTHORIZATION_OPERATIONS` together). The caller comes from `ResourceAccessService::caller` with the audience `urn:hodor:authorization`, or, for a value that `looks_like_api_key`, from `ApiKeyAccess` (the key good in the tenant, its holder a workload that may act, its application an enabled one of the tenant, whose resource server is asked about), then the route's scope; the namespace is the audience of the token client's application's resource server (`authorization.no_resource_server` when it has none) and the context's application is that application. Bodies are `deny_unknown_fields` (`request.body_invalid`). Answers name `decision` (`ALLOW`, `DENY`, `INDETERMINATE`), `decision_id`, `evaluated_at`, `engine`, `policy_version`, `reason`, and with `authz:explain` `matched_policies` and a simulation's `trace`; every answer carries `no-store`. `AuthorizationApiState { access, keys: ApiKeyAccess { keys, identity, applications }, evaluation, public_url }`. |
+| `scim_routes(state)`, `ScimState { access, provisioning, public_url }`, `SCIM_AUDIENCE`, `SCIM_SCOPE`, `SCIM_MEDIA_TYPE` | `scim.rs` | The SCIM 2.0 server, mounted under a tenant at `/scim/v2`: `GET /ServiceProviderConfig`, `/ResourceTypes[/{name}]`, `/Schemas[/{uri}]`; `GET`, `POST /Users` and `/Groups`; `GET`, `PUT`, `PATCH`, `DELETE` of one user or group; `POST /Bulk`; `.search` answers `501`; any other path a SCIM `404`. Every route first takes the caller from `ResourceAccessService::caller` with the audience `urn:hodor:scim`, then needs the scope `scim`; refusals carry the challenge of `bearer::challenge` and a SCIM error. The caller is `Actor::Client`. Every change goes through `perform`, alone or as an operation of a bulk request, so both answer alike: `If-Match` (a bulk operation's `version`) is a `Precondition`; answers carry `ETag` from `meta.version` and `Location` on `201`; `GET` of one resource answers `304` when `If-None-Match` names its version. `bulk` refuses a body past `MAX_BULK_BYTES` or more than 100 operations with `413` `tooMany`, then does each operation in order in its own transaction, resolving `bulkId:` references against what earlier `POST`s created, and stops after `failOnErrors` failures. Bodies must be `application/scim+json` or `application/json` (`415` otherwise); answers are `application/scim+json` with `no-store`, errors in the schema of RFC 7644 (`status` as text, `scimType` from the provisioning codes, `uniqueness` for `identity.identifier_taken` and `identity.group_name_taken`, `412` without one for `provisioning.version_mismatch`). Path parameters are read with `RawPathParams`, since the tenant's is among them. |
+| `bearer`, `refused`, `challenge`, `not_cached` (crate-visible) | `bearer.rs` | The token of `Authorization: Bearer`; a refusal as `401` with `WWW-Authenticate: Bearer` (`error="invalid_token"` when a token was sent) or `403` with `error="insufficient_scope", scope="…"`, logged with the surface it came from; `Cache-Control: no-store`. Shared by UserInfo and the Authorization API. |
+| `admin_routes(state)`, `AdminState` | `admin.rs` | The administration interface, authenticated by bearer access token or by the API key of a workload (`by_token`: a value that `looks_like_api_key` goes to `AdminState.api_keys`, its holder must be `is_workload_that_may_act`, and the route's permission must be among the key's scopes as well as in the holder's roles). |
 | `console_routes(state)`, `ConsoleState` | `admin.rs` | The same handlers for the admin console, authenticated by session cookie, plus `/me`. |
 | `ADMIN_OPENAPI` | `admin.rs` | `include_str!("../openapi/admin-v1.json")`, served at `/openapi.json`. |
 | `ADMIN_OPERATIONS` | `admin.rs` | Table of `(method, path as written in the OpenAPI document, Permission)`. Every shared handler looks its permission up here; the documentation says a test holds the table and the OpenAPI document together. |
@@ -64,10 +65,19 @@ its settings, `admin/decisions.rs`),
 `roles: RoleService` and `evaluation: EvaluationService` (`hodor_authorization`;
 permissions, roles, assignments and bindings, `admin/authorization.rs`, a
 resource server named in the path by its identifier and standing for its
-audience), `policies: Option<PolicyService>` (`hodor_authorization_opa`; policy
+audience), `access_lists: AccessListService` (`hodor_authorization`; the
+entries of access control lists, `admin/access_lists.rs`, granted under a
+resource server named by its identifier and read and removed by their own
+identifier at `/access-entries/{entry_id}`; granting the same entry again
+answers `200` with it instead of `201`; the principal is checked to be of
+the tenant by `admin/authorization.rs:principal`), `policies: Option<PolicyService>` (`hodor_authorization_opa`; policy
 versions drafted, checked, tested and simulated, and the publication status;
 `None` answers `404` `authorization.policies_unavailable`; publishing is not a
 route, since only the command line holds the key that signs bundles),
+`webhooks: Option<WebhookService>` (`hodor_webhooks`; endpoints,
+subscriptions, secrets shown once with `Cache-Control: no-store`,
+deliveries and delivering again, `admin/webhooks.rs`; `None` answers `503`
+`webhooks.not_configured`, except `GET /webhook-event-types`),
 `federation: Option<FederationService>` (`None` when the installation has no
 keys to keep provider secrets with), `keys: Option<KeyService>`
 (`hodor_keys`; `None` makes the key routes answer `503`
@@ -110,6 +120,12 @@ routes and the whole router.
 | POST | `/sign-in/steps/recovery_code` | `submit_recovery_code` (body `{ "code" }`), a substitute of the `webauthn` and `totp` steps |
 | POST | `/sign-in/steps/passkey/options` | `passkey_options` (the challenge of the passkey alternative) |
 | POST | `/sign-in/steps/passkey` | `submit_passkey` |
+| GET | `/sign-in/alternatives` | `offered_alternatives` (`AuthenticationService::alternatives`; no sign-in needed) |
+| POST | `/sign-in/steps/email_code/send`, `/sign-in/steps/email_link/send` | `ask_for_code`, `ask_for_link` (body `{ "email", "locale"? }`; the challenge of the email alternative, answered `202` `{ "status": "accepted" }`) |
+| POST | `/sign-in/steps/email_code`, `/sign-in/steps/email_link` | `submit_email_code` (body `{ "code" }`), `submit_email_link` (body `{ "token" }`) |
+| GET | `/sign-in/steps/enrollment/kinds` | `enrollment_kinds` (`FactorService::enrollable`, `{ "kinds": [...] }`; no sign-in needed) |
+| POST | `/sign-in/steps/enrollment/options` | `begin_enrollment` (body `{ "kind" }`, `422` `request.invalid_body` for anything but `authenticator_application`, `security_key` or `passkey`; the challenge of the enrollment step, `200` with its options) |
+| POST | `/sign-in/steps/enrollment` | `finish_enrollment` (body `{ "code" }`, or `{ "client_data", "attestation_object", "transports"?, "discoverable"?, "name"? }`; the answer of a sign-in, with `recovery_codes` once when a set was made) |
 | GET | `/sign-in/providers` | `offered_providers` |
 | POST | `/sign-in/providers/{alias}` | `choose_provider` |
 | POST | `/sign-in/providers/{alias}/callback` | `finish_with_provider` |
@@ -193,11 +209,37 @@ Administration and console handlers, shared by both routers
 | DELETE | `/clients/{client}/secrets/{secret}` | `revoke_secret` |
 | POST | `/clients/{client}/keys` | `add_key` |
 | DELETE | `/clients/{client}/keys/{key}` | `remove_key` (the `kid`, percent-decoded) |
+| GET, POST | `/clients/{client}/claim-mappers` | `list_mappers`, `create_mapper` (`admin/claim_mappers.rs`) |
+| GET, PUT, DELETE | `/clients/{client}/claim-mappers/{mapper}` | `get_mapper`, `replace_mapper`, `delete_mapper` |
 | GET, POST | `/resource-servers` | `list_resource_servers`, `create_resource_server` |
 | GET, PATCH | `/resource-servers/{resource_server}` | `get_resource_server`, `change_resource_server` |
 
 The application routes live in `admin/applications.rs` and are merged into
 `shared_routes`; they need `ApplicationService` in `AdminState.applications`.
+A client's `principal` is checked there through `AdminState.identity`
+(`principal_of`, which also asks for an agent when the grants hold token exchange, the kept principal included on `PATCH`): a service account or an agent of the tenant that is not
+Deleted, otherwise `422` `oauth.client_principal_invalid`; `PATCH` tells a
+`principal` left out from one given as `null`, which removes it.
+
+`GET` and `PUT /email-sign-in` (`read_email_sign_in`, `set_email_sign_in`
+in `admin.rs`, `users:read` and `users:write`) read and replace the
+tenant's `authentication.email_sign_in` as `{ "code", "link" }`, both
+required and nothing else (`422` `request.body_invalid`).
+
+The claim mapper routes live in `admin/claim_mappers.rs`, merged into
+`shared_routes`, under the permissions of clients, and need
+`ClaimMapperService` in `AdminState.claim_mappers`. A `group_member`
+source's group is checked through `AdminState.groups`; another tenant's
+group, or none, is `422` `oauth.claim_mapper_group_unknown`.
+
+Service accounts and agents live in `admin/workloads.rs`, merged into
+`shared_routes`, and need `WorkloadService` in `AdminState.workloads`. One
+set of handlers serves both collections, `/service-accounts` and `/agents`,
+each a `Collection` naming its `UserKind` and the paths its operations are
+written under in `ADMIN_OPERATIONS` (`workloads:read`, `workloads:write`);
+the routes are closures over the collection. `:disable` and `:enable` arrive
+at the item's `POST`; any other action is authorized as `:disable` before it
+is answered `route.not_found`. A workload's API keys are served there too, under `…/api-keys`, with `AdminState.api_keys` (`ApiKeyService`): the scopes checked by `hodor_authorization::api::check_key_scopes`, an application checked through `AdminState.applications`, the key itself written once in `MadeKeyBody` (no `Debug`), `:rotate` arriving at a key's `POST`.
 A client's secret is written only by `create_client` (`client_secret` in
 `CreatedClientBody`) and `rotate_secret` (`NewSecretBody`); neither type is
 `Debug`, and `ClientBody` names secrets by identifier and expiry only.

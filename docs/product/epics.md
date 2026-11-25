@@ -301,6 +301,116 @@ Per-resource access control lists, relationship-based access control, assigning 
 
 0.2.0 is released when Milestone 5 is done, following [the release rules](../development/conventions.md#releases).
 
+## Milestone 6: Hodor runs behind a load balancer and cleans up after itself
+
+**Goal**: Hodor is deployed behind a load balancer and every client still has a limit of its own. Expired rows of every kind are removed without anyone asking. The image and the chart of a release are published, built by actions pinned to a commit. The first part of 0.3.0 ([Decision 0027](../decisions/0027-what-0.3.0-holds.md)).
+
+**Demo script**: put a web server in front of the development stack, trusted as a proxy, and send requests through it as two clients behind a load balancer would. Ask for registrations from one until it is limited, and see the other still answered. Write a false address at the start of the limited client's header and see it still limited. Start a second worker that keeps nothing, sign out, and see the ended session and the delivered messages removed, with the audit chain still intact. At the tag of 0.3.0, pull the published image, check its signature, and install the published chart on a kind cluster.
+
+### Slice U — Behind a load balancer
+
+| Identifier | Issue | Acceptance | Depends on |
+|---|---|---|---|
+| Issue-81 | The forwarded client address: trusted proxies named by address ranges, the client address read from `Forwarded` or `X-Forwarded-For` only when the connection comes from one of them, taking the nearest address that is not a trusted proxy; used by the attempt guard, the audit log, sessions and every limit; both installation packages configured for the web server in front of Hodor | A forwarded header from an untrusted peer is ignored; behind a trusted proxy two clients have separate lockouts; a chain of trusted proxies yields the first untrusted address; an unreadable header falls back to the connection's address and is counted | — |
+| Issue-82 | One cleanup job in the worker for every kind of expired row: sessions, verification tokens, messages, pending WebAuthn registrations, authorization requests, codes and revoked grants, refresh token families, remembered client assertions, access token records, withdrawn and expired consents; a retention per kind, in batches, the rows of a pass locked so that two workers skip each other's, with a metric per kind | A row past its retention is removed and one within it is kept; two workers remove each row once; no audit record and no history row of consents is removed; a tenant's rows are removed inside that tenant | — |
+
+### Slice V — What is shipped
+
+| Identifier | Issue | Acceptance | Depends on |
+|---|---|---|---|
+| Issue-83 | Continuous integration actions pinned by commit, kept current by Dependabot; the licenses of the pages' dependencies checked against an allowed list, as `cargo deny` checks those of the crates (Threat-General-15) | Continuous integration fails on an action named by tag and on a page dependency under a license that is not allowed | — |
+| Issue-84 | The image and the chart published with each release: the image to the GitHub container registry with its software bill of materials and a signature, the chart as an OCI artifact; the installation pages install from them | A release tag publishes both; installing from them on a kind cluster passes the demonstration; the signatures check against the identity of the release workflow | Issue-83 |
+| Issue-85 | Acceptance: the demonstration of the milestone, through a web server in front of the development stack; the published image and chart tried by hand at the tag of 0.3.0 | The demonstration passes in continuous integration against the image; the published image's signature checks and the chart installs on kind | all |
+
+### Explicitly not in Milestone 6
+
+A limit on sign-ins started from one network (its cause was fixed where SAML responses arrive), the export of the audit chain's head, traces of database calls, high availability.
+
+## Milestone 7: Groups, organizations and SCIM
+
+**Goal**: people of a tenant are gathered in groups and organizations, and roles are given to a group or scoped to an organization. A token carries the organization a person signed in for. A directory of a business customer provisions users and groups through SCIM, and a person it removes can no longer get in. The second part of 0.3.0 ([Decision 0027](../decisions/0027-what-0.3.0-holds.md)).
+
+**Demo script**: create a group inside another group and see a cycle refused. Create an organization with a department, invite a person by email and accept the invitation. Assign a role to the group and evaluate for a member, then remove the member and see the next decision deny. Sign in from the example application for the organization and read `org_id` in the token. Provision a user and a group from a SCIM client, change them with PATCH, deactivate the user and see their session and refresh tokens end. Show a group, an organization and a SCIM token of one tenant refused by another.
+
+### Slice W — Groups and organizations (Epic 2)
+
+| Identifier | Issue | Acceptance | Depends on |
+|---|---|---|---|
+| Issue-86 | Groups in the identity context: tenant-level groups whose members are users and other groups, nesting bounded by a tenant setting, cycles refused, the effective groups of a user worked out from what is stored; storage under row-level security and a contract suite; events | A cycle is refused however it is made; nesting past the bound is refused; removing a member changes the effective membership in the same transaction; tenant isolation cases pass | — |
+| Issue-87 | Organizations: organizations with a tree of units, a unit of kind department, memberships of users with their units, invitations by email kept as hashes, good for one use and expiring; accepting signs in or registers the person and makes the membership | An invitation is accepted once even when presented many times at once; an expired or withdrawn invitation is refused; a person is a member of several organizations of one tenant and of none in another | Issue-86 |
+| Issue-88 | Managing groups and organizations: the administration interface, the command-line tool and the console pages | Every operation in the OpenAPI document is refused without its permission and answered for an administrator; every change is in the audit log | Issue-87 |
+| Issue-89 | Roles through groups and organizations: assignments to a group, held by its effective members; roles scoped to an organization, counting in requests made in it; the organization asked for by the client, carried in `org_id`; the `groups` claim by scope | Removing a person from a group stops allowing on the next decision; a token never carries an organization the person is not a member of; a role scoped to one organization does not allow in another | Issue-86, Issue-87 |
+
+### Slice X — SCIM (Epic 26)
+
+| Identifier | Issue | Acceptance | Depends on |
+|---|---|---|---|
+| Issue-90 | The SCIM server: Users and Groups with the core and enterprise schemas, the discovery endpoints, filters read by a bounded parser, sorting and pagination; called with an access token holding the `scim` scope | Every filter of a test corpus is answered or refused for its own reason; a filter past the bounds is refused; a token of another tenant is refused; a resource of another tenant is answered like one that does not exist | Issue-86 |
+| Issue-91 | Changing through SCIM: PATCH, bulk with a bounded number of operations and references between them, versions with entity tags, the tenant's deprovisioning policy, deactivate or delete, which ends the person's sessions and grants | A PATCH on a stale version is refused; a bulk request past the bound is refused whole; a deactivated user's refresh tokens stop working at once | Issue-90 |
+| Issue-92 | Acceptance: the cross-tenant suite extended to groups, organizations, invitations and SCIM; the demonstration of the milestone | They pass in continuous integration against the image | all |
+
+### Explicitly not in Milestone 7
+
+Delegated administration per organization, synchronizing groups from LDAP, SCIM as a client that provisions into other systems, a domain per organization for routing sign-ins, assigning roles to organizations as a whole.
+
+## Milestone 8: Workloads, agents and webhooks
+
+**Goal**: a service or an agent has an identity of its own in a tenant, with clients and API keys, and holds roles like a person. An agent acts on a person's behalf through token exchange, and every token and audit record says who acted for whom. A tenant receives Hodor's events at its own endpoints, signed and retried. The third part of 0.3.0 ([Decision 0027](../decisions/0027-what-0.3.0-holds.md)).
+
+**Demo script**: create a service account, give it a client and an API key, and assign it a role. Evaluate with its token and with its key. Create an agent, exchange a person's token for one the agent holds on their behalf, and read the `act` claim and the audit record. See an exchange for a wider scope refused. Register a webhook endpoint, sign in, and see the event arrive signed. Stop the endpoint, see the retries and the dead letter, and deliver it again. Show a key and a webhook of one tenant refused by another.
+
+### Slice Y — Workloads and agents (Epic 22)
+
+| Identifier | Issue | Acceptance | Depends on |
+|---|---|---|---|
+| Issue-93 | Service accounts and agents: principals of a tenant that are not people, with their lifecycle and owners, holding clients of the client credentials grant and assigned roles like users | A service account cannot sign in through the interaction interface; disabling one stops its tokens at once; tenant isolation cases pass | — |
+| Issue-94 | API keys: an identifiable prefix, kept as hashes, with scopes, an expiry, rotation with an overlap, revocation and the time of last use; accepted by the Authorization API and the administration interface | A revoked or expired key is refused; a key is shown once and never again; a key found in a public repository is recognized by its prefix | Issue-93 |
+| Issue-95 | Token exchange (RFC 8693): a subject token and an actor token, the `act` chain with a bounded depth, a policy per client of what may be exchanged for which audience, scopes that may only narrow; the chain in the audit log | An exchange for a wider scope or another audience than allowed is refused; a chain past the bound is refused; a token of another tenant is refused as subject and as actor | Issue-93 |
+
+### Slice Z — Webhooks (Epic 23)
+
+| Identifier | Issue | Acceptance | Depends on |
+|---|---|---|---|
+| Issue-96 | Webhooks: endpoints and subscriptions by event type, events taken from the outbox, signed with a secret shown once and rotated with an overlap, delivered by the worker through the guarded outbound client with growing waits, set aside after a bound and delivered again on request | An endpoint at a private address is refused; a delivery that keeps failing is set aside and the others keep flowing; the signature checks with an independent library | — |
+| Issue-97 | Managing workloads and webhooks, and acceptance: the administration interface, the command-line tool and the console pages; the cross-tenant suite extended; the demonstration of the milestone | They pass in continuous integration against the image | all |
+
+### Explicitly not in Milestone 8
+
+The JWT bearer grant, rich authorization requests, workload identity federation from a cloud provider, export to a security event management system, the authorization profile of the Model Context Protocol.
+
+## Milestone 9: What 0.2.0 left out
+
+**Goal**: the parts of Phases 2, 4 and 5 that [Decision 0023](../decisions/0023-what-0.2.0-holds.md) set aside are built. Applications of different sectors cannot tell they share a person. A client gets the claims it is configured for. Applications are told when a person signs out. A person signs in with a code or a link sent by email. A person who has no second factor yet sets one up while signing in. An application grants access to one resource at a time. The last part of 0.3.0 ([Decision 0027](../decisions/0027-what-0.3.0-holds.md)).
+
+**Demo script**: sign in to two example applications of different sectors and compare their `sub`. Add a claim mapper that puts a group into the ID token and read it. Sign out at Hodor and see both applications receive a logout token. Sign in with a code sent by email, then with a link, and see each refused the second time. Turn on the second factor policy and sign in as a person who has none: set up an authenticator application from its QR code during the sign-in and finish. Share one document with a group through an access control list and evaluate for a member and for someone else.
+
+From here on, slices are named rather than lettered.
+
+### Slice OpenID Connect (Epic 10)
+
+| Identifier | Issue | Acceptance | Depends on |
+|---|---|---|---|
+| Issue-98 | Pairwise subject identifiers: a client's subject type, the sector from its redirect addresses or its sector identifier address fetched through the guarded outbound client; UserInfo, introspection and token exchange answer with the same identifier | Two clients of different sectors get different identifiers for one person; two of one sector get the same; the pairwise profile of the OpenID conformance suite passes | — |
+| Issue-99 | Claim mappers per client: claims from attributes, memberships, organizations and constants, checked when saved; names Hodor sets cannot be mapped; a bound on the size of a token | A mapper that names `sub`, `iss` or `acr` is refused; a token past the bound is refused when the mapper is saved, not when it is issued | Issue-89 |
+| Issue-100 | Back-channel logout: `sid` in ID tokens, logout tokens signed with the tenant's key and delivered by the worker to the addresses clients register, with retries | Every client with a session receives a logout token when the person signs out; the back-channel logout profile of the OpenID conformance suite passes | — |
+
+### Slice Email, access lists and enrollment (Epics 16, 17 and 20)
+
+| Identifier | Issue | Acceptance | Depends on |
+|---|---|---|---|
+| Issue-101 | One-time passwords and magic links by email: authenticators of the flow, the code and the link kept as hashes, good for one use and expiring, tied to the browser that asked, counted with the lockout | A code or a link is accepted once even when presented many times at once; a link opened in another browser does not sign that browser in; asking does not tell whether an address belongs to someone | — |
+| Issue-102 | Per-resource access control lists in the native engine: entries naming a user, a group, a client or a service account, a permission and one resource of a resource server, evaluated with roles; managed through the administration interface and the command-line tool | An entry allows only on its resource; removing a person from a group named by an entry stops allowing on the next decision; an entry of another tenant is never read | Issue-89 |
+| Issue-103 | Enrolling a second factor during a sign-in: under a tenant that requires one, a person who has none sets up an authenticator application, a security key or a passkey after the first factor, gets recovery codes, and the sign-in completes at multi-factor assurance | Under the policy, a person without a factor completes a sign-in only by enrolling one; enrolling is offered only after the first factor was proved; the sign-in cannot be completed by abandoning the enrollment | — |
+| Issue-104 | Acceptance: the conformance profiles extended, the cross-tenant suite extended to sectors, mappers, codes, entries and enrollment, the demonstration of the milestone | They pass in continuous integration against the image | all |
+
+### Explicitly not in Milestone 9
+
+One-time passwords by text message, HOTP, front-channel logout, relationship-based access control, rich authorization requests, the JWT bearer grant.
+
+### After Milestone 9
+
+0.3.0 is released when Milestone 9 is done, following [the release rules](../development/conventions.md#releases).
+
 ## Later epics at story level
 
 **Epic 7 Keys** — key set and version model with states; local provider with envelope encryption; scheduled rotation job with advisory lock; JWKS publication with overlap; revoke; admin API.

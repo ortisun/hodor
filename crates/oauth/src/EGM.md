@@ -12,18 +12,51 @@ follows is `docs/architecture/contexts/oauth.md`.
   - Ports: `ApplicationStore`, `ClientStore`, `ResourceServerStore`,
     `AuthorizationRequestStore`, `GrantStore`, `AuthorizationCodeStore`,
     `ClientAssertionStore`, `RefreshTokenStore`, `AccessTokenRecordStore`,
-    `PersonStanding`, `ConsentStore`.
+    `PersonStanding`, `PersonMemberships`, `ConsentStore`, `ClaimMapperStore`,
+    `PersonClaimSources`, and those of
+    back-channel logout: `SessionClients`, `LogoutDeliveryStore`,
+    `DueLogoutDeliveries`, `TenantIssuer`; `PairwiseSecretStore`, and
+    `HmacSha256`, implemented by the crypto adapter.
   - Services: `ApplicationService`, `ApplicationPorts`, `CreateClient`,
     `RotateSecret`, `CreateResourceServer`; `AuthorizationCodeService`,
     `AuthorizationCodePorts`, `ResumedRequest`, `RedeemedCode`;
     `TokenService`, `TokenPorts`, `Issuer`, `IssuedTokens`, with
-    `TokenService::revoke`, `introspect` and `register`;
-    `AccessTokenRegister`; `UserInfoService`, `UserInfoPorts`;
+    `TokenService::revoke`, `introspect`, `register` and `workload_tokens`;
+    `AccessTokenRegister`; `WorkloadTokens`; `UserInfoService`, `UserInfoPorts`;
     `LogoutService`, `LogoutPorts`, `LogoutRefusal`; `ConsentService`,
-    `ConsentPorts`, `ConsentQuestion`, `AskedScope`, `ListedConsent`.
+    `ConsentPorts`, `ConsentQuestion`, `AskedScope`, `ListedConsent`;
+    `BackChannelLogoutFanOut`, `BackChannelLogoutSender`,
+    `LogoutSenderPorts`, `LogoutDeliverySettings`, `LogoutLease`,
+    `LogoutOutcome`; `PairwiseSubjects`, `PairwisePorts`, given to
+    `TokenService`, `LogoutService` and `BackChannelLogoutSender` with
+    `with_pairwise_subjects`; `ApplicationService::with_sector_documents`.
+  - Pairwise subject identifiers' domain: `SubjectType`, `PairwiseSecret`
+    (with `subject` and `session`), `host_of`, `sector_of`,
+    `check_sector_identifier_uri`, `check_sector_document`,
+    `PAIRWISE_SECRET_PURPOSE`, `PAIRWISE_SECRET_BYTES`,
+    `MAX_SECTOR_IDENTIFIER_URI_LENGTH`, `MAX_SECTOR_DOCUMENT_BYTES`,
+    `SECTOR_DOCUMENT_TIME_LIMIT`; `IdTokenNames`, how an ID token names the
+    person and the session.
+  - Back-channel logout's domain: `LogoutDelivery`, `LogoutDeliveryId`,
+    `LogoutDeliverySnapshot`, `LogoutDeliveryStatus`, `LogoutRetryPolicy`,
+    `LogoutTokenSubject`, `logout_token_claims`, `logout_token_header`,
+    `check_backchannel_logout_uri`, and `BACKCHANNEL_LOGOUT_EVENT`,
+    `LOGOUT_TOKEN_TYPE`, `LOGOUT_TOKEN_LIFETIME`, `SESSION_REVOKED`,
+    `MAX_BACKCHANNEL_LOGOUT_URI_LENGTH`, `MAX_LOGOUT_ERROR_LENGTH`.
+    `ClaimMapperService`, `ClaimMapperPorts`, `ClaimMapping` (read by
+    `TokenPorts::mapping` and `UserInfoPorts::mapping`), `MappedToken`,
+    `MappedClaims`.
+  - Claim mappers: `ClaimMapper`, `ClaimMapperId`, `ClaimMapperSettings`,
+    `ClaimMapperSnapshot`, `ClaimSource`, `ClaimTarget`, `PersonAttribute`,
+    `OrganizationAttribute`, `PersonAttributes`, `PersonFacts`,
+    `check_together`, `mapped_claims`, `add_mapped_claims`, `is_reserved`,
+    and `RESERVED_CLAIMS`, `MAX_CLAIM_MAPPERS`, `MOST_MAPPED_BYTES`,
+    `MAX_CONSTANT_BYTES`, `LONGEST_LOCALE`.
   - The end-session endpoint's domain: `LogoutParameters`,
-    `check_id_token_hint`, `IdTokenHint`, `LogoutRequest` (with `decide`),
-    `LogoutDecision`, `CurrentSession`, `ReturnAddress`, `logout_refusal`
+    `check_id_token_hint`, `IdTokenHint` (its `sub` and `sid` as text),
+    `LogoutRequest` (with `decide`), `LogoutDecision`, `CurrentSession`,
+    `KnownSession` (the session as the hint's client knows it),
+    `ReturnAddress`, `logout_refusal`
     (the codes of the page), `MAX_LOGOUT_STATE_LENGTH`,
     `MAX_LOGOUT_LOCALES_LENGTH`.
   - The token endpoint's domain: `TokenRequest` (with `parse`),
@@ -89,7 +122,10 @@ follows is `docs/architecture/contexts/oauth.md`.
   - `testing/refresh.rs`: `InMemoryRefreshTokens::new(&grants)`, which
     refuses a family whose grant the tenant does not have, with `all(tenant)`;
     `StandingOf`, a stand-in `PersonStanding` whose `end_session` and `bar`
-    end a session or bar a person; `RefreshStorePorts` and
+    end a session or bar a person or a workload, and whose `workload(id,
+    kind)` makes a workload that may act; `MembershipsOf`, a stand-in
+    `PersonMemberships` whose `join`, `leave` and `set_groups` say what a
+    person is a member of; `RefreshStorePorts` and
     `run_refresh_token_contract(ports)`: a family stored whole and found by
     its token, a move once from a generation that keeps the earlier tokens
     known, a revocation that stops moves, tenants apart, and a family found
@@ -97,12 +133,27 @@ follows is `docs/architecture/contexts/oauth.md`.
   - `testing/register.rs`: `InMemoryAccessTokenRecords::new(&clients)`,
     which refuses a record whose client the tenant does not have, with
     `all(tenant)`; `AccessTokenRecordStorePorts` and
-    `run_access_token_record_contract(ports)`.
+    `run_access_token_record_contract(ports)`, which also checks that the
+    records of a principal are revoked together, once, in their tenant only.
   - `testing/consent.rs`: `InMemoryConsents::new(&clients)`, which refuses
     a consent or a history entry whose client the tenant does not have,
     with `history(tenant)`; `consent_service(units, &stores, clock)`, a
     `ConsentService` on in-memory stores for the layers above;
     `ConsentStorePorts` and `run_consent_contract(ports)`.
+  - `testing/backchannel.rs`: `InMemorySessionClients::new(&grants)`;
+    `InMemoryLogoutDeliveries::new(&clients)`, which implements both
+    `LogoutDeliveryStore` and `DueLogoutDeliveries` and refuses a delivery
+    whose client the tenant does not have, with `all(tenant)`;
+    `FixedIssuer` (`of(tenant)`); `FakeDestinations`, a destination check
+    without a resolver; `RecordingClients` with `ClientAnswer`, an outbound
+    client that keeps the requests (`tokens_to(url)`); and
+    `LogoutDeliveryStorePorts` with `run_logout_delivery_contract(ports)`.
+  - `testing/pairwise.rs`: `FakeHmac`; `InMemoryPairwiseSecrets` (with
+    `damage(tenant)`, `len`); `SectorDocuments`, an outbound client that
+    answers set documents and counts fetches; `pairwise_subjects(units,
+    secrets)`; `PairwiseSecretStorePorts` and
+    `run_pairwise_secret_contract(ports)`, which requires one secret per
+    tenant, the first stored kept.
 - Subdirectories:
   - [application](./application/EGM.md): the ports and the use cases.
   - [domain](./domain/EGM.md): the aggregates and their rules.

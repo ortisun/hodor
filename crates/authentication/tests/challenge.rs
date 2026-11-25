@@ -92,10 +92,12 @@ impl Authenticator for Signer {
         &self,
         _tenant: &TenantContext,
         _transaction: &AuthTransaction,
+        _asked: &ExternalInput,
     ) -> Result<Option<StepChallenge>, DomainError> {
         let byte = self.made.fetch_add(1, Ordering::SeqCst) + 1;
         Ok(Some(StepChallenge {
-            challenge: [byte; 32],
+            challenge: Some([byte; 32]),
+            enrollment: None,
             options: json!({ "challenge": byte }),
         }))
     }
@@ -154,8 +156,12 @@ impl World {
         transaction: &mut AuthTransaction,
         step: &str,
     ) -> Result<serde_json::Value, DomainError> {
+        let asked = ExternalInput {
+            step: step.to_owned(),
+            fields: Vec::new(),
+        };
         self.engine
-            .challenge(&self.tenant, &self.flow, transaction, step, START)
+            .challenge(&self.tenant, &self.flow, transaction, &asked, START)
             .await
     }
 

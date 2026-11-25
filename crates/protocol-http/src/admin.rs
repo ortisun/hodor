@@ -29,7 +29,7 @@ use axum::{Extension, Json, Router, middleware};
 use hodor_audit::api::{AuditRecord, AuditService};
 use hodor_authentication::api::FactorService;
 use hodor_authorization::api::{AuthorizationService, DecisionLog, Permission};
-use hodor_credential::api::AccessTokenService;
+use hodor_credential::api::{AccessTokenService, ApiKey, ApiKeyService, looks_like_api_key};
 use hodor_federation::api::{
     ChangeProvider, CreateProvider, DirectorySettings, FederationService, IdentityProvider,
     ProviderId, ProviderKind, ProviderSettings, ProviderStatus, SamlSettings, callback_address,
@@ -43,16 +43,25 @@ use hodor_kernel::{
 use hodor_keys::api::{KeyAlgorithm, KeyService, KeyUse, KeyVersion, KeyVersionId, RotationPolicy};
 use hodor_oauth::api::{ApplicationService, ClientId, ConsentActor, ConsentService};
 use hodor_session::api::{Session, SessionId, SessionService};
-use hodor_tenant::api::{AssuranceLevel, AssuranceLevels, AssuranceRequirement, TenantService};
+use hodor_tenant::api::{
+    AssuranceLevel, AssuranceLevels, AssuranceRequirement, Deprovisioning, EmailSignInPolicy,
+    TenantService,
+};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use time::format_description::well_known::Rfc3339;
 
+mod access_lists;
 mod applications;
 mod authorization;
+mod claim_mappers;
 mod decisions;
 mod factors;
+mod groups;
+mod organizations;
+mod webhooks;
+mod workloads;
 
 /// The OpenAPI document of the interface, as served at `/openapi.json`.
 pub const ADMIN_OPENAPI: &str = include_str!("../openapi/admin-v1.json");
@@ -209,6 +218,31 @@ pub const ADMIN_OPERATIONS: &[(&str, &str, Permission)] = &[
         "/clients/{client_id}/keys/{key_id}",
         Permission::ApplicationsWrite,
     ),
+    (
+        "GET",
+        "/clients/{client_id}/claim-mappers",
+        Permission::ApplicationsRead,
+    ),
+    (
+        "POST",
+        "/clients/{client_id}/claim-mappers",
+        Permission::ApplicationsWrite,
+    ),
+    (
+        "GET",
+        "/clients/{client_id}/claim-mappers/{claim_mapper_id}",
+        Permission::ApplicationsRead,
+    ),
+    (
+        "PUT",
+        "/clients/{client_id}/claim-mappers/{claim_mapper_id}",
+        Permission::ApplicationsWrite,
+    ),
+    (
+        "DELETE",
+        "/clients/{client_id}/claim-mappers/{claim_mapper_id}",
+        Permission::ApplicationsWrite,
+    ),
     ("GET", "/resource-servers", Permission::ApplicationsRead),
     ("POST", "/resource-servers", Permission::ApplicationsWrite),
     (
@@ -221,6 +255,10 @@ pub const ADMIN_OPERATIONS: &[(&str, &str, Permission)] = &[
         "/resource-servers/{resource_server_id}",
         Permission::ApplicationsWrite,
     ),
+    ("GET", "/scim-deprovisioning", Permission::UsersRead),
+    ("PUT", "/scim-deprovisioning", Permission::UsersWrite),
+    ("GET", "/email-sign-in", Permission::UsersRead),
+    ("PUT", "/email-sign-in", Permission::UsersWrite),
     ("GET", "/assurance-levels", Permission::AssuranceLevelsRead),
     ("PUT", "/assurance-levels", Permission::AssuranceLevelsWrite),
     ("GET", "/decision-log", Permission::DecisionsRead),
@@ -267,8 +305,33 @@ pub const ADMIN_OPERATIONS: &[(&str, &str, Permission)] = &[
         "/clients/{client_id}/role-assignments",
         Permission::RolesRead,
     ),
+    (
+        "GET",
+        "/groups/{group_id}/role-assignments",
+        Permission::RolesRead,
+    ),
     ("POST", "/role-assignments", Permission::RolesWrite),
     ("POST", "/role-assignments:revoke", Permission::RolesWrite),
+    (
+        "GET",
+        "/resource-servers/{resource_server_id}/access-entries",
+        Permission::AccessEntriesRead,
+    ),
+    (
+        "POST",
+        "/resource-servers/{resource_server_id}/access-entries",
+        Permission::AccessEntriesWrite,
+    ),
+    (
+        "GET",
+        "/access-entries/{entry_id}",
+        Permission::AccessEntriesRead,
+    ),
+    (
+        "DELETE",
+        "/access-entries/{entry_id}",
+        Permission::AccessEntriesWrite,
+    ),
     ("GET", "/bindings", Permission::BindingsRead),
     (
         "GET",
@@ -309,6 +372,206 @@ pub const ADMIN_OPERATIONS: &[(&str, &str, Permission)] = &[
         Permission::PoliciesRead,
     ),
     ("GET", "/policy-status", Permission::PoliciesRead),
+    ("GET", "/groups", Permission::GroupsRead),
+    ("POST", "/groups", Permission::GroupsWrite),
+    ("GET", "/groups/{group_id}", Permission::GroupsRead),
+    ("PATCH", "/groups/{group_id}", Permission::GroupsWrite),
+    ("DELETE", "/groups/{group_id}", Permission::GroupsWrite),
+    ("GET", "/groups/{group_id}/members", Permission::GroupsRead),
+    (
+        "POST",
+        "/groups/{group_id}/members",
+        Permission::GroupsWrite,
+    ),
+    (
+        "POST",
+        "/groups/{group_id}/members:remove",
+        Permission::GroupsWrite,
+    ),
+    ("GET", "/users/{user_id}/groups", Permission::GroupsRead),
+    ("GET", "/organizations", Permission::OrganizationsRead),
+    ("POST", "/organizations", Permission::OrganizationsWrite),
+    (
+        "GET",
+        "/organizations/{organization_id}",
+        Permission::OrganizationsRead,
+    ),
+    (
+        "PATCH",
+        "/organizations/{organization_id}",
+        Permission::OrganizationsWrite,
+    ),
+    (
+        "DELETE",
+        "/organizations/{organization_id}",
+        Permission::OrganizationsWrite,
+    ),
+    (
+        "GET",
+        "/organizations/{organization_id}/units",
+        Permission::OrganizationsRead,
+    ),
+    (
+        "POST",
+        "/organizations/{organization_id}/units",
+        Permission::OrganizationsWrite,
+    ),
+    (
+        "PUT",
+        "/organizations/{organization_id}/units/{unit_id}",
+        Permission::OrganizationsWrite,
+    ),
+    (
+        "DELETE",
+        "/organizations/{organization_id}/units/{unit_id}",
+        Permission::OrganizationsWrite,
+    ),
+    (
+        "GET",
+        "/organizations/{organization_id}/members",
+        Permission::OrganizationsRead,
+    ),
+    (
+        "PUT",
+        "/organizations/{organization_id}/members/{user_id}",
+        Permission::OrganizationsWrite,
+    ),
+    (
+        "DELETE",
+        "/organizations/{organization_id}/members/{user_id}",
+        Permission::OrganizationsWrite,
+    ),
+    (
+        "GET",
+        "/organizations/{organization_id}/invitations",
+        Permission::OrganizationsRead,
+    ),
+    (
+        "POST",
+        "/organizations/{organization_id}/invitations",
+        Permission::OrganizationsWrite,
+    ),
+    (
+        "DELETE",
+        "/organizations/{organization_id}/invitations/{invitation_id}",
+        Permission::OrganizationsWrite,
+    ),
+    (
+        "GET",
+        "/users/{user_id}/organizations",
+        Permission::OrganizationsRead,
+    ),
+    ("GET", "/service-accounts", Permission::WorkloadsRead),
+    ("POST", "/service-accounts", Permission::WorkloadsWrite),
+    (
+        "GET",
+        "/service-accounts/{service_account_id}",
+        Permission::WorkloadsRead,
+    ),
+    (
+        "PATCH",
+        "/service-accounts/{service_account_id}",
+        Permission::WorkloadsWrite,
+    ),
+    (
+        "POST",
+        "/service-accounts/{service_account_id}:disable",
+        Permission::WorkloadsWrite,
+    ),
+    (
+        "POST",
+        "/service-accounts/{service_account_id}:enable",
+        Permission::WorkloadsWrite,
+    ),
+    (
+        "DELETE",
+        "/service-accounts/{service_account_id}",
+        Permission::WorkloadsWrite,
+    ),
+    ("GET", "/agents", Permission::WorkloadsRead),
+    ("POST", "/agents", Permission::WorkloadsWrite),
+    ("GET", "/agents/{agent_id}", Permission::WorkloadsRead),
+    ("PATCH", "/agents/{agent_id}", Permission::WorkloadsWrite),
+    (
+        "POST",
+        "/agents/{agent_id}:disable",
+        Permission::WorkloadsWrite,
+    ),
+    (
+        "POST",
+        "/agents/{agent_id}:enable",
+        Permission::WorkloadsWrite,
+    ),
+    ("DELETE", "/agents/{agent_id}", Permission::WorkloadsWrite),
+    ("GET", "/webhook-event-types", Permission::WebhooksRead),
+    ("GET", "/webhook-endpoints", Permission::WebhooksRead),
+    ("POST", "/webhook-endpoints", Permission::WebhooksWrite),
+    (
+        "GET",
+        "/webhook-endpoints/{endpoint_id}",
+        Permission::WebhooksRead,
+    ),
+    (
+        "DELETE",
+        "/webhook-endpoints/{endpoint_id}",
+        Permission::WebhooksWrite,
+    ),
+    (
+        "PUT",
+        "/webhook-endpoints/{endpoint_id}/subscriptions",
+        Permission::WebhooksWrite,
+    ),
+    (
+        "POST",
+        "/webhook-endpoints/{endpoint_id}:rotate-secret",
+        Permission::WebhooksWrite,
+    ),
+    ("GET", "/webhook-deliveries", Permission::WebhooksRead),
+    (
+        "POST",
+        "/webhook-deliveries/{delivery_id}:redeliver",
+        Permission::WebhooksWrite,
+    ),
+    (
+        "GET",
+        "/service-accounts/{service_account_id}/api-keys",
+        Permission::WorkloadsRead,
+    ),
+    (
+        "POST",
+        "/service-accounts/{service_account_id}/api-keys",
+        Permission::WorkloadsWrite,
+    ),
+    (
+        "POST",
+        "/service-accounts/{service_account_id}/api-keys/{api_key_id}:rotate",
+        Permission::WorkloadsWrite,
+    ),
+    (
+        "DELETE",
+        "/service-accounts/{service_account_id}/api-keys/{api_key_id}",
+        Permission::WorkloadsWrite,
+    ),
+    (
+        "GET",
+        "/agents/{agent_id}/api-keys",
+        Permission::WorkloadsRead,
+    ),
+    (
+        "POST",
+        "/agents/{agent_id}/api-keys",
+        Permission::WorkloadsWrite,
+    ),
+    (
+        "POST",
+        "/agents/{agent_id}/api-keys/{api_key_id}:rotate",
+        Permission::WorkloadsWrite,
+    ),
+    (
+        "DELETE",
+        "/agents/{agent_id}/api-keys/{api_key_id}",
+        Permission::WorkloadsWrite,
+    ),
 ];
 
 /// What the administration handlers need.
@@ -334,6 +597,8 @@ pub struct AdminState {
     pub key_rotation: RotationPolicy,
     /// The applications, their clients and resource servers.
     pub applications: ApplicationService,
+    /// The claim mappers of clients.
+    pub claim_mappers: hodor_oauth::api::ClaimMapperService,
     /// The tenant, for its assurance levels.
     pub tenants: TenantService,
     /// The users' second factors, which an administrator sees and removes.
@@ -344,6 +609,8 @@ pub struct AdminState {
     pub decisions: DecisionLog,
     /// The tenant's permissions, roles and who holds them.
     pub roles: hodor_authorization::api::RoleService,
+    /// The entries of the tenant's access control lists.
+    pub access_lists: hodor_authorization::api::AccessListService,
     /// The bindings of resource servers to engines.
     pub evaluation: hodor_authorization::api::EvaluationService,
     /// The tenant's policy versions for Open Policy Agent. `None` when the
@@ -351,6 +618,19 @@ pub struct AdminState {
     pub policies: Option<hodor_authorization_opa::api::PolicyService>,
     /// The address people reach this installation at, without a path.
     pub public_url: String,
+    /// The tenant's groups.
+    pub groups: hodor_identity::api::GroupService,
+    /// The tenant's organizations, their units, members and invitations.
+    pub organizations: hodor_identity::api::OrganizationService,
+    /// Sending invitations to organizations.
+    pub invitations: hodor_authentication::api::InvitationService,
+    /// The tenant's service accounts and agents.
+    pub workloads: hodor_identity::api::WorkloadService,
+    /// The tenant's webhook endpoints and their deliveries. `None` when
+    /// this installation has no keys to seal their secrets with.
+    pub webhooks: Option<hodor_webhooks::api::WebhookService>,
+    /// The API keys of service accounts and agents.
+    pub api_keys: ApiKeyService,
 }
 
 /// What the console interface needs on top of the administration
@@ -447,10 +727,24 @@ fn shared_routes() -> Router<Shared> {
             "/assurance-levels",
             get(read_assurance_levels).put(replace_assurance_levels),
         )
+        .route(
+            "/scim-deprovisioning",
+            get(read_scim_deprovisioning).put(set_scim_deprovisioning),
+        )
+        .route(
+            "/email-sign-in",
+            get(read_email_sign_in).put(set_email_sign_in),
+        )
         .merge(applications::routes())
+        .merge(claim_mappers::routes())
         .merge(factors::routes())
         .merge(decisions::routes())
         .merge(authorization::routes())
+        .merge(access_lists::routes())
+        .merge(groups::routes())
+        .merge(organizations::routes())
+        .merge(workloads::routes())
+        .merge(webhooks::routes())
 }
 
 /// One assurance level, as the interface writes it.
@@ -530,6 +824,125 @@ async fn replace_assurance_levels(
                 .map_err(failed)?;
             let levels = &changed.snapshot().settings.authentication.assurance_levels;
             Ok(Json(AssuranceLevelsBody::from(levels)).into_response())
+        }
+        .await,
+    )
+}
+
+/// The tenant's SCIM deprovisioning policy, as the interface writes it.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ScimDeprovisioningBody {
+    deprovisioning: Deprovisioning,
+}
+
+async fn read_scim_deprovisioning(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+) -> Response {
+    respond(
+        async {
+            authorize(&state, &tenant, &headers, "GET", "/scim-deprovisioning").await?;
+            let found = state.tenants.get(&tenant).await.map_err(failed)?;
+            Ok(Json(ScimDeprovisioningBody {
+                deprovisioning: found.snapshot().settings.provisioning.deprovisioning,
+            })
+            .into_response())
+        }
+        .await,
+    )
+}
+
+async fn set_scim_deprovisioning(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+    bytes: Bytes,
+) -> Response {
+    respond(
+        async {
+            let caller =
+                authorize(&state, &tenant, &headers, "PUT", "/scim-deprovisioning").await?;
+            let asked: ScimDeprovisioningBody = body(&bytes)?;
+            let found = state.tenants.get(&tenant).await.map_err(failed)?;
+            let mut settings = found.snapshot().settings.clone();
+            settings.provisioning.deprovisioning = asked.deprovisioning;
+            let changed = state
+                .tenants
+                .change_settings(&tenant, settings, caller)
+                .await
+                .map_err(failed)?;
+            Ok(Json(ScimDeprovisioningBody {
+                deprovisioning: changed.snapshot().settings.provisioning.deprovisioning,
+            })
+            .into_response())
+        }
+        .await,
+    )
+}
+
+/// The tenant's email sign-in policy, as the interface writes it: both
+/// fields, always.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EmailSignInBody {
+    code: bool,
+    link: bool,
+}
+
+impl From<EmailSignInPolicy> for EmailSignInBody {
+    fn from(policy: EmailSignInPolicy) -> Self {
+        Self {
+            code: policy.code,
+            link: policy.link,
+        }
+    }
+}
+
+async fn read_email_sign_in(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+) -> Response {
+    respond(
+        async {
+            authorize(&state, &tenant, &headers, "GET", "/email-sign-in").await?;
+            let found = state.tenants.get(&tenant).await.map_err(failed)?;
+            Ok(Json(EmailSignInBody::from(
+                found.snapshot().settings.authentication.email_sign_in,
+            ))
+            .into_response())
+        }
+        .await,
+    )
+}
+
+async fn set_email_sign_in(
+    State(state): State<Shared>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+    bytes: Bytes,
+) -> Response {
+    respond(
+        async {
+            let caller = authorize(&state, &tenant, &headers, "PUT", "/email-sign-in").await?;
+            let asked: EmailSignInBody = body(&bytes)?;
+            let found = state.tenants.get(&tenant).await.map_err(failed)?;
+            let mut settings = found.snapshot().settings.clone();
+            settings.authentication.email_sign_in = EmailSignInPolicy {
+                code: asked.code,
+                link: asked.link,
+            };
+            let changed = state
+                .tenants
+                .change_settings(&tenant, settings, caller)
+                .await
+                .map_err(failed)?;
+            Ok(Json(EmailSignInBody::from(
+                changed.snapshot().settings.authentication.email_sign_in,
+            ))
+            .into_response())
         }
         .await,
     )
@@ -625,13 +1038,13 @@ async fn authorize(
     method: &str,
     path: &str,
 ) -> Result<Caller, Box<Response>> {
-    let user_id = match &state.by_session {
+    let (user_id, key) = match &state.by_session {
         None => by_token(state, tenant, headers).await?,
         Some(by_session) => {
             let person = by_session
                 .recognize(state, tenant, headers, method != "GET")
                 .await?;
-            person.session.user_id()
+            (person.session.user_id(), None)
         }
     };
     let permission = ADMIN_OPERATIONS
@@ -639,6 +1052,10 @@ async fn authorize(
         .find(|(m, p, _)| *m == method && *p == path)
         .map(|(_, _, permission)| *permission)
         .ok_or_else(forbidden)?;
+    // A key does no more than its scopes, and no more than its holder.
+    if key.is_some_and(|key| !key.has_scope(permission.as_str())) {
+        return Err(forbidden());
+    }
     let decision = state
         .authorization
         .check(tenant, user_id, permission)
@@ -653,13 +1070,29 @@ async fn authorize(
     })
 }
 
-/// Who an access token belongs to, if it is good and its user may sign in.
+/// Who an access token belongs to, if it is good and its user may sign in;
+/// or who holds an API key, with the key, if it is good and its holder is a
+/// workload that may act.
 async fn by_token(
     state: &AdminState,
     tenant: &TenantContext,
     headers: &HeaderMap,
-) -> Result<UserId, Box<Response>> {
+) -> Result<(UserId, Option<ApiKey>), Box<Response>> {
     let token = bearer(headers).ok_or_else(not_authenticated)?;
+    if looks_like_api_key(token) {
+        let key = state
+            .api_keys
+            .authenticate(tenant, token)
+            .await
+            .map_err(failed)?
+            .ok_or_else(not_authenticated)?;
+        return match state.identity.get(tenant, key.holder_id()).await {
+            Ok(holder) if holder.is_workload_that_may_act() => Ok((holder.id(), Some(key))),
+            Ok(_) => Err(not_authenticated()),
+            Err(error) if error.code() == "identity.user_not_found" => Err(not_authenticated()),
+            Err(error) => Err(failed(error)),
+        };
+    }
     let token = state
         .tokens
         .authenticate(tenant, token)
@@ -668,7 +1101,7 @@ async fn by_token(
         .ok_or_else(not_authenticated)?;
     let user_id = token.user_id();
     match state.identity.get(tenant, user_id).await {
-        Ok(user) if user.may_sign_in() => Ok(user_id),
+        Ok(user) if user.may_sign_in() => Ok((user_id, None)),
         Ok(_) => Err(not_authenticated()),
         Err(error) if error.code() == "identity.user_not_found" => Err(not_authenticated()),
         Err(error) => Err(failed(error)),

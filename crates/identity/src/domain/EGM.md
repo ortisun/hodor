@@ -19,8 +19,10 @@ model are described in [the application layer](../application/EGM.md).
 - `UserSnapshot`: the stored state (`id`, `kind`, `status`, `status_reason`, `profile`, `identifiers` oldest first, `created_at`, `updated_at`, `version` for optimistic locking).
 - `User`, with `User::MAX_IDENTIFIERS = 10`:
   - `create(kind, identifiers: Vec<NormalizedIdentifier>, profile, confirmed, now) -> (User, Vec<UserEvent>)`.
-  - `from_snapshot`, `snapshot`, `id`, `status`, `identifiers`.
-  - `may_sign_in()`: true only for `Active`.
+  - `from_snapshot`, `snapshot`, `id`, `kind`, `status`, `identifiers`.
+  - `may_sign_in()`: true only for an `Active` `Human`. A service account or an agent never signs in.
+  - `is_workload_that_may_act()`: true only for an `Active` `ServiceAccount` or `Agent`.
+- `UserKind::is_workload()`: true for `ServiceAccount` and `Agent`.
   - Lifecycle: `activate`, `suspend(reason, now)`, `reactivate`, `deactivate`, `restore`, `mark_deleted`. Each returns one `UserEvent`.
   - Identifiers: `add_identifier(value, now) -> UserEvent`, `verify_identifier(id, now) -> Option<UserEvent>`, `choose_primary(id, now) -> Option<UserEvent>`, `remove_identifier(id, now) -> Vec<UserEvent>`.
   - `change_profile(profile, now) -> UserEvent`.
@@ -32,6 +34,14 @@ model are described in [the application layer](../application/EGM.md).
 - `IdentifierKind`: `Username`, `Email`. `as_str()` gives `username`, `email`; `from_stored`; `needs_verification()` is true only for `Email`.
 - `NormalizedIdentifier`: keeps the typed (display) form and the normalized form that is compared and kept unique. `parse(kind, value)`, `from_login(value) -> Option<Self>`, `from_stored(kind, normalized, display)`, `kind`, `normalized`, `display`, `same_as`.
 - `LoginIdentifier { id, value, verified_at, primary, created_at }` with `is_verified()`.
+
+### `workload.rs`
+
+- `Workload::of(user, kind, owners) -> Option<Workload>`: only a user of that workload kind that is not Deleted. `id`, `kind`, `name` (the display name), `status`, `owners`, `user`.
+- `WorkloadStatus`: `Active` or `Disabled`; `of(UserStatus)` reads Pending, Suspended and Deactivated as `Disabled` and Deleted as none. `as_str()` gives `active`, `disabled`.
+- `workload_profile(name)`: the name trimmed, 1 to 200 characters (`Invalid` `identity.display_name_invalid`).
+- `checked_owners(owners)`: repeats dropped, 1 to `MAX_WORKLOAD_OWNERS` = 10 (`Invalid` `identity.workload_owner_required`, `identity.too_many_workload_owners`).
+- `WorkloadEvent`: `OwnerAdded` and `OwnerRemoved`, each with `workload_id`, `kind` and `owner_id`, as `identity.workload_owner_added` and `identity.workload_owner_removed`; `of_change(workload, kind, before, after)` gives the added ones, then the removed ones.
 
 ### Domain events (`event.rs`)
 
@@ -66,6 +76,7 @@ model are described in [the application layer](../application/EGM.md).
 - `User::create`: a `Human` needs at least one identifier (`Invalid` `identity.identifier_required`). The user starts `Active` when `confirmed`, otherwise `Pending`. Its `UserId` is generated, its version starts at 0, and it emits `Created` followed by one `IdentifierAdded` per identifier.
 - A `Deleted` user cannot change: `add_identifier`, `verify_identifier`, `choose_primary`, `remove_identifier` and `change_profile` fail with `Conflict` `identity.invalid_transition` (`User::require_not_deleted`).
 - Login identifiers (`User` methods):
+  - A `ServiceAccount` or an `Agent` has none: `add_identifier`, and so `create` with identifiers, fails with `Invalid` `identity.workload_identifier_refused`.
   - At most 10 per user (`Invalid` `identity.too_many_identifiers`).
   - The same name twice, however it was typed, is refused (`Conflict` `identity.identifier_duplicate`, compared with `NormalizedIdentifier::same_as`, which compares kind and normalized form, so a username and an email address with the same text never collide).
   - The first identifier of a kind becomes primary.

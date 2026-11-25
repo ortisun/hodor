@@ -7,9 +7,11 @@ The operations tool of a Hodor installation: `main.rs`, and
 `decisions.rs` for `hodor-cli authorization decision-log show|set` and
 `hodor-cli authorization decisions`, and `roles.rs` for
 `hodor-cli authorization permission declare|remove|list`, `role define|remove|list`,
-`assign`, `revoke`, `bind`, `unbind` and `bindings` (a resource server named by
+`assign`, `revoke`, `access-entry grant|list|remove`, `bind`, `unbind` and
+`bindings` (a resource server named by
 its audience; `bind` knows the engine names `native` and `open_policy_agent`
-through a registry of names only, since the tool never evaluates). It parses
+through a registry of names only, since the tool never evaluates), and
+`webhooks.rs` for `hodor-cli webhook`. It parses
 the command line with clap (`Cli`, `Command`), connects to PostgreSQL and calls
 the services of the domain crates directly. It applies migrations, manages
 tenants, makes the first administrator of a tenant, verifies the audit chain,
@@ -34,6 +36,8 @@ Commands, as typed, from the clap enums in `main.rs`:
 | `hodor-cli tenant suspend` | `--slug`, `--reason` | `TenantService::suspend` (`TenantCommand::Suspend`) |
 | `hodor-cli tenant reactivate` | `--slug` | `TenantService::reactivate` (`TenantCommand::Reactivate`) |
 | `hodor-cli tenant second-factor` | `--slug`, `--policy` (`required`, `not-required`) | `TenantService::change_settings` with `authentication.second_factor` (`TenantCommand::SecondFactor`) |
+| `hodor-cli tenant email-sign-in` | `--slug`, `--code` and `--link` (`on`, `off`), each optional; neither to only print | `TenantService::change_settings` with `authentication.email_sign_in`, only what was given; prints `<slug> email-sign-in code <on\|off> link <on\|off>` (`TenantCommand::EmailSignIn`) |
+| `hodor-cli tenant scim-deprovisioning` | `--slug`, `--policy` (`deactivate`, `delete`) | `TenantService::change_settings` with `provisioning.deprovisioning`; prints `<slug> scim-deprovisioning <policy>` (`TenantCommand::ScimDeprovisioning`) |
 | `hodor-cli tenant assurance-levels` | `--slug`, `--level <acr>=<requirement>` repeated; none to only print | `AssuranceLevels::new` then `TenantService::change_settings` with `authentication.assurance_levels`; prints `<slug> <acr> <requirement>` per level, weakest first (`TenantCommand::AssuranceLevels`) |
 | `hodor-cli admin bootstrap` | `--tenant`, `--email`, `--token-minutes` (default 60) | `bootstrap_administrator` (`AdminCommand::Bootstrap`) |
 | `hodor-cli audit verify` | `--tenant` | `verify_audit`, which calls `hodor_audit::api::AuditService::verify` (`AuditCommand::Verify`) |
@@ -43,10 +47,27 @@ Commands, as typed, from the clap enums in `main.rs`:
 | `hodor-cli application add` | `--tenant`, `--name`, `--first-party` (third party unless given) | `ApplicationService::create_application`; prints `application <id> <name>` (`applications.rs:run_application`) |
 | `hodor-cli application list` | `--tenant` | `ApplicationService::applications`; one line `<id> <status> first-party|third-party <name>` each |
 | `hodor-cli application disable` / `enable` | `--tenant`, `--id` | `ApplicationService::set_application_status`; prints `application <id> <status>` |
-| `hodor-cli client add` | `--tenant`, `--application`, `--name`, `--type`, `--grant` (repeatable, required), `--redirect-uri`, `--scope` (repeatable), `--method`, `--secret-days` (default 365), `--without-pkce` (a confidential client only), `--id-token-algorithm` (`ES256` unless given, or `RS256`) | `ApplicationService::create_client`; prints `client <id>` and, for a secret method, `secret <value>` and `expires <time>`, once (`applications.rs:run_client`) |
+| `hodor-cli client add` | `--tenant`, `--application`, `--name`, `--type`, `--grant` (repeatable, required), `--redirect-uri`, `--scope` (repeatable), `--method`, `--secret-days` (default 365), `--without-pkce` (a confidential client only), `--id-token-algorithm` (`ES256` unless given, or `RS256`), `--backchannel-logout-uri` (checked by a `GuardedHttpClient` with the development exception of `HODOR_OUTBOUND_DEVELOPMENT_HOSTS`, given to `ApplicationService::with_destinations`; a private address is `oauth.client_backchannel_logout_uri_forbidden`), `--backchannel-logout-session-required`, `--principal` (a service account or an agent of the tenant, an agent with the token exchange grant, checked by `workloads.rs:principal_of`, otherwise `oauth.client_principal_invalid`), `--exchange-rule '<subject audience>=><audience>'` (repeatable, `exchange_rule`) | `ApplicationService::create_client`; prints `client <id>` and, for a secret method, `secret <value>` and `expires <time>`, once (`applications.rs:run_client`) |
+| `hodor-cli service-account create` / `agent create` | `--tenant`, `--name`, `--owner` (repeatable, required) | `WorkloadService::create` with the kind of the command; prints `created <id> <name>` (`workloads.rs:run`) |
+| `hodor-cli service-account list` / `agent list` | `--tenant` | `WorkloadService::list`, every page; one line `<id> <status> <name>` each, the deleted left out |
+| `hodor-cli service-account disable` / `enable` / `delete`, and the same of `agent` | `--tenant`, `--id` | `WorkloadService::disable`, `enable` and `delete`; print `<status> <id>` or `deleted <id>`. `CommandLineAccess` implements `WorkloadAccess` with `WorkloadTokens` and, on deletion, `ApiKeyService::revoke_all_of_in`, since a workload holds no session and no grant |
+| `hodor-cli service-account key create` / `agent key create` | `--tenant`, `--id`, `--name`, `--scope` (repeatable, required), `--application`, `--lifetime-days` (default 90) | `check_key_scopes`, the application through `ApplicationService::application` (`credential.api_key_application_invalid`), then `ApiKeyService::create`; prints `key <id>`, `api-key <value>` once and `expires <time>` (`workloads.rs:run_key`) |
+| `hodor-cli service-account key list` / `rotate` / `revoke`, and the same of `agent` | `--tenant`, `--id`; `--key` for `rotate` and `revoke`; `--lifetime-days` and `--keep-previous-days` (default 7) for `rotate` | `ApiKeyService::list` (one line `<id> <status> <hint> <name>` each), `rotate` (prints as `create`), `revoke` (prints `revoked <id>`) |
+| `hodor-cli webhook event-types` | none; no tenant | `CATALOG`, one a line (`webhooks.rs:run`) |
+| `hodor-cli webhook add` | `--tenant`, `--url`, `--event` (repeatable, required), `--description`; `HODOR_SECRET_KEYS` and `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` | `WebhookService::register`, the address checked by `GuardedHttpClient` as `DestinationCheck`; prints `created <id> <url>` and `secret <whsec_…>`, once |
+| `hodor-cli webhook list` | `--tenant` | `WebhookService::list`, every page; one line `<id> <url> <type>,<type>…` each |
+| `hodor-cli webhook subscribe` | `--tenant`, `--id`, `--event` (repeatable, required) | `WebhookService::replace_subscriptions`; prints `subscribed <id> <type>,<type>…` |
+| `hodor-cli webhook rotate-secret` | `--tenant`, `--id`, `--overlap-hours` (24 unless given); `HODOR_SECRET_KEYS` | `WebhookService::rotate_secret`; prints `secret <whsec_…>` once and `previous-until <time>` |
+| `hodor-cli webhook remove` | `--tenant`, `--id` | `WebhookService::remove`; prints `removed <id>` |
+| `hodor-cli webhook deliveries` | `--tenant`, `--endpoint`, `--status` (`pending`, `delivered`, `set_aside`) | `WebhookService::deliveries`, the latest 100; one line `<id> <status> <attempts> <event type> <event id>` each |
+| `hodor-cli webhook redeliver` | `--tenant`, `--delivery` | `WebhookService::redeliver`; prints `pending <id>` |
+| `hodor-cli admin grant` / `revoke` | `--tenant`, `--user`, `--role` (`tenant_administrator` or `tenant_auditor`) | `AuthorizationService::assign` or `revoke` for a user who exists and is not Deleted; prints `granted <role> <id>` or `revoked <role> <id>` (`built_in_role`) |
 | `hodor-cli client list` | `--tenant`, `--application` | `ApplicationService::clients`; one line `<id> <status> <type> <method> <name>` each |
 | `hodor-cli client rotate-secret` | `--tenant`, `--id`, `--lifetime-days` (default 365), `--keep-previous-days` (default 7) | `ApplicationService::rotate_client_secret`; prints `secret <value>` and `expires <time>`, once |
 | `hodor-cli client disable` / `enable` | `--tenant`, `--id` | `ApplicationService::set_client_status`; prints `client <id> <status>` |
+| `hodor-cli client mapper add` | `--tenant`, `--client`, `--claim`, `--target` (repeatable, required), `--source`, `--attribute`, `--group`, `--value` (JSON), `--scope` | The group of `group_member` through `GroupService::get` (`memberships::groups`), then `ClaimMapperService::create`; prints `mapper <id>` (`applications.rs:run_mapper`) |
+| `hodor-cli client mapper list` | `--tenant`, `--client` | `ClaimMapperService::mappers`; one line `<id> <claim> <targets, comma-separated> <source> <scope or ->` each, the source as `attribute:<name>`, `groups`, `group_member:<group>`, `organization:<attribute>` or `constant` |
+| `hodor-cli client mapper remove` | `--tenant`, `--client`, `--id` | `ClaimMapperService::delete`; prints `removed <id>` |
 | `hodor-cli resource-server add` | `--tenant`, `--application`, `--audience`, `--name`, `--scope name=description` (repeatable) | `ApplicationService::create_resource_server`; prints `resource-server <id> <audience>` (`applications.rs:run_resource_server`) |
 | `hodor-cli resource-server list` | `--tenant` | `ApplicationService::resource_servers`; one line `<id> <audience> <name> [<scopes>]` each |
 | `hodor-cli totp enroll` | `--tenant`, `--login`; keys from `HODOR_SECRET_KEYS` | `TotpService::begin_enrollment`, issuer the tenant's display name; prints `secret <Base32>` and `address <otpauth://…>` (`TotpCommand::Enroll`, `run_totp`) |
@@ -117,6 +138,10 @@ the application commands), `run_tenant`, `run_provider`,
   says the token "is printed once" and running the command again issues a new
   one and leaves earlier ones as they are. The 1 to 43200 minute range is
   stated in the doc comment only; `main.rs` does not check it.
+- `webhooks.rs:run` builds `WebhookService` with `NoKeys` in place of the
+  tenants' secret box when `HODOR_SECRET_KEYS` is not given: it refuses to
+  seal or open with `secret.keys_missing`, so `add` and `rotate-secret` are
+  refused and the other commands work.
 - `run_provider` refuses with `secret.keys_missing` when no secret keys are
   given, because provider secrets are kept encrypted. For every kind except
   SAML it refuses with `federation.client_secret_invalid` when

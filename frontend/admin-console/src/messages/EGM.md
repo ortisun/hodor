@@ -27,9 +27,11 @@ read it from a `Messages` object.
 - `en.ts:en` groups - plain keys (`locale`, `product`, `console`, `loading`,
   `scope`, `navigation`, `tenant`), then comment-marked groups for who may be
   here, the frame, navigation, failures, users, one user, the ladder, audit,
-  identity providers, applications, resource servers, clients and a secret
-  shown once; lookup tables `roles`, `status`, `kinds`, `providerStatus`,
-  `providerKinds`, `clientTypes`, `clientTypeHints`, `methods`, `grants`,
+  identity providers, applications, resource servers, clients, groups and
+  organizations alike, groups, organizations, the page of a user, and a
+  secret shown once; lookup tables `roles`, `status`, `kinds`,
+  `providerStatus`, `providerKinds`, `clientTypes`, `clientTypeHints`,
+  `methods`, `grants`, `memberKinds`, `unitKinds`, `messageLanguages`,
   `valueInvalid` and the list
   `levelFriction`; text-building functions such as `noAccess`, `sessionUntil`,
   `userCreated`, `typeToConfirm` and `requestIdentifier`.
@@ -53,7 +55,9 @@ read it from a `Messages` object.
   `identity.user_not_found`, `identity.invalid_transition`,
   `federation.provider_not_found`, `federation.alias_taken`,
   `federation.too_many_providers`, `federation.not_configured`,
-  `federation.provider_modified_concurrently`) to their text, then tries
+  `federation.provider_modified_concurrently`, `identity.group_cycle`,
+  `identity.group_nesting_too_deep`, `identity.unit_not_empty` and the other
+  codes of groups and organizations) to their text, then tries
   `text.valueInvalid[code]`, and falls back to `somethingWrong` followed by
   `requestIdentifier(requestId)` when the failure carries a request identifier.
   No HTTP status other than `0` is looked at.

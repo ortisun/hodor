@@ -43,8 +43,16 @@ reach other crates only through `hodor_authentication::api` in `../lib.rs`.
   (`demanded` is the assurance the tenant's policy asks beyond the flow's
   minimum; after a satisfied step the steps to be passed over are passed over,
   and an error leaves the transaction unchanged),
-  `challenge(tenant, flow, transaction, step, now)` (the current step's, or
-  an alternative's while `current_step` is 0),
+  `submit_step(...) -> Submitted { progress, enrolled }`, the same with what
+  an enrollment step put in use (`submit` keeps only `progress`),
+  `challenge(tenant, flow, transaction, asked: &ExternalInput, now)` (the
+  step named by `asked.step`: the current step's, or an alternative's while
+  `current_step` is 0; `asked.fields` go to the authenticator; the
+  challenge is kept in the transaction only when the authenticator gives
+  one, and so is the `enrollment` it began, in place of an earlier one), `offered_alternatives(tenant, flow)` (the keys of the alternatives
+  whose authenticator's `offered` is true), and both `submit` and
+  `challenge` refuse an alternative that is not offered with `Forbidden`
+  `authentication.method_not_offered`,
   `assurance(transaction) -> Option<Assurance>` over the carried and satisfied
   methods, `assurance_of_methods(methods)` (counts `factor` and
   `second_factor` of every method; two kinds with an authenticator whose
@@ -69,11 +77,43 @@ reach other crates only through `hodor_authentication::api` in `../lib.rs`.
   extension point: `kind() -> &'static str`, `traits() -> AuthenticatorTraits`,
   `perform(tenant, transaction, input) -> StepOutcome`, and
   `has_means(tenant, transaction) -> bool`, asked only for steps that are not
-  required; the default answers `true`; and `challenge(tenant, transaction) ->
-  Option<StepChallenge>`, for a step that checks an answer only to a question
-  it asked; the default answers `None`.
-- `StepChallenge { challenge: [u8; 32], options: serde_json::Value }`: what the
-  engine keeps in the transaction, and what the browser needs.
+  required; the default answers `true`; `challenge(tenant, transaction,
+  asked: &ExternalInput) -> Option<StepChallenge>`, for a step that checks an
+  answer only to a question it asked, or that sends something, as the email
+  alternatives do; the default answers `None`; and `offered(tenant) -> bool`,
+  asked of alternatives only; the default answers `true`.
+- `StepChallenge { challenge: Option<[u8; 32]>, enrollment:
+  Option<BegunEnrollment>, options: serde_json::Value }`: what the engine
+  keeps in the transaction, if anything, and what the browser needs.
+
+### Enrolling during a sign-in (`enrollment.rs`)
+
+- `EnrollmentKind { AuthenticatorApplication, SecurityKey, Passkey }`,
+  `ALL`, `as_str()` `authenticator_application` / `security_key` /
+  `passkey`, `parse`, `from_stored`.
+- `BegunEnrollment { AuthenticatorApplication(TotpId),
+  SecurityKey(WebAuthnRegistrationId), Passkey(WebAuthnRegistrationId) }`,
+  `kind()`: what a sign-in began, by the credential context's identifier.
+- `Enrolled { kind, recovery_codes: Vec<Secret<String>> }`: what finishing
+  put in use, and the codes made with it, shown once (empty when none were
+  made).
+
+### What is sent by email (`email.rs`)
+
+- `EmailMethod { Code, Link }`, `as_str()` `email_code` / `email_link`,
+  `from_stored`.
+- `EmailSecret`: six digits from eight random bytes, or 32 random bytes as 64
+  hexadecimal characters; `Debug` is redacted.
+- `EmailSecretHash::of_presented(method, value, digest)`: the SHA-256 of six
+  ASCII digits (spaces around trimmed) or of 64 lowercase hexadecimal
+  characters, `None` for anything else.
+- `EmailSignIn::issue(transaction, method, identifier_key, user_id, now,
+  random, digest) -> (EmailSignIn, EmailSecret)`: lives
+  `EmailSignIn::LIFETIME` (ten minutes) and never past the transaction;
+  `accepts(method, presented, now)` is unused, unexpired, of the method,
+  belonging to someone and of that hash; `mark_used(now)`.
+- `EmailUse { Accepted(UserId), AlreadyUsed, Refused }`: what using one up led
+  to.
 - `AuthenticatorTraits { identifies, factor, second_factor, method }`;
   `second_factor` is a second kind of evidence the same step provides, as a
   passkey's user verification does.
@@ -83,8 +123,10 @@ reach other crates only through `hodor_authentication::api` in `../lib.rs`.
   `External(ExternalInput)`; `step_key()` gives `"identifier"`,
   `"password"`, `"totp"`, `"recovery_code"` or the external input's step.
 - `ExternalInput { step, fields }` with `field(name)`.
-- `StepOutcome`: `Identified { candidate, identifier_key }`, `Proven`,
-  `Authenticated { user }`, `Rejected`.
+- `StepOutcome` (`Clone`, no equality: it may hold recovery codes):
+  `Identified { candidate, identifier_key }`, `Proven`,
+  `Authenticated { user }`, `Enrolled(Enrolled)` (a step only; the engine
+  records the authenticator's method and hands the value back), `Rejected`.
 
 ### Transactions (`transaction.rs`)
 
@@ -93,11 +135,13 @@ reach other crates only through `hodor_authentication::api` in `../lib.rs`.
   minutes), `MAX_REJECTIONS` (5), `start(flow, client, binding, now)`,
   `from_snapshot`, `snapshot`, `id`, `candidate`, `is_bound_to`, `state_at`,
   `all_steps_satisfied`, `require_in_progress`, `complete(flow, now) -> UserId`,
-  `cancel()`.
+  `cancel()`, `begun_enrollment()`; `record_enrollment(begun)` keeps what the
+  enrollment step began, `record_rejection` leaves it, `record_satisfied`
+  empties it.
 - `TransactionSnapshot` (`transaction.rs:TransactionSnapshot`): the stored
   state, including `current_step`, `candidate`, `identifier_key`,
-  `satisfied_methods`, `rejections`, `status`, `expires_at`, `client`,
-  `binding` and `version`.
+  `satisfied_methods`, `challenge`, `enrollment`, `rejections`, `status`,
+  `expires_at`, `client`, `binding` and `version`.
   `record_authenticated` (an alternative identified the person) sets
   `identifier_key` to `person_attempt_key(user)`: the prefix
   `attempts of user` and the user's 16 bytes, so that a second factor after
@@ -139,6 +183,8 @@ implements `hodor_kernel::DomainEvent`:
 | `RegistrationCompleted` | `user_id` | `authentication.registration_completed` |
 | `RecoveryRequested` | `user_id` | `authentication.recovery_requested` |
 | `PasswordReset` | `user_id` | `authentication.password_reset` |
+| `EmailSignInSent` | `user_id`, `method` | `authentication.email_sign_in_sent` |
+| `SecondFactorEnrolled` | `user_id`, `kind` | `authentication.second_factor_enrolled` |
 
 ## Invariants
 

@@ -163,3 +163,108 @@ export function clientBody(more: Record<string, unknown> = {}) {
     ...more,
   };
 }
+
+export const FINANCE = "0193f2a0-0000-7000-8000-0000000000e1";
+export const PAYABLES = "0193f2a0-0000-7000-8000-0000000000e2";
+export const ACME = "0193f2b0-0000-7000-8000-0000000000f1";
+export const ENGINEERING = "0193f2b1-0000-7000-8000-0000000000f2";
+export const PLATFORM = "0193f2b1-0000-7000-8000-0000000000f3";
+export const SALES = "0193f2b1-0000-7000-8000-0000000000f4";
+
+/** A group, or an organization, as the console interface writes one. */
+export function namedBody(id: string, name: string, more: Record<string, unknown> = {}) {
+  return { id, name, created_at: "2026-11-23T14:03:11Z", updated_at: "2026-11-23T14:03:11Z", ...more };
+}
+
+/** A unit of an organization, as the console interface writes one. */
+export function unitBody(id: string, name: string, parentId: string | null, kind = "unit") {
+  return {
+    id,
+    parent_id: parentId,
+    name,
+    kind,
+    created_at: "2026-11-23T14:03:11Z",
+    updated_at: "2026-11-23T14:03:11Z",
+  };
+}
+
+/** What an administrator of groups and organizations holds, besides reading users. */
+export const MEMBERSHIPS = ["users:read", "groups:read", "groups:write", "organizations:read", "organizations:write"];
+
+export const EXPORT = "0193f2c0-0000-7000-8000-000000000011";
+export const ASSISTANT = "0193f2c0-0000-7000-8000-000000000012";
+export const REPORTS_KEY = "0193f2d0-0000-7000-8000-000000000021";
+export const ROTATED_KEY = "0193f2d0-0000-7000-8000-000000000022";
+export const HOOK = "0193f2c4-0000-7000-8000-000000000031";
+export const SET_ASIDE = "0193f2d0-0000-7000-8000-000000000041";
+export const EVENT = "0193f2cf-0000-7000-8000-000000000051";
+
+/** A service account or an agent, as the console interface writes one: owned by Ana unless told otherwise. */
+export function workloadBody(id: string, name: string, more: Record<string, unknown> = {}) {
+  return {
+    id,
+    kind: "service_account",
+    name,
+    status: "active",
+    owners: [ANA],
+    created_at: "2026-11-24T14:03:11Z",
+    updated_at: "2026-11-24T14:03:11Z",
+    ...more,
+  };
+}
+
+/** An API key, as the console interface writes one: never the key. */
+export function apiKeyBody(id: string, name: string, more: Record<string, unknown> = {}) {
+  return {
+    id,
+    name,
+    hint: "…7c1e",
+    scopes: ["users:read"],
+    application_id: null,
+    status: "active",
+    created_at: "2026-11-24T14:03:11Z",
+    expires_at: "2027-02-22T14:03:11Z",
+    last_used_at: null,
+    revoked_at: null,
+    replaced_by: null,
+    ...more,
+  };
+}
+
+/** A webhook endpoint, as the console interface writes one: never a secret. */
+export function endpointBody(more: Record<string, unknown> = {}) {
+  return {
+    id: HOOK,
+    url: "https://hooks.example.com/hodor",
+    description: "Our directory",
+    event_types: ["session.started"],
+    secrets: [{ created_at: "2026-11-24T14:03:11Z", expires_at: null }],
+    created_at: "2026-11-24T14:03:11Z",
+    updated_at: "2026-11-24T14:03:11Z",
+    ...more,
+  };
+}
+
+/** A delivery set aside after its last attempt, as the console interface writes one: never its body. */
+export function deliveryBody(more: Record<string, unknown> = {}) {
+  return {
+    id: SET_ASIDE,
+    endpoint_id: HOOK,
+    event_id: EVENT,
+    event_type: "session.started",
+    status: "set_aside",
+    attempts: 8,
+    next_attempt_at: null,
+    last_response_status: 503,
+    last_error: "the endpoint answered 503",
+    created_at: "2026-11-24T14:03:11Z",
+    finished_at: "2026-11-24T16:03:11Z",
+    ...more,
+  };
+}
+
+/** What an administrator of workloads holds, besides reading users. */
+export const WORKLOADS = ["users:read", "workloads:read", "workloads:write"];
+
+/** What an administrator of webhooks holds. */
+export const WEBHOOKS = ["webhooks:read", "webhooks:write"];

@@ -9,7 +9,7 @@ use crate::domain::client::ClientId;
 use crate::domain::openid::ReadAccessToken;
 use crate::domain::refresh::RefreshFamilyId;
 use crate::domain::token::{BasicCredentials, PresentedClient, TokenError, presented_client};
-use hodor_kernel::{Secret, Timestamp};
+use hodor_kernel::{Secret, Timestamp, UserId};
 use serde_json::{Map, Value, json};
 use std::collections::BTreeSet;
 use std::fmt;
@@ -109,6 +109,13 @@ pub struct AccessTokenRecord {
     /// The refresh token family it came from; none for a code or client
     /// credentials.
     pub family_id: Option<RefreshFamilyId>,
+    /// The service account or agent it was issued for, for a client that
+    /// acts as one, and the agent that holds a token made by exchange;
+    /// none otherwise.
+    pub principal_id: Option<UserId>,
+    /// The `jti` of the token it was exchanged from; none unless it was
+    /// made by exchange.
+    pub parent_token_id: Option<String>,
     /// When it expires.
     pub expires_at: Timestamp,
     /// When it was revoked.
@@ -132,10 +139,26 @@ impl AccessTokenRecord {
             client_id,
             grant_id,
             family_id,
+            principal_id: None,
+            parent_token_id: None,
             expires_at,
             revoked_at: None,
             revocation_reason: None,
         }
+    }
+
+    /// The same record, for a token issued for `principal`.
+    #[must_use]
+    pub const fn for_principal(mut self, principal: Option<UserId>) -> Self {
+        self.principal_id = principal;
+        self
+    }
+
+    /// The same record, for a token exchanged from the token `parent`.
+    #[must_use]
+    pub fn exchanged_from(mut self, parent: &str) -> Self {
+        self.parent_token_id = Some(parent.to_owned());
+        self
     }
 }
 
@@ -149,7 +172,7 @@ pub fn inactive() -> Value {
 /// The answer about an active access token.
 #[must_use]
 pub fn active_access_token(issuer: &str, token: &ReadAccessToken) -> Value {
-    json!({
+    let mut answer = json!({
         "active": true,
         "scope": token.scopes.join(" "),
         "client_id": token.client_id,
@@ -159,7 +182,14 @@ pub fn active_access_token(issuer: &str, token: &ReadAccessToken) -> Value {
         "exp": token.expires_at.unix_timestamp(),
         "iat": token.issued_at,
         "token_type": "Bearer",
-    })
+    });
+    if let Some(kind) = &token.principal_kind {
+        answer["principal_kind"] = json!(kind);
+    }
+    if let Some(act) = &token.act {
+        answer["act"] = act.clone();
+    }
+    answer
 }
 
 /// What an active refresh token is answered with.

@@ -39,6 +39,28 @@ export const ptBR: Messages = {
   securityKeyUnavailable: "Este navegador não consegue usar chaves de segurança. Entre por outro navegador.",
   signInWithPasskey: "Entrar com uma chave de acesso",
   passkeyNoAnswer: "A chave de acesso não respondeu. Tente de novo, ou digite seu e-mail ou nome de usuário.",
+  emailMeACode: "Enviar um código por e-mail",
+  emailMeALink: "Enviar um link por e-mail",
+  typeAddressFirst: "Digite seu e-mail primeiro.",
+  emailCodeSent: (email: string) => `Se ${email} tiver uma conta aqui, enviamos um código para ele.`,
+  emailCodeLabel: "Código da mensagem",
+  emailCodeHint: "Seis dígitos. O código funciona uma única vez, por dez minutos.",
+  emailLinkSent: (email: string) =>
+    `Se ${email} tiver uma conta aqui, enviamos um link para ele. Abra-o neste navegador em até dez minutos.`,
+  sendAnotherCode: "Enviar outro código",
+  sendAnotherLink: "Enviar outro link",
+  signInLinkTitle: "Entrando",
+  signInLinkElsewhere:
+    "Este link só funciona no navegador em que foi pedido, por dez minutos. Abra-o lá, ou entre por aqui.",
+  signInLinkRefused: "Esse link não funcionou. Ele pode já ter sido usado, ou ter expirado.",
+  methodNotOffered: "Esta forma de entrar não é oferecida aqui.",
+  enrollLead:
+    "Sua organização exige um segundo fator, e você ainda não tem nenhum. Configure um para terminar de entrar. Ele será pedido em todas as próximas entradas.",
+  enrollKeysLead: "Ou use uma chave de segurança, ou uma chave de acesso guardada neste dispositivo ou no seu celular.",
+  confirmAndSignIn: "Confirmar e entrar",
+  chooseAnotherWay: "Escolher outra forma",
+  nothingToSetUp: "Este navegador não consegue configurar um segundo fator aqui. Entre por outro navegador.",
+  enrollmentNotNeeded: "Agora você tem um segundo fator. Entre de novo para usá-lo.",
 
   registerTitle: "Criar uma conta",
   registerLead: "Informe seu endereço de email. Uma mensagem vai levar um link para você terminar.",
@@ -59,6 +81,15 @@ export const ptBR: Messages = {
   createAccount: "Criar a conta",
   linkInvalidTitle: "Este link não pode ser usado",
   linkInvalid: "O link já foi usado ou expirou.",
+  acceptInvitationTitle: (organization: string) => `Entrar em ${organization}`,
+  invitationFor: (email: string) => `Este convite foi enviado para ${email}.`,
+  invitationNewAccount: "Escolha uma senha para criar sua conta e entrar.",
+  createAccountAndJoin: "Criar a conta e entrar",
+  join: "Entrar",
+  invitationSignIn: (email: string) => `Entre como ${email} e depois abra de novo o link da mensagem.`,
+  invitationOtherAccount: (email: string) =>
+    `Você entrou com outra conta. Saia, entre como ${email} e depois abra de novo o link da mensagem.`,
+  invitationHasAccount: "Entre para aceitar: este endereço já tem uma conta.",
   askForNewRegistrationLink: "Pedir um novo link para criar a conta",
   askForNewRecoveryLink: "Pedir um novo link",
 
@@ -87,6 +118,7 @@ export const ptBR: Messages = {
   consentScopeEmail: "Ver o seu endereço de email",
   consentScopeAddress: "Ver o seu endereço postal",
   consentScopePhone: "Ver o seu número de telefone",
+  consentScopeGroups: "Ver os grupos de que você faz parte",
   consentScopeOfResource: (description: string, resourceServer: string) =>
     resourceServer === "" ? description : `${description} (${resourceServer})`,
   consentAllow: "Permitir",

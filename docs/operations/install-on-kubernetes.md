@@ -28,23 +28,25 @@ Every pod runs as a user that is not root, with a read-only file system, no Linu
 |---|---|
 | A Kubernetes cluster, version 1.27 or newer, and `kubectl` | Where Hodor runs |
 | Helm 3 or newer | To install the chart |
-| A registry the cluster can pull from, and Docker to build | The image is built from this repository: no registry publishes one yet |
+| The published image, or a registry of your own | From 0.3.0, the cluster pulls `ghcr.io/ortisun/hodor`. For an earlier version, you build the image and push it to a registry the cluster can pull from |
 | A PostgreSQL database, version 16 or newer, reachable from the cluster | Everything Hodor knows is there. A managed service with a standby and point-in-time recovery, as [deployment](deployment.md#database) describes |
 | A way in: an ingress controller, or a gateway of your own, serving HTTPS | The session cookie is marked `Secure`, and browsers do not send it over plain HTTP |
 | A mail server that accepts messages over SMTP | For the links that verify an address and recover a password |
 
 Run every command of this page from the root of a checkout of the repository; the [quick-start](quick-start.md#0-get-the-code) says how to get one. The commands use the namespace `hodor` and the release name `hodor`.
 
-## 1. Build and push the image
+## 1. Get the image
 
-Replace `registry.example.com` with your registry, here and in the steps that follow:
+From 0.3.0, every release publishes its image, `ghcr.io/ortisun/hodor:<version>`, and the chart uses it unless `image.repository` says otherwise. There is nothing to do in this step. To check its signature first, see [what a release publishes](../security/supply-chain.md#what-a-release-publishes).
+
+For an earlier version, or for a checkout of `develop`, build the image and push it to your registry. Replace `registry.example.com` with your registry, here and in the steps that follow:
 
 ```bash
-docker build --file deploy/docker/Dockerfile --tag registry.example.com/hodor:0.2.0 .
+docker build --file deploy/docker/Dockerfile --tag registry.example.com/hodor:0.3.0 .
 ```
 
 ```bash
-docker push registry.example.com/hodor:0.2.0
+docker push registry.example.com/hodor:0.3.0
 ```
 
 ## 2. Prepare the database
@@ -74,7 +76,7 @@ kubectl create namespace hodor
 Make the key that keeps the secrets of identity providers encrypted. It is written after an identifier of your choice, as `identifier:key`; [secrets at rest](../security/secrets-at-rest.md#root-keys) explains the format and how to change the key later:
 
 ```bash
-docker run --rm --entrypoint /usr/local/bin/hodor-cli registry.example.com/hodor:0.2.0 secrets generate-key
+docker run --rm --entrypoint /usr/local/bin/hodor-cli registry.example.com/hodor:0.3.0 secrets generate-key
 ```
 
 Then create the Secret, with your own addresses, passwords and key in place of the examples:
@@ -102,11 +104,9 @@ A password written into an address must be made of letters and digits, or be per
 
 ## 4. Install the chart
 
-Write your settings in a file, `hodor-values.yaml`. Three have no default: where the image is, the address people use, and the name of the Secret.
+Write your settings in a file, `hodor-values.yaml`. Two have no default: the address people use, and the name of the Secret. With an image you built, also set `image.repository` to where you pushed it.
 
 ```yaml
-image:
-  repository: registry.example.com/hodor
 publicUrl: https://login.example.com
 secret:
   name: hodor
@@ -117,6 +117,14 @@ ingress:
   enabled: true
   className: nginx
 ```
+
+From 0.3.0, install the published chart of the version you want:
+
+```bash
+helm install hodor oci://ghcr.io/ortisun/charts/hodor --version 0.3.0 --namespace hodor --values hodor-values.yaml --wait
+```
+
+For an earlier version, or a checkout of `develop`, install the chart from the checkout:
 
 ```bash
 helm install hodor deploy/install/helm/hodor --namespace hodor --values hodor-values.yaml --wait
@@ -150,7 +158,7 @@ kubectl exec --namespace hodor deployment/hodor-server -- /usr/local/bin/hodor-c
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `image.repository`, `image.tag` | None; the version of the chart | Where the image is, and which version runs |
+| `image.repository`, `image.tag` | `ghcr.io/ortisun/hodor`; the version of the chart | Where the image is, and which version runs |
 | `publicUrl` | None | The address people use: `https://`, the name, no path |
 | `secret.name` | None | The Secret of [step 3](#3-create-the-secret) |
 | `server.replicas` | `3` | Servers, when autoscaling is off |
@@ -163,6 +171,7 @@ kubectl exec --namespace hodor deployment/hodor-server -- /usr/local/bin/hodor-c
 | `telemetry.metricsEndpoint`, `telemetry.tracesEndpoint` | Empty | Where metrics and traces are sent over OTLP/HTTP. [Deployment](deployment.md#observability) says what is sent |
 | `ingress.enabled`, `ingress.className`, `ingress.annotations`, `ingress.tls` | `false` | The Ingress for the name in `publicUrl`. The certificate is read from the Secret `ingress.tls.secretName`, `<release>-tls` when empty, which a certificate manager can fill |
 | `networkPolicy.enabled` | `false` | See [network policy](#network-policy) |
+| `trustedProxies`, `forwardedHeader` | Empty; `x-forwarded-for` | The address ranges of the ingress controller and of any load balancer in front of it, and the header they write. See [the address of each client](#the-address-of-each-client) |
 
 Changing the Secret does not restart anything. After changing it, restart the pods so that they read it again:
 
@@ -179,11 +188,35 @@ With `networkPolicy.enabled`, one policy applies to every pod of the release:
 
 A cluster enforces network policies only if its network plugin does.
 
+### The address of each client
+
+Hodor limits sign-in attempts by the [client address](../api/api-spec.md#the-client-address). Behind an Ingress, the connection Hodor sees comes from the ingress controller, so everyone shares one limit until the ingress controller is named in `trustedProxies`:
+
+```yaml
+trustedProxies:
+  - 10.244.0.0/16
+networkPolicy:
+  enabled: true
+  ingressFrom:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingress-nginx
+```
+
+- **Name the range the ingress controller's pods get their addresses from.** That is usually the cluster's pod range, here `10.244.0.0/16`, the default of kind.
+- **Turn on the network policy so that only the ingress controller can connect.** The pod range also holds every other pod of the cluster, and any of them could otherwise write the header.
+- **The ingress controller must see the client's own address.** Behind a cloud load balancer, that takes the load balancer's PROXY protocol or a service with `externalTrafficPolicy: Local`, as your ingress controller's documentation describes. Otherwise it forwards the address of a node.
+
 ## Upgrading
 
-1. Build and push the image of the new version, as in [step 1](#1-build-and-push-the-image).
-2. Get the chart of the same version: it is in the same checkout.
-3. Upgrade the release with the same values:
+1. With a published version, there is nothing to build. With an image of your own, build and push the image of the new version, as in [step 1](#1-get-the-image).
+2. Upgrade the release with the same values, and the chart of the new version. The published chart:
+
+```bash
+helm upgrade hodor oci://ghcr.io/ortisun/charts/hodor --version 0.3.0 --namespace hodor --values hodor-values.yaml --wait
+```
+
+Or the chart of a checkout at the new version:
 
 ```bash
 helm upgrade hodor deploy/install/helm/hodor --namespace hodor --values hodor-values.yaml --wait
@@ -216,11 +249,11 @@ kind create cluster --name hodor
 ```
 
 ```bash
-docker build --file deploy/docker/Dockerfile --tag hodor:0.2.0 .
+docker build --file deploy/docker/Dockerfile --tag hodor:0.3.0 .
 ```
 
 ```bash
-kind load docker-image hodor:0.2.0 --name hodor
+kind load docker-image hodor:0.3.0 --name hodor
 ```
 
 Create the namespace and the stand-ins, and wait for the database:
@@ -273,9 +306,6 @@ kind delete cluster --name hodor
 
 | Missing | Until then |
 |---|---|
-| Trusting a forwarded client address | Hodor limits sign-in attempts by the address of the connection it sees, which behind an Ingress is the ingress controller's. Everyone shares one limit. [The interaction interface](../api/interaction-api.md) lists this as not built |
 | Autoscaling on request concurrency | The autoscaler follows processor use only |
 | Dashboards and alerts | Metrics and traces are sent where `telemetry` says; what is drawn and alerted from them is yours |
 | The Open Policy Agent sidecar and Redis | Neither is used by Hodor yet: both belong to later phases of the [roadmap](../product/roadmap.md) |
-| A published image, its software bill of materials and its signature | The image is built from the checkout and pushed to your registry |
-| A published chart | The chart is installed from the checkout |

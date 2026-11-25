@@ -3,11 +3,14 @@
 
 use crate::domain::application::ApplicationId;
 use crate::domain::authorization::GrantId;
+use crate::domain::backchannel::LogoutDeliveryId;
+use crate::domain::claim_mapper::ClaimMapperId;
 use crate::domain::client::ClientId;
 use crate::domain::refresh::RefreshFamilyId;
 use crate::domain::resource_server::ResourceServerId;
 use crate::domain::secret::ClientSecretId;
 use hodor_kernel::{DomainEvent, Timestamp, UserId};
+use hodor_session::api::SessionId;
 use serde::Serialize;
 
 /// An event of the OAuth context.
@@ -46,6 +49,8 @@ pub enum OauthEvent {
         application_id: ApplicationId,
         /// `confidential` or `public`.
         client_type: &'static str,
+        /// The service account or agent it acts as, if any.
+        principal_id: Option<UserId>,
     },
     /// A client's settings changed.
     ClientChanged {
@@ -55,6 +60,8 @@ pub enum OauthEvent {
         application_id: ApplicationId,
         /// `confidential` or `public`.
         client_type: &'static str,
+        /// The service account or agent it acts as, if any.
+        principal_id: Option<UserId>,
     },
     /// A client was enabled.
     ClientEnabled {
@@ -174,6 +181,9 @@ pub enum OauthEvent {
     ClientAccessTokenIssued {
         /// The client.
         client_id: ClientId,
+        /// The service account or agent the client acts as, if it is bound
+        /// to one: the token's `sub`.
+        principal_id: Option<UserId>,
         /// The token's `jti`.
         token_id: String,
         /// When it expires.
@@ -215,14 +225,80 @@ pub enum OauthEvent {
         /// `revoked_by_client`.
         reason: &'static str,
     },
-    /// A client revoked an access token. Never carries the token.
+    /// An agent exchanged a person's token for one it holds on the
+    /// person's behalf. Never carries a token.
+    TokenExchanged {
+        /// The agent's client that asked.
+        client_id: ClientId,
+        /// The person the new token is about, its `sub`.
+        subject_id: String,
+        /// Every actor of the new token, the newest first.
+        actors: Vec<String>,
+        /// The audience the new token is for.
+        audience: String,
+        /// The new token's `jti`.
+        token_id: String,
+        /// When it expires.
+        #[serde(with = "time::serde::rfc3339")]
+        expires_at: Timestamp,
+    },
+    /// A claim mapper was created.
+    ClaimMapperCreated {
+        /// The mapper.
+        claim_mapper_id: ClaimMapperId,
+        /// Its client.
+        client_id: ClientId,
+        /// The claim it writes.
+        claim: String,
+        /// The tokens it writes into.
+        targets: Vec<&'static str>,
+        /// The kind of its source; never a constant's value.
+        source: &'static str,
+    },
+    /// A claim mapper was replaced.
+    ClaimMapperChanged {
+        /// The mapper.
+        claim_mapper_id: ClaimMapperId,
+        /// Its client.
+        client_id: ClientId,
+        /// The claim it writes.
+        claim: String,
+        /// The tokens it writes into.
+        targets: Vec<&'static str>,
+        /// The kind of its source; never a constant's value.
+        source: &'static str,
+    },
+    /// A claim mapper was deleted.
+    ClaimMapperDeleted {
+        /// The mapper.
+        claim_mapper_id: ClaimMapperId,
+        /// Its client.
+        client_id: ClientId,
+        /// The claim it wrote.
+        claim: String,
+    },
+    /// An access token was revoked. Never carries the token.
     AccessTokenRevoked {
         /// The client it was issued to.
         client_id: ClientId,
         /// The token's `jti`.
         token_id: String,
-        /// Why: `revoked_by_client`.
+        /// Why: `revoked_by_client`, or `workload_disabled` or
+        /// `workload_deleted` when its workload was.
         reason: &'static str,
+    },
+    /// A logout token was not delivered: every attempt failed, or its
+    /// client could no longer be sent to. Never carries the address or the
+    /// token.
+    BackchannelLogoutSetAside {
+        /// The delivery.
+        delivery_id: LogoutDeliveryId,
+        /// The client it was for.
+        client_id: ClientId,
+        /// The session that ended.
+        session_id: SessionId,
+        /// How many attempts were made.
+        attempts: u32,
     },
 }
 
@@ -253,7 +329,12 @@ impl DomainEvent for OauthEvent {
             Self::RefreshTokenFamilyStarted { .. } => "oauth.refresh_token_family_started",
             Self::RefreshTokenRotated { .. } => "oauth.refresh_token_rotated",
             Self::RefreshTokenFamilyRevoked { .. } => "oauth.refresh_token_family_revoked",
+            Self::ClaimMapperCreated { .. } => "oauth.claim_mapper_created",
+            Self::ClaimMapperChanged { .. } => "oauth.claim_mapper_changed",
+            Self::ClaimMapperDeleted { .. } => "oauth.claim_mapper_deleted",
             Self::AccessTokenRevoked { .. } => "oauth.access_token_revoked",
+            Self::TokenExchanged { .. } => "oauth.token_exchanged",
+            Self::BackchannelLogoutSetAside { .. } => "oauth.backchannel_logout_set_aside",
         }
     }
 }

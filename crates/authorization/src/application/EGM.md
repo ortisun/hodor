@@ -8,7 +8,8 @@ lists a user's roles, and answers whether a user holds a permission.
 `EvaluationService` keeps the bindings and evaluates requests through the
 bound engine. `RoleService` declares permissions, defines roles and assigns
 them for native role-based access control, which `NativeEngine` answers
-from. The modules are `pub(crate)`; the public names reach other
+from. `AccessListService` grants and removes the entries of access control
+lists, which `NativeEngine` reads before roles. The modules are `pub(crate)`; the public names reach other
 crates only through `hodor_authorization::api` in `../lib.rs`.
 
 ## Interface
@@ -40,6 +41,14 @@ of the same namespace), `find`, `list` (ordered by namespace), `remove`
 `put_permission`, `remove_permission`, `permissions`, `put_role`, `roles`,
 `remove_role` (`authorization.role_in_use` when included), `put_assignment`,
 `remove_assignment`, `assignments_of` (never the built-in roles).
+
+`AccessListStore` (`ports.rs:AccessListStore`), implemented by
+`PgAccessListStore` in `crates/adapters-postgres/src/access_list.rs` and
+`InMemoryNativeRoles` in `../testing.rs`: `insert` (`false` when the same
+principal, permission and resource exists), `same_as`, `get`, `remove`
+(answers the removed entry), `list` (oldest first, the cursor the last
+identifier, `request.query_invalid` for a foreign one), `allowing(namespace,
+permission, resource_id, principals, limit)`.
 
 `ConditionLanguage` (`ports.rs:ConditionLanguage`): `compile(&Condition) ->
 Arc<dyn CompiledCondition>`, refusing with `authorization.condition_invalid`
@@ -91,6 +100,13 @@ them in one unit of work. Port `DecisionLogStore` (`ports.rs`): `settings`,
   failed (or the 33rd needed) is indeterminate with `condition_failed`
   (`CONDITION_FAILED`); all false is deny with `condition_not_met`
   (`CONDITION_NOT_MET`); nothing held is deny with `no_matching_role`.
+- `NativeEngine::with_access_lists(entries)`: for a request that names a
+  resource identifier, reads first the entries of that resource server,
+  permission and resource naming the subject or, for a user, one of its
+  resolved `groups`, at most `MAX_ENTRIES_PER_DECISION`; one allows with
+  `matching_entry`, naming each as `entry:<identifier>`, with the role
+  revision. Without it, or when none applies, roles decide. Entries are not
+  cached.
 - `NativeEngine::with_condition_language(language)`: compiles the
   conditions of a principal's grants once, when their grants are cached.
   Without a language, or for a condition that no longer compiles, the
@@ -131,6 +147,18 @@ them in one unit of work. Port `DecisionLogStore` (`ports.rs`): `settings`,
   `revoke(tenant, principal, role, scope, caller) -> bool`,
   `assignments_of(tenant, principal)`.
 
+`AccessListService` (`access_list.rs:AccessListService`), `Clone`:
+
+- `new(units_of_work, entries, roles, clock)`: the permissions an entry may
+  name are read from the `NativeRoleStore`.
+- `grant(tenant, namespace, permission, resource_id, principal, caller) ->
+  Granted { entry, created }`: refuses a permission the resource server does
+  not declare (`authorization.permission_not_declared`, the permission in
+  the detail); the same grant again answers the existing entry with
+  `created: false` and announces nothing.
+- `remove(tenant, id, caller) -> bool`, `entry(tenant, id)`,
+  `entries(tenant, filter, page)`.
+
 `EvaluationService` (`evaluation.rs:EvaluationService`), `Clone`:
 
 - `new(units_of_work, assignments, bindings, subjects, registry, clock)`;
@@ -170,6 +198,8 @@ them in one unit of work. Port `DecisionLogStore` (`ports.rs`): `settings`,
   exist, declared permissions only, no cycle, at most ten deep) and stores.
   A change that changes nothing is not committed and announces nothing.
   A role another role includes is not removed (`authorization.role_in_use`).
+- `AccessListService` does not raise the role revision: entries are read
+  at every decision, so a grant or a removal takes effect on the next one.
 - `NativeEngine` reads the revision on every decision and reads the
   principal's assignments and the tenant's roles again when it differs from
   what it keeps, so a change takes effect on the next decision on any
@@ -196,7 +226,8 @@ them in one unit of work. Port `DecisionLogStore` (`ports.rs`): `settings`,
   every decision, and commits `EngineBound`, `EngineUnbound` and
   `FailedOpen` events. `NativeEngine` opens a unit of work to read roles,
   the revision and assignments, and keeps a cache in memory. `RoleService`
-  commits the native role-based access control events.
+  commits the native role-based access control events, and
+  `AccessListService` `AccessEntryGranted` and `AccessEntryRemoved`.
 
 ## Verification
 

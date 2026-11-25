@@ -1,6 +1,8 @@
 //! The use cases of the identity context.
 
-use crate::application::ports::UserRepository;
+use crate::application::groups::leave_every_group;
+use crate::application::organizations::leave_every_organization;
+use crate::application::ports::{GroupRepository, OrganizationRepository, UserRepository};
 use crate::domain::event::UserEvent;
 use crate::domain::identifier::{IdentifierId, IdentifierKind, NormalizedIdentifier};
 use crate::domain::user::{Profile, User, UserKind};
@@ -29,6 +31,8 @@ pub struct IdentityService {
     units_of_work: Arc<dyn UnitOfWorkFactory>,
     users: Arc<dyn UserRepository>,
     clock: Arc<dyn Clock>,
+    groups: Option<Arc<dyn GroupRepository>>,
+    organizations: Option<Arc<dyn OrganizationRepository>>,
 }
 
 impl std::fmt::Debug for IdentityService {
@@ -49,7 +53,24 @@ impl IdentityService {
             units_of_work,
             users,
             clock,
+            groups: None,
+            organizations: None,
         }
+    }
+
+    /// Ends every membership of a user of organizations when the user is
+    /// marked Deleted.
+    #[must_use]
+    pub fn with_organizations(mut self, organizations: Arc<dyn OrganizationRepository>) -> Self {
+        self.organizations = Some(organizations);
+        self
+    }
+
+    /// Takes a user out of every group when the user is marked Deleted.
+    #[must_use]
+    pub fn with_groups(mut self, groups: Arc<dyn GroupRepository>) -> Self {
+        self.groups = Some(groups);
+        self
     }
 
     /// Creates a user with its login identifiers.
@@ -126,6 +147,50 @@ impl IdentityService {
     pub async fn get(&self, tenant: &TenantContext, id: UserId) -> Result<User, DomainError> {
         let mut uow = self.units_of_work.begin(tenant).await?;
         self.load(uow.as_mut(), id).await
+    }
+
+    /// Returns a user of the tenant, in the caller's unit of work.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NotFound` if the tenant has no such user.
+    pub async fn get_in(&self, uow: &mut dyn UnitOfWork, id: UserId) -> Result<User, DomainError> {
+        self.load(uow, id).await
+    }
+
+    /// Loads a user, lets `apply` make any of the changes a [`User`]
+    /// allows, and stores the result with every event they produced, in
+    /// the caller's unit of work. A change that produces no event changed
+    /// nothing and is not stored. Answers the user as `apply` left it.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NotFound` if the tenant has no such user, whatever `apply`
+    /// refuses, and what storing refuses, such as `Conflict` with code
+    /// `identity.identifier_taken`. After an error the unit of work must
+    /// be abandoned.
+    pub async fn change_in(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: UserId,
+        caller: Caller,
+        apply: impl FnOnce(&mut User) -> Result<Vec<UserEvent>, DomainError> + Send,
+    ) -> Result<User, DomainError> {
+        let mut user = self.load(uow, id).await?;
+        let events = apply(&mut user)?;
+        if events.is_empty() {
+            return Ok(user);
+        }
+        self.users.update(uow, &user).await?;
+        self.record(uow, caller, &events)?;
+        Ok(user)
+    }
+
+    /// The time this service reads, for changes made through
+    /// [`IdentityService::change_in`].
+    #[must_use]
+    pub fn now(&self) -> hodor_kernel::Timestamp {
+        self.clock.now()
     }
 
     /// Returns the tenant's users in the order they were created, a page
@@ -278,9 +343,43 @@ impl IdentityService {
         id: UserId,
         caller: Caller,
     ) -> Result<User, DomainError> {
+        let mut uow = self.units_of_work.begin(tenant).await?;
+        let user = self.mark_deleted_in(uow.as_mut(), id, caller).await?;
+        uow.commit().await?;
+        Ok(user)
+    }
+
+    /// As [`IdentityService::mark_deleted`], in the caller's unit of work.
+    ///
+    /// # Errors
+    ///
+    /// As [`IdentityService::mark_deleted`]. After an error the unit of
+    /// work must be abandoned.
+    pub async fn mark_deleted_in(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: UserId,
+        caller: Caller,
+    ) -> Result<User, DomainError> {
         let now = self.clock.now();
-        self.change(tenant, id, caller, |user| Ok(vec![user.mark_deleted(now)?]))
-            .await
+        let mut user = self.load(uow, id).await?;
+        let event = user.mark_deleted(now)?;
+        self.users.update(uow, &user).await?;
+        self.record(uow, caller, &[event])?;
+        if let Some(groups) = &self.groups {
+            leave_every_group(groups.as_ref(), uow, id, &caller, self.clock.as_ref()).await?;
+        }
+        if let Some(organizations) = &self.organizations {
+            leave_every_organization(
+                organizations.as_ref(),
+                uow,
+                id,
+                &caller,
+                self.clock.as_ref(),
+            )
+            .await?;
+        }
+        Ok(user)
     }
 
     /// Adds a login identifier to a user.
@@ -395,13 +494,7 @@ impl IdentityService {
         apply: impl FnOnce(&mut User) -> Result<Vec<UserEvent>, DomainError> + Send,
     ) -> Result<User, DomainError> {
         let mut uow = self.units_of_work.begin(tenant).await?;
-        let mut user = self.load(uow.as_mut(), id).await?;
-        let events = apply(&mut user)?;
-        if events.is_empty() {
-            return Ok(user);
-        }
-        self.users.update(uow.as_mut(), &user).await?;
-        self.record(uow.as_mut(), caller, &events)?;
+        let user = self.change_in(uow.as_mut(), id, caller, apply).await?;
         uow.commit().await?;
         Ok(user)
     }

@@ -67,6 +67,62 @@ export const ACTIONS = {
   revokeRole: { level: 2, permission: "roles:write" },
   /** Every decision about the resource server is denied until it is bound again. */
   unbind: { level: 2, permission: "bindings:write" },
+  /** A form is its own confirmation. */
+  createGroup: { level: 0, permission: "groups:write" },
+  /** Its name and description change; whatever was given to it stays given. */
+  changeGroup: { level: 1, permission: "groups:write" },
+  /** Every member is taken out of it, and it is taken out of every group it was in. */
+  deleteGroup: { level: 2, permission: "groups:write" },
+  /** The member is in the group, and so are the members of a group added. */
+  addGroupMember: { level: 1, permission: "groups:write" },
+  /** The member, and whoever is in the group through it, are no longer in it. */
+  removeGroupMember: { level: 1, permission: "groups:write" },
+  /** A form is its own confirmation. */
+  createOrganization: { level: 0, permission: "organizations:write" },
+  /** Its name and description change; whatever was given to it stays given. */
+  changeOrganization: { level: 1, permission: "organizations:write" },
+  /** Its units, members and pending invitations are deleted with it. */
+  deleteOrganization: { level: 2, permission: "organizations:write" },
+  /** A form is its own confirmation. */
+  createUnit: { level: 0, permission: "organizations:write" },
+  /** Renames it, changes its kind, or moves it with every unit below it. */
+  changeUnit: { level: 1, permission: "organizations:write" },
+  /** Its members are taken out of it, and stay in the organization. */
+  deleteUnit: { level: 2, permission: "organizations:write" },
+  /** A user becomes a member with these units, or a member's units are replaced. */
+  putOrganizationMember: { level: 1, permission: "organizations:write" },
+  /** The person is no longer a member, nor in any of its units. */
+  removeOrganizationMember: { level: 1, permission: "organizations:write" },
+  /** A message with a link goes to the address; an earlier invitation to it stops working. */
+  invite: { level: 1, permission: "organizations:write" },
+  /** The link in the message stops working. */
+  withdrawInvitation: { level: 1, permission: "organizations:write" },
+  /** A form is its own confirmation. */
+  createWorkload: { level: 0, permission: "workloads:write" },
+  /** Its name and owners change; its clients, keys and roles stay as they are. */
+  changeWorkload: { level: 1, permission: "workloads:write" },
+  /** Its clients get tokens and its keys work again. */
+  enableWorkload: { level: 1, permission: "workloads:write" },
+  /** Its clients get no tokens, its tokens stop at once and its keys stop working. */
+  disableWorkload: { level: 2, permission: "workloads:write" },
+  /** Its tokens and keys are revoked, its name erased and its owners forgotten, for good. */
+  deleteWorkload: { level: 2, permission: "workloads:write" },
+  /** A key that acts as the workload, within its scopes; shown once. */
+  createApiKey: { level: 1, permission: "workloads:write" },
+  /** A new key, shown once; the old one keeps working for seven days. */
+  rotateApiKey: { level: 1, permission: "workloads:write" },
+  /** Whatever still uses the key is refused at once. */
+  revokeApiKey: { level: 2, permission: "workloads:write" },
+  /** Every event of the chosen types is sent to the address, signed with a secret shown once. */
+  registerEndpoint: { level: 1, permission: "webhooks:write" },
+  /** Only events that happen from now on are sent with the new choice. */
+  changeSubscriptions: { level: 1, permission: "webhooks:write" },
+  /** A new secret, shown once; the previous one signs for 24 hours more, then a receiver checking with it refuses everything. */
+  rotateEndpointSecret: { level: 2, permission: "webhooks:write" },
+  /** Its secrets and every delivery, pending, delivered or set aside, go with it. */
+  removeEndpoint: { level: 2, permission: "webhooks:write" },
+  /** The endpoint receives the event again, with the same webhook-id. */
+  redeliver: { level: 1, permission: "webhooks:write" },
 } as const satisfies Record<string, Action>;
 
 export type ActionName = keyof typeof ACTIONS;

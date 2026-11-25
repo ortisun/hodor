@@ -6,66 +6,77 @@
 
 use clap::{Parser, ValueEnum};
 use hodor_adapters_crypto::{
-    Argon2Parameters, Argon2idHasher, AwsLcHmacSha1, AwsLcVerifier, HashingLimits,
+    Argon2Parameters, Argon2idHasher, AwsLcHmacSha1, AwsLcHmacSha256, AwsLcVerifier, HashingLimits,
     LocalKeyProvider, OsRandom, SecretKeys, Sha256Digest,
 };
 use hodor_adapters_http::{GuardedHttpClient, OutboundPolicy, ServiceHttpClient};
 use hodor_adapters_ldap::LdapDirectoryClient;
 use hodor_adapters_postgres::{
-    Database, PgAccessTokenRecordStore, PgAccessTokenStore, PgApplicationStore, PgAttemptStore,
-    PgAuditLog, PgAuthorizationCodeStore, PgAuthorizationRequestStore, PgBundleStore,
-    PgClientAssertionStore, PgClientStore, PgConsentStore, PgDecisionLogStore,
-    PgEngineBindingStore, PgGrantStore, PgInstanceStatusStore, PgInstanceStore, PgKeyStore,
-    PgLinkStore, PgMessageQueue, PgNativeRoleStore, PgPasswordStore, PgPendingAuthorizationStore,
-    PgPolicyVersionStore, PgProviderStore, PgPublicationStore, PgRecoveryCodeStore,
-    PgRefreshTokenStore, PgResourceServerStore, PgRoleAssignmentStore, PgSealingStateStore,
-    PgSessionStore, PgSimulationStore, PgTenantDirectory, PgTenantRepository, PgTotpStore,
-    PgTransactionStore, PgUploadedDecisionStore, PgUserRepository, PgVerificationTokenStore,
-    PgWebAuthnStore,
+    Database, PgAccessListStore, PgAccessTokenRecordStore, PgAccessTokenStore, PgApiKeyStore,
+    PgApplicationStore, PgAttemptStore, PgAuditLog, PgAuthorizationCodeStore,
+    PgAuthorizationRequestStore, PgBundleStore, PgClaimMapperStore, PgClientAssertionStore,
+    PgClientStore, PgConsentStore, PgDecisionLogStore, PgDeliveryStore, PgDeprovisioningPolicy,
+    PgEmailSignInStore, PgEndpointStore, PgEngineBindingStore, PgGrantStore, PgGroupPolicy,
+    PgGroupRepository, PgInstanceStatusStore, PgInstanceStore, PgInvitationRepository, PgKeyStore,
+    PgLinkStore, PgMessageQueue, PgNativeRoleStore, PgOrganizationRepository,
+    PgPairwiseSecretStore, PgPasswordStore, PgPendingAuthorizationStore, PgPolicyVersionStore,
+    PgProviderStore, PgProvisionedGroupRepository, PgProvisionedUserRepository, PgPublicationStore,
+    PgRecoveryCodeStore, PgRefreshTokenStore, PgResourceServerStore, PgRoleAssignmentStore,
+    PgSealingStateStore, PgSessionStore, PgSimulationStore, PgTenantDirectory, PgTenantRepository,
+    PgTotpStore, PgTransactionStore, PgUploadedDecisionStore, PgUserRepository,
+    PgVerificationTokenStore, PgWebAuthnStore, PgWorkloadRepository,
 };
 use hodor_audit::api::AuditService;
 use hodor_authentication::api::{
-    AccountService, AttemptGuard, AuthFlow, AuthenticationService, Condition, FactorService,
-    FlowEngine, IdentifierAuthenticator, LockoutRules, PasskeyAuthenticator, PasswordAuthenticator,
-    RecoveryCodeAuthenticator, Requirement, TotpAuthenticator, WebAuthnAuthenticator,
+    AccountService, AttemptGuard, AuthFlow, AuthenticationService, Condition, EmailAuthenticator,
+    EmailSignInPorts, EnrollmentAuthenticator, FactorService, FlowEngine, IdentifierAuthenticator,
+    InvitationContexts, InvitationService, LockoutRules, PasskeyAuthenticator,
+    PasswordAuthenticator, RecoveryCodeAuthenticator, Requirement, TotpAuthenticator,
+    WebAuthnAuthenticator,
 };
 use hodor_authorization::api::{
-    AuthorizationService, DecisionLog, EngineRegistry, EvaluationService, NativeEngine, RoleService,
+    AccessListService, AuthorizationService, DecisionLog, EngineRegistry, EvaluationService,
+    NativeEngine, RoleService,
 };
 use hodor_authorization_native::CelConditionLanguage;
 use hodor_authorization_opa::api::{
     BundleService, Instances, OpenPolicyAgentEngine, PolicyService, StoredRevisions,
 };
 use hodor_credential::api::{
-    AccessTokenService, CredentialService, RecoveryCodeService, RelyingParty, TotpService,
-    WebAuthnService,
+    AccessTokenService, ApiKeyService, CredentialService, RecoveryCodeService, RelyingParty,
+    TotpService, WebAuthnService,
 };
 use hodor_federation::api::{
     EXTERNAL_STEP, ExternalIdentityAuthenticator, ExternalSignIn, FederationService, GitHubClient,
     LockoutPolicy, OpenIdClient, SamlClient,
 };
-use hodor_identity::api::IdentityService;
+use hodor_identity::api::{GroupService, IdentityService, OrganizationService, WorkloadService};
 use hodor_kernel::{DomainError, Secret, SecretBox, SystemClock, TenantContext};
 use hodor_keys::api::{KeyService, RotationPolicy, TenantSecretBox};
 use hodor_notification::api::Notifier;
 use hodor_oauth::api::{
     AccessTokenRegister, ApplicationPorts, ApplicationService, AuthorizationCodePorts,
-    AuthorizationCodeService, ConsentPorts, ConsentService, LogoutPorts, LogoutService,
+    AuthorizationCodeService, ClaimMapperPorts, ClaimMapperService, ClaimMapping, ConsentPorts,
+    ConsentService, LogoutPorts, LogoutService, PairwisePorts, PairwiseSubjects,
     ResourceAccessPorts, ResourceAccessService, TokenPorts, TokenService, UserInfoPorts,
-    UserInfoService,
+    UserInfoService, WorkloadTokens,
 };
 use hodor_observability::{LogFormat, Telemetry};
 use hodor_protocol_http::{
-    AdminState, AuthorizationApiState, AuthorizationState, ConsentState, ConsoleState,
-    DiscoveryState, Health, InteractionState, Limits, LogoutState, Pages, ReadinessCheck,
-    ResolvedTenant, TenantResolver, TenantStatus as HttpTenantStatus, TokenState, UserInfoState,
-    admin_routes, authorization_api_routes, authorization_routes, consent_routes, console_routes,
-    discovery_routes, interaction_routes, key_set_routes, logout_routes, ops_router,
-    policy_agent_routes, public_router, serve, token_routes, userinfo_routes,
+    AdminState, ApiKeyAccess, AuthorizationApiState, AuthorizationState, ConsentState,
+    ConsoleState, DiscoveryState, ForwardedHeader, Health, InteractionState, InvitationState,
+    Limits, LogoutState, Pages, ReadinessCheck, ResolvedTenant, ScimState, TenantResolver,
+    TenantStatus as HttpTenantStatus, TokenState, TrustedProxies, UserInfoState, admin_routes,
+    authorization_api_routes, authorization_routes, consent_routes, console_routes,
+    discovery_routes, interaction_routes, invitation_routes, key_set_routes, logout_routes,
+    ops_router, parse_ranges, policy_agent_routes, public_router_behind, scim_routes, serve,
+    token_routes, userinfo_routes,
 };
+use hodor_provisioning::api::{ProvisioningPorts, ProvisioningService};
 use hodor_session::api::SessionService;
 use hodor_tenant::api::{TenantDirectory as _, TenantService, TenantStatus};
-use standing::ServerStanding;
+use hodor_webhooks::api::WebhookService;
+use standing::{ServerMemberships, ServerStanding};
 use std::error::Error;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -74,6 +85,7 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 
+mod deprovisioning;
 mod standing;
 mod subjects;
 
@@ -195,6 +207,21 @@ struct Config {
     )]
     open_policy_agent_revision_lag_seconds: u32,
 
+    /// Address ranges of the load balancers and web servers whose
+    /// forwarded header is read, such as `10.0.0.0/8,fd00::/8`. Empty: the
+    /// client address is always the connection's.
+    #[arg(long, env = "HODOR_TRUSTED_PROXIES", default_value = "")]
+    trusted_proxies: String,
+
+    /// The header trusted proxies write the client address into:
+    /// `x-forwarded-for` or `forwarded`.
+    #[arg(
+        long,
+        env = "HODOR_FORWARDED_HEADER",
+        default_value = "x-forwarded-for"
+    )]
+    forwarded_header: String,
+
     /// The LDAP directories identity providers may name, as `host:port`
     /// separated by commas. Empty: no directory can be used.
     #[arg(long, env = "HODOR_DIRECTORY_HOSTS", value_delimiter = ',')]
@@ -295,6 +322,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 }
 
 async fn run(config: Config) -> Result<(), Box<dyn Error>> {
+    // Checked first, so that a wrong range stops the server before anything
+    // else is started.
+    let proxies = trusted_proxies(&config)?;
     let database = Database::connect(
         &Secret::from(config.database_url.clone()),
         config.database_max_connections,
@@ -306,8 +336,10 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
     let engines = authorization_engines(&config, &database)?;
 
     let keys = keys(&config, &database)?;
-    let interaction = interaction(&config, &database)?;
+    let (interaction, invitations) = interaction(&config, &database)?;
     let authorization = authorization(&config, &database, interaction.authentication.clone());
+    // SCIM ends a deprovisioned person's sessions and grants with these.
+    let revoker = access_revoker(&database);
     let mut oauth2 = authorization_routes(authorization.clone());
     if let (Some(keys), Some(setting)) = (&keys, &config.secret_keys) {
         oauth2 = oauth2.merge(token_routes(token(
@@ -323,26 +355,38 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
             &database,
             keys.clone(),
             authorization.sessions.clone(),
+            pairwise_subjects(&database, secret_box(setting, &database)?),
         )));
     }
     let mut tenant_routes = axum::Router::new()
         .nest(
             "/interaction",
-            interaction_routes(interaction).merge(consent_routes(ConsentState {
-                consents: authorization.consents.clone(),
-                sessions: authorization.sessions.clone(),
-                digest: Arc::new(Sha256Digest),
-            })),
+            interaction_routes(interaction)
+                .merge(consent_routes(ConsentState {
+                    consents: authorization.consents.clone(),
+                    sessions: authorization.sessions.clone(),
+                    digest: Arc::new(Sha256Digest),
+                }))
+                .merge(invitation_routes(InvitationState {
+                    invitations: invitations.clone(),
+                    sessions: authorization.sessions.clone(),
+                    digest: Arc::new(Sha256Digest),
+                })),
         )
         .nest("/oauth2", oauth2)
         .nest(
             "/api/v1/admin",
-            admin_routes(administration(&config, &database, &engines)?),
+            admin_routes(administration(
+                &config,
+                &database,
+                &engines,
+                invitations.clone(),
+            )?),
         )
         .nest(
             "/console/api",
             console_routes(ConsoleState {
-                administration: administration(&config, &database, &engines)?,
+                administration: administration(&config, &database, &engines, invitations.clone())?,
                 digest: Arc::new(Sha256Digest),
                 clock: Arc::new(SystemClock),
             }),
@@ -358,6 +402,10 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
                         keys.clone(),
                         engines,
                     )),
+                )
+                .nest(
+                    "/scim/v2",
+                    scim_routes(scim(&config, &database, keys.clone(), revoker)),
                 )
                 .merge(key_set_routes(keys))
                 .merge(discovery_routes(DiscoveryState {
@@ -400,11 +448,12 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
         }
         None => tracing::warn!("HODOR_CONSOLE_DIRECTORY is not set: no console is served"),
     }
-    let public = public_router(
+    let public = public_router_behind(
         Arc::new(DirectoryResolver(PgTenantDirectory::new(database.clone()))),
         tenant_routes,
         site_routes,
         Limits::default(),
+        proxies,
     );
     let ops = ops_router(health.clone());
 
@@ -441,7 +490,12 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
 
 /// Builds everything the interaction interface needs. This is the composition root: the
 /// one place that knows which adapter stands behind each port.
-fn interaction(config: &Config, database: &Database) -> Result<InteractionState, DomainError> {
+/// The interaction use cases, and the invitations, which share their
+/// password hasher.
+fn interaction(
+    config: &Config,
+    database: &Database,
+) -> Result<(InteractionState, InvitationService), DomainError> {
     let units = || Arc::new(database.clone());
     let clock = Arc::new(SystemClock);
     let digest = Arc::new(Sha256Digest);
@@ -470,7 +524,9 @@ fn interaction(config: &Config, database: &Database) -> Result<InteractionState,
         Arc::new(PgTenantDirectory::new(database.clone())),
         clock.clone(),
     );
-    let identity = IdentityService::new(units(), Arc::new(PgUserRepository), clock.clone());
+    let identity = IdentityService::new(units(), Arc::new(PgUserRepository), clock.clone())
+        .with_groups(Arc::new(PgGroupRepository))
+        .with_organizations(Arc::new(PgOrganizationRepository));
     let credentials =
         CredentialService::new(units(), Arc::new(PgPasswordStore), hasher, clock.clone());
     let sessions = SessionService::new(
@@ -524,6 +580,24 @@ fn interaction(config: &Config, database: &Database) -> Result<InteractionState,
             tenants.clone(),
             guard.clone(),
         )));
+    // A code or a link by email: two more alternatives, each offered only
+    // where the tenant turned it on. The server queues the message; the
+    // worker delivers it.
+    let by_email = EmailSignInPorts {
+        units_of_work: units(),
+        sent: Arc::new(PgEmailSignInStore),
+        identity: identity.clone(),
+        tenants: tenants.clone(),
+        notifier: Notifier::new(Arc::new(PgMessageQueue), clock.clone()),
+        guard: guard.clone(),
+        digest: digest.clone(),
+        random: random.clone(),
+        clock: clock.clone(),
+        public_url: config.public_url.clone(),
+    };
+    engine = engine
+        .with(Arc::new(EmailAuthenticator::code(by_email.clone())))
+        .with(Arc::new(EmailAuthenticator::link(by_email)));
     // A person who registered a security key is asked for it after the
     // first factor, unless the sign-in is multi-factor already. A passkey
     // is an alternative of the flow, which is multi-factor by itself.
@@ -542,7 +616,9 @@ fn interaction(config: &Config, database: &Database) -> Result<InteractionState,
             stronger,
         )
         .with_substitute(WebAuthnAuthenticator::KIND, RecoveryCodeAuthenticator::KIND)
-        .with_alternative(PasskeyAuthenticator::KIND, PasskeyAuthenticator::KIND);
+        .with_alternative(PasskeyAuthenticator::KIND, PasskeyAuthenticator::KIND)
+        .with_alternative(EmailAuthenticator::CODE_KIND, EmailAuthenticator::CODE_KIND)
+        .with_alternative(EmailAuthenticator::LINK_KIND, EmailAuthenticator::LINK_KIND);
     if let Some(totp) = totp_service(config, database, random.clone())? {
         engine = engine.with(Arc::new(TotpAuthenticator::new(
             totp,
@@ -557,6 +633,20 @@ fn interaction(config: &Config, database: &Database) -> Result<InteractionState,
             )
             .with_substitute(TotpAuthenticator::KIND, RecoveryCodeAuthenticator::KIND);
     }
+    // A person whose tenant requires a second factor and who has none sets
+    // one up at the last step, after the first factor, through the use
+    // cases of their own pages. Never in a step-up, never for a person who
+    // has a factor: they are asked for it by the steps before.
+    let factors = factor_service(config, database, &identity, &tenants, webauthn)?;
+    engine = engine.with(Arc::new(EnrollmentAuthenticator::new(
+        factors.clone(),
+        identity.clone(),
+    )));
+    flow = flow.with_step(
+        EnrollmentAuthenticator::KIND,
+        EnrollmentAuthenticator::KIND,
+        Requirement::Conditional(Condition::AssuranceNotReached),
+    );
     let external = external_sign_in(config, database, &identity, &tenants, &guard)?;
     if let Some(external) = &external {
         engine = engine.with(Arc::new(ExternalIdentityAuthenticator::new(
@@ -565,6 +655,25 @@ fn interaction(config: &Config, database: &Database) -> Result<InteractionState,
         flow = flow.with_alternative(EXTERNAL_STEP, EXTERNAL_STEP);
     }
     // The server only queues messages; the worker delivers them.
+    let invitations = InvitationService::new(
+        units(),
+        InvitationContexts {
+            organizations: OrganizationService::new(
+                units(),
+                Arc::new(PgOrganizationRepository),
+                Arc::new(PgInvitationRepository),
+                Arc::new(PgUserRepository),
+                clock.clone(),
+            ),
+            identity: identity.clone(),
+            credentials: credentials.clone(),
+            tenants: tenants.clone(),
+            notifier: Notifier::new(Arc::new(PgMessageQueue), clock.clone()),
+        },
+        digest.clone(),
+        random.clone(),
+        &config.public_url,
+    );
     let accounts = AccountService::new(
         units(),
         Arc::new(PgVerificationTokenStore),
@@ -579,7 +688,6 @@ fn interaction(config: &Config, database: &Database) -> Result<InteractionState,
         clock.clone(),
         &config.public_url,
     );
-    let factors = factor_service(config, database, &identity, &tenants, webauthn)?;
     let authentication = AuthenticationService::new(
         units(),
         Arc::new(PgTransactionStore),
@@ -592,15 +700,18 @@ fn interaction(config: &Config, database: &Database) -> Result<InteractionState,
         random,
         clock.clone(),
     )?;
-    Ok(InteractionState {
-        authentication,
-        accounts,
-        sessions,
-        factors,
-        external,
-        digest,
-        clock,
-    })
+    Ok((
+        InteractionState {
+            authentication,
+            accounts,
+            sessions,
+            factors,
+            external,
+            digest,
+            clock,
+        },
+        invitations,
+    ))
 }
 
 /// The tenant use cases, for the settings other routes read.
@@ -647,6 +758,7 @@ fn authorization(
             resource_servers: Arc::new(PgResourceServerStore),
             requests: Arc::new(PgAuthorizationRequestStore),
             grants: Arc::new(PgGrantStore),
+            memberships: Arc::new(ServerMemberships::over(database, clock.clone())),
             codes: Arc::new(PgAuthorizationCodeStore),
             digest: digest.clone(),
             random: random.clone(),
@@ -674,16 +786,8 @@ fn token(
     let clock = Arc::new(SystemClock);
     let digest = Arc::new(Sha256Digest);
     let random = Arc::new(OsRandom);
-    let standing = ServerStanding {
-        sessions: SessionService::new(
-            units.clone(),
-            Arc::new(PgSessionStore),
-            digest.clone(),
-            random.clone(),
-            clock.clone(),
-        ),
-        identity: IdentityService::new(units.clone(), Arc::new(PgUserRepository), clock.clone()),
-    };
+    let standing = standing(database);
+    let pairwise = pairwise_subjects(database, secrets.clone());
     let tokens = TokenService::new(TokenPorts {
         units_of_work: units,
         applications: Arc::new(PgApplicationStore),
@@ -694,6 +798,8 @@ fn token(
         refresh_tokens: Arc::new(PgRefreshTokenStore),
         access_tokens: Arc::new(PgAccessTokenRecordStore),
         standing: Arc::new(standing),
+        memberships: Arc::new(ServerMemberships::over(database, clock.clone())),
+        mapping: claim_mapping(database, clock.clone()),
         secrets,
         codes,
         keys,
@@ -702,10 +808,24 @@ fn token(
         random,
         clock,
     })
-    .with_retry_window(time::Duration::seconds(config.refresh_retry_seconds))?;
+    .with_retry_window(time::Duration::seconds(config.refresh_retry_seconds))?
+    .with_pairwise_subjects(pairwise);
     Ok(TokenState {
         tokens,
         public_url: config.public_url.clone(),
+    })
+}
+
+/// Names people to pairwise clients, with the tenants' pairwise secrets
+/// sealed by `secrets`.
+fn pairwise_subjects(database: &Database, secrets: Arc<dyn SecretBox>) -> PairwiseSubjects {
+    PairwiseSubjects::new(PairwisePorts {
+        units_of_work: Arc::new(database.clone()),
+        secrets: Arc::new(PgPairwiseSecretStore),
+        secret_box: secrets,
+        mac: Arc::new(AwsLcHmacSha256),
+        random: Arc::new(OsRandom),
+        clock: Arc::new(SystemClock),
     })
 }
 
@@ -721,17 +841,33 @@ fn userinfo(config: &Config, database: &Database, keys: KeyService) -> UserInfoS
                 Arc::new(database.clone()),
                 Arc::new(PgUserRepository),
                 clock.clone(),
-            ),
+            )
+            .with_groups(Arc::new(PgGroupRepository))
+            .with_organizations(Arc::new(PgOrganizationRepository)),
             register: AccessTokenRegister::new(
                 Arc::new(database.clone()),
                 Arc::new(PgAccessTokenRecordStore),
                 Arc::new(PgGrantStore),
                 Arc::new(PgRefreshTokenStore),
+                Arc::new(standing(database)),
             ),
+            memberships: Arc::new(ServerMemberships::over(database, clock.clone())),
+            mapping: claim_mapping(database, clock.clone()),
             clock,
         }),
         public_url: config.public_url.clone(),
     }
+}
+
+/// What the claim mappers of clients add to tokens and to UserInfo, read
+/// from the identity context.
+fn claim_mapping(database: &Database, clock: Arc<SystemClock>) -> ClaimMapping {
+    ClaimMapping::new(
+        Arc::new(database.clone()),
+        Arc::new(PgClaimMapperStore),
+        Arc::new(ServerMemberships::over(database, clock.clone())),
+        Arc::new(standing::ServerClaimSources::over(database, clock)),
+    )
 }
 
 /// Builds everything the Authorization API needs. It checks access tokens
@@ -755,30 +891,107 @@ fn authorization_api(
         clock: clock.clone(),
     });
     AuthorizationApiState {
-        access: ResourceAccessService::new(ResourceAccessPorts {
-            keys,
-            verifier: Arc::new(AwsLcVerifier),
-            register: AccessTokenRegister::new(
-                units(),
-                Arc::new(PgAccessTokenRecordStore),
-                Arc::new(PgGrantStore),
-                Arc::new(PgRefreshTokenStore),
-            ),
+        access: resource_access(database, keys, applications.clone()),
+        keys: ApiKeyAccess {
+            keys: api_keys(database),
+            identity: IdentityService::new(units(), Arc::new(PgUserRepository), clock.clone()),
             applications: applications.clone(),
-            clock: clock.clone(),
-        }),
+        },
         evaluation: EvaluationService::new(
             units(),
             Arc::new(PgRoleAssignmentStore),
             Arc::new(PgEngineBindingStore),
             Arc::new(subjects::ServerSubjects {
-                identity: IdentityService::new(units(), Arc::new(PgUserRepository), clock.clone()),
+                identity: IdentityService::new(units(), Arc::new(PgUserRepository), clock.clone())
+                    .with_groups(Arc::new(PgGroupRepository))
+                    .with_organizations(Arc::new(PgOrganizationRepository)),
                 applications,
+                groups: GroupService::new(
+                    units(),
+                    Arc::new(PgGroupRepository),
+                    Arc::new(PgUserRepository),
+                    Arc::new(PgGroupPolicy),
+                    clock.clone(),
+                ),
+                organizations: OrganizationService::new(
+                    units(),
+                    Arc::new(PgOrganizationRepository),
+                    Arc::new(PgInvitationRepository),
+                    Arc::new(PgUserRepository),
+                    clock.clone(),
+                ),
             }),
             engines,
             clock,
         )
         .with_decision_log(decision_log(database)),
+        public_url: config.public_url.clone(),
+    }
+}
+
+/// Checks the access tokens presented to Hodor's own resource servers, the
+/// Authorization API and the SCIM server, against the tenants' keys and
+/// the register of access tokens.
+fn resource_access(
+    database: &Database,
+    keys: KeyService,
+    applications: ApplicationService,
+) -> ResourceAccessService {
+    let units = || -> Arc<dyn hodor_kernel::UnitOfWorkFactory> { Arc::new(database.clone()) };
+    ResourceAccessService::new(ResourceAccessPorts {
+        keys,
+        verifier: Arc::new(AwsLcVerifier),
+        register: AccessTokenRegister::new(
+            units(),
+            Arc::new(PgAccessTokenRecordStore),
+            Arc::new(PgGrantStore),
+            Arc::new(PgRefreshTokenStore),
+            Arc::new(standing(database)),
+        ),
+        applications,
+        clock: Arc::new(SystemClock),
+    })
+}
+
+/// Builds everything the SCIM server needs. Like the Authorization API, it
+/// checks access tokens against the tenants' keys.
+fn scim(
+    config: &Config,
+    database: &Database,
+    keys: KeyService,
+    revoker: deprovisioning::ServerAccessRevoker,
+) -> ScimState {
+    let clock = Arc::new(SystemClock);
+    let units = || -> Arc<dyn hodor_kernel::UnitOfWorkFactory> { Arc::new(database.clone()) };
+    let applications = ApplicationService::new(ApplicationPorts {
+        units_of_work: units(),
+        applications: Arc::new(PgApplicationStore),
+        clients: Arc::new(PgClientStore),
+        resource_servers: Arc::new(PgResourceServerStore),
+        digest: Arc::new(Sha256Digest),
+        random: Arc::new(OsRandom),
+        clock: clock.clone(),
+    });
+    ScimState {
+        access: resource_access(database, keys, applications),
+        provisioning: ProvisioningService::new(ProvisioningPorts {
+            units_of_work: units(),
+            identity: IdentityService::new(units(), Arc::new(PgUserRepository), clock.clone())
+                .with_groups(Arc::new(PgGroupRepository))
+                .with_organizations(Arc::new(PgOrganizationRepository)),
+            groups: GroupService::new(
+                units(),
+                Arc::new(PgGroupRepository),
+                Arc::new(PgUserRepository),
+                Arc::new(PgGroupPolicy),
+                clock.clone(),
+            ),
+            users: Arc::new(PgProvisionedUserRepository),
+            provisioned_groups: Arc::new(PgProvisionedGroupRepository),
+            deprovisioning: Arc::new(PgDeprovisioningPolicy),
+            access: Arc::new(revoker),
+            clock,
+        }),
         public_url: config.public_url.clone(),
     }
 }
@@ -802,6 +1015,7 @@ fn logout(
     database: &Database,
     keys: KeyService,
     sessions: SessionService,
+    pairwise: PairwiseSubjects,
 ) -> LogoutState {
     LogoutState {
         logout: LogoutService::new(LogoutPorts {
@@ -810,7 +1024,8 @@ fn logout(
             clients: Arc::new(PgClientStore),
             keys,
             verifier: Arc::new(AwsLcVerifier),
-        }),
+        })
+        .with_pairwise_subjects(pairwise),
         sessions,
         public_url: config.public_url.clone(),
     }
@@ -881,7 +1096,8 @@ fn authorization_engines(
             Arc::new(PgNativeRoleStore),
             Arc::new(SystemClock),
         )
-        .with_condition_language(Arc::new(CelConditionLanguage::new())),
+        .with_condition_language(Arc::new(CelConditionLanguage::new()))
+        .with_access_lists(Arc::new(PgAccessListStore)),
     );
     registry.register_with_simulator(native.clone(), native)?;
     registry.register(Arc::new(engine))?;
@@ -889,6 +1105,28 @@ fn authorization_engines(
 }
 
 /// The directories that may be connected to: empty unless set.
+/// The proxies whose forwarded header is read. A range that cannot be read,
+/// or one that holds every address, stops the server from starting.
+fn trusted_proxies(config: &Config) -> Result<TrustedProxies, Box<dyn Error>> {
+    let ranges = parse_ranges(&config.trusted_proxies)
+        .map_err(|invalid| format!("HODOR_TRUSTED_PROXIES: {invalid}"))?;
+    let header: ForwardedHeader = config
+        .forwarded_header
+        .parse()
+        .map_err(|invalid| format!("HODOR_FORWARDED_HEADER: {invalid}"))?;
+    if ranges.is_empty() {
+        tracing::info!("no proxy is trusted: the client address is the connection's");
+    } else {
+        let named: Vec<String> = ranges.iter().map(ToString::to_string).collect();
+        tracing::info!(
+            ranges = %named.join(","),
+            header = %config.forwarded_header.to_ascii_lowercase(),
+            "the client address is read from the forwarded header of trusted proxies"
+        );
+    }
+    Ok(TrustedProxies::new(ranges, header))
+}
+
 fn directory_hosts(config: &Config) -> Vec<String> {
     config
         .directory_hosts
@@ -1073,11 +1311,73 @@ fn factor_service(
     })
 }
 
+/// What the OAuth context asks of a person or a workload, over the session
+/// and identity contexts.
+fn standing(database: &Database) -> ServerStanding {
+    let units = || Arc::new(database.clone());
+    let clock = Arc::new(SystemClock);
+    ServerStanding {
+        sessions: SessionService::new(
+            units(),
+            Arc::new(PgSessionStore),
+            Arc::new(Sha256Digest),
+            Arc::new(OsRandom),
+            clock.clone(),
+        ),
+        identity: IdentityService::new(units(), Arc::new(PgUserRepository), clock)
+            .with_groups(Arc::new(PgGroupRepository))
+            .with_organizations(Arc::new(PgOrganizationRepository)),
+    }
+}
+
+/// Ends a deprovisioned person's access, and a disabled or deleted
+/// workload's, in the asking context's unit of work.
+fn access_revoker(database: &Database) -> deprovisioning::ServerAccessRevoker {
+    let units = || Arc::new(database.clone());
+    let clock = Arc::new(SystemClock);
+    deprovisioning::ServerAccessRevoker {
+        sessions: SessionService::new(
+            units(),
+            Arc::new(PgSessionStore),
+            Arc::new(Sha256Digest),
+            Arc::new(OsRandom),
+            clock.clone(),
+        ),
+        grants: AuthorizationCodeService::new(AuthorizationCodePorts {
+            units_of_work: units(),
+            applications: Arc::new(PgApplicationStore),
+            clients: Arc::new(PgClientStore),
+            resource_servers: Arc::new(PgResourceServerStore),
+            requests: Arc::new(PgAuthorizationRequestStore),
+            grants: Arc::new(PgGrantStore),
+            codes: Arc::new(PgAuthorizationCodeStore),
+            memberships: Arc::new(ServerMemberships::over(database, clock.clone())),
+            digest: Arc::new(Sha256Digest),
+            random: Arc::new(OsRandom),
+            clock: clock.clone(),
+        }),
+        tokens: WorkloadTokens::new(Arc::new(PgAccessTokenRecordStore), clock),
+        keys: api_keys(database),
+    }
+}
+
+/// The API keys of service accounts and agents.
+fn api_keys(database: &Database) -> ApiKeyService {
+    ApiKeyService::new(
+        Arc::new(database.clone()),
+        Arc::new(PgApiKeyStore),
+        Arc::new(Sha256Digest),
+        Arc::new(OsRandom),
+        Arc::new(SystemClock),
+    )
+}
+
 /// Builds everything the administration interface needs.
 fn administration(
     config: &Config,
     database: &Database,
     engines: &EngineRegistry,
+    invitations: InvitationService,
 ) -> Result<AdminState, DomainError> {
     let units = || Arc::new(database.clone());
     let clock = Arc::new(SystemClock);
@@ -1107,9 +1407,26 @@ fn administration(
         digest: digest.clone(),
         random: random.clone(),
         clock: clock.clone(),
-    });
+    })
+    // Back-channel logout addresses are checked as webhook endpoints are,
+    // and sector identifier addresses checked and fetched, with this
+    // installation's development exception.
+    .with_destinations(Arc::new(GuardedHttpClient::new(OutboundPolicy {
+        development_hosts: development_hosts(config),
+        ..OutboundPolicy::default()
+    })?))
+    .with_sector_documents(Arc::new(GuardedHttpClient::new(OutboundPolicy {
+        development_hosts: development_hosts(config),
+        ..OutboundPolicy::default()
+    })?));
     let applications_for_subjects = applications.clone();
     Ok(AdminState {
+        claim_mappers: ClaimMapperService::new(ClaimMapperPorts {
+            units_of_work: units(),
+            clients: Arc::new(PgClientStore),
+            mappers: Arc::new(PgClaimMapperStore),
+            clock: clock.clone(),
+        }),
         tokens: AccessTokenService::new(
             units(),
             Arc::new(PgAccessTokenStore),
@@ -1122,7 +1439,19 @@ fn administration(
             Arc::new(PgRoleAssignmentStore),
             clock.clone(),
         ),
-        identity: IdentityService::new(units(), Arc::new(PgUserRepository), clock.clone()),
+        identity: IdentityService::new(units(), Arc::new(PgUserRepository), clock.clone())
+            .with_groups(Arc::new(PgGroupRepository))
+            .with_organizations(Arc::new(PgOrganizationRepository)),
+        workloads: WorkloadService::new(
+            units(),
+            IdentityService::new(units(), Arc::new(PgUserRepository), clock.clone())
+                .with_groups(Arc::new(PgGroupRepository))
+                .with_organizations(Arc::new(PgOrganizationRepository)),
+            Arc::new(PgWorkloadRepository),
+            Arc::new(access_revoker(database)),
+            clock.clone(),
+        ),
+        api_keys: api_keys(database),
         sessions: SessionService::new(
             units(),
             Arc::new(PgSessionStore),
@@ -1138,7 +1467,9 @@ fn administration(
         applications,
         tenants: tenant_service(database),
         factors: {
-            let identity = IdentityService::new(units(), Arc::new(PgUserRepository), clock.clone());
+            let identity = IdentityService::new(units(), Arc::new(PgUserRepository), clock.clone())
+                .with_groups(Arc::new(PgGroupRepository))
+                .with_organizations(Arc::new(PgOrganizationRepository));
             let tenants = TenantService::new(
                 units(),
                 Arc::new(PgTenantRepository),
@@ -1160,13 +1491,35 @@ fn administration(
         decisions: decision_log(database),
         roles: RoleService::new(units(), Arc::new(PgNativeRoleStore), clock.clone())
             .with_condition_language(Arc::new(CelConditionLanguage::new())),
+        access_lists: AccessListService::new(
+            units(),
+            Arc::new(PgAccessListStore),
+            Arc::new(PgNativeRoleStore),
+            clock.clone(),
+        ),
         evaluation: EvaluationService::new(
             units(),
             Arc::new(PgRoleAssignmentStore),
             Arc::new(PgEngineBindingStore),
             Arc::new(subjects::ServerSubjects {
-                identity: IdentityService::new(units(), Arc::new(PgUserRepository), clock.clone()),
+                identity: IdentityService::new(units(), Arc::new(PgUserRepository), clock.clone())
+                    .with_groups(Arc::new(PgGroupRepository))
+                    .with_organizations(Arc::new(PgOrganizationRepository)),
                 applications: applications_for_subjects,
+                groups: GroupService::new(
+                    units(),
+                    Arc::new(PgGroupRepository),
+                    Arc::new(PgUserRepository),
+                    Arc::new(PgGroupPolicy),
+                    clock.clone(),
+                ),
+                organizations: OrganizationService::new(
+                    units(),
+                    Arc::new(PgOrganizationRepository),
+                    Arc::new(PgInvitationRepository),
+                    Arc::new(PgUserRepository),
+                    clock.clone(),
+                ),
             }),
             engines.clone(),
             clock.clone(),
@@ -1190,7 +1543,45 @@ fn administration(
             Arc::new(SystemClock),
         )),
         public_url: config.public_url.clone(),
+        groups: GroupService::new(
+            units(),
+            Arc::new(PgGroupRepository),
+            Arc::new(PgUserRepository),
+            Arc::new(PgGroupPolicy),
+            clock.clone(),
+        ),
+        organizations: OrganizationService::new(
+            units(),
+            Arc::new(PgOrganizationRepository),
+            Arc::new(PgInvitationRepository),
+            Arc::new(PgUserRepository),
+            clock.clone(),
+        ),
+        invitations,
+        webhooks: webhooks(config, database)?,
     })
+}
+
+/// The webhooks an administrator manages, when there are keys to seal
+/// their secrets with. Addresses are checked by the guarded outbound
+/// client, with the development exception of this installation.
+fn webhooks(config: &Config, database: &Database) -> Result<Option<WebhookService>, DomainError> {
+    let Some(setting) = &config.secret_keys else {
+        return Ok(None);
+    };
+    let destinations = GuardedHttpClient::new(OutboundPolicy {
+        development_hosts: development_hosts(config),
+        ..OutboundPolicy::default()
+    })?;
+    Ok(Some(WebhookService::new(
+        Arc::new(database.clone()),
+        Arc::new(PgEndpointStore),
+        Arc::new(PgDeliveryStore),
+        secret_box(setting, database)?,
+        Arc::new(destinations),
+        Arc::new(OsRandom),
+        Arc::new(SystemClock),
+    )))
 }
 
 async fn wait_for(mut stopped: watch::Receiver<bool>) {

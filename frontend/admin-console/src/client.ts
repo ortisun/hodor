@@ -40,7 +40,15 @@ export type Permission =
   | "bindings:read"
   | "bindings:write"
   | "policies:read"
-  | "policies:write";
+  | "policies:write"
+  | "groups:read"
+  | "groups:write"
+  | "organizations:read"
+  | "organizations:write"
+  | "workloads:read"
+  | "workloads:write"
+  | "webhooks:read"
+  | "webhooks:write";
 
 /** A permission a role holds, with its condition when it has one. */
 export interface HeldPermission {
@@ -248,6 +256,8 @@ export interface ApplicationClient {
   tokenPolicy: TokenPolicy;
   secrets: { id: string; createdAt: string; expiresAt: string }[];
   keys: { kid: string; jwk: Record<string, unknown>; addedAt: string }[];
+  /** The service account or agent the client acts as; `null` for none. */
+  principal: string | null;
   status: string;
   createdAt: string;
   updatedAt: string;
@@ -297,6 +307,177 @@ export interface Page<T> {
   items: T[];
   /** What to ask for next; `null` on the last page. */
   nextCursor: string | null;
+}
+
+/** A group of users, or an organization: both have a name and an optional description. */
+export interface Named {
+  id: string;
+  name: string;
+  description: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type Group = Named;
+export type Organization = Named;
+
+/** What an administrator gives to create or change a group or an organization. */
+export interface NamedSettings {
+  name: string;
+  /** Empty for none. */
+  description: string;
+}
+
+/** A direct member of a group: a user, or another group. */
+export interface GroupMember {
+  kind: "user" | "group";
+  id: string;
+}
+
+/** A group a user is in, and whether they are in it directly rather than only through another group. */
+export interface GroupOfUser {
+  id: string;
+  direct: boolean;
+}
+
+export type UnitKind = "unit" | "department";
+
+/** A part of an organization. */
+export interface Unit {
+  id: string;
+  /** The unit it is part of; `null` at the top of the organization. */
+  parentId: string | null;
+  name: string;
+  kind: UnitKind;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** What an administrator decides about a unit: all three replace what it had. */
+export interface UnitSettings {
+  parentId: string | null;
+  name: string;
+  kind: UnitKind;
+}
+
+/** A user's membership of an organization, with the units they are in. */
+export interface OrganizationMember {
+  userId: string;
+  unitIds: string[];
+  addedAt: string;
+}
+
+/** An organization a user is a member of, with the units they are in. */
+export interface OrganizationOfUser {
+  organizationId: string;
+  unitIds: string[];
+  addedAt: string;
+}
+
+/**
+ * A pending invitation to an organization. Its link and its secret are
+ * never here: the server sends the link in the message only.
+ */
+export interface Invitation {
+  id: string;
+  email: string;
+  unitIds: string[];
+  createdAt: string;
+  expiresAt: string;
+}
+
+/** The two kinds of workload, each under a path of its own. */
+export type WorkloadKind = "service_account" | "agent";
+
+/** A service account or an agent: a principal of the tenant that is not a person. */
+export interface Workload {
+  id: string;
+  kind: WorkloadKind;
+  name: string;
+  status: string;
+  /** The user identifiers of the people responsible for it, in the order they became owners. */
+  owners: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** What an administrator gives to create a workload, or to rename it and replace its owners. */
+export interface WorkloadSettings {
+  name: string;
+  owners: string[];
+}
+
+/** An API key of a workload. The key itself is never here: only its last four characters. */
+export interface ApiKey {
+  id: string;
+  name: string;
+  hint: string;
+  scopes: string[];
+  applicationId: string | null;
+  status: string;
+  createdAt: string;
+  expiresAt: string;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+  replacedBy: string | null;
+}
+
+/** What an administrator gives to make an API key. */
+export interface ApiKeySettings {
+  name: string;
+  scopes: string[];
+  /** Needed with a scope of the Authorization API; `null` otherwise. */
+  applicationId: string | null;
+  lifetimeDays: number;
+}
+
+/** A new API key, and the key itself: shown once. */
+export interface MadeApiKey {
+  key: ApiKey;
+  secret: string;
+}
+
+/** A webhook endpoint, with when its secrets in force started and stop. Never a secret. */
+export interface WebhookEndpoint {
+  id: string;
+  url: string;
+  description: string | null;
+  eventTypes: string[];
+  /** Newest first; `expiresAt` is `null` for the current secret. */
+  secrets: { createdAt: string; expiresAt: string | null }[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** What an administrator gives to register an endpoint. */
+export interface EndpointSettings {
+  url: string;
+  /** Empty for none. */
+  description: string;
+  eventTypes: string[];
+}
+
+/** An endpoint with its new secret: shown once. */
+export interface SignedEndpoint {
+  endpoint: WebhookEndpoint;
+  secret: string;
+}
+
+export type DeliveryStatus = "pending" | "delivered" | "set_aside";
+
+/** One event on its way to one endpoint, without the body it carries. */
+export interface WebhookDelivery {
+  id: string;
+  endpointId: string;
+  eventId: string;
+  eventType: string;
+  status: DeliveryStatus;
+  attempts: number;
+  nextAttemptAt: string | null;
+  lastResponseStatus: number | null;
+  lastError: string | null;
+  createdAt: string;
+  finishedAt: string | null;
 }
 
 type Fetch = typeof globalThis.fetch;
@@ -464,6 +645,7 @@ function applicationClient(body: Fields): ApplicationClient {
       jwk: fields(key["jwk"]),
       addedAt: required(key["added_at"]),
     })),
+    principal: text(body["principal"]),
     status: required(body["status"]),
     createdAt: required(body["created_at"]),
     updatedAt: required(body["updated_at"]),
@@ -485,6 +667,59 @@ function resourceServer(body: Fields): ResourceServer {
   };
 }
 
+function named(body: Fields): Named {
+  return {
+    id: required(body["id"]),
+    name: required(body["name"]),
+    description: text(body["description"]),
+    createdAt: required(body["created_at"]),
+    updatedAt: required(body["updated_at"]),
+  };
+}
+
+function namedBody(settings: NamedSettings): Fields {
+  const description = settings.description.trim();
+  // A missing description removes it.
+  return { name: settings.name.trim(), ...(description === "" ? {} : { description }) };
+}
+
+function groupMember(body: Fields): GroupMember {
+  return { kind: body["kind"] === "group" ? "group" : "user", id: required(body["id"]) };
+}
+
+function unit(body: Fields): Unit {
+  return {
+    id: required(body["id"]),
+    parentId: text(body["parent_id"]),
+    name: required(body["name"]),
+    kind: body["kind"] === "department" ? "department" : "unit",
+    createdAt: required(body["created_at"]),
+    updatedAt: required(body["updated_at"]),
+  };
+}
+
+function unitBody(settings: UnitSettings): Fields {
+  return { parent_id: settings.parentId, name: settings.name.trim(), kind: settings.kind };
+}
+
+function organizationMember(body: Fields): OrganizationMember {
+  return {
+    userId: required(body["user_id"]),
+    unitIds: strings(body["unit_ids"]),
+    addedAt: required(body["added_at"]),
+  };
+}
+
+function invitation(body: Fields): Invitation {
+  return {
+    id: required(body["id"]),
+    email: required(body["email"]),
+    unitIds: strings(body["unit_ids"]),
+    createdAt: required(body["created_at"]),
+    expiresAt: required(body["expires_at"]),
+  };
+}
+
 function clientBody(settings: ClientSettings): Fields {
   return {
     name: settings.name.trim(),
@@ -493,6 +728,86 @@ function clientBody(settings: ClientSettings): Fields {
     redirect_uris: settings.redirectUris,
     post_logout_redirect_uris: settings.postLogoutRedirectUris,
     allowed_scopes: settings.allowedScopes,
+  };
+}
+
+/** The collection a kind of workload is under. */
+function collectionOf(kind: WorkloadKind): string {
+  return kind === "agent" ? "/agents" : "/service-accounts";
+}
+
+function workload(body: Fields): Workload {
+  return {
+    id: required(body["id"]),
+    kind: body["kind"] === "agent" ? "agent" : "service_account",
+    name: required(body["name"]),
+    status: required(body["status"]),
+    owners: strings(body["owners"]),
+    createdAt: required(body["created_at"]),
+    updatedAt: required(body["updated_at"]),
+  };
+}
+
+function workloadBody(settings: WorkloadSettings): Fields {
+  return { name: settings.name.trim(), owners: settings.owners };
+}
+
+function apiKey(body: Fields): ApiKey {
+  return {
+    id: required(body["id"]),
+    name: required(body["name"]),
+    hint: required(body["hint"]),
+    scopes: strings(body["scopes"]),
+    applicationId: text(body["application_id"]),
+    status: required(body["status"]),
+    createdAt: required(body["created_at"]),
+    expiresAt: required(body["expires_at"]),
+    lastUsedAt: text(body["last_used_at"]),
+    revokedAt: text(body["revoked_at"]),
+    replacedBy: text(body["replaced_by"]),
+  };
+}
+
+function madeApiKey(body: Fields): MadeApiKey {
+  return { key: apiKey(body), secret: required(body["api_key"]) };
+}
+
+function endpoint(body: Fields): WebhookEndpoint {
+  return {
+    id: required(body["id"]),
+    url: required(body["url"]),
+    description: text(body["description"]),
+    eventTypes: strings(body["event_types"]),
+    secrets: list(body["secrets"]).map((secret) => ({
+      createdAt: required(secret["created_at"]),
+      expiresAt: text(secret["expires_at"]),
+    })),
+    createdAt: required(body["created_at"]),
+    updatedAt: required(body["updated_at"]),
+  };
+}
+
+function signedEndpoint(body: Fields): SignedEndpoint {
+  return { endpoint: endpoint(fields(body["endpoint"])), secret: required(body["secret"]) };
+}
+
+function deliveryStatus(value: unknown): DeliveryStatus {
+  return value === "delivered" || value === "set_aside" ? value : "pending";
+}
+
+function delivery(body: Fields): WebhookDelivery {
+  return {
+    id: required(body["id"]),
+    endpointId: required(body["endpoint_id"]),
+    eventId: required(body["event_id"]),
+    eventType: required(body["event_type"]),
+    status: deliveryStatus(body["status"]),
+    attempts: typeof body["attempts"] === "number" ? body["attempts"] : 0,
+    nextAttemptAt: text(body["next_attempt_at"]),
+    lastResponseStatus: typeof body["last_response_status"] === "number" ? body["last_response_status"] : null,
+    lastError: text(body["last_error"]),
+    createdAt: required(body["created_at"]),
+    finishedAt: text(body["finished_at"]),
   };
 }
 
@@ -884,6 +1199,272 @@ export class Client {
     return resourceServer(
       await this.#send("PATCH", `/resource-servers/${encodeURIComponent(id)}`, { name: name.trim(), scopes }),
     );
+  }
+
+  async listGroups(cursor: string | null = null): Promise<Page<Group>> {
+    return page(await this.#send("GET", `/groups${query(cursor)}`), named);
+  }
+
+  async getGroup(id: string): Promise<Group> {
+    return named(await this.#send("GET", `/groups/${encodeURIComponent(id)}`));
+  }
+
+  async createGroup(settings: NamedSettings): Promise<Group> {
+    return named(await this.#send("POST", "/groups", namedBody(settings)));
+  }
+
+  /** Replaces the name and the description; an empty description removes it. */
+  async changeGroup(id: string, settings: NamedSettings): Promise<Group> {
+    return named(await this.#send("PATCH", `/groups/${encodeURIComponent(id)}`, namedBody(settings)));
+  }
+
+  async deleteGroup(id: string): Promise<void> {
+    await this.#send("DELETE", `/groups/${encodeURIComponent(id)}`);
+  }
+
+  /** The direct members of a group, users first. */
+  async listGroupMembers(id: string, cursor: string | null = null): Promise<Page<GroupMember>> {
+    return page(await this.#send("GET", `/groups/${encodeURIComponent(id)}/members${query(cursor)}`), groupMember);
+  }
+
+  async addGroupMember(id: string, member: GroupMember): Promise<void> {
+    await this.#send("POST", `/groups/${encodeURIComponent(id)}/members`, { kind: member.kind, id: member.id.trim() });
+  }
+
+  async removeGroupMember(id: string, member: GroupMember): Promise<void> {
+    await this.#send("POST", `/groups/${encodeURIComponent(id)}/members:remove`, { kind: member.kind, id: member.id });
+  }
+
+  /** The groups a user is in, directly or through other groups. */
+  async groupsOfUser(userId: string): Promise<GroupOfUser[]> {
+    return list((await this.#send("GET", `/users/${encodeURIComponent(userId)}/groups`))["items"]).map((found) => ({
+      id: required(found["id"]),
+      direct: found["direct"] === true,
+    }));
+  }
+
+  async listOrganizations(cursor: string | null = null): Promise<Page<Organization>> {
+    return page(await this.#send("GET", `/organizations${query(cursor)}`), named);
+  }
+
+  async getOrganization(id: string): Promise<Organization> {
+    return named(await this.#send("GET", `/organizations/${encodeURIComponent(id)}`));
+  }
+
+  async createOrganization(settings: NamedSettings): Promise<Organization> {
+    return named(await this.#send("POST", "/organizations", namedBody(settings)));
+  }
+
+  /** Replaces the name and the description; an empty description removes it. */
+  async changeOrganization(id: string, settings: NamedSettings): Promise<Organization> {
+    return named(await this.#send("PATCH", `/organizations/${encodeURIComponent(id)}`, namedBody(settings)));
+  }
+
+  async deleteOrganization(id: string): Promise<void> {
+    await this.#send("DELETE", `/organizations/${encodeURIComponent(id)}`);
+  }
+
+  async listUnits(organizationId: string): Promise<Unit[]> {
+    return list((await this.#send("GET", `/organizations/${encodeURIComponent(organizationId)}/units`))["items"]).map(
+      unit,
+    );
+  }
+
+  async createUnit(organizationId: string, settings: UnitSettings): Promise<Unit> {
+    return unit(
+      await this.#send("POST", `/organizations/${encodeURIComponent(organizationId)}/units`, unitBody(settings)),
+    );
+  }
+
+  /** Renames a unit, changes its kind, or moves it with what is below it. */
+  async changeUnit(organizationId: string, unitId: string, settings: UnitSettings): Promise<Unit> {
+    return unit(
+      await this.#send(
+        "PUT",
+        `/organizations/${encodeURIComponent(organizationId)}/units/${encodeURIComponent(unitId)}`,
+        unitBody(settings),
+      ),
+    );
+  }
+
+  async deleteUnit(organizationId: string, unitId: string): Promise<void> {
+    await this.#send(
+      "DELETE",
+      `/organizations/${encodeURIComponent(organizationId)}/units/${encodeURIComponent(unitId)}`,
+    );
+  }
+
+  async listOrganizationMembers(organizationId: string, cursor: string | null = null): Promise<Page<OrganizationMember>> {
+    return page(
+      await this.#send("GET", `/organizations/${encodeURIComponent(organizationId)}/members${query(cursor)}`),
+      organizationMember,
+    );
+  }
+
+  /** Makes a user a member with these units, or replaces the units of a member. */
+  async putOrganizationMember(organizationId: string, userId: string, unitIds: string[]): Promise<OrganizationMember> {
+    return organizationMember(
+      await this.#send(
+        "PUT",
+        `/organizations/${encodeURIComponent(organizationId)}/members/${encodeURIComponent(userId.trim())}`,
+        { unit_ids: unitIds },
+      ),
+    );
+  }
+
+  async removeOrganizationMember(organizationId: string, userId: string): Promise<void> {
+    await this.#send(
+      "DELETE",
+      `/organizations/${encodeURIComponent(organizationId)}/members/${encodeURIComponent(userId)}`,
+    );
+  }
+
+  async listInvitations(organizationId: string): Promise<Invitation[]> {
+    return list(
+      (await this.#send("GET", `/organizations/${encodeURIComponent(organizationId)}/invitations`))["items"],
+    ).map(invitation);
+  }
+
+  /** Sends an invitation. The answer holds nothing: the link is in the message only. */
+  async invite(organizationId: string, email: string, unitIds: string[], locale: string): Promise<void> {
+    await this.#send("POST", `/organizations/${encodeURIComponent(organizationId)}/invitations`, {
+      email: email.trim(),
+      unit_ids: unitIds,
+      locale,
+    });
+  }
+
+  async withdrawInvitation(organizationId: string, invitationId: string): Promise<void> {
+    await this.#send(
+      "DELETE",
+      `/organizations/${encodeURIComponent(organizationId)}/invitations/${encodeURIComponent(invitationId)}`,
+    );
+  }
+
+  /** The organizations a user is a member of, with their units. */
+  async organizationsOfUser(userId: string): Promise<OrganizationOfUser[]> {
+    return list((await this.#send("GET", `/users/${encodeURIComponent(userId)}/organizations`))["items"]).map(
+      (found) => ({
+        organizationId: required(found["organization_id"]),
+        unitIds: strings(found["unit_ids"]),
+        addedAt: required(found["added_at"]),
+      }),
+    );
+  }
+
+  async listWorkloads(kind: WorkloadKind, cursor: string | null = null): Promise<Page<Workload>> {
+    return page(await this.#send("GET", `${collectionOf(kind)}${query(cursor)}`), workload);
+  }
+
+  async getWorkload(kind: WorkloadKind, id: string): Promise<Workload> {
+    return workload(await this.#send("GET", `${collectionOf(kind)}/${encodeURIComponent(id)}`));
+  }
+
+  async createWorkload(kind: WorkloadKind, settings: WorkloadSettings): Promise<Workload> {
+    return workload(await this.#send("POST", collectionOf(kind), workloadBody(settings)));
+  }
+
+  /** Renames it and replaces the whole list of its owners. */
+  async changeWorkload(kind: WorkloadKind, id: string, settings: WorkloadSettings): Promise<Workload> {
+    return workload(await this.#send("PATCH", `${collectionOf(kind)}/${encodeURIComponent(id)}`, workloadBody(settings)));
+  }
+
+  async disableWorkload(kind: WorkloadKind, id: string): Promise<Workload> {
+    return workload(await this.#send("POST", `${collectionOf(kind)}/${encodeURIComponent(id)}:disable`));
+  }
+
+  async enableWorkload(kind: WorkloadKind, id: string): Promise<Workload> {
+    return workload(await this.#send("POST", `${collectionOf(kind)}/${encodeURIComponent(id)}:enable`));
+  }
+
+  async deleteWorkload(kind: WorkloadKind, id: string): Promise<void> {
+    await this.#send("DELETE", `${collectionOf(kind)}/${encodeURIComponent(id)}`);
+  }
+
+  /** A workload's API keys, newest first. */
+  async listApiKeys(kind: WorkloadKind, id: string): Promise<ApiKey[]> {
+    return list((await this.#send("GET", `${collectionOf(kind)}/${encodeURIComponent(id)}/api-keys`))["items"]).map(
+      apiKey,
+    );
+  }
+
+  async createApiKey(kind: WorkloadKind, id: string, settings: ApiKeySettings): Promise<MadeApiKey> {
+    return madeApiKey(
+      await this.#send("POST", `${collectionOf(kind)}/${encodeURIComponent(id)}/api-keys`, {
+        name: settings.name.trim(),
+        scopes: settings.scopes,
+        ...(settings.applicationId === null ? {} : { application_id: settings.applicationId }),
+        lifetime_days: settings.lifetimeDays,
+      }),
+    );
+  }
+
+  /** Replaces a key with a new one, shown once; the old one keeps working for the server's default overlap. */
+  async rotateApiKey(kind: WorkloadKind, id: string, keyId: string): Promise<MadeApiKey> {
+    return madeApiKey(
+      await this.#send(
+        "POST",
+        `${collectionOf(kind)}/${encodeURIComponent(id)}/api-keys/${encodeURIComponent(keyId)}:rotate`,
+        {},
+      ),
+    );
+  }
+
+  async revokeApiKey(kind: WorkloadKind, id: string, keyId: string): Promise<void> {
+    await this.#send("DELETE", `${collectionOf(kind)}/${encodeURIComponent(id)}/api-keys/${encodeURIComponent(keyId)}`);
+  }
+
+  /** The event types an endpoint can receive. */
+  async listEventTypes(): Promise<string[]> {
+    return strings((await this.#send("GET", "/webhook-event-types"))["items"]);
+  }
+
+  async listEndpoints(cursor: string | null = null): Promise<Page<WebhookEndpoint>> {
+    return page(await this.#send("GET", `/webhook-endpoints${query(cursor)}`), endpoint);
+  }
+
+  async getEndpoint(id: string): Promise<WebhookEndpoint> {
+    return endpoint(await this.#send("GET", `/webhook-endpoints/${encodeURIComponent(id)}`));
+  }
+
+  async registerEndpoint(settings: EndpointSettings): Promise<SignedEndpoint> {
+    const description = settings.description.trim();
+    return signedEndpoint(
+      await this.#send("POST", "/webhook-endpoints", {
+        url: settings.url.trim(),
+        ...(description === "" ? {} : { description }),
+        event_types: settings.eventTypes,
+      }),
+    );
+  }
+
+  async replaceSubscriptions(id: string, eventTypes: string[]): Promise<WebhookEndpoint> {
+    return endpoint(
+      await this.#send("PUT", `/webhook-endpoints/${encodeURIComponent(id)}/subscriptions`, { event_types: eventTypes }),
+    );
+  }
+
+  /** A new secret, shown once; the previous one keeps signing for the server's default overlap. */
+  async rotateEndpointSecret(id: string): Promise<SignedEndpoint> {
+    return signedEndpoint(await this.#send("POST", `/webhook-endpoints/${encodeURIComponent(id)}:rotate-secret`));
+  }
+
+  async removeEndpoint(id: string): Promise<void> {
+    await this.#send("DELETE", `/webhook-endpoints/${encodeURIComponent(id)}`);
+  }
+
+  /** An endpoint's deliveries, newest first, of one status or of all. */
+  async listDeliveries(
+    endpointId: string,
+    status: DeliveryStatus | null,
+    cursor: string | null = null,
+  ): Promise<Page<WebhookDelivery>> {
+    const filter = `&endpoint_id=${encodeURIComponent(endpointId)}${status === null ? "" : `&status=${status}`}`;
+    return page(await this.#send("GET", `/webhook-deliveries${query(cursor)}${filter}`), delivery);
+  }
+
+  async redeliver(id: string): Promise<WebhookDelivery> {
+    return delivery(await this.#send("POST", `/webhook-deliveries/${encodeURIComponent(id)}:redeliver`));
   }
 
   async listAuditRecords(cursor: string | null = null): Promise<Page<AuditRecord>> {

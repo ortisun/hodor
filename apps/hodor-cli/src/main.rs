@@ -4,18 +4,22 @@
 
 mod applications;
 mod decisions;
+mod memberships;
 mod policies;
 mod roles;
+mod webhooks;
+mod workloads;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use hodor_adapters_crypto::{
     AwsLcHmacSha1, BundleSigningKey, LocalKeyProvider, OsRandom, SecretKeys, Sha256Digest,
 };
 use hodor_adapters_postgres::{
-    Database, PgAccessTokenStore, PgAuditLog, PgBundleStore, PgInstanceStatusStore,
-    PgInstanceStore, PgKeyStore, PgLinkStore, PgPool, PgProviderStore, PgRecoveryCodeStore,
-    PgRoleAssignmentStore, PgSealingStateStore, PgTenantDirectory, PgTenantRepository, PgTotpStore,
-    PgUploadedDecisionStore, PgUserRepository, reseal_tenant,
+    Database, PgAccessTokenStore, PgAuditLog, PgBundleStore, PgGroupRepository,
+    PgInstanceStatusStore, PgInstanceStore, PgKeyStore, PgLinkStore, PgOrganizationRepository,
+    PgPool, PgProviderStore, PgRecoveryCodeStore, PgRoleAssignmentStore, PgSealingStateStore,
+    PgTenantDirectory, PgTenantRepository, PgTotpStore, PgUploadedDecisionStore, PgUserRepository,
+    reseal_tenant,
 };
 use hodor_audit::api::AuditService;
 use hodor_authorization::api::{AuthorizationService, Namespace, Role};
@@ -36,8 +40,8 @@ use hodor_keys::api::{
     TenantSecretBox,
 };
 use hodor_tenant::api::{
-    AssuranceLevel, AssuranceLevels, AssuranceRequirement, Caller, CreateTenant, DirectoryEntry,
-    SecondFactorPolicy, TenantDirectory as _, TenantService,
+    AssuranceLevel, AssuranceLevels, AssuranceRequirement, Caller, CreateTenant, Deprovisioning,
+    DirectoryEntry, SecondFactorPolicy, TenantDirectory as _, TenantService,
 };
 use std::error::Error;
 use std::io::{Read as _, Write as _};
@@ -173,6 +177,72 @@ enum Command {
         command: decisions::AuthorizationCommand,
     },
 
+    /// Manage a tenant's groups and their members.
+    Group {
+        /// Connection URL of the application role.
+        #[arg(
+            long,
+            env = "HODOR_DATABASE_URL",
+            hide_env_values = true,
+            global = true
+        )]
+        database_url: Option<String>,
+        #[command(subcommand)]
+        command: memberships::GroupCommand,
+    },
+
+    /// Manage a tenant's organizations, their units and members, and invite
+    /// people to them.
+    Organization {
+        /// Connection URL of the application role.
+        #[arg(
+            long,
+            env = "HODOR_DATABASE_URL",
+            hide_env_values = true,
+            global = true
+        )]
+        database_url: Option<String>,
+        /// The address people reach this installation at, without a path:
+        /// links in invitations start with it.
+        #[arg(
+            long,
+            env = "HODOR_PUBLIC_URL",
+            default_value = "http://localhost:8080",
+            global = true
+        )]
+        public_url: String,
+        #[command(subcommand)]
+        command: memberships::OrganizationCommand,
+    },
+
+    /// Manage a tenant's service accounts: programs that act on their own.
+    ServiceAccount {
+        /// Connection URL of the application role.
+        #[arg(
+            long,
+            env = "HODOR_DATABASE_URL",
+            hide_env_values = true,
+            global = true
+        )]
+        database_url: Option<String>,
+        #[command(subcommand)]
+        command: workloads::WorkloadCommand,
+    },
+
+    /// Manage a tenant's agents: artificial intelligence agents.
+    Agent {
+        /// Connection URL of the application role.
+        #[arg(
+            long,
+            env = "HODOR_DATABASE_URL",
+            hide_env_values = true,
+            global = true
+        )]
+        database_url: Option<String>,
+        #[command(subcommand)]
+        command: workloads::WorkloadCommand,
+    },
+
     /// Manage a tenant's applications.
     Application {
         /// Connection URL of the application role.
@@ -197,6 +267,16 @@ enum Command {
             global = true
         )]
         database_url: Option<String>,
+        /// Hosts with their ports that a back-channel logout address may
+        /// name over plain HTTP, separated by commas, as the server has
+        /// them. For a development stack; never set it anywhere real.
+        #[arg(
+            long,
+            env = "HODOR_OUTBOUND_DEVELOPMENT_HOSTS",
+            value_delimiter = ',',
+            global = true
+        )]
+        development_hosts: Vec<String>,
         #[command(subcommand)]
         command: applications::ClientCommand,
     },
@@ -213,6 +293,35 @@ enum Command {
         database_url: Option<String>,
         #[command(subcommand)]
         command: applications::ResourceServerCommand,
+    },
+
+    /// Manage a tenant's webhook endpoints and their deliveries.
+    Webhook {
+        /// Connection URL of the application role.
+        #[arg(
+            long,
+            env = "HODOR_DATABASE_URL",
+            hide_env_values = true,
+            global = true
+        )]
+        database_url: Option<String>,
+        /// The keys that keep secrets encrypted at rest, as the server
+        /// has them. Registering an endpoint and rotating its secret need
+        /// them.
+        #[arg(long, env = "HODOR_SECRET_KEYS", hide_env_values = true, global = true)]
+        secret_keys: Option<String>,
+        /// Hosts with their ports that an endpoint may name at a private
+        /// address and over plain HTTP, separated by commas, as the server
+        /// has them. For a development stack; never set it anywhere real.
+        #[arg(
+            long,
+            env = "HODOR_OUTBOUND_DEVELOPMENT_HOSTS",
+            value_delimiter = ',',
+            global = true
+        )]
+        development_hosts: Vec<String>,
+        #[command(subcommand)]
+        command: webhooks::WebhookCommand,
     },
 
     /// Manage people's authenticator applications, until people can do it
@@ -404,6 +513,24 @@ enum AdminCommand {
         #[arg(long, default_value_t = 60)]
         token_minutes: u32,
     },
+    /// Give a built-in role to a user who exists: a person, a service
+    /// account or an agent. The administration interface gives none.
+    Grant(RoleArgs),
+    /// Take a built-in role away from a user.
+    Revoke(RoleArgs),
+}
+
+#[derive(clap::Args)]
+struct RoleArgs {
+    /// The tenant's slug.
+    #[arg(long)]
+    tenant: String,
+    /// The user's identifier.
+    #[arg(long)]
+    user: hodor_kernel::UserId,
+    /// `tenant_administrator` or `tenant_auditor`.
+    #[arg(long)]
+    role: String,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -684,6 +811,33 @@ enum SecondFactorArg {
     NotRequired,
 }
 
+#[derive(Clone, Copy, ValueEnum)]
+enum OnOffArg {
+    /// Offered.
+    On,
+    /// Not offered.
+    Off,
+}
+
+impl OnOffArg {
+    const fn is_on(self) -> bool {
+        matches!(self, Self::On)
+    }
+}
+
+/// `on` or `off`, as the command-line tool writes a setting.
+const fn on_off(value: bool) -> &'static str {
+    if value { "on" } else { "off" }
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum DeprovisioningArg {
+    /// Deactivate the person: they can be restored.
+    Deactivate,
+    /// Deactivate the person and mark them Deleted: they are erased.
+    Delete,
+}
+
 #[derive(Subcommand)]
 enum TenantCommand {
     /// Create and activate a tenant.
@@ -728,6 +882,39 @@ enum TenantCommand {
         /// Whether a second factor is required.
         #[arg(long, value_enum)]
         policy: SecondFactorArg,
+    },
+    /// Set how deep groups of the tenant may be nested: the longest chain of
+    /// groups inside a group, counting itself, from 1 to 10.
+    GroupDepth {
+        /// The tenant's slug.
+        #[arg(long)]
+        slug: String,
+        /// The deepest a group may be.
+        #[arg(long)]
+        depth: u8,
+    },
+    /// Say whether people of the tenant may sign in with a code, or with a
+    /// link, sent to their address. What is not given stays as it was.
+    EmailSignIn {
+        /// The tenant's slug.
+        #[arg(long)]
+        slug: String,
+        /// Signing in with a code by email.
+        #[arg(long, value_enum)]
+        code: Option<OnOffArg>,
+        /// Signing in with a link by email.
+        #[arg(long, value_enum)]
+        link: Option<OnOffArg>,
+    },
+    /// Set what deprovisioning a person through SCIM does: `DELETE` of a
+    /// user or `active: false`. Either way their sessions and grants end.
+    ScimDeprovisioning {
+        /// The tenant's slug.
+        #[arg(long)]
+        slug: String,
+        /// Deactivate or delete.
+        #[arg(long, value_enum)]
+        policy: DeprovisioningArg,
     },
     /// Replace the assurance levels applications ask for in `acr_values`
     /// and tokens name in `acr`; without `--level`, print them.
@@ -850,6 +1037,58 @@ async fn run_tenant(
             settings.authentication.second_factor = policy;
             service.change_settings(&tenant, settings, caller()).await?;
             Ok(format!("{} second-factor {said}", entry.slug))
+        }
+        TenantCommand::GroupDepth { slug, depth } => {
+            let entry = existing(service, &slug).await?;
+            let tenant = TenantContext::assume(entry.tenant_id);
+            let mut settings = service.get(&tenant).await?.snapshot().settings.clone();
+            settings.groups.max_depth = depth;
+            service.change_settings(&tenant, settings, caller()).await?;
+            Ok(format!("{} group-depth {depth}", entry.slug))
+        }
+        TenantCommand::EmailSignIn { slug, code, link } => {
+            let entry = existing(service, &slug).await?;
+            let tenant = TenantContext::assume(entry.tenant_id);
+            let mut settings = service.get(&tenant).await?.snapshot().settings.clone();
+            let policy = &mut settings.authentication.email_sign_in;
+            if let Some(code) = code {
+                policy.code = code.is_on();
+            }
+            if let Some(link) = link {
+                policy.link = link.is_on();
+            }
+            let now = if code.is_some() || link.is_some() {
+                service.change_settings(&tenant, settings, caller()).await?
+            } else {
+                service.get(&tenant).await?
+            };
+            let policy = now.snapshot().settings.authentication.email_sign_in;
+            Ok(format!(
+                "{} email-sign-in code {} link {}",
+                entry.slug,
+                on_off(policy.code),
+                on_off(policy.link)
+            ))
+        }
+        TenantCommand::ScimDeprovisioning { slug, policy } => {
+            let entry = existing(service, &slug).await?;
+            let tenant = TenantContext::assume(entry.tenant_id);
+            let mut settings = service.get(&tenant).await?.snapshot().settings.clone();
+            settings.provisioning.deprovisioning = match policy {
+                DeprovisioningArg::Deactivate => Deprovisioning::Deactivate,
+                DeprovisioningArg::Delete => Deprovisioning::Delete,
+            };
+            let changed = service.change_settings(&tenant, settings, caller()).await?;
+            Ok(format!(
+                "{} scim-deprovisioning {}",
+                entry.slug,
+                changed
+                    .snapshot()
+                    .settings
+                    .provisioning
+                    .deprovisioning
+                    .as_str()
+            ))
         }
         TenantCommand::AssuranceLevels { slug, levels } => {
             let entry = existing(service, &slug).await?;
@@ -988,7 +1227,9 @@ async fn person(
         Arc::new(database.clone()),
         Arc::new(PgUserRepository),
         Arc::new(SystemClock),
-    );
+    )
+    .with_groups(Arc::new(PgGroupRepository))
+    .with_organizations(Arc::new(PgOrganizationRepository));
     let user = identity
         .find_by_login(&tenant, login)
         .await?
@@ -1625,6 +1866,41 @@ async fn run_reseal(
     Ok((lines.join("\n"), complete))
 }
 
+/// Gives or takes away a built-in role of a user who exists in the tenant.
+async fn built_in_role(
+    database: &Database,
+    args: &RoleArgs,
+    give: bool,
+) -> Result<String, DomainError> {
+    let units = || Arc::new(database.clone());
+    let clock = Arc::new(SystemClock);
+    let tenants = TenantService::new(
+        units(),
+        Arc::new(PgTenantRepository),
+        Arc::new(PgTenantDirectory::new(database.clone())),
+        clock.clone(),
+    );
+    let tenant = TenantContext::assume(existing(&tenants, &args.tenant).await?.tenant_id);
+    let role = Role::from_name(&args.role)?;
+    let user = IdentityService::new(units(), Arc::new(PgUserRepository), clock.clone())
+        .get(&tenant, args.user)
+        .await?;
+    if user.status() == hodor_identity::api::UserStatus::Deleted {
+        return Err(DomainError::not_found(
+            "identity.user_not_found",
+            "the user does not exist",
+        ));
+    }
+    let service = AuthorizationService::new(units(), Arc::new(PgRoleAssignmentStore), clock);
+    if give {
+        service.assign(&tenant, user.id(), role, caller()).await?;
+        Ok(format!("granted {} {}", role.as_str(), user.id()))
+    } else {
+        service.revoke(&tenant, user.id(), role, caller()).await?;
+        Ok(format!("revoked {} {}", role.as_str(), user.id()))
+    }
+}
+
 async fn bootstrap_administrator(
     database: &Database,
     slug: &str,
@@ -1646,7 +1922,9 @@ async fn bootstrap_administrator(
     // tenant context: the operator names the tenant.
     let tenant = TenantContext::assume(entry.tenant_id);
 
-    let identity = IdentityService::new(units(), Arc::new(PgUserRepository), clock.clone());
+    let identity = IdentityService::new(units(), Arc::new(PgUserRepository), clock.clone())
+        .with_groups(Arc::new(PgGroupRepository))
+        .with_organizations(Arc::new(PgOrganizationRepository));
     let address = NormalizedIdentifier::parse(IdentifierKind::Email, email)?;
     let user = match identity
         .find_by_login(&tenant, address.normalized())
@@ -1817,6 +2095,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .map_err(|error| format!("{}: {}", error.code(), error.message()))?;
             writeln!(std::io::stdout(), "{output}")?;
         }
+        Command::Admin {
+            database_url,
+            command: AdminCommand::Grant(args),
+        } => {
+            let database = connect(database_url).await?;
+            print(built_in_role(&database, &args, true).await)?;
+        }
+        Command::Admin {
+            database_url,
+            command: AdminCommand::Revoke(args),
+        } => {
+            let database = connect(database_url).await?;
+            print(built_in_role(&database, &args, false).await)?;
+        }
         Command::Audit {
             database_url,
             command: AuditCommand::Verify { tenant },
@@ -1859,6 +2151,35 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let database = connect(database_url).await?;
             print(decisions::run_authorization(&database, command).await)?;
         }
+        Command::Group {
+            database_url,
+            command,
+        } => {
+            let database = connect(database_url).await?;
+            print(memberships::run_group(&database, command).await)?;
+        }
+        Command::ServiceAccount {
+            database_url,
+            command,
+        } => {
+            let database = connect(database_url).await?;
+            print(workloads::run(&database, UserKind::ServiceAccount, command).await)?;
+        }
+        Command::Agent {
+            database_url,
+            command,
+        } => {
+            let database = connect(database_url).await?;
+            print(workloads::run(&database, UserKind::Agent, command).await)?;
+        }
+        Command::Organization {
+            database_url,
+            public_url,
+            command,
+        } => {
+            let database = connect(database_url).await?;
+            print(memberships::run_organization(&database, &public_url, command).await)?;
+        }
         Command::Application {
             database_url,
             command,
@@ -1868,10 +2189,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
         Command::Client {
             database_url,
+            development_hosts,
             command,
         } => {
             let database = connect(database_url).await?;
-            print(applications::run_client(&database, command).await)?;
+            print(applications::run_client(&database, command, &development_hosts).await)?;
         }
         Command::ResourceServer {
             database_url,
@@ -1879,6 +2201,25 @@ async fn main() -> Result<(), Box<dyn Error>> {
         } => {
             let database = connect(database_url).await?;
             print(applications::run_resource_server(&database, command).await)?;
+        }
+        Command::Webhook {
+            database_url,
+            secret_keys,
+            development_hosts,
+            command,
+        } => {
+            let database = connect(database_url).await?;
+            print(
+                webhooks::run(
+                    &database,
+                    webhooks::Installation {
+                        secret_keys,
+                        development_hosts: &development_hosts,
+                    },
+                    command,
+                )
+                .await,
+            )?;
         }
         Command::Totp {
             database_url,

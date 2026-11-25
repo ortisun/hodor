@@ -61,6 +61,7 @@ flowchart TB
 | Replicas | Server: 3 minimum, horizontal pod autoscaler on CPU and request concurrency. Worker: 2 minimum |
 | Scheduling | Topology spread across zones; PodDisruptionBudget keeps a majority |
 | Probes | `startupz` (migrations compatible, keys loaded), `readyz` (database reachable, not draining), `livez` (process responsive). Readiness does not depend on Redis, Open Policy Agent or external identity providers |
+| Client address | The ingress controller's pod range in `trustedProxies`, with the network policy on, so that limits count each client: [the address of each client](install-on-kubernetes.md#the-address-of-each-client) |
 | Shutdown | On SIGTERM: fail readiness, wait for the load balancer, drain in-flight requests, stop; workers finish or release the current job |
 | Network policy | Ingress to `:8080` only from the gateway; `:9090` only from monitoring; Open Policy Agent reachable only on localhost; egress restricted to database, Redis, key management service, collector and an egress proxy for identity providers and webhooks |
 | Pod security | Non-root, no privilege escalation, all capabilities dropped, read-only filesystem, seccomp default |
@@ -68,9 +69,9 @@ flowchart TB
 
 ## The worker
 
-`hodor-worker` runs background work: delivering outbox events to their handlers ([Decision 0003](../decisions/0003-context-communication.md)), delivering queued messages to the mail server ([the notification context](../architecture/contexts/notification.md)), the cleanup jobs, rotating the tenants' signing keys ([the keys context](../architecture/contexts/keys.md#rotation)), and checking, testing and simulating policy versions for Open Policy Agent ([the policy lifecycle](../architecture/contexts/authorization.md#the-policy-lifecycle)).
+`hodor-worker` runs background work: delivering outbox events to their handlers ([Decision 0003](../decisions/0003-context-communication.md)), delivering queued messages to the mail server ([the notification context](../architecture/contexts/notification.md)), the cleanup jobs, rotating the tenants' signing keys ([the keys context](../architecture/contexts/keys.md#rotation)), sending webhooks ([the webhooks context](../architecture/contexts/webhooks.md)), sending logout tokens to the clients of a session that ended ([back-channel logout](../architecture/contexts/oauth.md#back-channel-logout)), and checking, testing and simulating policy versions for Open Policy Agent ([the policy lifecycle](../architecture/contexts/authorization.md#the-policy-lifecycle)).
 
-The one handler today is the [audit log](../architecture/contexts/audit.md): every event becomes an audit record. An installation without a running worker loses nothing, but its audit log falls behind until a worker runs.
+Two handlers hear every event. The [audit log](../architecture/contexts/audit.md) makes every event an audit record; the [webhooks context](../architecture/contexts/webhooks.md#how-an-event-reaches-an-endpoint) makes one delivery for each endpoint subscribed to the event's type. A third hears `session.revoked` only: the [OAuth context](../architecture/contexts/oauth.md#which-sessions-which-clients) makes one logout delivery for each client signed in to with the session. All three write in the transaction that marks the event dispatched. An installation without a running worker loses nothing, but its audit log, its webhooks and its logout tokens fall behind until a worker runs.
 
 Delivering events and messages works the same way:
 
@@ -103,6 +104,67 @@ Policy checks run only when `HODOR_OPEN_POLICY_AGENT_BINARY` is set; the image s
 | `hodor.policy.check.done` | Counter | `kind`: `version`, `simulation` |
 
 A growing count of `retrying` messages means the mail server is refusing or unreachable; the reason for each message is in the `last_error` column of `notification.message`.
+
+Webhooks are sent only when `HODOR_SECRET_KEYS` is set, with the same keys as the server, since only they open the secrets deliveries are signed with. Without it the worker says so once, and deliveries wait. Unlike the other loops, the webhook loop sends many deliveries at once (`HODOR_WEBHOOK_CONCURRENCY`) and holds no transaction while an endpoint answers: each delivery is leased for the time limit of an attempt plus one minute, so a worker that stops in the middle of a request leaves it to another after that minute. Any number of workers can run; an endpoint never has more than `HODOR_WEBHOOK_IN_FLIGHT_PER_ENDPOINT` deliveries in flight across all of them. Endpoints are on the internet, chosen by tenants: give the worker a route out to public addresses for them, through the [guarded client's](../security/outbound-http.md) rules, and nothing more. The settings and [bounds](../architecture/contexts/webhooks.md#bounds) are on the context's page.
+
+| Metric | Kind | Labels |
+|---|---|---|
+| `hodor.webhooks.attempts` | Counter | `outcome`: `delivered`, `retrying`, `set_aside`, `skipped` |
+| `hodor.webhooks.passes` | Counter | `outcome`: `ok`, `error` |
+
+A growing count of `set_aside` means an endpoint keeps failing; the deliveries say why (`GET /webhook-deliveries?status=set_aside`).
+
+Logout tokens are sent the same way, by a loop of their own, only when both `HODOR_SECRET_KEYS` and `HODOR_PUBLIC_URL` are set: the keys sign the token with the tenant's key, and the public address, the same as the server's, names the issuer. Without either the worker says so once, and logout deliveries wait. A worker sends up to 16 at once and a client never has more than 4 in flight. Back-channel logout addresses are on the internet, chosen by tenants, like webhook endpoints, and need the same route out. The settings and [bounds](../architecture/contexts/oauth.md#bounds) are on the OAuth context's page.
+
+| Metric | Kind | Labels |
+|---|---|---|
+| `hodor.backchannel_logout.attempts` | Counter | `outcome`: `delivered`, `retrying`, `set_aside`, `skipped` |
+| `hodor.backchannel_logout.passes` | Counter | `outcome`: `ok`, `error` |
+
+A growing count of `set_aside` means a client's back-channel logout address keeps failing; `oauth.backchannel_logout_set_aside` in the audit log names the client, and the `last_error` column of `oauth.logout_delivery` says why.
+
+### Cleanup
+
+Many rows are only useful for a while: a session that ended, a link that was used, a code that expired. The worker removes them, so that the database does not grow forever and holds no more personal data than it needs. Every kind of row below has a **retention**: how long it is kept after it stopped being useful. Then it is removed.
+
+| Kind | Stops being useful when | Retention | What removing it also removes |
+|---|---|---|---|
+| `sessions` | It was ended, or it expired, idle or absolute | 7 days | — |
+| `sign_ins` | The sign-in in progress expired | 1 day | — |
+| `verification_tokens` | The registration or recovery link was used, replaced or expired | 7 days | — |
+| `email_sign_ins` | The code or the link to sign in by email expired. A used one expires ten minutes after it was made, at the latest | 1 day | — |
+| `messages` | It was sent, failed or expired. Its contents were already erased | 30 days | — |
+| `webauthn_registrations` | A security key or passkey registration was never finished and expired | 0 | — |
+| `authorization_requests` | The request kept while the person signs in expired | 0 | — |
+| `authorization_codes` | The code expired | 1 day | — |
+| `revoked_grants` | The grant was revoked | 30 days | Its codes, refresh token families and records of access tokens |
+| `refresh_token_families` | The family expired or was revoked | 30 days | Its refresh tokens and records of access tokens |
+| `client_assertions` | The remembered `jti` of a client assertion expired | 0 | — |
+| `consents` | It was withdrawn or expired. The history of consents is kept | 30 days | — |
+| `administration_access_tokens` | The access token of the administration interface expired or was revoked | 30 days | — |
+| `webhook_deliveries` | The webhook delivery was delivered or set aside | 30 days | — |
+| `api_keys` | The API key of a service account or an agent expired or was revoked | 30 days | — |
+| `logout_deliveries` | The [logout delivery](../architecture/contexts/oauth.md#deliveries-and-retries) was delivered or set aside | 30 days | — |
+| `pending_authorizations` | A sign-in that left for an identity provider never came back | 0, fixed | — |
+| `access_tokens` | The access token recorded in the register expired | 0, fixed | — |
+
+Removing a row never changes an answer Hodor gives:
+
+- **Nothing that can still be used is removed.** A row is removed only after it stopped being useful, so a retention of 0 removes it at the next pass and no sooner.
+- **A row that is gone answers like one that was refused.** A code, a refresh token, a link or a session that is no longer stored is refused as unknown. An access token whose record is gone is [not in force](../architecture/contexts/oauth.md#the-register-of-access-tokens).
+- **What is longer means more is remembered.** While a revoked refresh token family is kept, presenting one of its tokens again is recognized as reuse. After that it is simply unknown, and refused all the same.
+- **The audit log, the history of consents and the record of decisions are never removed by this job.** The record of decisions has [its own retention](../architecture/contexts/authorization.md#the-record-of-decisions).
+
+A retention is changed with `HODOR_CLEANUP_RETENTION_DAYS`, as `kind=days` pairs separated by commas, such as `sessions=30,messages=90`. A kind it does not name keeps its default. The worker refuses to start with a kind it does not know, a kind given twice, a number that is not a whole number of days from 0 to 3650, or a retention for `pending_authorizations` or `access_tokens`.
+
+Each kind is a job of its own, run like the others: it finds the tenants that have something to remove through the platform connection, then removes at most `HODOR_CLEANUP_BATCH_SIZE` rows in each tenant as the application role. A pass that removed a full batch is followed by another at once. Workers need no leader: the rows a pass removes are locked with `FOR UPDATE SKIP LOCKED`, so two workers never remove the same row and each skips what the other holds.
+
+| Metric | Kind | Labels |
+|---|---|---|
+| `hodor.cleanup.removed` | Counter | `job`: the kind |
+| `hodor.cleanup.passes` | Counter | `job`: the kind; `outcome`: `ok`, `error` |
+
+Rows that are never removed today: the counters of failed attempts, which keep the escalation of lockouts, and an authenticator application enrollment that was never confirmed, of which a person has at most one.
 
 ## Configuration and secrets
 
@@ -150,7 +212,7 @@ The server checks the schema version at startup and refuses to run against a sch
 
 | Signal | Content |
 |---|---|
-| Metrics | The set in section 20 of the specification, plus outbox lag, job queue depth, hashing queue depth, breaker state per Open Policy Agent binding, key age. Pushed over OTLP to VictoriaMetrics ([Decision 0015](../decisions/0015-observability-stack.md)); no scrape endpoint |
+| Metrics | The set in section 20 of the specification, plus outbox lag, job queue depth, hashing queue depth, breaker state per Open Policy Agent binding, key age. Pushed over OTLP to VictoriaMetrics ([Decision 0015](../decisions/0015-observability-stack.md)); no scrape endpoint. Every process names itself with `service.name`, `service.version` and `service.instance.id`, a random identifier made when it starts, so that the series of two replicas never mix; add series up across instances to count for the whole deployment |
 | Traces | One trace per request across server, database, Open Policy Agent and outbound calls; worker jobs linked to the originating request by `correlation_id` |
 | Logs | JSON to stdout with `tenant_id`, `request_id`, `trace_id`; no bodies, no secrets |
 | Dashboards and alerts | Shipped with the chart: authentication failure spike, token error rate, p99 latency, outbox lag, Open Policy Agent unhealthy, key rotation overdue, certificate expiry, database pool saturation |
@@ -158,6 +220,6 @@ The server checks the schema version at startup and refuses to run against a sch
 ## Scaling notes
 
 - The server is stateless; any node serves any request. In-memory caches are bounded and invalidated by events (through Redis pub/sub when present, by short time to live otherwise).
-- Workers coordinate through `FOR UPDATE SKIP LOCKED`; there is no leader election. Scheduled jobs (key rotation, cleanup) use a database advisory lock.
+- Workers coordinate through `FOR UPDATE SKIP LOCKED`; there is no leader election. Cleanup jobs lock the rows they remove the same way. Key rotation and policy checks need one worker at a time and take a database advisory lock.
 - The first bottleneck is password hashing CPU, then database connections. Scale servers for the former, the pooler for the latter.
 - Open Policy Agent sidecars scale with the server. Bundle downloads are conditional requests, so thousands of instances are cheap.

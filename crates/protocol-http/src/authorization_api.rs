@@ -19,12 +19,17 @@ use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use hodor_authorization::api::{
     Action, ApplicationReference, Attributes, AuthorizationDecision, AuthorizationRequest,
-    EvaluationContext, EvaluationService, Namespace, PolicyReference, PolicyRevision,
-    PolicySelection, Resource, Subject, SubjectKind,
+    EvaluationContext, EvaluationService, Namespace, OrganizationReference, PolicyReference,
+    PolicyRevision, PolicySelection, Resource, Subject, SubjectKind,
 };
 use hodor_authorization::api::{Effect, MAX_BATCH};
-use hodor_kernel::{DomainError, TenantContext};
-use hodor_oauth::api::{BearerRefusal, ResourceAccessService, ResourceCaller};
+use hodor_credential::api::{ApiKeyService, looks_like_api_key};
+use hodor_identity::api::IdentityService;
+use hodor_kernel::{DomainError, ErrorKind, TenantContext};
+use hodor_oauth::api::{
+    ApplicationId, ApplicationService, BearerRefusal, ResourceAccessService, ResourceCaller,
+    ResourceServer,
+};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
@@ -52,11 +57,31 @@ pub const AUTHORIZATION_OPERATIONS: &[(&str, &str)] = &[
 
 const SURFACE: &str = "the Authorization API";
 
+/// What the API needs to take the API key of a service account or an
+/// agent in place of an access token.
+#[derive(Clone)]
+pub struct ApiKeyAccess {
+    /// Says which key a presented value is.
+    pub keys: ApiKeyService,
+    /// Says whether the key's holder may act.
+    pub identity: IdentityService,
+    /// Reads the key's application and its resource server.
+    pub applications: ApplicationService,
+}
+
+impl std::fmt::Debug for ApiKeyAccess {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ApiKeyAccess").finish_non_exhaustive()
+    }
+}
+
 /// What the API needs.
 #[derive(Clone)]
 pub struct AuthorizationApiState {
     /// Checks the caller's access token.
     pub access: ResourceAccessService,
+    /// Checks the caller's API key.
+    pub keys: ApiKeyAccess,
     /// Decides.
     pub evaluation: EvaluationService,
     /// The address people reach this installation at, without a path.
@@ -101,6 +126,9 @@ struct Question {
     action: String,
     #[serde(default)]
     context: BTreeMap<String, Value>,
+    /// The organization the request is made in, by its identifier.
+    #[serde(default)]
+    organization: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -148,17 +176,84 @@ fn body_invalid() -> Problem {
 }
 
 /// What the caller may ask about: the resource server of its client's
-/// application, and that application.
+/// application, or of its key's, and that application.
 struct Asker {
-    caller: ResourceCaller,
+    scopes: Vec<String>,
     namespace: Namespace,
     application: ApplicationReference,
 }
 
 impl Asker {
     fn explains(&self) -> bool {
-        self.caller.has_scope(EXPLAIN_SCOPE)
+        self.scopes.iter().any(|scope| scope == EXPLAIN_SCOPE)
     }
+}
+
+/// Who presented a token or a key, once it was found good: its scopes, its
+/// application and that application's resource server.
+struct Presented {
+    scopes: Vec<String>,
+    application_id: ApplicationId,
+    resource_server: Option<ResourceServer>,
+}
+
+impl From<ResourceCaller> for Presented {
+    fn from(caller: ResourceCaller) -> Self {
+        Self {
+            scopes: caller.scopes,
+            application_id: caller.application_id,
+            resource_server: caller.resource_server,
+        }
+    }
+}
+
+/// The application and scopes an API key stands for, if the key is good in
+/// the tenant, its holder a workload that may act, and its application an
+/// enabled one of the tenant. Otherwise why it is refused.
+async fn by_key(
+    access: &ApiKeyAccess,
+    tenant: &TenantContext,
+    presented: &str,
+) -> Result<Result<Presented, BearerRefusal>, DomainError> {
+    use BearerRefusal::InvalidToken;
+    let Some(key) = access.keys.authenticate(tenant, presented).await? else {
+        return Ok(Err(InvalidToken("the API key is not good here")));
+    };
+    match access.identity.get(tenant, key.holder_id()).await {
+        Ok(holder) if holder.is_workload_that_may_act() => {}
+        Ok(_) => return Ok(Err(InvalidToken("the key's holder may not act"))),
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            return Ok(Err(InvalidToken("the key's holder does not exist")));
+        }
+        Err(error) => return Err(error),
+    }
+    let Some(application_id) = key
+        .application()
+        .map(|id| ApplicationId::from_uuid(id.as_uuid()))
+    else {
+        return Ok(Err(InvalidToken("the key names no application")));
+    };
+    match access
+        .applications
+        .application(tenant, application_id)
+        .await
+    {
+        Ok(application) if application.is_enabled() => {}
+        Ok(_) => return Ok(Err(InvalidToken("the key's application is disabled"))),
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            return Ok(Err(InvalidToken("the key's application does not exist")));
+        }
+        Err(error) => return Err(error),
+    }
+    let resource_server = access
+        .applications
+        .resource_server_of(tenant, application_id)
+        .await?;
+    Ok(Ok(Presented {
+        scopes: key.scopes().to_vec(),
+        application_id,
+        resource_server,
+    }))
 }
 
 fn issuer(public_url: &str, slug: &str) -> String {
@@ -180,21 +275,25 @@ async fn asker(
             SURFACE,
         )));
     };
-    let caller = match state
-        .access
-        .caller(
-            tenant,
-            &issuer(&state.public_url, slug),
-            AUTHORIZATION_API_AUDIENCE,
-            token,
-        )
-        .await
-    {
+    let found = match token {
+        Some(key) if looks_like_api_key(key) => by_key(&state.keys, tenant, key).await,
+        _ => state
+            .access
+            .caller(
+                tenant,
+                &issuer(&state.public_url, slug),
+                AUTHORIZATION_API_AUDIENCE,
+                token,
+            )
+            .await
+            .map(|found| found.map(Presented::from)),
+    };
+    let caller = match found {
         Ok(Ok(caller)) => caller,
         Ok(Err(refusal)) => return Err(Box::new(refused(refusal, scope, SURFACE))),
         Err(error) => return Err(Box::new(not_cached(Problem::from(error).into_response()))),
     };
-    if !caller.has_scope(scope) {
+    if !caller.scopes.iter().any(|held| held == scope) {
         return Err(Box::new(refused(
             BearerRefusal::InsufficientScope,
             scope,
@@ -206,7 +305,8 @@ async fn asker(
             Problem::new(
                 StatusCode::FORBIDDEN,
                 "authorization.no_resource_server",
-                "the application of the token's client has no resource server to ask about",
+                "the application of the token's client, or of the key, has no resource server \
+                 to ask about",
             )
             .into_response(),
         )));
@@ -220,7 +320,7 @@ async fn asker(
         Err(error) => return Err(Box::new(not_cached(Problem::from(error).into_response()))),
     };
     Ok(Asker {
-        caller,
+        scopes: caller.scopes,
         namespace,
         application,
     })
@@ -244,6 +344,11 @@ fn request(question: Question, asker: &Asker) -> Result<AuthorizationRequest, Do
             attributes: Attributes::new(question.context)?,
             correlation_id: current_request_id(),
             application: Some(asker.application.clone()),
+            organization: question
+                .organization
+                .as_deref()
+                .map(OrganizationReference::parse)
+                .transpose()?,
         },
     })
 }

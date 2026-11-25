@@ -25,6 +25,8 @@ function wordsFor(scope: AskedScope, text: Messages): string {
       return text.consentScopeAddress;
     case "phone":
       return text.consentScopePhone;
+    case "groups":
+      return text.consentScopeGroups;
     default:
       return scope.scope;
   }

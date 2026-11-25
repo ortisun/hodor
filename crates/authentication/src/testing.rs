@@ -2,9 +2,10 @@
 
 use crate::api::{
     AttemptCounter, AttemptStore, AttemptSubject, AuthFlow, AuthTransaction, Authenticator,
-    AuthenticatorTraits, Factor, LockoutRules, StepInput, StepOutcome, TokenPurpose, TransactionId,
-    TransactionStore, VerificationSecret, VerificationToken, VerificationTokenHash,
-    VerificationTokenId, VerificationTokenStore,
+    AuthenticatorTraits, EmailMethod, EmailSecretHash, EmailSignIn, EmailSignInStore, EmailUse,
+    Factor, LockoutRules, StepInput, StepOutcome, TokenPurpose, TransactionId, TransactionStore,
+    VerificationSecret, VerificationToken, VerificationTokenHash, VerificationTokenId,
+    VerificationTokenStore,
 };
 use hodor_kernel::random::testing::FakeDigest;
 use hodor_kernel::{
@@ -493,6 +494,53 @@ pub async fn run_transaction_contract(ports: TransactionPorts<'_>) {
     assert_eq!(reloaded.challenge(), None);
     assert_eq!(reloaded.snapshot().version, 3);
 
+    // What the enrollment step began is stored, in place of what it began
+    // before, and is kept through a rejection.
+    let mut enrolling = reloaded.clone();
+    enrolling.record_enrollment(crate::api::BegunEnrollment::AuthenticatorApplication(
+        hodor_credential::api::TotpId::generate(),
+    ));
+    let begun = crate::api::BegunEnrollment::Passkey(
+        hodor_credential::api::WebAuthnRegistrationId::generate(),
+    );
+    enrolling.record_enrollment(begun);
+    update(&ports, &tenant, &enrolling).await.expect("update");
+    let reloaded = stored(&ports, &tenant, transaction.id())
+        .await
+        .expect("exists");
+    assert_eq!(reloaded.begun_enrollment(), Some(begun));
+    let mut mistyped = reloaded.clone();
+    mistyped.record_rejection();
+    update(&ports, &tenant, &mistyped).await.expect("update");
+    let reloaded = stored(&ports, &tenant, transaction.id())
+        .await
+        .expect("exists");
+    assert_eq!(reloaded.begun_enrollment(), Some(begun));
+    for other in [
+        crate::api::BegunEnrollment::SecurityKey(
+            hodor_credential::api::WebAuthnRegistrationId::generate(),
+        ),
+        crate::api::BegunEnrollment::AuthenticatorApplication(
+            hodor_credential::api::TotpId::generate(),
+        ),
+    ] {
+        let mut replaced = stored(&ports, &tenant, transaction.id())
+            .await
+            .expect("exists");
+        replaced.record_enrollment(other);
+        update(&ports, &tenant, &replaced).await.expect("update");
+        assert_eq!(
+            stored(&ports, &tenant, transaction.id())
+                .await
+                .expect("exists")
+                .begun_enrollment(),
+            Some(other)
+        );
+    }
+    let reloaded = stored(&ports, &tenant, transaction.id())
+        .await
+        .expect("exists");
+
     // Of two requests working from the same version, the second is
     // refused. This is what makes completion happen once.
     let (mut first, mut second) = (reloaded.clone(), reloaded.clone());
@@ -511,6 +559,11 @@ pub async fn run_transaction_contract(ports: TransactionPorts<'_>) {
         .expect("exists");
     assert_eq!(ended.snapshot().satisfied_methods, ["password"]);
     assert_eq!(ended.snapshot().status, first.snapshot().status);
+    assert_eq!(
+        ended.begun_enrollment(),
+        None,
+        "a satisfied step empties what it began"
+    );
 
     // A transaction cannot be updated from another tenant.
     let error = update(&ports, &elsewhere, &ended)
@@ -876,5 +929,337 @@ pub async fn run_verification_token_contract(ports: VerificationTokenPorts<'_>) 
         use_token(&ports, &tenant, &second_secret, Registration, soon)
             .await
             .is_some()
+    );
+}
+
+/// What was sent to sign in by email, kept in memory. One lock serves
+/// every call, so using up is atomic here as it is on PostgreSQL.
+#[derive(Debug, Clone, Default)]
+pub struct InMemoryEmailSignIns {
+    rows: Arc<Mutex<BTreeMap<(TenantId, TransactionId), EmailSignIn>>>,
+}
+
+impl InMemoryEmailSignIns {
+    fn rows(&self) -> std::sync::MutexGuard<'_, BTreeMap<(TenantId, TransactionId), EmailSignIn>> {
+        self.rows.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// How many sign-ins of every tenant have something sent for them.
+    #[must_use]
+    pub fn count(&self) -> usize {
+        self.rows().len()
+    }
+}
+
+#[async_trait::async_trait]
+impl EmailSignInStore for InMemoryEmailSignIns {
+    async fn replace(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        sent: &EmailSignIn,
+    ) -> Result<(), DomainError> {
+        self.rows().insert(
+            (uow.tenant().tenant_id(), sent.snapshot().transaction_id),
+            sent.clone(),
+        );
+        Ok(())
+    }
+
+    async fn get(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        transaction: TransactionId,
+    ) -> Result<Option<EmailSignIn>, DomainError> {
+        Ok(self
+            .rows()
+            .get(&(uow.tenant().tenant_id(), transaction))
+            .cloned())
+    }
+
+    async fn use_up(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        transaction: TransactionId,
+        method: EmailMethod,
+        presented: &EmailSecretHash,
+        now: Timestamp,
+    ) -> Result<EmailUse, DomainError> {
+        let mut rows = self.rows();
+        let Some(sent) = rows.get_mut(&(uow.tenant().tenant_id(), transaction)) else {
+            return Ok(EmailUse::Refused);
+        };
+        if sent.accepts(method, presented, now) {
+            sent.mark_used(now);
+            let user = sent.snapshot().user_id.ok_or_else(|| {
+                DomainError::internal("authentication.stored_data_invalid", "unreachable")
+            })?;
+            return Ok(EmailUse::Accepted(user));
+        }
+        let state = sent.snapshot();
+        Ok(
+            if state.used_at.is_some() && state.method == method && &state.secret_hash == presented
+            {
+                EmailUse::AlreadyUsed
+            } else {
+                EmailUse::Refused
+            },
+        )
+    }
+}
+
+/// The ports under test.
+#[derive(Clone)]
+pub struct EmailSignInPortsUnderTest<'a> {
+    /// Starts units of work.
+    pub units_of_work: &'a dyn UnitOfWorkFactory,
+    /// The store under test.
+    pub sent: &'a dyn EmailSignInStore,
+}
+
+impl std::fmt::Debug for EmailSignInPortsUnderTest<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EmailSignInPortsUnderTest")
+            .finish_non_exhaustive()
+    }
+}
+
+fn sent_for(
+    transaction: &AuthTransaction,
+    method: EmailMethod,
+    user: Option<UserId>,
+) -> (EmailSignIn, EmailSecretHash) {
+    let (sent, secret) = EmailSignIn::issue(
+        transaction,
+        method,
+        [4; 32],
+        user,
+        MOMENT,
+        &ContractRandom,
+        &FakeDigest,
+    );
+    let hash =
+        EmailSecretHash::of_presented(method, secret.expose(), &FakeDigest).expect("well formed");
+    (sent, hash)
+}
+
+async fn replace_sent(
+    ports: &EmailSignInPortsUnderTest<'_>,
+    tenant: &TenantContext,
+    sent: &EmailSignIn,
+) {
+    let mut uow = ports.units_of_work.begin(tenant).await.expect("begin");
+    ports
+        .sent
+        .replace(uow.as_mut(), sent)
+        .await
+        .expect("replace");
+    uow.commit().await.expect("commit");
+}
+
+async fn sent_of(
+    ports: &EmailSignInPortsUnderTest<'_>,
+    tenant: &TenantContext,
+    transaction: TransactionId,
+) -> Option<EmailSignIn> {
+    let mut uow = ports.units_of_work.begin(tenant).await.expect("begin");
+    ports
+        .sent
+        .get(uow.as_mut(), transaction)
+        .await
+        .expect("get")
+}
+
+async fn use_sent(
+    ports: &EmailSignInPortsUnderTest<'_>,
+    tenant: &TenantContext,
+    transaction: TransactionId,
+    method: EmailMethod,
+    hash: &EmailSecretHash,
+    now: Timestamp,
+) -> EmailUse {
+    let mut uow = ports.units_of_work.begin(tenant).await.expect("begin");
+    let used = ports
+        .sent
+        .use_up(uow.as_mut(), transaction, method, hash, now)
+        .await
+        .expect("use up");
+    uow.commit().await.expect("commit");
+    used
+}
+
+/// Runs the whole contract of a store of what is sent to sign in by
+/// email. Each run uses tenants of its own, so runs can share one
+/// database.
+///
+/// # Panics
+///
+/// Panics when the implementation breaks the contract.
+pub async fn run_email_sign_in_contract(ports: EmailSignInPortsUnderTest<'_>) {
+    use EmailMethod::{Code, Link};
+    let tenant = TenantContext::assume(TenantId::generate());
+    let elsewhere = TenantContext::assume(TenantId::generate());
+    let flow = AuthFlow::built_in();
+    let transaction = AuthTransaction::start(&flow, ClientInfo::default(), [9; 32], MOMENT);
+    let soon = MOMENT + Duration::minutes(1);
+    let user = UserId::generate();
+
+    // What is stored is loaded unchanged, within its tenant only.
+    let (code, code_hash) = sent_for(&transaction, Code, Some(user));
+    replace_sent(&ports, &tenant, &code).await;
+    assert_eq!(
+        sent_of(&ports, &tenant, transaction.id()).await,
+        Some(code.clone())
+    );
+    assert_eq!(sent_of(&ports, &elsewhere, transaction.id()).await, None);
+    assert_eq!(
+        sent_of(&ports, &tenant, TransactionId::generate()).await,
+        None
+    );
+
+    // Another tenant, another sign-in, the other method or another secret
+    // use nothing up.
+    assert_eq!(
+        use_sent(&ports, &elsewhere, transaction.id(), Code, &code_hash, soon).await,
+        EmailUse::Refused
+    );
+    assert_eq!(
+        use_sent(
+            &ports,
+            &tenant,
+            TransactionId::generate(),
+            Code,
+            &code_hash,
+            soon
+        )
+        .await,
+        EmailUse::Refused
+    );
+    assert_eq!(
+        use_sent(&ports, &tenant, transaction.id(), Link, &code_hash, soon).await,
+        EmailUse::Refused
+    );
+    let (_, other_hash) = sent_for(&transaction, Code, Some(user));
+    assert_eq!(
+        use_sent(&ports, &tenant, transaction.id(), Code, &other_hash, soon).await,
+        EmailUse::Refused
+    );
+    assert_eq!(
+        sent_of(&ports, &tenant, transaction.id())
+            .await
+            .expect("kept")
+            .snapshot()
+            .used_at,
+        None,
+        "a wrong secret does not spend the right one"
+    );
+
+    // It is used up once; the same secret again is known to be used.
+    assert_eq!(
+        use_sent(&ports, &tenant, transaction.id(), Code, &code_hash, soon).await,
+        EmailUse::Accepted(user)
+    );
+    assert_eq!(
+        use_sent(&ports, &tenant, transaction.id(), Code, &code_hash, soon).await,
+        EmailUse::AlreadyUsed
+    );
+    assert_eq!(
+        use_sent(&ports, &tenant, transaction.id(), Code, &other_hash, soon).await,
+        EmailUse::Refused
+    );
+    assert_eq!(
+        sent_of(&ports, &tenant, transaction.id())
+            .await
+            .expect("kept")
+            .snapshot()
+            .used_at,
+        Some(soon)
+    );
+
+    // Asking again replaces what was sent, used or not: only the newest
+    // is good.
+    let (link, link_hash) = sent_for(&transaction, Link, Some(user));
+    replace_sent(&ports, &tenant, &link).await;
+    assert_eq!(
+        sent_of(&ports, &tenant, transaction.id()).await,
+        Some(link.clone())
+    );
+    let (newer, newer_hash) = sent_for(&transaction, Link, Some(user));
+    replace_sent(&ports, &tenant, &newer).await;
+    assert_eq!(
+        use_sent(&ports, &tenant, transaction.id(), Link, &link_hash, soon).await,
+        EmailUse::Refused
+    );
+
+    // An expired one is not used up, and stays unused.
+    let too_late = newer.snapshot().expires_at;
+    assert_eq!(
+        use_sent(
+            &ports,
+            &tenant,
+            transaction.id(),
+            Link,
+            &newer_hash,
+            too_late
+        )
+        .await,
+        EmailUse::Refused
+    );
+    assert_eq!(
+        use_sent(
+            &ports,
+            &tenant,
+            transaction.id(),
+            Link,
+            &newer_hash,
+            too_late - Duration::seconds(1)
+        )
+        .await,
+        EmailUse::Accepted(user)
+    );
+
+    // One sent to nobody is never used up, even with its own secret.
+    let nobodys_sign_in = AuthTransaction::start(&flow, ClientInfo::default(), [8; 32], MOMENT);
+    let (nobodys, nobodys_hash) = sent_for(&nobodys_sign_in, Code, None);
+    replace_sent(&ports, &tenant, &nobodys).await;
+    assert_eq!(
+        sent_of(&ports, &tenant, nobodys_sign_in.id()).await,
+        Some(nobodys.clone())
+    );
+    assert_eq!(
+        use_sent(
+            &ports,
+            &tenant,
+            nobodys_sign_in.id(),
+            Code,
+            &nobodys_hash,
+            soon
+        )
+        .await,
+        EmailUse::Refused
+    );
+
+    // The same sign-in identifier in another tenant is a row of its own.
+    let (theirs, theirs_hash) = sent_for(&transaction, Code, Some(user));
+    replace_sent(&ports, &elsewhere, &theirs).await;
+    assert_eq!(
+        use_sent(
+            &ports,
+            &elsewhere,
+            transaction.id(),
+            Code,
+            &theirs_hash,
+            soon
+        )
+        .await,
+        EmailUse::Accepted(user)
+    );
+    assert_eq!(
+        sent_of(&ports, &tenant, transaction.id())
+            .await
+            .expect("kept")
+            .snapshot()
+            .method,
+        Link,
+        "the first tenant's row is untouched"
     );
 }

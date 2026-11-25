@@ -487,8 +487,10 @@ def an_administrator(tenant, other, user_id, address):
           "nothing is left, and the recovery codes went with the last second factor")
     failed = Browser()
     answer = failed.sign_in(tenant, address, PASSWORD)
-    check(answer.json().get("status") == "failed" and "__Secure-hodor_session" not in failed.cookies,
-          "with no second factor, the password no longer signs the person in to a tenant that requires one")
+    said = answer.json()
+    check(said.get("status") == "pending" and said.get("step") == "enrollment"
+          and "__Secure-hodor_session" not in failed.cookies,
+          "with no second factor, the password alone no longer signs the person in: the sign-in waits for one to be set up")
 
     def records():
         items, cursor = [], None

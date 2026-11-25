@@ -1,6 +1,6 @@
 # Secrets at rest
 
-Some secrets must be read back, so they cannot be stored as a hash the way passwords and tokens are: the client secret Hodor presents to an external identity provider, the password it binds to an LDAP directory with, the PKCE verifier of a sign-in through a provider, the secret of an authenticator application. These are stored encrypted. This page says how.
+Some secrets must be read back, so they cannot be stored as a hash the way passwords and tokens are: the client secret Hodor presents to an external identity provider, the password it binds to an LDAP directory with, the PKCE verifier of a sign-in through a provider, the secret of an authenticator application, the secret a webhook is signed with. These are stored encrypted. This page says how.
 
 Since Issue-52, every secret is encrypted under a **data key of its tenant**, a key version of the [keys context](../architecture/contexts/keys.md). The keys of `HODOR_SECRET_KEYS` no longer encrypt secrets: they are **root keys**, and wrap the data keys and the signing keys. This is the envelope encryption of [Decision 0008](../decisions/0008-cryptography.md). Until Issue-52 the root keys sealed every secret directly, in the format described under [the first format](#the-first-format), and an installation moves its secrets to the second with [one command](#moving-the-secrets-of-an-earlier-version).
 
@@ -83,6 +83,8 @@ The tables are listed in one place in `hodor-adapters-postgres`, each with its p
 | `federation.pending_authorization` | `code_verifier` | `federation.code_verifier` |
 | `credential.totp` | `sealed_secret` | `credential.totp_secret` |
 | `oauth.refresh_token_family` | `sealed_secret` | `oauth.refresh_token_family_secret` |
+| `oauth.pairwise_secret` | `sealed_secret` | `oauth.pairwise_secret` |
+| `webhooks.signing_secret` | `sealed_secret` | `webhooks.signing_secret` |
 
 ### Moving the secrets of an earlier version
 

@@ -617,6 +617,11 @@ fn a_token_about_a_client_has_no_auth_time() {
         signed_in_at: None,
         acr: None,
         methods: Vec::new(),
+        organization: None,
+        groups: None,
+        principal_kind: None,
+        act: None,
+        amr: None,
     };
     let claims = super::claims_for(
         ISSUER,
@@ -629,4 +634,65 @@ fn a_token_about_a_client_has_no_auth_time() {
     assert_eq!(claims.claims["sub"], client.to_string());
     assert_eq!(claims.claims["client_id"], client.to_string());
     assert!(claims.claims.get("auth_time").is_none());
+}
+
+fn person_subject(
+    organization: Option<OrganizationId>,
+    groups: Option<Vec<GroupId>>,
+) -> TokenSubject {
+    TokenSubject {
+        subject: UserId::generate().to_string(),
+        scopes: vec!["openid".to_owned(), "groups".to_owned()],
+        audiences: Vec::new(),
+        signed_in_at: Some(now()),
+        acr: None,
+        methods: vec!["password".to_owned()],
+        organization,
+        groups,
+        principal_kind: None,
+        act: None,
+        amr: None,
+    }
+}
+
+fn claims_of(subject: &TokenSubject) -> serde_json::Value {
+    super::claims_for(
+        ISSUER,
+        subject,
+        ClientId::generate(),
+        Duration::minutes(5),
+        now(),
+        &DistinctRandom,
+    )
+    .claims
+}
+
+#[test]
+fn an_access_token_names_the_organization_and_the_groups() {
+    let organization = OrganizationId::generate();
+    let groups = vec![GroupId::generate(), GroupId::generate()];
+    let claims = claims_of(&person_subject(Some(organization), Some(groups.clone())));
+    assert_eq!(claims["org_id"], organization.to_string());
+    assert_eq!(
+        claims["groups"],
+        json!([groups[0].to_string(), groups[1].to_string()])
+    );
+
+    let claims = claims_of(&person_subject(None, None));
+    assert!(claims.get("org_id").is_none());
+    assert!(claims.get("groups").is_none());
+}
+
+#[test]
+fn an_access_token_names_a_hundred_groups_at_most() {
+    let hundred: Vec<GroupId> = (0..100).map(|_| GroupId::generate()).collect();
+    let claims = claims_of(&person_subject(None, Some(hundred)));
+    assert_eq!(claims["groups"].as_array().map(Vec::len), Some(100));
+
+    let more: Vec<GroupId> = (0..101).map(|_| GroupId::generate()).collect();
+    let claims = claims_of(&person_subject(None, Some(more)));
+    assert!(claims.get("groups").is_none(), "none rather than some");
+
+    let none = claims_of(&person_subject(None, Some(Vec::new())));
+    assert_eq!(none["groups"], json!([]));
 }

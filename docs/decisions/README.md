@@ -32,3 +32,14 @@ All records below are **Proposed** unless marked otherwise: they become Accepted
 | [0024](0024-webauthn-checks.md) | WebAuthn is checked by Hodor's own code, over the cryptography it already has (Accepted) |
 | [0025](0025-condition-language.md) | Conditions are Common Expression Language, interpreted by the `cel` crate in a crate of their own (Accepted) |
 | [0026](0026-policy-checks-in-a-sandbox.md) | Policies are checked by the `opa` binary, run by the worker as a child process with nothing of its own (Accepted) |
+| [0027](0027-what-0.3.0-holds.md) | 0.3.0 holds operations, groups and organizations with SCIM, workloads with webhooks, and what 0.2.0 left out (Accepted) |
+| [0031](0031-workloads-are-users.md) | Service accounts and agents are users of the identity context, and a client of the client credentials grant acts as one (Accepted) |
+| [0032](0032-webhooks.md) | Webhooks are a context of their own, signed as Standard Webhooks say, and sent on leases outside any transaction (Accepted) |
+| [0033](0033-api-keys.md) | API keys are credentials of workloads, recognized by their prefix, and never do more than their holder (Accepted) |
+| [0034](0034-token-exchange.md) | An agent acts for a person through token exchange, with a bounded `act` chain, a policy of audiences per client and scopes that only narrow (Accepted) |
+| [0035](0035-access-control-lists.md) | Access control lists are entries that only allow, read at every decision beside the roles (Accepted) |
+| [0036](0036-codes-and-links-by-email.md) | A code or a link by email is an alternative of the flow, kept apart from the sign-in that asked for it, and counted as the first factor (Accepted) |
+| [0037](0037-back-channel-logout.md) | Back-channel logout is made by the OAuth context from the end of a session, and sent by the worker on leases as webhooks are (Accepted) |
+| [0039](0039-enrolling-during-a-sign-in.md) | A second factor is enrolled during a sign-in at the last step of the flow, only by a person the policy holds back, and counts as that sign-in's second factor (Accepted) |
+| [0040](0040-pairwise-subjects.md) | A pairwise client knows a person by an identifier of its sector alone, in every token, answer and logout it is given (Accepted) |
+| [0041](0041-claim-mappers.md) | Claim mappers name their tokens, never a claim Hodor sets, and are bounded when they are saved (Accepted) |

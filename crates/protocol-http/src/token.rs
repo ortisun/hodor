@@ -60,6 +60,8 @@ struct TokenAnswer<'a> {
     refresh_token: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     id_token: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    issued_token_type: Option<&'static str>,
 }
 
 #[derive(Serialize)]
@@ -124,6 +126,7 @@ fn answered(tokens: &IssuedTokens) -> Response {
                 .id_token
                 .as_ref()
                 .map(|token| token.expose().as_str()),
+            issued_token_type: tokens.issued_token_type,
         })
         .into_response(),
     )

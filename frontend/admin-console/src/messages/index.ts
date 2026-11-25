@@ -70,6 +70,56 @@ export function describe(failure: Failure, text: Messages): string {
       return text.keyTaken;
     case "oauth.client_too_many_keys":
       return text.tooManyKeys;
+    case "identity.group_not_found":
+      return text.groupNotFound;
+    case "identity.group_name_taken":
+      return text.groupNameTaken;
+    case "identity.group_cycle":
+      return text.groupCycle;
+    case "identity.group_nesting_too_deep":
+      return text.groupNestingTooDeep;
+    case "identity.group_modified_concurrently":
+    case "identity.organization_modified_concurrently":
+      return text.changedConcurrently;
+    case "identity.organization_not_found":
+      return text.organizationNotFound;
+    case "identity.unit_not_found":
+      return text.unitNotFound;
+    case "identity.membership_not_found":
+      return text.membershipNotFound;
+    case "identity.invitation_invalid":
+      return text.invitationInvalid;
+    case "identity.organization_name_taken":
+      return text.organizationNameTaken;
+    case "identity.unit_name_taken":
+      return text.unitNameTaken;
+    case "identity.unit_cycle":
+      return text.unitCycle;
+    case "identity.unit_tree_too_deep":
+      return text.unitTreeTooDeep;
+    case "identity.unit_not_empty":
+      return text.unitNotEmpty;
+    case "identity.workload_not_found":
+      return text.workloadNotFound;
+    case "identity.user_modified_concurrently":
+    case "webhooks.endpoint_changed":
+      return text.changedConcurrently;
+    case "credential.api_key_not_found":
+      return text.apiKeyNotFound;
+    case "credential.too_many_api_keys":
+      return text.tooManyApiKeys;
+    case "credential.api_key_not_rotatable":
+      return text.apiKeyNotRotatable;
+    case "webhooks.endpoint_not_found":
+      return text.endpointNotFound;
+    case "webhooks.delivery_not_found":
+      return text.deliveryNotFound;
+    case "webhooks.too_many_endpoints":
+      return text.tooManyEndpoints;
+    case "webhooks.delivery_not_set_aside":
+      return text.deliveryNotSetAside;
+    case "webhooks.not_configured":
+      return text.webhooksNotConfigured;
     default:
       if (failure.code !== null && text.valueInvalid[failure.code] !== undefined) {
         return text.valueInvalid[failure.code] ?? text.somethingWrong;

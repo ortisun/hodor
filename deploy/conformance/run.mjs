@@ -1,6 +1,8 @@
-// Runs the Basic OpenID Provider and Config OpenID Provider plans of the
-// OpenID conformance suite against Hodor, in the stack of compose.yaml, and
-// fails unless every test ends as docs/operations/conformance.md expects.
+// Runs the Basic OpenID Provider, Config OpenID Provider and Back-Channel
+// OpenID Provider plans of the OpenID conformance suite against Hodor, then
+// the Basic and Back-Channel plans again with pairwise clients, in the stack
+// of compose.yaml, and fails unless every test ends as
+// docs/operations/conformance.md expects.
 //
 // NOT FOR ANYTHING REAL: the person, the clients and their secrets are made
 // here for the run and written to the console.
@@ -38,6 +40,15 @@ const PASSWORD = "conformance-suite-password";
 const ISSUER = `${HODOR}/t/${TENANT}`;
 const CALLBACK = `${SUITE}test/a/${ALIAS}/callback`;
 const POST_LOGOUT = `${SUITE}test/a/${ALIAS}/post_logout_redirect`;
+// The suite's back-channel logout address, `test/a/{alias}/backchannel_logout`,
+// as the worker reaches it: through the relay of compose.yaml.
+const RELAY = "suite-relay:8080";
+const BACKCHANNEL_LOGOUT = `http://${RELAY}/test/a/${ALIAS}/backchannel_logout`;
+// The sector identifier address of the second pairwise client, answered by
+// `sector-document` of compose.yaml with the suite's redirect address. Its
+// host is that client's sector.
+const SECTOR_DOCUMENT_HOST = "sector-document:8080";
+const SECTOR_IDENTIFIER_URI = `http://${SECTOR_DOCUMENT_HOST}/redirect_uris.json`;
 const ONLY = (process.env.CONFORMANCE_ONLY ?? "").split(",").filter((name) => name !== "");
 
 // Both servers show certificates of their own making.
@@ -55,6 +66,10 @@ function cli(...args) {
       "compose", "-f", COMPOSE_FILE, "run", "--rm", "--no-deps", "-T",
       "--entrypoint", "/usr/local/bin/hodor-cli",
       "-e", "HODOR_DATABASE_URL=postgres://hodor_server:dev-server@postgres:5432/hodor",
+      // The back-channel logout address is checked, and the sector
+      // identifier address fetched, when the client is made, as the server
+      // does it: the relay and the sector document are the exceptions.
+      "-e", `HODOR_OUTBOUND_DEVELOPMENT_HOSTS=${RELAY},${SECTOR_DOCUMENT_HOST}`,
       "hodor", ...args,
     ],
     { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] },
@@ -110,7 +125,7 @@ async function waitForState(module, states, seconds) {
 // ---------------------------------------------------------------------------
 
 function seedHodor() {
-  step("A tenant, an application and three clients in Hodor");
+  step("A tenant, an application and eight clients in Hodor");
   if (!cli("tenant", "list").split("\n").some((line) => line.includes(` ${TENANT} `) || line.startsWith(`${TENANT} `))) {
     cli("tenant", "create", "--slug", TENANT, "--name", "Conformance", "--open-registration");
   }
@@ -119,13 +134,14 @@ function seedHodor() {
     cli("application", "add", "--tenant", TENANT, "--name", "OpenID conformance suite", "--first-party"),
     "application",
   );
-  const client = (name, method) => {
+  const client = (name, method, more = []) => {
     const output = cli(
       "client", "add", "--tenant", TENANT, "--application", application, "--name", name,
       "--type", "confidential", "--method", method, "--without-pkce",
       "--grant", "authorization_code", "--grant", "refresh_token",
       "--redirect-uri", CALLBACK, "--post-logout-redirect-uri", POST_LOGOUT,
       "--scope", "openid", "--scope", "profile", "--scope", "email", "--scope", "offline_access",
+      ...more,
     );
     return { client_id: printed(output, "client"), client_secret: printed(output, "secret") };
   };
@@ -133,6 +149,27 @@ function seedHodor() {
     first: client("First client", "client_secret_basic"),
     second: client("Second client", "client_secret_basic"),
     post: client("Client that sends its secret in the form", "client_secret_post"),
+    // The back-channel plan's alone: a test of another plan that signs out
+    // never gets a logout token it does not wait for.
+    backchannel: client("Client told when the session ends", "client_secret_basic", [
+      "--backchannel-logout-uri", BACKCHANNEL_LOGOUT, "--backchannel-logout-session-required",
+    ]),
+    // The same four, pairwise, for the plans' second run: each knows the
+    // person by an identifier of its sector. The second names a sector
+    // identifier address, so its sector is another host than the others'.
+    pairwise: {
+      first: client("Pairwise first client", "client_secret_basic", ["--subject-type", "pairwise"]),
+      second: client("Pairwise second client", "client_secret_basic", [
+        "--subject-type", "pairwise", "--sector-identifier-uri", SECTOR_IDENTIFIER_URI,
+      ]),
+      post: client("Pairwise client that sends its secret in the form", "client_secret_post", [
+        "--subject-type", "pairwise",
+      ]),
+      backchannel: client("Pairwise client told when the session ends", "client_secret_basic", [
+        "--subject-type", "pairwise",
+        "--backchannel-logout-uri", BACKCHANNEL_LOGOUT, "--backchannel-logout-session-required",
+      ]),
+    },
   };
 }
 
@@ -277,17 +314,17 @@ async function runModule(plan, entry, browser) {
   return { name: entry.testModule, module, status: info.status, result: info.result };
 }
 
-async function runPlan(name, config, variant, browser, wanted = () => true) {
-  step(`Plan ${name}`);
+async function runPlan(name, config, variant, browser, label = name) {
+  step(`Plan ${label}`);
   const plan = await suite("POST", "api/plan", { query: { planName: name, variant }, body: config });
   const results = [];
   for (const entry of plan.modules) {
-    if (!wanted(entry.testModule) || (ONLY.length > 0 && !ONLY.includes(entry.testModule))) {
+    if (ONLY.length > 0 && !ONLY.includes(entry.testModule)) {
       continue;
     }
     const result = await runModule(plan.id, entry, browser);
     console.log(`${result.result ?? result.status}\t${result.name}\t${SUITE}log-detail.html?log=${result.module}`);
-    results.push({ plan: name, ...result });
+    results.push({ plan: label, ...result });
   }
   return results;
 }
@@ -329,6 +366,25 @@ async function main() {
         { server_metadata: "discovery", client_registration: "static_client" }, browser)),
       // This plan sets its own variants.
       ...(await runPlan("oidcc-config-certification-test-plan", config, undefined, browser)),
+      // The client of this plan is the one with a back-channel logout
+      // address; the plan sets the rest of its variants.
+      ...(await runPlan("oidcc-backchannel-rp-initiated-logout-certification-test-plan",
+        { ...config, client: clients.backchannel, client2: undefined, client_secret_post: undefined },
+        { client_registration: "static_client", response_type: "code" }, browser)),
+      // The pairwise configuration, the acceptance of Issue-98: the same
+      // plans with clients that know the person by an identifier of their
+      // sector. The suite checks that UserInfo, a second sign-in and the
+      // logout token give the `sub` and `sid` of the ID token.
+      ...(await runPlan("oidcc-basic-certification-test-plan",
+        { ...config, client: clients.pairwise.first, client2: clients.pairwise.second,
+          client_secret_post: clients.pairwise.post },
+        { server_metadata: "discovery", client_registration: "static_client" }, browser,
+        "oidcc-basic-certification-test-plan (pairwise)")),
+      ...(await runPlan("oidcc-backchannel-rp-initiated-logout-certification-test-plan",
+        { ...config, client: clients.pairwise.backchannel, client2: undefined,
+          client_secret_post: undefined },
+        { client_registration: "static_client", response_type: "code" }, browser,
+        "oidcc-backchannel-rp-initiated-logout-certification-test-plan (pairwise)")),
     ];
     if (process.env.CONFORMANCE_REPORT) {
       writeFileSync(process.env.CONFORMANCE_REPORT, JSON.stringify(results, null, 2));
@@ -340,7 +396,7 @@ async function main() {
       const outcome = result.status === "FINISHED" ? result.result : result.status;
       const allowed = ["PASSED", ...Object.keys(EXPECTED[result.name] ?? {})];
       const mark = allowed.includes(outcome) ? "ok" : "UNEXPECTED";
-      console.log(`${mark}\t${outcome}\t${result.name}`);
+      console.log(`${mark}\t${outcome}\t${result.plan}\t${result.name}`);
       if (mark !== "ok") {
         unexpected.push(result);
       }

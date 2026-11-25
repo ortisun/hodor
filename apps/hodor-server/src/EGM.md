@@ -49,7 +49,13 @@ Routers, as assembled in `run`:
   `hodor_protocol_http::consent_routes`, whose `ConsentState` shares the
   `ConsentService` and `SessionService` of the authorization endpoint.
 - `/api/v1/admin` nests `hodor_protocol_http::admin_routes` with the
-  `AdminState` built by `administration`.
+  `AdminState` built by `administration`; its `webhooks` is the
+  `WebhookService` of `webhooks`, with `HODOR_SECRET_KEYS` only, whose
+  addresses are checked by a `GuardedHttpClient` with the development
+  exception; its `applications` is an `ApplicationService` given such a
+  client too, with `with_destinations`, to check clients' back-channel
+  logout addresses and sector identifier addresses, and another with
+  `with_sector_documents`, to fetch the latter.
 - `/console/api` nests `hodor_protocol_http::console_routes`.
 - `/api/v1/authorization` nests `hodor_protocol_http::authorization_api_routes`
   with the `AuthorizationApiState` built by `authorization_api`, only when
@@ -58,6 +64,23 @@ Routers, as assembled in `run`:
   `PgEngineBindingStore`, `ServerSubjects` and the registry of
   `authorization_engines` (the native engine with its simulator, and Open
   Policy Agent).
+- `/scim/v2` nests `hodor_protocol_http::scim_routes` with the `ScimState`
+  built by `scim`, only when `keys` built a `KeyService`: the same
+  `ResourceAccessService` as the Authorization API (`resource_access`), and a
+  `ProvisioningService` over `IdentityService`, `GroupService`,
+  `PgProvisionedUserRepository`, `PgProvisionedGroupRepository`,
+  `PgDeprovisioningPolicy` and `deprovisioning::ServerAccessRevoker`, which
+  ends a deprovisioned person's sessions (`SessionService::revoke_all_for_user_in`)
+  and grants (`AuthorizationCodeService::revoke_grants_of_in`) in the
+  provisioning context's unit of work. `access_revoker` builds it.
+- The same `ServerAccessRevoker` implements `hodor_identity::api::WorkloadAccess`
+  for the `WorkloadService` of `administration`: a disabled or deleted service
+  account or agent loses its sessions and grants, if any, and every access
+  token issued for it (`WorkloadTokens::revoke_in`), in the identity
+  context's unit of work; a deleted one also loses its API keys
+  (`ApiKeyService::revoke_all_of_in`, `revoke_credentials`). `api_keys`
+  builds the `ApiKeyService` over `PgApiKeyStore` that the administration
+  interface and the Authorization API (`ApiKeyAccess`) use.
 - `/oauth2/jwks`: `hodor_protocol_http::key_set_routes(KeyService)` is merged
   into the tenant routes when `keys` built a `KeyService` (`PgKeyStore`,
   `LocalKeyProvider` over `HODOR_SECRET_KEYS`); otherwise a warning is logged
@@ -83,12 +106,28 @@ Adapters implemented here:
 - `ServerSubjects` (`subjects.rs`) implements
   `hodor_authorization::api::SubjectAttributeSource`: a user's `status` and
   `kind` through `IdentityService::get`, a client's `application`,
-  `client_type` and `enabled` through `ApplicationService::client`; an
-  identifier that does not parse or is not found has no attributes.
-- `ServerStanding` (`standing.rs`) implements
+  `client_type` and `enabled` through `ApplicationService::client`, and its
+  `principal` only when it is bound to one; an identifier that does not
+  parse or is not found has no attributes.
+- `ServerStanding` (`standing.rs`), built by `standing`, implements
   `hodor_oauth::api::PersonStanding` over `SessionService::list_for_user`
   (a session is active when it is among the person's active sessions) and
-  `IdentityService::get` (`may_sign_in`; an unknown user may not).
+  `IdentityService::get` (`may_sign_in`, and `workload_that_may_act`, the
+  kind of an active service account or agent; an unknown user may not). The
+  token endpoint and every `AccessTokenRegister` (UserInfo, the Authorization
+  API and SCIM) use it.
+- `ServerMemberships` (`standing.rs`, `ServerMemberships::over(database,
+  clock)`) implements `hodor_oauth::api::PersonMemberships` over
+  `OrganizationService::organizations_of` (a member when the organization
+  is among the person's) and `GroupService::effective_groups`.
+- `ServerClaimSources` (`standing.rs`, `ServerClaimSources::over(database,
+  clock)`) implements `hodor_oauth::api::PersonClaimSources` over
+  `IdentityService::get` (the display name, the primary username and
+  email address, whether it is verified, the locale; nothing for an
+  unknown user) and `OrganizationService::get` (the name, or none).
+  `claim_mapping` wires both with `PgClaimMapperStore` into the
+  `ClaimMapping` of the token endpoint and of UserInfo; `administration`
+  gives `AdminState.claim_mappers` its `ClaimMapperService`.
 
 Wiring functions: `interaction` (Argon2id hashing, identity, credential,
 WebAuthn with the relying party of `HODOR_PUBLIC_URL`, session, attempt
@@ -96,15 +135,23 @@ guard, sign-in flow, accounts and notification queue; the flow is the
 built-in one with a `webauthn` step after it, conditional on a stronger
 assurance being needed (`StrongerAssuranceNeeded`), a `totp` step when
 secrets can be kept, conditional on the sign-in not being multi-factor yet,
-and the alternative `passkey`), `authorization` (given the interaction's
+an `enrollment` step last, conditional on the assurance not being reached
+(`AssuranceNotReached`), whose `EnrollmentAuthenticator` uses the same
+`FactorService` as the factor routes, built earlier for it, and the
+alternatives `passkey`, `email_code` and `email_link`, the last two
+`EmailAuthenticator`s over `PgEmailSignInStore` and the message queue, offered
+where the tenant turned them on), `authorization` (given the interaction's
 `AuthenticationService`, for step-ups, and `tenant_service`, for the
 assurance levels, which `administration` and the discovery document read
 too),
 `external_sign_in` (`ExternalSignIn` with OpenID Connect, GitHub, SAML and,
 through `with_directories`, `LdapDirectoryClient`), `keys`, `key_rotation`
 (the default policy with `HODOR_KEY_OVERLAP_HOURS`), `token` (the token
-endpoint, with `PgRefreshTokenStore`, `ServerStanding`, the secret box and
-the retry window of `HODOR_REFRESH_RETRY_SECONDS`), `consents` (the
+endpoint, with `PgRefreshTokenStore`, `ServerStanding`, the secret box,
+the retry window of `HODOR_REFRESH_RETRY_SECONDS` and `pairwise_subjects`),
+`pairwise_subjects` (`PairwiseSubjects` over `PgPairwiseSecretStore`, a
+secret box and `AwsLcHmacSha256`, given to the token endpoint and to
+`logout`, the end-session endpoint), `consents` (the
 `ConsentService` over `PgConsentStore`, which the authorization endpoint,
 the consent routes and the administration interface use),
 `administration`,
@@ -124,7 +171,7 @@ and `run`.
   `HODOR_SECRET_KEYS`; a retry window outside 0 to 60 seconds aborts startup
   (`token`).
 - Every context that keeps secrets (federation, authenticator applications,
-  refresh token families)
+  refresh token families, pairwise secrets)
   gets the same kind of `TenantSecretBox`, built by `secret_box` with
   `PgKeyStore`, `LocalKeyProvider` over the root keys, `PgSealingStateStore`
   and the root keys to open the first format.
@@ -160,7 +207,8 @@ and `run`.
   LDAP connections go through `LdapDirectoryClient`, limited to
   `HODOR_DIRECTORY_HOSTS` (`external_sign_in`).
 - Builds the engine registry with `NativeEngine` (over `PgRoleAssignmentStore`
-  and `PgNativeRoleStore`) and `OpenPolicyAgentEngine` over a
+  and `PgNativeRoleStore`, reading access control lists through
+  `PgAccessListStore`) and `OpenPolicyAgentEngine` over a
   `ServiceHttpClient` limited to the configured Open Policy Agent origins,
   with a 64-kibibyte limit on answers (`authorization_engines`, called in
   `run`). A wrong origin or tenant pair stops the server at startup. No

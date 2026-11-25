@@ -32,6 +32,8 @@ pub const PAGE_PATHS: &[&str] = &[
     "/account/sign-out",
     "/account/security",
     "/account/consent",
+    "/account/accept-invitation",
+    "/account/sign-in-link",
 ];
 
 /// The page an identity provider sends a person back to. It is the one
@@ -50,6 +52,20 @@ pub const CONSOLE_PATHS: &[&str] = &[
     "/console/audit",
     "/console/identity-providers",
     "/console/identity-providers/{provider}",
+    "/console/applications",
+    "/console/applications/{application}",
+    "/console/clients/{client}",
+    "/console/authorization",
+    "/console/groups",
+    "/console/groups/{group}",
+    "/console/organizations",
+    "/console/organizations/{organization}",
+    "/console/service-accounts",
+    "/console/service-accounts/{service_account}",
+    "/console/agents",
+    "/console/agents/{agent}",
+    "/console/webhooks",
+    "/console/webhooks/{endpoint}",
 ];
 
 /// Where the files of the admin console are served, outside any tenant.

@@ -1,11 +1,15 @@
 //! Per-request context: identifier, tracing span and security headers.
 
-use axum::extract::{ConnectInfo, Request};
+use crate::client_address::TrustedProxies;
+use axum::extract::{ConnectInfo, Request, State};
 use axum::http::header::{self, HeaderName, HeaderValue};
 use axum::middleware::Next;
 use axum::response::Response;
 use hodor_kernel::CorrelationId;
+use opentelemetry::KeyValue;
+use opentelemetry::metrics::Counter;
 use std::net::{IpAddr, SocketAddr};
+use std::sync::{Arc, OnceLock};
 use tracing::Instrument as _;
 
 tokio::task_local! {
@@ -32,13 +36,26 @@ const SECURITY_HEADERS: &[(HeaderName, &str)] = &[
     ),
 ];
 
-/// The network address a request came from, as the server saw it.
+/// The network address a request came from.
 ///
-/// This is the address of the connection. Behind a load balancer it is the
-/// load balancer's address; trusting a forwarded address from named
-/// proxies is not built yet.
+/// This is the address of the connection, or the address a trusted proxy
+/// forwarded when the connection comes from one: see
+/// [`TrustedProxies::resolve`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ClientAddress(pub Option<IpAddr>);
+
+/// Counts the forwarded headers of trusted proxies that could not be read.
+fn unreadable_forwarded_addresses() -> &'static Counter<u64> {
+    static COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
+    COUNTER.get_or_init(|| {
+        opentelemetry::global::meter("hodor.server")
+            .u64_counter("hodor.http.forwarded_address.unreadable")
+            .with_description(
+                "Forwarded headers of trusted proxies that could not be read, by reason",
+            )
+            .build()
+    })
+}
 
 /// The identifier of the request being handled, if any.
 pub(crate) fn current_request_id() -> Option<CorrelationId> {
@@ -52,7 +69,13 @@ pub(crate) fn current_request_id() -> Option<CorrelationId> {
 /// are ignored, so they cannot be used to forge log correlation. Only the
 /// path is recorded, never the query string, which may carry codes or
 /// tokens.
-pub(crate) async fn request_context(mut request: Request, next: Next) -> Response {
+///
+/// The client address is set here too, once, before anything reads it.
+pub(crate) async fn request_context(
+    State(proxies): State<Arc<TrustedProxies>>,
+    mut request: Request,
+    next: Next,
+) -> Response {
     let request_id = CorrelationId::generate();
     let span = tracing::info_span!(
         "http.request",
@@ -63,11 +86,21 @@ pub(crate) async fn request_context(mut request: Request, next: Next) -> Respons
         tenant_id = tracing::field::Empty,
     );
     request.extensions_mut().insert(request_id);
-    let address = request
+    let peer = request
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
         .map(|connection| connection.0.ip());
-    request.extensions_mut().insert(ClientAddress(address));
+    let resolved = proxies.resolve(peer, request.headers());
+    if let Some(unreadable) = resolved.unreadable {
+        unreadable_forwarded_addresses().add(1, &[KeyValue::new("reason", unreadable.as_str())]);
+        tracing::debug!(
+            reason = unreadable.as_str(),
+            "the forwarded header of a trusted proxy could not be read; the connection's address is used"
+        );
+    }
+    request
+        .extensions_mut()
+        .insert(ClientAddress(resolved.address));
 
     let mut response = REQUEST_ID
         .scope(request_id, next.run(request))

@@ -7,7 +7,10 @@ use hodor_kernel::clock::testing::FixedClock;
 use hodor_kernel::random::testing::FakeDigest;
 use hodor_kernel::sealing::testing::FakeSecretBox;
 use hodor_kernel::uow::testing::InMemoryUnitOfWorkFactory;
-use hodor_kernel::{Caller, Clock as _, CorrelationId, TenantContext, TenantId, Timestamp, UserId};
+use hodor_kernel::{
+    Caller, Clock as _, CorrelationId, GroupId, OrganizationId, TenantContext, TenantId, Timestamp,
+    UserId,
+};
 use hodor_keys::api::{KeyAlgorithm, KeyService, RotationPolicy};
 use hodor_keys::testing::{FakeKeyProvider, InMemoryKeys};
 use hodor_oauth::api::{
@@ -20,7 +23,7 @@ use hodor_oauth::api::{
 use hodor_oauth::testing::{
     DistinctRandom, FakeVerifier, InMemoryAccessTokenRecords, InMemoryAuthorizationCodes,
     InMemoryAuthorizationRequests, InMemoryClientAssertions, InMemoryGrants, InMemoryRefreshTokens,
-    InMemoryStores, RefreshStorePorts, StandingOf, run_refresh_token_contract,
+    InMemoryStores, MembershipsOf, RefreshStorePorts, StandingOf, run_refresh_token_contract,
 };
 use hodor_session::api::SessionId;
 use serde_json::Value;
@@ -45,6 +48,7 @@ struct World {
     grants: InMemoryGrants,
     families: InMemoryRefreshTokens,
     standing: StandingOf,
+    memberships: MembershipsOf,
     codes: AuthorizationCodeService,
     applications: ApplicationService,
     keys: KeyService,
@@ -59,6 +63,7 @@ fn world_with_window(window: Duration) -> World {
     let code_store = InMemoryAuthorizationCodes::new(&grants);
     let families = InMemoryRefreshTokens::new(&grants);
     let standing = StandingOf::default();
+    let memberships = MembershipsOf::default();
     let clock = Arc::new(FixedClock::at(
         Timestamp::UNIX_EPOCH + Duration::days(20_000),
     ));
@@ -70,6 +75,7 @@ fn world_with_window(window: Duration) -> World {
         requests: Arc::new(requests),
         grants: Arc::new(grants.clone()),
         codes: Arc::new(code_store),
+        memberships: Arc::new(memberships.clone()),
         digest: Arc::new(FakeDigest),
         random: Arc::new(DistinctRandom),
         clock: clock.clone(),
@@ -90,6 +96,15 @@ fn world_with_window(window: Duration) -> World {
         refresh_tokens: Arc::new(families.clone()),
         access_tokens: Arc::new(InMemoryAccessTokenRecords::new(&stores.clients)),
         standing: Arc::new(standing.clone()),
+        memberships: Arc::new(memberships.clone()),
+        mapping: hodor_oauth::api::ClaimMapping::new(
+            Arc::new(units.clone()),
+            Arc::new(hodor_oauth::testing::InMemoryClaimMappers::new(
+                &stores.clients,
+            )),
+            Arc::new(memberships.clone()),
+            Arc::new(hodor_oauth::testing::ClaimSourcesOf::default()),
+        ),
         secrets: Arc::new(FakeSecretBox),
         codes: codes.clone(),
         keys: keys.clone(),
@@ -115,6 +130,7 @@ fn world_with_window(window: Duration) -> World {
         grants,
         families,
         standing,
+        memberships,
         codes,
         applications,
         keys,
@@ -234,6 +250,7 @@ async fn client(
         "offline_access".to_owned(),
         "read".to_owned(),
         "invoices".to_owned(),
+        "groups".to_owned(),
     ];
     let (client, secret) = world
         .applications
@@ -288,9 +305,24 @@ async fn signed_in(
     client: &Credentials,
     scope: &str,
 ) -> (IssuedTokens, SignedInPerson) {
+    let person = person(world);
+    let tokens = signed_in_as(world, tenant, client, scope, &[], &person).await;
+    (tokens, person)
+}
+
+/// The tokens for a code issued to `client` for `person`, with `extra`
+/// parameters in the request.
+async fn signed_in_as(
+    world: &World,
+    tenant: &TenantContext,
+    client: &Credentials,
+    scope: &str,
+    extra: &[(&str, &str)],
+    person: &SignedInPerson,
+) -> IssuedTokens {
     let challenge = s256_challenge(VERIFIER, &FakeDigest);
     let id = client.id.to_string();
-    let pairs = [
+    let mut pairs = vec![
         ("response_type", "code"),
         ("client_id", id.as_str()),
         ("redirect_uri", REDIRECT),
@@ -298,6 +330,7 @@ async fn signed_in(
         ("code_challenge", challenge.as_str()),
         ("code_challenge_method", "S256"),
     ];
+    pairs.extend_from_slice(extra);
     let parameters = AuthorizationParameters::from_pairs(
         pairs
             .iter()
@@ -309,10 +342,9 @@ async fn signed_in(
         .await
         .expect("storage")
         .expect("a valid request");
-    let person = person(world);
     let code = world
         .codes
-        .issue_code(tenant, &request, &person, Caller::system())
+        .issue_code(tenant, &request, person, Caller::system())
         .await
         .expect("code");
     let mut form = vec![
@@ -322,8 +354,7 @@ async fn signed_in(
         ("code_verifier".to_owned(), VERIFIER.to_owned()),
     ];
     form.extend(client.fields());
-    let tokens = ask(world, tenant, client, form).await.expect("tokens");
-    (tokens, person)
+    ask(world, tenant, client, form).await.expect("tokens")
 }
 
 async fn ask(
@@ -371,6 +402,17 @@ fn refresh_token(tokens: &IssuedTokens) -> String {
 
 fn claims(tokens: &IssuedTokens) -> Value {
     let token = tokens.access_token.expose().clone();
+    let part = token.split('.').nth(1).expect("claims").to_owned();
+    serde_json::from_slice(&URL_SAFE_NO_PAD.decode(part).expect("base64url")).expect("json")
+}
+
+fn id_token_claims(tokens: &IssuedTokens) -> Value {
+    let token = tokens
+        .id_token
+        .as_ref()
+        .expect("an ID token")
+        .expose()
+        .clone();
     let part = token.split('.').nth(1).expect("claims").to_owned();
     serde_json::from_slice(&URL_SAFE_NO_PAD.decode(part).expect("base64url")).expect("json")
 }
@@ -696,6 +738,92 @@ async fn a_family_without_offline_access_ends_with_its_session() {
         "invalid_grant",
         "a person who may no longer sign in gets no tokens"
     );
+}
+
+#[tokio::test]
+async fn the_tokens_carry_the_organization_while_the_person_is_a_member() {
+    let world = world();
+    let (tenant, application) = tenant(&world).await;
+    let client = refreshing_client(&world, &tenant, application).await;
+    let person = person(&world);
+    let organization = OrganizationId::generate();
+    world.memberships.join(person.user_id, organization);
+    let named = organization.to_string();
+    let tokens = signed_in_as(
+        &world,
+        &tenant,
+        &client,
+        "openid read",
+        &[("organization", named.as_str())],
+        &person,
+    )
+    .await;
+    assert_eq!(claims(&tokens)["org_id"], named);
+    assert_eq!(id_token_claims(&tokens)["org_id"], named);
+
+    let refreshed = refresh(&world, &tenant, &client, &refresh_token(&tokens), &[])
+        .await
+        .expect("still a member");
+    assert_eq!(claims(&refreshed)["org_id"], named);
+
+    world.memberships.leave(person.user_id, organization);
+    assert_eq!(
+        error_of(refresh(&world, &tenant, &client, &refresh_token(&refreshed), &[]).await),
+        "invalid_grant",
+        "a person who left gets no more tokens for the organization"
+    );
+
+    // Without an organization, none is claimed.
+    let (plain, _) = signed_in(&world, &tenant, &client, "openid read").await;
+    assert!(claims(&plain).get("org_id").is_none());
+    assert!(id_token_claims(&plain).get("org_id").is_none());
+}
+
+#[tokio::test]
+async fn the_groups_are_read_again_for_every_token() {
+    let world = world();
+    let (tenant, application) = tenant(&world).await;
+    let client = refreshing_client(&world, &tenant, application).await;
+    let person = person(&world);
+    let (finance, payroll) = (GroupId::generate(), GroupId::generate());
+    world
+        .memberships
+        .set_groups(person.user_id, vec![finance, payroll]);
+    let tokens = signed_in_as(&world, &tenant, &client, "openid groups", &[], &person).await;
+    assert_eq!(
+        claims(&tokens)["groups"],
+        serde_json::json!([finance.to_string(), payroll.to_string()])
+    );
+    assert!(
+        id_token_claims(&tokens).get("groups").is_none(),
+        "groups stay out of the ID token"
+    );
+
+    world.memberships.set_groups(person.user_id, vec![finance]);
+    let refreshed = refresh(&world, &tenant, &client, &refresh_token(&tokens), &[])
+        .await
+        .expect("refreshed");
+    assert_eq!(
+        claims(&refreshed)["groups"],
+        serde_json::json!([finance.to_string()]),
+        "taken out of a group, the next token does not name it"
+    );
+
+    // A refresh that narrows its scopes away from `groups` names none.
+    let narrowed = refresh(
+        &world,
+        &tenant,
+        &client,
+        &refresh_token(&refreshed),
+        &[("scope", "openid")],
+    )
+    .await
+    .expect("narrowed");
+    assert!(claims(&narrowed).get("groups").is_none());
+
+    // Without the scope, nothing is read.
+    let (plain, _) = signed_in(&world, &tenant, &client, "openid read").await;
+    assert!(claims(&plain).get("groups").is_none());
 }
 
 #[tokio::test]

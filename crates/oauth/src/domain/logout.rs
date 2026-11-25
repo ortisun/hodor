@@ -109,11 +109,12 @@ fn printable(value: &str) -> bool {
 pub struct IdTokenHint {
     /// The client it was issued to, its `aud`.
     pub client_id: ClientId,
-    /// The person, its `sub`.
-    pub user_id: UserId,
-    /// The session, its `sid`. An ID token issued before `sid` existed has
-    /// none.
-    pub session_id: Option<SessionId>,
+    /// The person as that client knows them, its `sub`: a user identifier,
+    /// or for a pairwise client a pairwise one.
+    pub subject: String,
+    /// The session as that client knows it, its `sid`. An ID token issued
+    /// before `sid` existed has none.
+    pub session: Option<String>,
 }
 
 /// Checks an `id_token_hint`: an ID token this tenant issued. Its
@@ -177,24 +178,29 @@ pub fn check_id_token_hint(
     let client_id = audience
         .and_then(|text| text.parse::<ClientId>().ok())
         .ok_or("the hint names no client")?;
-    let user_id = claims
+    // Read as text: a pairwise client's `sub` and `sid` are no
+    // identifiers of Hodor's, and are compared with what the client was
+    // told, never parsed.
+    let subject = claims
         .get("sub")
         .and_then(Value::as_str)
-        .and_then(|text| text.parse::<UserId>().ok())
-        .ok_or("the hint names no person")?;
-    let session_id = match claims.get("sid") {
+        .filter(|text| !text.is_empty())
+        .ok_or("the hint names no person")?
+        .to_owned();
+    let session = match claims.get("sid") {
         None => None,
         Some(value) => Some(
             value
                 .as_str()
-                .and_then(|text| text.parse::<SessionId>().ok())
-                .ok_or("the hint's session is malformed")?,
+                .filter(|text| !text.is_empty())
+                .ok_or("the hint's session is malformed")?
+                .to_owned(),
         ),
     };
     Ok(IdTokenHint {
         client_id,
-        user_id,
-        session_id,
+        subject,
+        session,
     })
 }
 
@@ -241,12 +247,22 @@ pub struct CurrentSession {
     pub session_id: SessionId,
 }
 
+/// The browser's session as the hint's client knows it: the `sub` and the
+/// `sid` that client's ID tokens give the person and the session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KnownSession {
+    /// The person, as the client knows them.
+    pub subject: String,
+    /// The session, as the client knows it.
+    pub session: String,
+}
+
 impl LogoutRequest {
-    /// What to do, given the browser's session and whether the request
-    /// came as a form. A form another site posts does not carry the
-    /// session cookie, so it always asks.
+    /// What to do, given the browser's session as the hint's client knows
+    /// it and whether the request came as a form. A form another site
+    /// posts does not carry the session cookie, so it always asks.
     #[must_use]
-    pub fn decide(&self, current: Option<CurrentSession>, by_form: bool) -> LogoutDecision {
+    pub fn decide(&self, current: Option<&KnownSession>, by_form: bool) -> LogoutDecision {
         if by_form {
             return LogoutDecision::Ask;
         }
@@ -255,8 +271,8 @@ impl LogoutRequest {
         };
         match &self.hint {
             Some(hint)
-                if hint.user_id == current.user_id
-                    && hint.session_id == Some(current.session_id) =>
+                if hint.subject == current.subject
+                    && hint.session.as_deref() == Some(current.session.as_str()) =>
             {
                 LogoutDecision::EndSession
             }

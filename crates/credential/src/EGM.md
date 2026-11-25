@@ -13,11 +13,13 @@ The `application` and `domain` modules are private; other crates use the
 
 - `lib.rs: pub mod api` re-exports:
   - Access token use cases and port: `AccessTokenService`, `AccessTokenStore`.
+  - API key use cases and port: `ApiKeyService`, `ApiKeyStore`.
   - Authenticator application use cases and ports: `TotpService`, `TotpCheck`, `TotpStore`, `HmacSha1`, and `totp_code_at(mac, secret, moment)`, the code an application shows.
   - Recovery code use cases and port: `RecoveryCodeService`, `RecoveryCodeCheck`, `RecoveryCodeStore`.
   - Password ports: `PasswordHasher`, `PasswordStore`, `PasswordVerification`.
   - Password use cases: `CredentialService`, `NewPassword`, `PasswordCheck`.
   - Access tokens: `AccessToken`, `AccessTokenEvent`, `AccessTokenHash`, `AccessTokenId`, `AccessTokenSecret`, `AccessTokenSnapshot`.
+  - API keys: `ApiKey`, `ApiKeyEvent`, `ApiKeyHash`, `ApiKeyId`, `ApiKeySecret`, `ApiKeySettings`, `ApiKeySnapshot`, `ApiKeyStatus`, `KeyApplicationId`, `looks_like_api_key`, and the constants `API_KEY_PREFIX` (`hodor_ak_`), `MAX_API_KEYS`, `MAX_API_KEY_SCOPES`, the lifetimes, the overlaps, `LAST_USE_PRECISION` and `REVOKED_BY_ADMINISTRATOR`.
   - Passwords: `PasswordEvent`, `HistoricHash`, `MAX_PASSWORD_BYTES`, `PasswordHash`, `PasswordRecord`, `PasswordRules`, `check_acceptable`.
   - Authenticator applications: `Totp`, `TotpEnrollment`, `TotpEvent`, `TotpId`, `TotpSnapshot`, `TotpStatus`, `ENROLLMENT_LIFETIME`, `STEP_SECONDS`, `TOTP_SEALING_PURPOSE`.
   - WebAuthn use cases and port: `WebAuthnService`, `WebAuthnStore`, `BegunRegistration`, `AssertionChallenge`.
@@ -26,6 +28,7 @@ The `application` and `domain` modules are private; other crates use the
 - `lib.rs: pub mod testing` (`testing.rs`): public test support, compiled only under `#[cfg(any(test, feature = "testing"))]`. The `testing` feature turns on `hodor-kernel/testing` (`Cargo.toml`).
   - `InMemoryPasswords`: an in-memory `PasswordStore`.
   - `InMemoryAccessTokens`: an in-memory `AccessTokenStore`.
+  - `InMemoryApiKeys`, `ApiKeyPorts<'a> { units_of_work, keys }` and `run_api_key_contract(ports)`: the same for API keys. The contract checks a key loaded unchanged by identifier and by hash in its tenant only, a holder's keys listed newest first, a use written at most once a minute, a rotation and a revocation stored without losing the use, and another tenant's update refused with `credential.api_key_not_found`.
   - `InMemoryTotps`: an in-memory `TotpStore`. `FakeHmacSha1`: a deterministic stand-in for HMAC-SHA-1, not HMAC. `base32_secret(text)`: the bytes of a Base32 secret, as an application reads it.
   - `TotpPorts<'a> { units_of_work, totps }` and `run_totp_contract(ports)`: the contract every `TotpStore` must pass.
   - `InMemoryRecoveryCodes`: an in-memory `RecoveryCodeStore`. `RecoveryCodePorts<'a>` and `run_recovery_code_contract(ports)`: the contract every `RecoveryCodeStore` must pass.

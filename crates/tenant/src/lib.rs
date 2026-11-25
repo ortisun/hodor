@@ -18,8 +18,9 @@ pub mod api {
     pub use crate::domain::event::TenantEvent;
     pub use crate::domain::settings::{
         ACR_MULTI_FACTOR, ACR_SINGLE_FACTOR, AssuranceLevel, AssuranceLevels, AssuranceRequirement,
-        AuthenticationPolicy, LockoutPolicy, PasswordPolicy, RegistrationPolicy,
-        SecondFactorPolicy, SessionPolicy, TenantSettings,
+        AuthenticationPolicy, Deprovisioning, EmailSignInPolicy, GroupPolicy, LockoutPolicy,
+        PasswordPolicy, ProvisioningPolicy, RegistrationPolicy, SecondFactorPolicy, SessionPolicy,
+        TenantSettings,
     };
     pub use crate::domain::slug::Slug;
     pub use crate::domain::tenant::{Tenant, TenantSnapshot, TenantStatus};

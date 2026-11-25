@@ -13,9 +13,11 @@ mod admin;
 mod authorization_api;
 mod authorize;
 mod bearer;
+mod client_address;
 mod consent;
 mod health;
 mod interaction;
+mod invitations;
 mod key_set;
 mod logout;
 mod openid;
@@ -23,6 +25,7 @@ mod pages;
 mod policy_agent;
 mod problem;
 mod request;
+mod scim;
 mod server;
 mod tenant;
 mod token;
@@ -32,13 +35,17 @@ pub use admin::{
     console_routes,
 };
 pub use authorization_api::{
-    AUTHORIZATION_API_AUDIENCE, AUTHORIZATION_OPENAPI, AUTHORIZATION_OPERATIONS,
+    AUTHORIZATION_API_AUDIENCE, AUTHORIZATION_OPENAPI, AUTHORIZATION_OPERATIONS, ApiKeyAccess,
     AuthorizationApiState, EVALUATE_SCOPE, EXPLAIN_SCOPE, SIMULATE_SCOPE, authorization_api_routes,
 };
 pub use authorize::{AuthorizationState, authorization_routes};
+pub use client_address::{
+    AddressRange, ForwardedHeader, InvalidRange, MAX_FORWARDED_HOPS, TrustedProxies, parse_ranges,
+};
 pub use consent::{ConsentState, consent_routes};
 pub use health::{Health, ReadinessCheck, ops_router};
 pub use interaction::{InteractionState, interaction_routes};
+pub use invitations::{InvitationState, invitation_routes};
 pub use key_set::key_set_routes;
 pub use logout::{LogoutState, logout_routes};
 pub use openid::{DiscoveryState, UserInfoState, discovery_routes, userinfo_routes};
@@ -49,6 +56,7 @@ pub use pages::{
 pub use policy_agent::policy_agent_routes;
 pub use problem::Problem;
 pub use request::ClientAddress;
-pub use server::{Limits, public_router, serve};
+pub use scim::{SCIM_AUDIENCE, SCIM_MEDIA_TYPE, SCIM_SCOPE, ScimState, scim_routes};
+pub use server::{Limits, public_router, public_router_behind, serve};
 pub use tenant::{ResolvedTenant, TenantResolver, TenantSlug, TenantStatus};
 pub use token::{TokenState, token_routes};

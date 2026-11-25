@@ -7,13 +7,16 @@ use crate::domain::application::{
 use crate::domain::client::{Client, ClientId, ClientSettings, ClientType, MAX_CLIENTS};
 use crate::domain::event::OauthEvent;
 use crate::domain::key::ClientKey;
+use crate::domain::pairwise::{
+    MAX_SECTOR_DOCUMENT_BYTES, SECTOR_DOCUMENT_TIME_LIMIT, SubjectType, check_sector_document,
+};
 use crate::domain::resource_server::{
     Audience, ResourceServer, ResourceServerId, ResourceServerSettings,
 };
 use crate::domain::secret::{ClientSecret, ClientSecretId, ClientSecretValue};
 use hodor_kernel::{
-    Caller, Clock, Digest, DomainError, EventEnvelope, EventMetadata, RandomSource, TenantContext,
-    UnitOfWork, UnitOfWorkFactory,
+    Caller, Clock, DestinationCheck, Digest, DomainError, EventEnvelope, EventMetadata, HttpClient,
+    HttpRequest, RandomSource, TenantContext, UnitOfWork, UnitOfWorkFactory,
 };
 use std::sync::Arc;
 use time::Duration;
@@ -59,6 +62,70 @@ fn application_not_found() -> DomainError {
     )
 }
 
+/// What the guarded client said of a back-channel logout address, in the
+/// OAuth context's words.
+fn refused_address(error: DomainError) -> DomainError {
+    match error.code() {
+        "http.url_invalid" => DomainError::invalid(
+            "oauth.client_backchannel_logout_uri_invalid",
+            "a back-channel logout address is an HTTPS address of at most 2000 characters, with \
+             a host and without a name and password or a fragment",
+        ),
+        "http.destination_forbidden" => DomainError::invalid(
+            "oauth.client_backchannel_logout_uri_forbidden",
+            "the address leads somewhere Hodor may not call: it must be public",
+        ),
+        "http.unreachable" => DomainError::invalid(
+            "oauth.client_backchannel_logout_uri_unresolvable",
+            "the address's name does not resolve to any address",
+        ),
+        _ => error,
+    }
+}
+
+/// What the guarded client's check said of a sector identifier address,
+/// in the OAuth context's words.
+fn refused_sector_address(error: DomainError) -> DomainError {
+    match error.code() {
+        "http.url_invalid" => crate::domain::pairwise::sector_uri_invalid(
+            "the guarded client cannot call the address",
+        ),
+        "http.destination_forbidden" => sector_forbidden(),
+        "http.unreachable" => DomainError::invalid(
+            "oauth.client_sector_identifier_uri_unresolvable",
+            "the address's name does not resolve to any address",
+        ),
+        _ => error,
+    }
+}
+
+/// What fetching a sector identifier document failed with, in the OAuth
+/// context's words.
+fn refused_sector_fetch(error: DomainError) -> DomainError {
+    match error.code() {
+        "http.url_invalid" => crate::domain::pairwise::sector_uri_invalid(
+            "the guarded client cannot call the address",
+        ),
+        "http.destination_forbidden" => sector_forbidden(),
+        _ => sector_unreachable(),
+    }
+}
+
+fn sector_forbidden() -> DomainError {
+    DomainError::invalid(
+        "oauth.client_sector_identifier_uri_forbidden",
+        "the address leads somewhere Hodor may not call: it must be public",
+    )
+}
+
+fn sector_unreachable() -> DomainError {
+    DomainError::invalid(
+        "oauth.client_sector_identifier_uri_unreachable",
+        "the sector identifier address did not answer its document: no answer in 10 seconds, a \
+         status other than 2xx, or more than 64 kibibytes",
+    )
+}
+
 fn client_not_found() -> DomainError {
     DomainError::not_found("oauth.client_not_found", "there is no such client")
 }
@@ -80,6 +147,8 @@ pub struct ApplicationService {
     digest: Arc<dyn Digest>,
     random: Arc<dyn RandomSource>,
     clock: Arc<dyn Clock>,
+    destinations: Option<Arc<dyn DestinationCheck>>,
+    sector_documents: Option<Arc<dyn HttpClient>>,
 }
 
 impl std::fmt::Debug for ApplicationService {
@@ -125,7 +194,68 @@ impl ApplicationService {
             digest: ports.digest,
             random: ports.random,
             clock: ports.clock,
+            destinations: None,
+            sector_documents: None,
         }
+    }
+
+    /// Checks back-channel logout addresses through `destinations`, the
+    /// guarded outbound client, when they are set. Without it, no client
+    /// can be given one.
+    #[must_use]
+    pub fn with_destinations(mut self, destinations: Arc<dyn DestinationCheck>) -> Self {
+        self.destinations = Some(destinations);
+        self
+    }
+
+    /// Fetches sector identifier addresses through `http`, the guarded
+    /// outbound client, when they are set. Without it, no client can be
+    /// given one.
+    #[must_use]
+    pub fn with_sector_documents(mut self, http: Arc<dyn HttpClient>) -> Self {
+        self.sector_documents = Some(http);
+        self
+    }
+
+    /// Checks a pairwise client's sector identifier address and fetches its
+    /// document, which must list every redirect address of the client. See
+    /// `docs/architecture/contexts/oauth.md`, "The sector identifier
+    /// address".
+    async fn check_sector_address(&self, settings: &ClientSettings) -> Result<(), DomainError> {
+        let Some(url) = settings.sector_identifier_uri.as_deref() else {
+            return Ok(());
+        };
+        let (Some(destinations), Some(http)) = (&self.destinations, &self.sector_documents) else {
+            return Err(DomainError::invalid(
+                "oauth.client_sector_identifier_uri_forbidden",
+                "this installation cannot fetch a sector identifier address, so it accepts none",
+            ));
+        };
+        destinations
+            .check(url)
+            .await
+            .map_err(refused_sector_address)?;
+        let request = HttpRequest::get(url)
+            .header("accept", "application/json")
+            .within(SECTOR_DOCUMENT_TIME_LIMIT);
+        let response = http.send(request).await.map_err(refused_sector_fetch)?;
+        if !response.is_success() || response.body.len() > MAX_SECTOR_DOCUMENT_BYTES {
+            return Err(sector_unreachable());
+        }
+        check_sector_document(&response.body, &settings.redirect_uris)
+    }
+
+    /// Whether a back-channel logout address could be called now. See
+    /// `docs/architecture/contexts/oauth.md`, "The back-channel logout
+    /// address".
+    async fn check_backchannel_address(&self, url: &str) -> Result<(), DomainError> {
+        let Some(destinations) = &self.destinations else {
+            return Err(DomainError::invalid(
+                "oauth.client_backchannel_logout_uri_forbidden",
+                "this installation cannot check a back-channel logout address, so it accepts none",
+            ));
+        };
+        destinations.check(url).await.map_err(refused_address)
     }
 
     fn record(
@@ -306,6 +436,13 @@ impl ApplicationService {
             self.random.as_ref(),
             self.digest.as_ref(),
         )?;
+        if let Some(url) = client.backchannel_logout_uri() {
+            self.check_backchannel_address(url).await?;
+        }
+        let settings = &client.snapshot().settings;
+        if settings.subject_type == SubjectType::Pairwise {
+            self.check_sector_address(settings).await?;
+        }
         let mut uow = self.units_of_work.begin(tenant).await?;
         if self
             .applications
@@ -367,6 +504,26 @@ impl ApplicationService {
         settings: ClientSettings,
         caller: Caller,
     ) -> Result<Client, DomainError> {
+        // Only a new or changed back-channel logout address is checked: a
+        // name that leads elsewhere since does not stop other changes.
+        let current = self.client(tenant, id).await?;
+        let settings = settings.checked(current.client_type())?;
+        if let Some(url) = settings.backchannel_logout_uri.as_deref()
+            && current.backchannel_logout_uri() != Some(url)
+        {
+            self.check_backchannel_address(url).await?;
+        }
+        // The sector identifier document is fetched again only when what it
+        // vouches for changes: its address, the redirect addresses it must
+        // list, or the client becoming pairwise.
+        let before = &current.snapshot().settings;
+        if settings.subject_type == SubjectType::Pairwise
+            && (before.subject_type != SubjectType::Pairwise
+                || before.sector_identifier_uri != settings.sector_identifier_uri
+                || before.redirect_uris != settings.redirect_uris)
+        {
+            self.check_sector_address(&settings).await?;
+        }
         let now = self.clock.now();
         self.change_client_with(tenant, id, caller, |client| {
             Ok(((), client.change(settings, now)?))

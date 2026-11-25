@@ -12,7 +12,7 @@ Start with the [critical review](architecture/critical-review.md): it lists wher
 | 2 | Functional Requirements | [product/requirements.md](product/requirements.md#functional-requirements) |
 | 3 | Non-functional Requirements | [product/requirements.md](product/requirements.md#non-functional-requirements) |
 | 4 | Domain Model | [architecture/domain-model.md](architecture/domain-model.md) |
-| — | Context specifications, one page per bounded context, written before the context is built | [tenant](architecture/contexts/tenant.md), [identity](architecture/contexts/identity.md), [credential](architecture/contexts/credential.md), [session](architecture/contexts/session.md), [keys](architecture/contexts/keys.md), [oauth](architecture/contexts/oauth.md), [authentication](architecture/contexts/authentication.md), [notification](architecture/contexts/notification.md), [audit](architecture/contexts/audit.md), [authorization](architecture/contexts/authorization.md), [federation](architecture/contexts/federation.md) |
+| — | Context specifications, one page per bounded context, written before the context is built | [tenant](architecture/contexts/tenant.md), [identity](architecture/contexts/identity.md), [credential](architecture/contexts/credential.md), [session](architecture/contexts/session.md), [keys](architecture/contexts/keys.md), [oauth](architecture/contexts/oauth.md), [authentication](architecture/contexts/authentication.md), [notification](architecture/contexts/notification.md), [audit](architecture/contexts/audit.md), [authorization](architecture/contexts/authorization.md), [federation](architecture/contexts/federation.md), [provisioning](architecture/contexts/provisioning.md), [webhooks](architecture/contexts/webhooks.md) |
 | 5 | Bounded Context Map | [architecture/domain-model.md](architecture/domain-model.md#bounded-context-map) |
 | 6 | C4 Context Diagram | [architecture/overview.md](architecture/overview.md#c4-level-1-context) |
 | 7 | C4 Container Diagram | [architecture/overview.md](architecture/overview.md#c4-level-2-containers) |
@@ -33,6 +33,7 @@ Start with the [critical review](architecture/critical-review.md): it lists wher
 | — | Outbound HTTP: the one guarded way out to addresses other people chose | [security/outbound-http.md](security/outbound-http.md) |
 | — | The SAML attack corpus: every response a SAML service provider must refuse | [security/saml-attack-corpus.md](security/saml-attack-corpus.md) |
 | — | Secrets at rest: how the secrets Hodor must read back are kept encrypted, and how keys are changed | [security/secrets-at-rest.md](security/secrets-at-rest.md) |
+| — | Supply chain: what Hodor is built from, and how crates, npm packages and actions are checked | [security/supply-chain.md](security/supply-chain.md) |
 | 22 | Database Model | [architecture/database.md](architecture/database.md) |
 | 23 | API Specifications | [api/api-spec.md](api/api-spec.md) |
 | — | The interaction interface: how a browser signs in | [api/interaction-api.md](api/interaction-api.md) |

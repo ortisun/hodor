@@ -17,8 +17,9 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Extension, Json, Router};
 use hodor_authentication::api::{
-    AccountRequest, AccountService, AuthenticationService, ExternalInput, FactorService,
-    PasskeyAuthenticator, SignIn, StepInput, TransactionId, WebAuthnAuthenticator,
+    AccountRequest, AccountService, AuthenticationService, EmailAuthenticator,
+    EnrollmentAuthenticator, EnrollmentKind, ExternalInput, FactorService, PasskeyAuthenticator,
+    SignIn, StepInput, TransactionId, WebAuthnAuthenticator,
 };
 use hodor_credential::api::{RegistrationResponse, WebAuthnRegistrationId};
 use hodor_federation::api::{Alias, EXTERNAL_STEP, ExternalSignIn};
@@ -82,6 +83,14 @@ pub fn interaction_routes(state: InteractionState) -> Router {
         .route("/sign-in/steps/webauthn", post(submit_webauthn))
         .route("/sign-in/steps/passkey/options", post(passkey_options))
         .route("/sign-in/steps/passkey", post(submit_passkey))
+        .route("/sign-in/alternatives", get(offered_alternatives))
+        .route("/sign-in/steps/email_code/send", post(ask_for_code))
+        .route("/sign-in/steps/email_code", post(submit_email_code))
+        .route("/sign-in/steps/email_link/send", post(ask_for_link))
+        .route("/sign-in/steps/email_link", post(submit_email_link))
+        .route("/sign-in/steps/enrollment/kinds", get(enrollment_kinds))
+        .route("/sign-in/steps/enrollment/options", post(begin_enrollment))
+        .route("/sign-in/steps/enrollment", post(finish_enrollment))
         .route("/sign-in/providers", get(offered_providers))
         .route("/sign-in/providers/{alias}", post(choose_provider))
         .route(
@@ -151,6 +160,15 @@ struct SignInBody {
     /// authorization request of this browser waits for it.
     #[serde(rename = "continue", skip_serializing_if = "Option::is_none")]
     continue_to: Option<String>,
+    /// The recovery codes made with a second factor the enrollment step
+    /// just put in use, shown once.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recovery_codes: Option<Vec<String>>,
+}
+
+/// Recovery codes to show once, or nothing when none were made.
+fn shown(codes: &[Secret<String>]) -> Option<Vec<String>> {
+    (!codes.is_empty()).then(|| codes.iter().map(|code| code.expose().clone()).collect())
 }
 
 /// A provider as the sign-in page shows it.
@@ -386,7 +404,11 @@ fn respond(
 ) -> Response {
     let token = || Some(csrf_token(state.digest.as_ref(), secret));
     match outcome {
-        SignIn::Pending { step, .. } => (
+        SignIn::Pending {
+            step,
+            recovery_codes,
+            ..
+        } => (
             status,
             Json(SignInBody {
                 status: "pending",
@@ -394,6 +416,7 @@ fn respond(
                 attempts_left: None,
                 csrf_token: token(),
                 continue_to: None,
+                recovery_codes: shown(&recovery_codes),
             }),
         )
             .into_response(),
@@ -409,6 +432,7 @@ fn respond(
                 attempts_left: Some(attempts_left),
                 csrf_token: token(),
                 continue_to: None,
+                recovery_codes: None,
             }),
         )
             .into_response(),
@@ -421,13 +445,18 @@ fn respond(
                     attempts_left: None,
                     csrf_token: None,
                     continue_to: None,
+                    recovery_codes: None,
                 }),
             )
                 .into_response();
             set_cookie(&mut response, &sign_in_cookie(slug, "", 0));
             response
         }
-        SignIn::Completed { session, token } => {
+        SignIn::Completed {
+            session,
+            token,
+            recovery_codes,
+        } => {
             let lifetime = (session.snapshot().absolute_expires_at - state.clock.now())
                 .whole_seconds()
                 .max(0);
@@ -439,6 +468,7 @@ fn respond(
                     attempts_left: None,
                     csrf_token: None,
                     continue_to: crate::authorize::waiting(headers, slug),
+                    recovery_codes: shown(&recovery_codes),
                 }),
             )
                 .into_response();
@@ -507,6 +537,7 @@ async fn start_sign_in(
             attempts_left: None,
             csrf_token: Some(csrf_token(state.digest.as_ref(), secret)),
             continue_to: None,
+            recovery_codes: None,
         }),
     )
         .into_response();
@@ -695,28 +726,265 @@ async fn step_options(
     headers: &HeaderMap,
     step: &str,
 ) -> Response {
-    let Some(handle) = handle(headers) else {
-        return no_sign_in();
+    let asked = ExternalInput {
+        step: step.to_owned(),
+        fields: Vec::new(),
     };
-    if !csrf_is_valid(headers, state.digest.as_ref(), &handle) {
-        return problem(
-            StatusCode::FORBIDDEN,
-            "request.csrf_token_invalid",
-            "the request is missing its CSRF token, or the token is wrong",
-        );
-    }
-    match state
-        .authentication
-        .challenge(tenant, handle.id, handle.secret.expose(), step)
-        .await
-    {
+    match challenge(state, tenant, headers, asked).await {
         Ok(options) => Json(PublicKeyBody {
             registration_id: None,
             public_key: options,
         })
         .into_response(),
+        Err(response) => *response,
+    }
+}
+
+/// Asks the sign-in of the browser that asks for a challenge, with the
+/// cookie and the CSRF token checked first.
+async fn challenge(
+    state: &InteractionState,
+    tenant: &TenantContext,
+    headers: &HeaderMap,
+    asked: ExternalInput,
+) -> Result<serde_json::Value, Box<Response>> {
+    let Some(handle) = handle(headers) else {
+        return Err(Box::new(no_sign_in()));
+    };
+    if !csrf_is_valid(headers, state.digest.as_ref(), &handle) {
+        return Err(Box::new(problem(
+            StatusCode::FORBIDDEN,
+            "request.csrf_token_invalid",
+            "the request is missing its CSRF token, or the token is wrong",
+        )));
+    }
+    state
+        .authentication
+        .challenge(tenant, handle.id, handle.secret.expose(), asked)
+        .await
+        .map_err(|error| Box::new(Problem::from(error).into_response()))
+}
+
+/// The alternatives the tenant offers, for the sign-in page.
+#[derive(Debug, Serialize)]
+struct AlternativesBody {
+    alternatives: Vec<String>,
+}
+
+async fn offered_alternatives(
+    State(state): State<InteractionState>,
+    Extension(tenant): Extension<TenantContext>,
+) -> Response {
+    match state.authentication.alternatives(&tenant).await {
+        Ok(alternatives) => Json(AlternativesBody { alternatives }).into_response(),
         Err(error) => Problem::from(error).into_response(),
     }
+}
+
+/// What a person gives when asking for a code or a link. No `Debug`: the
+/// address is personal.
+#[derive(Deserialize)]
+struct EmailAskBody {
+    email: String,
+    #[serde(default)]
+    locale: Option<String>,
+}
+
+/// No `Debug`: this holds a code until it is wrapped.
+#[derive(Deserialize)]
+struct EmailCodeBody {
+    code: String,
+}
+
+/// No `Debug`: this holds the token of a link until it is wrapped.
+#[derive(Deserialize)]
+struct EmailLinkBody {
+    token: String,
+}
+
+/// Asks for a code or a link to be sent: the same answer whoever the
+/// address belongs to.
+async fn ask_by_email(
+    state: &InteractionState,
+    tenant: &TenantContext,
+    headers: &HeaderMap,
+    step: &str,
+    body: EmailAskBody,
+) -> Response {
+    let mut fields = vec![("email".to_owned(), Secret::from(body.email))];
+    if let Some(locale) = body.locale {
+        fields.push(("locale".to_owned(), Secret::from(locale)));
+    }
+    let asked = ExternalInput {
+        step: step.to_owned(),
+        fields,
+    };
+    match challenge(state, tenant, headers, asked).await {
+        Ok(_) => accepted(Ok(())),
+        Err(response) => *response,
+    }
+}
+
+async fn ask_for_code(
+    State(state): State<InteractionState>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+    Json(body): Json<EmailAskBody>,
+) -> Response {
+    ask_by_email(
+        &state,
+        &tenant,
+        &headers,
+        EmailAuthenticator::CODE_KIND,
+        body,
+    )
+    .await
+}
+
+async fn ask_for_link(
+    State(state): State<InteractionState>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+    Json(body): Json<EmailAskBody>,
+) -> Response {
+    ask_by_email(
+        &state,
+        &tenant,
+        &headers,
+        EmailAuthenticator::LINK_KIND,
+        body,
+    )
+    .await
+}
+
+fn one_field(step: &str, name: &str, value: String) -> StepInput {
+    StepInput::External(ExternalInput {
+        step: step.to_owned(),
+        fields: vec![(name.to_owned(), Secret::from(value))],
+    })
+}
+
+async fn submit_email_code(
+    State(state): State<InteractionState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(TenantSlug(slug)): Extension<TenantSlug>,
+    headers: HeaderMap,
+    Json(body): Json<EmailCodeBody>,
+) -> Response {
+    let input = one_field(EmailAuthenticator::CODE_KIND, "code", body.code);
+    submit(&state, &tenant, &slug, &headers, input).await
+}
+
+async fn submit_email_link(
+    State(state): State<InteractionState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(TenantSlug(slug)): Extension<TenantSlug>,
+    headers: HeaderMap,
+    Json(body): Json<EmailLinkBody>,
+) -> Response {
+    let input = one_field(EmailAuthenticator::LINK_KIND, "token", body.token);
+    submit(&state, &tenant, &slug, &headers, input).await
+}
+
+/// What can be set up at the enrollment step in this installation.
+#[derive(Debug, Serialize)]
+struct EnrollmentKindsBody {
+    kinds: Vec<&'static str>,
+}
+
+async fn enrollment_kinds(State(state): State<InteractionState>) -> Response {
+    Json(EnrollmentKindsBody {
+        kinds: state
+            .factors
+            .enrollable()
+            .into_iter()
+            .map(EnrollmentKind::as_str)
+            .collect(),
+    })
+    .into_response()
+}
+
+/// What a person chose to set up at the enrollment step.
+#[derive(Debug, Deserialize)]
+struct BeginEnrollmentBody {
+    kind: String,
+}
+
+/// Begins setting up a second factor at the enrollment step of the
+/// browser's sign-in: the secret of an application, once, or the options
+/// for a key.
+async fn begin_enrollment(
+    State(state): State<InteractionState>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+    Json(body): Json<BeginEnrollmentBody>,
+) -> Response {
+    let Some(kind) = EnrollmentKind::parse(&body.kind) else {
+        return problem(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "request.invalid_body",
+            "kind must be authenticator_application, security_key or passkey",
+        );
+    };
+    let asked = ExternalInput {
+        step: EnrollmentAuthenticator::KIND.to_owned(),
+        fields: vec![("kind".to_owned(), Secret::from(kind.as_str().to_owned()))],
+    };
+    match challenge(&state, &tenant, &headers, asked).await {
+        Ok(options) => Json(options).into_response(),
+        Err(response) => *response,
+    }
+}
+
+/// What finishes the enrollment: the code an application shows, or what
+/// an authenticator answered to the registration. No `Debug`: this holds
+/// a code until it is wrapped.
+#[derive(Deserialize)]
+struct FinishEnrollmentBody {
+    #[serde(default)]
+    code: Option<String>,
+    #[serde(default)]
+    client_data: Option<String>,
+    #[serde(default)]
+    attestation_object: Option<String>,
+    #[serde(default)]
+    transports: Vec<String>,
+    #[serde(default)]
+    discoverable: Option<bool>,
+    #[serde(default)]
+    name: Option<String>,
+}
+
+async fn finish_enrollment(
+    State(state): State<InteractionState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(TenantSlug(slug)): Extension<TenantSlug>,
+    headers: HeaderMap,
+    Json(body): Json<FinishEnrollmentBody>,
+) -> Response {
+    let mut fields = Vec::new();
+    let mut give = |name: &str, value: Option<String>| {
+        if let Some(value) = value {
+            fields.push((name.to_owned(), Secret::from(value)));
+        }
+    };
+    give("code", body.code);
+    give("client_data", body.client_data);
+    give("attestation_object", body.attestation_object);
+    give(
+        "transports",
+        (!body.transports.is_empty()).then(|| body.transports.join(",")),
+    );
+    give(
+        "discoverable",
+        body.discoverable.map(|found| found.to_string()),
+    );
+    give("name", body.name);
+    let input = StepInput::External(ExternalInput {
+        step: EnrollmentAuthenticator::KIND.to_owned(),
+        fields,
+    });
+    submit(&state, &tenant, &slug, &headers, input).await
 }
 
 async fn submit_webauthn(

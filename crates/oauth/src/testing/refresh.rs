@@ -5,13 +5,14 @@ use super::{InMemoryGrants, lock};
 use crate::api::{
     Application, ApplicationSettings, ApplicationStore, AuthorizationCode, Client, ClientId,
     ClientSecret, ClientSettings, ClientStore, ClientType, CodeHash, FamilyStatus, Grant, GrantId,
-    GrantStatus, GrantStore, GrantType, PersonStanding, RefreshAsk, RefreshFamily, RefreshFamilyId,
-    RefreshTokenHash, RefreshTokenRecord, RefreshTokenStore, TokenPolicy,
+    GrantStatus, GrantStore, GrantType, PersonMemberships, PersonStanding, RefreshAsk,
+    RefreshFamily, RefreshFamilyId, RefreshTokenHash, RefreshTokenRecord, RefreshTokenStore,
+    TokenPolicy,
 };
 use hodor_kernel::random::testing::FakeDigest;
 use hodor_kernel::{
-    DomainError, SealedSecret, TenantContext, TenantId, Timestamp, UnitOfWork, UnitOfWorkFactory,
-    UserId,
+    DomainError, GroupId, OrganizationId, SealedSecret, TenantContext, TenantId, Timestamp,
+    UnitOfWork, UnitOfWorkFactory, UserId,
 };
 use hodor_session::api::SessionId;
 use std::collections::{BTreeMap, BTreeSet};
@@ -160,11 +161,13 @@ impl RefreshTokenStore for InMemoryRefreshTokens {
 }
 
 /// A stand-in for the session and identity contexts: every person may sign
-/// in and every session is active, except those the test ends.
+/// in and every session is active, except those the test ends; only the
+/// workloads the test names may act, until it bars them.
 #[derive(Debug, Clone, Default)]
 pub struct StandingOf {
     ended_sessions: Arc<Mutex<BTreeSet<SessionId>>>,
     barred_users: Arc<Mutex<BTreeSet<UserId>>>,
+    workloads: Arc<Mutex<std::collections::BTreeMap<UserId, &'static str>>>,
 }
 
 impl StandingOf {
@@ -173,9 +176,15 @@ impl StandingOf {
         lock(&self.ended_sessions).insert(session);
     }
 
-    /// Bars `user` from signing in.
+    /// Bars `user` from signing in, or from acting if it is a workload.
     pub fn bar(&self, user: UserId) {
         lock(&self.barred_users).insert(user);
+    }
+
+    /// Makes `principal` a workload of `kind`, `service_account` or
+    /// `agent`, that may act.
+    pub fn workload(&self, principal: UserId, kind: &'static str) {
+        lock(&self.workloads).insert(principal, kind);
     }
 }
 
@@ -195,7 +204,63 @@ impl PersonStanding for StandingOf {
         _tenant: &TenantContext,
         user: UserId,
     ) -> Result<bool, DomainError> {
-        Ok(!lock(&self.barred_users).contains(&user))
+        Ok(!lock(&self.barred_users).contains(&user) && !lock(&self.workloads).contains_key(&user))
+    }
+
+    async fn workload_that_may_act(
+        &self,
+        _tenant: &TenantContext,
+        principal: UserId,
+    ) -> Result<Option<&'static str>, DomainError> {
+        if lock(&self.barred_users).contains(&principal) {
+            return Ok(None);
+        }
+        Ok(lock(&self.workloads).get(&principal).copied())
+    }
+}
+
+/// [`PersonMemberships`] answered from what a test sets: nobody is a
+/// member of anything, and in no group, until a test says so.
+#[derive(Debug, Clone, Default)]
+pub struct MembershipsOf {
+    members: Arc<Mutex<BTreeSet<(UserId, OrganizationId)>>>,
+    groups: Arc<Mutex<BTreeMap<UserId, Vec<GroupId>>>>,
+}
+
+impl MembershipsOf {
+    /// Makes `user` a member of `organization`.
+    pub fn join(&self, user: UserId, organization: OrganizationId) {
+        lock(&self.members).insert((user, organization));
+    }
+
+    /// Takes `user` out of `organization`.
+    pub fn leave(&self, user: UserId, organization: OrganizationId) {
+        lock(&self.members).remove(&(user, organization));
+    }
+
+    /// Sets the effective groups of `user`.
+    pub fn set_groups(&self, user: UserId, groups: Vec<GroupId>) {
+        lock(&self.groups).insert(user, groups);
+    }
+}
+
+#[async_trait::async_trait]
+impl PersonMemberships for MembershipsOf {
+    async fn is_member(
+        &self,
+        _tenant: &TenantContext,
+        user: UserId,
+        organization: OrganizationId,
+    ) -> Result<bool, DomainError> {
+        Ok(lock(&self.members).contains(&(user, organization)))
+    }
+
+    async fn effective_groups(
+        &self,
+        _tenant: &TenantContext,
+        user: UserId,
+    ) -> Result<Vec<GroupId>, DomainError> {
+        Ok(lock(&self.groups).get(&user).cloned().unwrap_or_default())
     }
 }
 
@@ -262,6 +327,7 @@ async fn a_grant(ports: RefreshStorePorts<'_>, tenant: &TenantContext) -> Grant 
         session_id: SessionId::generate(),
         scopes: vec!["openid".to_owned(), "offline_access".to_owned()],
         audiences: vec!["https://api.payroll.example.com".to_owned()],
+        organization: None,
         status: GrantStatus::Active,
         created_at: moment(),
         revoked_at: None,

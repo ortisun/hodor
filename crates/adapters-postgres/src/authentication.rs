@@ -4,10 +4,13 @@
 
 use crate::uow::{connection, database_error};
 use hodor_authentication::api::{
-    AttemptCounter, AttemptStore, AttemptSubject, AuthTransaction, TokenPurpose, TransactionId,
-    TransactionSnapshot, TransactionStatus, TransactionStore, VerificationToken,
-    VerificationTokenHash, VerificationTokenId, VerificationTokenSnapshot, VerificationTokenStore,
+    AttemptCounter, AttemptStore, AttemptSubject, AuthTransaction, BegunEnrollment, EmailMethod,
+    EmailSecretHash, EmailSignIn, EmailSignInSnapshot, EmailSignInStore, EmailUse, EnrollmentKind,
+    TokenPurpose, TransactionId, TransactionSnapshot, TransactionStatus, TransactionStore,
+    VerificationToken, VerificationTokenHash, VerificationTokenId, VerificationTokenSnapshot,
+    VerificationTokenStore,
 };
+use hodor_credential::api::{TotpId, WebAuthnRegistrationId};
 use hodor_kernel::{DomainError, Timestamp, UnitOfWork, UserId};
 use hodor_session::api::{Assurance, ClientInfo, SessionId};
 use sqlx::Row as _;
@@ -127,6 +130,14 @@ impl AttemptStore for PgAttemptStore {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PgTransactionStore;
 
+/// The identifier of what an enrollment began, in the credential context.
+fn enrollment_uuid(begun: BegunEnrollment) -> Uuid {
+    match begun {
+        BegunEnrollment::AuthenticatorApplication(id) => id.as_uuid(),
+        BegunEnrollment::SecurityKey(id) | BegunEnrollment::Passkey(id) => id.as_uuid(),
+    }
+}
+
 fn unsigned(value: i32, what: &str) -> Result<u32, DomainError> {
     u32::try_from(value).map_err(|_| corrupted(what))
 }
@@ -148,6 +159,27 @@ fn to_transaction(row: &PgRow) -> Result<AuthTransaction, DomainError> {
     let version: i32 = row.try_get("version").map_err(get)?;
     let demanded: Option<String> = row.try_get("demanded_assurance").map_err(get)?;
     let raised: Option<Uuid> = row.try_get("raised_session_id").map_err(get)?;
+    let enrollment_kind: Option<String> = row.try_get("enrollment_kind").map_err(get)?;
+    let enrollment_id: Option<Uuid> = row.try_get("enrollment_id").map_err(get)?;
+    let enrollment = match (enrollment_kind, enrollment_id) {
+        (Some(kind), Some(id)) => Some(match EnrollmentKind::from_stored(&kind)? {
+            EnrollmentKind::AuthenticatorApplication => {
+                BegunEnrollment::AuthenticatorApplication(TotpId::from_uuid(id))
+            }
+            EnrollmentKind::SecurityKey => {
+                BegunEnrollment::SecurityKey(WebAuthnRegistrationId::from_uuid(id))
+            }
+            EnrollmentKind::Passkey => {
+                BegunEnrollment::Passkey(WebAuthnRegistrationId::from_uuid(id))
+            }
+        }),
+        (None, None) => None,
+        _ => {
+            return Err(corrupted(
+                "an enrollment without its kind or its identifier",
+            ));
+        }
+    };
     Ok(AuthTransaction::from_snapshot(TransactionSnapshot {
         id: TransactionId::from_uuid(row.try_get("id").map_err(get)?),
         flow_name: row.try_get("flow_name").map_err(get)?,
@@ -168,6 +200,7 @@ fn to_transaction(row: &PgRow) -> Result<AuthTransaction, DomainError> {
         challenge: challenge
             .map(|challenge| bytes_32(challenge, "challenge is not 32 bytes"))
             .transpose()?,
+        enrollment,
         rejections: unsigned(rejections, "negative rejections")?,
         status: TransactionStatus::from_stored(&status)?,
         started_at: row.try_get("started_at").map_err(get)?,
@@ -195,9 +228,9 @@ impl TransactionStore for PgTransactionStore {
                  (tenant_id, id, flow_name, flow_version, current_step, identified, candidate_user_id,
                   identifier_key, satisfied_methods, rejections, status, started_at, expires_at,
                   client_address, client_description, binding, version, challenge, carried_methods,
-                  demanded_assurance, raised_session_id)
+                  demanded_assurance, raised_session_id, enrollment_kind, enrollment_id)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
-                     $18, $19, $20, $21)",
+                     $18, $19, $20, $21, $22, $23)",
         )
         .bind(tenant.as_uuid())
         .bind(state.id.as_uuid())
@@ -220,6 +253,8 @@ impl TransactionStore for PgTransactionStore {
         .bind(&state.carried_methods)
         .bind(state.demanded.map(Assurance::as_str))
         .bind(state.raised_session.map(|session| session.as_uuid()))
+        .bind(state.enrollment.map(|begun| begun.kind().as_str()))
+        .bind(state.enrollment.map(enrollment_uuid))
         .execute(connection(uow)?)
         .await
         .map_err(|e| database_error(&e))?;
@@ -236,7 +271,8 @@ impl TransactionStore for PgTransactionStore {
             "SELECT id, flow_name, flow_version, current_step, identified, candidate_user_id,
                     identifier_key, satisfied_methods, challenge, rejections, status, started_at,
                     expires_at, client_address, client_description, binding, version,
-                    carried_methods, demanded_assurance, raised_session_id
+                    carried_methods, demanded_assurance, raised_session_id, enrollment_kind,
+                    enrollment_id
              FROM authentication.transaction
              WHERE tenant_id = $1 AND id = $2",
         )
@@ -260,7 +296,7 @@ impl TransactionStore for PgTransactionStore {
             "UPDATE authentication.transaction
              SET current_step = $3, identified = $4, candidate_user_id = $5, identifier_key = $6,
                  satisfied_methods = $7, rejections = $8, status = $9, challenge = $11,
-                 version = version + 1
+                 enrollment_kind = $12, enrollment_id = $13, version = version + 1
              WHERE tenant_id = $1 AND id = $2 AND version = $10",
         )
         .bind(tenant.as_uuid())
@@ -274,6 +310,8 @@ impl TransactionStore for PgTransactionStore {
         .bind(state.status.as_str())
         .bind(stored(state.version)?)
         .bind(state.challenge.map(|challenge| challenge.to_vec()))
+        .bind(state.enrollment.map(|begun| begun.kind().as_str()))
+        .bind(state.enrollment.map(enrollment_uuid))
         .execute(&mut *connection)
         .await
         .map_err(|e| database_error(&e))?
@@ -458,5 +496,158 @@ impl VerificationTokenStore for PgVerificationTokenStore {
         .await
         .map_err(|e| database_error(&e))?;
         row.map(to_token).transpose()
+    }
+}
+
+/// [`EmailSignInStore`] on `authentication.email_sign_in`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PgEmailSignInStore;
+
+const EMAIL_SIGN_IN_COLUMNS: &str = "transaction_id, method, secret_hash, identifier_key, \
+                                     user_id, created_at, expires_at, used_at";
+
+type EmailSignInRow = (
+    Uuid,
+    String,
+    Vec<u8>,
+    Vec<u8>,
+    Option<Uuid>,
+    Timestamp,
+    Timestamp,
+    Option<Timestamp>,
+);
+
+fn to_email_sign_in(row: EmailSignInRow) -> Result<EmailSignIn, DomainError> {
+    let (
+        transaction_id,
+        method,
+        secret_hash,
+        identifier_key,
+        user_id,
+        created_at,
+        expires_at,
+        used_at,
+    ) = row;
+    Ok(EmailSignIn::from_snapshot(EmailSignInSnapshot {
+        transaction_id: TransactionId::from_uuid(transaction_id),
+        method: EmailMethod::from_stored(&method)?,
+        secret_hash: EmailSecretHash::from_stored(bytes_32(
+            secret_hash,
+            "the hash of what was sent is not 32 bytes",
+        )?),
+        identifier_key: bytes_32(identifier_key, "the identifier key is not 32 bytes")?,
+        user_id: user_id.map(UserId::from_uuid),
+        created_at,
+        expires_at,
+        used_at,
+    }))
+}
+
+#[async_trait::async_trait]
+impl EmailSignInStore for PgEmailSignInStore {
+    async fn replace(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        sent: &EmailSignIn,
+    ) -> Result<(), DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let state = sent.snapshot();
+        sqlx::query(
+            "INSERT INTO authentication.email_sign_in
+                 (tenant_id, transaction_id, method, secret_hash, identifier_key, user_id,
+                  created_at, expires_at, used_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+             ON CONFLICT (tenant_id, transaction_id) DO UPDATE
+             SET method = EXCLUDED.method,
+                 secret_hash = EXCLUDED.secret_hash,
+                 identifier_key = EXCLUDED.identifier_key,
+                 user_id = EXCLUDED.user_id,
+                 created_at = EXCLUDED.created_at,
+                 expires_at = EXCLUDED.expires_at,
+                 used_at = EXCLUDED.used_at",
+        )
+        .bind(tenant.as_uuid())
+        .bind(state.transaction_id.as_uuid())
+        .bind(state.method.as_str())
+        .bind(state.secret_hash.as_bytes().as_slice())
+        .bind(state.identifier_key.as_slice())
+        .bind(state.user_id.map(|user| user.as_uuid()))
+        .bind(state.created_at)
+        .bind(state.expires_at)
+        .bind(state.used_at)
+        .execute(connection(uow)?)
+        .await
+        .map_err(|e| database_error(&e))?;
+        Ok(())
+    }
+
+    async fn get(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        transaction: TransactionId,
+    ) -> Result<Option<EmailSignIn>, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        let row: Option<EmailSignInRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT {EMAIL_SIGN_IN_COLUMNS} FROM authentication.email_sign_in
+             WHERE tenant_id = $1 AND transaction_id = $2"
+        )))
+        .bind(tenant.as_uuid())
+        .bind(transaction.as_uuid())
+        .fetch_optional(connection(uow)?)
+        .await
+        .map_err(|e| database_error(&e))?;
+        row.map(to_email_sign_in).transpose()
+    }
+
+    async fn use_up(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        transaction: TransactionId,
+        method: EmailMethod,
+        presented: &EmailSecretHash,
+        now: Timestamp,
+    ) -> Result<EmailUse, DomainError> {
+        let tenant = uow.tenant().tenant_id();
+        // One statement checks that it is good and marks it used. Of
+        // several transactions doing this at once, the first locks the
+        // row; the others wait, then see `used_at` set and change nothing.
+        let used: Option<(Option<Uuid>,)> = sqlx::query_as(
+            "UPDATE authentication.email_sign_in
+             SET used_at = $5
+             WHERE tenant_id = $1 AND transaction_id = $2 AND method = $3 AND secret_hash = $4
+               AND used_at IS NULL AND user_id IS NOT NULL AND expires_at > $5
+             RETURNING user_id",
+        )
+        .bind(tenant.as_uuid())
+        .bind(transaction.as_uuid())
+        .bind(method.as_str())
+        .bind(presented.as_bytes().as_slice())
+        .bind(now)
+        .fetch_optional(connection(uow)?)
+        .await
+        .map_err(|e| database_error(&e))?;
+        if let Some((user,)) = used {
+            let user = user.ok_or_else(|| corrupted("a used row names nobody"))?;
+            return Ok(EmailUse::Accepted(UserId::from_uuid(user)));
+        }
+        // Whether the right secret was used a moment ago by another
+        // request, which this one must not overwrite.
+        let spent: Option<(i32,)> = sqlx::query_as(
+            "SELECT 1 FROM authentication.email_sign_in
+             WHERE tenant_id = $1 AND transaction_id = $2 AND method = $3 AND secret_hash = $4
+               AND used_at IS NOT NULL",
+        )
+        .bind(tenant.as_uuid())
+        .bind(transaction.as_uuid())
+        .bind(method.as_str())
+        .bind(presented.as_bytes().as_slice())
+        .fetch_optional(connection(uow)?)
+        .await
+        .map_err(|e| database_error(&e))?;
+        Ok(if spent.is_some() {
+            EmailUse::AlreadyUsed
+        } else {
+            EmailUse::Refused
+        })
     }
 }

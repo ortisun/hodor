@@ -76,14 +76,30 @@ export function phone(secret: Buffer, steps = 0): string {
   return String(binary % 1_000_000).padStart(6, "0");
 }
 
-/** The path of a page of the tenant under test. */
-export function at(page: string): string {
-  return page === "" ? `/t/${TENANT}/account` : `/t/${TENANT}/account/${page}`;
+/** The path of a page of the tenant under test, or of another tenant. */
+export function at(page: string, tenant = TENANT): string {
+  return page === "" ? `/t/${tenant}/account` : `/t/${tenant}/account/${page}`;
 }
 
 /** An address nobody has used before. */
 export function newAddress(): string {
   return `person-${randomUUID()}@example.com`;
+}
+
+/**
+ * A tenant of its own, open to registration, for a test that changes a
+ * policy every other test of the run would feel. The operator makes it
+ * with the command-line tool and then runs each of `settings`, the
+ * arguments of `hodor-cli tenant` after the slug, such as
+ * `["second-factor", "--policy", "required"]`. Answers its slug.
+ */
+export function newTenant(...settings: string[][]): string {
+  const slug = `browser-${randomUUID().slice(0, 8)}`;
+  operator("tenant", "create", "--slug", slug, "--name", "Initech", "--open-registration");
+  for (const [command, ...rest] of settings) {
+    operator("tenant", command ?? "", "--slug", slug, ...rest);
+  }
+  return slug;
 }
 
 /**
@@ -135,9 +151,12 @@ interface Summary {
   Subject: string;
 }
 
-export interface Message {
+export interface Mail {
   subject: string;
   text: string;
+}
+
+export interface Message extends Mail {
   /** The path and fragment of the link in the message, to open on the server under test. */
   link: string;
 }
@@ -146,7 +165,7 @@ export interface Message {
  * Reads the mailbox of `address` on the development mail server, as a
  * person would, waiting for message number `count` to arrive.
  */
-export async function messageTo(address: string, count = 1): Promise<Message> {
+export async function mailTo(address: string, count = 1): Promise<Mail> {
   let summaries: Summary[] = [];
   await expect
     .poll(
@@ -166,17 +185,23 @@ export async function messageTo(address: string, count = 1): Promise<Message> {
   }
   const response = await fetch(`${MAIL}/api/v1/message/${summary.ID}`);
   const { Text: text } = (await response.json()) as { Text: string };
+  return { subject: summary.Subject, text };
+}
+
+/** Message number `count` to `address`, as `mailTo` reads it, with the link it carries. */
+export async function messageTo(address: string, count = 1): Promise<Message> {
+  const { subject, text } = await mailTo(address, count);
   const found = /https?:\/\/\S+#token=[0-9a-f]+/.exec(text);
   if (found === null) {
     throw new Error(`the message to ${address} carries no link:\n${text}`);
   }
   const link = new URL(found[0]);
-  return { subject: summary.Subject, text, link: link.pathname + link.hash };
+  return { subject, text, link: link.pathname + link.hash };
 }
 
 /** Registers a person through the pages, up to the sign-in page that says the account is ready. */
-export async function register(page: Page, address: string, password = PASSWORD): Promise<void> {
-  await page.goto(at("register"));
+export async function register(page: Page, address: string, password = PASSWORD, tenant = TENANT): Promise<void> {
+  await page.goto(at("register", tenant));
   await page.getByLabel(en.emailLabel, { exact: true }).fill(address);
   await page.getByRole("button", { name: en.sendLink }).click();
   await expect(page.getByRole("heading", { name: en.checkMailboxTitle })).toBeVisible();
@@ -189,9 +214,9 @@ export async function register(page: Page, address: string, password = PASSWORD)
 }
 
 /** Signs in through the pages, up to the answer to the password. */
-export async function signIn(page: Page, identifier: string, password: string): Promise<void> {
-  if (!page.url().includes(at("sign-in"))) {
-    await page.goto(at("sign-in"));
+export async function signIn(page: Page, identifier: string, password: string, tenant = TENANT): Promise<void> {
+  if (!page.url().includes(at("sign-in", tenant))) {
+    await page.goto(at("sign-in", tenant));
   }
   await page.getByLabel(en.identifierLabel, { exact: true }).fill(identifier);
   await page.getByRole("button", { name: en.continue, exact: true }).click();

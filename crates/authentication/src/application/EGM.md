@@ -32,6 +32,8 @@ the tenant the unit of work is bound to.
   - `update(uow, transaction)`: stores changes to a transaction loaded earlier,
     guarded by its version.
 - `VerificationTokenStore` (`ports.rs:VerificationTokenStore`)
+- `EmailSignInStore` (`ports.rs:EmailSignInStore`): `replace`, `get`,
+  `use_up`, one row per transaction
   - `insert(uow, token)`: stores a new token.
   - `replace_earlier(uow, purpose, email, now)`: marks every unused token of
     the purpose for the email address as replaced.
@@ -64,9 +66,15 @@ the tenant the unit of work is bound to.
     `authentication.failed` and no session (`service.rs:demanded`).
   - `cancel(tenant, id, secret)`: ends a sign-in; ending one that has already
     ended changes nothing.
-- `SignIn` (`service.rs:SignIn`): `Pending { transaction_id, step }`,
-  `Rejected { transaction_id, step, attempts_left }`, `Failed`,
-  `Completed { session, token }`.
+  - When the step put a factor in use (`FlowEngine::submit_step` answers
+    `enrolled`), `submit` records `SecondFactorEnrolled` in a unit of work of
+    its own, whatever becomes of the sign-in, and carries the recovery codes
+    into the answer.
+- `SignIn` (`service.rs:SignIn`): `Pending { transaction_id, step,
+  recovery_codes }`, `Rejected { transaction_id, step, attempts_left }`,
+  `Failed`, `Completed { session, token, recovery_codes }`; `recovery_codes`
+  (`Vec<Secret<String>>`) is empty unless the step just satisfied enrolled a
+  first factor.
 - `StartedSignIn` (`service.rs:StartedSignIn`): `transaction_id`, `secret`
   (`Secret<String>`), `step`.
 
@@ -139,7 +147,11 @@ Both implement the `Authenticator` trait from [`../domain/EGM.md`](../domain/EGM
   - `begin_authenticator_application` (issuer: the tenant's display name;
     account: the primary email address, else username) and
     `confirm_authenticator_application(tenant, user_id, code, caller) ->
-    Option<RecoveryCodes>`.
+    Option<RecoveryCodes>`; `confirm_begun_authenticator_application(tenant,
+    user_id, id: TotpId, code, caller)` confirms only the enrollment `id`
+    (`TotpService::confirm_enrollment_of`). `enrollable() ->
+    Vec<EnrollmentKind>`: the application only with `with_totp`, a security
+    key and a passkey always.
   - `begin_webauthn_registration(tenant, user_id)` (names the person by their
     primary email address, else username, and display name),
     `begin_passkey_registration(tenant, user_id)` (the same, with the
@@ -160,9 +172,52 @@ Both implement the `Authenticator` trait from [`../domain/EGM.md`](../domain/EGM
   `recent_sign_in_required()` (`Forbidden`
   `authentication.recent_sign_in_required`), which the interaction routes
   apply to the session's `signed_in_at`.
-- `AuthenticationService::challenge(tenant, id, secret, step) -> Value`: asks
-  the current step, or an alternative at the start, for a challenge through
-  `FlowEngine::challenge` and stores the transaction.
+- `AuthenticationService::challenge(tenant, id, secret, asked: ExternalInput)
+  -> Value`: asks the current step, or an alternative at the start, for a
+  challenge through `FlowEngine::challenge`, with what the person gave, and
+  stores the transaction. `alternatives(tenant) -> Vec<String>`: the offered
+  alternatives, for the pages.
+- `EmailAuthenticator` (`email.rs:EmailAuthenticator`), built with
+  `EmailAuthenticator::code(ports)` or `::link(ports)` over `EmailSignInPorts
+  { units_of_work, sent: EmailSignInStore, identity, tenants, notifier,
+  guard, digest, random, clock, public_url }`: kinds `CODE_KIND`
+  (`"email_code"`) and `LINK_KIND` (`"email_link"`), traits `identifies:
+  true`, `factor: Some(Factor::Knowledge)`, the method its kind. `offered`
+  reads `authentication.email_sign_in` of the tenant. `challenge` admits the
+  asking against `email_sign_in:<address>` and the client address, then
+  replaces the row of the transaction whoever the address belongs to, and
+  for a person who may sign in queues `sign_in_code` or `sign_in_link`
+  (`{public_url}/t/{slug}/account/sign-in-link#token=…`) and records
+  `EmailSignInSent`, in one unit of work. `perform` admits the attempt
+  against the row's `identifier_key` (only the address when nothing was
+  asked), then `use_up`: `Accepted` answers `Authenticated` for a person who
+  may sign in and clears the identifier's count, `AlreadyUsed` is `Conflict`
+  `authentication.transaction_modified_concurrently`, anything else
+  `Rejected`.
+- `EnrollmentAuthenticator` (`enrollment.rs:EnrollmentAuthenticator`),
+  `new(factors: FactorService, identity)`: `KIND` `"enrollment"`, traits
+  `identifies: false`, `factor: Some(Factor::Possession)`, `method:
+  Some("enrollment")`, never `resists_phishing`. The candidate is eligible in
+  a transaction that is not a step-up (`raised_session` empty), has satisfied
+  a method, and when `FactorService::factors` counts no second factor;
+  `has_means` is that and a non-empty `enrollable()`. `challenge` reads the
+  field `kind` (`Invalid` `authentication.enrollment_kind_unknown`
+  otherwise), refuses an ineligible person with `Conflict`
+  `authentication.enrollment_not_needed`, begins through `FactorService`
+  and answers `StepChallenge { challenge: None, enrollment:
+  Some(BegunEnrollment), options }`, the options `{ kind, secret, uri }` or
+  `{ kind, public_key }`. `perform` refuses an ineligible person the same
+  way, rejects a person who may not sign in, input of the other kind and
+  nothing begun, and finishes the begun enrollment with
+  `confirm_begun_authenticator_application` (field `code`) or
+  `finish_webauthn_registration` (fields `client_data`,
+  `attestation_object`, `transports` joined by commas, `discoverable`,
+  `name`), the person as the caller; the credential context's refusals of an
+  answer (`credential.totp_code_wrong`, `credential.totp_enrollment_not_found`,
+  `credential.webauthn_registration_not_found`,
+  `credential.webauthn_registration_refused`,
+  `credential.webauthn_credential_exists`) are `Rejected`, anything else is
+  passed on. Success is `StepOutcome::Enrolled` with the recovery codes made.
 - `RecoveryCodeAuthenticator` (`authenticators.rs:RecoveryCodeAuthenticator`):
   `kind()` is `RecoveryCodeAuthenticator::KIND`, `"recovery_code"`; traits
   `identifies: false`, `factor: Some(Factor::Possession)`,
@@ -180,6 +235,9 @@ Both implement the `Authenticator` trait from [`../domain/EGM.md`](../domain/EGM
 - Of any number of simultaneous `use_up` calls for one token exactly one gets
   it; the others and every later call get nothing
   (`ports.rs:VerificationTokenStore::use_up`).
+- Of any number of simultaneous `EmailSignInStore::use_up` calls with the
+  right secret exactly one gets `Accepted`; the others get `AlreadyUsed`
+  (`ports.rs:EmailSignInStore::use_up`).
 - Two units of work locking the same attempt subject are served one after the
   other, which keeps the attempt limit exact (`ports.rs:AttemptStore::lock`).
 - A wrong sign-in secret is answered exactly like a missing sign-in:

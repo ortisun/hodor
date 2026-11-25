@@ -16,12 +16,13 @@ use axum::http::header::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Extension, Json};
-use hodor_kernel::{DomainError, TenantContext};
+use hodor_identity::api::{UserKind, UserStatus};
+use hodor_kernel::{DomainError, ErrorKind, TenantContext, UserId};
 use hodor_oauth::api::{
     Application, ApplicationId, ApplicationSettings, AuthenticationMethod, Client, ClientId,
     ClientSecret, ClientSecretId, ClientSettings, ClientType, CreateClient, CreateResourceServer,
-    GrantType, IdTokenAlgorithm, ResourceServer, ResourceServerId, ResourceServerSettings,
-    RotateSecret, ScopeDefinition, Status, TokenPolicy,
+    ExchangeRule, GrantType, IdTokenAlgorithm, ResourceServer, ResourceServerId,
+    ResourceServerSettings, RotateSecret, ScopeDefinition, Status, SubjectType, TokenPolicy,
 };
 use serde::{Deserialize, Serialize};
 use time::Duration;
@@ -404,6 +405,16 @@ struct ClientBody {
     allowed_scopes: Vec<String>,
     require_pkce: bool,
     id_token_signed_response_alg: &'static str,
+    /// Where its logout tokens are sent, or `null`.
+    backchannel_logout_uri: Option<String>,
+    backchannel_logout_session_required: bool,
+    /// `public` or `pairwise`.
+    subject_type: &'static str,
+    /// The sector identifier address of a pairwise client, or `null`.
+    sector_identifier_uri: Option<String>,
+    /// The service account or agent it acts as, or `null`.
+    principal: Option<String>,
+    exchange_rules: Vec<ExchangeRuleBody>,
     token_policy: TokenPolicyBody,
     /// What identifies each secret and when it expires: never the secret
     /// or its hash.
@@ -431,6 +442,19 @@ impl From<&Client> for ClientBody {
             allowed_scopes: settings.allowed_scopes.clone(),
             require_pkce: settings.require_pkce,
             id_token_signed_response_alg: settings.id_token_algorithm.as_str(),
+            backchannel_logout_uri: settings.backchannel_logout_uri.clone(),
+            backchannel_logout_session_required: settings.backchannel_logout_session_required,
+            subject_type: settings.subject_type.as_str(),
+            sector_identifier_uri: settings.sector_identifier_uri.clone(),
+            principal: settings.principal.map(|principal| principal.to_string()),
+            exchange_rules: settings
+                .exchange_rules
+                .iter()
+                .map(|rule| ExchangeRuleBody {
+                    subject_audience: rule.subject_audience.clone(),
+                    audience: rule.audience.clone(),
+                })
+                .collect(),
             token_policy: TokenPolicyBody {
                 access_token_seconds: policy.access_token.whole_seconds(),
                 id_token_seconds: policy.id_token.whole_seconds(),
@@ -487,8 +511,32 @@ struct NewClientBody {
     allowed_scopes: Option<Vec<String>>,
     require_pkce: Option<bool>,
     id_token_signed_response_alg: Option<String>,
+    backchannel_logout_uri: Option<String>,
+    backchannel_logout_session_required: Option<bool>,
+    subject_type: Option<String>,
+    sector_identifier_uri: Option<String>,
     token_policy: Option<TokenPolicyInput>,
     secret_lifetime_days: Option<u32>,
+    principal: Option<String>,
+    exchange_rules: Option<Vec<ExchangeRuleBody>>,
+}
+
+/// One exchange rule, as the interface writes it.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExchangeRuleBody {
+    subject_audience: String,
+    audience: String,
+}
+
+fn exchange_rules(given: Vec<ExchangeRuleBody>) -> Vec<ExchangeRule> {
+    given
+        .into_iter()
+        .map(|rule| ExchangeRule {
+            subject_audience: rule.subject_audience,
+            audience: rule.audience,
+        })
+        .collect()
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -502,7 +550,59 @@ struct ClientChangesBody {
     allowed_scopes: Option<Vec<String>>,
     require_pkce: Option<bool>,
     id_token_signed_response_alg: Option<String>,
+    /// Left out: unchanged; `null`: removed; an address: replaced.
+    #[serde(default, deserialize_with = "present")]
+    backchannel_logout_uri: Option<Option<String>>,
+    backchannel_logout_session_required: Option<bool>,
+    subject_type: Option<String>,
+    /// Left out: unchanged; `null`: removed; an address: replaced.
+    #[serde(default, deserialize_with = "present")]
+    sector_identifier_uri: Option<Option<String>>,
     token_policy: Option<TokenPolicyInput>,
+    /// Left out: unchanged; `null`: removed; an identifier: replaced.
+    #[serde(default, deserialize_with = "present")]
+    principal: Option<Option<String>>,
+    exchange_rules: Option<Vec<ExchangeRuleBody>>,
+}
+
+/// A field that may be given as `null`, told apart from one left out.
+fn present<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer).map(Some)
+}
+
+/// The workload `given` names, if it is a service account or an agent of
+/// the tenant that is not deleted: the OAuth context does not know what a
+/// principal is, so the interface asks the identity context.
+async fn principal_of(
+    state: &Shared,
+    tenant: &TenantContext,
+    given: &str,
+    grants: &[GrantType],
+) -> Result<UserId, Box<Response>> {
+    // Only an agent acts on a person's behalf.
+    let exchanges = grants.contains(&GrantType::TokenExchange);
+    let refused = || {
+        failed(DomainError::invalid(
+            "oauth.client_principal_invalid",
+            "a client's principal is a service account or an agent of the tenant",
+        ))
+    };
+    let id: UserId = given.parse().map_err(|_| refused())?;
+    match state.identity.get(tenant, id).await {
+        Ok(user)
+            if user.kind().is_workload()
+                && user.status() != UserStatus::Deleted
+                && (!exchanges || user.kind() == UserKind::Agent) =>
+        {
+            Ok(id)
+        }
+        Ok(_) => Err(refused()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Err(refused()),
+        Err(error) => Err(failed(error)),
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -603,8 +703,22 @@ async fn create_client(
                 settings.id_token_algorithm =
                     IdTokenAlgorithm::parse(&algorithm).map_err(failed)?;
             }
+            settings.backchannel_logout_uri = new.backchannel_logout_uri;
+            settings.backchannel_logout_session_required =
+                new.backchannel_logout_session_required.unwrap_or(false);
+            if let Some(subject_type) = new.subject_type {
+                settings.subject_type = SubjectType::parse(&subject_type).map_err(failed)?;
+            }
+            settings.sector_identifier_uri = new.sector_identifier_uri;
             if let Some(policy) = new.token_policy {
                 settings.token_policy = policy.over(settings.token_policy);
+            }
+            if let Some(rules) = new.exchange_rules {
+                settings.exchange_rules = exchange_rules(rules);
+            }
+            if let Some(principal) = &new.principal {
+                settings.principal =
+                    Some(principal_of(&state, &tenant, principal, &settings.grant_types).await?);
             }
             let (client, secret) = state
                 .applications
@@ -673,16 +787,17 @@ async fn change_client(
                 .await
                 .map_err(failed)?;
             let now = current.snapshot().settings.clone();
+            let grants = match changes.grant_types {
+                Some(given) => grant_types(&given)?,
+                None => now.grant_types.clone(),
+            };
             let settings = ClientSettings {
                 name: changes.name.unwrap_or(now.name),
                 authentication_method: match changes.authentication_method {
                     Some(method) => AuthenticationMethod::parse(&method).map_err(failed)?,
                     None => now.authentication_method,
                 },
-                grant_types: match changes.grant_types {
-                    Some(given) => grant_types(&given)?,
-                    None => now.grant_types,
-                },
+                grant_types: grants.clone(),
                 redirect_uris: changes.redirect_uris.unwrap_or(now.redirect_uris),
                 post_logout_redirect_uris: changes
                     .post_logout_redirect_uris
@@ -693,9 +808,36 @@ async fn change_client(
                     Some(algorithm) => IdTokenAlgorithm::parse(&algorithm).map_err(failed)?,
                     None => now.id_token_algorithm,
                 },
+                backchannel_logout_uri: changes
+                    .backchannel_logout_uri
+                    .unwrap_or(now.backchannel_logout_uri),
+                backchannel_logout_session_required: changes
+                    .backchannel_logout_session_required
+                    .unwrap_or(now.backchannel_logout_session_required),
+                subject_type: match changes.subject_type {
+                    Some(given) => SubjectType::parse(&given).map_err(failed)?,
+                    None => now.subject_type,
+                },
+                sector_identifier_uri: changes
+                    .sector_identifier_uri
+                    .unwrap_or(now.sector_identifier_uri),
                 token_policy: changes
                     .token_policy
                     .map_or(now.token_policy, |given| given.over(now.token_policy)),
+                principal: match &changes.principal {
+                    // Kept, but checked again when the grants now exchange.
+                    None => match now.principal {
+                        Some(kept) if grants.contains(&GrantType::TokenExchange) => {
+                            Some(principal_of(&state, &tenant, &kept.to_string(), &grants).await?)
+                        }
+                        kept => kept,
+                    },
+                    Some(None) => None,
+                    Some(Some(given)) => Some(principal_of(&state, &tenant, given, &grants).await?),
+                },
+                exchange_rules: changes
+                    .exchange_rules
+                    .map_or(now.exchange_rules, exchange_rules),
             };
             let client = state
                 .applications

@@ -17,7 +17,7 @@ pub mod testing;
 
 pub use bundle_signing::BundleSigningKey;
 pub use digest::Sha256Digest;
-pub use hmac::AwsLcHmacSha1;
+pub use hmac::{AwsLcHmacSha1, AwsLcHmacSha256};
 pub use keys::LocalKeyProvider;
 pub use password::{Argon2Parameters, Argon2idHasher, HashingLimits};
 pub use random::OsRandom;

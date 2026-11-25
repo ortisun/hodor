@@ -103,6 +103,10 @@ pub enum SubjectKind {
     User,
     /// An application acting for itself, a client of the OAuth context.
     Client,
+    /// A group of users of the identity context. It is never the subject
+    /// of a request: it is a principal that roles are given to, held by
+    /// every user in it.
+    Group,
 }
 
 impl SubjectKind {
@@ -112,6 +116,25 @@ impl SubjectKind {
         match self {
             Self::User => "user",
             Self::Client => "client",
+            Self::Group => "group",
+        }
+    }
+
+    /// Reads the kind of a principal roles are given to: a user, a client
+    /// or a group.
+    ///
+    /// # Errors
+    ///
+    /// Returns `authorization.principal_kind_invalid` for anything else.
+    pub fn parse_principal(value: &str) -> Result<Self, DomainError> {
+        match value {
+            "group" => Ok(Self::Group),
+            other => Self::parse(other).map_err(|_| {
+                invalid(
+                    "authorization.principal_kind_invalid",
+                    "a principal is a `user`, a `client` or a `group`",
+                )
+            }),
         }
     }
 
@@ -195,7 +218,7 @@ impl Subject {
     pub fn user_id(&self) -> Option<UserId> {
         match self.kind {
             SubjectKind::User => self.id.parse().ok(),
-            SubjectKind::Client => None,
+            SubjectKind::Client | SubjectKind::Group => None,
         }
     }
 }
@@ -367,6 +390,37 @@ impl ApplicationReference {
     }
 }
 
+/// The organization a request is made in, by its identifier: what an
+/// assignment scoped to an organization is compared with.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(transparent)]
+pub struct OrganizationReference(String);
+
+impl OrganizationReference {
+    /// Reads an organization's identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns `authorization.organization_invalid` if it is empty, longer
+    /// than 255 characters or holds a control character.
+    pub fn parse(value: &str) -> Result<Self, DomainError> {
+        if is_identifier(value) {
+            Ok(Self(value.to_owned()))
+        } else {
+            Err(invalid(
+                "authorization.organization_invalid",
+                "an organization's identifier has 1 to 255 characters and no control character",
+            ))
+        }
+    }
+
+    /// The identifier as written.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// What is known about the moment of the request.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct EvaluationContext {
@@ -376,6 +430,8 @@ pub struct EvaluationContext {
     pub correlation_id: Option<CorrelationId>,
     /// The application the request is made for, when there is one.
     pub application: Option<ApplicationReference>,
+    /// The organization the request is made in, when there is one.
+    pub organization: Option<OrganizationReference>,
 }
 
 /// The question: may this subject do this action to this resource of this

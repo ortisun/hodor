@@ -186,16 +186,17 @@ impl Totp {
 
 /// What a person is given once, when enrollment begins.
 pub struct TotpEnrollment {
+    id: TotpId,
     secret: Secret<String>,
     address: Secret<String>,
 }
 
 impl TotpEnrollment {
-    /// Writes the secret in the forms an authenticator application reads:
-    /// Base32, and an `otpauth://totp/` address naming the issuer and the
-    /// account.
+    /// Writes the secret of the enrollment `id` in the forms an
+    /// authenticator application reads: Base32, and an `otpauth://totp/`
+    /// address naming the issuer and the account.
     #[must_use]
-    pub fn new(secret: &[u8], issuer: &str, account: &str) -> Self {
+    pub fn new(id: TotpId, secret: &[u8], issuer: &str, account: &str) -> Self {
         let encoded = base32(secret);
         let label = format!("{}:{}", escape(issuer), escape(account));
         let address = format!(
@@ -203,9 +204,17 @@ impl TotpEnrollment {
             escape(issuer)
         );
         Self {
+            id,
             secret: Secret::from(encoded),
             address: Secret::from(address),
         }
+    }
+
+    /// The enrollment this is the secret of, which a caller may name when
+    /// it confirms it.
+    #[must_use]
+    pub const fn id(&self) -> TotpId {
+        self.id
     }
 
     /// The secret in Base32, for typing into an application by hand.
@@ -368,8 +377,12 @@ mod tests {
 
     #[test]
     fn the_address_names_the_issuer_and_the_account() {
-        let enrollment =
-            TotpEnrollment::new(b"12345678901234567890", "Acme Inc", "ana@example.com");
+        let enrollment = TotpEnrollment::new(
+            TotpId::generate(),
+            b"12345678901234567890",
+            "Acme Inc",
+            "ana@example.com",
+        );
         assert_eq!(enrollment.secret(), "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ");
         assert_eq!(
             enrollment.address(),

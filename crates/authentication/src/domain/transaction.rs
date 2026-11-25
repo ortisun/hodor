@@ -1,5 +1,6 @@
 //! A sign-in in progress.
 
+use crate::domain::enrollment::BegunEnrollment;
 use crate::domain::flow::AuthFlow;
 use hodor_kernel::{DomainError, Timestamp, UserId};
 use hodor_session::api::{Assurance, ClientInfo, SessionId};
@@ -101,6 +102,10 @@ pub struct TransactionSnapshot {
     /// The challenge the current step asked for, if it needs one. Used
     /// once: submitting the step removes it.
     pub challenge: Option<[u8; 32]>,
+    /// What the enrollment step began, if it began something not yet
+    /// finished. Kept when the step is rejected; emptied once it is
+    /// satisfied.
+    pub enrollment: Option<BegunEnrollment>,
     /// How many times a step was rejected.
     pub rejections: u32,
     /// How the transaction ended, or that it has not.
@@ -156,6 +161,7 @@ impl AuthTransaction {
                 demanded: None,
                 raised_session: None,
                 challenge: None,
+                enrollment: None,
                 rejections: 0,
                 status: TransactionStatus::InProgress,
                 started_at: now,
@@ -287,6 +293,18 @@ impl AuthTransaction {
         self.state.challenge = Some(challenge);
     }
 
+    /// What the enrollment step began, if anything that is not finished.
+    #[must_use]
+    pub const fn begun_enrollment(&self) -> Option<BegunEnrollment> {
+        self.state.enrollment
+    }
+
+    /// Keeps what the enrollment step began, in place of anything it began
+    /// before.
+    pub(crate) fn record_enrollment(&mut self, begun: BegunEnrollment) {
+        self.state.enrollment = Some(begun);
+    }
+
     /// Records the outcome of the identifier step and moves on.
     pub(crate) fn record_identified(
         &mut self,
@@ -303,6 +321,7 @@ impl AuthTransaction {
     /// Records a satisfied step and moves on.
     pub(crate) fn record_satisfied(&mut self, method: Option<&str>) {
         self.state.challenge = None;
+        self.state.enrollment = None;
         if let Some(method) = method
             && !self.state.satisfied_methods.iter().any(|m| m == method)
         {

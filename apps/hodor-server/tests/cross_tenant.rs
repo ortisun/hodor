@@ -12,8 +12,9 @@ use hodor_adapters_crypto::{
 };
 use hodor_adapters_postgres::testing::TestDatabase;
 use hodor_adapters_postgres::{
-    OutboxDispatcher, PgAccessTokenStore, PgAuditLog, PgPasswordStore, PgRoleAssignmentStore,
-    PgTenantDirectory, PgTenantRepository, PgUserRepository,
+    OutboxDispatcher, PgAccessTokenStore, PgAuditLog, PgDeliveryStore, PgEndpointStore,
+    PgPasswordStore, PgRoleAssignmentStore, PgTenantDirectory, PgTenantRepository,
+    PgUserRepository,
 };
 use hodor_audit::api::{AuditHandler, AuditService};
 use hodor_authorization::api::{AuthorizationService, Role};
@@ -21,6 +22,7 @@ use hodor_credential::api::{AccessTokenService, CredentialService, NewPassword, 
 use hodor_identity::api::{CreateUser, IdentifierKind, IdentityService, Profile, UserKind};
 use hodor_kernel::{Caller, Secret, SystemClock, TenantContext, UserId};
 use hodor_tenant::api::{CreateTenant, TenantService};
+use hodor_webhooks::api::WebhookFanOut;
 use reqwest::header::COOKIE;
 use reqwest::{Client, Method, StatusCode};
 use std::sync::Arc;
@@ -440,13 +442,24 @@ async fn an_administrators_token_is_refused_by_every_operation_of_another_tenant
                 .replace("{version_id}", &globex.ana.to_string())
                 .replace("{application_id}", &globex.ana.to_string())
                 .replace("{client_id}", &globex.ana.to_string())
+                .replace("{claim_mapper_id}", &globex.ana.to_string())
                 .replace("{secret_id}", &globex.ana.to_string())
                 .replace("{key_id}", "a-key")
                 .replace("{resource_server_id}", &globex.ana.to_string())
+                .replace("{group_id}", &globex.ana.to_string())
+                .replace("{organization_id}", &globex.ana.to_string())
+                .replace("{unit_id}", &globex.ana.to_string())
+                .replace("{invitation_id}", &globex.ana.to_string())
                 .replace("{permission}", "document:read")
                 .replace("{role}", "editor")
                 .replace("{number}", "1")
-                .replace("{simulation_id}", &globex.ana.to_string());
+                .replace("{simulation_id}", &globex.ana.to_string())
+                .replace("{service_account_id}", &globex.ana.to_string())
+                .replace("{agent_id}", &globex.ana.to_string())
+                .replace("{endpoint_id}", &globex.ana.to_string())
+                .replace("{delivery_id}", &globex.ana.to_string())
+                .replace("{api_key_id}", &globex.ana.to_string())
+                .replace("{entry_id}", &globex.ana.to_string());
             let method: Method = method.to_uppercase().parse().expect("method");
             let (status, body) = world
                 .admin(
@@ -465,7 +478,7 @@ async fn an_administrators_token_is_refused_by_every_operation_of_another_tenant
             tried += 1;
         }
     }
-    assert_eq!(tried, 71, "every documented operation was tried");
+    assert_eq!(tried, 141, "every documented operation was tried");
 
     // The token is good where it belongs, and nothing happened in Globex:
     // it has its two users, both active.
@@ -1139,6 +1152,16 @@ const AUDIENCE: &str = "https://api.billing.example.com";
 /// confidential client allowed a code, refresh tokens and a token for
 /// itself. Answers the client's identifier and its secret.
 async fn third_party_client(world: &World, tenant: &Tenant) -> (String, String) {
+    client_of(world, tenant, false).await
+}
+
+/// As [`third_party_client`], for an application of the tenant's own, whose
+/// people are never asked for consent.
+async fn first_party_client(world: &World, tenant: &Tenant) -> (String, String) {
+    client_of(world, tenant, true).await
+}
+
+async fn client_of(world: &World, tenant: &Tenant, first_party: bool) -> (String, String) {
     use hodor_adapters_postgres::{PgApplicationStore, PgClientStore, PgResourceServerStore};
     use hodor_oauth::api::{
         ApplicationPorts, ApplicationService, ApplicationSettings, ClientSettings, ClientType,
@@ -1158,7 +1181,7 @@ async fn third_party_client(world: &World, tenant: &Tenant) -> (String, String) 
             &tenant.context,
             ApplicationSettings {
                 name: "Billing".to_owned(),
-                first_party: false,
+                first_party,
             },
             Caller::system(),
         )
@@ -1217,6 +1240,11 @@ async fn third_party_client(world: &World, tenant: &Tenant) -> (String, String) 
 }
 
 fn authorize_path(slug: &str, client_id: &str) -> String {
+    authorize_path_with(slug, client_id, &[])
+}
+
+/// As [`authorize_path`], with more parameters, such as `organization`.
+fn authorize_path_with(slug: &str, client_id: &str, more: &[(&str, &str)]) -> String {
     let challenge = hodor_oauth::api::s256_challenge(VERIFIER, &Sha256Digest);
     format!(
         "/t/{slug}/oauth2/authorize?{}",
@@ -1230,6 +1258,7 @@ fn authorize_path(slug: &str, client_id: &str) -> String {
                 ("code_challenge", challenge.as_str()),
                 ("code_challenge_method", "S256"),
             ])
+            .extend_pairs(more)
             .finish()
     )
 }
@@ -1644,4 +1673,2748 @@ async fn one_tenants_roles_bindings_and_policies_are_invisible_and_unusable_from
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+/// A directory's client of a tenant that opened SCIM: the resource server
+/// `urn:hodor:scim` and a client allowed the scope `scim`. Answers a token
+/// the client got for itself.
+async fn scim_token(world: &World, tenant: &Tenant) -> String {
+    use base64::Engine as _;
+    use hodor_adapters_postgres::{PgApplicationStore, PgClientStore, PgResourceServerStore};
+    use hodor_oauth::api::{
+        ApplicationPorts, ApplicationService, ApplicationSettings, AuthenticationMethod,
+        ClientSettings, ClientType, CreateClient, CreateResourceServer, GrantType,
+        ResourceServerSettings, ScopeDefinition,
+    };
+    let applications = ApplicationService::new(ApplicationPorts {
+        units_of_work: Arc::new(world.database.app().clone()),
+        applications: Arc::new(PgApplicationStore),
+        clients: Arc::new(PgClientStore),
+        resource_servers: Arc::new(PgResourceServerStore),
+        digest: Arc::new(Sha256Digest),
+        random: Arc::new(OsRandom),
+        clock: Arc::new(SystemClock),
+    });
+    let application = applications
+        .create_application(
+            &tenant.context,
+            ApplicationSettings {
+                name: "SCIM".to_owned(),
+                first_party: true,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("application");
+    applications
+        .create_resource_server(
+            &tenant.context,
+            CreateResourceServer {
+                application_id: application.id(),
+                audience: "urn:hodor:scim".to_owned(),
+                settings: ResourceServerSettings {
+                    name: "SCIM".to_owned(),
+                    scopes: vec![ScopeDefinition {
+                        name: "scim".to_owned(),
+                        description: "Provision users and groups".to_owned(),
+                    }],
+                },
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("resource server");
+    let mut settings = ClientSettings::new(
+        "Directory",
+        ClientType::Confidential,
+        vec![GrantType::ClientCredentials],
+        Vec::new(),
+    );
+    settings.authentication_method = AuthenticationMethod::ClientSecretBasic;
+    settings.allowed_scopes = vec!["scim".to_owned()];
+    let (client, secret) = applications
+        .create_client(
+            &tenant.context,
+            CreateClient {
+                application_id: application.id(),
+                client_type: ClientType::Confidential,
+                settings,
+                secret_lifetime: None,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("client");
+    let basic = base64::engine::general_purpose::STANDARD.encode(format!(
+        "{}:{}",
+        client.id(),
+        secret.expect("a secret").expose()
+    ));
+    let response = Client::new()
+        .post(format!(
+            "{}/t/{}/oauth2/token",
+            world.server.base, tenant.slug
+        ))
+        .header("authorization", format!("Basic {basic}"))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(
+            form_urlencoded::Serializer::new(String::new())
+                .extend_pairs([
+                    ("grant_type", "client_credentials"),
+                    ("resource", "urn:hodor:scim"),
+                    ("scope", "scim"),
+                ])
+                .finish(),
+        )
+        .send()
+        .await
+        .expect("token response");
+    let body: serde_json::Value = response.json().await.expect("token body");
+    body["access_token"].as_str().expect("a token").to_owned()
+}
+
+/// A request to a tenant's SCIM server. Answers the status, the challenge
+/// and the body.
+async fn scim(
+    world: &World,
+    tenant: &Tenant,
+    token: &str,
+    method: Method,
+    path: &str,
+    body: Option<serde_json::Value>,
+) -> (StatusCode, Option<String>, serde_json::Value) {
+    let mut request = Client::new()
+        .request(
+            method,
+            format!("{}/t/{}/scim/v2{path}", world.server.base, tenant.slug),
+        )
+        .bearer_auth(token);
+    if let Some(body) = body {
+        request = request
+            .header("content-type", "application/scim+json")
+            .body(body.to_string());
+    }
+    let response = request.send().await.expect("response");
+    let challenge = response
+        .headers()
+        .get("www-authenticate")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let status = response.status();
+    (
+        status,
+        challenge,
+        response.json().await.unwrap_or(serde_json::Value::Null),
+    )
+}
+
+#[tokio::test]
+async fn a_scim_clients_token_and_identifiers_mean_nothing_in_another_tenant() {
+    let world = world_with(&[("HODOR_SECRET_KEYS", ROOT_KEY)]).await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    let acme_token = scim_token(&world, acme).await;
+    let globex_token = scim_token(&world, globex).await;
+    let user = |name: &str| serde_json::json!({ "schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"], "userName": name });
+    let group = |name: &str, members: serde_json::Value| {
+        serde_json::json!({
+            "schemas": ["urn:ietf:params:scim:schemas:core:2.0:Group"],
+            "displayName": name,
+            "members": members,
+        })
+    };
+
+    // In Acme, its directory sees its person and puts them in a group.
+    let (status, _, person) = scim(
+        &world,
+        acme,
+        &acme_token,
+        Method::GET,
+        &format!("/Users/{}", acme.ana),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{person}");
+    assert_eq!(person["userName"], EMAIL);
+    let (status, _, made) = scim(
+        &world,
+        acme,
+        &acme_token,
+        Method::POST,
+        "/Groups",
+        Some(group(
+            "finance",
+            serde_json::json!([{ "value": acme.ana.to_string() }]),
+        )),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{made}");
+    let acme_group = made["id"].as_str().expect("an id").to_owned();
+
+    // Acme's token is not authenticated by Globex, on any route.
+    let ana = acme.ana.to_string();
+    let patch = serde_json::json!({
+        "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+        "Operations": [{ "op": "replace", "path": "displayName", "value": "intruder" }]
+    });
+    let routes = [
+        (Method::PATCH, format!("/Users/{ana}"), Some(patch.clone())),
+        (Method::DELETE, format!("/Users/{ana}"), None),
+        (
+            Method::PATCH,
+            format!("/Groups/{acme_group}"),
+            Some(patch.clone()),
+        ),
+        (
+            Method::POST,
+            "/Bulk".to_owned(),
+            Some(
+                serde_json::json!({ "schemas": ["urn:ietf:params:scim:api:messages:2.0:BulkRequest"], "Operations": [] }),
+            ),
+        ),
+        (Method::GET, "/ServiceProviderConfig".to_owned(), None),
+        (Method::GET, "/ResourceTypes".to_owned(), None),
+        (Method::GET, "/Schemas".to_owned(), None),
+        (Method::GET, "/Users".to_owned(), None),
+        (Method::POST, "/Users".to_owned(), Some(user("intruder"))),
+        (Method::GET, format!("/Users/{ana}"), None),
+        (Method::PUT, format!("/Users/{ana}"), Some(user("intruder"))),
+        (Method::GET, "/Groups".to_owned(), None),
+        (
+            Method::POST,
+            "/Groups".to_owned(),
+            Some(group("intruders", serde_json::json!([]))),
+        ),
+        (Method::GET, format!("/Groups/{acme_group}"), None),
+        (
+            Method::PUT,
+            format!("/Groups/{acme_group}"),
+            Some(group("intruders", serde_json::json!([]))),
+        ),
+        (Method::DELETE, format!("/Groups/{acme_group}"), None),
+    ];
+    for (method, path, body) in &routes {
+        let (status, challenge, answer) = scim(
+            &world,
+            globex,
+            &acme_token,
+            method.clone(),
+            path,
+            body.clone(),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "{method} {path}: {answer}"
+        );
+        assert_eq!(
+            challenge.as_deref(),
+            Some("Bearer error=\"invalid_token\""),
+            "{method} {path}"
+        );
+        assert_eq!(answer["status"], "401");
+    }
+
+    // Globex's own directory does not find Acme's person or group by
+    // naming them, and cannot make Acme's person a member.
+    for (method, path, body) in [
+        (Method::GET, format!("/Users/{ana}"), None),
+        (Method::PATCH, format!("/Users/{ana}"), Some(patch.clone())),
+        (Method::DELETE, format!("/Users/{ana}"), None),
+        (
+            Method::PATCH,
+            format!("/Groups/{acme_group}"),
+            Some(patch.clone()),
+        ),
+        (
+            Method::PUT,
+            format!("/Users/{ana}"),
+            Some(user("ana.silva")),
+        ),
+        (Method::GET, format!("/Groups/{acme_group}"), None),
+        (
+            Method::PUT,
+            format!("/Groups/{acme_group}"),
+            Some(group("finance", serde_json::json!([]))),
+        ),
+        (Method::DELETE, format!("/Groups/{acme_group}"), None),
+    ] {
+        let (status, _, answer) =
+            scim(&world, globex, &globex_token, method.clone(), &path, body).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{method} {path}: {answer}");
+    }
+    let (status, _, answer) = scim(
+        &world,
+        globex,
+        &globex_token,
+        Method::POST,
+        "/Groups",
+        Some(group("finance", serde_json::json!([{ "value": ana }]))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{answer}");
+    assert_eq!(answer["scimType"], "invalidValue");
+
+    // Nor in a bulk request.
+    let (status, _, answer) = scim(
+        &world,
+        globex,
+        &globex_token,
+        Method::POST,
+        "/Bulk",
+        Some(serde_json::json!({
+            "schemas": ["urn:ietf:params:scim:api:messages:2.0:BulkRequest"],
+            "Operations": [
+                { "method": "PATCH", "path": format!("/Users/{ana}"), "data": patch },
+                { "method": "DELETE", "path": format!("/Groups/{acme_group}") },
+                { "method": "POST", "path": "/Groups", "bulkId": "g", "data": group("finance", serde_json::json!([{ "value": ana }])) }
+            ]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    let statuses: Vec<&str> = answer["Operations"]
+        .as_array()
+        .expect("results")
+        .iter()
+        .map(|result| result["status"].as_str().expect("a status"))
+        .collect();
+    assert_eq!(statuses, ["404", "404", "400"]);
+
+    // Globex finds its own person by the shared address, never Acme's.
+    let (status, _, found) = scim(
+        &world,
+        globex,
+        &globex_token,
+        Method::GET,
+        &format!("/Users?filter=userName%20eq%20%22{EMAIL}%22"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{found}");
+    assert_eq!(found["totalResults"], 1);
+    assert_eq!(found["Resources"][0]["id"], globex.ana.to_string());
+
+    // Both tenants are as they were.
+    let (status, _, kept) = scim(
+        &world,
+        acme,
+        &acme_token,
+        Method::GET,
+        &format!("/Groups/{acme_group}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(kept["displayName"], "finance");
+    assert_eq!(kept["members"][0]["value"], ana);
+    let (_, _, groups) = scim(&world, globex, &globex_token, Method::GET, "/Groups", None).await;
+    assert_eq!(groups["totalResults"], 0);
+}
+
+/// A service account of a tenant, owned by its person, with a client of an
+/// application whose resource server defines `read`, bound to it. Answers
+/// the service account and the client's identifier and secret, made
+/// through the tenant's own administration interface.
+async fn service_account_with_a_client(
+    world: &World,
+    tenant: &Tenant,
+) -> (String, (String, String)) {
+    let token = &tenant.administrator_token;
+    let (status, account) = world
+        .admin(
+            tenant,
+            token,
+            Method::POST,
+            "/service-accounts",
+            Some(serde_json::json!({
+                "name": "Nightly export", "owners": [tenant.ana.to_string()]
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{account}");
+    let account = account["id"].as_str().expect("id").to_owned();
+    let (_, application) = world
+        .admin(
+            tenant,
+            token,
+            Method::POST,
+            "/applications",
+            Some(serde_json::json!({ "name": "Exports", "first_party": true })),
+        )
+        .await;
+    let application = application["id"].as_str().expect("id").to_owned();
+    let (status, _) = world
+        .admin(
+            tenant,
+            token,
+            Method::POST,
+            "/resource-servers",
+            Some(serde_json::json!({
+                "application_id": application, "audience": "urn:example:exports",
+                "name": "Exports", "scopes": [{ "name": "read", "description": "Read" }]
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, client) = world
+        .admin(
+            tenant,
+            token,
+            Method::POST,
+            &format!("/applications/{application}/clients"),
+            Some(serde_json::json!({
+                "name": "Nightly export", "type": "confidential",
+                "grant_types": ["client_credentials"], "allowed_scopes": ["read"],
+                "principal": account
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{client}");
+    (
+        account,
+        (
+            client["id"].as_str().expect("id").to_owned(),
+            client["client_secret"].as_str().expect("secret").to_owned(),
+        ),
+    )
+}
+
+#[tokio::test]
+async fn a_service_account_of_one_tenant_and_its_tokens_mean_nothing_in_another() {
+    let world = world_with(&[("HODOR_SECRET_KEYS", ROOT_KEY)]).await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    let (account, client) = service_account_with_a_client(&world, acme).await;
+    let (_, theirs) = service_account_with_a_client(&world, globex).await;
+    let (status, issued) = oauth_form(
+        &world,
+        acme,
+        "token",
+        (&client.0, &client.1),
+        &[("grant_type", "client_credentials"), ("scope", "read")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{issued}");
+    let token = issued["access_token"].as_str().expect("a token").to_owned();
+    assert!(active(&world, acme, (&client.0, &client.1), &token).await);
+
+    // Globex's administrator names Acme's service account on every
+    // operation of an item, under both kinds' paths.
+    let globex_token = &globex.administrator_token;
+    for (method, path) in [
+        (Method::GET, format!("/service-accounts/{account}")),
+        (Method::PATCH, format!("/service-accounts/{account}")),
+        (Method::POST, format!("/service-accounts/{account}:disable")),
+        (Method::POST, format!("/service-accounts/{account}:enable")),
+        (Method::DELETE, format!("/service-accounts/{account}")),
+        (Method::GET, format!("/agents/{account}")),
+    ] {
+        let (status, body) = world
+            .admin(
+                globex,
+                globex_token,
+                method.clone(),
+                &path,
+                Some(serde_json::json!({ "name": "Taken over" })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{method} {path}");
+        assert_eq!(
+            body["code"], "identity.workload_not_found",
+            "{method} {path}"
+        );
+    }
+    // Nor can it make Acme's person an owner, or bind a client to Acme's
+    // service account.
+    let (status, body) = world
+        .admin(
+            globex,
+            globex_token,
+            Method::POST,
+            "/service-accounts",
+            Some(serde_json::json!({ "name": "Spy", "owners": [acme.ana.to_string()] })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["code"], "identity.user_not_found");
+    let (_, application) = world
+        .admin(
+            globex,
+            globex_token,
+            Method::POST,
+            "/applications",
+            Some(serde_json::json!({ "name": "Spy", "first_party": true })),
+        )
+        .await;
+    let (status, body) = world
+        .admin(
+            globex,
+            globex_token,
+            Method::POST,
+            &format!(
+                "/applications/{}/clients",
+                application["id"].as_str().expect("id")
+            ),
+            Some(serde_json::json!({
+                "name": "Spy", "type": "confidential",
+                "grant_types": ["client_credentials"], "principal": account
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(body["code"], "oauth.client_principal_invalid");
+
+    // Acme's token is nothing to Globex: not active at introspection by
+    // Globex's own client, not authenticated at its Authorization API.
+    assert!(!active(&world, globex, (&theirs.0, &theirs.1), &token).await);
+    let response = Client::new()
+        .post(format!(
+            "{}/t/{}/api/v1/authorization/evaluate",
+            world.server.base, globex.slug
+        ))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({
+            "subject": { "type": "user", "id": account },
+            "resource": { "type": "export", "id": "1" },
+            "action": "read"
+        }))
+        .send()
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    // Everything still works where it belongs.
+    let (status, read) = world
+        .admin(
+            acme,
+            &acme.administrator_token,
+            Method::GET,
+            &format!("/service-accounts/{account}"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(read["status"], "active");
+    assert_eq!(read["name"], "Nightly export");
+    assert!(active(&world, acme, (&client.0, &client.1), &token).await);
+}
+
+/// Something a tenant's administrator creates, by its path and body.
+/// Answers its identifier.
+async fn created(world: &World, tenant: &Tenant, path: &str, body: serde_json::Value) -> String {
+    let (status, made) = call(world, tenant, Method::POST, path.to_owned(), Some(body)).await;
+    assert_eq!(status, StatusCode::CREATED, "{path}: {made}");
+    made["id"].as_str().expect("an id").to_owned()
+}
+
+/// A resource server of the tenant's own, the same in both tenants, with a
+/// `reader` role. Answers the role's namespace.
+async fn reader_role(world: &World, tenant: &Tenant) -> &'static str {
+    let namespace = "https://api.documents.example.com";
+    let application = created(
+        world,
+        tenant,
+        "/applications",
+        serde_json::json!({ "name": "Documents", "first_party": true }),
+    )
+    .await;
+    let server = created(
+        world,
+        tenant,
+        "/resource-servers",
+        serde_json::json!({
+            "application_id": application,
+            "audience": namespace,
+            "name": "Documents interface",
+        }),
+    )
+    .await;
+    for (path, body) in [
+        (
+            format!("/resource-servers/{server}/permissions/document:read"),
+            serde_json::json!({ "description": "Read" }),
+        ),
+        (
+            format!("/resource-servers/{server}/roles/reader"),
+            serde_json::json!({ "permissions": [{ "name": "document:read" }] }),
+        ),
+    ] {
+        let (status, body) = call(world, tenant, Method::PUT, path.clone(), Some(body)).await;
+        assert!(status.is_success(), "{path}: {status} {body}");
+    }
+    namespace
+}
+
+#[tokio::test]
+async fn one_tenants_groups_and_the_roles_they_hold_are_out_of_reach_of_another() {
+    let world = world().await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    let namespace = reader_role(&world, acme).await;
+    reader_role(&world, globex).await;
+
+    // In Acme, `finance` is inside `staff`, Ana is in `finance`, and
+    // `staff` holds the reader role.
+    let staff = created(
+        &world,
+        acme,
+        "/groups",
+        serde_json::json!({ "name": "staff" }),
+    )
+    .await;
+    let finance = created(
+        &world,
+        acme,
+        "/groups",
+        serde_json::json!({ "name": "finance" }),
+    )
+    .await;
+    let reader = serde_json::json!({ "namespace": namespace, "name": "reader" });
+    for (path, body) in [
+        (
+            format!("/groups/{staff}/members"),
+            serde_json::json!({ "kind": "group", "id": finance }),
+        ),
+        (
+            format!("/groups/{finance}/members"),
+            serde_json::json!({ "kind": "user", "id": acme.ana.to_string() }),
+        ),
+        (
+            "/role-assignments".to_owned(),
+            serde_json::json!({ "principal": { "kind": "group", "id": staff }, "role": reader }),
+        ),
+    ] {
+        let (status, body) = call(&world, acme, Method::POST, path.clone(), Some(body)).await;
+        assert!(status.is_success(), "{path}: {status} {body}");
+    }
+    let (status, groups) = call(
+        &world,
+        acme,
+        Method::GET,
+        format!("/users/{}/groups", acme.ana),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{groups}");
+    assert_eq!(groups["items"].as_array().expect("items").len(), 2);
+
+    // Globex's administrator, naming Acme's groups, finds no such group,
+    // whatever it asks of them.
+    for (method, path, body) in [
+        (Method::GET, format!("/groups/{staff}"), None),
+        (
+            Method::PATCH,
+            format!("/groups/{staff}"),
+            Some(serde_json::json!({ "name": "taken over" })),
+        ),
+        (Method::DELETE, format!("/groups/{staff}"), None),
+        (Method::GET, format!("/groups/{staff}/members"), None),
+        (
+            Method::POST,
+            format!("/groups/{staff}/members"),
+            Some(serde_json::json!({ "kind": "user", "id": globex.ana.to_string() })),
+        ),
+        (
+            Method::POST,
+            format!("/groups/{finance}/members:remove"),
+            Some(serde_json::json!({ "kind": "user", "id": acme.ana.to_string() })),
+        ),
+        (
+            Method::GET,
+            format!("/groups/{staff}/role-assignments"),
+            None,
+        ),
+        (
+            Method::POST,
+            "/role-assignments".to_owned(),
+            Some(
+                serde_json::json!({ "principal": { "kind": "group", "id": staff }, "role": reader }),
+            ),
+        ),
+        (
+            Method::POST,
+            "/role-assignments:revoke".to_owned(),
+            Some(
+                serde_json::json!({ "principal": { "kind": "group", "id": staff }, "role": reader }),
+            ),
+        ),
+    ] {
+        let (status, answer) = call(&world, globex, method.clone(), path.clone(), body).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{method} {path}: {answer}");
+        assert_eq!(
+            answer["code"], "identity.group_not_found",
+            "{method} {path}"
+        );
+    }
+    let (status, answer) = call(
+        &world,
+        globex,
+        Method::GET,
+        format!("/users/{}/groups", acme.ana),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(answer["code"], "identity.user_not_found");
+
+    // Nor can Acme's person or Acme's group become a member of a group of
+    // Globex's own.
+    let theirs = created(
+        &world,
+        globex,
+        "/groups",
+        serde_json::json!({ "name": "staff" }),
+    )
+    .await;
+    for (member, code) in [
+        (
+            serde_json::json!({ "kind": "user", "id": acme.ana.to_string() }),
+            "identity.user_not_found",
+        ),
+        (
+            serde_json::json!({ "kind": "group", "id": finance }),
+            "identity.group_not_found",
+        ),
+    ] {
+        let (status, answer) = call(
+            &world,
+            globex,
+            Method::POST,
+            format!("/groups/{theirs}/members"),
+            Some(member.clone()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{member}: {answer}");
+        assert_eq!(answer["code"], code, "{member}");
+    }
+
+    // Globex's lists name only its own group, which has no member.
+    let (_, listed) = call(&world, globex, Method::GET, "/groups".to_owned(), None).await;
+    let names: Vec<&str> = listed["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .filter_map(|group| group["id"].as_str())
+        .collect();
+    assert_eq!(names, [theirs.as_str()]);
+    let (_, members) = call(
+        &world,
+        globex,
+        Method::GET,
+        format!("/groups/{theirs}/members"),
+        None,
+    )
+    .await;
+    assert_eq!(members["items"], serde_json::json!([]));
+
+    // Acme's groups are as they were: Ana still in both, the role still
+    // held by `staff`.
+    let (_, groups) = call(
+        &world,
+        acme,
+        Method::GET,
+        format!("/users/{}/groups", acme.ana),
+        None,
+    )
+    .await;
+    assert_eq!(groups["items"].as_array().expect("items").len(), 2);
+    let (_, held) = call(
+        &world,
+        acme,
+        Method::GET,
+        format!("/groups/{staff}/role-assignments"),
+        None,
+    )
+    .await;
+    assert_eq!(held["items"][0]["role"]["name"], "reader", "{held}");
+    let (status, kept) = call(&world, acme, Method::GET, format!("/groups/{staff}"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(kept["name"], "staff");
+}
+
+/// The claims of a signed token, unchecked: the token came straight from
+/// the token endpoint.
+fn claims_of(token: &str) -> serde_json::Value {
+    use base64::Engine as _;
+    let payload = token.split('.').nth(1).expect("a payload");
+    serde_json::from_slice(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(payload)
+            .expect("base64url"),
+    )
+    .expect("JSON")
+}
+
+/// Where the authorization endpoint sends a signed-in browser, and the
+/// parameters it adds to the redirect address.
+async fn authorized(
+    browser: &mut Browser,
+    path: &str,
+) -> std::collections::BTreeMap<String, String> {
+    let (status, location, page) = browser.navigate(Method::GET, path, None).await;
+    assert_eq!(status, StatusCode::FOUND, "{page}");
+    let location = location.expect("a redirect");
+    let (address, query) = location.split_once('?').expect("a query");
+    assert_eq!(address, REDIRECT);
+    form_urlencoded::parse(query.as_bytes())
+        .map(|(name, value)| (name.into_owned(), value.into_owned()))
+        .collect()
+}
+
+#[tokio::test]
+async fn one_tenants_organizations_and_invitations_mean_nothing_in_another() {
+    let world = world_with(&[("HODOR_SECRET_KEYS", ROOT_KEY)]).await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    let namespace = reader_role(&world, globex).await;
+
+    // In Acme, an organization with a department invites the shared
+    // address. Globex has an organization of the same name.
+    let initech = created(
+        &world,
+        acme,
+        "/organizations",
+        serde_json::json!({ "name": "Initech" }),
+    )
+    .await;
+    let engineering = created(
+        &world,
+        acme,
+        &format!("/organizations/{initech}/units"),
+        serde_json::json!({ "parent_id": null, "name": "Engineering", "kind": "department" }),
+    )
+    .await;
+    let (status, answer) = call(
+        &world,
+        acme,
+        Method::POST,
+        format!("/organizations/{initech}/invitations"),
+        Some(serde_json::json!({ "email": EMAIL, "unit_ids": [engineering] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{answer}");
+    let token = world.newest_link_token(acme).await;
+    let (_, pending) = call(
+        &world,
+        acme,
+        Method::GET,
+        format!("/organizations/{initech}/invitations"),
+        None,
+    )
+    .await;
+    let invitation = pending["items"][0]["id"]
+        .as_str()
+        .expect("a pending invitation")
+        .to_owned();
+    let theirs = created(
+        &world,
+        globex,
+        "/organizations",
+        serde_json::json!({ "name": "Initech" }),
+    )
+    .await;
+
+    // Globex's administrator, naming Acme's organization, finds no such
+    // organization, whatever it asks of it.
+    let unit = serde_json::json!({ "parent_id": null, "name": "Taken over", "kind": "unit" });
+    for (method, path, body) in [
+        (Method::GET, format!("/organizations/{initech}"), None),
+        (
+            Method::PATCH,
+            format!("/organizations/{initech}"),
+            Some(serde_json::json!({ "name": "Taken over" })),
+        ),
+        (Method::DELETE, format!("/organizations/{initech}"), None),
+        (Method::GET, format!("/organizations/{initech}/units"), None),
+        (
+            Method::POST,
+            format!("/organizations/{initech}/units"),
+            Some(unit.clone()),
+        ),
+        (
+            Method::PUT,
+            format!("/organizations/{initech}/units/{engineering}"),
+            Some(unit.clone()),
+        ),
+        (
+            Method::DELETE,
+            format!("/organizations/{initech}/units/{engineering}"),
+            None,
+        ),
+        (
+            Method::GET,
+            format!("/organizations/{initech}/members"),
+            None,
+        ),
+        (
+            Method::PUT,
+            format!("/organizations/{initech}/members/{}", globex.ana),
+            Some(serde_json::json!({ "unit_ids": [] })),
+        ),
+        (
+            Method::DELETE,
+            format!("/organizations/{initech}/members/{}", acme.ana),
+            None,
+        ),
+        (
+            Method::GET,
+            format!("/organizations/{initech}/invitations"),
+            None,
+        ),
+        (
+            Method::POST,
+            format!("/organizations/{initech}/invitations"),
+            Some(serde_json::json!({ "email": EMAIL, "unit_ids": [] })),
+        ),
+        (
+            Method::DELETE,
+            format!("/organizations/{initech}/invitations/{invitation}"),
+            None,
+        ),
+        (
+            Method::POST,
+            "/role-assignments".to_owned(),
+            Some(serde_json::json!({
+                "principal": { "kind": "user", "id": globex.ana.to_string() },
+                "role": { "namespace": namespace, "name": "reader" },
+                "organization_id": initech,
+            })),
+        ),
+    ] {
+        let (status, answer) = call(&world, globex, method.clone(), path.clone(), body).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{method} {path}: {answer}");
+        assert_eq!(
+            answer["code"], "identity.organization_not_found",
+            "{method} {path}"
+        );
+    }
+
+    // Nor can Acme's person become a member of Globex's own organization,
+    // or Globex's person be put in Acme's department.
+    for (path, body, code) in [
+        (
+            format!("/organizations/{theirs}/members/{}", acme.ana),
+            serde_json::json!({ "unit_ids": [] }),
+            "identity.user_not_found",
+        ),
+        (
+            format!("/organizations/{theirs}/members/{}", globex.ana),
+            serde_json::json!({ "unit_ids": [engineering] }),
+            "identity.unit_not_found",
+        ),
+    ] {
+        let (status, answer) = call(&world, globex, Method::PUT, path.clone(), Some(body)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{path}: {answer}");
+        assert_eq!(answer["code"], code, "{path}");
+    }
+    let (status, answer) = call(
+        &world,
+        globex,
+        Method::GET,
+        format!("/users/{}/organizations", acme.ana),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(answer["code"], "identity.user_not_found");
+
+    // Acme's link does not work at Globex: described, accepted with a
+    // password, or accepted by the signed-in person who has the invited
+    // address there.
+    let (status, answer) = world
+        .post(
+            globex,
+            "invitations/describe",
+            serde_json::json!({ "token": token }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{answer}");
+    assert_eq!(answer["code"], "identity.invitation_invalid");
+    let (status, answer) = world
+        .post(
+            globex,
+            "invitations/accept",
+            serde_json::json!({ "token": token, "password": "a password of its own" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{answer}");
+    assert_eq!(answer["code"], "identity.invitation_invalid");
+    let (mut there, _, _) = signed_in(&world, globex).await;
+    let (status, answer) = there
+        .send(
+            Method::POST,
+            "/t/globex/interaction/invitations/accept",
+            Some(serde_json::json!({ "token": token })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{answer}");
+    assert_eq!(answer["code"], "identity.invitation_invalid");
+
+    // Where it belongs, the link works, once.
+    let (status, described) = world
+        .post(
+            acme,
+            "invitations/describe",
+            serde_json::json!({ "token": token }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{described}");
+    assert_eq!(described["organization_name"], "Initech");
+    assert_eq!(described["has_account"], true);
+    let (mut here, _, _) = signed_in(&world, acme).await;
+    let accept = serde_json::json!({ "token": token });
+    let (status, answer) = here
+        .send(
+            Method::POST,
+            "/t/acme/interaction/invitations/accept",
+            Some(accept.clone()),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{answer}");
+    let (status, _) = here
+        .send(
+            Method::POST,
+            "/t/acme/interaction/invitations/accept",
+            Some(accept),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (_, memberships) = call(
+        &world,
+        acme,
+        Method::GET,
+        format!("/users/{}/organizations", acme.ana),
+        None,
+    )
+    .await;
+    assert_eq!(
+        memberships["items"].as_array().expect("items").len(),
+        1,
+        "{memberships}"
+    );
+
+    // Asked for at Globex's authorization endpoint, Acme's organization is
+    // one the person is not a member of. In Acme the tokens carry it.
+    let (globex_client, _) = first_party_client(&world, globex).await;
+    let named = [("organization", initech.as_str())];
+    let mut stranger = Browser::not_following(&world.server);
+    let (_, body) = stranger.sign_in(globex.slug, EMAIL, PASSWORD).await;
+    assert_eq!(body["status"], "completed", "{body}");
+    let back = authorized(
+        &mut stranger,
+        &authorize_path_with(globex.slug, &globex_client, &named),
+    )
+    .await;
+    assert_eq!(back.get("error").map(String::as_str), Some("access_denied"));
+    assert!(!back.contains_key("code"));
+    let (acme_client, acme_secret) = first_party_client(&world, acme).await;
+    let mut member = Browser::not_following(&world.server);
+    let (_, body) = member.sign_in(acme.slug, EMAIL, PASSWORD).await;
+    assert_eq!(body["status"], "completed", "{body}");
+    let back = authorized(
+        &mut member,
+        &authorize_path_with(acme.slug, &acme_client, &named),
+    )
+    .await;
+    let code = back.get("code").expect("a code");
+    let (status, tokens) = oauth_form(
+        &world,
+        acme,
+        "token",
+        (&acme_client, &acme_secret),
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", code),
+            ("redirect_uri", REDIRECT),
+            ("code_verifier", VERIFIER),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{tokens}");
+    for token in ["access_token", "id_token"] {
+        let claims = claims_of(tokens[token].as_str().expect("a token"));
+        assert_eq!(claims["org_id"], initech.as_str(), "{token}");
+    }
+
+    // Globex's lists name only its own organization, which has no member.
+    let (_, listed) = call(
+        &world,
+        globex,
+        Method::GET,
+        "/organizations".to_owned(),
+        None,
+    )
+    .await;
+    let organizations: Vec<&str> = listed["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .filter_map(|organization| organization["id"].as_str())
+        .collect();
+    assert_eq!(organizations, [theirs.as_str()]);
+    let (_, members) = call(
+        &world,
+        globex,
+        Method::GET,
+        format!("/organizations/{theirs}/members"),
+        None,
+    )
+    .await;
+    assert_eq!(members["items"], serde_json::json!([]));
+}
+
+#[tokio::test]
+async fn a_person_deactivated_through_scim_in_one_tenant_stays_signed_in_to_another() {
+    let world = world_with(&[("HODOR_SECRET_KEYS", ROOT_KEY)]).await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    let acme_token = scim_token(&world, acme).await;
+    let (here, _, _) = signed_in(&world, acme).await;
+    let (there, _, _) = signed_in(&world, globex).await;
+
+    // Acme's directory deactivates its person.
+    let (status, _, answer) = scim(
+        &world,
+        acme,
+        &acme_token,
+        Method::PATCH,
+        &format!("/Users/{}", acme.ana),
+        Some(serde_json::json!({
+            "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+            "Operations": [{ "op": "replace", "path": "active", "value": false }]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    assert_eq!(answer["active"], false);
+
+    // Her session in Acme ended; the person with the same address in
+    // Globex is still signed in, and still signs in.
+    let (status, _) = world
+        .with_session_cookie(
+            acme,
+            Method::GET,
+            "/session",
+            &here.cookies[SESSION_COOKIE],
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _) = world
+        .with_session_cookie(
+            globex,
+            Method::GET,
+            "/session",
+            &there.cookies[SESSION_COOKIE],
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, body) = Browser::new(&world.server)
+        .sign_in(globex.slug, EMAIL, PASSWORD)
+        .await;
+    assert_eq!(body["status"], "completed", "{body}");
+    let (_, body) = Browser::new(&world.server)
+        .sign_in(acme.slug, EMAIL, PASSWORD)
+        .await;
+    assert_ne!(body["status"], "completed", "{body}");
+}
+
+#[tokio::test]
+async fn a_service_accounts_api_key_of_one_tenant_means_nothing_in_another() {
+    let world = world_with(&[("HODOR_SECRET_KEYS", ROOT_KEY)]).await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    let (account, _) = service_account_with_a_client(&world, acme).await;
+    let (theirs, _) = service_account_with_a_client(&world, globex).await;
+    let (status, made) = world
+        .admin(
+            acme,
+            &acme.administrator_token,
+            Method::POST,
+            &format!("/service-accounts/{account}/api-keys"),
+            Some(serde_json::json!({ "name": "Reports", "scopes": ["users:read"] })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{made}");
+    let key = made["api_key"].as_str().expect("the key").to_owned();
+    let key_id = made["id"].as_str().expect("id").to_owned();
+    AuthorizationService::new(
+        Arc::new(world.database.app().clone()),
+        Arc::new(PgRoleAssignmentStore),
+        Arc::new(SystemClock),
+    )
+    .assign(
+        &acme.context,
+        account.parse().expect("an identifier"),
+        Role::TenantAuditor,
+        Caller::system(),
+    )
+    .await
+    .expect("a role");
+    let (status, _) = world.admin(acme, &key, Method::GET, "/users", None).await;
+    assert_eq!(status, StatusCode::OK, "it works where it belongs");
+
+    // Presented to Globex, at its administration interface and at its
+    // Authorization API, it is not known.
+    let (status, body) = world.admin(globex, &key, Method::GET, "/users", None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["code"], "admin.not_authenticated");
+    let response = Client::new()
+        .post(format!(
+            "{}/t/{}/api/v1/authorization/evaluate",
+            world.server.base, globex.slug
+        ))
+        .bearer_auth(&key)
+        .json(&serde_json::json!({
+            "subject": { "type": "user", "id": account },
+            "resource": { "type": "export", "id": "1" },
+            "action": "read"
+        }))
+        .send()
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    // Globex's administrator cannot list, rotate or revoke it, under
+    // Acme's workload or its own.
+    let globex_token = &globex.administrator_token;
+    for (method, path) in [
+        (Method::GET, format!("/service-accounts/{account}/api-keys")),
+        (
+            Method::POST,
+            format!("/service-accounts/{account}/api-keys/{key_id}:rotate"),
+        ),
+        (
+            Method::DELETE,
+            format!("/service-accounts/{account}/api-keys/{key_id}"),
+        ),
+        (
+            Method::POST,
+            format!("/service-accounts/{theirs}/api-keys/{key_id}:rotate"),
+        ),
+        (
+            Method::DELETE,
+            format!("/service-accounts/{theirs}/api-keys/{key_id}"),
+        ),
+    ] {
+        let (status, body) = world
+            .admin(globex, globex_token, method.clone(), &path, None)
+            .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{method} {path}");
+        assert!(
+            body["code"] == "identity.workload_not_found"
+                || body["code"] == "credential.api_key_not_found",
+            "{method} {path}: {body}"
+        );
+    }
+
+    // Nor make one for Acme's workload.
+    let (status, body) = world
+        .admin(
+            globex,
+            globex_token,
+            Method::POST,
+            &format!("/service-accounts/{account}/api-keys"),
+            Some(serde_json::json!({ "name": "Mine now", "scopes": ["users:read"] })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(body["code"], "identity.workload_not_found");
+    let (_, keys) = world
+        .admin(
+            acme,
+            &acme.administrator_token,
+            Method::GET,
+            &format!("/service-accounts/{account}/api-keys"),
+            None,
+        )
+        .await;
+    assert_eq!(keys["items"].as_array().map(Vec::len), Some(1), "{keys}");
+
+    // And it still works where it belongs.
+    let (status, _) = world.admin(acme, &key, Method::GET, "/users", None).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+/// The person's access token in a tenant, from a code of its third-party
+/// application, which they agree to.
+async fn person_access_token(world: &World, tenant: &Tenant) -> String {
+    let (client, secret) = third_party_client(world, tenant).await;
+    let mut browser = Browser::not_following(&world.server);
+    let (_, body) = browser.sign_in(tenant.slug, EMAIL, PASSWORD).await;
+    assert_eq!(body["status"], "completed", "{body}");
+    let (status, _, _) = browser
+        .navigate(Method::GET, &authorize_path(tenant.slug, &client), None)
+        .await;
+    assert_eq!(status, StatusCode::FOUND);
+    let (status, question) = browser
+        .send(
+            Method::GET,
+            &format!("/t/{}/interaction/consent", tenant.slug),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{question}");
+    let (status, answer) = browser
+        .send(
+            Method::POST,
+            &format!("/t/{}/interaction/consent", tenant.slug),
+            Some(serde_json::json!({ "decision": "allow" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    let (_, location, _) = browser
+        .navigate(
+            Method::GET,
+            &format!("/t/{}/oauth2/authorize/resume", tenant.slug),
+            None,
+        )
+        .await;
+    let location = location.expect("a redirect");
+    let (_, query) = location.split_once('?').expect("a query");
+    let code = form_urlencoded::parse(query.as_bytes())
+        .find(|(name, _)| name == "code")
+        .expect("a code")
+        .1
+        .into_owned();
+    let (status, tokens) = oauth_form(
+        world,
+        tenant,
+        "token",
+        (&client, &secret),
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", code.as_str()),
+            ("redirect_uri", REDIRECT),
+            ("code_verifier", VERIFIER),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{tokens}");
+    tokens["access_token"].as_str().expect("access").to_owned()
+}
+
+/// An agent of the tenant with a client that exchanges the person's
+/// tokens for the invoices interface, and the agent's own token. Answers
+/// the client's identifier and secret and the agent's token.
+async fn agent_with_its_token(world: &World, tenant: &Tenant) -> ((String, String), String) {
+    let token = &tenant.administrator_token;
+    let (status, agent) = world
+        .admin(
+            tenant,
+            token,
+            Method::POST,
+            "/agents",
+            Some(serde_json::json!({ "name": "Assistant", "owners": [tenant.ana.to_string()] })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{agent}");
+    let (_, application) = world
+        .admin(
+            tenant,
+            token,
+            Method::POST,
+            "/applications",
+            Some(serde_json::json!({ "name": "Assistant", "first_party": true })),
+        )
+        .await;
+    let (status, client) = world
+        .admin(
+            tenant,
+            token,
+            Method::POST,
+            &format!(
+                "/applications/{}/clients",
+                application["id"].as_str().expect("id")
+            ),
+            Some(serde_json::json!({
+                "name": "Assistant", "type": "confidential",
+                "grant_types": [
+                    "client_credentials", "urn:ietf:params:oauth:grant-type:token-exchange"
+                ],
+                "allowed_scopes": ["invoices:read"],
+                "principal": agent["id"],
+                "exchange_rules": [{ "subject_audience": AUDIENCE, "audience": AUDIENCE }]
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{client}");
+    let pair = (
+        client["id"].as_str().expect("id").to_owned(),
+        client["client_secret"].as_str().expect("secret").to_owned(),
+    );
+    let (status, own) = oauth_form(
+        world,
+        tenant,
+        "token",
+        (&pair.0, &pair.1),
+        &[("grant_type", "client_credentials")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{own}");
+    (
+        pair,
+        own["access_token"].as_str().expect("token").to_owned(),
+    )
+}
+
+#[tokio::test]
+async fn a_token_of_one_tenant_is_refused_by_another_as_subject_and_as_actor_of_an_exchange() {
+    let world = world_with(&[("HODOR_SECRET_KEYS", ROOT_KEY)]).await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    let acme_person = person_access_token(&world, acme).await;
+    let globex_person = person_access_token(&world, globex).await;
+    let (acme_agent, acme_actor) = agent_with_its_token(&world, acme).await;
+    let (globex_agent, globex_actor) = agent_with_its_token(&world, globex).await;
+    let exchange = |subject: &str, actor: &str| {
+        vec![
+            (
+                "grant_type".to_owned(),
+                "urn:ietf:params:oauth:grant-type:token-exchange".to_owned(),
+            ),
+            ("subject_token".to_owned(), subject.to_owned()),
+            (
+                "subject_token_type".to_owned(),
+                "urn:ietf:params:oauth:token-type:access_token".to_owned(),
+            ),
+            ("actor_token".to_owned(), actor.to_owned()),
+            (
+                "actor_token_type".to_owned(),
+                "urn:ietf:params:oauth:token-type:access_token".to_owned(),
+            ),
+            ("audience".to_owned(), AUDIENCE.to_owned()),
+        ]
+    };
+
+    // Where they belong, the exchange works.
+    let pairs = exchange(&acme_person, &acme_actor);
+    let pairs: Vec<(&str, &str)> = pairs
+        .iter()
+        .map(|(n, v)| (n.as_str(), v.as_str()))
+        .collect();
+    let (status, body) = oauth_form(
+        &world,
+        acme,
+        "token",
+        (&acme_agent.0, &acme_agent.1),
+        &pairs,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // Globex's agent presents Acme's person as subject, or Acme's agent's
+    // token as actor: each is refused.
+    for (subject, actor) in [
+        (acme_person.as_str(), globex_actor.as_str()),
+        (globex_person.as_str(), acme_actor.as_str()),
+    ] {
+        let form = exchange(subject, actor);
+        let pairs: Vec<(&str, &str)> = form.iter().map(|(n, v)| (n.as_str(), v.as_str())).collect();
+        let (status, body) = oauth_form(
+            &world,
+            globex,
+            "token",
+            (&globex_agent.0, &globex_agent.1),
+            &pairs,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"], "invalid_request", "{body}");
+    }
+    // And Globex's own pair works there, so the refusals were the tenant's.
+    let form = exchange(&globex_person, &globex_actor);
+    let pairs: Vec<(&str, &str)> = form.iter().map(|(n, v)| (n.as_str(), v.as_str())).collect();
+    let (status, body) = oauth_form(
+        &world,
+        globex,
+        "token",
+        (&globex_agent.0, &globex_agent.1),
+        &pairs,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+/// The documents of a tenant, answered by the native engine, the same in
+/// both tenants: a resource server with the permission `document:read`,
+/// and a client allowed to ask the tenant's Authorization API. Answers
+/// the resource server and the client's identifier and secret.
+async fn shared_documents(world: &World, tenant: &Tenant) -> (String, (String, String)) {
+    let api = created(
+        world,
+        tenant,
+        "/applications",
+        serde_json::json!({ "name": "Authorization API", "first_party": true }),
+    )
+    .await;
+    created(
+        world,
+        tenant,
+        "/resource-servers",
+        serde_json::json!({
+            "application_id": api, "audience": "urn:hodor:authorization",
+            "name": "Authorization API",
+            "scopes": [{ "name": "authz:evaluate", "description": "Ask" }]
+        }),
+    )
+    .await;
+    let application = created(
+        world,
+        tenant,
+        "/applications",
+        serde_json::json!({ "name": "Documents", "first_party": true }),
+    )
+    .await;
+    let server = created(
+        world,
+        tenant,
+        "/resource-servers",
+        serde_json::json!({
+            "application_id": application, "audience": "urn:example:documents",
+            "name": "Documents"
+        }),
+    )
+    .await;
+    for (path, body) in [
+        (
+            format!("/resource-servers/{server}/permissions/document:read"),
+            serde_json::json!({ "description": "Read" }),
+        ),
+        (
+            format!("/resource-servers/{server}/binding"),
+            serde_json::json!({ "engine": "native" }),
+        ),
+    ] {
+        let (status, body) = call(world, tenant, Method::PUT, path.clone(), Some(body)).await;
+        assert!(status.is_success(), "{path}: {status} {body}");
+    }
+    let (status, client) = call(
+        world,
+        tenant,
+        Method::POST,
+        format!("/applications/{application}/clients"),
+        Some(serde_json::json!({
+            "name": "Documents back end", "type": "confidential",
+            "grant_types": ["client_credentials"], "allowed_scopes": ["authz:evaluate"]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{client}");
+    (
+        server,
+        (
+            client["id"].as_str().expect("id").to_owned(),
+            client["client_secret"].as_str().expect("secret").to_owned(),
+        ),
+    )
+}
+
+/// Whether the tenant's Authorization API lets `subject` read `document`,
+/// asked with a token of the tenant's own client.
+async fn reads_document(
+    world: &World,
+    tenant: &Tenant,
+    client: &(String, String),
+    subject: &str,
+    document: &str,
+) -> String {
+    let (status, issued) = oauth_form(
+        world,
+        tenant,
+        "token",
+        (&client.0, &client.1),
+        &[
+            ("grant_type", "client_credentials"),
+            ("resource", "urn:hodor:authorization"),
+            ("scope", "authz:evaluate"),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{issued}");
+    let response = Client::new()
+        .post(format!(
+            "{}/t/{}/api/v1/authorization/evaluate",
+            world.server.base, tenant.slug
+        ))
+        .bearer_auth(issued["access_token"].as_str().expect("a token"))
+        .json(&serde_json::json!({
+            "subject": { "type": "user", "id": subject },
+            "resource": { "type": "document", "id": document },
+            "action": "read"
+        }))
+        .send()
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let answer: serde_json::Value = response.json().await.expect("JSON");
+    answer["decision"].as_str().unwrap_or_default().to_owned()
+}
+
+#[tokio::test]
+async fn one_tenants_access_control_lists_are_never_read_or_reached_from_another() {
+    let world = world_with(&[("HODOR_SECRET_KEYS", ROOT_KEY)]).await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    let (acme_server, acme_client) = shared_documents(&world, acme).await;
+    let (globex_server, globex_client) = shared_documents(&world, globex).await;
+    let ana = acme.ana.to_string();
+    let entry = created(
+        &world,
+        acme,
+        &format!("/resource-servers/{acme_server}/access-entries"),
+        serde_json::json!({
+            "permission": "document:read", "resource_id": "d-42",
+            "principal": { "kind": "user", "id": ana }
+        }),
+    )
+    .await;
+    let finance = created(
+        &world,
+        acme,
+        "/groups",
+        serde_json::json!({ "name": "finance" }),
+    )
+    .await;
+    assert_eq!(
+        reads_document(&world, acme, &acme_client, &ana, "d-42").await,
+        "ALLOW"
+    );
+
+    // Globex asks about the same resource server, permission, resource
+    // and principal: Acme's entry is never read there.
+    assert_eq!(
+        reads_document(&world, globex, &globex_client, &ana, "d-42").await,
+        "DENY"
+    );
+
+    // Globex's administrator names Acme's entry: no such entry.
+    for method in [Method::GET, Method::DELETE] {
+        let (status, body) = call(
+            &world,
+            globex,
+            method.clone(),
+            format!("/access-entries/{entry}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{method}");
+        assert_eq!(body["code"], "authorization.access_entry_not_found");
+    }
+    // Nor Acme's resource server, nor Acme's person or group as the
+    // principal of an entry of its own.
+    let (status, body) = call(
+        &world,
+        globex,
+        Method::GET,
+        format!("/resource-servers/{acme_server}/access-entries"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    for (principal, code) in [
+        (
+            serde_json::json!({ "kind": "user", "id": ana }),
+            "identity.user_not_found",
+        ),
+        (
+            serde_json::json!({ "kind": "group", "id": finance }),
+            "identity.group_not_found",
+        ),
+    ] {
+        let (status, body) = call(
+            &world,
+            globex,
+            Method::POST,
+            format!("/resource-servers/{globex_server}/access-entries"),
+            Some(serde_json::json!({
+                "permission": "document:read", "resource_id": "d-42", "principal": principal
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+        assert_eq!(body["code"], code);
+    }
+    let (status, theirs) = call(
+        &world,
+        globex,
+        Method::GET,
+        format!("/resource-servers/{globex_server}/access-entries"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(theirs["items"], serde_json::json!([]));
+
+    // Everything still stands where it belongs.
+    let (status, kept) = call(
+        &world,
+        acme,
+        Method::GET,
+        format!("/access-entries/{entry}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(kept["resource_id"], "d-42");
+    assert_eq!(
+        reads_document(&world, acme, &acme_client, &ana, "d-42").await,
+        "ALLOW"
+    );
+}
+
+/// Where both tenants' endpoints point: a development exception nothing
+/// listens on, since no delivery is sent in this suite.
+const RECEIVER: &str = "127.0.0.1:9";
+
+/// Registers an endpoint of a tenant subscribed to `session.started`, and
+/// answers its identifier and what the answer said of its secrets.
+async fn endpoint_of(world: &World, tenant: &Tenant) -> (String, serde_json::Value) {
+    let (status, made) = world
+        .admin(
+            tenant,
+            &tenant.administrator_token,
+            Method::POST,
+            "/webhook-endpoints",
+            Some(serde_json::json!({
+                "url": format!("http://{RECEIVER}/{}", tenant.slug),
+                "event_types": ["session.started"],
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{made}");
+    (
+        made["endpoint"]["id"].as_str().expect("id").to_owned(),
+        made["endpoint"]["secrets"].clone(),
+    )
+}
+
+/// Does the worker's part for webhooks: every waiting event goes to the
+/// audit log and is fanned out to the endpoints subscribed to it.
+async fn fan_out(world: &World) {
+    let audit = AuditService::new(
+        Arc::new(world.database.app().clone()),
+        Arc::new(PgAuditLog),
+        Arc::new(Sha256Digest),
+        Arc::new(SystemClock),
+    );
+    let dispatcher = OutboxDispatcher::new(
+        world.database.platform().clone(),
+        world.database.app().clone(),
+        vec![
+            Arc::new(AuditHandler::new(audit)),
+            Arc::new(WebhookFanOut::new(
+                Arc::new(PgEndpointStore),
+                Arc::new(PgDeliveryStore),
+                Arc::new(SystemClock),
+            )),
+        ],
+    );
+    while dispatcher
+        .dispatch_batch(100)
+        .await
+        .expect("dispatch")
+        .delivered
+        > 0
+    {}
+}
+
+#[tokio::test]
+async fn one_tenants_webhooks_and_their_deliveries_are_out_of_reach_of_another() {
+    let world = world_with(&[
+        ("HODOR_SECRET_KEYS", ROOT_KEY),
+        ("HODOR_OUTBOUND_DEVELOPMENT_HOSTS", RECEIVER),
+    ])
+    .await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    let (endpoint, secrets) = endpoint_of(&world, acme).await;
+    let (theirs, _) = endpoint_of(&world, globex).await;
+
+    // The person signs in to Acme: the event is Acme's, and only Acme's
+    // endpoint gets a delivery of it, though Globex's is subscribed to the
+    // same type.
+    signed_in(&world, acme).await;
+    fan_out(&world).await;
+    let (status, listed) = world
+        .admin(
+            acme,
+            &acme.administrator_token,
+            Method::GET,
+            &format!("/webhook-deliveries?endpoint_id={endpoint}"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    let deliveries = listed["items"].as_array().expect("items").clone();
+    assert_eq!(deliveries.len(), 1, "{listed}");
+    assert_eq!(deliveries[0]["event_type"], "session.started");
+    let delivery = deliveries[0]["id"].as_str().expect("id").to_owned();
+    let globex_token = &globex.administrator_token;
+    let (_, theirs_listed) = world
+        .admin(
+            globex,
+            globex_token,
+            Method::GET,
+            "/webhook-deliveries",
+            None,
+        )
+        .await;
+    assert_eq!(
+        theirs_listed["items"],
+        serde_json::json!([]),
+        "{theirs_listed}"
+    );
+
+    // Globex's administrator names Acme's endpoint and Acme's delivery.
+    for (method, path, body) in [
+        (Method::GET, format!("/webhook-endpoints/{endpoint}"), None),
+        (
+            Method::PUT,
+            format!("/webhook-endpoints/{endpoint}/subscriptions"),
+            Some(serde_json::json!({ "event_types": ["identity.user_created"] })),
+        ),
+        (
+            Method::POST,
+            format!("/webhook-endpoints/{endpoint}:rotate-secret"),
+            None,
+        ),
+        (
+            Method::DELETE,
+            format!("/webhook-endpoints/{endpoint}"),
+            None,
+        ),
+        (
+            Method::POST,
+            format!("/webhook-deliveries/{delivery}:redeliver"),
+            None,
+        ),
+    ] {
+        let (status, answer) = world
+            .admin(globex, globex_token, method.clone(), &path, body)
+            .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{method} {path}: {answer}");
+        assert!(
+            answer["code"] == "webhooks.endpoint_not_found"
+                || answer["code"] == "webhooks.delivery_not_found",
+            "{method} {path}: {answer}"
+        );
+    }
+    let (status, named) = world
+        .admin(
+            globex,
+            globex_token,
+            Method::GET,
+            &format!("/webhook-deliveries?endpoint_id={endpoint}"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(named["items"], serde_json::json!([]), "{named}");
+    let (_, endpoints) = world
+        .admin(
+            globex,
+            globex_token,
+            Method::GET,
+            "/webhook-endpoints",
+            None,
+        )
+        .await;
+    let ids: Vec<&str> = endpoints["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .filter_map(|item| item["id"].as_str())
+        .collect();
+    assert_eq!(ids, [theirs.as_str()], "only its own endpoint");
+
+    // Acme's endpoint, its secret and its delivery are as they were.
+    let (status, kept) = world
+        .admin(
+            acme,
+            &acme.administrator_token,
+            Method::GET,
+            &format!("/webhook-endpoints/{endpoint}"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(kept["event_types"], serde_json::json!(["session.started"]));
+    assert_eq!(kept["secrets"], secrets);
+    let (_, still) = world
+        .admin(
+            acme,
+            &acme.administrator_token,
+            Method::GET,
+            &format!("/webhook-deliveries?endpoint_id={endpoint}"),
+            None,
+        )
+        .await;
+    assert_eq!(still["items"], listed["items"]);
+}
+
+/// Turns on both ways of signing in by email in a tenant.
+async fn offer_by_email(world: &World, tenant: &Tenant) {
+    let tenants = TenantService::new(
+        Arc::new(world.database.app().clone()),
+        Arc::new(PgTenantRepository),
+        Arc::new(PgTenantDirectory::new(world.database.app().clone())),
+        Arc::new(SystemClock),
+    );
+    let mut settings = tenants
+        .get(&tenant.context)
+        .await
+        .expect("tenant")
+        .snapshot()
+        .settings
+        .clone();
+    settings.authentication.email_sign_in.code = true;
+    settings.authentication.email_sign_in.link = true;
+    tenants
+        .change_settings(&tenant.context, settings, Caller::system())
+        .await
+        .expect("settings");
+}
+
+/// A browser that started a sign-in in a tenant and asked for `step` for
+/// the shared address, and what the message carries.
+async fn asked_by_email(
+    world: &World,
+    tenant: &Tenant,
+    step: &str,
+    variable: &str,
+) -> (Browser, String) {
+    let mut browser = Browser::new(&world.server);
+    browser
+        .send(
+            Method::POST,
+            &format!("/t/{}/interaction/sign-in", tenant.slug),
+            None,
+        )
+        .await;
+    let (status, _) = browser
+        .send(
+            Method::POST,
+            &format!("/t/{}/interaction/sign-in/steps/{step}/send", tenant.slug),
+            Some(serde_json::json!({ "email": EMAIL })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let sent: String = sqlx::query_scalar(
+        "SELECT variables->>$2 FROM notification.message
+         WHERE tenant_id = $1 AND variables ? $2
+         ORDER BY created_at DESC, id DESC LIMIT 1",
+    )
+    .bind(tenant.context.tenant_id().as_uuid())
+    .bind(variable)
+    .fetch_one(world.database.owner())
+    .await
+    .expect("a message");
+    let sent = match variable {
+        "link" => sent.split_once("#token=").expect("a token").1.to_owned(),
+        _ => sent,
+    };
+    (browser, sent)
+}
+
+async fn present_by_email(
+    browser: &mut Browser,
+    tenant: &Tenant,
+    step: &str,
+    field: &str,
+    value: &str,
+) -> (StatusCode, serde_json::Value) {
+    browser
+        .send(
+            Method::POST,
+            &format!("/t/{}/interaction/sign-in/steps/{step}", tenant.slug),
+            Some(serde_json::json!({ field: value })),
+        )
+        .await
+}
+
+#[tokio::test]
+async fn a_code_or_a_link_sent_in_one_tenant_signs_nobody_in_at_another() {
+    let world = world().await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    offer_by_email(&world, acme).await;
+    offer_by_email(&world, globex).await;
+
+    for (step, field, variable) in [
+        ("email_code", "code", "code"),
+        ("email_link", "token", "link"),
+    ] {
+        let (mut in_acme, acme_sent) = asked_by_email(&world, acme, step, variable).await;
+        // Globex's own sign-in asked for the same address.
+        let (mut in_globex, globex_sent) = asked_by_email(&world, globex, step, variable).await;
+
+        // Acme's code or token, presented to Globex's sign-in.
+        if acme_sent != globex_sent {
+            let (_, body) = present_by_email(&mut in_globex, globex, step, field, &acme_sent).await;
+            assert_eq!(body["status"], "rejected", "{step}: {body}");
+        }
+        // Acme's browser, cookie and CSRF token, on Globex's path.
+        let (status, body) = present_by_email(&mut in_acme, globex, step, field, &acme_sent).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{step}");
+        assert_eq!(body["code"], "authentication.transaction_not_found");
+        assert!(!in_globex.cookies.contains_key(SESSION_COOKIE));
+
+        // Each still signs its own person in where it belongs.
+        for (browser, tenant, sent, person) in [
+            (&mut in_acme, acme, &acme_sent, acme.ana),
+            (&mut in_globex, globex, &globex_sent, globex.ana),
+        ] {
+            let (_, body) = present_by_email(browser, tenant, step, field, sent).await;
+            assert_eq!(body["status"], "completed", "{step}: {body}");
+            let (_, who) = browser
+                .send(
+                    Method::GET,
+                    &format!("/t/{}/interaction/session", tenant.slug),
+                    None,
+                )
+                .await;
+            assert_eq!(who["user_id"], person.to_string());
+        }
+    }
+}
+
+/// Makes a tenant require a second factor of everyone who signs in.
+async fn require_second_factor(world: &World, tenant: &Tenant) {
+    let tenants = TenantService::new(
+        Arc::new(world.database.app().clone()),
+        Arc::new(PgTenantRepository),
+        Arc::new(PgTenantDirectory::new(world.database.app().clone())),
+        Arc::new(SystemClock),
+    );
+    let mut settings = tenants
+        .get(&tenant.context)
+        .await
+        .expect("tenant")
+        .snapshot()
+        .settings
+        .clone();
+    settings.authentication.second_factor = hodor_tenant::api::SecondFactorPolicy::Required;
+    tenants
+        .change_settings(&tenant.context, settings, Caller::system())
+        .await
+        .expect("settings");
+}
+
+async fn enrollment(
+    browser: &mut Browser,
+    tenant: &Tenant,
+    what: &str,
+    body: serde_json::Value,
+) -> (StatusCode, serde_json::Value) {
+    browser
+        .send(
+            Method::POST,
+            &format!(
+                "/t/{}/interaction/sign-in/steps/enrollment{what}",
+                tenant.slug
+            ),
+            Some(body),
+        )
+        .await
+}
+
+#[tokio::test]
+async fn an_enrollment_begun_in_one_tenant_cannot_be_finished_in_another() {
+    use hodor_adapters_crypto::testing::webauthn::SoftwareAuthenticator;
+    let world = world_with(&[("HODOR_SECRET_KEYS", ROOT_KEY)]).await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    require_second_factor(&world, acme).await;
+    require_second_factor(&world, globex).await;
+
+    // In Acme, the shared person reaches the enrollment step and begins
+    // an application.
+    let (mut in_acme, body) = waiting_after_password(&world, acme).await;
+    assert_eq!(body["step"], "enrollment", "{body}");
+    let (status, application) = enrollment(
+        &mut in_acme,
+        acme,
+        "/options",
+        serde_json::json!({ "kind": "authenticator_application" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{application}");
+    let acme_secret = support::base32(application["secret"].as_str().expect("secret"));
+
+    // Acme's sign-in does not exist at Globex, whatever is asked of it.
+    let mut carried = Browser::new(&world.server);
+    carried.cookies = in_acme.cookies.clone();
+    carried.csrf_token = in_acme.csrf_token.clone();
+    for (what, body) in [
+        (
+            "/options",
+            serde_json::json!({ "kind": "authenticator_application" }),
+        ),
+        (
+            "",
+            serde_json::json!({ "code": application_code(&acme_secret, 0) }),
+        ),
+    ] {
+        let (status, body) = enrollment(&mut carried, globex, what, body).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+        assert_eq!(body["code"], "authentication.transaction_not_found");
+    }
+
+    // Globex's own sign-in of the same person has begun nothing: the code
+    // of Acme's secret, and the answer to a registration Acme began, are
+    // rejections there.
+    let (mut in_globex, body) = waiting_after_password(&world, globex).await;
+    assert_eq!(body["step"], "enrollment", "{body}");
+    let (_, body) = enrollment(
+        &mut in_globex,
+        globex,
+        "",
+        serde_json::json!({ "code": application_code(&acme_secret, 0) }),
+    )
+    .await;
+    assert_eq!(body["status"], "rejected", "{body}");
+    let (status, begun) = enrollment(
+        &mut in_acme,
+        acme,
+        "/options",
+        serde_json::json!({ "kind": "security_key" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{begun}");
+    // The relying party of the server, as `HODOR_PUBLIC_URL` leaves it.
+    let key = SoftwareAuthenticator::new("http://localhost:8080");
+    let acme_answer = key.register(&begun["public_key"]);
+    let (status, _) = enrollment(
+        &mut in_globex,
+        globex,
+        "/options",
+        serde_json::json!({ "kind": "security_key" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, body) = enrollment(&mut in_globex, globex, "", acme_answer.clone()).await;
+    assert_eq!(body["status"], "rejected", "{body}");
+
+    // Acme finishes its own, and its factor means nothing at Globex: the
+    // person there still has none, and sets one up of Globex's own.
+    let (_, body) = enrollment(&mut in_acme, acme, "", acme_answer).await;
+    assert_eq!(body["status"], "completed", "{body}");
+    let (_, body) = enrollment(
+        &mut in_globex,
+        globex,
+        "/options",
+        serde_json::json!({ "kind": "authenticator_application" }),
+    )
+    .await;
+    let globex_secret = support::base32(body["secret"].as_str().expect("secret"));
+    assert_ne!(globex_secret, acme_secret);
+    let (_, body) = enrollment(
+        &mut in_globex,
+        globex,
+        "",
+        serde_json::json!({ "code": application_code(&globex_secret, 0) }),
+    )
+    .await;
+    assert_eq!(body["status"], "completed", "{body}");
+
+    // Each tenant asks for its own factor at the next sign-in.
+    let (_, body) = waiting_after_password(&world, acme).await;
+    assert_eq!(body["step"], "webauthn", "{body}");
+    let (_, body) = waiting_after_password(&world, globex).await;
+    assert_eq!(body["step"], "totp", "{body}");
+}
+
+#[tokio::test]
+async fn wrong_codes_by_email_in_one_tenant_do_not_lock_the_same_address_out_in_another() {
+    let world = world().await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    offer_by_email(&world, acme).await;
+    offer_by_email(&world, globex).await;
+
+    // Five wrong codes for the shared address in Acme, in two sign-ins,
+    // after which even the right password waits there.
+    for tries in [4, 1] {
+        let (mut browser, sent) = asked_by_email(&world, acme, "email_code", "code").await;
+        let wrong = if sent == "000000" { "000001" } else { "000000" };
+        for _ in 0..tries {
+            let (_, body) = present_by_email(&mut browser, acme, "email_code", "code", wrong).await;
+            assert_eq!(body["status"], "rejected", "{body}");
+        }
+    }
+    let (status, body) = Browser::new(&world.server)
+        .sign_in(acme.slug, EMAIL, PASSWORD)
+        .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+    assert_eq!(body["code"], "authentication.too_many_attempts");
+
+    // The person with the same address in Globex signs in at once, with
+    // the password and with a code.
+    let (status, body) = Browser::new(&world.server)
+        .sign_in(globex.slug, EMAIL, PASSWORD)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["status"], "completed", "{body}");
+    let (mut browser, sent) = asked_by_email(&world, globex, "email_code", "code").await;
+    let (_, body) = present_by_email(&mut browser, globex, "email_code", "code", &sent).await;
+    assert_eq!(body["status"], "completed", "{body}");
+}
+
+/// A first-party client of a new application of `tenant` that is told
+/// when a session it signed a person in with ends.
+async fn client_told_of_sign_outs(world: &World, tenant: &Tenant, address: &str) -> String {
+    use hodor_adapters_postgres::{PgApplicationStore, PgClientStore, PgResourceServerStore};
+    use hodor_oauth::api::{
+        ApplicationPorts, ApplicationService, ApplicationSettings, ClientSettings, ClientType,
+        CreateClient, GrantType,
+    };
+    let applications = ApplicationService::new(ApplicationPorts {
+        units_of_work: Arc::new(world.database.app().clone()),
+        applications: Arc::new(PgApplicationStore),
+        clients: Arc::new(PgClientStore),
+        resource_servers: Arc::new(PgResourceServerStore),
+        digest: Arc::new(Sha256Digest),
+        random: Arc::new(OsRandom),
+        clock: Arc::new(SystemClock),
+    })
+    .with_destinations(Arc::new(hodor_oauth::testing::FakeDestinations));
+    let application = applications
+        .create_application(
+            &tenant.context,
+            ApplicationSettings {
+                name: "Billing".to_owned(),
+                first_party: true,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("application");
+    let mut settings = ClientSettings::new(
+        "Billing web",
+        ClientType::Confidential,
+        vec![GrantType::AuthorizationCode],
+        vec![REDIRECT.to_owned()],
+    );
+    settings.allowed_scopes = vec!["openid".to_owned()];
+    settings.backchannel_logout_uri = Some(address.to_owned());
+    applications
+        .create_client(
+            &tenant.context,
+            CreateClient {
+                application_id: application.id(),
+                client_type: ClientType::Confidential,
+                settings,
+                secret_lifetime: None,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("client")
+        .0
+        .id()
+        .to_string()
+}
+
+/// The person signs in to `tenant` and is sent back to `client` with a
+/// code; answers the browser, still signed in.
+async fn signed_in_to(world: &World, tenant: &Tenant, client: &str) -> Browser {
+    let mut browser = Browser::not_following(&world.server);
+    let (_, body) = browser.sign_in(tenant.slug, EMAIL, PASSWORD).await;
+    assert_eq!(body["status"], "completed", "{body}");
+    let challenge = hodor_oauth::api::s256_challenge(VERIFIER, &Sha256Digest);
+    let path = format!(
+        "/t/{}/oauth2/authorize?{}",
+        tenant.slug,
+        form_urlencoded::Serializer::new(String::new())
+            .extend_pairs([
+                ("response_type", "code"),
+                ("client_id", client),
+                ("redirect_uri", REDIRECT),
+                ("scope", "openid"),
+                ("code_challenge", challenge.as_str()),
+                ("code_challenge_method", "S256"),
+            ])
+            .finish()
+    );
+    let (status, location, _) = browser.navigate(Method::GET, &path, None).await;
+    assert_eq!(status, StatusCode::FOUND);
+    assert!(
+        location
+            .as_deref()
+            .is_some_and(|location| location.starts_with(REDIRECT) && location.contains("code=")),
+        "{location:?}"
+    );
+    browser
+}
+
+#[tokio::test]
+async fn a_sign_out_in_one_tenant_tells_none_of_another_tenants_clients() {
+    let world = world().await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    let acme_client =
+        client_told_of_sign_outs(&world, acme, "https://billing.acme.example/logout").await;
+    let globex_client =
+        client_told_of_sign_outs(&world, globex, "https://billing.globex.example/logout").await;
+    let mut in_acme = signed_in_to(&world, acme, &acme_client).await;
+    let _in_globex = signed_in_to(&world, globex, &globex_client).await;
+
+    // Signing out, as the account page does: with the session's CSRF
+    // token.
+    let (status, _) = in_acme
+        .send(Method::GET, "/t/acme/interaction/session", None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = in_acme
+        .send(Method::DELETE, "/t/acme/interaction/session", None)
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // The worker's part: the outbox hands the end of the session to the
+    // OAuth context, in the session's tenant.
+    let dispatcher = OutboxDispatcher::new(
+        world.database.platform().clone(),
+        world.database.app().clone(),
+        vec![Arc::new(hodor_oauth::api::BackChannelLogoutFanOut::new(
+            Arc::new(hodor_adapters_postgres::PgSessionClients),
+            Arc::new(hodor_adapters_postgres::PgClientStore),
+            Arc::new(hodor_adapters_postgres::PgApplicationStore),
+            Arc::new(hodor_adapters_postgres::PgLogoutDeliveryStore),
+            Arc::new(SystemClock),
+        ))],
+    );
+    while dispatcher
+        .dispatch_batch(100)
+        .await
+        .expect("dispatch")
+        .delivered
+        > 0
+    {}
+    let made: Vec<(String, String)> =
+        sqlx::query_as("SELECT tenant_id::text, client_id::text FROM oauth.logout_delivery")
+            .fetch_all(world.database.owner())
+            .await
+            .expect("deliveries");
+    assert_eq!(
+        made,
+        [(acme.context.tenant_id().to_string(), acme_client)],
+        "Acme's client alone is told; Globex's session goes on"
+    );
+    let ended_in_globex: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM session.session WHERE tenant_id = $1 AND revoked_at IS NOT NULL",
+    )
+    .bind(globex.context.tenant_id().as_uuid())
+    .fetch_one(world.database.owner())
+    .await
+    .expect("sessions");
+    assert_eq!(ended_in_globex, 0);
+}
+
+/// A pairwise client of a new first-party application of `tenant`, whose
+/// sector is the host of `REDIRECT`, and the tokens the person gets from
+/// it. Answers the client's identifier and secret, the tokens, and the
+/// browser, still signed in.
+async fn pairwise_tokens(
+    world: &World,
+    tenant: &Tenant,
+) -> ((String, String), serde_json::Value, Browser) {
+    use hodor_adapters_postgres::{PgApplicationStore, PgClientStore, PgResourceServerStore};
+    use hodor_oauth::api::{
+        ApplicationPorts, ApplicationService, ApplicationSettings, ClientSettings, ClientType,
+        CreateClient, GrantType, SubjectType,
+    };
+    let applications = ApplicationService::new(ApplicationPorts {
+        units_of_work: Arc::new(world.database.app().clone()),
+        applications: Arc::new(PgApplicationStore),
+        clients: Arc::new(PgClientStore),
+        resource_servers: Arc::new(PgResourceServerStore),
+        digest: Arc::new(Sha256Digest),
+        random: Arc::new(OsRandom),
+        clock: Arc::new(SystemClock),
+    });
+    let application = applications
+        .create_application(
+            &tenant.context,
+            ApplicationSettings {
+                name: "Travel".to_owned(),
+                first_party: true,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("application");
+    let mut settings = ClientSettings::new(
+        "Travel web",
+        ClientType::Confidential,
+        vec![GrantType::AuthorizationCode],
+        vec![REDIRECT.to_owned()],
+    );
+    settings.allowed_scopes = vec!["openid".to_owned()];
+    settings.subject_type = SubjectType::Pairwise;
+    let (client, secret) = applications
+        .create_client(
+            &tenant.context,
+            CreateClient {
+                application_id: application.id(),
+                client_type: ClientType::Confidential,
+                settings,
+                secret_lifetime: None,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("client");
+    let pair = (
+        client.id().to_string(),
+        secret.expect("a secret").expose().to_owned(),
+    );
+    let mut browser = Browser::not_following(&world.server);
+    let (_, body) = browser.sign_in(tenant.slug, EMAIL, PASSWORD).await;
+    assert_eq!(body["status"], "completed", "{body}");
+    let challenge = hodor_oauth::api::s256_challenge(VERIFIER, &Sha256Digest);
+    let path = format!(
+        "/t/{}/oauth2/authorize?{}",
+        tenant.slug,
+        form_urlencoded::Serializer::new(String::new())
+            .extend_pairs([
+                ("response_type", "code"),
+                ("client_id", pair.0.as_str()),
+                ("redirect_uri", REDIRECT),
+                ("scope", "openid"),
+                ("code_challenge", challenge.as_str()),
+                ("code_challenge_method", "S256"),
+            ])
+            .finish()
+    );
+    let (status, location, _) = browser.navigate(Method::GET, &path, None).await;
+    assert_eq!(status, StatusCode::FOUND);
+    let location = location.expect("a redirect");
+    let (_, query) = location.split_once('?').expect("a query");
+    let code = form_urlencoded::parse(query.as_bytes())
+        .find(|(name, _)| name == "code")
+        .expect("a code")
+        .1
+        .into_owned();
+    let (status, tokens) = oauth_form(
+        world,
+        tenant,
+        "token",
+        (&pair.0, &pair.1),
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", code.as_str()),
+            ("redirect_uri", REDIRECT),
+            ("code_verifier", VERIFIER),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{tokens}");
+    (pair, tokens, browser)
+}
+
+fn id_token_claims(tokens: &serde_json::Value) -> serde_json::Value {
+    use base64::Engine as _;
+    let token = tokens["id_token"].as_str().expect("an ID token");
+    let payload = token.split('.').nth(1).expect("claims");
+    serde_json::from_slice(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(payload)
+            .expect("base64url"),
+    )
+    .expect("JSON")
+}
+
+#[tokio::test]
+async fn one_sector_in_two_tenants_knows_the_same_address_by_two_identifiers() {
+    let world = world_with(&[("HODOR_SECRET_KEYS", ROOT_KEY)]).await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    let (acme_client, in_acme, _) = pairwise_tokens(&world, acme).await;
+    let (globex_client, in_globex, _) = pairwise_tokens(&world, globex).await;
+    let acme_sub = id_token_claims(&in_acme)["sub"].clone();
+    let globex_sub = id_token_claims(&in_globex)["sub"].clone();
+    // The same address, the same sector, two tenants: two identifiers, and
+    // neither is the person's user identifier there.
+    assert_ne!(acme_sub, globex_sub);
+    assert_ne!(acme_sub, acme.ana.to_string());
+    assert_ne!(globex_sub, globex.ana.to_string());
+    let secrets: i64 = sqlx::query_scalar("SELECT count(*) FROM oauth.pairwise_secret")
+        .fetch_one(world.database.owner())
+        .await
+        .expect("secrets");
+    assert_eq!(secrets, 2, "a secret per tenant");
+
+    // Acme's access token: the `sub` of the ID token at Acme's UserInfo,
+    // nothing at Globex's, and not active for Globex's client.
+    let access = in_acme["access_token"].as_str().expect("access");
+    let answer: serde_json::Value = Client::new()
+        .get(format!("{}/t/acme/oauth2/userinfo", world.server.base))
+        .bearer_auth(access)
+        .send()
+        .await
+        .expect("response")
+        .json()
+        .await
+        .expect("JSON");
+    assert_eq!(answer["sub"], acme_sub);
+    assert_eq!(
+        userinfo(&world, globex, access).await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert!(!active(&world, globex, (&globex_client.0, &globex_client.1), access).await);
+    let (status, introspected) = oauth_form(
+        &world,
+        acme,
+        "introspect",
+        (&acme_client.0, &acme_client.1),
+        &[("token", access)],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(introspected["sub"], acme_sub);
+}
+
+/// The end-session endpoint of a tenant, with an ID token as the hint.
+fn end_session_path(slug: &str, hint: &str) -> String {
+    format!(
+        "/t/{slug}/oauth2/logout?{}",
+        form_urlencoded::Serializer::new(String::new())
+            .append_pair("id_token_hint", hint)
+            .finish()
+    )
+}
+
+#[tokio::test]
+async fn a_pairwise_id_token_of_one_tenant_ends_no_session_at_another() {
+    let world = world_with(&[("HODOR_SECRET_KEYS", ROOT_KEY)]).await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    // The person is signed in to a pairwise client of the same sector in
+    // each tenant.
+    let (_, in_acme, mut acme_browser) = pairwise_tokens(&world, acme).await;
+    let (_, _, mut globex_browser) = pairwise_tokens(&world, globex).await;
+    let hint = in_acme["id_token"].as_str().expect("an ID token");
+
+    // Acme's ID token, the hint of Globex's end-session endpoint in the
+    // browser signed in to Globex: not an ID token of Globex, never a
+    // redirect, and Globex's session goes on.
+    let (status, location, body) = globex_browser
+        .navigate(Method::GET, &end_session_path(globex.slug, hint), None)
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(location, None);
+    assert!(
+        body.contains("oauth.logout_id_token_hint_invalid"),
+        "{body}"
+    );
+    let (status, _) = globex_browser
+        .send(Method::GET, "/t/globex/interaction/session", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "Globex's session goes on");
+    // Acme's own browser, carried to Globex's path with its cookies: the
+    // same refusal.
+    let (status, location, _) = acme_browser
+        .navigate(Method::GET, &end_session_path(globex.slug, hint), None)
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(location, None);
+
+    // Where it belongs, its pairwise `sub` and `sid` name the session, which
+    // ends without asking; Globex's still goes on.
+    let (status, location, _) = acme_browser
+        .navigate(Method::GET, &end_session_path(acme.slug, hint), None)
+        .await;
+    assert!(status.is_redirection(), "{status}");
+    assert!(
+        location
+            .as_deref()
+            .is_some_and(|location| !location.contains("/account/sign-out")),
+        "ended without asking: {location:?}"
+    );
+    let (status, _) = acme_browser
+        .send(Method::GET, "/t/acme/interaction/session", None)
+        .await;
+    assert_ne!(status, StatusCode::OK, "Acme's session ended");
+    let (status, _) = globex_browser
+        .send(Method::GET, "/t/globex/interaction/session", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "Globex's session goes on");
+}
+
+/// The ID token and the access token a person gets at a tenant's
+/// first-party client, signed in with the shared address.
+async fn first_party_tokens(
+    world: &World,
+    tenant: &Tenant,
+    client: (&str, &str),
+) -> (serde_json::Value, serde_json::Value) {
+    let mut browser = Browser::not_following(&world.server);
+    let (_, body) = browser.sign_in(tenant.slug, EMAIL, PASSWORD).await;
+    assert_eq!(body["status"], "completed", "{body}");
+    let back = authorized(&mut browser, &authorize_path(tenant.slug, client.0)).await;
+    let code = back.get("code").expect("a code");
+    let (status, tokens) = oauth_form(
+        world,
+        tenant,
+        "token",
+        client,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", code),
+            ("redirect_uri", REDIRECT),
+            ("code_verifier", VERIFIER),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{tokens}");
+    (
+        claims_of(tokens["id_token"].as_str().expect("an ID token")),
+        claims_of(tokens["access_token"].as_str().expect("an access token")),
+    )
+}
+
+#[tokio::test]
+async fn one_tenants_claim_mappers_are_out_of_reach_of_another_and_read_only_their_own_tenant() {
+    let world = world_with(&[("HODOR_SECRET_KEYS", ROOT_KEY)]).await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    let finance = created(
+        &world,
+        acme,
+        "/groups",
+        serde_json::json!({ "name": "finance" }),
+    )
+    .await;
+    let (status, _) = call(
+        &world,
+        acme,
+        Method::POST,
+        format!("/groups/{finance}/members"),
+        Some(serde_json::json!({ "kind": "user", "id": acme.ana.to_string() })),
+    )
+    .await;
+    assert!(status.is_success(), "{status}");
+    let (acme_client, acme_secret) = first_party_client(&world, acme).await;
+    let (globex_client, globex_secret) = first_party_client(&world, globex).await;
+    let mappers = format!("/clients/{acme_client}/claim-mappers");
+    let mapper = created(
+        &world,
+        acme,
+        &mappers,
+        serde_json::json!({
+            "claim": "in_finance",
+            "targets": ["id_token", "access_token"],
+            "source": { "kind": "group_member", "group_id": finance },
+        }),
+    )
+    .await;
+
+    // Globex's administrator, naming Acme's client and mapper at Globex,
+    // finds no such client.
+    let replacement = serde_json::json!({
+        "claim": "plan",
+        "targets": ["userinfo"],
+        "source": { "kind": "constant", "value": "gold" },
+    });
+    for (method, path, body) in [
+        (Method::GET, mappers.clone(), None),
+        (Method::POST, mappers.clone(), Some(replacement.clone())),
+        (Method::GET, format!("{mappers}/{mapper}"), None),
+        (
+            Method::PUT,
+            format!("{mappers}/{mapper}"),
+            Some(replacement.clone()),
+        ),
+        (Method::DELETE, format!("{mappers}/{mapper}"), None),
+    ] {
+        let (status, answer) = call(&world, globex, method.clone(), path.clone(), body).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{method} {path}: {answer}");
+        assert_eq!(answer["code"], "oauth.client_not_found", "{method} {path}");
+    }
+    // Acme's mapper, named under Globex's own client, is not one of it.
+    let (status, answer) = call(
+        &world,
+        globex,
+        Method::GET,
+        format!("/clients/{globex_client}/claim-mappers/{mapper}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{answer}");
+    assert_eq!(answer["code"], "oauth.claim_mapper_not_found");
+    // A mapper of Globex cannot name Acme's group.
+    let globex_mappers = format!("/clients/{globex_client}/claim-mappers");
+    let (status, answer) = call(
+        &world,
+        globex,
+        Method::POST,
+        globex_mappers.clone(),
+        Some(serde_json::json!({
+            "claim": "in_finance",
+            "targets": ["id_token"],
+            "source": { "kind": "group_member", "group_id": finance },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{answer}");
+    assert_eq!(answer["code"], "oauth.claim_mapper_group_unknown");
+
+    // Globex's own mapper of the person's groups reads Globex's groups
+    // only: the person with the same address is in none there.
+    created(
+        &world,
+        globex,
+        &globex_mappers,
+        serde_json::json!({
+            "claim": "teams",
+            "targets": ["id_token", "access_token"],
+            "source": { "kind": "groups" },
+        }),
+    )
+    .await;
+    let (identity, access) =
+        first_party_tokens(&world, globex, (&globex_client, &globex_secret)).await;
+    assert_eq!(identity["teams"], serde_json::json!([]));
+    assert_eq!(access["teams"], serde_json::json!([]));
+    assert!(
+        identity.get("in_finance").is_none(),
+        "Acme's mapper is Acme's"
+    );
+
+    // Where it belongs, the mapper writes the group, unchanged.
+    let (identity, access) = first_party_tokens(&world, acme, (&acme_client, &acme_secret)).await;
+    assert_eq!(identity["in_finance"], true);
+    assert_eq!(access["in_finance"], true);
+    assert!(
+        identity.get("teams").is_none(),
+        "Globex's mapper is Globex's"
+    );
+    let (_, listed) = call(&world, acme, Method::GET, mappers, None).await;
+    assert_eq!(listed["items"][0]["id"], mapper.as_str());
+    assert_eq!(listed["items"][0]["claim"], "in_finance");
+}
+
+#[tokio::test]
+async fn one_tenants_second_factor_policy_asks_no_enrollment_of_another() {
+    let world = world_with(&[("HODOR_SECRET_KEYS", ROOT_KEY)]).await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    require_second_factor(&world, acme).await;
+
+    // In Acme the shared person, who has no second factor, is asked to set
+    // one up after the password, and nobody is signed in yet.
+    let (in_acme, body) = waiting_after_password(&world, acme).await;
+    assert_eq!(
+        (body["status"].as_str(), body["step"].as_str()),
+        (Some("pending"), Some("enrollment")),
+        "{body}"
+    );
+    assert!(!in_acme.cookies.contains_key(SESSION_COOKIE));
+
+    // In Globex, which requires nothing more, the person with the same
+    // address signs in with the password alone.
+    let (mut in_globex, body) = waiting_after_password(&world, globex).await;
+    assert_eq!(body["status"], "completed", "{body}");
+    let (status, who) = in_globex
+        .send(Method::GET, "/t/globex/interaction/session", None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(who["methods"], serde_json::json!(["password"]));
+
+    // Acme's sign-in, still waiting, is finished only by enrolling there.
+    let mut carried = Browser::new(&world.server);
+    carried.cookies = in_acme.cookies.clone();
+    carried.csrf_token = in_acme.csrf_token.clone();
+    let (status, body) = carried
+        .send(Method::GET, "/t/acme/interaction/sign-in", None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["step"], "enrollment", "{body}");
 }

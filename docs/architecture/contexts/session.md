@@ -84,7 +84,7 @@ Rules:
 | List a user's sessions | Returns the user's active sessions, newest first, for the account pages and for administrators |
 | Revoke session | Ends one session, with a reason |
 | Revoke one of a user's sessions | Ends a session only if it belongs to the given user and is active; otherwise it reports that there is no such session, without saying which was the case. This is what a person uses on their own sessions |
-| Revoke a user's sessions | Ends all of a user's active sessions, optionally keeping one: used when a password changes, where the session that made the change survives |
+| Revoke a user's sessions | Ends all of a user's active sessions, optionally keeping one: used when a password changes, where the session that made the change survives. It can also run in the caller's unit of work, as [deprovisioning](provisioning.md#deprovisioning) does |
 | Replace token | Gives a session a new token |
 | Raise session | Adds the methods of a step-up to a session, raises its assurance and replaces its token, as [raising a session](#raising-a-session) says |
 
@@ -96,7 +96,7 @@ Rules:
 | `session.revoked` | A session was ended on purpose; carries the reason |
 | `session.raised` | A step-up raised a session; carries the user, the new assurance and the methods proven |
 
-Expiry produces no event, since nothing happens at that moment. Events carry identifiers and never a token or its hash. The address and browser description stay in the session row.
+Expiry produces no event, since nothing happens at that moment. Events carry identifiers and never a token or its hash. The address and browser description stay in the session row. The OAuth context hears `session.revoked`, with its `session_id` and `user_id`, to tell the applications signed in to with the session that it ended ([back-channel logout](oauth.md#back-channel-logout)); the session context does not know it does.
 
 ### Ports
 
@@ -128,7 +128,7 @@ Expiry produces no event, since nothing happens at that moment. Events carry ide
 
 A tenant table under row-level security. A token is looked up by tenant and hash together, so a token presented to another tenant finds nothing.
 
-Rows of expired and revoked sessions stay until a cleanup job removes them; that job does not exist yet.
+Rows of expired and revoked sessions stay for seven days, then [the cleanup job](../../operations/deployment.md#cleanup) of the worker removes them.
 
 ## Not built yet
 

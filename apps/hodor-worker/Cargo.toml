@@ -11,6 +11,7 @@ repository.workspace = true
 async-trait.workspace = true
 clap.workspace = true
 hodor-adapters-crypto.workspace = true
+hodor-adapters-http.workspace = true
 hodor-adapters-policy-check.workspace = true
 hodor-adapters-postgres.workspace = true
 hodor-adapters-smtp.workspace = true
@@ -19,22 +20,33 @@ hodor-authorization-opa.workspace = true
 hodor-kernel.workspace = true
 hodor-keys.workspace = true
 hodor-notification.workspace = true
+hodor-oauth.workspace = true
 hodor-observability.workspace = true
 hodor-protocol-http.workspace = true
+hodor-tenant.workspace = true
+hodor-webhooks.workspace = true
 opentelemetry.workspace = true
 time.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+axum.workspace = true
+# Only to check, in tests, the logout tokens the worker signs with a
+# library of its own.
+jsonwebtoken = { workspace = true, features = ["aws_lc_rs"] }
+hodor-session.workspace = true
+tower.workspace = true
 hodor-adapters-postgres = { workspace = true, features = ["testing"] }
 hodor-kernel = { workspace = true, features = ["testing"] }
 hodor-notification = { workspace = true, features = ["testing"] }
-hodor-tenant.workspace = true
+hodor-webhooks = { workspace = true, features = ["testing"] }
+http.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true
+standardwebhooks.workspace = true
 testcontainers.workspace = true
 
 [lints]

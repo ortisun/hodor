@@ -19,7 +19,7 @@ The stack uses the ports 8080, 9090, 8025, 8428, 9400, 9500 and 10428 on `localh
 
 ## 0. Get the code
 
-The branch `main` holds the latest release, 0.2.0, whose [changelog](https://github.com/ortisun/hodor/blob/main/CHANGELOG.md#020---2026-11-23) says what it holds and what it is not ready for; the work towards the next one happens on `develop`. Clone the release and run every command of this page from the root of the checkout:
+The branch `main` holds the latest release, 0.3.0, whose [changelog](https://github.com/ortisun/hodor/blob/main/CHANGELOG.md#030---2026-11-25) says what it holds and what it is not ready for; the work towards the next one happens on `develop`. Clone the release and run every command of this page from the root of the checkout:
 
 ```bash
 git clone https://github.com/ortisun/hodor.git
@@ -203,7 +203,7 @@ python3 deploy/demo/strong_authentication.py
 | A recovery code | A recovery code stands in for the code once, and is refused the second time |
 | A passkey | The person registers one, then signs in with it alone, with no identifier and no password. Asked for the phishing-resistant level, the application gets a code at once, and the tokens say `pop`, `user` and `mfa` |
 | Tenants apart | The same passkey is refused by a second tenant |
-| An administrator removes the person's factors | The administrator sees the factors and no secret, removes the passkey and the application, and the recovery codes go with them; the person's password no longer signs them in to a tenant that requires a second factor, and the audit log names the administrator |
+| An administrator removes the person's factors | The administrator sees the factors and no secret, removes the passkey and the application, and the recovery codes go with them; the person's password alone no longer signs them in to a tenant that requires a second factor: the sign-in waits for them to [set one up](../architecture/contexts/authentication.md#enrolling-a-second-factor-during-a-sign-in), with no session until they do, and the audit log names the administrator |
 
 The passkey is a software authenticator written into the script, with the arithmetic of P-256 done by hand so that the demonstration still needs nothing outside the standard library. It answers as a device does after the person unlocked it, and keeps its key in memory for as long as the script runs. A code of an authenticator application is good once, so the script waits for the next one when it needs a third within a minute.
 
@@ -233,6 +233,99 @@ The instance is shared, so it is served only what the operator wrote ([Decision 
 
 It ends with `The demonstration of Milestone 5 passed.` It can be run again and again, starts and removes its own instance, and runs in continuous integration after the other four. The variables of [the first demonstration](#the-demonstration) tell it where the stack is.
 
+## The demonstration of Milestone 6
+
+[Milestone 6](../product/epics.md#milestone-6-hodor-runs-behind-a-load-balancer-and-cleans-up-after-itself) lets Hodor run behind load balancers and clean up after itself. Its demonstration goes through `edge`, the web server in front of the stack, as clients behind a load balancer would:
+
+```bash
+python3 deploy/demo/operations.py
+```
+
+| Step | What it shows |
+|---|---|
+| A tenant behind a web server | A tenant that accepts registrations, reached through `edge` |
+| Each client has a limit of its own | One client, named by the `X-Forwarded-For` the script sends as a load balancer would, asks to register a new address again and again until it is answered `429`. Another client behind the same web server is still answered, and so is the script itself, straight to the server |
+| A forged address does not help | The limited client writes another address at the start of its header, and is still limited: Hodor reads the header from the end and stops at the first address that is not a trusted proxy |
+| Ended sessions are removed | A person registers, signs in and signs out. A second worker starts with a retention of 0 days for sessions and messages, and removes the ended session and the delivered messages of the tenant |
+| The audit log is untouched | The audit chain of the tenant is intact after the cleanup, and the cleanup's metric arrived in VictoriaMetrics |
+
+The second worker keeps nothing for any tenant of the stack: it removes every ended session and every delivered message, of the other demonstrations too, and it is stopped at the end. The published image and chart are not part of this script; they are tried by hand at the tag of 0.3.0, as the [release steps](../development/conventions.md#releases) say.
+
+It ends with `The demonstration of Milestone 6 passed.` It can be run again and again, and runs in continuous integration after the other eight. The variables of [the first demonstration](#the-demonstration) tell it where the stack is, and `HODOR_EDGE_URL` where the web server in front is, `http://localhost:8081` unless set.
+
+## The demonstration of Milestone 7
+
+[Milestone 7](../product/epics.md#milestone-7-groups-organizations-and-scim) gathers the people of a tenant in groups and organizations, gives roles to groups, carries the organization of a sign-in in the tokens, and lets a directory provision people through SCIM. Its demonstration plays an administrator, a person invited by email, an application and a SCIM client of one tenant:
+
+```bash
+python3 deploy/demo/organizations.py
+```
+
+| Step | What it shows |
+|---|---|
+| Two tenants, and their administrators | Two tenants, each with a signing key and a first administrator made with the command-line tool |
+| A group inside another group | Through the administration interface, `finance` is put inside `staff`. Putting `staff` inside `finance` is refused as a cycle, `identity.group_cycle` |
+| An organization, a department and an invitation | An organization with a unit of kind department, and a new address invited to it with that department. The link, read from the mail server, describes the invitation; accepting it with a password makes the account and the membership with the department, and the same link is refused the second time |
+| A role through a group | A Payroll resource server whose `reader` role is given to `staff`. The invited person is put in `finance`, and the Authorization API allows them, through both groups; taken out of `finance`, the next decision denies |
+| Signed in for the organization | The person signs in from an application of the tenant, which names the organization with `organization`: the ID token and the access token carry it in `org_id`, both checked against the tenant's key set. Asking for an organization the person is not a member of is answered `access_denied` at the application's address |
+| A directory provisions through SCIM | The tenant opens SCIM with a resource server of audience `urn:hodor:scim` and a client of the client credentials grant allowed the scope `scim`. The SCIM client creates a user and a group with the user in it, and changes both with `PATCH` |
+| Deactivated through SCIM | The provisioned person sets a password with a recovery link, signs in from the application, and gets a refresh token that works. The SCIM client sets `active` to false: the person's session ends at once, the refresh token is refused, and the password no longer signs in |
+| Tenants apart | The second tenant's administrator finds neither the group nor the organization, and the first tenant's SCIM token is refused by the second tenant's SCIM server |
+| The audit log | The log of the first tenant holds the nesting, the accepted invitation and the deactivation, done by the SCIM client |
+
+The application is played by the script, as in [the demonstration of Milestone 4](#the-demonstration-of-milestone-4): it registers a redirect address nobody listens on, and reads where the browser is sent.
+
+It ends with `The demonstration of Milestone 7 passed.` It can be run again and again, and runs in continuous integration after the demonstration of Milestone 5 and before that of Milestone 6, whose second worker removes the delivered messages this one reads. The variables of [the first demonstration](#the-demonstration) tell it where the stack is.
+
+## The demonstration of Milestone 8
+
+[Milestone 8](../product/epics.md#milestone-8-workloads-agents-and-webhooks) gives the services and agents of a tenant identities of their own, with clients, API keys and roles, lets an agent act on a person's behalf through token exchange, and tells other systems what happens in a tenant through signed webhooks. Its demonstration plays an administrator, an operator, a service, an agent, a person and a receiver of webhooks:
+
+```bash
+python3 deploy/demo/workloads.py
+```
+
+| Step | What it shows |
+|---|---|
+| Two tenants, and their administrators | Two tenants, each with a signing key and a first administrator made with the command-line tool |
+| A service account, its client, its key and its role | Through the administration interface: a Payroll resource server whose `approver` role may approve invoices, a service account owned by a person of the tenant, a client of Payroll that acts as it, and the role given to it. With `hodor-cli service-account key create`, an API key for Payroll with the scope `authz:evaluate`, printed once and never listed again |
+| Evaluated with its token and with its key | The client gets a token by client credentials, which names the service account in `sub` with `principal_kind`. The Authorization API allows the service account to approve an invoice, asked with that token and again with the key; the same key with one character changed is refused |
+| An agent acts for a person | An agent, with a client allowed the token exchange grant and one exchange rule: a token for the agent's own interface, the assistant, may be exchanged for one for Payroll. A person signs in to the assistant, which gets a token with `payroll:read`. The agent's client exchanges the person's token, with the agent's own token as the actor, for a token for Payroll: checked against the tenant's key set, it names the person in `sub` and the agent in `act`, and comes without a refresh token |
+| A wider exchange refused | Asking for a scope the person's token does not hold is refused with `invalid_scope`, and asking for an audience no rule allows with `invalid_target` |
+| A webhook endpoint | With `hodor-cli webhook add`, an endpoint at the stack's receiver, `webhook-receiver`, subscribed to `session.started`; its secret is printed once, and `hodor-cli webhook list` never shows it. The person signs in again and the receiver gets the event. The script checks its `webhook-signature` with the secret, as Standard Webhooks say, and reads the tenant and the session in its body |
+| Retries, set aside, delivered again | The receiver is stopped. The next sign-in's delivery is tried three times and set aside, as the administration interface and `hodor-cli webhook deliveries --status set_aside` show. The receiver is started again, the administration interface delivers the delivery again, and the event arrives with the same `webhook-id`, signed |
+| Tenants apart | The second tenant's Authorization API and administration interface refuse the first tenant's key, and the second tenant's administrator finds neither the endpoint nor its deliveries |
+| The audit log | The log of the first tenant holds the key made, the exchange done by the agent for the person, the endpoint registered, the delivery set aside and the request to deliver it again |
+
+The development stack has what this needs: `webhook-receiver`, a receiver of webhooks that keeps what it gets and shows it on its own port, named in `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` of the server and the worker so that it may be called over plain HTTP; and a worker that waits one second after a first failed attempt and sets a delivery aside after three, so that the retries take seconds rather than hours. Nowhere real has either.
+
+It ends with `The demonstration of Milestone 8 passed.` It can be run again and again, and runs in continuous integration after the demonstration of Milestone 7 and before that of Milestone 6, whose second worker removes the delivered messages this one reads. The variables of [the first demonstration](#the-demonstration) tell it where the stack is, and `HODOR_WEBHOOK_RECEIVER_URL` where the receiver is, `http://localhost:9600` unless given.
+
+## The demonstration of Milestone 9
+
+[Milestone 9](../product/epics.md#milestone-9-what-020-left-out) builds what 0.2.0 left out: applications of different sectors know a person by different identifiers, a client gets the claims it is configured for, applications are told when a person signs out, a person signs in with a code or a link sent by email or sets up a second factor while signing in, and an application grants access to one resource at a time. Its demonstration plays an administrator, an operator, two applications, two people and the applications' receiver of logout tokens:
+
+```bash
+python3 deploy/demo/what_was_left_out.py
+```
+
+| Step | What it shows |
+|---|---|
+| Two tenants, and their administrators | Two tenants, each with a signing key and a first administrator made with the command-line tool |
+| Two applications of two sectors | Through the administration interface, Travel and Payroll, each with a pairwise client whose redirect address names a host of its own, its sector, and a back-channel logout address at the stack's receiver, `webhook-receiver` |
+| One person, two sectors, two subjects | A person signs in once and gets a code from each application at once. The two ID tokens, checked against the tenant's key set, name her by two different `sub` and her session by two different `sid`, neither of them her user identifier. Signed in again, Travel is given the same `sub`, and UserInfo answers Travel with it |
+| A claim mapper | The person is put in the group `finance`. A mapper that would name `sub` is refused, `oauth.claim_mapper_name_reserved`. A mapper of Travel writes her groups as `teams`, and her next ID token carries the identifier of `finance` there, as UserInfo does |
+| Signed out at Hodor | She signs out as the account page does. The receiver gets a logout token for each application, posted as a form: of type `logout+jwt`, checked against the tenant's key set, for that application, with the back-channel logout event, and naming her and her session by the `sub` and `sid` of that application's ID token |
+| A code, then a link, by email | `hodor-cli tenant email-sign-in` turns both on. She asks for a code, reads it from the mail server, and is signed in with `email_code`; the same code, presented again in a new sign-in, is refused. She asks for a link: opened in another browser it signs nothing in, in the browser that asked it signs her in with `email_link`, and presented again it is refused |
+| A second factor set up during the sign-in | `hodor-cli tenant second-factor --policy required`, and a second person who has no second factor. The password leaves the sign-in waiting at the step `enrollment`, and leaving it there signs nobody in. In another sign-in, the person begins an authenticator application and is given the `otpauth://` address its QR code shows; the script reads the secret from that address, computes the code as the application would, and the code finishes the sign-in with ten recovery codes. The session holds a password and the enrollment, at the multi-factor level, and Travel's ID token says `pwd` and `mfa`. The next sign-in asks for the application's code |
+| A document shared with a group | A Documents resource server answered by the native engine, with the permission `document:read`. Before anything is shared, the member of `finance` may not read `budget-2027`; an entry of its access control list lets `finance` read it. The Authorization API then allows the member, with `matching_entry`, and denies the second person and another document |
+| Tenants apart | The second tenant's administrator finds neither Travel's mapper nor the entry |
+| The audit log | The log of the first tenant holds the mapper made, a code sent by email, the second factor set up and the entry granted |
+
+The applications are played by the script, as in [the demonstration of Milestone 4](#the-demonstration-of-milestone-4): they register redirect addresses nobody listens on, and read where the browser is sent. Their back-channel logout addresses are paths of `webhook-receiver`, which keeps the logout tokens the worker posts as it keeps webhooks.
+
+It ends with `The demonstration of Milestone 9 passed.` It can be run again and again, and runs in continuous integration after the demonstration of Milestone 8 and before that of Milestone 6, whose second worker removes the delivered messages this one reads. The variables of [the first demonstration](#the-demonstration) tell it where the stack is, and `HODOR_WEBHOOK_RECEIVER_URL` where the receiver is, `http://localhost:9600` unless given.
+
 ## Stop
 
 Stop the stack and delete its data:
@@ -249,7 +342,7 @@ Milestone 1 is a walking skeleton: it proves that the pieces work together. It i
 |---|---|
 | Your own database roles and passwords | The ones in `deploy/docker/postgres-init.sql` and in the Compose file are public. See [database roles](../development/local-setup.md#database-roles) |
 | TLS in front of the server, and `HODOR_PUBLIC_URL` set to the address people use | The cookies are marked `Secure`, and the links in messages start with that address |
-| Hodor reached directly, not through a load balancer | The address used to limit attempts is the connection's. Behind a load balancer everyone would share one limit |
+| The load balancer or web server in front named in `HODOR_TRUSTED_PROXIES` | Attempts are limited by the [client address](../api/api-spec.md#the-client-address). Behind a proxy that is not named, everyone shares one limit |
 | A real mail server in `HODOR_SMTP_URL`, with encryption, and `HODOR_MAIL_FROM` | The development mail server delivers nothing |
 | The operations listener kept off the internet | It answers health checks without any authentication |
 | Backups of the database | Everything Hodor knows is there, the audit log included |

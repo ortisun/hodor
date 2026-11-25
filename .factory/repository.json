@@ -49,6 +49,13 @@
         "support/"
       ]
     },
-    "additional_flows": []
+    "additional_flows": [
+      {
+        "head_prefix": "dependabot/",
+        "into": [
+          "develop"
+        ]
+      }
+    ]
   }
 }

@@ -12,11 +12,14 @@
 # Mail sent:        http://localhost:8025
 # Development identity provider, which lets anyone sign in as anyone:
 #                   http://localhost:9400
+# What the development receiver of webhooks got:
+#                   http://localhost:9600/received
 #
 # If a port is taken on your machine, override it:
 #
 #   HODOR_HTTP_PORT=18080 HODOR_OPS_PORT=19090 HODOR_VM_PORT=18428 \
 #   HODOR_TRACES_PORT=20428 HODOR_MAIL_PORT=18025 HODOR_PROVIDER_PORT=19400 \
+#   HODOR_WEBHOOK_RECEIVER_PORT=19600 \
 #     docker compose -f deploy/docker/compose.yaml up --build --wait
 
 name: hodor
@@ -130,6 +133,25 @@ services:
       timeout: 2s
       retries: 30
 
+  # A receiver of webhooks for development: it answers every delivery
+  # with 204 and shows what it got at /received. Hodor reaches it as
+  # `webhook-receiver`, this machine as `localhost`.
+  webhook-receiver:
+    image: node:24-bookworm-slim
+    command: ["node", "/receiver.mjs"]
+    user: node
+    environment:
+      PORT: "9600"
+    volumes:
+      - ../dev-webhook-receiver/receiver.mjs:/receiver.mjs:ro
+    ports:
+      - "127.0.0.1:${HODOR_WEBHOOK_RECEIVER_PORT:-9600}:9600"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:9600/health').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
   # An LDAP directory for development, with one person in it: dora,
   # whose password is written in deploy/dev-directory/people.ldif.
   # Reachable from inside the stack only.
@@ -163,10 +185,10 @@ services:
       # identity providers and the signing keys encrypted in this stack
       # and nowhere else.
       HODOR_SECRET_KEYS: development:gV8TjmTiZoYOlhsN4OdTTiWMwWa1t/o5RPNGCdbBNro=
-      # The development provider is at a private address, over plain
-      # HTTP. This is the setting that allows it; never set it anywhere
-      # real.
-      HODOR_OUTBOUND_DEVELOPMENT_HOSTS: provider:9400,localhost:${HODOR_PROVIDER_PORT:-9400},directory:389,localhost:${HODOR_SAML_PROVIDER_PORT:-9500}
+      # The development provider and the receiver of webhooks are at
+      # private addresses, over plain HTTP. This is the setting that allows
+      # them; never set it anywhere real.
+      HODOR_OUTBOUND_DEVELOPMENT_HOSTS: provider:9400,localhost:${HODOR_PROVIDER_PORT:-9400},directory:389,localhost:${HODOR_SAML_PROVIDER_PORT:-9500},webhook-receiver:9600
       # The development directory, the one directory this stack may use.
       HODOR_DIRECTORY_HOSTS: directory:389
       # The shared Open Policy Agent instance resource servers bound to it
@@ -175,6 +197,10 @@ services:
       # credential and the tenant's bundle are only known once the tenant
       # exists. Until then such a resource server is denied everything.
       HODOR_OPEN_POLICY_AGENT_ADDRESS: http://policy-agent:8181
+      # Every private address is a trusted proxy, as in the Docker
+      # installation: `edge` in front, and this machine, are the only ways
+      # in, since the ports are published on 127.0.0.1 alone.
+      HODOR_TRUSTED_PROXIES: 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
       HODOR_LOG_FORMAT: pretty
       HODOR_OTLP_METRICS_ENDPOINT: http://victoriametrics:8428/opentelemetry/v1/metrics
       HODOR_OTLP_TRACES_ENDPOINT: http://victoriatraces:10428/insert/opentelemetry/v1/traces
@@ -199,6 +225,19 @@ services:
       retries: 12
       start_period: 5s
 
+  # A web server in front of the server, as a load balancer would be. The
+  # demonstration of Milestone 6 sends its requests through it.
+  edge:
+    image: caddy:2.10-alpine
+    command: ["caddy", "run", "--adapter", "caddyfile", "--config", "/etc/caddy/Caddyfile"]
+    volumes:
+      - ./edge.Caddyfile:/etc/caddy/Caddyfile:ro
+    ports:
+      - "127.0.0.1:${HODOR_EDGE_PORT:-8081}:8081"
+    depends_on:
+      server:
+        condition: service_healthy
+
   worker:
     image: hodor:dev
     entrypoint: ["/usr/local/bin/hodor-worker"]
@@ -208,8 +247,19 @@ services:
       # The server's placeholder key: the worker makes the tenants'
       # signing keys under it, and the server signs with them.
       HODOR_SECRET_KEYS: development:gV8TjmTiZoYOlhsN4OdTTiWMwWa1t/o5RPNGCdbBNro=
+      # The server's address: the issuer of the logout tokens it sends to
+      # clients starts with it.
+      HODOR_PUBLIC_URL: http://localhost:${HODOR_HTTP_PORT:-8080}
       HODOR_SMTP_URL: smtp://mail:1025
       HODOR_MAIL_FROM: Hodor <no-reply@hodor.localhost>
+      # The receiver of webhooks, at a private address over plain HTTP, as
+      # for the server; never set it anywhere real.
+      HODOR_OUTBOUND_DEVELOPMENT_HOSTS: webhook-receiver:9600
+      # A delivery that keeps failing is set aside after three attempts,
+      # one and then two seconds apart, so that the demonstration of
+      # Milestone 8 sees it in seconds rather than hours.
+      HODOR_WEBHOOK_MAX_ATTEMPTS: "3"
+      HODOR_WEBHOOK_FIRST_RETRY_MS: "1000"
       HODOR_LOG_FORMAT: pretty
       HODOR_OTLP_METRICS_ENDPOINT: http://victoriametrics:8428/opentelemetry/v1/metrics
       HODOR_OTLP_TRACES_ENDPOINT: http://victoriatraces:10428/insert/opentelemetry/v1/traces

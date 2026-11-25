@@ -22,15 +22,24 @@ person sees from who they are (`Client.me`).
   permission, command palette on mod+k, and the current screen).
 - `App.tsx:needsOf` - the permission a screen needs: `audit` needs
   `audit:read`; `providers` and `provider` need `identity-providers:read`;
-  `applications`, `application` and `client` need `applications:read`; the
-  others need `users:read`.
+  `applications`, `application` and `client` need `applications:read`;
+  `groups` and `group` need `groups:read`; `organizations` and `organization`
+  need `organizations:read`; `serviceAccounts`, `serviceAccount`, `agents`
+  and `agent` need `workloads:read`; `webhooks` and `webhook` need
+  `webhooks:read`; the others need `users:read`. Service accounts and agents
+  are under Directory, webhooks under Audit.
 - `address.ts` - `Screen` (`home`, `users`, `user`, `audit`, `providers`,
-  `provider`, `applications`, `application`, `client`), `Place`, `placeOf(pathname)`, `pathOf(tenant, screen)`,
+  `provider`, `applications`, `application`, `client`, `authorization`,
+  `groups`, `group`, `organizations`, `organization`, `serviceAccounts`,
+  `serviceAccount`, `agents`, `agent`, `webhooks`, `webhook`), `Place`, `placeOf(pathname)`, `pathOf(tenant, screen)`,
   `isIdentifier(text)`, `signInPath(tenant)` (`/t/{tenant}/account/sign-in`)
   and `accountPath(tenant)` (`/t/{tenant}/account`). Console addresses are
   `/t/{tenant}/console`, `.../users`, `.../users/{id}`, `.../audit`,
   `.../identity-providers`, `.../identity-providers/{id}`, `.../applications`,
-  `.../applications/{id}` and `.../clients/{id}`.
+  `.../applications/{id}`, `.../clients/{id}`, `.../authorization`,
+  `.../groups`, `.../groups/{id}`, `.../organizations`,
+  `.../organizations/{id}`, `.../service-accounts`, `.../service-accounts/{id}`,
+  `.../agents`, `.../agents/{id}`, `.../webhooks` and `.../webhooks/{id}`.
 - `actions.ts:ACTIONS`, `ActionName`, `Level`, `Action`, `may(permissions,
   action)` - `createUser` (level 0, `users:write`); `endSession` (1,
   `sessions:revoke`); `suspendUser` (2, `users:write`); `addProvider`,
@@ -40,7 +49,16 @@ person sees from who they are (`Client.me`).
   `enableApplication`, `addClient`, `changeClient`, `changeResourceServer`,
   `addKey`, `removeKey`, `enableClient` (1, `applications:write`);
   `disableApplication`, `rotateSecret`, `revokeSecret`, `disableClient` (2,
-  `applications:write`).
+  `applications:write`); `createGroup` (0), `changeGroup`, `addGroupMember`,
+  `removeGroupMember` (1), `deleteGroup` (2), all `groups:write`;
+  `createOrganization`, `createUnit` (0), `changeOrganization`, `changeUnit`,
+  `putOrganizationMember`, `removeOrganizationMember`, `invite`,
+  `withdrawInvitation` (1), `deleteOrganization`, `deleteUnit` (2), all
+  `organizations:write`; `createWorkload` (0), `changeWorkload`,
+  `enableWorkload`, `createApiKey`, `rotateApiKey` (1), `disableWorkload`,
+  `deleteWorkload`, `revokeApiKey` (2), all `workloads:write`;
+  `registerEndpoint`, `changeSubscriptions`, `redeliver` (1),
+  `rotateEndpointSecret`, `removeEndpoint` (2), all `webhooks:write`.
 - `client.ts:Client` - every request goes to `/t/{tenant}/console/api{path}`,
   except sign-out, which uses `/t/{tenant}/interaction{path}`:
 
@@ -79,13 +97,42 @@ person sees from who they are (`Client.me`).
   | `addResourceServer(applicationId, audience, name, scopes)` | `POST /resource-servers` |
   | `changeResourceServer(id, name, scopes)` | `PATCH /resource-servers/{id}` |
   | `listAuditRecords(cursor)` | `GET /audit-records?limit=50[&cursor=]` |
+  | `listGroups(cursor)` | `GET /groups?limit=50[&cursor=]` |
+  | `getGroup(id)`, `createGroup(settings)`, `changeGroup(id, settings)`, `deleteGroup(id)` | `GET /groups/{id}`, `POST /groups`, `PATCH /groups/{id}`, `DELETE /groups/{id}`; an empty description is not sent |
+  | `listGroupMembers(id, cursor)` | `GET /groups/{id}/members?limit=50[&cursor=]` |
+  | `addGroupMember(id, member)`, `removeGroupMember(id, member)` | `POST /groups/{id}/members`, `POST /groups/{id}/members:remove` with `{ kind, id }` |
+  | `groupsOfUser(userId)` | `GET /users/{id}/groups` |
+  | `listOrganizations(cursor)` | `GET /organizations?limit=50[&cursor=]` |
+  | `getOrganization(id)`, `createOrganization(settings)`, `changeOrganization(id, settings)`, `deleteOrganization(id)` | `GET /organizations/{id}`, `POST /organizations`, `PATCH /organizations/{id}`, `DELETE /organizations/{id}` |
+  | `listUnits(id)`, `createUnit(id, settings)`, `changeUnit(id, unitId, settings)`, `deleteUnit(id, unitId)` | `GET` and `POST /organizations/{id}/units`, `PUT` and `DELETE /organizations/{id}/units/{unitId}` |
+  | `listOrganizationMembers(id, cursor)` | `GET /organizations/{id}/members?limit=50[&cursor=]` |
+  | `putOrganizationMember(id, userId, unitIds)`, `removeOrganizationMember(id, userId)` | `PUT` and `DELETE /organizations/{id}/members/{userId}` |
+  | `listInvitations(id)`, `invite(id, email, unitIds, locale)`, `withdrawInvitation(id, invitationId)` | `GET` and `POST /organizations/{id}/invitations`, `DELETE /organizations/{id}/invitations/{invitationId}`; the answer to `POST` holds nothing |
+  | `organizationsOfUser(userId)` | `GET /users/{id}/organizations` |
+  | `listWorkloads(kind, cursor)` | `GET /service-accounts` or `GET /agents`, `?limit=50[&cursor=]` |
+  | `getWorkload(kind, id)`, `createWorkload(kind, settings)`, `changeWorkload(kind, id, settings)` | `GET /…/{id}`, `POST /…`, `PATCH /…/{id}` with `{ name, owners }` |
+  | `disableWorkload(kind, id)`, `enableWorkload(kind, id)`, `deleteWorkload(kind, id)` | `POST /…/{id}:disable`, `POST /…/{id}:enable`, `DELETE /…/{id}` |
+  | `listApiKeys(kind, id)` | `GET /…/{id}/api-keys` |
+  | `createApiKey(kind, id, settings)`, `rotateApiKey(kind, id, keyId)`, `revokeApiKey(kind, id, keyId)` | `POST /…/{id}/api-keys` with `{ name, scopes, application_id?, lifetime_days }`, `POST /…/{id}/api-keys/{keyId}:rotate` with `{}`, `DELETE /…/{id}/api-keys/{keyId}`; the first two answer the key and `api_key`, once |
+  | `listEventTypes()` | `GET /webhook-event-types` |
+  | `listEndpoints(cursor)`, `getEndpoint(id)` | `GET /webhook-endpoints?limit=50[&cursor=]`, `GET /webhook-endpoints/{id}` |
+  | `registerEndpoint(settings)`, `rotateEndpointSecret(id)` | `POST /webhook-endpoints` with `{ url, description?, event_types }`, `POST /webhook-endpoints/{id}:rotate-secret` with no body; both answer the endpoint and its `secret`, once |
+  | `replaceSubscriptions(id, eventTypes)`, `removeEndpoint(id)` | `PUT /webhook-endpoints/{id}/subscriptions`, `DELETE /webhook-endpoints/{id}` |
+  | `listDeliveries(endpointId, status, cursor)`, `redeliver(id)` | `GET /webhook-deliveries?limit=50[&cursor=]&endpoint_id=…[&status=]`, `POST /webhook-deliveries/{id}:redeliver` |
 
 - `client.ts` types - `Failure` (`code`, `status`, `requestId`, `signedOut`),
   `Permission`, `Identifier`, `User`, `Me`, `Session`, `AuditRecord`,
   `Provider`, `NewProvider`, `ProviderChange`, `Application`,
   `ApplicationSettings`, `TokenPolicy`, `ApplicationClient` (an OAuth client:
   the name `Client` is this class), `ClientSettings`, `CreatedClient`,
-  `NewSecret`, `Scope`, `ResourceServer`, `Page<T>`.
+  `NewSecret`, `Scope`, `ResourceServer`, `Page<T>`, `Named` (with `Group`
+  and `Organization`), `NamedSettings`, `GroupMember`, `GroupOfUser`, `Unit`,
+  `UnitKind`, `UnitSettings`, `OrganizationMember`, `OrganizationOfUser`,
+  `Invitation` (never a link or a secret), `WorkloadKind`, `Workload`,
+  `WorkloadSettings`, `ApiKey` (never the key), `ApiKeySettings`, `MadeApiKey`,
+  `WebhookEndpoint` (never a secret), `EndpointSettings`, `SignedEndpoint`,
+  `DeliveryStatus`, `WebhookDelivery` (never its body). `ApplicationClient`
+  has `principal`, the workload it acts as.
 - `hodor-theme.d.ts` - declares the modules `@hodor-theme/hodor.js`
   (`hodorTheme: DefinedTheme`) and `@hodor-theme/hodor.css`; the alias is
   resolved by `../vite.config.ts`.
@@ -98,8 +145,9 @@ person sees from who they are (`Client.me`).
 - Subdirectories: [messages](./messages/EGM.md) (copy in English and Brazilian
   Portuguese, failure text), [parts](./parts/EGM.md) (confirmation dialog,
   identifier, loading state, a secret shown once), [screens](./screens/EGM.md)
-  (users, one user, identity providers, one provider, applications, one
-  application, one client, audit).
+  (users, one user, groups, one group, organizations, one organization,
+  identity providers, one provider, applications, one application, one
+  client, authorization, audit).
 
 ## Invariants
 
@@ -116,7 +164,8 @@ person sees from who they are (`Client.me`).
 - `App.tsx:Frame` renders a screen only when `me.permissions` holds
   `needsOf(screen)`; a forbidden screen shows the same not-found page as an
   unknown address. `home` goes to the first allowed entry in the order users,
-  identity providers, audit. A person with no allowed entry sees only the
+  groups, organizations, identity providers, applications, authorization,
+  audit. A person with no allowed entry sees only the
   no-access notice.
 - `App.tsx:Frame` signs out by calling `client.signOut()` and always leaves for
   the sign-in page afterwards, even when sign-out fails.

@@ -1,15 +1,19 @@
+import { Heading } from "@astryxdesign/core/Heading";
+import { Text } from "@astryxdesign/core/Text";
+import { VStack } from "@astryxdesign/core/VStack";
 import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import type { NoticeName, PageName } from "../address";
-import type { Client, Failure, OfferedProvider, SignInAnswer } from "../client";
+import type { Client, Enrollment, EnrollmentKind, Failure, OfferedProvider, SignInAnswer } from "../client";
 import { describe, type Messages } from "../messages";
 import { Field, PasswordField } from "../parts/Field";
 import { Form } from "../parts/Form";
 import { Frame } from "../parts/Frame";
 import { Notice } from "../parts/Notice";
+import { QrCode } from "../parts/QrCode";
 import { Action, Submit } from "../parts/Submit";
 import { PageLink, Ways, Words } from "../parts/Words";
-import { askAuthenticator, conditionalMediationAvailable, webAuthnAvailable } from "../webauthn";
-import { asFailure, type PageProps } from "./shared";
+import { askAuthenticator, askToCreate, conditionalMediationAvailable, webAuthnAvailable } from "../webauthn";
+import { asFailure, grouped, type PageProps } from "./shared";
 
 type View =
   | { kind: "loading" }
@@ -27,6 +31,24 @@ const OUT_OF_STEP = [
   "authentication.transaction_modified_concurrently",
   "request.csrf_token_invalid",
 ];
+
+/**
+ * Sends an identifier, and sends it once more if the sign-in was changed by
+ * another request at the same moment. That request is the page's own: while
+ * the identifier step is shown, it asks for the passkey challenge, which
+ * changes the sign-in. The first identifier was not taken, and sending an
+ * identifier counts no attempt, so sending it again is safe.
+ */
+async function sendIdentifier(client: Client, identifier: string): Promise<SignInAnswer> {
+  try {
+    return await client.submitIdentifier(identifier);
+  } catch (thrown) {
+    if (asFailure(thrown).code === "authentication.transaction_modified_concurrently") {
+      return client.submitIdentifier(identifier);
+    }
+    throw thrown;
+  }
+}
 
 type Found =
   | { kind: "signed-in" }
@@ -90,6 +112,19 @@ interface SignInPageProps extends PageProps {
 
 /** The steps a recovery code can stand in for. */
 const SECOND_FACTORS = ["webauthn", "totp"];
+/** The step at which a person whose organization requires a second factor, and who has none, sets one up. */
+const ENROLLMENT = "enrollment";
+/** The steps this page knows how to show. */
+const KNOWN_STEPS = ["identifier", "password", "totp", "webauthn", ENROLLMENT];
+/** The person has a second factor by now: the sign-in starts again, to ask for it. */
+const ENROLLMENT_NOT_NEEDED = "authentication.enrollment_not_needed";
+
+/** A code or a link the person asked for by email, in place of the identifier and the password. */
+interface ByEmail {
+  method: "code" | "link";
+  /** The address it was asked for, as typed. */
+  address: string;
+}
 
 /**
  * Signing in. The page shows the form for the step the server names and
@@ -141,9 +176,33 @@ export function SignInPage({
   const [passkeyNoAnswer, setPasskeyNoAnswer] = useState(false);
   /** The conditional request that offers passkeys in the identifier field, while it waits. */
   const offering = useRef<AbortController | null>(null);
+  /** The ways to sign in by email the tenant offers. */
+  const [byEmailOffered, setByEmailOffered] = useState<{ code: boolean; link: boolean }>({
+    code: false,
+    link: false,
+  });
+  /** What the person asked for by email, while the sign-in waits for its first step. */
+  const [byEmail, setByEmail] = useState<ByEmail | null>(null);
+  /** The person asked for a code or a link without typing an address. */
+  const [needAddress, setNeedAddress] = useState(false);
+  /** What can be set up at the enrollment step, once the server said. */
+  const [kinds, setKinds] = useState<EnrollmentKind[] | null>(null);
+  /** The authenticator application being set up at the enrollment step: its secret, shown once. */
+  const [settingUp, setSettingUp] = useState<Enrollment | null>(null);
+  const [keyName, setKeyName] = useState("");
+  /** The key did not answer the last time it was asked to register. */
+  const [keyNoAnswer, setKeyNoAnswer] = useState(false);
+  /** Recovery codes made with a factor just set up, to keep before the page goes on, and the answer to go on with. */
+  const [keeping, setKeeping] = useState<{ codes: string[]; then: SignInAnswer } | null>(null);
 
   const show = useCallback(
     (answer: SignInAnswer) => {
+      if (answer.recoveryCodes !== undefined) {
+        // Shown once: the person keeps them before the page goes on.
+        const { recoveryCodes, ...then } = answer;
+        setKeeping({ codes: recoveryCodes, then });
+        return;
+      }
       if (answer.status === "completed") {
         if (answer.continueTo === undefined) {
           go(afterSignIn);
@@ -160,6 +219,8 @@ export function SignInPage({
         // A choice made for one step does not carry over to the next.
         if (before.kind !== "step" || before.step !== (answer.step ?? "")) {
           setRecovering(false);
+          setSettingUp(null);
+          setKeyNoAnswer(false);
         }
         return {
           kind: "step",
@@ -189,6 +250,14 @@ export function SignInPage({
   useEffect(() => {
     let current = true;
     // A tenant that offers none, or a list that cannot be had, shows none.
+    client.alternatives().then(
+      (offered) => {
+        if (current) {
+          setByEmailOffered({ code: offered.includes("email_code"), link: offered.includes("email_link") });
+        }
+      },
+      () => undefined,
+    );
     client.providers().then(
       (offered) => {
         if (current) {
@@ -207,7 +276,13 @@ export function SignInPage({
     };
   }, [client, apply, signInAgain]);
 
-  const open = async (afresh: boolean) => apply(await findOut(client, afresh, signInAgain));
+  const open = async (afresh: boolean) => {
+    if (afresh) {
+      // A new sign-in never asked for anything.
+      setByEmail(null);
+    }
+    apply(await findOut(client, afresh, signInAgain));
+  };
 
   async function send(request: () => Promise<SignInAnswer>) {
     if (busy) {
@@ -233,12 +308,42 @@ export function SignInPage({
         setPassword("");
         setCode("");
         await open(false);
+      } else if (code === ENROLLMENT_NOT_NEEDED) {
+        setCode("");
+        await open(true);
+        setFailure(failed);
       } else {
         setFailure(failed);
       }
     } finally {
       setBusy(false);
     }
+  }
+
+  /** Begins setting up an authenticator application: its QR code and its key are shown once. */
+  async function beginApplication() {
+    await send(async () => {
+      setSettingUp(await client.beginApplicationEnrollment());
+      return { status: "pending", step: ENROLLMENT, attemptsLeft: null };
+    });
+  }
+
+  /**
+   * Adds a security key or a passkey: begins its registration, then asks
+   * the authenticator. When it makes nothing, nothing is sent and the
+   * person tries again, which begins anew.
+   */
+  async function addKey(passkey: boolean) {
+    setKeyNoAnswer(false);
+    await send(async () => {
+      const registration = await askToCreate(await client.beginKeyEnrollment(passkey));
+      if (registration === null) {
+        setKeyNoAnswer(true);
+        return { status: "pending", step: ENROLLMENT, attemptsLeft: null };
+      }
+      const name = keyName.trim() === "" ? (passkey ? text.defaultPasskeyName : text.defaultKeyName) : keyName;
+      return client.finishKeyEnrollment(registration, name);
+    });
   }
 
   async function startAgain() {
@@ -251,6 +356,8 @@ export function SignInPage({
     setPassword("");
     setCode("");
     setRecovering(false);
+    setByEmail(null);
+    setNeedAddress(false);
     try {
       await client.abandonSignIn();
       await open(true);
@@ -332,7 +439,82 @@ export function SignInPage({
     });
   }
 
-  const asksIdentifier = view.kind === "step" && view.step === "identifier" && directory === null;
+  /**
+   * Asks for a code or a link to be sent to the address typed. The answer
+   * is the same whoever the address belongs to. Sent once more when the
+   * sign-in was changed at the same moment by the page's own request for
+   * the passkey challenge, which is stopped first.
+   */
+  async function askByEmail(method: "code" | "link") {
+    const address = identifier.trim();
+    if (address === "") {
+      setNeedAddress(true);
+      return;
+    }
+    if (busy) {
+      return;
+    }
+    stopOffering();
+    setNeedAddress(false);
+    setBusy(true);
+    setFailure(null);
+    setExpired(false);
+    try {
+      try {
+        await client.askByEmail(method, address, text.locale);
+      } catch (thrown) {
+        if (asFailure(thrown).code !== "authentication.transaction_modified_concurrently") {
+          throw thrown;
+        }
+        await client.askByEmail(method, address, text.locale);
+      }
+      setCode("");
+      setByEmail({ method, address });
+      // The rejection of an earlier code is not about this one.
+      setView((before) => (before.kind === "step" ? { ...before, rejected: false, shown: before.shown + 1 } : before));
+    } catch (thrown) {
+      const failed = asFailure(thrown);
+      const code = failed.code ?? "";
+      if (GONE.includes(code)) {
+        setExpired(true);
+        await open(true);
+      } else if (OUT_OF_STEP.includes(code)) {
+        await open(false);
+      } else {
+        setFailure(failed);
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const enrolling = view.kind === "step" && view.step === ENROLLMENT;
+  // What can be set up is read when the step is shown.
+  useEffect(() => {
+    if (!enrolling) {
+      return undefined;
+    }
+    let current = true;
+    client.enrollmentKinds().then(
+      (listed) => {
+        if (current) {
+          setKinds(listed);
+        }
+      },
+      () => {
+        if (current) {
+          setKinds([]);
+        }
+      },
+    );
+    return () => {
+      current = false;
+    };
+  }, [enrolling, client]);
+
+  const waitsByEmail = view.kind === "step" && view.step === "identifier" && byEmail !== null;
+  const asksIdentifier =
+    view.kind === "step" && view.step === "identifier" && directory === null && byEmail === null;
   const shownAt = view.kind === "step" ? view.shown : -1;
 
   // Where the browser can, the passkeys it holds are offered in the
@@ -375,6 +557,37 @@ export function SignInPage({
   }
 
   const told = noticeText(notice, text);
+
+  if (keeping !== null) {
+    return (
+      <Frame tenant={tenant} title={text.signInTitle} text={text}>
+        <VStack gap={4}>
+          <Heading level={2}>{text.codesTitle}</Heading>
+          <Words>{text.codesLead}</Words>
+          <ul className="auth-codes" aria-label={text.codesTitle}>
+            {keeping.codes.map((one) => (
+              <li key={one}>
+                <Text className="auth-code">{one}</Text>
+              </li>
+            ))}
+          </ul>
+          <Action
+            variant="primary"
+            label={text.codesKept}
+            onClick={() => {
+              const then = keeping.then;
+              setKeeping(null);
+              show(then);
+            }}
+          />
+        </VStack>
+      </Frame>
+    );
+  }
+
+  const offersApplication = kinds?.includes("authenticator_application") === true;
+  const offersKeys =
+    webAuthnAvailable() && (kinds?.includes("security_key") === true || kinds?.includes("passkey") === true);
 
   return (
     <Frame tenant={tenant} title={text.signInTitle} text={text}>
@@ -446,12 +659,46 @@ export function SignInPage({
         </Form>
       ) : null}
 
-      {view.kind === "step" && view.step === "identifier" && directory === null ? (
+      {view.kind === "step" && waitsByEmail && byEmail.method === "code" ? (
+        <Form key={`email-code-${view.shown}`} onSubmit={(event) => submit(event, () => client.submitEmailCode(code))}>
+          <Notice kind="info">{text.emailCodeSent(byEmail.address)}</Notice>
+          <Field
+            label={text.emailCodeLabel}
+            hint={text.emailCodeHint}
+            name="email-code"
+            autoComplete="one-time-code"
+            inputMode="numeric"
+            autoFocus
+            verbatim
+            value={code}
+            onChange={setCode}
+          />
+          <Submit label={text.signIn} busy={busy} text={text} />
+          <Action variant="ghost" label={text.sendAnotherCode} busy={busy} onClick={() => void askByEmail("code")} />
+          <Action variant="ghost" label={text.useAnotherIdentifier} onClick={() => void startAgain()} />
+        </Form>
+      ) : null}
+
+      {view.kind === "step" && waitsByEmail && byEmail.method === "link" ? (
+        <>
+          <Notice kind="info">{text.emailLinkSent(byEmail.address)}</Notice>
+          <Ways>
+            <li>
+              <Action variant="ghost" label={text.sendAnotherLink} busy={busy} onClick={() => void askByEmail("link")} />
+            </li>
+            <li>
+              <Action variant="ghost" label={text.useAnotherIdentifier} onClick={() => void startAgain()} />
+            </li>
+          </Ways>
+        </>
+      ) : null}
+
+      {view.kind === "step" && view.step === "identifier" && directory === null && byEmail === null ? (
         <Form
           key={view.shown}
           onSubmit={(event) => {
             stopOffering();
-            submit(event, () => client.submitIdentifier(identifier));
+            submit(event, () => sendIdentifier(client, identifier));
           }}
         >
           {passkeyNoAnswer ? <Notice kind="danger">{text.passkeyNoAnswer}</Notice> : null}
@@ -464,14 +711,25 @@ export function SignInPage({
             value={identifier}
             onChange={setIdentifier}
           />
+          {needAddress ? <Notice kind="danger">{text.typeAddressFirst}</Notice> : null}
           <Submit label={text.continue} busy={busy} text={text} />
           {webAuthnAvailable() ? (
             <Action label={text.signInWithPasskey} busy={busy} onClick={() => void askPasskey()} />
           ) : null}
+          {byEmailOffered.code ? (
+            <Action label={text.emailMeACode} busy={busy} onClick={() => void askByEmail("code")} />
+          ) : null}
+          {byEmailOffered.link ? (
+            <Action label={text.emailMeALink} busy={busy} onClick={() => void askByEmail("link")} />
+          ) : null}
         </Form>
       ) : null}
 
-      {view.kind === "step" && view.step === "identifier" && directory === null && providers.length > 0 ? (
+      {view.kind === "step" &&
+      view.step === "identifier" &&
+      directory === null &&
+      byEmail === null &&
+      providers.length > 0 ? (
         <>
           <p className="auth-divider">{text.or}</p>
           <Ways>
@@ -594,7 +852,88 @@ export function SignInPage({
         </Form>
       ) : null}
 
-      {view.kind === "step" && !["identifier", "password", "totp", "webauthn"].includes(view.step) ? (
+      {enrolling && settingUp !== null ? (
+        <Form
+          key={`enrollment-${view.shown}`}
+          onSubmit={(event) => submit(event, () => client.finishApplicationEnrollment(code.replace(/\s/g, "")))}
+        >
+          <Words>{text.setUpLead}</Words>
+          <QrCode value={settingUp.uri} label={text.qrLabel} />
+          <VStack gap={1}>
+            <Text as="p" type="supporting" color="secondary">
+              {text.secretLabel}
+            </Text>
+            <Text as="p" className="auth-code">
+              {grouped(settingUp.secret)}
+            </Text>
+          </VStack>
+          <Field
+            label={text.totpLabel}
+            hint={text.totpHint}
+            name="code"
+            autoComplete="one-time-code"
+            inputMode="numeric"
+            autoFocus
+            verbatim
+            value={code}
+            onChange={setCode}
+          />
+          <Submit label={text.confirmAndSignIn} busy={busy} text={text} />
+          <Action
+            variant="ghost"
+            label={text.chooseAnotherWay}
+            onClick={() => {
+              setCode("");
+              setSettingUp(null);
+            }}
+          />
+        </Form>
+      ) : null}
+
+      {enrolling && settingUp === null ? (
+        <VStack gap={4}>
+          <Words>{text.enrollLead}</Words>
+          {kinds === null ? (
+            <Words quiet announced>
+              {text.loading}
+            </Words>
+          ) : null}
+          {offersApplication ? (
+            <Action
+              variant="primary"
+              label={text.setUpApplication}
+              busy={busy}
+              onClick={() => void beginApplication()}
+            />
+          ) : null}
+          {offersKeys ? (
+            <VStack gap={2}>
+              <Words>{text.enrollKeysLead}</Words>
+              {keyNoAnswer ? <Notice kind="danger">{text.keyNoAnswer}</Notice> : null}
+              <Field
+                label={text.keyNameLabel}
+                hint={text.keyNameHint}
+                name="key-name"
+                autoComplete="off"
+                value={keyName}
+                onChange={setKeyName}
+              />
+              {kinds?.includes("security_key") === true ? (
+                <Action label={text.addSecurityKey} busy={busy} onClick={() => void addKey(false)} />
+              ) : null}
+              {kinds?.includes("passkey") === true ? (
+                <Action label={text.addPasskey} busy={busy} onClick={() => void addKey(true)} />
+              ) : null}
+            </VStack>
+          ) : null}
+          {kinds !== null && !offersApplication && !offersKeys ? (
+            <Notice kind="danger">{text.nothingToSetUp}</Notice>
+          ) : null}
+          <Action variant="ghost" label={text.useAnotherIdentifier} onClick={() => void startAgain()} />
+        </VStack>
+      ) : null}
+
+      {view.kind === "step" && !KNOWN_STEPS.includes(view.step) ? (
         <>
           <Notice kind="danger">{text.unknownStep}</Notice>
           <Action label={text.startAgain} onClick={() => void startAgain()} />

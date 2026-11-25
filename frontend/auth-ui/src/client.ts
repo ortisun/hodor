@@ -36,7 +36,17 @@ export interface SignInAnswer {
    * tenant, and nothing else.
    */
   continueTo?: string;
+  /**
+   * The recovery codes made with a second factor the person just set up
+   * during the sign-in, shown once before the page goes on.
+   */
+  recoveryCodes?: string[];
 }
+
+/** What a person may set up at the enrollment step of a sign-in. */
+export type EnrollmentKind = "authenticator_application" | "security_key" | "passkey";
+
+const ENROLLMENT_KINDS: readonly EnrollmentKind[] = ["authenticator_application", "security_key", "passkey"];
 
 /** An identity provider as the sign-in page shows it. */
 export interface OfferedProvider {
@@ -65,6 +75,14 @@ export interface Key {
 }
 
 /** The person's second factors. */
+/** What an invitation's link is for, as the server describes it. */
+export interface InvitationDescription {
+  organizationName: string;
+  email: string;
+  hasAccount: boolean;
+  expiresAt: string;
+}
+
 export interface Factors {
   /** `null` when the installation offers no authenticator application. */
   authenticatorApplication: { inUse: boolean } | null;
@@ -216,6 +234,10 @@ export class Client {
     if (status === "completed" && next !== null && this.#isOwnAuthorization(next)) {
       answer.continueTo = next;
     }
+    const codes = codesOf(reply.body);
+    if (codes !== null && codes.length > 0) {
+      answer.recoveryCodes = codes;
+    }
     return answer;
   }
 
@@ -361,6 +383,80 @@ export class Client {
     return options as Record<string, unknown>;
   }
 
+  /** The ways to sign in, other than the identifier and the password, that the tenant offers. */
+  async alternatives(): Promise<string[]> {
+    const reply = await this.#send("GET", "/sign-in/alternatives");
+    const listed = reply.body["alternatives"];
+    return Array.isArray(listed) ? listed.filter((entry): entry is string => typeof entry === "string") : [];
+  }
+
+  /**
+   * Asks for a code or a link to be sent to an address, in place of the
+   * identifier and the password. The answer is the same whoever the
+   * address belongs to.
+   */
+  async askByEmail(method: "code" | "link", email: string, locale: string): Promise<void> {
+    await this.#send("POST", `/sign-in/steps/email_${method}/send`, { email, locale });
+  }
+
+  /** Sends the code that came by email. */
+  async submitEmailCode(code: string): Promise<SignInAnswer> {
+    return this.#signIn(await this.#send("POST", "/sign-in/steps/email_code", { code }));
+  }
+
+  /** Sends the token of the link that came by email, within this browser's sign-in. */
+  async submitEmailLink(token: string): Promise<SignInAnswer> {
+    return this.#signIn(await this.#send("POST", "/sign-in/steps/email_link", { token }));
+  }
+
+  /** What can be set up at the enrollment step of a sign-in here, in the order to offer it. */
+  async enrollmentKinds(): Promise<EnrollmentKind[]> {
+    const reply = await this.#send("GET", "/sign-in/steps/enrollment/kinds");
+    const listed = reply.body["kinds"];
+    return Array.isArray(listed)
+      ? ENROLLMENT_KINDS.filter((kind) => listed.includes(kind))
+      : [];
+  }
+
+  /** Begins setting up an authenticator application at the enrollment step. The secret is given once. */
+  async beginApplicationEnrollment(): Promise<Enrollment> {
+    const reply = await this.#send("POST", "/sign-in/steps/enrollment/options", { kind: "authenticator_application" });
+    const secret = text(reply.body["secret"]);
+    const uri = text(reply.body["uri"]);
+    if (secret === null || uri === null) {
+      throw new Failure(null, reply.status);
+    }
+    return { secret, uri };
+  }
+
+  /** Begins registering a security key, or a passkey, at the enrollment step: the options for the browser. */
+  async beginKeyEnrollment(passkey: boolean): Promise<Record<string, unknown>> {
+    const reply = await this.#send("POST", "/sign-in/steps/enrollment/options", {
+      kind: passkey ? "passkey" : "security_key",
+    });
+    const options = reply.body["public_key"];
+    if (typeof options !== "object" || options === null) {
+      throw new Failure(null, reply.status);
+    }
+    return options as Record<string, unknown>;
+  }
+
+  /** Finishes setting up the application with a code it shows. */
+  async finishApplicationEnrollment(code: string): Promise<SignInAnswer> {
+    return this.#signIn(await this.#send("POST", "/sign-in/steps/enrollment", { code }));
+  }
+
+  /** Finishes registering the key with what the browser answered. */
+  async finishKeyEnrollment(registration: KeyRegistration, name: string): Promise<SignInAnswer> {
+    const named = name.trim();
+    return this.#signIn(
+      await this.#send("POST", "/sign-in/steps/enrollment", {
+        ...registration,
+        ...(named === "" ? {} : { name: named }),
+      }),
+    );
+  }
+
   /** Sends one of the person's recovery codes, in place of their security key or the code of their application. */
   async submitRecoveryCode(code: string): Promise<SignInAnswer> {
     return this.#signIn(await this.#send("POST", "/sign-in/steps/recovery_code", { code }));
@@ -471,6 +567,30 @@ export class Client {
     await this.#send("POST", "/registration/complete", {
       token,
       password,
+      ...(name === "" ? {} : { display_name: name }),
+    });
+  }
+
+  /** What an invitation's link is for. */
+  async describeInvitation(token: string): Promise<InvitationDescription> {
+    const reply = await this.#send("POST", "/invitations/describe", { token });
+    return {
+      organizationName: text(reply.body["organization_name"]) ?? "",
+      email: text(reply.body["email"]) ?? "",
+      hasAccount: reply.body["has_account"] === true,
+      expiresAt: text(reply.body["expires_at"]) ?? "",
+    };
+  }
+
+  /**
+   * Accepts an invitation. With a password, creates the account of an
+   * address that has none; without, joins as the signed-in person.
+   */
+  async acceptInvitation(token: string, password?: string, displayName?: string): Promise<void> {
+    const name = displayName?.trim() ?? "";
+    await this.#send("POST", "/invitations/accept", {
+      token,
+      ...(password === undefined ? {} : { password }),
       ...(name === "" ? {} : { display_name: name }),
     });
   }

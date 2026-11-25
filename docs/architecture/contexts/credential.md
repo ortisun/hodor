@@ -4,7 +4,7 @@ The `credential` context owns what a user proves their identity with. It stores 
 
 It does not decide whether a sign-in succeeds. That belongs to the `authentication` context, which also counts failed attempts and locks accounts. The credential context only says whether a secret is right.
 
-This page specifies passwords (Milestone 1), access tokens, and authenticator applications, security keys, passkeys and recovery codes (Milestone 4). Keys for programs are credentials too and are specified here when their turn comes.
+This page specifies passwords (Milestone 1), access tokens, authenticator applications, security keys, passkeys and recovery codes (Milestone 4), and the API keys of service accounts and agents (Milestone 8, Issue-94).
 
 ## Passwords
 
@@ -78,6 +78,53 @@ A token that is malformed, unknown, expired or revoked is refused in the same wa
 
 Holding a valid token is not enough: whoever accepts it must still ask the identity context whether the user may sign in, and the [authorization context](authorization.md) whether the user may do what is asked. A suspended user's tokens stop working without anyone revoking them.
 
+## API keys
+
+An API key lets a [service account or an agent](identity.md#service-accounts-and-agents) call Hodor's administration interface and its Authorization API without a token endpoint: the key is presented as it is, as a bearer token ([Decision 0033](../../decisions/0033-api-keys.md)).
+
+| Property | Rule |
+|---|---|
+| Holder | One service account or agent of the tenant. A person holds no key: a person signs in |
+| Shape | The text `hodor_ak_` followed by 64 lowercase hexadecimal characters: 32 random bytes from the operating system |
+| Storage | Only the SHA-256 of the key, unique within the tenant. The key is returned once, when it is made or rotated, and never again; the last four characters are kept as a **hint**, so that a person can tell their keys apart |
+| Name | 1 to 100 characters without control characters, for administrators |
+| Scopes | 1 to 50 of the scopes Hodor's own interfaces understand: a permission of the administration interface, such as `users:read`, or a scope of [the Authorization API](authorization.md#who-may-ask), `authz:evaluate`, `authz:simulate` or `authz:explain`. Each once |
+| Application | The application whose resource server the key asks the Authorization API about. Required with a scope of the Authorization API, refused without one |
+| Lifetime | 1 to 365 days; 90 unless chosen. There is no key that does not expire |
+| Last use | When it was last accepted, to the minute |
+| How many | A workload holds at most 10 keys that are neither revoked nor expired, not counting a key that was rotated and still works for its overlap |
+
+### Recognizing a key
+
+The prefix tells anyone who finds a key in a repository, a log or a ticket what it is. Secret scanning tools can be given these patterns, one per kind of secret Hodor makes:
+
+| Secret | Pattern |
+|---|---|
+| API key | `hodor_ak_[0-9a-f]{64}` |
+| Client secret | `hodor_cs_[0-9a-f]{64}` |
+| Access token of the administration interface | `hodor_at_[0-9a-f]{64}` |
+
+A key found where it should not be is revoked by an administrator of its tenant. A value with the prefix but not the shape matches no key, and nothing is computed or looked up for it.
+
+### When a key is accepted
+
+A presented key is accepted only when all of these hold; otherwise it is refused in one way, whatever the reason:
+
+- it has the shape of a key, and its hash is a key of this tenant;
+- it is not revoked and has not expired;
+- its holder is a service account or an agent of the tenant that may act. Disabling the workload stops its keys at once; enabling it again lets them work.
+
+What an accepted key may then do is the interface's to decide:
+
+- **At the administration interface** a request needs the route's permission among the key's scopes **and** among the permissions of the built-in roles its holder holds ([the administration interface](../../api/admin-api.md#who-may-call-it)). A key never does more than its holder may. A workload is given a built-in role by the operator, with `hodor-cli admin grant`.
+- **At the Authorization API** the key stands for its application, as a client's token does: the resource server asked about is the application's, and the scopes open the routes as a token's do ([who may ask](authorization.md#who-may-ask)).
+
+### Rotation and revocation
+
+- **Rotating** a key makes a new one, with the same holder, name, scopes and application, a lifetime of its own, and returns it once. The old key keeps working for an **overlap** of 0 to 30 days, 7 unless chosen, and never longer than it would have; it then names the key that replaced it. Only a key that was not replaced can be rotated: rotating the same key twice would leave two lines.
+- **Revoking** a key ends it at once. Revoking is final, and revoking a revoked key changes nothing.
+- **Deleting a workload** revokes its keys, with the reason `workload_deleted`.
+
 ## Authenticator applications
 
 An authenticator application on the person's phone shows a six-digit code that changes every thirty seconds: a time-based one-time password, TOTP, as RFC 6238 defines it. It is something the person has, and a second factor after the password.
@@ -99,9 +146,9 @@ HMAC-SHA-1 is what the standard and the applications use. [Decision 0008](../../
 Enrolling takes two calls, so that an application that never received the secret cannot be put in use:
 
 1. **Begin.** A new secret is made and stored as an enrollment waiting to be confirmed, replacing any earlier one that was never confirmed. The answer, given once, holds the secret in Base32 and an `otpauth://totp/` address for a QR code, naming the tenant as the issuer and the person's login identifier as the account. A user who already has an application in use keeps it until the new one is confirmed.
-2. **Confirm.** The person types a code their application shows. A right code puts the new application in use and removes the old one; that code counts as used. A wrong code leaves everything as it was. An enrollment not confirmed within ten minutes of beginning is gone: confirming it is refused, and the person begins again.
+2. **Confirm.** The person types a code their application shows. A right code puts the new application in use and removes the old one; that code counts as used. A wrong code leaves everything as it was. An enrollment not confirmed within ten minutes of beginning is gone: confirming it is refused, and the person begins again. The caller may name the enrollment it confirms, by the identifier beginning gave it: when the enrollment waiting is another, begun since, confirming is refused as if none waited.
 
-Who may enroll is decided by the caller: the person, from [their own pages](authentication.md#a-persons-own-factors) after proving themselves again, or an operator with the command-line tool.
+Who may enroll is decided by the caller: the person, from [their own pages](authentication.md#a-persons-own-factors) after proving themselves again or [during a sign-in](authentication.md#enrolling-a-second-factor-during-a-sign-in) under a policy that requires a second factor, or an operator with the command-line tool. A sign-in names the enrollment it began when it confirms it.
 
 ### Checking a code
 
@@ -284,11 +331,17 @@ Removing takes away the user's set. The credential context does not remove a set
 | Issue access token | Makes a token for a user with a lifetime and a note of what it is for, and returns it once |
 | Authenticate access token | Says which user and token a presented token belongs to, or nothing |
 | Revoke access token | Ends a token |
+| Create API key | Makes a key for a workload with a name, scopes, an application when it needs one, and a lifetime, and returns it once |
+| List API keys | A workload's keys, newest first, with their hint and status, never the key |
+| Rotate API key | Makes the next key of a line, returned once, and shortens the old one to the overlap |
+| Revoke API key | Ends a key; ending one that is revoked changes nothing |
+| Revoke every API key of a workload | In the caller's unit of work, when the workload is deleted |
+| Authenticate API key | Says which key a presented value is, if it is one that works, and records its use |
 | Verify password | Answers "verified" or "rejected". On success, if the stored hash uses old parameters, it is replaced with a fresh one |
 | Remove password | Deletes the password and its history, for example when a user is erased |
 | Has password | Says whether a user has a password; for administrators and the account pages, never for a sign-in form |
 | Begin authenticator application enrollment | Makes a secret, stores it as waiting to be confirmed, and returns it once with its `otpauth://` address |
-| Confirm authenticator application enrollment | Puts the waiting application in use when the code typed is right |
+| Confirm authenticator application enrollment | Puts the waiting application in use when the code typed is right, and, when the caller names an enrollment, only if it is the one waiting |
 | Verify authenticator application code | Answers "verified" or "rejected", and marks an accepted code as used |
 | Has authenticator application | Says whether a user has an application in use; asked by the sign-in once the person has proved a first factor |
 | Remove authenticator application | Takes away the application in use and any enrollment waiting to be confirmed |
@@ -318,6 +371,9 @@ Removing takes away the user's set. The credential context does not remove a set
 | `credential.password_removed` | A password was removed |
 | `credential.access_token_issued` | An access token was issued; carries the user, the token's identifier and when it expires |
 | `credential.access_token_revoked` | An access token was revoked; carries the user and the token's identifier |
+| `credential.api_key_created` | An API key was made; carries the holder, the key's identifier, its scopes and when it expires |
+| `credential.api_key_rotated` | A key was replaced; carries the holder, the old key's identifier, the new one's, when the old one now stops and when the new one expires |
+| `credential.api_key_revoked` | A key was revoked; carries the holder, the key's identifier and the reason, `revoked_by_administrator` or `workload_deleted` |
 | `credential.totp_enrolled` | A user's authenticator application was put in use; carries the user |
 | `credential.totp_removed` | A user's authenticator application was removed; carries the user |
 | `credential.webauthn_registered` | A WebAuthn credential was registered; carries the user and Hodor's identifier of the credential |
@@ -338,6 +394,7 @@ Events carry the user's identifier and nothing derived from the password, from a
 |---|---|
 | `PasswordStore` | Store and load a user's password record and history, with optimistic locking |
 | `AccessTokenStore` | Store access tokens, find one by the hash of its token, mark one revoked |
+| `ApiKeyStore` | Store API keys, find one by its hash, list a holder's, count a holder's that work, store a change, and record a use at most once a minute in one statement |
 | `PasswordHasher` | Hash a password, verify a password against a stored hash and say whether the hash should be renewed, and perform a discarded computation of equal cost |
 | `TotpStore` | Store a user's authenticator application and the enrollment waiting to be confirmed; put one in use; mark a step used only if it is later than the last one, in one statement |
 | `HmacSha1` | Compute HMAC-SHA-1, from which the codes are made |
@@ -381,6 +438,24 @@ The hasher is a port because the choice of library is an infrastructure decision
 | `description` | `text` | What the token is for, as written by whoever issued it |
 | `created_at`, `expires_at` | `timestamptz` | |
 | `revoked_at` | `timestamptz` | Null unless revoked |
+
+### `credential.api_key`
+
+| Column | Type | Notes |
+|---|---|---|
+| `tenant_id`, `id` | `uuid` | Primary key |
+| `holder_id` | `uuid` | The workload. Deliberately not a reference: contexts do not reference each other's tables |
+| `key_hash` | `bytea` | SHA-256 of the key, 32 bytes; unique within the tenant |
+| `hint` | `text` | The last four characters of the key |
+| `name` | `text` | |
+| `scopes` | `text[]` | |
+| `application_id` | `uuid` | Or null. Not a reference: the application is the OAuth context's |
+| `created_at`, `expires_at` | `timestamptz` | |
+| `last_used_at` | `timestamptz` | Null until used |
+| `revoked_at`, `revocation_reason` | `timestamptz`, `text` | Both null or both set |
+| `replaced_by` | `uuid` | The key that replaced it, once rotated. Not a reference, so that the cleanup job can remove either first |
+
+A tenant table under row-level security. The cleanup job removes a key 30 days after it expired or was revoked ([cleanup](../../operations/deployment.md#cleanup)).
 
 ### `credential.totp`
 
@@ -452,7 +527,7 @@ The design's data model has a general `credential` table with one row per creden
 | A secret key mixed into every hash, kept outside the database | With the keys context, Phase 2 |
 | HOTP, the counter-based codes of RFC 4226, and codes sent by email or text message | Phase 4, outside the plan of 0.2.0 |
 | A relying party of each tenant's own, so that a browser offers only that tenant's passkeys | With custom domains for tenants, Phase 3 |
-| Removing pending WebAuthn registrations that were never finished | With the other cleanup jobs |
 | Checking attestation, EdDSA keys | When someone needs them ([Decision 0024](../../decisions/0024-webauthn-checks.md)) |
-| Keys for programs and certificates | Phases 5 and 6 |
+| A checksum in API keys, so that a scanner can check a key offline | When a scanning service asks for it ([Decision 0033](../../decisions/0033-api-keys.md)) |
+| Certificates for programs | Phase 6 |
 | Listing and revoking access tokens through an interface, and recording when one was last used | With OAuth in Phase 2, which replaces them |

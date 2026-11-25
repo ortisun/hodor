@@ -1,8 +1,9 @@
 //! The use cases of the authentication context: running a sign-in.
 
 use crate::application::ports::TransactionStore;
-use crate::domain::authenticator::StepInput;
-use crate::domain::engine::{FlowEngine, Progress};
+use crate::domain::authenticator::{ExternalInput, StepInput};
+use crate::domain::engine::{FlowEngine, Progress, Submitted};
+use crate::domain::enrollment::Enrolled;
 use crate::domain::event::AuthenticationEvent;
 use crate::domain::flow::AuthFlow;
 use crate::domain::transaction::{AuthTransaction, TransactionId, TransactionState};
@@ -28,6 +29,9 @@ pub enum SignIn {
         transaction_id: TransactionId,
         /// The key of the step that is expected.
         step: String,
+        /// The recovery codes made with a second factor the last step put
+        /// in use, to be shown once; empty otherwise.
+        recovery_codes: Vec<Secret<String>>,
     },
     /// The last input was rejected; the same step is expected again.
     Rejected {
@@ -46,6 +50,9 @@ pub enum SignIn {
         session: Box<Session>,
         /// Its token, to be handed to the browser. Not available again.
         token: SessionToken,
+        /// The recovery codes made with a second factor the last step put
+        /// in use, to be shown once; empty otherwise.
+        recovery_codes: Vec<Secret<String>>,
     },
 }
 
@@ -264,6 +271,16 @@ impl AuthenticationService {
         self.engine.assurance_of_methods(methods)
     }
 
+    /// The alternatives a sign-in of the tenant may take at its start, in
+    /// the order of the flow, for the pages to offer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the tenant's settings cannot be read.
+    pub async fn alternatives(&self, tenant: &TenantContext) -> Result<Vec<String>, DomainError> {
+        self.engine.offered_alternatives(tenant, &self.flow).await
+    }
+
     /// Says which step a sign-in is waiting for, so that its page can be
     /// shown again.
     ///
@@ -282,25 +299,35 @@ impl AuthenticationService {
         self.pending(&transaction)
     }
 
-    /// Asks the current step of a sign-in for a challenge, for a step that
-    /// needs one, and returns what the browser needs to answer it.
+    /// Asks the current step of a sign-in, or an alternative while no step
+    /// has been satisfied, for a challenge, with what the person gave in
+    /// `asked`, and returns what the browser needs to answer it. For the
+    /// email alternatives this sends the code or the link.
     ///
     /// # Errors
     ///
     /// Returns `NotFound` if there is no such sign-in, `Conflict` if it is
-    /// not in progress or was advanced by another request meanwhile, and
-    /// `Invalid` if `step` is not the current step or needs no challenge.
+    /// not in progress or was advanced by another request meanwhile,
+    /// `Invalid` if the step is not the current step or needs no challenge,
+    /// `Forbidden` for an alternative the tenant does not offer, and
+    /// `RateLimited` when too much was asked.
     pub async fn challenge(
         &self,
         tenant: &TenantContext,
         id: TransactionId,
         secret: &str,
-        step: &str,
+        asked: ExternalInput,
     ) -> Result<serde_json::Value, DomainError> {
         let mut transaction = self.load(tenant, id, secret).await?;
         let options = self
             .engine
-            .challenge(tenant, &self.flow, &mut transaction, step, self.clock.now())
+            .challenge(
+                tenant,
+                &self.flow,
+                &mut transaction,
+                &asked,
+                self.clock.now(),
+            )
             .await?;
         self.store(tenant, &transaction, None).await?;
         Ok(options)
@@ -330,15 +357,28 @@ impl AuthenticationService {
         let step = input.step_key().to_owned();
         let step = step.as_str();
         let demanded = self.demanded(tenant, &transaction).await?;
-        let progress = self
+        let Submitted { progress, enrolled } = self
             .engine
-            .submit(tenant, &self.flow, &mut transaction, &input, demanded, now)
+            .submit_step(tenant, &self.flow, &mut transaction, &input, demanded, now)
             .await?;
+        // The factor is in use already, whatever becomes of the sign-in.
+        let recovery_codes = match enrolled {
+            Some(enrolled) => self.enrolled(tenant, &transaction, enrolled).await?,
+            None => Vec::new(),
+        };
 
         match progress {
             Progress::Next { .. } => {
                 self.store(tenant, &transaction, None).await?;
-                self.pending(&transaction)
+                let mut pending = self.pending(&transaction)?;
+                if let SignIn::Pending {
+                    recovery_codes: shown,
+                    ..
+                } = &mut pending
+                {
+                    *shown = recovery_codes;
+                }
+                Ok(pending)
             }
             Progress::Rejected { attempts_left } => {
                 self.store(tenant, &transaction, Some(self.failed(step, &transaction)))
@@ -356,8 +396,35 @@ impl AuthenticationService {
                     .await?;
                 Ok(SignIn::Failed)
             }
-            Progress::ReadyToComplete => self.complete(tenant, transaction, step).await,
+            Progress::ReadyToComplete => match self.complete(tenant, transaction, step).await? {
+                SignIn::Completed { session, token, .. } => Ok(SignIn::Completed {
+                    session,
+                    token,
+                    recovery_codes,
+                }),
+                other => Ok(other),
+            },
         }
+    }
+
+    /// Records that the enrollment step put a factor in use, and answers
+    /// the recovery codes made with it.
+    async fn enrolled(
+        &self,
+        tenant: &TenantContext,
+        transaction: &AuthTransaction,
+        enrolled: Enrolled,
+    ) -> Result<Vec<Secret<String>>, DomainError> {
+        if let Some(user_id) = transaction.candidate() {
+            let mut uow = self.units_of_work.begin(tenant).await?;
+            let event = AuthenticationEvent::SecondFactorEnrolled {
+                user_id,
+                kind: enrolled.kind.as_str(),
+            };
+            self.record(uow.as_mut(), &event)?;
+            uow.commit().await?;
+        }
+        Ok(enrolled.recovery_codes)
     }
 
     /// Ends a sign-in. Ending one that has already ended changes nothing.
@@ -457,6 +524,7 @@ impl AuthenticationService {
         Ok(SignIn::Completed {
             session: Box::new(session),
             token,
+            recovery_codes: Vec::new(),
         })
     }
 
@@ -575,6 +643,7 @@ impl AuthenticationService {
         Ok(SignIn::Pending {
             transaction_id: transaction.id(),
             step: self.pending_step(transaction)?,
+            recovery_codes: Vec::new(),
         })
     }
 

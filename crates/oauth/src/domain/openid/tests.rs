@@ -2,6 +2,7 @@ use super::*;
 use crate::domain::authorization::{CodeHash, GrantId};
 use crate::domain::token::SUPPORTED_GRANT_TYPES;
 use crate::testing::{FakeVerifier, fake_signature};
+use hodor_kernel::UserId;
 use hodor_kernel::random::testing::FakeDigest;
 use hodor_session::api::SessionId;
 
@@ -50,6 +51,38 @@ fn each_method_is_named_as_rfc_8176_names_it() {
         "an external sign-in names nothing, and counts as something known, \
          as it does for the acr"
     );
+    assert_eq!(
+        authentication_methods(&methods(&["email_code"])),
+        ["otp"],
+        "a code by email is a one-time password, and one factor"
+    );
+    assert!(
+        authentication_methods(&methods(&["email_link"])).is_empty(),
+        "RFC 8176 has no name for a link"
+    );
+    assert_eq!(
+        authentication_methods(&methods(&["email_link", "webauthn"])),
+        ["pop", "mfa"],
+        "the mailbox counts as something known, as it does for the acr"
+    );
+    assert_eq!(
+        authentication_methods(&methods(&["email_code", "totp"])),
+        ["otp", "mfa"]
+    );
+    assert!(
+        authentication_methods(&methods(&["enrollment"])).is_empty(),
+        "RFC 8176 has no name for a factor put in use during the sign-in"
+    );
+    assert_eq!(
+        authentication_methods(&methods(&["password", "enrollment"])),
+        ["pwd", "mfa"],
+        "a factor set up after the password counts as something held, as \
+         it does for the acr"
+    );
+    assert_eq!(
+        authentication_methods(&methods(&["external", "enrollment"])),
+        ["mfa"]
+    );
     assert!(authentication_methods(&methods(&["something-new"])).is_empty());
 }
 
@@ -83,6 +116,11 @@ fn the_id_token_says_who_signed_in_for_which_client() {
     let claims = id_token_claims(
         ISSUER,
         &code,
+        IdTokenNames {
+            subject: "the person as the client knows them",
+            session: "the session as the client knows it",
+        },
+        None,
         client,
         Duration::minutes(5),
         now(),
@@ -90,7 +128,7 @@ fn the_id_token_says_who_signed_in_for_which_client() {
         &FakeDigest,
     );
     assert_eq!(claims["iss"], ISSUER);
-    assert_eq!(claims["sub"], code.user_id.to_string());
+    assert_eq!(claims["sub"], "the person as the client knows them");
     assert_eq!(claims["aud"], client.to_string(), "the client alone");
     assert_eq!(claims["iat"], now().unix_timestamp());
     assert_eq!(
@@ -111,8 +149,7 @@ fn the_id_token_says_who_signed_in_for_which_client() {
         "16 bytes of base64url"
     );
     assert_eq!(
-        claims["sid"],
-        code.session_id.to_string(),
+        claims["sid"], "the session as the client knows it",
         "the session, for logout"
     );
     for absent in ["azp", "email", "name", "scope", "client_id"] {
@@ -125,6 +162,11 @@ fn an_id_token_leaves_out_what_the_sign_in_did_not_have() {
     let claims = id_token_claims(
         ISSUER,
         &code(None, &["external"]),
+        IdTokenNames {
+            subject: "the person as the client knows them",
+            session: "the session as the client knows it",
+        },
+        None,
         ClientId::generate(),
         Duration::minutes(5),
         now(),
@@ -208,7 +250,7 @@ fn check(token: &str) -> Result<CheckedAccessToken, BearerRefusal> {
 fn a_good_access_token_is_accepted_with_its_scopes() {
     let user = UserId::generate();
     let checked = check(&sign(&good_header(), &good_claims(user))).expect("accepted");
-    assert_eq!(checked.user_id, user);
+    assert_eq!(checked.subject, user.to_string());
     assert_eq!(checked.scopes, ["openid", "profile"]);
     assert_eq!(checked.token_id, "token-1");
     assert_eq!(checked.client_id, "a-client");
@@ -270,7 +312,8 @@ fn every_bad_access_token_is_refused_for_its_own_reason() {
             invalid("the token does not say when it expires"),
         ),
         (
-            changed_claim("sub", json!("not-a-user")),
+            // The client acting for itself: client credentials.
+            changed_claim("sub", json!("a-client")),
             invalid("the token names no person"),
         ),
         (
@@ -311,19 +354,24 @@ fn userinfo_answers_only_the_claims_of_the_token_s_scopes() {
         locale: Some("pt-BR".to_owned()),
         updated_at: Some(now()),
         email: Some(("ana@example.com".to_owned(), true)),
+        groups: vec![GroupId::generate()],
     };
     let scopes =
         |list: &[&str]| -> Vec<String> { list.iter().map(|scope| (*scope).to_owned()).collect() };
     assert_eq!(
-        userinfo_claims(user, &scopes(&["openid"]), &person),
+        userinfo_claims(&user.to_string(), &scopes(&["openid"]), &person),
         json!({"sub": user.to_string()})
     );
     assert_eq!(
-        userinfo_claims(user, &scopes(&["openid", "email"]), &person),
+        userinfo_claims(&user.to_string(), &scopes(&["openid", "groups"]), &person),
+        json!({"sub": user.to_string(), "groups": [person.groups[0].to_string()]})
+    );
+    assert_eq!(
+        userinfo_claims(&user.to_string(), &scopes(&["openid", "email"]), &person),
         json!({"sub": user.to_string(), "email": "ana@example.com", "email_verified": true})
     );
     assert_eq!(
-        userinfo_claims(user, &scopes(&["openid", "profile"]), &person),
+        userinfo_claims(&user.to_string(), &scopes(&["openid", "profile"]), &person),
         json!({
             "sub": user.to_string(),
             "name": "Ana Lima",
@@ -334,7 +382,7 @@ fn userinfo_answers_only_the_claims_of_the_token_s_scopes() {
     );
     assert_eq!(
         userinfo_claims(
-            user,
+            &user.to_string(),
             &scopes(&["openid", "profile", "email"]),
             &PersonClaims::default()
         ),
@@ -366,12 +414,20 @@ fn discovery_names_only_what_is_built() {
         document["end_session_endpoint"],
         format!("{ISSUER}/oauth2/logout")
     );
+    assert_eq!(document["backchannel_logout_supported"], json!(true));
+    assert_eq!(
+        document["backchannel_logout_session_supported"],
+        json!(true)
+    );
     assert_eq!(
         document["grant_types_supported"],
         json!(SUPPORTED_GRANT_TYPES)
     );
     assert_eq!(document["response_types_supported"], json!(["code"]));
-    assert_eq!(document["subject_types_supported"], json!(["public"]));
+    assert_eq!(
+        document["subject_types_supported"],
+        json!(["public", "pairwise"])
+    );
     assert_eq!(
         document["code_challenge_methods_supported"],
         json!(["S256"])
@@ -409,4 +465,46 @@ fn discovery_names_only_what_is_built() {
     ] {
         assert!(document.get(absent).is_none(), "{absent} is not built");
     }
+}
+
+#[test]
+fn the_id_token_names_the_organization_of_the_sign_in() {
+    let organization = OrganizationId::generate();
+    let claims = id_token_claims(
+        ISSUER,
+        &code(None, &["password"]),
+        IdTokenNames {
+            subject: "the person as the client knows them",
+            session: "the session as the client knows it",
+        },
+        Some(organization),
+        ClientId::generate(),
+        Duration::minutes(5),
+        now(),
+        "token",
+        &FakeDigest,
+    );
+    assert_eq!(claims["org_id"], organization.to_string());
+    assert!(
+        claims.get("groups").is_none(),
+        "groups stay out of the ID token"
+    );
+}
+
+#[test]
+fn userinfo_answers_every_group_however_many() {
+    let person = PersonClaims {
+        name: None,
+        preferred_username: None,
+        locale: None,
+        updated_at: None,
+        email: None,
+        groups: (0..150).map(|_| GroupId::generate()).collect(),
+    };
+    let claims = userinfo_claims(
+        "the person as the client knows them",
+        &["openid".to_owned(), "groups".to_owned()],
+        &person,
+    );
+    assert_eq!(claims["groups"].as_array().map(Vec::len), Some(150));
 }
