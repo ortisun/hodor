@@ -414,7 +414,7 @@ A bundle's summary is `bundle_sha256`, the SHA-256 of the bundle as it is kept, 
 
 ## The certificate authority of a tenant
 
-A tenant may have a certificate authority of its own, which signs the intermediate certificates of its service meshes so that every mesh of the tenant trusts one root ([Decision 0030](../../decisions/0030-optional-certificate-authority.md)). This section specifies the authority itself: how it is turned on, its key, its certificate and name constraints, its published bundle and how Hodor trusts it. Signing the meshes' intermediates is Issue-117. Why it is built this way is [Decision 0062](../../decisions/0062-the-certificate-authority-of-a-tenant.md).
+A tenant may have a certificate authority of its own, which signs the intermediate certificates of its service meshes so that every mesh of the tenant trusts one root ([Decision 0030](../../decisions/0030-optional-certificate-authority.md)). This section specifies the authority itself: how it is turned on, its key, its certificate and name constraints, its published bundle and how Hodor trusts it, and the intermediates it signs and withdraws. Why it is built this way is [Decision 0062](../../decisions/0062-the-certificate-authority-of-a-tenant.md), and for its intermediates [Decision 0071](../../decisions/0071-signing-intermediates.md).
 
 ### Turning it on
 
@@ -436,7 +436,7 @@ A tenant may have a certificate authority of its own, which signs the intermedia
 | Trust domains | The trust domains it may sign for: 1 to 10 names, each a DNS name (below), no two the same |
 | Common name | The common name of its certificate's subject: 1 to 64 characters, `Hodor certificate authority` unless given. Under `development`, ` (development)` is added to it |
 | Lifetime | For a root: how long its certificate is valid, 1 to 3650 days, 1826 (five years) unless given |
-| Intermediate lifetime | The longest an intermediate it signs may live (Issue-117): 1 to 365 days, 30 unless given, and shorter than the root's own lifetime |
+| Intermediate lifetime | The longest an intermediate it signs may live ([signing intermediates](#signing-intermediates)): 1 to 365 days, 30 unless given, and shorter than the root's own lifetime |
 | For development | Whether it was made under `development`. Every answer about the authority says so |
 | Key | The identifier its key was made for, the provider that made it, the material that provider handed back, and its public key: ECDSA P-256 |
 | Certificate signing request | For an intermediate: the request Hodor made, in DER |
@@ -486,7 +486,9 @@ Verifiers that honor URI constraints, such as Go's, which Istio, Linkerd and SPI
 
 The check of a certificate a trusted proxy forwards, at the token, introspection and revocation endpoints, is `check_path` ([an identity forwarded by a proxy](oauth.md#an-identity-forwarded-by-a-proxy)): with the authorities of the identity's trust domain as anchors, a workload certificate under the tenant's authority is accepted for `spiffe_x509` and `tls_client_auth`, and one for a name outside its trust domains is refused.
 
-A certificate below the anchor that constrains URIs itself is refused by the first part. Intermediates the authority signs (Issue-117) therefore carry its DNS and address constraints, narrowed if asked, and no URI constraint: the authority's own bind every certificate below it.
+A certificate below the anchor that constrains URIs itself is refused by the first part. Intermediates the authority signs therefore carry its DNS and address constraints, narrowed if asked, and no URI constraint: the authority's own bind every certificate below it ([signing intermediates](#signing-intermediates)).
+
+`check_path` is also given the withdrawn keys of the tenant: a path whose intermediates hold one of them is refused, and `rustls-webpki` looks for another path through the certificates given before it gives up ([withdrawing an intermediate](#withdrawing-an-intermediate)).
 
 ### Its bundle
 
@@ -509,6 +511,97 @@ The authority's bundle is published at `GET /t/{tenant}/certificate-authority/bu
 
 **Hodor trusts it.** When the authority becomes active, a [trust domain](#trust-domains) of source `authority` is added for each of its trust domains, holding this bundle. Every check that reads a trust domain's bundle then trusts what the authority signed. Removing the authority removes those of its trust domains that still have the source `authority`.
 
+### Signing intermediates
+
+The authority signs the intermediate certificates of the tenant's meshes, and nothing else: an Istio cluster's `cacerts`, Linkerd's identity issuer, SPIRE's upstream authority. A mesh makes its own key and a certificate signing request for it; Hodor checks the request, signs a certificate for it with the authority's key, and keeps what it signed. A workload's own certificate always comes from its mesh. Why it is built this way is [Decision 0071](../../decisions/0071-signing-intermediates.md).
+
+An administrator signs through [the administration interface](../../api/admin-api.md#intermediates) or `hodor-cli authority sign`; `hodor-cert-manager-issuer` (Issue-118) signs through the same operation ([who may sign](#who-may-sign)).
+
+#### What a request must be
+
+A request is a PKCS#10 certificate signing request in PEM, at most 16 kibibytes, with the lifetime the administrator asks for, in days, if any. It is signed only when every rule below holds, checked in this order. Each refusal has its own code and says the reason as its detail, such as which name is outside the trust domains:
+
+| Rule | Refused with |
+|---|---|
+| The tenant has an authority | `keys.authority_not_found` |
+| The authority is active: an intermediate authority has its certificate installed | `keys.authority_not_active` |
+| It reads as one certificate signing request in PEM; its signature checks with its own public key, so that whoever sends it holds the key; its subject is not empty | `keys.intermediate_request_invalid` |
+| It asks for an authority: its requested basic constraints say `cA` | `keys.intermediate_not_an_authority` |
+| It asks for no path length, or for zero | `keys.intermediate_path_length_invalid` |
+| Every name of its subject alternative names is within the authority's trust domains: a URI whose host is one of them exactly, as `spiffe://T/…`; a DNS name that is one of them or ends in `.` and one of them, as Linkerd's `identity.linkerd.T`. A name of another kind, such as an address or an email address, is refused. At most 20 names | `keys.intermediate_name_outside_trust_domains` |
+| The name constraints it asks for, if any, only narrow: each permitted DNS name is a trust domain of the authority or a name under one, and there are at most 20; no permitted subtree of another kind, such as an address range | `keys.intermediate_constraints_widened` |
+| It asks for no URI constraint, permitted or excluded, and for no excluded subtree other than DNS names and addresses: an intermediate never carries a URI constraint ([Decision 0062](../../decisions/0062-the-certificate-authority-of-a-tenant.md)) | `keys.intermediate_constraints_unsupported` |
+| Its key is ECDSA on P-256 or P-384, or RSA of 3072 to 8192 bits, and is not the authority's own key | `keys.intermediate_key_unsuitable` |
+| Its key was never withdrawn in the tenant ([withdrawing an intermediate](#withdrawing-an-intermediate)) | `keys.intermediate_key_withdrawn` |
+| Its lifetime is 1 day to the authority's bound on intermediates (30 days unless the authority says otherwise), and it ends no later than the authority's own certificate. Without one, it lives the bound | `keys.intermediate_lifetime_invalid` |
+
+A request with no subject alternative names is accepted: an intermediate needs none, and Istio's has none.
+
+#### The certificate Hodor writes
+
+Of the request, Hodor copies the subject, the public key and the subject alternative names, as they were written. It writes everything else itself, whatever the request asked for:
+
+| Part | Value |
+|---|---|
+| Issuer | The subject of the authority's certificate, as that certificate writes it |
+| Serial number | 16 random bytes, positive |
+| Validity | From one minute before it is signed, for its lifetime |
+| Signature | ECDSA with SHA-256, by the authority's key in its provider |
+| Basic constraints | Critical: an authority, with a path length of zero. It signs workloads and nothing deeper |
+| Key usage | Critical: `keyCertSign` and `cRLSign` |
+| Subject key identifier | The first 20 bytes of the SHA-256 of its subject public key info, as the authority's own is derived |
+| Authority key identifier | The authority's subject key identifier, when its certificate has one |
+| Subject alternative names | As the request wrote them, if it has any |
+| Name constraints | Critical. Permitted: the DNS names the request narrowed to, or else each trust domain of the authority as a DNS name. Excluded: the DNS names the request excluded, and every IPv4 and IPv6 address, `0.0.0.0/0` and `::/0`. No URI subtree |
+
+Other extensions a request asks for, such as extended key usages, are not copied.
+
+The answer holds the certificate in PEM and the chain above it: the authority's certificate and, for an intermediate authority, the certificates above it as the administrator gave them. Istio's `cacerts` takes them as `ca-cert.pem` and `cert-chain.pem`; Linkerd's identity issuer as `tls.crt` and `ca.crt`.
+
+A workload certificate under the intermediate is accepted by Hodor, through a trust domain of source `authority`, when its path to the authority holds: the intermediate's DNS and address constraints are read by `rustls-webpki`, and the authority's URI constraints by Hodor ([checking a path under the authority](#checking-a-path-under-the-authority)).
+
+#### Withdrawing an intermediate
+
+An administrator withdraws an intermediate, with a reason of 1 to 200 characters, when its key may have leaked or its mesh is gone:
+
+- **Withdrawal is of the key.** Every intermediate signed in the tenant for the same key, identified by the SHA-256 of its subject public key info, is withdrawn with it: a mesh may have had the same key signed again on renewal.
+- **Hodor stops trusting it at once.** Every certificate path Hodor checks in the tenant, under any trust domain, is refused when one of its intermediates holds a withdrawn key that has not expired: the check of a certificate a trusted proxy forwards reads the tenant's withdrawn keys at every request ([an identity forwarded by a proxy](oauth.md#an-identity-forwarded-by-a-proxy)). A workload under a withdrawn intermediate is refused on its next request.
+- **It cannot come back.** A request for a key that was ever withdrawn is refused with `keys.intermediate_key_withdrawn`. Withdrawing a withdrawn intermediate is refused with `keys.intermediate_withdrawn` and changes nothing.
+- **The meshes keep it until it expires.** No revocation list is published and no certificate status is answered online, and the authority's bundle never named the intermediate: a mesh that holds it keeps issuing with it until it expires, which is why the bound is short.
+
+Removing the authority keeps its intermediates and their withdrawals, so that a key withdrawn under one authority stays refused under the next.
+
+#### Who may sign
+
+| What | Needs |
+|---|---|
+| Signing an intermediate | `certificate-authority:sign` |
+| Reading intermediates | `certificate-authority:read` |
+| Withdrawing one | `certificate-authority:write` |
+
+- **`certificate-authority:sign` is a permission of its own**, held by the tenant administrator and by the built-in role `certificate_signer`, which holds nothing else ([roles](authorization.md#roles)). The auditor does not hold it.
+- **A workload signs with that role and that scope.** The service account that signs, such as the one of `hodor-cert-manager-issuer`, is given `certificate_signer` with `hodor-cli admin grant`, and an API key holding the one scope `certificate-authority:sign`: the key signs and does nothing else ([API keys](credential.md#api-keys)).
+- **Through a client, with an access token** (Issue-118). A client acting as that service account, proving who it is with its mesh identity (`spiffe_x509`, `spiffe_jwt`, `tls_client_auth`, `linkerd_identity`) or a signed assertion (`private_key_jwt`), gets an access token with the client credentials grant for the audience `urn:hodor:certificate-authority` and the scope `certificate-authority:sign`, which a tenant opens by registering a resource server with that audience and scope, as it does for [the Authorization API](authorization.md#the-authorization-api). The signing operation takes such a token, and no other operation of the administration interface does; the service account must still hold `certificate-authority:sign` through its roles.
+- **`hodor-cli authority sign`** signs as Hodor itself, as the tool's other commands act: whoever runs it can read the database and reach the key provider already. It needs `HODOR_CERTIFICATE_AUTHORITY` set as the server has it.
+
+Every signature is recorded as `keys.authority_signed`, with who asked, the hash of the request and of the part signed, the serial number, the intermediate's identifier and the trust domains it was signed for ([events of the authority](#events-of-the-authority)).
+
+#### From the command-line tool
+
+`hodor-cli authority` signs, lists and withdraws intermediates against the database and the key provider, as the server would. It needs `HODOR_DATABASE_URL`, `HODOR_SECRET_KEYS`, the settings of the key provider as the server has them (OpenBao's address and sign-in, [keys in OpenBao](../../operations/keys-in-openbao.md)), and `HODOR_CERTIFICATE_AUTHORITY` set to `on` or `development` as the server has it; with `off` it refuses with `keys.authority_setting_invalid`.
+
+```
+hodor-cli authority sign --tenant acme --request linkerd-issuer.csr [--lifetime-days 2] > linkerd-issuer.pem
+hodor-cli authority intermediates --tenant acme
+hodor-cli authority withdraw --tenant acme --intermediate 0193f3b1-… --reason "the cluster was rebuilt"
+```
+
+- **`sign`** reads the request in PEM from the file named, or from standard input when it is `-`, and prints the certificate in PEM followed by the chain above it, nearest first, which is what Istio's `cert-chain.pem` and Linkerd's issuer take. A line naming the intermediate, its serial number and when it expires goes to standard error.
+- **`intermediates`** prints one line per intermediate of the authority, newest first: its identifier, its state, its serial number, when it expires and its subject.
+- **`withdraw`** withdraws an intermediate with every other of its key, and prints a line for each.
+
+A refusal prints its code and its message, and the reason as its detail, and the command ends with a failure.
+
 ### Use cases of the authority
 
 `AuthorityService`, given only when the installation turns the authority on:
@@ -520,28 +613,34 @@ The authority's bundle is published at `GET /t/{tenant}/certificate-authority/bu
 | Install the certificate | For an intermediate awaiting it: checks the certificate and the chain, makes the authority active and adds its trust domains |
 | Remove | Removes the authority and the trust domains of source `authority` it added. Its key stays in the provider: Hodor's policy in OpenBao cannot delete a key |
 | Bundle | The bundle of the tenant's active authority |
+| Sign an intermediate | Checks a certificate signing request against every rule of [signing intermediates](#signing-intermediates), has the authority's key sign the certificate Hodor writes for it, and keeps it |
+| List intermediates, read one | The intermediates of the tenant's authority, newest first, a page at a time; one by its identifier |
+| Withdraw an intermediate | Withdraws it and every intermediate of the same key, at once |
+| Withdrawn keys | The keys of the tenant's withdrawn intermediates that have not expired, for every check of a certificate path. Read through `TrustDomainService`, which every such check has |
 
-The administration interface offers creating, reading, installing the certificate and removing; see [the certificate authority](../../api/admin-api.md#the-certificate-authority). They need `certificate-authority:read` and `certificate-authority:write`, which only the authority's operations use: the tenant auditor holds the first and the administrator both.
+The administration interface offers creating, reading, installing the certificate and removing; see [the certificate authority](../../api/admin-api.md#the-certificate-authority); and signing, listing, reading and withdrawing intermediates, see [intermediates](../../api/admin-api.md#intermediates). They need `certificate-authority:read`, `certificate-authority:write` and `certificate-authority:sign`, which only the authority's operations use: the tenant auditor holds the first, the administrator all three, and the role `certificate_signer` the last.
 
 ### Events of the authority
 
 | Event type | When | Fields |
 |---|---|---|
 | `keys.authority_created` | An authority was created | `authority_id`, `kind`, `trust_domains`, `key_id`, `provider`, `for_development` |
-| `keys.authority_signed` | The authority's key signed something: its own certificate or its certificate signing request | `authority_id`, `signed` (`certificate` or `certificate_signing_request`), `signed_sha256`, the SHA-256 of the part signed, in hexadecimal; `serial_number` for a certificate; `trust_domains` |
+| `keys.authority_signed` | The authority's key signed something: its own certificate, its certificate signing request, or an intermediate's certificate | `authority_id`, `signed` (`certificate`, `certificate_signing_request` or `intermediate_certificate`), `signed_sha256`, the SHA-256 of the part signed, in hexadecimal; `serial_number` for a certificate; `trust_domains`, the authority's for its own and those an intermediate was signed for; for an intermediate, `intermediate_id` and `request_sha256`, the SHA-256 of the request in DER |
+| `keys.intermediate_withdrawn` | An intermediate was withdrawn, alone or with another of the same key | `authority_id`, `intermediate_id`, `serial_number`, `public_key_sha256`, `reason` |
 | `keys.authority_activated` | An authority got its certificate: a root when it was made, an intermediate when its certificate was installed | `authority_id`, `serial_number`, `certificate_sha256`, `not_after` |
 | `keys.authority_removed` | An authority was removed | `authority_id`, `key_id` |
 
-Every signature is recorded in the transaction that keeps what was signed. The trust domains the authority adds and removes record their own events. No event carries a key, a certificate or a request.
+Every signature is recorded in the transaction that keeps what was signed. The actor is who asked: the administrator, the workload whose key or token signed, or Hodor itself for `hodor-cli`. The trust domains the authority adds and removes record their own events. No event carries a key, a certificate or a request.
 
 ### Ports of the authority
 
 | Port | Purpose |
 |---|---|
 | `AuthorityStore` | Store the tenant's authority: insert it, read it and lock it while it changes, update it if it still has the version it was read at, remove it |
-| `CertificateWriter` | Write the part to be signed of the authority's certificate and of its certificate signing request, put a signature on it, and read a certificate an administrator installs. Implemented by `X509Certificates` in `hodor-adapters-crypto`, which writes with `rcgen` and reads with `x509-parser` |
+| `CertificateWriter` | Write the part to be signed of the authority's certificate, of its certificate signing request and of an intermediate's certificate, put a signature on it, read a certificate an administrator installs, and read a certificate signing request, checking its signature. Implemented by `X509Certificates` in `hodor-adapters-crypto`, which writes with `rcgen` and in DER of its own, and reads with `x509-parser` |
 | `KeyProvider` | Make the authority's key, sign with it in the DER encoding, and say whether it signs inside itself |
 | `TrustDomainStore` | Add and remove the trust domains of source `authority` |
+| `IntermediateStore` | Store the intermediates it signs: insert one, read one, list them a page at a time, find those of a key, update one if it still has the version it was read at, say whether a key was ever withdrawn, and list the withdrawn keys that have not expired |
 | `Digest` (kernel) | SHA-256 of what is signed, for events |
 | `Clock` | The times of the authority |
 
@@ -619,6 +718,25 @@ A tenant table under row-level security. A partial index on `next_refresh_at` of
 
 A tenant table under row-level security. The application role may insert, read, update and delete its rows: removing the authority removes its row, and the audit log keeps what it signed.
 
+### `keys.intermediate`
+
+| Column | Type | Notes |
+|---|---|---|
+| `tenant_id`, `id` | `uuid` | Primary key |
+| `authority_id` | `uuid` | The authority that signed it. Not a foreign key: removing the authority keeps its intermediates |
+| `serial_number` | `text` | Lowercase hexadecimal, unique per tenant |
+| `subject` | `text` | Its subject as text, for people to read, at most 1000 characters |
+| `uris`, `dns_names` | `text[]` | Its subject alternative names, at most 20 in all |
+| `permitted_dns_names`, `excluded_dns_names` | `text[]` | The name constraints written, 1 to 20 permitted and at most 20 excluded |
+| `certificate` | `bytea` | The certificate, in DER |
+| `certificate_sha256`, `public_key_sha256`, `request_sha256` | `text` | 64 lowercase hexadecimal characters each: of the certificate, of its subject public key info, and of the request it was signed from |
+| `not_before`, `not_after`, `signed_at` | `timestamptz` | `not_after` after `not_before` |
+| `state` | `text` | `active` or `withdrawn` |
+| `withdrawn_at`, `withdrawal_reason` | `timestamptz`, `text` | Set exactly when withdrawn; the reason 1 to 200 characters |
+| `version` | `integer` | |
+
+A tenant table under row-level security. An index on `public_key_sha256` serves the withdrawn keys and the intermediates of a key, and one on `(authority_id, id)` the list. The application role may insert, read and update its rows, never delete them: an intermediate is withdrawn, never removed, so that a withdrawn key stays refused.
+
 ## Not built yet
 
 | Item | Planned in |
@@ -634,5 +752,6 @@ A tenant table under row-level security. The application role may insert, read, 
 | The cloud's key management services: Amazon Web Services, Google Cloud, Azure Key Vault (Requirement-Key-03) | Phase 9, on the same port and the same contract |
 | Data keys, and the root keys of secrets at rest, in OpenBao or a key management service | Not scheduled ([Decision 0030](../../decisions/0030-optional-certificate-authority.md#what-protects-the-key)) |
 | Showing which provider holds a version, in the administration interface and `hodor-cli keys` | When someone asks |
-| Signing intermediates with the certificate authority, withdrawing them, and `hodor-cli authority sign` | Issue-117 |
-| Managing the certificate authority from the command-line tool and the console | Not scheduled |
+| The signing operation taking an access token of a client with the scope `certificate-authority:sign`, for `hodor-cert-manager-issuer` | Issue-118 |
+| Removing intermediates long expired; one that was withdrawn must still refuse its key | Not scheduled |
+| Managing the certificate authority from the command-line tool, beyond signing, listing and withdrawing intermediates, and from the console | Not scheduled |

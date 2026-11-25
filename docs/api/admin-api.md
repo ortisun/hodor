@@ -97,6 +97,10 @@ It needs `HODOR_DATABASE_URL`, like the tenant commands.
 | `POST /certificate-authority` | `certificate-authority:write` | Create it: a root, or an intermediate awaiting its certificate |
 | `POST /certificate-authority:install` | `certificate-authority:write` | Install an intermediate's certificate, signed by the tenant's own root |
 | `DELETE /certificate-authority` | `certificate-authority:write` | Remove it, with the trust domains it added |
+| `POST /certificate-authority/intermediates` | `certificate-authority:sign` | Sign an intermediate of a mesh from its certificate signing request |
+| `GET /certificate-authority/intermediates` | `certificate-authority:read` | List the intermediates the authority signed |
+| `GET /certificate-authority/intermediates/{intermediate_id}` | `certificate-authority:read` | Read one |
+| `POST /certificate-authority/intermediates/{intermediate_id}:withdraw` | `certificate-authority:write` | Withdraw it, with every intermediate of the same key: Hodor stops trusting it at once |
 | `GET /applications` | `applications:read` | List the tenant's applications |
 | `POST /applications` | `applications:write` | Register an application |
 | `GET /applications/{application_id}` | `applications:read` | Read one application |
@@ -518,7 +522,7 @@ and answers `201` with the trust domain. A bundle endpoint is fetched before any
 
 ### The certificate authority
 
-The tenant's certificate authority, specified in [the keys context](../architecture/contexts/keys.md#the-certificate-authority-of-a-tenant). These four operations are routed only when the installation sets `HODOR_CERTIFICATE_AUTHORITY` to `on` or `development`; otherwise they answer `404` as any path the interface does not have, and `GET /openapi.json` does not name them. The authority is answered as:
+The tenant's certificate authority, specified in [the keys context](../architecture/contexts/keys.md#the-certificate-authority-of-a-tenant). These four operations, and the four of [its intermediates](#intermediates), are routed only when the installation sets `HODOR_CERTIFICATE_AUTHORITY` to `on` or `development`; otherwise they answer `404` as any path the interface does not have, and `GET /openapi.json` does not name them. The authority is answered as:
 
 ```json
 {
@@ -582,6 +586,70 @@ and answers `200` with the authority, now active, whose trust domains are added 
 | A certificate or a chain that does not read, or a certificate that does not hold the authority's key, is not an authority, is not valid now, or whose name constraints are missing or reach past the authority's trust domains | `422` | `keys.authority_certificate_unsuitable` |
 | Adding through `POST /trust-domains` a trust domain of source `authority` | `422` | `keys.trust_domain_source_invalid` |
 | Replacing through `PUT /trust-domains/{trust_domain_id}` a trust domain of source `authority` | `409` | `keys.trust_domain_of_authority` |
+
+### Intermediates
+
+The intermediates the tenant's certificate authority signs for its meshes, specified in [signing intermediates](../architecture/contexts/keys.md#signing-intermediates). Like the authority's own, these four operations are routed only when the installation turns the authority on. An intermediate is answered as:
+
+```json
+{
+  "id": "0193f3b1-…",
+  "authority_id": "0193f3a0-…",
+  "state": "active",
+  "serial_number": "41c2…",
+  "subject": "CN=identity.linkerd.cluster.local",
+  "uris": [],
+  "dns_names": ["identity.linkerd.cluster.local"],
+  "name_constraints": {
+    "permitted_dns_names": ["cluster.local"],
+    "excluded_dns_names": [],
+    "excluded_ip_ranges": ["0.0.0.0/0", "::/0"]
+  },
+  "not_before": "…",
+  "not_after": "…",
+  "certificate": "-----BEGIN CERTIFICATE-----\n…",
+  "chain": ["-----BEGIN CERTIFICATE-----\n…"],
+  "certificate_sha256": "7be0…",
+  "public_key_sha256": "c41f…",
+  "request_sha256": "0d9a…",
+  "signed_at": "…",
+  "withdrawn_at": null,
+  "withdrawal_reason": null
+}
+```
+
+`chain` is what is above the intermediate, nearest first: the authority's certificate, then, for an intermediate authority, the certificates above it as the administrator gave them. `state` is `active` or `withdrawn`; a withdrawn one has `withdrawn_at` and `withdrawal_reason`.
+
+`POST /certificate-authority/intermediates` signs one. It takes the mesh's certificate signing request in PEM and, if wished, a lifetime in days, which is the authority's bound on intermediates unless given:
+
+```json
+{ "certificate_signing_request": "-----BEGIN CERTIFICATE REQUEST-----\n…", "lifetime_days": 2 }
+```
+
+and answers `201` with the intermediate. It needs `certificate-authority:sign`, which the tenant administrator holds, and so does the built-in role `certificate_signer`, which holds nothing else: the role of a workload whose API key holds the one scope `certificate-authority:sign` ([who may sign](../architecture/contexts/keys.md#who-may-sign)).
+
+`GET /certificate-authority/intermediates` answers `{ "items": [ … ], "next_cursor": … }`, the intermediates of the tenant's authority, newest first, a page at a time as users are. `GET /certificate-authority/intermediates/{intermediate_id}` answers one.
+
+`POST /certificate-authority/intermediates/{intermediate_id}:withdraw` takes `{ "reason": "the cluster was rebuilt" }`, 1 to 200 characters, and answers `200` with the intermediate, withdrawn, with every other intermediate of the same key. Hodor refuses its workloads from the next request on ([withdrawing an intermediate](../architecture/contexts/keys.md#withdrawing-an-intermediate)).
+
+| Situation | Status | Code |
+|---|---|---|
+| The tenant has no authority, or no intermediate of that identifier | `404` | `keys.authority_not_found`, `keys.intermediate_not_found` |
+| The authority awaits its certificate | `409` | `keys.authority_not_active` |
+| A request for a key that was withdrawn | `409` | `keys.intermediate_key_withdrawn` |
+| Withdrawing an intermediate already withdrawn | `409` | `keys.intermediate_withdrawn` |
+| The intermediate or the authority changed while it was being changed | `409` | `keys.intermediate_changed`, `keys.authority_changed` |
+| A request that does not read, is larger than 16 kibibytes, whose signature does not check with its own key, or whose subject is empty | `422` | `keys.intermediate_request_invalid` |
+| A request that does not ask for an authority | `422` | `keys.intermediate_not_an_authority` |
+| A request that asks for a path length above zero | `422` | `keys.intermediate_path_length_invalid` |
+| A name outside the authority's trust domains, a name of another kind than a URI or a DNS name, or more than 20 | `422` | `keys.intermediate_name_outside_trust_domains` |
+| Name constraints that permit a DNS name outside the trust domains or a subtree of another kind, or more than 20 | `422` | `keys.intermediate_constraints_widened` |
+| Name constraints on URIs, or excluding a subtree of another kind than DNS names and addresses | `422` | `keys.intermediate_constraints_unsupported` |
+| A key that is not ECDSA on P-256 or P-384 nor RSA of 3072 to 8192 bits, or is the authority's own | `422` | `keys.intermediate_key_unsuitable` |
+| A lifetime of less than a day, longer than the authority's bound, or ending after the authority's own certificate | `422` | `keys.intermediate_lifetime_invalid` |
+| A reason of no characters or more than 200 | `422` | `keys.intermediate_reason_invalid` |
+
+The problem's `detail` names the reason, such as the name that is outside the trust domains or the size of the key.
 
 ### Applications, clients and resource servers
 

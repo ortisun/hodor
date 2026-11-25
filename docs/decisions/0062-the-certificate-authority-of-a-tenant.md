@@ -64,7 +64,7 @@ The authority's own certificate is the anchor its bundle publishes, so every pat
 
 ### Permissions of its own, and every signature audited
 
-- `certificate-authority:read` sees the authority, its certificate, its request and its name constraints; the tenant auditor holds it. `certificate-authority:write` creates it, installs its certificate and removes it. The administrator holds both. Signing intermediates, and the scope a signing client holds, come with Issue-117.
+- `certificate-authority:read` sees the authority, its certificate, its request and its name constraints; the tenant auditor holds it. `certificate-authority:write` creates it, installs its certificate and removes it. The administrator holds both. Signing intermediates, and the scope a signing client holds, come with Issue-117 ([Decision 0071](0071-signing-intermediates.md)).
 - Every signature the authority's key makes is an audit event, `keys.authority_signed`, in the same transaction that keeps what was signed: who asked, what was signed (`certificate` or `certificate_signing_request`), the SHA-256 of the signed part, the serial number of a certificate, and the trust domains it was signed for. Creating, activating and removing the authority are events too. No event carries a key, a certificate or a request.
 
 ## Consequences
