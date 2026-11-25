@@ -1147,6 +1147,16 @@ const AUDIENCE: &str = "https://api.billing.example.com";
 /// confidential client allowed a code, refresh tokens and a token for
 /// itself. Answers the client's identifier and its secret.
 async fn third_party_client(world: &World, tenant: &Tenant) -> (String, String) {
+    client_of(world, tenant, false).await
+}
+
+/// As [`third_party_client`], for an application of the tenant's own, whose
+/// people are never asked for consent.
+async fn first_party_client(world: &World, tenant: &Tenant) -> (String, String) {
+    client_of(world, tenant, true).await
+}
+
+async fn client_of(world: &World, tenant: &Tenant, first_party: bool) -> (String, String) {
     use hodor_adapters_postgres::{PgApplicationStore, PgClientStore, PgResourceServerStore};
     use hodor_oauth::api::{
         ApplicationPorts, ApplicationService, ApplicationSettings, ClientSettings, ClientType,
@@ -1166,7 +1176,7 @@ async fn third_party_client(world: &World, tenant: &Tenant) -> (String, String) 
             &tenant.context,
             ApplicationSettings {
                 name: "Billing".to_owned(),
-                first_party: false,
+                first_party,
             },
             Caller::system(),
         )
@@ -1225,6 +1235,11 @@ async fn third_party_client(world: &World, tenant: &Tenant) -> (String, String) 
 }
 
 fn authorize_path(slug: &str, client_id: &str) -> String {
+    authorize_path_with(slug, client_id, &[])
+}
+
+/// As [`authorize_path`], with more parameters, such as `organization`.
+fn authorize_path_with(slug: &str, client_id: &str, more: &[(&str, &str)]) -> String {
     let challenge = hodor_oauth::api::s256_challenge(VERIFIER, &Sha256Digest);
     format!(
         "/t/{slug}/oauth2/authorize?{}",
@@ -1238,6 +1253,7 @@ fn authorize_path(slug: &str, client_id: &str) -> String {
                 ("code_challenge", challenge.as_str()),
                 ("code_challenge_method", "S256"),
             ])
+            .extend_pairs(more)
             .finish()
     )
 }
@@ -2176,4 +2192,622 @@ async fn a_service_account_of_one_tenant_and_its_tokens_mean_nothing_in_another(
     assert_eq!(read["status"], "active");
     assert_eq!(read["name"], "Nightly export");
     assert!(active(&world, acme, (&client.0, &client.1), &token).await);
+}
+
+/// Something a tenant's administrator creates, by its path and body.
+/// Answers its identifier.
+async fn created(world: &World, tenant: &Tenant, path: &str, body: serde_json::Value) -> String {
+    let (status, made) = call(world, tenant, Method::POST, path.to_owned(), Some(body)).await;
+    assert_eq!(status, StatusCode::CREATED, "{path}: {made}");
+    made["id"].as_str().expect("an id").to_owned()
+}
+
+/// A resource server of the tenant's own, the same in both tenants, with a
+/// `reader` role. Answers the role's namespace.
+async fn reader_role(world: &World, tenant: &Tenant) -> &'static str {
+    let namespace = "https://api.documents.example.com";
+    let application = created(
+        world,
+        tenant,
+        "/applications",
+        serde_json::json!({ "name": "Documents", "first_party": true }),
+    )
+    .await;
+    let server = created(
+        world,
+        tenant,
+        "/resource-servers",
+        serde_json::json!({
+            "application_id": application,
+            "audience": namespace,
+            "name": "Documents interface",
+        }),
+    )
+    .await;
+    for (path, body) in [
+        (
+            format!("/resource-servers/{server}/permissions/document:read"),
+            serde_json::json!({ "description": "Read" }),
+        ),
+        (
+            format!("/resource-servers/{server}/roles/reader"),
+            serde_json::json!({ "permissions": [{ "name": "document:read" }] }),
+        ),
+    ] {
+        let (status, body) = call(world, tenant, Method::PUT, path.clone(), Some(body)).await;
+        assert!(status.is_success(), "{path}: {status} {body}");
+    }
+    namespace
+}
+
+#[tokio::test]
+async fn one_tenants_groups_and_the_roles_they_hold_are_out_of_reach_of_another() {
+    let world = world().await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    let namespace = reader_role(&world, acme).await;
+    reader_role(&world, globex).await;
+
+    // In Acme, `finance` is inside `staff`, Ana is in `finance`, and
+    // `staff` holds the reader role.
+    let staff = created(
+        &world,
+        acme,
+        "/groups",
+        serde_json::json!({ "name": "staff" }),
+    )
+    .await;
+    let finance = created(
+        &world,
+        acme,
+        "/groups",
+        serde_json::json!({ "name": "finance" }),
+    )
+    .await;
+    let reader = serde_json::json!({ "namespace": namespace, "name": "reader" });
+    for (path, body) in [
+        (
+            format!("/groups/{staff}/members"),
+            serde_json::json!({ "kind": "group", "id": finance }),
+        ),
+        (
+            format!("/groups/{finance}/members"),
+            serde_json::json!({ "kind": "user", "id": acme.ana.to_string() }),
+        ),
+        (
+            "/role-assignments".to_owned(),
+            serde_json::json!({ "principal": { "kind": "group", "id": staff }, "role": reader }),
+        ),
+    ] {
+        let (status, body) = call(&world, acme, Method::POST, path.clone(), Some(body)).await;
+        assert!(status.is_success(), "{path}: {status} {body}");
+    }
+    let (status, groups) = call(
+        &world,
+        acme,
+        Method::GET,
+        format!("/users/{}/groups", acme.ana),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{groups}");
+    assert_eq!(groups["items"].as_array().expect("items").len(), 2);
+
+    // Globex's administrator, naming Acme's groups, finds no such group,
+    // whatever it asks of them.
+    for (method, path, body) in [
+        (Method::GET, format!("/groups/{staff}"), None),
+        (
+            Method::PATCH,
+            format!("/groups/{staff}"),
+            Some(serde_json::json!({ "name": "taken over" })),
+        ),
+        (Method::DELETE, format!("/groups/{staff}"), None),
+        (Method::GET, format!("/groups/{staff}/members"), None),
+        (
+            Method::POST,
+            format!("/groups/{staff}/members"),
+            Some(serde_json::json!({ "kind": "user", "id": globex.ana.to_string() })),
+        ),
+        (
+            Method::POST,
+            format!("/groups/{finance}/members:remove"),
+            Some(serde_json::json!({ "kind": "user", "id": acme.ana.to_string() })),
+        ),
+        (
+            Method::GET,
+            format!("/groups/{staff}/role-assignments"),
+            None,
+        ),
+        (
+            Method::POST,
+            "/role-assignments".to_owned(),
+            Some(
+                serde_json::json!({ "principal": { "kind": "group", "id": staff }, "role": reader }),
+            ),
+        ),
+        (
+            Method::POST,
+            "/role-assignments:revoke".to_owned(),
+            Some(
+                serde_json::json!({ "principal": { "kind": "group", "id": staff }, "role": reader }),
+            ),
+        ),
+    ] {
+        let (status, answer) = call(&world, globex, method.clone(), path.clone(), body).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{method} {path}: {answer}");
+        assert_eq!(
+            answer["code"], "identity.group_not_found",
+            "{method} {path}"
+        );
+    }
+    let (status, answer) = call(
+        &world,
+        globex,
+        Method::GET,
+        format!("/users/{}/groups", acme.ana),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(answer["code"], "identity.user_not_found");
+
+    // Nor can Acme's person or Acme's group become a member of a group of
+    // Globex's own.
+    let theirs = created(
+        &world,
+        globex,
+        "/groups",
+        serde_json::json!({ "name": "staff" }),
+    )
+    .await;
+    for (member, code) in [
+        (
+            serde_json::json!({ "kind": "user", "id": acme.ana.to_string() }),
+            "identity.user_not_found",
+        ),
+        (
+            serde_json::json!({ "kind": "group", "id": finance }),
+            "identity.group_not_found",
+        ),
+    ] {
+        let (status, answer) = call(
+            &world,
+            globex,
+            Method::POST,
+            format!("/groups/{theirs}/members"),
+            Some(member.clone()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{member}: {answer}");
+        assert_eq!(answer["code"], code, "{member}");
+    }
+
+    // Globex's lists name only its own group, which has no member.
+    let (_, listed) = call(&world, globex, Method::GET, "/groups".to_owned(), None).await;
+    let names: Vec<&str> = listed["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .filter_map(|group| group["id"].as_str())
+        .collect();
+    assert_eq!(names, [theirs.as_str()]);
+    let (_, members) = call(
+        &world,
+        globex,
+        Method::GET,
+        format!("/groups/{theirs}/members"),
+        None,
+    )
+    .await;
+    assert_eq!(members["items"], serde_json::json!([]));
+
+    // Acme's groups are as they were: Ana still in both, the role still
+    // held by `staff`.
+    let (_, groups) = call(
+        &world,
+        acme,
+        Method::GET,
+        format!("/users/{}/groups", acme.ana),
+        None,
+    )
+    .await;
+    assert_eq!(groups["items"].as_array().expect("items").len(), 2);
+    let (_, held) = call(
+        &world,
+        acme,
+        Method::GET,
+        format!("/groups/{staff}/role-assignments"),
+        None,
+    )
+    .await;
+    assert_eq!(held["items"][0]["role"]["name"], "reader", "{held}");
+    let (status, kept) = call(&world, acme, Method::GET, format!("/groups/{staff}"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(kept["name"], "staff");
+}
+
+/// The claims of a signed token, unchecked: the token came straight from
+/// the token endpoint.
+fn claims_of(token: &str) -> serde_json::Value {
+    use base64::Engine as _;
+    let payload = token.split('.').nth(1).expect("a payload");
+    serde_json::from_slice(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(payload)
+            .expect("base64url"),
+    )
+    .expect("JSON")
+}
+
+/// Where the authorization endpoint sends a signed-in browser, and the
+/// parameters it adds to the redirect address.
+async fn authorized(
+    browser: &mut Browser,
+    path: &str,
+) -> std::collections::BTreeMap<String, String> {
+    let (status, location, page) = browser.navigate(Method::GET, path, None).await;
+    assert_eq!(status, StatusCode::FOUND, "{page}");
+    let location = location.expect("a redirect");
+    let (address, query) = location.split_once('?').expect("a query");
+    assert_eq!(address, REDIRECT);
+    form_urlencoded::parse(query.as_bytes())
+        .map(|(name, value)| (name.into_owned(), value.into_owned()))
+        .collect()
+}
+
+#[tokio::test]
+async fn one_tenants_organizations_and_invitations_mean_nothing_in_another() {
+    let world = world_with(&[("HODOR_SECRET_KEYS", ROOT_KEY)]).await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    let namespace = reader_role(&world, globex).await;
+
+    // In Acme, an organization with a department invites the shared
+    // address. Globex has an organization of the same name.
+    let initech = created(
+        &world,
+        acme,
+        "/organizations",
+        serde_json::json!({ "name": "Initech" }),
+    )
+    .await;
+    let engineering = created(
+        &world,
+        acme,
+        &format!("/organizations/{initech}/units"),
+        serde_json::json!({ "parent_id": null, "name": "Engineering", "kind": "department" }),
+    )
+    .await;
+    let (status, answer) = call(
+        &world,
+        acme,
+        Method::POST,
+        format!("/organizations/{initech}/invitations"),
+        Some(serde_json::json!({ "email": EMAIL, "unit_ids": [engineering] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{answer}");
+    let token = world.newest_link_token(acme).await;
+    let (_, pending) = call(
+        &world,
+        acme,
+        Method::GET,
+        format!("/organizations/{initech}/invitations"),
+        None,
+    )
+    .await;
+    let invitation = pending["items"][0]["id"]
+        .as_str()
+        .expect("a pending invitation")
+        .to_owned();
+    let theirs = created(
+        &world,
+        globex,
+        "/organizations",
+        serde_json::json!({ "name": "Initech" }),
+    )
+    .await;
+
+    // Globex's administrator, naming Acme's organization, finds no such
+    // organization, whatever it asks of it.
+    let unit = serde_json::json!({ "parent_id": null, "name": "Taken over", "kind": "unit" });
+    for (method, path, body) in [
+        (Method::GET, format!("/organizations/{initech}"), None),
+        (
+            Method::PATCH,
+            format!("/organizations/{initech}"),
+            Some(serde_json::json!({ "name": "Taken over" })),
+        ),
+        (Method::DELETE, format!("/organizations/{initech}"), None),
+        (Method::GET, format!("/organizations/{initech}/units"), None),
+        (
+            Method::POST,
+            format!("/organizations/{initech}/units"),
+            Some(unit.clone()),
+        ),
+        (
+            Method::PUT,
+            format!("/organizations/{initech}/units/{engineering}"),
+            Some(unit.clone()),
+        ),
+        (
+            Method::DELETE,
+            format!("/organizations/{initech}/units/{engineering}"),
+            None,
+        ),
+        (
+            Method::GET,
+            format!("/organizations/{initech}/members"),
+            None,
+        ),
+        (
+            Method::PUT,
+            format!("/organizations/{initech}/members/{}", globex.ana),
+            Some(serde_json::json!({ "unit_ids": [] })),
+        ),
+        (
+            Method::DELETE,
+            format!("/organizations/{initech}/members/{}", acme.ana),
+            None,
+        ),
+        (
+            Method::GET,
+            format!("/organizations/{initech}/invitations"),
+            None,
+        ),
+        (
+            Method::POST,
+            format!("/organizations/{initech}/invitations"),
+            Some(serde_json::json!({ "email": EMAIL, "unit_ids": [] })),
+        ),
+        (
+            Method::DELETE,
+            format!("/organizations/{initech}/invitations/{invitation}"),
+            None,
+        ),
+        (
+            Method::POST,
+            "/role-assignments".to_owned(),
+            Some(serde_json::json!({
+                "principal": { "kind": "user", "id": globex.ana.to_string() },
+                "role": { "namespace": namespace, "name": "reader" },
+                "organization_id": initech,
+            })),
+        ),
+    ] {
+        let (status, answer) = call(&world, globex, method.clone(), path.clone(), body).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{method} {path}: {answer}");
+        assert_eq!(
+            answer["code"], "identity.organization_not_found",
+            "{method} {path}"
+        );
+    }
+
+    // Nor can Acme's person become a member of Globex's own organization,
+    // or Globex's person be put in Acme's department.
+    for (path, body, code) in [
+        (
+            format!("/organizations/{theirs}/members/{}", acme.ana),
+            serde_json::json!({ "unit_ids": [] }),
+            "identity.user_not_found",
+        ),
+        (
+            format!("/organizations/{theirs}/members/{}", globex.ana),
+            serde_json::json!({ "unit_ids": [engineering] }),
+            "identity.unit_not_found",
+        ),
+    ] {
+        let (status, answer) = call(&world, globex, Method::PUT, path.clone(), Some(body)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{path}: {answer}");
+        assert_eq!(answer["code"], code, "{path}");
+    }
+    let (status, answer) = call(
+        &world,
+        globex,
+        Method::GET,
+        format!("/users/{}/organizations", acme.ana),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(answer["code"], "identity.user_not_found");
+
+    // Acme's link does not work at Globex: described, accepted with a
+    // password, or accepted by the signed-in person who has the invited
+    // address there.
+    let (status, answer) = world
+        .post(
+            globex,
+            "invitations/describe",
+            serde_json::json!({ "token": token }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{answer}");
+    assert_eq!(answer["code"], "identity.invitation_invalid");
+    let (status, answer) = world
+        .post(
+            globex,
+            "invitations/accept",
+            serde_json::json!({ "token": token, "password": "a password of its own" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{answer}");
+    assert_eq!(answer["code"], "identity.invitation_invalid");
+    let (mut there, _, _) = signed_in(&world, globex).await;
+    let (status, answer) = there
+        .send(
+            Method::POST,
+            "/t/globex/interaction/invitations/accept",
+            Some(serde_json::json!({ "token": token })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{answer}");
+    assert_eq!(answer["code"], "identity.invitation_invalid");
+
+    // Where it belongs, the link works, once.
+    let (status, described) = world
+        .post(
+            acme,
+            "invitations/describe",
+            serde_json::json!({ "token": token }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{described}");
+    assert_eq!(described["organization_name"], "Initech");
+    assert_eq!(described["has_account"], true);
+    let (mut here, _, _) = signed_in(&world, acme).await;
+    let accept = serde_json::json!({ "token": token });
+    let (status, answer) = here
+        .send(
+            Method::POST,
+            "/t/acme/interaction/invitations/accept",
+            Some(accept.clone()),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{answer}");
+    let (status, _) = here
+        .send(
+            Method::POST,
+            "/t/acme/interaction/invitations/accept",
+            Some(accept),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (_, memberships) = call(
+        &world,
+        acme,
+        Method::GET,
+        format!("/users/{}/organizations", acme.ana),
+        None,
+    )
+    .await;
+    assert_eq!(
+        memberships["items"].as_array().expect("items").len(),
+        1,
+        "{memberships}"
+    );
+
+    // Asked for at Globex's authorization endpoint, Acme's organization is
+    // one the person is not a member of. In Acme the tokens carry it.
+    let (globex_client, _) = first_party_client(&world, globex).await;
+    let named = [("organization", initech.as_str())];
+    let mut stranger = Browser::not_following(&world.server);
+    let (_, body) = stranger.sign_in(globex.slug, EMAIL, PASSWORD).await;
+    assert_eq!(body["status"], "completed", "{body}");
+    let back = authorized(
+        &mut stranger,
+        &authorize_path_with(globex.slug, &globex_client, &named),
+    )
+    .await;
+    assert_eq!(back.get("error").map(String::as_str), Some("access_denied"));
+    assert!(!back.contains_key("code"));
+    let (acme_client, acme_secret) = first_party_client(&world, acme).await;
+    let mut member = Browser::not_following(&world.server);
+    let (_, body) = member.sign_in(acme.slug, EMAIL, PASSWORD).await;
+    assert_eq!(body["status"], "completed", "{body}");
+    let back = authorized(
+        &mut member,
+        &authorize_path_with(acme.slug, &acme_client, &named),
+    )
+    .await;
+    let code = back.get("code").expect("a code");
+    let (status, tokens) = oauth_form(
+        &world,
+        acme,
+        "token",
+        (&acme_client, &acme_secret),
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", code),
+            ("redirect_uri", REDIRECT),
+            ("code_verifier", VERIFIER),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{tokens}");
+    for token in ["access_token", "id_token"] {
+        let claims = claims_of(tokens[token].as_str().expect("a token"));
+        assert_eq!(claims["org_id"], initech.as_str(), "{token}");
+    }
+
+    // Globex's lists name only its own organization, which has no member.
+    let (_, listed) = call(
+        &world,
+        globex,
+        Method::GET,
+        "/organizations".to_owned(),
+        None,
+    )
+    .await;
+    let organizations: Vec<&str> = listed["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .filter_map(|organization| organization["id"].as_str())
+        .collect();
+    assert_eq!(organizations, [theirs.as_str()]);
+    let (_, members) = call(
+        &world,
+        globex,
+        Method::GET,
+        format!("/organizations/{theirs}/members"),
+        None,
+    )
+    .await;
+    assert_eq!(members["items"], serde_json::json!([]));
+}
+
+#[tokio::test]
+async fn a_person_deactivated_through_scim_in_one_tenant_stays_signed_in_to_another() {
+    let world = world_with(&[("HODOR_SECRET_KEYS", ROOT_KEY)]).await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    let acme_token = scim_token(&world, acme).await;
+    let (here, _, _) = signed_in(&world, acme).await;
+    let (there, _, _) = signed_in(&world, globex).await;
+
+    // Acme's directory deactivates its person.
+    let (status, _, answer) = scim(
+        &world,
+        acme,
+        &acme_token,
+        Method::PATCH,
+        &format!("/Users/{}", acme.ana),
+        Some(serde_json::json!({
+            "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+            "Operations": [{ "op": "replace", "path": "active", "value": false }]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    assert_eq!(answer["active"], false);
+
+    // Her session in Acme ended; the person with the same address in
+    // Globex is still signed in, and still signs in.
+    let (status, _) = world
+        .with_session_cookie(
+            acme,
+            Method::GET,
+            "/session",
+            &here.cookies[SESSION_COOKIE],
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _) = world
+        .with_session_cookie(
+            globex,
+            Method::GET,
+            "/session",
+            &there.cookies[SESSION_COOKIE],
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, body) = Browser::new(&world.server)
+        .sign_in(globex.slug, EMAIL, PASSWORD)
+        .await;
+    assert_eq!(body["status"], "completed", "{body}");
+    let (_, body) = Browser::new(&world.server)
+        .sign_in(acme.slug, EMAIL, PASSWORD)
+        .await;
+    assert_ne!(body["status"], "completed", "{body}");
 }
