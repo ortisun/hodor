@@ -67,6 +67,7 @@ All records below are **Proposed** unless marked otherwise: they become Accepted
 | [0061](0061-gateway-identities.md) | Behind a mesh's proxy, the forwarded address is read only from the ingress gateways the operator names by their identity, and the chart puts Hodor in Istio or Linkerd with one value (Accepted) |
 | [0062](0062-the-certificate-authority-of-a-tenant.md) | The certificate authority of a tenant lives in the keys context, is switched on by one setting, and writes name constraints that Hodor's own chain checking reads (Accepted) |
 | [0065](0065-where-the-standard-claims-come-from.md) | The identity context keeps a person's standard claims, and each source writes only what it can vouch for |
+| [0068](0068-claims-of-every-consented-scope.md) | The `claims` parameter gives a claim of any scope consented to for the client, not only of the scopes of the request |
 | [0071](0071-signing-intermediates.md) | An intermediate is signed from what its request asks, within the authority; withdrawing it stops Hodor trusting its key; signing has a permission, a role and a scope of its own (Accepted) |
 | [0074](0074-hodor-cert-manager-issuer.md) | `hodor-cert-manager-issuer` signs approved requests for an authority through the signing operation, which takes an access token for the audience of the certificate authority (Accepted) |
 | [0075](0075-the-registration-settings-of-a-tenant.md) | A tenant has one registration policy for every way and one list of hosts for every address; an initial access token is spent under a lock of its row (Accepted) |
