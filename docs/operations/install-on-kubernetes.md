@@ -99,6 +99,7 @@ kubectl create secret generic hodor --namespace hodor \
 | `worker-platform-database-url` | The workers | Connection address of the worker's role in `hodor_platform` |
 | `secret-keys` | The servers and the workers | `HODOR_SECRET_KEYS`: one or more `identifier:key` pairs, separated by commas. The workers make the tenants' signing keys with them, and the servers use those keys |
 | `smtp-url` | The workers, with `mail.enabled` | Address of the mail server |
+| `openbao-role-id`, `openbao-secret-id` | The servers and the workers, when they sign in to OpenBao with an AppRole | The identifiers of Hodor's AppRole: [keys in OpenBao](keys-in-openbao.md) |
 
 A password written into an address must be made of letters and digits, or be percent-encoded. A tool that manages secrets in the cluster can make this Secret instead of `kubectl`; `secret.keys` renames the keys if it needs other names.
 
@@ -172,6 +173,10 @@ kubectl exec --namespace hodor deployment/hodor-server -- /usr/local/bin/hodor-c
 | `ingress.enabled`, `ingress.className`, `ingress.annotations`, `ingress.tls` | `false` | The Ingress for the name in `publicUrl`. The certificate is read from the Secret `ingress.tls.secretName`, `<release>-tls` when empty, which a certificate manager can fill |
 | `networkPolicy.enabled` | `false` | See [network policy](#network-policy) |
 | `trustedProxies`, `forwardedHeader` | Empty; `x-forwarded-for` | The address ranges of the ingress controller and of any load balancer in front of it, and the header they write. See [the address of each client](#the-address-of-each-client) |
+| `keyProvider.signingKeys` | `local` | Where new signing keys are made: `local`, or `openbao`, which needs `keyProvider.openbao.enabled`. See [keys in OpenBao](keys-in-openbao.md) |
+| `keyProvider.openbao.enabled`, `address`, `transitMount` | `false`; none; `hodor-transit` | Whether the servers and workers use OpenBao, its address, and Hodor's Transit mount. Keep it enabled while a key made there may sign |
+| `keyProvider.openbao.authMethod` | `kubernetes` | `kubernetes`: the pods present a token of the release's service account made for the audience `keyProvider.openbao.tokenAudience` alone, mounted for that purpose, under the role `kubernetesRole`. `approle`: the identifiers in the Secret |
+| `keyProvider.openbao.certificateAuthority.configMap`, `key` | Empty; `ca.crt` | A ConfigMap holding the certificate of the authority that issued OpenBao's certificate. Set, only that authority is trusted for OpenBao |
 
 Changing the Secret does not restart anything. After changing it, restart the pods so that they read it again:
 
@@ -184,7 +189,7 @@ kubectl rollout restart --namespace hodor deployment/hodor-server deployment/hod
 With `networkPolicy.enabled`, one policy applies to every pod of the release:
 
 - **In**: only the servers' public port accepts connections, from the peers listed in `networkPolicy.ingressFrom`, or from anywhere in the cluster when the list is empty. Nothing can connect to a worker or to the migration job. The health checks still work, because the kubelet that runs them is not subject to network policies.
-- **Out**: unrestricted, unless `networkPolicy.egress.enabled` is set. Then the pods reach the cluster's name service and what `networkPolicy.egress.to` lists, and nothing else. List the database, the mail server, the collector of metrics and traces, and the identity providers and directories your tenants use.
+- **Out**: unrestricted, unless `networkPolicy.egress.enabled` is set. Then the pods reach the cluster's name service and what `networkPolicy.egress.to` lists, and nothing else. List the database, the mail server, the collector of metrics and traces, the identity providers and directories your tenants use, and OpenBao when the keys are there.
 
 A cluster enforces network policies only if its network plugin does.
 

@@ -16,7 +16,7 @@ migrations (doc comment on `Command::Migrate` in `apps/hodor-cli/src/main.rs`).
 ## Dependencies
 
 From `Cargo.toml`: `async-trait`, `axum`, `clap`, `time`, `tokio`, `tracing`,
-and the workspace crates `hodor-adapters-crypto`, `hodor-adapters-http`,
+and the workspace crates `hodor-adapters-crypto`, `hodor-adapters-http`, `hodor-adapters-kms`,
 `hodor-adapters-ldap`, `hodor-adapters-postgres`, `hodor-audit`,
 `hodor-authentication`, `hodor-authorization`, `hodor-authorization-native`,
 `hodor-authorization-opa`,

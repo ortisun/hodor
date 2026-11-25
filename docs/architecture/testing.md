@@ -8,7 +8,7 @@
 | Property-based | Invariants over generated inputs | `proptest` | Every commit |
 | Architecture | Crate dependency rules, schema rules | Custom tests over `cargo metadata` and the Postgres catalog | Every commit |
 | Contract | Each adapter against its port's shared test suite | Generic test functions in the context crate, instantiated per adapter | Every commit |
-| Integration | Use cases against real PostgreSQL, Redis and Open Policy Agent | `testcontainers` | Every pull request |
+| Integration | Use cases against real PostgreSQL, Redis, Open Policy Agent and OpenBao | `testcontainers` | Every pull request |
 | API / end-to-end | HTTP flows against a running server | `reqwest` harness; Playwright for the user interfaces | Every pull request |
 | Protocol conformance | Standards suites | OpenID Conformance Suite, SAML test peers | Nightly and before release |
 | Interoperability | Third-party software development kits and identity providers | Containers of real clients and identity providers | Nightly |

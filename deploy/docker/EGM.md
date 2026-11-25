@@ -2,7 +2,7 @@
 
 ## Overview
 
-The container image of Hodor and the local development stack that runs it. `Dockerfile` builds one image holding the three binaries (`hodor-server`, `hodor-worker`, `hodor-cli`), the hosted pages and the administration console. `compose.yaml` runs that image beside PostgreSQL, a mail server that delivers nothing, VictoriaMetrics, VictoriaTraces and three development identity providers. `postgres-init.sql` creates the database roles the migrations expect.
+The container image of Hodor and the local development stack that runs it. `Dockerfile` builds one image holding the three binaries (`hodor-server`, `hodor-worker`, `hodor-cli`), the hosted pages and the administration console. `compose.yaml` runs that image beside PostgreSQL, a mail server that delivers nothing, VictoriaMetrics, VictoriaTraces, OpenBao and three development identity providers. `postgres-init.sql` creates the database roles the migrations expect.
 
 The header comment of `compose.yaml` states the scope: "Not for production: credentials are placeholders and nothing is persisted outside named volumes."
 
@@ -33,6 +33,8 @@ The final image runs as `nonroot:nonroot`, exposes `8080` and `9090`, sets `HODO
 | `provider` | `node:24-bookworm-slim` | `node /provider.mjs`, mounted read-only from `../dev-provider/provider.mjs`, with `PORT`, `ISSUER=http://provider:9400`, `BROWSER_URL`, `CLIENT_ID`, `CLIENT_SECRET`; health check fetches `/health` | `HODOR_PROVIDER_PORT`, 9400 |
 | `saml-provider` | `node:24-bookworm-slim` | `node /saml-provider/saml-provider.mjs`, the whole `../dev-saml-provider` directory mounted read-only, with `PORT`, `ENTITY_ID=urn:hodor:development-saml-provider`, `BROWSER_URL`; health check fetches `/health` | `HODOR_SAML_PROVIDER_PORT`, 9500 |
 | `webhook-receiver` | `node:24-bookworm-slim` | `node /receiver.mjs`, `../dev-webhook-receiver/receiver.mjs` mounted read-only, with `PORT=9600`; health check fetches `/health` | `HODOR_WEBHOOK_RECEIVER_PORT`, 9600 |
+| `openbao` | `openbao/openbao:2.7.2` | `server -dev`, in memory, root token `development-root-token`; health check `bao status` | `HODOR_OPENBAO_PORT`, 8200 |
+| `openbao-setup` | `openbao/openbao:2.7.2` | `../openbao/setup.sh`, once: Transit at `hodor-transit`, the policy `../openbao/hodor-policy.hcl`, the AppRole `hodor` with placeholder identifiers. The server and the worker wait for it, and are given OpenBao's settings, with `HODOR_KEY_PROVIDER` from the caller's environment, `local` by default | None |
 | `directory` | `osixia/openldap:1.5.0` | LDAP directory for `example.org` with a read-only user `readonly`, transport security off (`LDAP_TLS: "false"`), seeded from `../dev-directory/people.ldif`; health check `ldapwhoami` as the read-only user | none (inside the stack only) |
 | `server` | `hodor:dev` (default entrypoint `hodor-server`) | the server, as database role `hodor_server`; health check `hodor-cli probe --addr 127.0.0.1:9090 --path /readyz` | `HODOR_HTTP_PORT`, 8080; `HODOR_OPS_PORT`, 9090 |
 | `worker` | `hodor:dev`, entrypoint `hodor-worker` | the worker, as `hodor_worker` and `hodor_worker_platform`, sending mail to `smtp://mail:1025`; same `probe` health check | none |

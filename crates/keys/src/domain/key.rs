@@ -121,6 +121,31 @@ impl KeyAlgorithm {
     }
 }
 
+/// How a signature is written. An RSA signature is the same bytes either
+/// way; an ECDSA signature is not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SignatureEncoding {
+    /// As JSON Web Signatures write it (RFC 7518, section 3.4): an ECDSA
+    /// signature is its two numbers, 32 bytes each for P-256, one after
+    /// the other. What tokens carry.
+    Jose,
+    /// As X.509 certificates write it (RFC 3279, section 2.2.3): an ECDSA
+    /// signature is an ASN.1 sequence of its two integers, in DER. What
+    /// certificates carry.
+    Der,
+}
+
+impl SignatureEncoding {
+    /// The name used in logs: `jose` or `der`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Jose => "jose",
+            Self::Der => "der",
+        }
+    }
+}
+
 /// Where a key version is in its lifecycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum KeyState {

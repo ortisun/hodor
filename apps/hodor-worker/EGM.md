@@ -18,7 +18,7 @@ the cleanup loops, the key rotation loop and the policy check loop.
 ## Dependencies
 
 From `Cargo.toml`: `async-trait`, `clap`, `opentelemetry`, `tokio`, `tracing`,
-and the workspace crates `hodor-adapters-crypto`, `hodor-adapters-http`,
+and the workspace crates `hodor-adapters-crypto`, `hodor-adapters-http`, `hodor-adapters-kms`,
 `hodor-adapters-policy-check`, `hodor-adapters-postgres`,
 `hodor-adapters-smtp`, `hodor-audit`, `hodor-authorization-opa`,
 `hodor-kernel`, `hodor-keys`, `hodor-notification`, `hodor-oauth`,

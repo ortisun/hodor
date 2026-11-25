@@ -136,3 +136,91 @@ topologySpreadConstraints:
         app.kubernetes.io/component: {{ index $ 1 }}
   {{- end }}
 {{- end -}}
+
+{{/* The environment of the key providers, the same for the servers and the workers: the worker makes the
+     signing keys the servers sign with (docs/operations/keys-in-openbao.md). */}}
+{{- define "hodor.keyProviderEnvironment" -}}
+{{- $provider := .Values.keyProvider -}}
+{{- $openbao := $provider.openbao -}}
+{{- if not (has $provider.signingKeys (list "local" "openbao")) -}}
+{{- fail (printf "keyProvider.signingKeys is local or openbao; it is %q" $provider.signingKeys) -}}
+{{- end -}}
+{{- if and (eq $provider.signingKeys "openbao") (not $openbao.enabled) -}}
+{{- fail "keyProvider.signingKeys is openbao: keyProvider.openbao.enabled must be true" -}}
+{{- end -}}
+- name: HODOR_KEY_PROVIDER
+  value: {{ $provider.signingKeys | quote }}
+{{- if $openbao.enabled }}
+{{- if not $openbao.address }}
+{{- fail "keyProvider.openbao.address is required when keyProvider.openbao.enabled is true, such as https://openbao.openbao.svc:8200" }}
+{{- end }}
+{{- if not (has $openbao.authMethod (list "kubernetes" "approle")) }}
+{{- fail (printf "keyProvider.openbao.authMethod is kubernetes or approle; it is %q" $openbao.authMethod) }}
+{{- end }}
+- name: HODOR_OPENBAO_ADDRESS
+  value: {{ $openbao.address | quote }}
+- name: HODOR_OPENBAO_TRANSIT_MOUNT
+  value: {{ $openbao.transitMount | quote }}
+- name: HODOR_OPENBAO_AUTH_METHOD
+  value: {{ $openbao.authMethod | quote }}
+{{- with $openbao.authMount }}
+- name: HODOR_OPENBAO_AUTH_MOUNT
+  value: {{ . | quote }}
+{{- end }}
+- name: HODOR_OPENBAO_TIMEOUT_MS
+  value: {{ $openbao.timeoutMs | quote }}
+{{- if eq $openbao.authMethod "kubernetes" }}
+- name: HODOR_OPENBAO_KUBERNETES_ROLE
+  value: {{ $openbao.kubernetesRole | quote }}
+- name: HODOR_OPENBAO_KUBERNETES_TOKEN_FILE
+  value: /var/run/secrets/openbao/token
+{{- else }}
+{{ include "hodor.secretEnvironment" (list . "HODOR_OPENBAO_APPROLE_ROLE_ID" .Values.secret.keys.openbaoRoleId) }}
+{{ include "hodor.secretEnvironment" (list . "HODOR_OPENBAO_APPROLE_SECRET_ID" .Values.secret.keys.openbaoSecretId) }}
+{{- end }}
+{{- if $openbao.certificateAuthority.configMap }}
+- name: HODOR_OPENBAO_CA_FILE
+  value: {{ printf "/etc/hodor/openbao/%s" $openbao.certificateAuthority.key | quote }}
+{{- end }}
+{{- end }}
+{{- end -}}
+
+{{/* Where the key providers' files are mounted in the container: the token of the service account that
+     OpenBao checks, and the authority of OpenBao's certificate. */}}
+{{- define "hodor.keyProviderVolumeMounts" -}}
+{{- $openbao := .Values.keyProvider.openbao -}}
+{{- if $openbao.enabled }}
+{{- if eq $openbao.authMethod "kubernetes" }}
+- name: openbao-token
+  mountPath: /var/run/secrets/openbao
+  readOnly: true
+{{- end }}
+{{- if $openbao.certificateAuthority.configMap }}
+- name: openbao-authority
+  mountPath: /etc/hodor/openbao
+  readOnly: true
+{{- end }}
+{{- end }}
+{{- end -}}
+
+{{/* The volumes behind those mounts. The token is the service account's, for OpenBao's audience alone,
+     replaced by the kubelet before it expires; the pods mount no other token. */}}
+{{- define "hodor.keyProviderVolumes" -}}
+{{- $openbao := .Values.keyProvider.openbao -}}
+{{- if $openbao.enabled }}
+{{- if eq $openbao.authMethod "kubernetes" }}
+- name: openbao-token
+  projected:
+    sources:
+      - serviceAccountToken:
+          audience: {{ $openbao.tokenAudience | quote }}
+          expirationSeconds: 3600
+          path: token
+{{- end }}
+{{- if $openbao.certificateAuthority.configMap }}
+- name: openbao-authority
+  configMap:
+    name: {{ $openbao.certificateAuthority.configMap | quote }}
+{{- end }}
+{{- end }}
+{{- end -}}

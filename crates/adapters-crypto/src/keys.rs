@@ -9,12 +9,13 @@ use aws_lc_rs::encoding::AsDer as _;
 use aws_lc_rs::rand::SystemRandom;
 use aws_lc_rs::rsa::KeySize;
 use aws_lc_rs::signature::{
-    ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, KeyPair as _, RSA_PKCS1_SHA256, RSA_PSS_SHA256,
-    RsaEncoding, RsaKeyPair,
+    ECDSA_P256_SHA256_ASN1_SIGNING, ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, KeyPair as _,
+    RSA_PKCS1_SHA256, RSA_PSS_SHA256, RsaEncoding, RsaKeyPair,
 };
 use hodor_kernel::{DomainError, PublicKey, SealedSecret, Secret, TenantContext};
 use hodor_keys::api::{
     GeneratedKey, KeyAlgorithm, KeyMaterial, KeyProvider, KeyUse, KeyVersion, KeyVersionId,
+    SignatureEncoding,
 };
 use std::sync::Arc;
 use zeroize::Zeroize as _;
@@ -174,12 +175,17 @@ impl KeyProvider for LocalKeyProvider {
         tenant: &TenantContext,
         version: &KeyVersion,
         message: &[u8],
+        encoding: SignatureEncoding,
     ) -> Result<Vec<u8>, DomainError> {
         let key = self.unwrap(tenant, version, KeyUse::Signing)?;
         let random = SystemRandom::new();
         match version.algorithm() {
             KeyAlgorithm::Es256 => {
-                let pair = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, key.expose())
+                let written = match encoding {
+                    SignatureEncoding::Jose => &ECDSA_P256_SHA256_FIXED_SIGNING,
+                    SignatureEncoding::Der => &ECDSA_P256_SHA256_ASN1_SIGNING,
+                };
+                let pair = EcdsaKeyPair::from_pkcs8(written, key.expose())
                     .map_err(|_| unusable("the key is not a P-256 key"))?;
                 let signature = pair
                     .sign(&random, message)
@@ -189,7 +195,8 @@ impl KeyProvider for LocalKeyProvider {
             algorithm @ (KeyAlgorithm::Rs256 | KeyAlgorithm::Ps256) => {
                 // An RSA signature takes about a millisecond, a thousand
                 // times an ECDSA one: off the threads that answer requests,
-                // as the password hasher does.
+                // as the password hasher does. Its two encodings are the
+                // same bytes.
                 let message = message.to_vec();
                 tokio::task::spawn_blocking(move || {
                     let pair = RsaKeyPair::from_pkcs8(key.expose())

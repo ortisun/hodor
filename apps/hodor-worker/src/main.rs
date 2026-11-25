@@ -12,7 +12,8 @@ use clap::{Parser, ValueEnum};
 use hodor_adapters_crypto::{
     AwsLcHmacSha256, LocalKeyProvider, OsRandom, SecretKeys, Sha256Digest,
 };
-use hodor_adapters_http::{GuardedHttpClient, OutboundPolicy};
+use hodor_adapters_http::{GuardedHttpClient, OutboundPolicy, ServiceHttpClient};
+use hodor_adapters_kms::KeyProviderSettings;
 use hodor_adapters_policy_check::{OpaProcessChecker, RunLimits};
 use hodor_adapters_postgres::{
     AccessTokenCleanup, CleanupReport, Database, DecisionLogMaintenance, ExpiredKind,
@@ -30,9 +31,11 @@ use hodor_adapters_postgres::{PgDueRefreshes, PgTrustDomainStore};
 use hodor_adapters_smtp::SmtpSender;
 use hodor_audit::api::{AuditHandler, AuditService};
 use hodor_authorization_opa::api::{BundleService, PolicyService};
-use hodor_kernel::{Clock as _, DomainError, Secret, SystemClock, TenantContext, Timestamp};
+use hodor_kernel::{
+    Clock as _, DomainError, HttpClient, Secret, SystemClock, TenantContext, Timestamp,
+};
 use hodor_keys::api::{
-    BundleRefresher, KeyService, MAX_BUNDLE_BYTES, RotationPolicy, TenantSecretBox,
+    BundleRefresher, KeyProvider, KeyService, MAX_BUNDLE_BYTES, RotationPolicy, TenantSecretBox,
     TrustDomainPorts, TrustDomainService,
 };
 use hodor_notification::api::DeliveryService;
@@ -460,15 +463,18 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
             None
         }
     };
-    let rotation = root_keys.map(|root| {
-        let keys = KeyService::new(
-            Arc::new(database.clone()),
-            Arc::new(PgKeyStore),
-            Arc::new(LocalKeyProvider::new(root)),
-            Arc::new(SystemClock),
-        );
-        KeyRotationJob::new(platform.clone(), keys, rotation_policy)
-    });
+    let rotation = match root_keys {
+        Some(root) => {
+            let keys = KeyService::new(
+                Arc::new(database.clone()),
+                Arc::new(PgKeyStore),
+                key_provider(root)?,
+                Arc::new(SystemClock),
+            );
+            Some(KeyRotationJob::new(platform.clone(), keys, rotation_policy))
+        }
+        None => None,
+    };
     if rotation.is_none() {
         tracing::warn!(
             "HODOR_SECRET_KEYS is not set: keys do not rotate, no tenant gets one, and no webhook is sent"
@@ -1278,7 +1284,7 @@ fn logout_sender(
     let keys = KeyService::new(
         Arc::new(database.clone()),
         Arc::new(PgKeyStore),
-        Arc::new(LocalKeyProvider::new(root.clone())),
+        key_provider(root.clone())?,
         Arc::new(SystemClock),
     );
     let tenants = TenantService::new(
@@ -1479,6 +1485,41 @@ async fn stop_signal() {
     {
         let _ = tokio::signal::ctrl_c().await;
     }
+}
+
+/// The key provider of the keys context: the local one, wrapping keys
+/// under `root`, and OpenBao when `HODOR_OPENBAO_ADDRESS` is set, reached
+/// through a client that calls its address alone. New signing keys are
+/// made where `HODOR_KEY_PROVIDER` says, and every version is used by the
+/// provider that made it (`docs/operations/keys-in-openbao.md`).
+fn key_provider(root: Arc<SecretKeys>) -> Result<Arc<dyn KeyProvider>, DomainError> {
+    let settings = KeyProviderSettings::from_lookup(|name| std::env::var(name).ok())?;
+    let providers = settings.providers(Arc::new(LocalKeyProvider::new(root)), |openbao| {
+        let origins = [openbao.address.clone()];
+        let policy = OutboundPolicy {
+            timeout: openbao.time_limit,
+            connect_timeout: openbao.time_limit.min(std::time::Duration::from_secs(5)),
+            ..OutboundPolicy::default()
+        };
+        let client = match &openbao.certificate_authorities {
+            Some(path) => {
+                let authorities = std::fs::read(path).map_err(|error| {
+                    DomainError::invalid(
+                        "keys.provider_settings_invalid",
+                        "the settings of the key provider are not valid",
+                    )
+                    .with_detail(format!(
+                        "HODOR_OPENBAO_CA_FILE cannot be read: {}",
+                        error.kind()
+                    ))
+                })?;
+                ServiceHttpClient::trusting_only(&origins, policy, &authorities)?
+            }
+            None => ServiceHttpClient::new(&origins, policy)?,
+        };
+        Ok(Arc::new(client) as Arc<dyn HttpClient>)
+    })?;
+    Ok(Arc::new(providers))
 }
 
 #[cfg(test)]

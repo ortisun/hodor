@@ -26,13 +26,14 @@ surface through `pub mod api`.
     `MAX_ERROR_LENGTH` (100), `FETCH_TIME_LIMIT` (10 seconds),
     `DEFAULT_REFRESH` (5 minutes), `SHORTEST_REFRESH` (1 minute),
     `LONGEST_REFRESH` (1 day), `LONGEST_RETRY` (5 minutes).
+  - Several providers as one: `KeyProviders`.
   - Service: `KeyService`, `RotationReport`, `Signature`.
   - Secrets at rest: `TenantSecretBox`, `SEALED_FORMAT` (2), `LOST_RACE`.
   - Event: `KeyEvent`.
   - Domain: `GeneratedKey`, `KeyAlgorithm`, `KeyMaterial`, `KeyState`,
     `KeyUse`, `KeyVersion`, `KeyVersionId`, `KeyVersionSnapshot`,
-    `MAX_REASON_LENGTH`, `Activation`, `KeySet`, `RotationChange`,
-    `RotationPolicy`.
+    `MAX_REASON_LENGTH`, `SignatureEncoding` (`Jose` or `Der`), `Activation`,
+    `KeySet`, `RotationChange`, `RotationPolicy`.
 - `testing` (public test-support module, compiled only under
   `#[cfg(any(test, feature = "testing"))]`):
   - `InMemoryKeys`: a `KeyStore` kept in a shared
@@ -58,6 +59,14 @@ surface through `pub mod api`.
   - `TrustDomainContract<'a> { units_of_work, store, due }` and
     `run_trust_domain_contract(ports)`: the contract of trust domain
     stores.
+  - `ProviderPorts<'a> { provider, verifier, signing, data }` and
+    `run_provider_contract(ports)`: the contract every key provider passes
+    (both encodings checked with the public key by `verifier`, two keys never
+    equal, material refused for another tenant, version, algorithm, when
+    changed and for another provider, one use refused for the other, data
+    keys or their refusal). `made_by`, `with_material` and `der_to_jose`
+    (a strict reader of an ECDSA signature in DER) help it and the adapters'
+    own tests.
 - Subdirectories:
   - [application](./application/EGM.md): `KeyStore` and `KeyProvider` ports
     and `KeyService` use cases.

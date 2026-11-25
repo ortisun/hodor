@@ -1,14 +1,15 @@
 //! In-memory stores, a stand-in provider and stand-in bundle endpoints,
-//! and the contracts every key store and trust domain store pass.
+//! and the contracts every key store, trust domain store and key provider
+//! pass.
 
 use crate::api::{
     CheckedSource, DueRefreshes, GeneratedKey, KeyAlgorithm, KeyMaterial, KeyProvider, KeyState,
-    KeyStore, KeyUse, KeyVersion, KeyVersionId, KeyVersionSnapshot, TrustBundle, TrustDomain,
-    TrustDomainId, TrustDomainStore,
+    KeyStore, KeyUse, KeyVersion, KeyVersionId, KeyVersionSnapshot, SignatureEncoding, TrustBundle,
+    TrustDomain, TrustDomainId, TrustDomainStore,
 };
 use hodor_kernel::{
     DestinationCheck, DomainError, HttpClient, HttpRequest, HttpResponse, PublicKey, Secret,
-    TenantContext, TenantId, Timestamp, UnitOfWork, UnitOfWorkFactory,
+    SignatureVerifier, TenantContext, TenantId, Timestamp, UnitOfWork, UnitOfWorkFactory,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
@@ -154,8 +155,12 @@ impl KeyProvider for FakeKeyProvider {
         tenant: &TenantContext,
         version: &KeyVersion,
         message: &[u8],
+        encoding: SignatureEncoding,
     ) -> Result<Vec<u8>, DomainError> {
         let mut signature = check(tenant, version, KeyUse::Signing)?;
+        if encoding == SignatureEncoding::Der {
+            signature.extend_from_slice(b"der|");
+        }
         signature.extend_from_slice(message);
         Ok(signature)
     }
@@ -1093,4 +1098,332 @@ async fn the_due_search_finds_only_what_is_due_in_any_tenant(ports: &TrustDomain
         .await
         .expect("due");
     assert!(after.iter().any(|(_, id)| *id == leased.id()));
+}
+
+/// The provider under test, and what checks its signatures.
+pub struct ProviderPorts<'a> {
+    /// The provider under test.
+    pub provider: &'a dyn KeyProvider,
+    /// Checks signatures written in the JOSE encoding, independently of
+    /// the provider.
+    pub verifier: &'a dyn SignatureVerifier,
+    /// The signing algorithms the provider makes keys of: at least one.
+    pub signing: &'a [KeyAlgorithm],
+    /// Whether the provider makes data keys.
+    pub data: bool,
+}
+
+impl std::fmt::Debug for ProviderPorts<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProviderPorts")
+            .field("provider", &self.provider.name())
+            .field("signing", &self.signing)
+            .field("data", &self.data)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Makes a key with the provider and keeps it as a pending version, as
+/// the keys context does.
+///
+/// # Panics
+///
+/// Panics if the provider cannot make the key, or answers something that
+/// is not a version of `algorithm`.
+pub async fn made_by(
+    provider: &dyn KeyProvider,
+    tenant: &TenantContext,
+    algorithm: KeyAlgorithm,
+) -> KeyVersion {
+    let id = KeyVersionId::generate();
+    let generated = provider
+        .generate(tenant, id, algorithm)
+        .await
+        .expect("the provider makes the key");
+    KeyVersion::create(
+        id,
+        algorithm,
+        provider.name_for(algorithm),
+        generated,
+        MOMENT,
+    )
+    .expect("what the provider answered is a version of the algorithm")
+    .0
+}
+
+/// The same version with other material, as if a row had been copied.
+#[must_use]
+pub fn with_material(version: &KeyVersion, material: &KeyMaterial) -> KeyVersion {
+    let mut snapshot = version.snapshot().clone();
+    snapshot.material = material.clone();
+    KeyVersion::from_snapshot(snapshot)
+}
+
+/// An ECDSA signature in DER, an ASN.1 sequence of two positive integers,
+/// written as JOSE writes it: each integer in `size` bytes. `None` for
+/// anything else, trailing bytes and integers written longer than DER
+/// allows included.
+#[must_use]
+pub fn der_to_jose(der: &[u8], size: usize) -> Option<Vec<u8>> {
+    fn length(bytes: &[u8]) -> Option<(usize, &[u8])> {
+        let (&first, rest) = bytes.split_first()?;
+        match first {
+            0..=0x7f => Some((usize::from(first), rest)),
+            0x81 => {
+                let (&value, rest) = rest.split_first()?;
+                (value >= 0x80).then_some((usize::from(value), rest))
+            }
+            _ => None,
+        }
+    }
+    fn integer(bytes: &[u8], size: usize) -> Option<(Vec<u8>, &[u8])> {
+        let (&tag, rest) = bytes.split_first()?;
+        if tag != 0x02 {
+            return None;
+        }
+        let (length, rest) = length(rest)?;
+        if length == 0 || rest.len() < length {
+            return None;
+        }
+        let (value, rest) = rest.split_at(length);
+        // Positive, and no longer than it needs to be.
+        if value[0] & 0x80 != 0 || (value.len() > 1 && value[0] == 0 && value[1] & 0x80 == 0) {
+            return None;
+        }
+        let value = if value[0] == 0 { &value[1..] } else { value };
+        if value.len() > size {
+            return None;
+        }
+        let mut padded = vec![0; size - value.len()];
+        padded.extend_from_slice(value);
+        Some((padded, rest))
+    }
+    let (&tag, rest) = der.split_first()?;
+    if tag != 0x30 {
+        return None;
+    }
+    let (length, rest) = length(rest)?;
+    if rest.len() != length {
+        return None;
+    }
+    let (mut first, rest) = integer(rest, size)?;
+    let (second, rest) = integer(rest, size)?;
+    if !rest.is_empty() {
+        return None;
+    }
+    first.extend_from_slice(&second);
+    Some(first)
+}
+
+/// Runs the whole contract of a key provider. Each case makes keys in
+/// tenants of its own.
+///
+/// # Panics
+///
+/// Panics when the provider breaks the contract.
+pub async fn run_provider_contract(ports: ProviderPorts<'_>) {
+    assert!(!ports.signing.is_empty(), "a provider signs");
+    each_signing_key_signs_in_both_encodings(&ports).await;
+    two_keys_are_never_the_same(&ports).await;
+    material_is_refused_for_another_tenant_version_or_algorithm(&ports).await;
+    changed_material_and_another_providers_versions_are_refused(&ports).await;
+    a_key_of_one_use_is_refused_for_the_other(&ports).await;
+    if ports.data {
+        a_data_key_decrypts_only_what_it_encrypted_with_its_associated_data(&ports).await;
+    } else {
+        let refused = ports
+            .provider
+            .generate(&tenant(), KeyVersionId::generate(), KeyAlgorithm::A256Gcm)
+            .await;
+        assert!(refused.is_err(), "a provider without data keys makes none");
+    }
+}
+
+async fn each_signing_key_signs_in_both_encodings(ports: &ProviderPorts<'_>) {
+    let tenant = tenant();
+    for &algorithm in ports.signing {
+        let version = made_by(ports.provider, &tenant, algorithm).await;
+        let name = algorithm.as_str();
+        let checked = algorithm.signature().expect("a signing algorithm");
+        let public = version
+            .public_key()
+            .expect("a signing key has a public key");
+        let message = b"a message of the contract";
+
+        let jose = ports
+            .provider
+            .sign(&tenant, &version, message, SignatureEncoding::Jose)
+            .await
+            .expect("sign in the JOSE encoding");
+        assert!(
+            ports.verifier.verify(checked, public, message, &jose),
+            "{name}: the JOSE signature checks with the public key"
+        );
+        assert!(
+            !ports
+                .verifier
+                .verify(checked, public, b"another message", &jose),
+            "{name}: and checks nothing else"
+        );
+
+        let der = ports
+            .provider
+            .sign(&tenant, &version, message, SignatureEncoding::Der)
+            .await
+            .expect("sign in the DER encoding");
+        let as_jose = if algorithm == KeyAlgorithm::Es256 {
+            assert_eq!(jose.len(), 64, "{name}: two numbers of 32 bytes");
+            der_to_jose(&der, 32).expect("an ASN.1 sequence of two integers")
+        } else {
+            der
+        };
+        assert!(
+            ports.verifier.verify(checked, public, message, &as_jose),
+            "{name}: the DER signature checks with the public key"
+        );
+    }
+}
+
+async fn two_keys_are_never_the_same(ports: &ProviderPorts<'_>) {
+    let tenant = tenant();
+    let algorithm = ports.signing[0];
+    let first = made_by(ports.provider, &tenant, algorithm).await;
+    let second = made_by(ports.provider, &tenant, algorithm).await;
+    assert_ne!(first.public_key(), second.public_key());
+    assert_ne!(first.material(), second.material());
+}
+
+async fn refuses(
+    ports: &ProviderPorts<'_>,
+    tenant: &TenantContext,
+    version: &KeyVersion,
+    case: &str,
+) {
+    for encoding in [SignatureEncoding::Jose, SignatureEncoding::Der] {
+        let error = ports
+            .provider
+            .sign(tenant, version, b"m", encoding)
+            .await
+            .expect_err(case);
+        assert_eq!(error.code(), "keys.unusable", "{case}");
+    }
+}
+
+async fn material_is_refused_for_another_tenant_version_or_algorithm(ports: &ProviderPorts<'_>) {
+    let (tenant, elsewhere) = (self::tenant(), self::tenant());
+    let algorithm = ports.signing[0];
+    let version = made_by(ports.provider, &tenant, algorithm).await;
+    let other = made_by(ports.provider, &tenant, algorithm).await;
+    // The other tenant has a key of the same version identifier.
+    refuses(ports, &elsewhere, &version, "another tenant").await;
+    refuses(
+        ports,
+        &tenant,
+        &with_material(&other, version.material()),
+        "another version",
+    )
+    .await;
+    // Material of one tenant's version put on another tenant's version.
+    let theirs = made_by(ports.provider, &elsewhere, algorithm).await;
+    refuses(
+        ports,
+        &elsewhere,
+        &with_material(&theirs, version.material()),
+        "another tenant's material",
+    )
+    .await;
+    if let Some(&second) = ports.signing.iter().find(|&&each| each != algorithm) {
+        let of_second = made_by(ports.provider, &tenant, second).await;
+        refuses(
+            ports,
+            &tenant,
+            &with_material(&of_second, version.material()),
+            "another algorithm",
+        )
+        .await;
+    }
+}
+
+async fn changed_material_and_another_providers_versions_are_refused(ports: &ProviderPorts<'_>) {
+    let tenant = tenant();
+    let version = made_by(ports.provider, &tenant, ports.signing[0]).await;
+    let length = version.material().as_bytes().len();
+    for position in [0, length / 2, length - 1] {
+        let mut bytes = version.material().as_bytes().to_vec();
+        bytes[position] ^= 1;
+        let changed = with_material(&version, &KeyMaterial::from_stored(bytes));
+        refuses(ports, &tenant, &changed, "changed material").await;
+    }
+    let mut foreign = version.snapshot().clone();
+    foreign.provider = "another_provider".to_owned();
+    refuses(
+        ports,
+        &tenant,
+        &KeyVersion::from_snapshot(foreign),
+        "a version of another provider",
+    )
+    .await;
+}
+
+async fn a_key_of_one_use_is_refused_for_the_other(ports: &ProviderPorts<'_>) {
+    let tenant = tenant();
+    let signing = made_by(ports.provider, &tenant, ports.signing[0]).await;
+    let secret = Secret::new(b"s".to_vec());
+    assert!(
+        ports
+            .provider
+            .encrypt(&tenant, &signing, b"x", &secret)
+            .await
+            .is_err()
+    );
+    assert!(
+        ports
+            .provider
+            .decrypt(&tenant, &signing, b"x", &[1])
+            .await
+            .is_err()
+    );
+    if ports.data {
+        let data = made_by(ports.provider, &tenant, KeyAlgorithm::A256Gcm).await;
+        refuses(ports, &tenant, &data, "a data key").await;
+    }
+}
+
+async fn a_data_key_decrypts_only_what_it_encrypted_with_its_associated_data(
+    ports: &ProviderPorts<'_>,
+) {
+    let (tenant, elsewhere) = (self::tenant(), self::tenant());
+    let data = made_by(ports.provider, &tenant, KeyAlgorithm::A256Gcm).await;
+    let secret = Secret::new(b"the client secret of a provider".to_vec());
+    let sealed = ports
+        .provider
+        .encrypt(&tenant, &data, b"federation.client_secret", &secret)
+        .await
+        .expect("encrypt");
+    assert!(
+        !sealed
+            .windows(secret.expose().len())
+            .any(|window| window == secret.expose().as_slice()),
+        "nothing of the secret in the clear"
+    );
+    let opened = ports
+        .provider
+        .decrypt(&tenant, &data, b"federation.client_secret", &sealed)
+        .await
+        .expect("decrypt");
+    assert_eq!(opened.expose(), secret.expose());
+    assert!(
+        ports
+            .provider
+            .decrypt(&tenant, &data, b"ldap.bind_password", &sealed)
+            .await
+            .is_err()
+    );
+    assert!(
+        ports
+            .provider
+            .decrypt(&elsewhere, &data, b"federation.client_secret", &sealed)
+            .await
+            .is_err()
+    );
 }

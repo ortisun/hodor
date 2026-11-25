@@ -14,6 +14,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 use hodor_adapters_crypto::{
     AwsLcHmacSha1, BundleSigningKey, LocalKeyProvider, OsRandom, SecretKeys, Sha256Digest,
 };
+use hodor_adapters_http::{OutboundPolicy, ServiceHttpClient};
+use hodor_adapters_kms::KeyProviderSettings;
 use hodor_adapters_postgres::{
     Database, PgAccessTokenStore, PgAuditLog, PgBundleStore, PgGroupRepository,
     PgInstanceStatusStore, PgInstanceStore, PgKeyStore, PgLinkStore, PgOrganizationRepository,
@@ -33,11 +35,11 @@ use hodor_identity::api::{
     CreateUser, IdentifierKind, IdentityService, NormalizedIdentifier, Profile, UserKind,
 };
 use hodor_kernel::{
-    Actor, CorrelationId, DomainError, Secret, SecretBox, SystemClock, TenantContext,
+    Actor, CorrelationId, DomainError, HttpClient, Secret, SecretBox, SystemClock, TenantContext,
 };
 use hodor_keys::api::{
-    KeyAlgorithm, KeyService, KeyState, KeyUse, KeyVersion, KeyVersionId, RotationPolicy,
-    TenantSecretBox,
+    KeyAlgorithm, KeyProvider, KeyService, KeyState, KeyUse, KeyVersion, KeyVersionId,
+    RotationPolicy, TenantSecretBox,
 };
 use hodor_tenant::api::{
     AssuranceLevel, AssuranceLevels, AssuranceRequirement, Caller, CreateTenant, Deprovisioning,
@@ -1746,9 +1748,7 @@ async fn run_keys(
     let keys = KeyService::new(
         units(),
         Arc::new(PgKeyStore),
-        Arc::new(LocalKeyProvider::new(Arc::new(SecretKeys::parse(
-            &Secret::from(setting),
-        )?))),
+        key_provider(Arc::new(SecretKeys::parse(&Secret::from(setting))?))?,
         clock,
     );
     let slug = match &command {
@@ -2317,4 +2317,39 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     }
     Ok(())
+}
+
+/// The key provider of the keys context: the local one, wrapping keys
+/// under `root`, and OpenBao when `HODOR_OPENBAO_ADDRESS` is set, reached
+/// through a client that calls its address alone. New signing keys are
+/// made where `HODOR_KEY_PROVIDER` says, and every version is used by the
+/// provider that made it (`docs/operations/keys-in-openbao.md`).
+fn key_provider(root: Arc<SecretKeys>) -> Result<Arc<dyn KeyProvider>, DomainError> {
+    let settings = KeyProviderSettings::from_lookup(|name| std::env::var(name).ok())?;
+    let providers = settings.providers(Arc::new(LocalKeyProvider::new(root)), |openbao| {
+        let origins = [openbao.address.clone()];
+        let policy = OutboundPolicy {
+            timeout: openbao.time_limit,
+            connect_timeout: openbao.time_limit.min(std::time::Duration::from_secs(5)),
+            ..OutboundPolicy::default()
+        };
+        let client = match &openbao.certificate_authorities {
+            Some(path) => {
+                let authorities = std::fs::read(path).map_err(|error| {
+                    DomainError::invalid(
+                        "keys.provider_settings_invalid",
+                        "the settings of the key provider are not valid",
+                    )
+                    .with_detail(format!(
+                        "HODOR_OPENBAO_CA_FILE cannot be read: {}",
+                        error.kind()
+                    ))
+                })?;
+                ServiceHttpClient::trusting_only(&origins, policy, &authorities)?
+            }
+            None => ServiceHttpClient::new(&origins, policy)?,
+        };
+        Ok(Arc::new(client) as Arc<dyn HttpClient>)
+    })?;
+    Ok(Arc::new(providers))
 }

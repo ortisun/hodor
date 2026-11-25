@@ -43,6 +43,7 @@ The first run builds the image, which takes several minutes. The command returns
 | The messages Hodor sends, in a development mail server that delivers none | <http://localhost:8025> |
 | Metrics, in VictoriaMetrics | <http://localhost:8428/vmui> |
 | Traces, in VictoriaTraces | <http://localhost:10428/select/vmui> |
+| OpenBao, in development mode, root token `development-root-token`. The tenants' signing keys are made there when the stack is started with `HODOR_KEY_PROVIDER=openbao`: [keys in OpenBao](keys-in-openbao.md#in-the-development-stack) | <http://localhost:8200> |
 
 The database is migrated and the system tenant is created as part of starting.
 

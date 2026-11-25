@@ -17,7 +17,9 @@ kernel traits.
 - Ports implemented elsewhere: `KeyStore` and `SealingStateStore`, by
   `PgKeyStore` and `PgSealingStateStore` in
   `crates/adapters-postgres/src/keys.rs`; `KeyProvider`, by
-  `LocalKeyProvider` in `crates/adapters-crypto/src/keys.rs`;
+  `LocalKeyProvider` in `crates/adapters-crypto/src/keys.rs` and
+  `OpenBaoKeyProvider` in `crates/adapters-kms/src/openbao.rs`, and by this
+  crate's own `KeyProviders`, which routes between them;
   `FirstFormatSecrets`, by `SecretKeys` in
   `crates/adapters-crypto/src/sealing.rs`; `TrustDomainStore` and
   `DueRefreshes`, by `PgTrustDomainStore` and `PgDueRefreshes` in

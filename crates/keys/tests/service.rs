@@ -6,7 +6,7 @@ use hodor_kernel::uow::testing::InMemoryUnitOfWorkFactory;
 use hodor_kernel::{Caller, Clock as _, Secret, TenantContext, TenantId, Timestamp};
 use hodor_keys::api::{
     KeyAlgorithm, KeyProvider, KeyService, KeyState, KeyUse, KeyVersion, KeyVersionId,
-    RotationPolicy, RotationReport,
+    RotationPolicy, RotationReport, SignatureEncoding,
 };
 use hodor_keys::testing::{FakeKeyProvider, InMemoryKeys, Ports, pending_version, run_contract};
 use std::sync::Arc;
@@ -278,9 +278,24 @@ async fn the_stand_in_provider_refuses_material_of_another_tenant_or_use() {
     let data = pending_version(&tenant, KeyAlgorithm::A256Gcm, Timestamp::UNIX_EPOCH);
     let provider = FakeKeyProvider;
 
-    assert!(provider.sign(&tenant, &signing, b"m").await.is_ok());
-    assert!(provider.sign(&elsewhere, &signing, b"m").await.is_err());
-    assert!(provider.sign(&tenant, &data, b"m").await.is_err());
+    assert!(
+        provider
+            .sign(&tenant, &signing, b"m", SignatureEncoding::Jose)
+            .await
+            .is_ok()
+    );
+    assert!(
+        provider
+            .sign(&elsewhere, &signing, b"m", SignatureEncoding::Jose)
+            .await
+            .is_err()
+    );
+    assert!(
+        provider
+            .sign(&tenant, &data, b"m", SignatureEncoding::Jose)
+            .await
+            .is_err()
+    );
 
     let secret = Secret::new(b"secret".to_vec());
     let sealed = provider

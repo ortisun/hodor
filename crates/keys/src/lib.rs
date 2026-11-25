@@ -22,6 +22,7 @@ pub mod api {
         DueRefreshes, FirstFormatSecrets, KeyProvider, KeyStore, SealingStateStore,
         TrustDomainStore,
     };
+    pub use crate::application::providers::KeyProviders;
     pub use crate::application::secret_box::{FORMAT as SEALED_FORMAT, LOST_RACE, TenantSecretBox};
     pub use crate::application::service::{KeyService, LOST_FIRST_RACE, RotationReport, Signature};
     pub use crate::application::trust_domains::{
@@ -31,7 +32,7 @@ pub mod api {
     pub use crate::domain::event::{BundleSummary, KeyEvent, TrustDomainEvent};
     pub use crate::domain::key::{
         GeneratedKey, KeyAlgorithm, KeyMaterial, KeyState, KeyUse, KeyVersion, KeyVersionId,
-        KeyVersionSnapshot, MAX_REASON_LENGTH,
+        KeyVersionSnapshot, MAX_REASON_LENGTH, SignatureEncoding,
     };
     pub use crate::domain::key_set::{Activation, KeySet};
     pub use crate::domain::rotation::{RotationChange, RotationPolicy};

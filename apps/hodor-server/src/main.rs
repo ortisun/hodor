@@ -10,6 +10,7 @@ use hodor_adapters_crypto::{
     LocalKeyProvider, OsRandom, SecretKeys, Sha256Digest,
 };
 use hodor_adapters_http::{GuardedHttpClient, OutboundPolicy, ServiceHttpClient};
+use hodor_adapters_kms::KeyProviderSettings;
 use hodor_adapters_ldap::LdapDirectoryClient;
 use hodor_adapters_postgres::{
     Database, PgAccessListStore, PgAccessTokenRecordStore, PgAccessTokenStore, PgApiKeyStore,
@@ -51,9 +52,9 @@ use hodor_federation::api::{
     LockoutPolicy, OpenIdClient, SamlClient,
 };
 use hodor_identity::api::{GroupService, IdentityService, OrganizationService, WorkloadService};
-use hodor_kernel::{DomainError, Secret, SecretBox, SystemClock, TenantContext};
+use hodor_kernel::{DomainError, HttpClient, Secret, SecretBox, SystemClock, TenantContext};
 use hodor_keys::api::{
-    KeyService, RotationPolicy, TenantSecretBox, TrustDomainPorts, TrustDomainService,
+    KeyProvider, KeyService, RotationPolicy, TenantSecretBox, TrustDomainPorts, TrustDomainService,
 };
 use hodor_notification::api::Notifier;
 use hodor_oauth::api::{
@@ -1269,9 +1270,44 @@ fn keys(config: &Config, database: &Database) -> Result<Option<KeyService>, Doma
     Ok(Some(KeyService::new(
         Arc::new(database.clone()),
         Arc::new(PgKeyStore),
-        Arc::new(LocalKeyProvider::new(root)),
+        key_provider(root)?,
         Arc::new(SystemClock),
     )))
+}
+
+/// The key provider of the keys context: the local one, wrapping keys
+/// under `root`, and OpenBao when `HODOR_OPENBAO_ADDRESS` is set, reached
+/// through a client that calls its address alone. New signing keys are
+/// made where `HODOR_KEY_PROVIDER` says, and every version is used by the
+/// provider that made it (`docs/operations/keys-in-openbao.md`).
+fn key_provider(root: Arc<SecretKeys>) -> Result<Arc<dyn KeyProvider>, DomainError> {
+    let settings = KeyProviderSettings::from_lookup(|name| std::env::var(name).ok())?;
+    let providers = settings.providers(Arc::new(LocalKeyProvider::new(root)), |openbao| {
+        let origins = [openbao.address.clone()];
+        let policy = OutboundPolicy {
+            timeout: openbao.time_limit,
+            connect_timeout: openbao.time_limit.min(std::time::Duration::from_secs(5)),
+            ..OutboundPolicy::default()
+        };
+        let client = match &openbao.certificate_authorities {
+            Some(path) => {
+                let authorities = std::fs::read(path).map_err(|error| {
+                    DomainError::invalid(
+                        "keys.provider_settings_invalid",
+                        "the settings of the key provider are not valid",
+                    )
+                    .with_detail(format!(
+                        "HODOR_OPENBAO_CA_FILE cannot be read: {}",
+                        error.kind()
+                    ))
+                })?;
+                ServiceHttpClient::trusting_only(&origins, policy, &authorities)?
+            }
+            None => ServiceHttpClient::new(&origins, policy)?,
+        };
+        Ok(Arc::new(client) as Arc<dyn HttpClient>)
+    })?;
+    Ok(Arc::new(providers))
 }
 
 /// Where secrets at rest are sealed: under the tenant's data keys, with

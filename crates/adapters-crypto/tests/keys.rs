@@ -1,10 +1,12 @@
-//! The local key provider, with real keys.
+//! The local key provider, with real keys: the contract of every key
+//! provider, then what is the local provider's own.
 
 use hodor_adapters_crypto::{AwsLcVerifier, LocalKeyProvider, OsRandom, SecretKeys};
 use hodor_kernel::{
     PublicKey, SealedSecret, Secret, SignatureVerifier, TenantContext, TenantId, Timestamp,
 };
-use hodor_keys::api::{KeyAlgorithm, KeyMaterial, KeyProvider, KeyVersion, KeyVersionId};
+use hodor_keys::api::{KeyAlgorithm, KeyProvider, KeyVersion, KeyVersionId, SignatureEncoding};
+use hodor_keys::testing::{ProviderPorts, run_provider_contract};
 use std::sync::Arc;
 
 fn root(pairs: &[(&str, &Secret<String>)]) -> Arc<SecretKeys> {
@@ -45,13 +47,6 @@ async fn make(
     .0
 }
 
-/// The same version with other material, as if a row had been copied.
-fn with_material(version: &KeyVersion, material: &KeyMaterial) -> KeyVersion {
-    let mut snapshot = version.snapshot().clone();
-    snapshot.material = material.clone();
-    KeyVersion::from_snapshot(snapshot)
-}
-
 fn purpose(version: &KeyVersion) -> String {
     let id: String = version
         .id()
@@ -66,28 +61,19 @@ fn purpose(version: &KeyVersion) -> String {
 }
 
 #[tokio::test]
-async fn each_signing_algorithm_signs_what_its_public_key_checks() {
+async fn the_local_provider_passes_the_contract_of_a_key_provider() {
     let (provider, _) = provider();
-    let tenant = tenant();
-    for algorithm in [
-        KeyAlgorithm::Es256,
-        KeyAlgorithm::Rs256,
-        KeyAlgorithm::Ps256,
-    ] {
-        let version = make(&provider, &tenant, algorithm).await;
-        let public = version.public_key().expect("a public key");
-        let signature = provider
-            .sign(&tenant, &version, b"a message")
-            .await
-            .expect("sign");
-        let checked = algorithm.signature().expect("a signing algorithm");
-        assert!(
-            AwsLcVerifier.verify(checked, public, b"a message", &signature),
-            "{} signature checks",
-            algorithm.as_str()
-        );
-        assert!(!AwsLcVerifier.verify(checked, public, b"another message", &signature));
-    }
+    run_provider_contract(ProviderPorts {
+        provider: &provider,
+        verifier: &AwsLcVerifier,
+        signing: &[
+            KeyAlgorithm::Es256,
+            KeyAlgorithm::Rs256,
+            KeyAlgorithm::Ps256,
+        ],
+        data: true,
+    })
+    .await;
 }
 
 #[tokio::test]
@@ -136,51 +122,6 @@ async fn the_material_holds_no_private_key_in_the_clear() {
         );
         assert!(!format!("{version:?}").contains(&format!("{:?}", key.expose())));
     }
-}
-
-#[tokio::test]
-async fn material_is_refused_for_another_tenant_version_or_algorithm() {
-    let (provider, _) = provider();
-    let (tenant, elsewhere) = (tenant(), tenant());
-    let es256 = make(&provider, &tenant, KeyAlgorithm::Es256).await;
-    let other_es256 = make(&provider, &tenant, KeyAlgorithm::Es256).await;
-    let rs256 = make(&provider, &tenant, KeyAlgorithm::Rs256).await;
-    let ps256 = make(&provider, &tenant, KeyAlgorithm::Ps256).await;
-
-    let cases = [
-        ("another tenant", &elsewhere, es256.clone()),
-        (
-            "another version",
-            &tenant,
-            with_material(&other_es256, es256.material()),
-        ),
-        (
-            "another algorithm",
-            &tenant,
-            with_material(&ps256, rs256.material()),
-        ),
-    ];
-    for (case, tenant, version) in cases {
-        let error = provider.sign(tenant, &version, b"m").await.expect_err(case);
-        assert_eq!(error.code(), "keys.unusable", "{case}");
-    }
-
-    for position in [0, 5, es256.material().as_bytes().len() - 1] {
-        let mut bytes = es256.material().as_bytes().to_vec();
-        bytes[position] ^= 1;
-        let changed = with_material(&es256, &KeyMaterial::from_stored(bytes));
-        assert!(provider.sign(&tenant, &changed, b"m").await.is_err());
-    }
-
-    let mut foreign = es256.snapshot().clone();
-    foreign.provider = "fake".to_owned();
-    assert!(
-        provider
-            .sign(&tenant, &KeyVersion::from_snapshot(foreign), b"m")
-            .await
-            .is_err(),
-        "material of another provider"
-    );
 }
 
 #[tokio::test]
@@ -241,28 +182,6 @@ async fn a_data_key_encrypts_and_decrypts_only_with_its_associated_data() {
 }
 
 #[tokio::test]
-async fn a_key_of_one_use_is_refused_for_the_other() {
-    let (provider, _) = provider();
-    let tenant = tenant();
-    let signing = make(&provider, &tenant, KeyAlgorithm::Es256).await;
-    let data = make(&provider, &tenant, KeyAlgorithm::A256Gcm).await;
-    let secret = Secret::new(b"s".to_vec());
-    assert!(provider.sign(&tenant, &data, b"m").await.is_err());
-    assert!(
-        provider
-            .encrypt(&tenant, &signing, b"x", &secret)
-            .await
-            .is_err()
-    );
-    assert!(
-        provider
-            .decrypt(&tenant, &signing, b"x", &[1])
-            .await
-            .is_err()
-    );
-}
-
-#[tokio::test]
 async fn material_wrapped_under_an_old_root_key_is_used_after_a_new_one_is_put_first() {
     let old = SecretKeys::generate(&OsRandom);
     let new = SecretKeys::generate(&OsRandom);
@@ -273,7 +192,7 @@ async fn material_wrapped_under_an_old_root_key_is_used_after_a_new_one_is_put_f
 
     let version = make(&before, &tenant, KeyAlgorithm::Es256).await;
     let signature = after
-        .sign(&tenant, &version, b"m")
+        .sign(&tenant, &version, b"m", SignatureEncoding::Jose)
         .await
         .expect("an old root key still unwraps");
     assert!(AwsLcVerifier.verify(
@@ -282,7 +201,12 @@ async fn material_wrapped_under_an_old_root_key_is_used_after_a_new_one_is_put_f
         b"m",
         &signature
     ));
-    assert!(without_old.sign(&tenant, &version, b"m").await.is_err());
+    assert!(
+        without_old
+            .sign(&tenant, &version, b"m", SignatureEncoding::Jose)
+            .await
+            .is_err()
+    );
 }
 
 #[test]

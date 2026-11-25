@@ -26,19 +26,28 @@ are `pub(crate)` in `mod.rs` and reach other crates only through
 | `update(uow, &KeyVersion)` | Stores state, times and revocation reason; `NotFound` `keys.version_not_found` if absent. |
 
 `KeyProvider` (`#[async_trait]`, `Send + Sync`), implemented by
-`LocalKeyProvider` (`crates/adapters-crypto/src/keys.rs`) and
-`FakeKeyProvider`:
+`LocalKeyProvider` (`crates/adapters-crypto/src/keys.rs`),
+`OpenBaoKeyProvider` (`crates/adapters-kms/src/openbao.rs`), `KeyProviders`
+(`providers.rs`) and `FakeKeyProvider`:
 
 | Method | Meaning |
 | --- | --- |
 | `name() -> &'static str` | Stored with every version it makes. |
+| `name_for(KeyAlgorithm) -> &'static str` | The provider that makes keys of the algorithm; `name()` unless the provider routes. `KeyService` stores this one. |
 | `generate(tenant, KeyVersionId, KeyAlgorithm) -> GeneratedKey` | A new key: public key for signing, and material. |
-| `sign(tenant, &KeyVersion, message) -> Vec<u8>` | Signs with a signing key. |
+| `sign(tenant, &KeyVersion, message, SignatureEncoding) -> Vec<u8>` | Signs with a signing key, in the JOSE or the DER encoding (the same bytes for RSA). |
 | `encrypt(tenant, &KeyVersion, associated, &Secret<Vec<u8>>) -> Vec<u8>` | Encrypts with a data key. |
 | `decrypt(tenant, &KeyVersion, associated, ciphertext) -> Secret<Vec<u8>>` | Decrypts what `encrypt` made. |
 
 A provider must refuse material made for another tenant, version or
-algorithm.
+algorithm, or by another provider, with `keys.unusable`; the contract is
+`testing::run_provider_contract`.
+
+`KeyProviders` (`providers.rs`): `new(signing, data)` makes new signing keys
+with `signing` and data keys with `data`; `also(provider)` adds a provider
+whose versions are still used. Every version goes to the provider named in
+it and to no other; an unknown name is `keys.provider_not_configured`.
+Nothing falls back.
 
 `SealingStateStore` (`#[async_trait]`), implemented by `PgSealingStateStore`
 (`crates/adapters-postgres/src/keys.rs`) and `InMemorySealingStates`:
