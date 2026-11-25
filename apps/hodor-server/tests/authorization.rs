@@ -495,8 +495,10 @@ async fn errors_go_back_to_a_trusted_address_with_the_state_and_the_issuer() {
     let mut browser = Browser::not_following(&server);
 
     let cases = [
+        // An unknown type answers in the query; `token`, a type that
+        // returns an access token, would answer in the fragment.
         (
-            vec![("response_type", "token")],
+            vec![("response_type", "code code")],
             "unsupported_response_type",
         ),
         (vec![("code_challenge_method", "plain")], "invalid_request"),
@@ -888,7 +890,7 @@ async fn errors_are_posted_in_the_mode_asked_for_and_other_modes_are_refused() {
 
     // A mode Hodor does not offer is refused in the query, the default of
     // the type.
-    for mode in ["fragment", "jwt", "form_post.jwt", "anything"] {
+    for mode in ["jwt", "form_post.jwt", "anything"] {
         let answer = fetch(
             &mut browser,
             &server,
@@ -906,7 +908,7 @@ async fn errors_are_posted_in_the_mode_asked_for_and_other_modes_are_refused() {
         assert_eq!(back["error"], "invalid_request", "{mode}");
         assert_eq!(
             back["error_description"],
-            "the response modes are query and form_post"
+            "the response modes are query, fragment and form_post"
         );
         assert!(!back.contains_key("code"));
     }

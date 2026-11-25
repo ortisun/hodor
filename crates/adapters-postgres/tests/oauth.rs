@@ -12,7 +12,7 @@ use hodor_kernel::{Caller, TenantContext, TenantId, Timestamp};
 use hodor_oauth::api::ClientAssertionStore;
 use hodor_oauth::api::{
     ApplicationPorts, ApplicationService, ApplicationSettings, ClientSettings, ClientType,
-    CreateClient, GrantType, RotateSecret,
+    CreateClient, GrantType, ResponseType, RotateSecret,
 };
 use hodor_oauth::testing::{
     AssertionStorePorts, AuthorizationStorePorts, ClaimMapperStorePorts, ConsentStorePorts,
@@ -59,9 +59,14 @@ async fn the_database_keeps_claim_mappers_to_their_shape() {
     .await
     .expect("application");
     sqlx::query(
-        "INSERT INTO oauth.client VALUES ($1, $1, $1, 'Web', 'public', 'none',
+        "INSERT INTO oauth.client (tenant_id, id, application_id, name, client_type,
+             authentication_method, grant_types, redirect_uris, allowed_scopes, require_pkce,
+             access_token_seconds, id_token_seconds, refresh_token_seconds,
+             refresh_idle_seconds, status, created_at, updated_at, version, response_types)
+         VALUES ($1, $1, $1, 'Web', 'public', 'none',
              ARRAY['authorization_code'], ARRAY['https://billing.example.com/callback'],
-             ARRAY[]::text[], true, 300, 300, 2592000, 604800, 'enabled', now(), now(), 0)",
+             ARRAY[]::text[], true, 300, 300, 2592000, 604800, 'enabled', now(), now(), 0,
+             ARRAY['code'])",
     )
     .bind(tenant)
     .execute(database.owner())
@@ -183,9 +188,14 @@ async fn the_database_keeps_consent_to_its_rules_and_its_history_unchanged() {
     .await
     .expect("application");
     sqlx::query(
-        "INSERT INTO oauth.client VALUES ($1, $1, $1, 'Web', 'public', 'none',
+        "INSERT INTO oauth.client (tenant_id, id, application_id, name, client_type,
+             authentication_method, grant_types, redirect_uris, allowed_scopes, require_pkce,
+             access_token_seconds, id_token_seconds, refresh_token_seconds,
+             refresh_idle_seconds, status, created_at, updated_at, version, response_types)
+         VALUES ($1, $1, $1, 'Web', 'public', 'none',
              ARRAY['authorization_code'], ARRAY['https://billing.example.com/callback'],
-             ARRAY[]::text[], true, 300, 300, 2592000, 604800, 'enabled', now(), now(), 0)",
+             ARRAY[]::text[], true, 300, 300, 2592000, 604800, 'enabled', now(), now(), 0,
+             ARRAY['code'])",
     )
     .bind(tenant)
     .execute(database.owner())
@@ -1192,10 +1202,12 @@ async fn the_database_keeps_subject_types_and_sector_addresses_to_their_rules() 
                  authentication_method, grant_types, redirect_uris, allowed_scopes, require_pkce,
                  access_token_seconds, id_token_seconds, refresh_token_seconds,
                  refresh_idle_seconds, status, created_at, updated_at, version, subject_type,
-                 sector_identifier_uri)
+                 sector_identifier_uri, response_types)
              VALUES ($1, gen_random_uuid(), $1, 'Web', 'confidential', 'client_secret_basic',
                  {grants}, ARRAY['https://billing.example.com/callback'], ARRAY[]::text[], true,
-                 300, 300, 2592000, 604800, 'enabled', now(), now(), 0, '{subject_type}', {sector})"
+                 300, 300, 2592000, 604800, 'enabled', now(), now(), 0, '{subject_type}', {sector},
+                 CASE WHEN 'authorization_code' = ANY ({grants}) THEN ARRAY['code']
+                      ELSE ARRAY[]::text[] END)"
         )
     };
     let code = "ARRAY['authorization_code']";
@@ -2032,4 +2044,164 @@ async fn the_database_keeps_a_pending_request_bound_one_way() {
         insert(None, Some(vec![8_u8; 32]), 60).await.is_err(),
         "a reference names one request of its tenant"
     );
+}
+
+#[tokio::test]
+async fn the_database_keeps_response_types_to_their_rules() {
+    let database = TestDatabase::start().await;
+    let tenant = sqlx::types::Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO oauth.application VALUES ($1, $1, 'Billing', false, 'enabled', now(), now(), 0)",
+    )
+    .bind(tenant)
+    .execute(database.owner())
+    .await
+    .expect("application");
+    let insert = |grants: &str, types: &str| {
+        format!(
+            "INSERT INTO oauth.client (tenant_id, id, application_id, name, client_type,
+                 authentication_method, grant_types, redirect_uris, allowed_scopes, require_pkce,
+                 access_token_seconds, id_token_seconds, refresh_token_seconds,
+                 refresh_idle_seconds, status, created_at, updated_at, version, response_types)
+             VALUES ($1, gen_random_uuid(), $1, 'Web', 'confidential', 'client_secret_basic',
+                 {grants}, ARRAY['https://billing.example.com/callback'], ARRAY[]::text[], true,
+                 300, 300, 2592000, 604800, 'enabled', now(), now(), 0, {types})"
+        )
+    };
+    let code = "ARRAY['authorization_code']";
+    // Every piece of the statement is a constant of this test.
+    sqlx::query(sqlx::AssertSqlSafe(insert(
+        code,
+        "ARRAY['code', 'id_token', 'code id_token', 'none']",
+    )))
+    .bind(tenant)
+    .execute(database.owner())
+    .await
+    .expect("every response type");
+    for (case, statement) in [
+        (
+            "no response type with a code",
+            insert(code, "ARRAY[]::text[]"),
+        ),
+        (
+            "a type that returns an access token",
+            insert(code, "ARRAY['id_token token']"),
+        ),
+        (
+            "the words in another order",
+            insert(code, "ARRAY['id_token code']"),
+        ),
+        (
+            "a response type without a code",
+            insert("ARRAY['client_credentials']", "ARRAY['id_token']"),
+        ),
+    ] {
+        let refused = sqlx::query(sqlx::AssertSqlSafe(statement))
+            .bind(tenant)
+            .execute(database.owner())
+            .await;
+        assert!(refused.is_err(), "{case}");
+    }
+}
+
+#[tokio::test]
+async fn a_client_made_before_response_types_answers_code_and_keeps_what_it_is_given() {
+    let database = TestDatabase::start().await;
+    let tenant = TenantContext::assume(TenantId::generate());
+    let applications = ApplicationService::new(ApplicationPorts {
+        units_of_work: Arc::new(database.app().clone()),
+        applications: Arc::new(PgApplicationStore),
+        clients: Arc::new(PgClientStore),
+        resource_servers: Arc::new(PgResourceServerStore),
+        digest: Arc::new(FakeDigest),
+        random: Arc::new(DistinctRandom),
+        clock: Arc::new(FixedClock::at(
+            Timestamp::UNIX_EPOCH + Duration::days(20_000),
+        )),
+    });
+    let application = applications
+        .create_application(
+            &tenant,
+            ApplicationSettings {
+                name: "Billing".to_owned(),
+                first_party: false,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("application");
+    let mut settings = ClientSettings::new(
+        "Web",
+        ClientType::Public,
+        vec![GrantType::AuthorizationCode],
+        vec!["https://billing.example.com/callback".to_owned()],
+    );
+    settings.response_types = vec![ResponseType::IdToken, ResponseType::CodeIdToken];
+    let (browser, _) = applications
+        .create_client(
+            &tenant,
+            CreateClient {
+                application_id: application.id(),
+                client_type: ClientType::Public,
+                settings: settings.clone(),
+                secret_lifetime: None,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("a client of the browser");
+    let read = applications
+        .client(&tenant, browser.id())
+        .await
+        .expect("read back");
+    assert_eq!(
+        read.snapshot().settings.response_types,
+        [ResponseType::IdToken, ResponseType::CodeIdToken]
+    );
+    let machine = ClientSettings::new(
+        "Nightly export",
+        ClientType::Confidential,
+        vec![GrantType::ClientCredentials],
+        Vec::new(),
+    );
+    let (machine, _) = applications
+        .create_client(
+            &tenant,
+            CreateClient {
+                application_id: application.id(),
+                client_type: ClientType::Confidential,
+                settings: machine,
+                secret_lifetime: None,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("a client of client credentials");
+
+    // As if made before the column existed: the migration's backfill,
+    // run again over the column taken away, gives `code` to the client of
+    // the authorization code alone.
+    sqlx::raw_sql("ALTER TABLE oauth.client DROP COLUMN response_types")
+        .execute(database.owner())
+        .await
+        .expect("the column taken away");
+    sqlx::raw_sql(include_str!(
+        "../../../migrations/0112_oauth_client_response_types.sql"
+    ))
+    .execute(database.owner())
+    .await
+    .expect("the migration again");
+    let browser = applications
+        .client(&tenant, browser.id())
+        .await
+        .expect("read back");
+    assert_eq!(
+        browser.snapshot().settings.response_types,
+        [ResponseType::Code]
+    );
+    let machine = applications
+        .client(&tenant, machine.id())
+        .await
+        .expect("read back");
+    assert!(machine.snapshot().settings.response_types.is_empty());
 }

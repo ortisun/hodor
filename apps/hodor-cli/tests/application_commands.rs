@@ -861,3 +861,82 @@ async fn a_client_is_given_request_object_addresses_checked_as_the_server_checks
         ]
     );
 }
+
+#[tokio::test]
+async fn a_client_is_given_the_response_types_it_is_answered_with() {
+    let database = TestDatabase::start().await;
+    let created = run(
+        &database,
+        &["tenant", "create", "--slug", "acme", "--name", "Acme"],
+    );
+    assert!(created.status.success(), "{created:?}");
+    let added = run(
+        &database,
+        &[
+            "application",
+            "add",
+            "--tenant",
+            "acme",
+            "--name",
+            "Billing",
+            "--first-party",
+        ],
+    );
+    let application = value(&added, "application");
+    let client = |types: &[&str]| {
+        let mut arguments = vec![
+            "client",
+            "add",
+            "--tenant",
+            "acme",
+            "--application",
+            &application,
+            "--name",
+            "Billing in the browser",
+            "--type",
+            "public",
+            "--grant",
+            "authorization_code",
+            "--redirect-uri",
+            "https://billing.example.com/callback",
+        ];
+        for kind in types {
+            arguments.extend(["--response-type", kind]);
+        }
+        run(&database, &arguments)
+    };
+    let stored = |id: String| {
+        let database = &database;
+        async move {
+            let types: Vec<String> =
+                sqlx::query_scalar("SELECT response_types FROM oauth.client WHERE id = $1::uuid")
+                    .bind(id)
+                    .fetch_one(database.owner())
+                    .await
+                    .expect("client");
+            types
+        }
+    };
+
+    // `code` alone unless given.
+    let plain = client(&[]);
+    assert!(plain.status.success(), "{plain:?}");
+    assert_eq!(stored(value(&plain, "client")).await, ["code"]);
+
+    // Given once per type, a type of two words in either order.
+    let every = client(&["id_token", "id_token code", "none"]);
+    assert!(every.status.success(), "{every:?}");
+    assert_eq!(
+        stored(value(&every, "client")).await,
+        ["id_token", "code id_token", "none"]
+    );
+
+    // A type that returns an access token is refused with the context's
+    // code.
+    let refused = client(&["id_token token"]);
+    assert!(!refused.status.success());
+    assert!(
+        text(&refused.stderr).contains("oauth.client_response_types_invalid"),
+        "{refused:?}"
+    );
+}

@@ -11,11 +11,12 @@ use crate::domain::client::{Client, ClientId, GrantType};
 use crate::domain::consent::ConsentWait;
 use crate::domain::event::OauthEvent;
 use crate::domain::logout::IdTokenHint;
+use crate::domain::openid::asks_for_openid;
 use crate::domain::request_object::{
     RequestObjectCheck, RequestObjectRefusal, check_request_object, unchecked_claims,
 };
 use crate::domain::resource_server::{OPENID_SCOPES, ResourceServer};
-use crate::domain::response::{ResponseMode, ResponseType, error_mode};
+use crate::domain::response::{ReadResponseType, ResponseMode, ResponseType, error_mode};
 use crate::domain::text::is_scope;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -236,6 +237,10 @@ pub struct AuthorizationRequest {
     /// The languages the client prefers for the claims, as given.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claims_locales: Option<String>,
+    /// What the answer holds. A request kept before response types
+    /// existed reads as `code`.
+    #[serde(default)]
+    pub response_type: ResponseType,
 }
 
 /// An error that may be sent back to the client at its redirect address.
@@ -476,38 +481,55 @@ fn check_parameters(
             "request_uri cannot be given with the request it would name",
         ));
     }
-    let response_type = match parameters.once("response_type") {
+    let response_type = match parameters.once("response_type").map(ResponseType::read) {
         None => return Err(invalid("response_type is required")),
-        Some(given) => match ResponseType::read(given) {
-            Some(kind) => kind,
-            None => {
-                return Err(refuse(
-                    "unsupported_response_type",
-                    "the only response type is code",
-                ));
-            }
-        },
+        Some(ReadResponseType::Offered(kind)) => kind,
+        Some(ReadResponseType::ReturnsAccessToken | ReadResponseType::Unknown) => {
+            return Err(refuse(
+                "unsupported_response_type",
+                "the response types are code, id_token, code id_token and none",
+            ));
+        }
     };
+    if !client
+        .snapshot()
+        .settings
+        .response_types
+        .contains(&response_type)
+    {
+        return Err(refuse(
+            "unauthorized_client",
+            "the client may not use this response type",
+        ));
+    }
     let response_mode = match parameters.once("response_mode") {
         None => response_type.default_mode(),
         Some(given) => match ResponseMode::read(given) {
-            Some(asked) if response_type.allows(asked) => asked,
-            Some(_) => {
+            None => {
                 return Err(invalid(
-                    "the response type may not be answered in this response mode",
+                    "the response modes are query, fragment and form_post",
                 ));
             }
-            None => {
-                return Err(invalid("the response modes are query and form_post"));
+            Some(asked) if !response_type.allows(asked) => {
+                return Err(invalid(
+                    "a response type that returns a token is never answered in the query",
+                ));
             }
+            Some(asked) => asked,
         },
     };
 
+    // Only a code has a verifier to meet: a type without one does not read
+    // the challenge.
     let code_challenge = match (
-        parameters.once("code_challenge"),
-        parameters.once("code_challenge_method"),
+        parameters
+            .once("code_challenge")
+            .filter(|_| response_type.returns_code()),
+        parameters
+            .once("code_challenge_method")
+            .filter(|_| response_type.returns_code()),
     ) {
-        (None, _) if client.snapshot().settings.require_pkce => {
+        (None, _) if response_type.returns_code() && client.snapshot().settings.require_pkce => {
             return Err(invalid("this client must send a code challenge"));
         }
         (None, None) => None,
@@ -537,6 +559,9 @@ fn check_parameters(
         return Err(invalid(
             "nonce is too long or holds characters that are not printable",
         ));
+    }
+    if nonce.is_none() && response_type.returns_id_token() {
+        return Err(invalid("nonce is required where an ID token is returned"));
     }
 
     let prompt: Vec<String> = parameters
@@ -636,6 +661,12 @@ fn check_parameters(
             "a scope is missing, or one is not allowed to this client",
         ));
     }
+    if response_type.returns_id_token() && !asks_for_openid(&scopes) {
+        return Err(refuse(
+            "invalid_scope",
+            "a response type that returns an ID token needs the scope openid",
+        ));
+    }
     let resources = parameters.all("resource");
     if resources.len() > MAX_RESOURCES {
         return Err(refuse(
@@ -711,6 +742,7 @@ fn check_parameters(
         given_hint: parameters.id_token_hint().map(str::to_owned),
         claims,
         claims_locales,
+        response_type,
     })
 }
 

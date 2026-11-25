@@ -393,16 +393,23 @@ async fn run(config: Config) -> Result<(), Box<dyn Error>> {
     }
     // SCIM ends a deprovisioned person's sessions and grants with these.
     let revoker = access_revoker(&database);
-    let mut oauth2 = authorization_routes(authorization.clone());
-    if let (Some(keys), Some(setting)) = (&keys, &config.secret_keys) {
-        oauth2 = oauth2.merge(token_routes(token(
+    // The token endpoint signs, besides its own, the ID tokens that come
+    // through the browser; without the tenants' keys there is neither.
+    let tokens = match (&keys, &config.secret_keys) {
+        (Some(keys), Some(setting)) => Some(token(
             &config,
             &database,
             keys.clone(),
-            authorization.authorization,
+            authorization.authorization.clone(),
             secret_box(setting, &database)?,
             client_keys,
-        )?));
+        )?),
+        _ => None,
+    };
+    authorization.id_tokens = tokens.as_ref().map(|state| state.tokens.clone());
+    let mut oauth2 = authorization_routes(authorization.clone());
+    if let (Some(keys), Some(setting), Some(tokens)) = (&keys, &config.secret_keys, tokens) {
+        oauth2 = oauth2.merge(token_routes(tokens));
         oauth2 = oauth2.merge(userinfo_routes(userinfo(&config, &database, keys.clone())));
         oauth2 = oauth2.merge(logout_routes(logout(
             &config,
@@ -846,6 +853,7 @@ fn authorization(
         authentication,
         tenants: tenant_service(database),
         public_url: config.public_url.clone(),
+        id_tokens: None,
     })
 }
 

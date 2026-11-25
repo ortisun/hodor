@@ -22,8 +22,8 @@ use hodor_oauth::api::{
     Application, ApplicationId, ApplicationSettings, AuthenticationMethod, Client, ClientId,
     ClientSecret, ClientSecretId, ClientSettings, ClientType, CreateClient, CreateResourceServer,
     ExchangeRule, GrantType, IdTokenAlgorithm, LinkerdIdentity, RequestObjectAlgorithm,
-    ResourceServer, ResourceServerId, ResourceServerSettings, RotateSecret, ScopeDefinition,
-    SpiffeId, Status, SubjectType, TokenPolicy,
+    ResourceServer, ResourceServerId, ResourceServerSettings, ResponseType, RotateSecret,
+    ScopeDefinition, SpiffeId, Status, SubjectType, TokenPolicy, response_types_kept,
 };
 use serde::{Deserialize, Serialize};
 use time::Duration;
@@ -401,6 +401,7 @@ struct ClientBody {
     client_type: &'static str,
     authentication_method: &'static str,
     grant_types: Vec<&'static str>,
+    response_types: Vec<&'static str>,
     redirect_uris: Vec<String>,
     post_logout_redirect_uris: Vec<String>,
     allowed_scopes: Vec<String>,
@@ -462,6 +463,11 @@ impl From<&Client> for ClientBody {
             client_type: state.client_type.as_str(),
             authentication_method: settings.authentication_method.as_str(),
             grant_types: settings.grant_types.iter().map(|g| g.as_str()).collect(),
+            response_types: settings
+                .response_types
+                .iter()
+                .map(|kind| kind.as_str())
+                .collect(),
             redirect_uris: settings.redirect_uris.clone(),
             post_logout_redirect_uris: settings.post_logout_redirect_uris.clone(),
             allowed_scopes: settings.allowed_scopes.clone(),
@@ -550,6 +556,7 @@ struct NewClientBody {
     client_type: String,
     authentication_method: Option<String>,
     grant_types: Vec<String>,
+    response_types: Option<Vec<String>>,
     redirect_uris: Option<Vec<String>>,
     post_logout_redirect_uris: Option<Vec<String>>,
     allowed_scopes: Option<Vec<String>>,
@@ -600,6 +607,7 @@ struct ClientChangesBody {
     name: Option<String>,
     authentication_method: Option<String>,
     grant_types: Option<Vec<String>>,
+    response_types: Option<Vec<String>>,
     redirect_uris: Option<Vec<String>>,
     post_logout_redirect_uris: Option<Vec<String>>,
     allowed_scopes: Option<Vec<String>>,
@@ -758,6 +766,13 @@ fn client_type(value: &str) -> Result<ClientType, Box<Response>> {
     }
 }
 
+fn response_types(values: &[String]) -> Result<Vec<ResponseType>, Box<Response>> {
+    values
+        .iter()
+        .map(|value| ResponseType::parse(value).map_err(failed))
+        .collect()
+}
+
 fn grant_types(values: &[String]) -> Result<Vec<GrantType>, Box<Response>> {
     values
         .iter()
@@ -813,6 +828,9 @@ async fn create_client(
             if let Some(method) = new.authentication_method {
                 settings.authentication_method =
                     AuthenticationMethod::parse(&method).map_err(failed)?;
+            }
+            if let Some(given) = &new.response_types {
+                settings.response_types = response_types(given)?;
             }
             settings.post_logout_redirect_uris = new.post_logout_redirect_uris.unwrap_or_default();
             settings.allowed_scopes = new.allowed_scopes.unwrap_or_default();
@@ -952,6 +970,10 @@ async fn change_client(
             let settings = ClientSettings {
                 name: changes.name.unwrap_or(now.name),
                 authentication_method: method,
+                response_types: match &changes.response_types {
+                    Some(given) => response_types(given)?,
+                    None => response_types_kept(&now.response_types, &grants),
+                },
                 grant_types: grants.clone(),
                 redirect_uris: changes.redirect_uris.unwrap_or(now.redirect_uris),
                 post_logout_redirect_uris: changes

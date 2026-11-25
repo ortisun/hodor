@@ -21,11 +21,12 @@ fn request(scopes: &[&str], first_party: bool) -> AuthorizationRequest {
         acr_values: None,
         first_party,
         organization: None,
-        response_mode: crate::domain::response::ResponseMode::Query,
         id_token_hint: None,
         given_hint: None,
         claims: crate::domain::claims_parameter::ClaimsRequest::default(),
         claims_locales: None,
+        response_type: crate::domain::response::ResponseType::Code,
+        response_mode: crate::domain::response::ResponseMode::Query,
     }
 }
 

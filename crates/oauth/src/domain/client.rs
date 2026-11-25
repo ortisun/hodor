@@ -14,6 +14,7 @@ use crate::domain::pairwise::{
     subject_type_invalid,
 };
 use crate::domain::request_uri::{MAX_REQUEST_URIS, check_request_uri, request_uri_invalid};
+use crate::domain::response::{ResponseType, response_types_invalid};
 use crate::domain::secret::{ClientSecret, ClientSecretHash, ClientSecretId, ClientSecretValue};
 use crate::domain::spiffe::SpiffeId;
 use crate::domain::text;
@@ -568,6 +569,9 @@ pub struct ClientSettings {
     pub authentication_method: AuthenticationMethod,
     /// What it may ask for.
     pub grant_types: Vec<GrantType>,
+    /// What the authorization endpoint may answer it with: at least one
+    /// with `authorization_code`, none without it.
+    pub response_types: Vec<ResponseType>,
     /// Where a person may be sent back to, compared by exact equality.
     pub redirect_uris: Vec<String>,
     /// Where a person may be sent back to after signing out at Hodor's
@@ -831,7 +835,8 @@ impl ClientSettings {
     }
 
     /// Settings for a client of `client_type` with these grants and
-    /// redirect addresses, and everything else at its default.
+    /// redirect addresses, and everything else at its default: `code` as
+    /// its response type with `authorization_code`, none without it.
     #[must_use]
     pub fn new(
         name: &str,
@@ -844,6 +849,11 @@ impl ClientSettings {
             authentication_method: match client_type {
                 ClientType::Confidential => AuthenticationMethod::ClientSecretBasic,
                 ClientType::Public => AuthenticationMethod::None,
+            },
+            response_types: if grant_types.contains(&GrantType::AuthorizationCode) {
+                vec![ResponseType::Code]
+            } else {
+                Vec::new()
             },
             grant_types,
             redirect_uris,
@@ -953,6 +963,21 @@ impl ClientSettings {
             return Err(exchange_rules_invalid(
                 "at most 20 rules, each a pair of audiences",
             ));
+        }
+        let mut response_types = without_repeats(self.response_types);
+        response_types.sort();
+        match (has_code, response_types.is_empty()) {
+            (true, true) => {
+                return Err(response_types_invalid(
+                    "a client with `authorization_code` has a response type",
+                ));
+            }
+            (false, false) => {
+                return Err(response_types_invalid(
+                    "a client without `authorization_code` has no response type",
+                ));
+            }
+            _ => {}
         }
         let redirect_uris = without_repeats(self.redirect_uris);
         if redirect_uris.len() > MAX_REDIRECT_URIS {
@@ -1076,6 +1101,7 @@ impl ClientSettings {
             name,
             authentication_method: self.authentication_method,
             grant_types,
+            response_types,
             redirect_uris,
             post_logout_redirect_uris,
             allowed_scopes,
@@ -2109,6 +2135,8 @@ mod tests {
             } else {
                 web()
             };
+            settings.response_types =
+                crate::domain::response::response_types_kept(&settings.response_types, &grants);
             settings.grant_types = grants;
             settings.redirect_uris = redirects.into_iter().map(str::to_owned).collect();
             create(client_type, settings).map(|(client, _)| client)
@@ -2175,6 +2203,61 @@ mod tests {
             [GrantType::AuthorizationCode, GrantType::RefreshToken]
         );
         assert_eq!(tidied.snapshot().settings.redirect_uris, [callback]);
+    }
+
+    #[test]
+    fn response_types_belong_to_a_client_of_the_authorization_code() {
+        // `code` unless chosen.
+        let (client, _) = create(ClientType::Confidential, web()).expect("valid");
+        assert_eq!(
+            client.snapshot().settings.response_types,
+            [ResponseType::Code]
+        );
+        let machine = ClientSettings::new(
+            "Nightly export",
+            ClientType::Confidential,
+            vec![GrantType::ClientCredentials],
+            Vec::new(),
+        );
+        assert!(machine.response_types.is_empty());
+
+        // Kept once each, in a fixed order, whatever order they came in.
+        let every = ClientSettings {
+            response_types: vec![
+                ResponseType::None,
+                ResponseType::CodeIdToken,
+                ResponseType::IdToken,
+                ResponseType::Code,
+                ResponseType::IdToken,
+            ],
+            ..spa()
+        };
+        let (client, _) = create(ClientType::Public, every).expect("valid");
+        assert_eq!(client.snapshot().settings.response_types, ResponseType::ALL);
+
+        // At least one with the grant, none without it.
+        let refused = [
+            (
+                ClientType::Confidential,
+                ClientSettings {
+                    response_types: Vec::new(),
+                    ..web()
+                },
+            ),
+            (
+                ClientType::Confidential,
+                ClientSettings {
+                    response_types: vec![ResponseType::IdToken],
+                    ..machine
+                },
+            ),
+        ];
+        for (kind, settings) in refused {
+            assert_eq!(
+                create(kind, settings).expect_err("refused").code(),
+                "oauth.client_response_types_invalid"
+            );
+        }
     }
 
     #[test]

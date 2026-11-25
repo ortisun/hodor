@@ -162,6 +162,13 @@ memberships, verifier, digest, random, clock })`:
   caller)` does the same with the grant giving the claims of the `claims`
   parameter that `consented` covers; `issue_code` passes the request's
   scopes.
+- `answer(tenant, request, person, consented, caller) ->
+  AuthorizationAnswer { grant, code }`: what the request's response type
+  makes, in one unit of work: nothing for `none`; a grant otherwise, as
+  `issue_code_consented` makes it, with a code for a type that returns one
+  (`oauth.authorization_code_issued`) and `oauth.id_token_issued` for a type
+  that returns an ID token. The ID token itself is signed by
+  `TokenService::browser_id_token`.
 - `with_pairwise_subjects(pairwise)` and `names_another(tenant, request,
   user)`: whether the request asked through `claims` for a `sub` that is
   not the person as its client knows them, pairwise for a pairwise client
@@ -349,6 +356,14 @@ certificates; without them every JWT-SVID, and every client of
     with the client's ID token algorithm
     (`ClientSettings::id_token_algorithm`, ES256, RS256, PS256 or EdDSA) and
     lifetime, header `typ` `JWT`.
+  - `browser_id_token(tenant, issuer, request, grant, person, code)`: the
+    ID token of `id_token` and `code id_token`, from `id_token_claims_for`
+    with the request's `nonce`, the person's sign-in, `c_hash` of the code
+    when one comes with it and `s_hash` of the request's `state`; then the
+    person's claims of the request's scopes (`claims_of_scopes`) for
+    `id_token` alone, with the grant's `GrantClaims::id_token`, within the
+    bound, then the mappers' claims of the ID token, signed as above. A
+    client the tenant no longer has is `server_error`.
   - The register: every access token issued is recorded with
     `AccessTokenRecordStore::record` in the unit of work of its event: the
     code's with its grant, a refresh's with its grant and family, client

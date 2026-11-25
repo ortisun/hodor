@@ -7932,3 +7932,173 @@ async fn claims_asked_through_the_claims_parameter_are_read_from_the_tenants_own
         StatusCode::UNAUTHORIZED
     );
 }
+
+/// A public client of `id_token` of a new first-party application of
+/// `tenant`, and the ID token it is answered with in the fragment, for the
+/// person signed in with the shared address. Answers the client, the token
+/// and the browser, still signed in.
+async fn browser_id_token(world: &World, tenant: &Tenant) -> (String, String, Browser) {
+    use hodor_adapters_postgres::{PgApplicationStore, PgClientStore, PgResourceServerStore};
+    use hodor_oauth::api::{
+        ApplicationPorts, ApplicationService, ApplicationSettings, ClientSettings, ClientType,
+        CreateClient, GrantType, ResponseType,
+    };
+    let applications = ApplicationService::new(ApplicationPorts {
+        units_of_work: Arc::new(world.database.app().clone()),
+        applications: Arc::new(PgApplicationStore),
+        clients: Arc::new(PgClientStore),
+        resource_servers: Arc::new(PgResourceServerStore),
+        digest: Arc::new(Sha256Digest),
+        random: Arc::new(OsRandom),
+        clock: Arc::new(SystemClock),
+    });
+    let application = applications
+        .create_application(
+            &tenant.context,
+            ApplicationSettings {
+                name: "Travel in the browser".to_owned(),
+                first_party: true,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("application");
+    let mut settings = ClientSettings::new(
+        "Travel in the browser",
+        ClientType::Public,
+        vec![GrantType::AuthorizationCode],
+        vec![REDIRECT.to_owned()],
+    );
+    settings.response_types = vec![ResponseType::IdToken];
+    settings.allowed_scopes = vec!["openid".to_owned()];
+    let (client, _) = applications
+        .create_client(
+            &tenant.context,
+            CreateClient {
+                application_id: application.id(),
+                client_type: ClientType::Public,
+                settings,
+                secret_lifetime: None,
+            },
+            Caller::system(),
+        )
+        .await
+        .expect("client");
+    let client = client.id().to_string();
+    let mut browser = Browser::not_following(&world.server);
+    let (_, body) = browser.sign_in(tenant.slug, EMAIL, PASSWORD).await;
+    assert_eq!(body["status"], "completed", "{body}");
+    let (status, location, body) = browser
+        .navigate(Method::GET, &id_token_request(tenant.slug, &client), None)
+        .await;
+    assert_eq!(status, StatusCode::FOUND, "{body}");
+    let location = location.expect("a redirect");
+    let (_, fragment) = location.split_once('#').expect("a fragment");
+    let token = form_urlencoded::parse(fragment.as_bytes())
+        .find(|(name, _)| name == "id_token")
+        .expect("an ID token")
+        .1
+        .into_owned();
+    (client, token, browser)
+}
+
+/// A request of `client` for an ID token at `slug`'s authorization
+/// endpoint.
+fn id_token_request(slug: &str, client: &str) -> String {
+    format!(
+        "/t/{slug}/oauth2/authorize?{}",
+        form_urlencoded::Serializer::new(String::new())
+            .extend_pairs([
+                ("response_type", "id_token"),
+                ("client_id", client),
+                ("redirect_uri", REDIRECT),
+                ("scope", "openid"),
+                ("nonce", "n-0S6_WzA2Mj"),
+            ])
+            .finish()
+    )
+}
+
+/// The `kid` values of `slug`'s published key set.
+async fn published_key_ids(world: &World, slug: &str) -> Vec<String> {
+    let set: serde_json::Value = Client::new()
+        .get(format!("{}/t/{slug}/oauth2/jwks", world.server.base))
+        .send()
+        .await
+        .expect("response")
+        .json()
+        .await
+        .expect("JSON");
+    set["keys"]
+        .as_array()
+        .expect("keys")
+        .iter()
+        .filter_map(|key| key["kid"].as_str().map(str::to_owned))
+        .collect()
+}
+
+#[tokio::test]
+async fn an_id_token_answered_in_one_tenants_fragment_is_nothing_at_another() {
+    use base64::Engine as _;
+    let world = world_with(&[("HODOR_SECRET_KEYS", ROOT_KEY)]).await;
+    let (acme, globex) = (&world.acme, &world.globex);
+    let (acme_client, hint, mut acme_browser) = browser_id_token(&world, acme).await;
+    let (_, _, mut globex_browser) = browser_id_token(&world, globex).await;
+
+    // Its key is Acme's: Globex publishes no key that checks it.
+    let header: serde_json::Value = serde_json::from_slice(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(hint.split('.').next().expect("a header"))
+            .expect("base64url"),
+    )
+    .expect("JSON");
+    let kid = header["kid"].as_str().expect("kid").to_owned();
+    assert!(published_key_ids(&world, acme.slug).await.contains(&kid));
+    assert!(!published_key_ids(&world, globex.slug).await.contains(&kid));
+
+    // Acme's client is unknown at Globex's authorization endpoint: Hodor's
+    // own page, nothing sent to the address.
+    let (status, location, body) = globex_browser
+        .navigate(
+            Method::GET,
+            &id_token_request(globex.slug, &acme_client),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(location, None);
+    assert!(
+        body.contains("oauth.authorization_client_unknown"),
+        "{body}"
+    );
+
+    // As the hint of Globex's end-session endpoint, in the browser signed
+    // in to Globex: not an ID token of Globex, and Globex's session goes on.
+    let (status, location, body) = globex_browser
+        .navigate(Method::GET, &end_session_path(globex.slug, &hint), None)
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(location, None);
+    assert!(
+        body.contains("oauth.logout_id_token_hint_invalid"),
+        "{body}"
+    );
+    let (status, _) = globex_browser
+        .send(Method::GET, "/t/globex/interaction/session", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "Globex's session goes on");
+
+    // Where it belongs, it names the session, which ends.
+    let (status, _, _) = acme_browser
+        .navigate(Method::GET, &end_session_path(acme.slug, &hint), None)
+        .await;
+    assert!(status.is_redirection(), "{status}");
+    let (status, _) = acme_browser
+        .send(Method::GET, "/t/acme/interaction/session", None)
+        .await;
+    assert_ne!(status, StatusCode::OK, "Acme's session ended");
+    let (status, _) = globex_browser
+        .send(Method::GET, "/t/globex/interaction/session", None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "Globex's session goes on");
+}

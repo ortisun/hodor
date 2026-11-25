@@ -218,11 +218,12 @@ fn asked(client: ClientId) -> AuthorizationRequest {
         acr_values: None,
         first_party: false,
         organization: None,
-        response_mode: crate::domain::response::ResponseMode::Query,
         id_token_hint: None,
         given_hint: None,
         claims: crate::api::ClaimsRequest::default(),
         claims_locales: None,
+        response_type: crate::api::ResponseType::Code,
+        response_mode: crate::api::ResponseMode::Query,
     }
 }
 

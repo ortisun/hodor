@@ -15,7 +15,7 @@ use crate::domain::authorization::{
 use crate::domain::client::Client;
 use crate::domain::request_object::RequestObjectCheck;
 use crate::domain::resource_server::ResourceServer;
-use crate::domain::response::error_mode;
+use crate::domain::response::{error_mode, same_response_type};
 use crate::domain::token::{BasicCredentials, PresentedClient, TokenError, presented_client};
 use hodor_kernel::{Digest, RandomSource, Secret, Timestamp};
 use std::collections::BTreeSet;
@@ -290,7 +290,8 @@ pub fn check_reference(
         })
     };
     match outside.given("response_type") {
-        Given::Absent | Given::Once("code") => {}
+        Given::Absent => {}
+        Given::Once(given) if same_response_type(given, request.response_type.as_str()) => {}
         Given::Once(_) | Given::Repeated => {
             return Err(contradicted(
                 "response_type outside is not the pushed request's",

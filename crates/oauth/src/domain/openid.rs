@@ -20,6 +20,9 @@ use hodor_kernel::{
 use serde_json::{Map, Value, json};
 use time::Duration;
 
+/// The grant OpenID Connect Discovery names for an ID token through the
+/// browser. No request to the token endpoint uses it.
+pub const IMPLICIT_GRANT: &str = "implicit";
 /// The scope that makes a request an OpenID Connect one.
 pub const OPENID_SCOPE: &str = "openid";
 /// The languages the hosted pages are written in.
@@ -122,28 +125,72 @@ pub fn authentication_methods(methods: &[String]) -> Vec<&'static str> {
         .collect()
 }
 
-/// `at_hash`: the base64url of the left half of the hash of the access
-/// token that the ID token's `algorithm` uses (OpenID Connect Core, section
-/// 3.1.3.6).
+/// The base64url of the left half of the hash of `value` that the ID
+/// token's `algorithm` uses, as `at_hash`, `c_hash` and `s_hash` are
+/// written (OpenID Connect Core, sections 3.1.3.6 and 3.3.2.11).
+#[must_use]
+pub fn left_half_hash(value: &str, algorithm: IdTokenAlgorithm, digest: &dyn Digest) -> String {
+    // The hash of the ID token's `alg`: SHA-256 for the algorithms named
+    // ...256, and SHA-512 for EdDSA on Ed25519, as OpenID Connect Core
+    // (errata set 2) says.
+    match algorithm {
+        IdTokenAlgorithm::EdDsa => {
+            let hash = digest.sha512(value.as_bytes());
+            URL_SAFE_NO_PAD.encode(&hash[..32])
+        }
+        IdTokenAlgorithm::Es256 | IdTokenAlgorithm::Rs256 | IdTokenAlgorithm::Ps256 => {
+            let hash = digest.sha256(value.as_bytes());
+            URL_SAFE_NO_PAD.encode(&hash[..16])
+        }
+    }
+}
+
+/// `at_hash`: the left half hash of the access token.
 #[must_use]
 pub fn access_token_hash(
     access_token: &str,
     algorithm: IdTokenAlgorithm,
     digest: &dyn Digest,
 ) -> String {
-    // The hash of the ID token's `alg`: SHA-256 for the algorithms named
-    // ...256, and SHA-512 for EdDSA on Ed25519, as OpenID Connect Core
-    // (errata set 2) says.
-    match algorithm {
-        IdTokenAlgorithm::EdDsa => {
-            let hash = digest.sha512(access_token.as_bytes());
-            URL_SAFE_NO_PAD.encode(&hash[..32])
-        }
-        IdTokenAlgorithm::Es256 | IdTokenAlgorithm::Rs256 | IdTokenAlgorithm::Ps256 => {
-            let hash = digest.sha256(access_token.as_bytes());
-            URL_SAFE_NO_PAD.encode(&hash[..16])
+    left_half_hash(access_token, algorithm, digest)
+}
+
+/// What an ID token says of the sign-in it was issued for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SignInFacts<'a> {
+    /// When the person last proved something that counts: `auth_time`.
+    pub signed_in_at: Timestamp,
+    /// The `nonce` of the request, if it had one.
+    pub nonce: Option<&'a str>,
+    /// The level the sign-in reached: `acr`.
+    pub acr: Option<&'a str>,
+    /// Hodor's names of the methods that count, for `amr`.
+    pub methods: &'a [String],
+}
+
+impl<'a> SignInFacts<'a> {
+    /// What a code says of its sign-in.
+    #[must_use]
+    pub fn of_code(code: &'a AuthorizationCode) -> Self {
+        Self {
+            signed_in_at: code.signed_in_at,
+            nonce: code.nonce.as_deref(),
+            acr: code.acr.as_deref(),
+            methods: &code.methods,
         }
     }
+}
+
+/// The hashes that tie an ID token to what comes with it, each already
+/// written as [`left_half_hash`] writes it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct IdTokenHashes {
+    /// Of the access token that comes with it.
+    pub at_hash: Option<String>,
+    /// Of the code that comes with it.
+    pub c_hash: Option<String>,
+    /// Of the request's `state`.
+    pub s_hash: Option<String>,
 }
 
 /// Whether `scopes` make an OpenID Connect request.
@@ -186,6 +233,40 @@ pub fn id_token_claims(
     algorithm: IdTokenAlgorithm,
     digest: &dyn Digest,
 ) -> Value {
+    id_token_claims_for(
+        issuer,
+        SignInFacts::of_code(code),
+        names,
+        organization,
+        client_id,
+        lifetime,
+        now,
+        &IdTokenHashes {
+            at_hash: Some(access_token_hash(access_token, algorithm, digest)),
+            ..IdTokenHashes::default()
+        },
+    )
+}
+
+/// The claims of an ID token about the sign-in `sign_in`, naming the
+/// person and the session as `names` says, in the `organization` of its
+/// grant, with the hashes of what comes with it: what the token endpoint
+/// and the authorization endpoint both issue.
+#[must_use]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each is one part of the ID token; grouping them would only rename them"
+)]
+pub fn id_token_claims_for(
+    issuer: &str,
+    sign_in: SignInFacts<'_>,
+    names: IdTokenNames<'_>,
+    organization: Option<OrganizationId>,
+    client_id: ClientId,
+    lifetime: Duration,
+    now: Timestamp,
+    hashes: &IdTokenHashes,
+) -> Value {
     let mut claims = Map::new();
     claims.insert("iss".to_owned(), json!(issuer));
     claims.insert("sub".to_owned(), json!(names.subject));
@@ -194,29 +275,46 @@ pub fn id_token_claims(
     claims.insert("exp".to_owned(), json!((now + lifetime).unix_timestamp()));
     claims.insert(
         "auth_time".to_owned(),
-        json!(code.signed_in_at.unix_timestamp()),
+        json!(sign_in.signed_in_at.unix_timestamp()),
     );
-    if let Some(nonce) = &code.nonce {
+    if let Some(nonce) = sign_in.nonce {
         claims.insert("nonce".to_owned(), json!(nonce));
     }
-    if let Some(acr) = &code.acr {
+    if let Some(acr) = sign_in.acr {
         claims.insert("acr".to_owned(), json!(acr));
     }
-    let amr = authentication_methods(&code.methods);
+    let amr = authentication_methods(sign_in.methods);
     if !amr.is_empty() {
         claims.insert("amr".to_owned(), json!(amr));
     }
     if let Some(organization) = organization {
         claims.insert("org_id".to_owned(), json!(organization.to_string()));
     }
-    claims.insert(
-        "at_hash".to_owned(),
-        json!(access_token_hash(access_token, algorithm, digest)),
-    );
+    for (name, hash) in [
+        ("at_hash", &hashes.at_hash),
+        ("c_hash", &hashes.c_hash),
+        ("s_hash", &hashes.s_hash),
+    ] {
+        if let Some(hash) = hash {
+            claims.insert(name.to_owned(), json!(hash));
+        }
+    }
     // The session, never its token: logout needs to know whether an ID
     // token names the browser's current session.
     claims.insert("sid".to_owned(), json!(names.session));
     Value::Object(claims)
+}
+
+/// The person's claims of the `scopes` among `profile`, `email`, `address`
+/// and `phone`: what the ID token holds when no access token comes with
+/// it (OpenID Connect Core, section 5.4).
+#[must_use]
+pub fn claims_of_scopes(scopes: &[String]) -> Vec<String> {
+    PERSON_CLAIMS
+        .iter()
+        .filter(|(_, scope)| scopes.iter().any(|asked| asked == scope))
+        .map(|(claim, _)| (*claim).to_owned())
+        .collect()
 }
 
 /// Why an access token is refused at UserInfo (RFC 6750, section 3.1).
@@ -672,7 +770,13 @@ pub fn discovery_document(issuer: &str, acr_values: &[&str], pushed_required: bo
         "pushed_authorization_request_endpoint": format!("{issuer}/oauth2/par"),
         "response_types_supported": ResponseType::ALL.map(ResponseType::as_str),
         "response_modes_supported": ResponseMode::ALL.map(ResponseMode::as_str),
-        "grant_types_supported": crate::domain::token::SUPPORTED_GRANT_TYPES,
+        // The token endpoint's grants, and `implicit`: OpenID Connect
+        // Discovery names it for an ID token through the browser.
+        "grant_types_supported": crate::domain::token::SUPPORTED_GRANT_TYPES
+            .iter()
+            .copied()
+            .chain([IMPLICIT_GRANT])
+            .collect::<Vec<_>>(),
         "code_challenge_methods_supported": ["S256"],
         // `spiffe_jwt` follows draft-ietf-oauth-spiffe-client-auth-03,
         // which asks for it in all three lists (section 4).
@@ -696,7 +800,8 @@ pub fn discovery_document(issuer: &str, acr_values: &[&str], pushed_required: bo
         "subject_types_supported": ["public", "pairwise"],
         "scopes_supported": ["openid", "profile", "email", "address", "phone", "groups"],
         "claims_supported": [
-            "iss", "sub", "aud", "exp", "iat", "auth_time", "nonce", "acr", "amr", "at_hash", "sid",
+            "iss", "sub", "aud", "exp", "iat", "auth_time", "nonce", "acr", "amr", "at_hash", "c_hash",
+            "s_hash", "sid",
             "org_id", "name", "given_name", "family_name", "middle_name", "nickname",
             "preferred_username", "profile", "picture", "website", "gender", "birthdate",
             "zoneinfo", "locale", "updated_at", "email", "email_verified", "address",

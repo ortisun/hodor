@@ -105,13 +105,24 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   `ScopeDefinition`; `ResourceServerSettings`; `ResourceServer` with
   `create`, `change`, `defines`; `OPENID_SCOPES`.
 - `response.rs`: what the authorization endpoint answers with, and where.
-  `ResponseType` (`Code` only; `read`, `as_str`, `ALL`, `default_mode`,
-  `allows(mode)`), `ResponseMode` (`Query`, the default, and `FormPost`,
-  serialized as `query` and `form_post`; `read` answers `None` for any
-  other name; `as_str`, `ALL`, which discovery lists), and
+  `ResponseType` (`code`, `id_token`, `code id_token`, `none`; `read` takes
+  the words in any order and answers a `ReadResponseType`, which tells a
+  type that returns an access token, `ReturnsAccessToken`, from an unknown
+  one, and whose `offered` is the type when Hodor offers it; `parse`
+  refuses both with `oauth.client_response_types_invalid`; `as_str`,
+  `ALL`; `default_mode` is the fragment for a type that returns an ID token
+  and the query otherwise; `allows(mode)` refuses the query for a type that
+  returns an ID token; `makes_grant` is false for `none` alone), `ResponseMode`
+  (`Query`, the default, `Fragment` and `FormPost`, serialized as `query`,
+  `fragment` and `form_post`; `read` answers `None` for any other name;
+  `as_str`, `ALL`, which discovery lists),
   `error_mode(response_type, response_mode)`: the mode an error goes back
   in, the one named when offered and allowed by the type, else the type's
-  default, else the query. Its cases are in the module's own tests.
+  default, the fragment for a type that returns an access token, else the
+  query; and `response_types_kept(current, grants)`, what a change that
+  does not name them leaves: none without `authorization_code`, `code` for
+  a client that gains it with none. Its cases are in the module's own
+  tests.
 - `authorization.rs`: the authorization endpoint. `AuthorizationParameters`
   (pairs as received, empty values dropped; `client_id` is the one given,
   or the request object's when none is); `check_request(parameters,
@@ -152,8 +163,18 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   `make`);
   `AuthorizationCode` (`issue`, `check_redemption`); `CodeHash`
   (`of_presented` answers `None` for a value without the shape of a code);
-  `s256_challenge`. Its cases are in `authorization/tests.rs`, and those of
-  Issue-125 in `authorization/parameter_tests.rs`.
+  `s256_challenge`. The request keeps its `response_type` and
+  `response_mode` (read as `code` in the query from a request stored
+  before them); `check_request` reads the type after the request objects
+  (`unsupported_response_type` for an unknown one or one that returns an
+  access token, `unauthorized_client` for one the client did not
+  register), then the mode (`invalid_request` for one not offered or the
+  query for a type that returns an ID token), reads the code challenge only
+  for a type that returns a code, requires `nonce` and `openid` for a type
+  that returns an ID token, and gives every `AuthorizationError` the
+  `mode` the answer would have had (`error_mode`). Its cases are in
+  `authorization/tests.rs`, and those of Issue-125 in
+  `authorization/parameter_tests.rs`.
 - `token.rs`: the token endpoint. `TokenRequest::parse(basic, pairs)`,
   then `with_forwarded(identity)`, which keeps what a trusted proxy
   forwarded in `forwarded`, for binding tokens, besides giving it to the
@@ -250,7 +271,14 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   `enrollment`, a factor set up during the sign-in, names nothing and counts
   as something held),
   the code's `acr` when it has one,
-  `is_multi_factor`, `access_token_hash` (`at_hash`, the left half of SHA-256, or of SHA-512 for EdDSA), `id_token_claims`,
+  `is_multi_factor`, `left_half_hash` (the base64url of the left half of the
+  hash of the ID token's algorithm over a value, SHA-256 or SHA-512 for
+  EdDSA, for `at_hash`, `c_hash` and `s_hash`),
+  `access_token_hash` (`at_hash`), `id_token_claims` (the token endpoint's,
+  over a code) and `id_token_claims_for` (any ID token, over `SignInFacts`
+  and `IdTokenHashes`, each hash written only when given),
+  `claims_of_scopes` (the person's claims of `profile`, `email`, `address`
+  and `phone` among the scopes, for an ID token without an access token),
   `read_access_token` (shape, header, a published key, signature, issuer
   and expiry, in order, against `PublishedKey`s; `ReadAccessToken`, with
   its `cnf` as `confirmation` and `check_certificate(presented)`),
@@ -267,7 +295,9 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   `signed_userinfo_claims` and `userinfo_header` (crate-visible: a signed
   UserInfo answer adds `iss` and `aud`, and its header has `alg` and `kid`
   and no `typ`), and
-  `discovery_document(issuer, acr_values)`, which names the scopes
+  `discovery_document(issuer, acr_values)`, which names the response types
+  and modes of `response.rs`, the token endpoint's grants and
+  `IMPLICIT_GRANT`, `c_hash` and `s_hash` among the claims, the scopes
   `address` and `phone` and every standard claim among those supported,
   the revocation and introspection endpoints and their methods, the
   response types and modes of `ResponseType::ALL` and `ResponseMode::ALL`,
@@ -356,6 +386,10 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   `oauth.client_linkerd_identity_invalid`). And
   `certificate_bound_access_tokens`, refused with `linkerd_identity`
   (`oauth.client_certificate_bound_access_tokens_invalid`).
+  And `response_types`, kept once each in the order of
+  `ResponseType::ALL`, at least one with `authorization_code` and none
+  without it (`oauth.client_response_types_invalid`); `ClientSettings::new`
+  gives `code` to a client of that grant.
 - `pairwise.rs`: pairwise subject identifiers. `SubjectType` (`public`,
   `pairwise`), `host_of` (lowercase, without the port; none for a
   private-use scheme), `sector_of(sector_identifier_uri, redirect_uris)`,

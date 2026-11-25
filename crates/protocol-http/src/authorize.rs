@@ -1,6 +1,7 @@
 //! The authorization endpoint of OAuth 2.x: where a client sends a
-//! person's browser to ask for an authorization code, answered in the
-//! query or with the page of `form_post`.
+//! person's browser to ask for an authorization code, an ID token, or
+//! both, answered in the query, in the fragment or with the page of
+//! `form_post`.
 //!
 //! Specified in `docs/architecture/contexts/oauth.md`, "Authorization
 //! endpoint". These handlers translate between HTTP and the OAuth and
@@ -25,7 +26,7 @@ use hodor_kernel::{Actor, Caller, CorrelationId, TenantContext, Timestamp};
 use hodor_oauth::api::{
     AuthorizationCodeService, AuthorizationError, AuthorizationParameters, AuthorizationRefusal,
     AuthorizationRequest, ConsentAnswer, ConsentService, PENDING_LIFETIME, PendingAuthorizationId,
-    Proof, ResponseMode, SessionDecision, SignedInPerson,
+    Proof, ResponseMode, SessionDecision, SignedInPerson, TokenService,
 };
 use hodor_session::api::{Assurance, ClientInfo, Session, SessionService};
 use hodor_tenant::api::{AssuranceLevels, AssuranceRequirement, RegistrationPolicy, TenantService};
@@ -50,6 +51,10 @@ pub struct AuthorizationState {
     /// The address people reach this installation at, without a path. The
     /// issuer of a tenant is this address followed by `/t/{slug}`.
     pub public_url: String,
+    /// Signs the ID tokens that come through the browser. Without it, as
+    /// without tenants' keys, a request for a type that returns one is
+    /// answered `server_error`.
+    pub id_tokens: Option<TokenService>,
 }
 
 impl std::fmt::Debug for AuthorizationState {
@@ -108,12 +113,15 @@ pub(crate) fn redirect_to(uri: &str, parameters: &[(&str, &str)]) -> Response {
 }
 
 /// Gives the client `parameters` at `uri` in the response mode `mode`:
-/// added to its query by a redirect, or posted by the page of `form_post`.
+/// added to its query or as its fragment, written as a form is, by a
+/// redirect, or posted by the page of `form_post`. A registered address
+/// has no fragment of its own.
 pub(crate) fn answer_at(uri: &str, mode: ResponseMode, parameters: &[(&str, &str)]) -> Response {
     let separator = match mode {
         ResponseMode::FormPost => return form_post_page(uri, parameters),
         ResponseMode::Query if uri.contains('?') => '&',
         ResponseMode::Query => '?',
+        ResponseMode::Fragment => '#',
     };
     let mut query = form_urlencoded::Serializer::new(String::new());
     for (name, value) in parameters {
@@ -276,22 +284,52 @@ async fn issue(
         Ok(consented) => consented,
         Err(error) => return Problem::from(error).into_response(),
     };
-    match state
+    let issuer = issuer(state, slug);
+    // An ID token through the browser needs the tenant's keys: without
+    // them, nothing is made for a request that asks for one.
+    let signer = match (request.response_type.returns_id_token(), &state.id_tokens) {
+        (true, None) => {
+            let error = error_for(request, "server_error", "ID tokens cannot be signed here");
+            return redirect_error(&error, &issuer);
+        }
+        (_, signer) => signer,
+    };
+    let answer = match state
         .authorization
-        .issue_code_consented(tenant, request, person, &consented, caller)
+        .answer(tenant, request, person, &consented, caller)
         .await
     {
-        Ok(code) => {
-            let issuer = issuer(state, slug);
-            let mut parameters = vec![("code", code.expose())];
-            if let Some(value) = &request.state {
-                parameters.push(("state", value));
+        Ok(answer) => answer,
+        Err(error) => return Problem::from(error).into_response(),
+    };
+    let code = answer.code.as_ref().map(|code| code.expose().to_owned());
+    let id_token = match (signer, &answer.grant) {
+        (Some(signer), Some(grant)) if request.response_type.returns_id_token() => match signer
+            .browser_id_token(tenant, &issuer, request, grant, person, code.as_deref())
+            .await
+        {
+            Ok(Ok(token)) => Some(token),
+            Ok(Err(refusal)) => {
+                tracing::error!(reason = refusal.reason, "no ID token was signed");
+                let error = error_for(request, "server_error", "the ID token was not signed");
+                return redirect_error(&error, &issuer);
             }
-            parameters.push(("iss", &issuer));
-            answer_at(&request.redirect_uri, request.response_mode, &parameters)
-        }
-        Err(error) => Problem::from(error).into_response(),
+            Err(error) => return Problem::from(error).into_response(),
+        },
+        _ => None,
+    };
+    let mut parameters = Vec::new();
+    if let Some(code) = &code {
+        parameters.push(("code", code.as_str()));
     }
+    if let Some(token) = &id_token {
+        parameters.push(("id_token", token.expose().as_str()));
+    }
+    if let Some(value) = &request.state {
+        parameters.push(("state", value));
+    }
+    parameters.push(("iss", &issuer));
+    answer_at(&request.redirect_uri, request.response_mode, &parameters)
 }
 
 /// Issues a code for a person whose session is enough, or, when they must
