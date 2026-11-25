@@ -1,6 +1,7 @@
 {
   "name": "hodor-design-system-showcase",
   "private": true,
+  "license": "MIT",
   "version": "0.0.0",
   "type": "module",
   "description": "The showcase of Hodor's design system: a screen of the control plane and a gallery, on Astryx with the Hodor theme. Never shipped.",
