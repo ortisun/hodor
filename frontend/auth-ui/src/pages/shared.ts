@@ -15,6 +15,11 @@ export interface PageProps {
   path: (page: PageName) => string;
 }
 
+/** The key of an authenticator application in groups of four, as people type it. */
+export function grouped(secret: string): string {
+  return secret.replace(/(.{4})/g, "$1 ").trim();
+}
+
 /** Anything thrown that is not a failure of a request is shown as "something went wrong". */
 export function asFailure(thrown: unknown): Failure {
   return thrown instanceof Failure ? thrown : new Failure(null, 500);

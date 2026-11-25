@@ -4,11 +4,13 @@
 
 use crate::uow::{connection, database_error};
 use hodor_authentication::api::{
-    AttemptCounter, AttemptStore, AttemptSubject, AuthTransaction, EmailMethod, EmailSecretHash,
-    EmailSignIn, EmailSignInSnapshot, EmailSignInStore, EmailUse, TokenPurpose, TransactionId,
-    TransactionSnapshot, TransactionStatus, TransactionStore, VerificationToken,
-    VerificationTokenHash, VerificationTokenId, VerificationTokenSnapshot, VerificationTokenStore,
+    AttemptCounter, AttemptStore, AttemptSubject, AuthTransaction, BegunEnrollment, EmailMethod,
+    EmailSecretHash, EmailSignIn, EmailSignInSnapshot, EmailSignInStore, EmailUse, EnrollmentKind,
+    TokenPurpose, TransactionId, TransactionSnapshot, TransactionStatus, TransactionStore,
+    VerificationToken, VerificationTokenHash, VerificationTokenId, VerificationTokenSnapshot,
+    VerificationTokenStore,
 };
+use hodor_credential::api::{TotpId, WebAuthnRegistrationId};
 use hodor_kernel::{DomainError, Timestamp, UnitOfWork, UserId};
 use hodor_session::api::{Assurance, ClientInfo, SessionId};
 use sqlx::Row as _;
@@ -128,6 +130,14 @@ impl AttemptStore for PgAttemptStore {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PgTransactionStore;
 
+/// The identifier of what an enrollment began, in the credential context.
+fn enrollment_uuid(begun: BegunEnrollment) -> Uuid {
+    match begun {
+        BegunEnrollment::AuthenticatorApplication(id) => id.as_uuid(),
+        BegunEnrollment::SecurityKey(id) | BegunEnrollment::Passkey(id) => id.as_uuid(),
+    }
+}
+
 fn unsigned(value: i32, what: &str) -> Result<u32, DomainError> {
     u32::try_from(value).map_err(|_| corrupted(what))
 }
@@ -149,6 +159,27 @@ fn to_transaction(row: &PgRow) -> Result<AuthTransaction, DomainError> {
     let version: i32 = row.try_get("version").map_err(get)?;
     let demanded: Option<String> = row.try_get("demanded_assurance").map_err(get)?;
     let raised: Option<Uuid> = row.try_get("raised_session_id").map_err(get)?;
+    let enrollment_kind: Option<String> = row.try_get("enrollment_kind").map_err(get)?;
+    let enrollment_id: Option<Uuid> = row.try_get("enrollment_id").map_err(get)?;
+    let enrollment = match (enrollment_kind, enrollment_id) {
+        (Some(kind), Some(id)) => Some(match EnrollmentKind::from_stored(&kind)? {
+            EnrollmentKind::AuthenticatorApplication => {
+                BegunEnrollment::AuthenticatorApplication(TotpId::from_uuid(id))
+            }
+            EnrollmentKind::SecurityKey => {
+                BegunEnrollment::SecurityKey(WebAuthnRegistrationId::from_uuid(id))
+            }
+            EnrollmentKind::Passkey => {
+                BegunEnrollment::Passkey(WebAuthnRegistrationId::from_uuid(id))
+            }
+        }),
+        (None, None) => None,
+        _ => {
+            return Err(corrupted(
+                "an enrollment without its kind or its identifier",
+            ));
+        }
+    };
     Ok(AuthTransaction::from_snapshot(TransactionSnapshot {
         id: TransactionId::from_uuid(row.try_get("id").map_err(get)?),
         flow_name: row.try_get("flow_name").map_err(get)?,
@@ -169,6 +200,7 @@ fn to_transaction(row: &PgRow) -> Result<AuthTransaction, DomainError> {
         challenge: challenge
             .map(|challenge| bytes_32(challenge, "challenge is not 32 bytes"))
             .transpose()?,
+        enrollment,
         rejections: unsigned(rejections, "negative rejections")?,
         status: TransactionStatus::from_stored(&status)?,
         started_at: row.try_get("started_at").map_err(get)?,
@@ -196,9 +228,9 @@ impl TransactionStore for PgTransactionStore {
                  (tenant_id, id, flow_name, flow_version, current_step, identified, candidate_user_id,
                   identifier_key, satisfied_methods, rejections, status, started_at, expires_at,
                   client_address, client_description, binding, version, challenge, carried_methods,
-                  demanded_assurance, raised_session_id)
+                  demanded_assurance, raised_session_id, enrollment_kind, enrollment_id)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
-                     $18, $19, $20, $21)",
+                     $18, $19, $20, $21, $22, $23)",
         )
         .bind(tenant.as_uuid())
         .bind(state.id.as_uuid())
@@ -221,6 +253,8 @@ impl TransactionStore for PgTransactionStore {
         .bind(&state.carried_methods)
         .bind(state.demanded.map(Assurance::as_str))
         .bind(state.raised_session.map(|session| session.as_uuid()))
+        .bind(state.enrollment.map(|begun| begun.kind().as_str()))
+        .bind(state.enrollment.map(enrollment_uuid))
         .execute(connection(uow)?)
         .await
         .map_err(|e| database_error(&e))?;
@@ -237,7 +271,8 @@ impl TransactionStore for PgTransactionStore {
             "SELECT id, flow_name, flow_version, current_step, identified, candidate_user_id,
                     identifier_key, satisfied_methods, challenge, rejections, status, started_at,
                     expires_at, client_address, client_description, binding, version,
-                    carried_methods, demanded_assurance, raised_session_id
+                    carried_methods, demanded_assurance, raised_session_id, enrollment_kind,
+                    enrollment_id
              FROM authentication.transaction
              WHERE tenant_id = $1 AND id = $2",
         )
@@ -261,7 +296,7 @@ impl TransactionStore for PgTransactionStore {
             "UPDATE authentication.transaction
              SET current_step = $3, identified = $4, candidate_user_id = $5, identifier_key = $6,
                  satisfied_methods = $7, rejections = $8, status = $9, challenge = $11,
-                 version = version + 1
+                 enrollment_kind = $12, enrollment_id = $13, version = version + 1
              WHERE tenant_id = $1 AND id = $2 AND version = $10",
         )
         .bind(tenant.as_uuid())
@@ -275,6 +310,8 @@ impl TransactionStore for PgTransactionStore {
         .bind(state.status.as_str())
         .bind(stored(state.version)?)
         .bind(state.challenge.map(|challenge| challenge.to_vec()))
+        .bind(state.enrollment.map(|begun| begun.kind().as_str()))
+        .bind(state.enrollment.map(enrollment_uuid))
         .execute(&mut *connection)
         .await
         .map_err(|e| database_error(&e))?

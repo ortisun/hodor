@@ -3,6 +3,8 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { pathOf, type PageName } from "../address";
 import { en } from "../messages/en";
+import { ptBR } from "../messages/pt-BR";
+import { modulesOf } from "../parts/QrCode";
 import { empty, json, problem, scripted } from "../testing";
 import { AcceptInvitationPage } from "./AcceptInvitationPage";
 import { AccountPage } from "./AccountPage";
@@ -499,6 +501,171 @@ describe("the sign-in page", () => {
     const { props } = page({ "GET /session": [nobody], "GET /sign-in": [pending("identifier")] });
     render(<SignInPage {...props} notice="registered" />);
     expect(await screen.findByText(en.noticeRegistered)).toBeTruthy();
+  });
+});
+
+describe("the enrollment step of the sign-in page", () => {
+  const address = "otpauth://totp/acme:ana%40example.com?secret=JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP&issuer=acme";
+  const recoveryCodes = Array.from({ length: 10 }, (_, index) => `7K2M-QX9D-4HVN-R8T${index}`);
+  const kinds = (...listed: string[]) => json(200, { kinds: listed });
+  const allKinds = () => kinds("authenticator_application", "security_key", "passkey");
+  /** A sign-in in progress that waits for the enrollment step; each script takes its answers. */
+  const waiting = () => ({ "GET /session": [nobody], "GET /sign-in": [pending("enrollment")] });
+
+  it("sets up an application from its QR code, and shows the recovery codes once before going on", async () => {
+    const { props, sent, leave, user } = page({
+      ...waiting(),
+      "GET /sign-in/steps/enrollment/kinds": [allKinds()],
+      "POST /sign-in/steps/enrollment/options": [
+        json(200, { kind: "authenticator_application", secret: "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP", uri: address }),
+      ],
+      "POST /sign-in/steps/enrollment": [
+        json(200, { status: "rejected", step: "enrollment", attempts_left: 4, csrf_token: "token" }),
+        json(200, {
+          status: "completed",
+          recovery_codes: recoveryCodes,
+          continue: "/t/acme/oauth2/authorize/resume",
+        }),
+      ],
+    });
+    render(<SignInPage {...props} notice={null} />);
+
+    expect(await screen.findByText(en.enrollLead)).toBeTruthy();
+    // Nothing lets the person go on without a factor.
+    expect(screen.queryByRole("button", { name: en.continue })).toBeNull();
+    await user.click(await screen.findByRole("button", { name: en.setUpApplication }));
+
+    // The QR code is drawn from the address the server gave, square by square.
+    const picture = await screen.findByRole("img", { name: en.qrLabel });
+    expect(picture.querySelectorAll("rect").length).toBe(modulesOf(address).flat().filter(Boolean).length + 1);
+    expect(screen.getByText("JBSW Y3DP EHPK 3PXP JBSW Y3DP EHPK 3PXP")).toBeTruthy();
+    expect(sent.find((request) => request.path === "/sign-in/steps/enrollment/options")).toMatchObject({
+      body: { kind: "authenticator_application" },
+      csrfToken: "token",
+    });
+
+    // A mistyped code shows the form again, with the same secret.
+    await user.type(screen.getByLabelText(en.totpLabel), "000 000{Enter}");
+    expect((await alertShown()).textContent).toContain(en.rejected);
+    expect(screen.getByRole("img", { name: en.qrLabel })).toBeTruthy();
+    await user.type(screen.getByLabelText(en.totpLabel), "123 456{Enter}");
+
+    // The codes are shown, and only once they are kept does the page go on.
+    expect(await screen.findByRole("heading", { name: en.codesTitle })).toBeTruthy();
+    for (const one of recoveryCodes) {
+      expect(screen.getByText(one)).toBeTruthy();
+    }
+    expect(sent.at(-1)).toMatchObject({ path: "/sign-in/steps/enrollment", body: { code: "123456" } });
+    expect(leave).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: en.codesKept }));
+    expect(leave).toHaveBeenCalledWith("/t/acme/oauth2/authorize/resume");
+  });
+
+  it("adds a security key with the name given, and goes on", async () => {
+    const bytes = (...values: number[]) => new Uint8Array(values).buffer;
+    const create = vi.fn().mockResolvedValue({
+      rawId: bytes(1),
+      response: { clientDataJSON: bytes(3), attestationObject: bytes(4), getTransports: () => ["usb"] },
+      getClientExtensionResults: () => ({ credProps: { rk: false } }),
+    });
+    vi.stubGlobal("PublicKeyCredential", function PublicKeyCredential() {});
+    Object.defineProperty(navigator, "credentials", { value: { create }, configurable: true });
+    const { props, sent, go, user } = page({
+      ...waiting(),
+      "GET /sign-in/steps/enrollment/kinds": [allKinds()],
+      "POST /sign-in/steps/enrollment/options": [
+        json(200, {
+          kind: "security_key",
+          public_key: {
+            rp: { id: "auth.example", name: "Hodor" },
+            user: { id: "AQI", name: "ana@example.com", displayName: "Ana" },
+            challenge: "BQY",
+            pubKeyCredParams: [{ type: "public-key", alg: -7 }],
+            authenticatorSelection: { residentKey: "preferred", userVerification: "discouraged" },
+          },
+        }),
+      ],
+      "POST /sign-in/steps/enrollment": [json(200, { status: "completed" })],
+    });
+    render(<SignInPage {...props} notice={null} />);
+    await user.type(await screen.findByLabelText(en.keyNameLabel), "Blue key");
+    await user.click(screen.getByRole("button", { name: en.addSecurityKey }));
+
+    await waitFor(() => expect(go).toHaveBeenCalledWith("account"));
+    expect(sent.find((request) => request.path === "/sign-in/steps/enrollment/options")?.body).toEqual({
+      kind: "security_key",
+    });
+    expect(sent.at(-1)?.body).toEqual({
+      client_data: "Aw",
+      attestation_object: "BA",
+      transports: ["usb"],
+      discoverable: false,
+      name: "Blue key",
+    });
+    vi.unstubAllGlobals();
+  });
+
+  it("says the key did not answer, and sends nothing", async () => {
+    const create = vi.fn().mockRejectedValue(new DOMException("cancelled", "NotAllowedError"));
+    vi.stubGlobal("PublicKeyCredential", function PublicKeyCredential() {});
+    Object.defineProperty(navigator, "credentials", { value: { create }, configurable: true });
+    const { props, sent, user } = page({
+      ...waiting(),
+      "GET /sign-in/steps/enrollment/kinds": [allKinds()],
+      "POST /sign-in/steps/enrollment/options": [
+        json(200, {
+          kind: "passkey",
+          public_key: {
+            rp: { id: "auth.example", name: "Hodor" },
+            user: { id: "AQI", name: "ana@example.com", displayName: "Ana (acme)" },
+            challenge: "BQY",
+            pubKeyCredParams: [{ type: "public-key", alg: -7 }],
+          },
+        }),
+      ],
+    });
+    render(<SignInPage {...props} notice={null} />);
+    await user.click(await screen.findByRole("button", { name: en.addPasskey }));
+    expect(await screen.findByText(en.keyNoAnswer)).toBeTruthy();
+    expect(sent.some((request) => request.path === "/sign-in/steps/enrollment")).toBe(false);
+    vi.unstubAllGlobals();
+  });
+
+  it("offers only what the installation can set up, and keys only in a browser that can use them", async () => {
+    const { props } = page({ ...waiting(), "GET /sign-in/steps/enrollment/kinds": [kinds("security_key", "passkey")] });
+    render(<SignInPage {...props} notice={null} />);
+    expect(await screen.findByText(en.nothingToSetUp)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: en.setUpApplication })).toBeNull();
+    expect(screen.queryByRole("button", { name: en.addSecurityKey })).toBeNull();
+  });
+
+  it("starts the sign-in again when the person has a factor by now", async () => {
+    const { props, user } = page({
+      ...waiting(),
+      "GET /sign-in/steps/enrollment/kinds": [allKinds()],
+      "POST /sign-in/steps/enrollment/options": [problem(409, "authentication.enrollment_not_needed")],
+      "POST /sign-in": [pending("identifier")],
+    });
+    render(<SignInPage {...props} notice={null} />);
+    await user.click(await screen.findByRole("button", { name: en.setUpApplication }));
+    expect(await screen.findByLabelText(en.identifierLabel)).toBeTruthy();
+    expect((await alertShown()).textContent).toContain(en.enrollmentNotNeeded);
+  });
+
+  it("speaks Brazilian Portuguese", async () => {
+    const { props, user } = page({
+      ...waiting(),
+      "GET /sign-in/steps/enrollment/kinds": [allKinds()],
+      "POST /sign-in/steps/enrollment/options": [
+        json(200, { kind: "authenticator_application", secret: "JBSWY3DPEHPK3PXP", uri: address }),
+      ],
+    });
+    render(<SignInPage {...props} text={ptBR} notice={null} />);
+    expect(await screen.findByText(ptBR.enrollLead)).toBeTruthy();
+    await user.click(await screen.findByRole("button", { name: ptBR.setUpApplication }));
+    expect(await screen.findByRole("img", { name: ptBR.qrLabel })).toBeTruthy();
+    expect(screen.getByRole("button", { name: ptBR.confirmAndSignIn })).toBeTruthy();
+    expect(screen.getByRole("button", { name: ptBR.chooseAnotherWay })).toBeTruthy();
   });
 });
 

@@ -81,6 +81,13 @@ fn facts(method: &str) -> MethodFacts {
             knows: true,
             ..none
         },
+        // A second factor put in use during the sign-in counts as
+        // something held, as the authentication context's table counts it;
+        // RFC 8176 has no name for binding a factor.
+        "enrollment" => MethodFacts {
+            holds: true,
+            ..none
+        },
         // Anything unknown: nothing is claimed about it.
         _ => none,
     }

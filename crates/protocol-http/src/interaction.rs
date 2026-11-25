@@ -17,8 +17,9 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Extension, Json, Router};
 use hodor_authentication::api::{
-    AccountRequest, AccountService, AuthenticationService, EmailAuthenticator, ExternalInput,
-    FactorService, PasskeyAuthenticator, SignIn, StepInput, TransactionId, WebAuthnAuthenticator,
+    AccountRequest, AccountService, AuthenticationService, EmailAuthenticator,
+    EnrollmentAuthenticator, EnrollmentKind, ExternalInput, FactorService, PasskeyAuthenticator,
+    SignIn, StepInput, TransactionId, WebAuthnAuthenticator,
 };
 use hodor_credential::api::{RegistrationResponse, WebAuthnRegistrationId};
 use hodor_federation::api::{Alias, EXTERNAL_STEP, ExternalSignIn};
@@ -87,6 +88,9 @@ pub fn interaction_routes(state: InteractionState) -> Router {
         .route("/sign-in/steps/email_code", post(submit_email_code))
         .route("/sign-in/steps/email_link/send", post(ask_for_link))
         .route("/sign-in/steps/email_link", post(submit_email_link))
+        .route("/sign-in/steps/enrollment/kinds", get(enrollment_kinds))
+        .route("/sign-in/steps/enrollment/options", post(begin_enrollment))
+        .route("/sign-in/steps/enrollment", post(finish_enrollment))
         .route("/sign-in/providers", get(offered_providers))
         .route("/sign-in/providers/{alias}", post(choose_provider))
         .route(
@@ -156,6 +160,15 @@ struct SignInBody {
     /// authorization request of this browser waits for it.
     #[serde(rename = "continue", skip_serializing_if = "Option::is_none")]
     continue_to: Option<String>,
+    /// The recovery codes made with a second factor the enrollment step
+    /// just put in use, shown once.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recovery_codes: Option<Vec<String>>,
+}
+
+/// Recovery codes to show once, or nothing when none were made.
+fn shown(codes: &[Secret<String>]) -> Option<Vec<String>> {
+    (!codes.is_empty()).then(|| codes.iter().map(|code| code.expose().clone()).collect())
 }
 
 /// A provider as the sign-in page shows it.
@@ -391,7 +404,11 @@ fn respond(
 ) -> Response {
     let token = || Some(csrf_token(state.digest.as_ref(), secret));
     match outcome {
-        SignIn::Pending { step, .. } => (
+        SignIn::Pending {
+            step,
+            recovery_codes,
+            ..
+        } => (
             status,
             Json(SignInBody {
                 status: "pending",
@@ -399,6 +416,7 @@ fn respond(
                 attempts_left: None,
                 csrf_token: token(),
                 continue_to: None,
+                recovery_codes: shown(&recovery_codes),
             }),
         )
             .into_response(),
@@ -414,6 +432,7 @@ fn respond(
                 attempts_left: Some(attempts_left),
                 csrf_token: token(),
                 continue_to: None,
+                recovery_codes: None,
             }),
         )
             .into_response(),
@@ -426,13 +445,18 @@ fn respond(
                     attempts_left: None,
                     csrf_token: None,
                     continue_to: None,
+                    recovery_codes: None,
                 }),
             )
                 .into_response();
             set_cookie(&mut response, &sign_in_cookie(slug, "", 0));
             response
         }
-        SignIn::Completed { session, token } => {
+        SignIn::Completed {
+            session,
+            token,
+            recovery_codes,
+        } => {
             let lifetime = (session.snapshot().absolute_expires_at - state.clock.now())
                 .whole_seconds()
                 .max(0);
@@ -444,6 +468,7 @@ fn respond(
                     attempts_left: None,
                     csrf_token: None,
                     continue_to: crate::authorize::waiting(headers, slug),
+                    recovery_codes: shown(&recovery_codes),
                 }),
             )
                 .into_response();
@@ -512,6 +537,7 @@ async fn start_sign_in(
             attempts_left: None,
             csrf_token: Some(csrf_token(state.digest.as_ref(), secret)),
             continue_to: None,
+            recovery_codes: None,
         }),
     )
         .into_response();
@@ -857,6 +883,107 @@ async fn submit_email_link(
     Json(body): Json<EmailLinkBody>,
 ) -> Response {
     let input = one_field(EmailAuthenticator::LINK_KIND, "token", body.token);
+    submit(&state, &tenant, &slug, &headers, input).await
+}
+
+/// What can be set up at the enrollment step in this installation.
+#[derive(Debug, Serialize)]
+struct EnrollmentKindsBody {
+    kinds: Vec<&'static str>,
+}
+
+async fn enrollment_kinds(State(state): State<InteractionState>) -> Response {
+    Json(EnrollmentKindsBody {
+        kinds: state
+            .factors
+            .enrollable()
+            .into_iter()
+            .map(EnrollmentKind::as_str)
+            .collect(),
+    })
+    .into_response()
+}
+
+/// What a person chose to set up at the enrollment step.
+#[derive(Debug, Deserialize)]
+struct BeginEnrollmentBody {
+    kind: String,
+}
+
+/// Begins setting up a second factor at the enrollment step of the
+/// browser's sign-in: the secret of an application, once, or the options
+/// for a key.
+async fn begin_enrollment(
+    State(state): State<InteractionState>,
+    Extension(tenant): Extension<TenantContext>,
+    headers: HeaderMap,
+    Json(body): Json<BeginEnrollmentBody>,
+) -> Response {
+    let Some(kind) = EnrollmentKind::parse(&body.kind) else {
+        return problem(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "request.invalid_body",
+            "kind must be authenticator_application, security_key or passkey",
+        );
+    };
+    let asked = ExternalInput {
+        step: EnrollmentAuthenticator::KIND.to_owned(),
+        fields: vec![("kind".to_owned(), Secret::from(kind.as_str().to_owned()))],
+    };
+    match challenge(&state, &tenant, &headers, asked).await {
+        Ok(options) => Json(options).into_response(),
+        Err(response) => *response,
+    }
+}
+
+/// What finishes the enrollment: the code an application shows, or what
+/// an authenticator answered to the registration. No `Debug`: this holds
+/// a code until it is wrapped.
+#[derive(Deserialize)]
+struct FinishEnrollmentBody {
+    #[serde(default)]
+    code: Option<String>,
+    #[serde(default)]
+    client_data: Option<String>,
+    #[serde(default)]
+    attestation_object: Option<String>,
+    #[serde(default)]
+    transports: Vec<String>,
+    #[serde(default)]
+    discoverable: Option<bool>,
+    #[serde(default)]
+    name: Option<String>,
+}
+
+async fn finish_enrollment(
+    State(state): State<InteractionState>,
+    Extension(tenant): Extension<TenantContext>,
+    Extension(TenantSlug(slug)): Extension<TenantSlug>,
+    headers: HeaderMap,
+    Json(body): Json<FinishEnrollmentBody>,
+) -> Response {
+    let mut fields = Vec::new();
+    let mut give = |name: &str, value: Option<String>| {
+        if let Some(value) = value {
+            fields.push((name.to_owned(), Secret::from(value)));
+        }
+    };
+    give("code", body.code);
+    give("client_data", body.client_data);
+    give("attestation_object", body.attestation_object);
+    give(
+        "transports",
+        (!body.transports.is_empty()).then(|| body.transports.join(",")),
+    );
+    give(
+        "discoverable",
+        body.discoverable.map(|found| found.to_string()),
+    );
+    give("name", body.name);
+    let input = StepInput::External(ExternalInput {
+        step: EnrollmentAuthenticator::KIND.to_owned(),
+        fields,
+    });
     submit(&state, &tenant, &slug, &headers, input).await
 }
 

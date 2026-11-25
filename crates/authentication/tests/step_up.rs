@@ -317,6 +317,7 @@ async fn a_password_session_asked_for_multi_factor_is_asked_only_for_a_second_fa
     let SignIn::Completed {
         session: raised,
         token,
+        ..
     } = outcome
     else {
         panic!("expected completion, got {outcome:?}");

@@ -70,7 +70,9 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   inside the crate, `access_token_header`, `decode_json`, `signing_input`
   and `compact`. Its cases are in `token/tests.rs`.
 - `openid.rs`: the OpenID Provider. `authentication_methods` (Hodor's
-  method names as RFC 8176 `amr`, each once, in a fixed order, with `mfa`),
+  method names as RFC 8176 `amr`, each once, in a fixed order, with `mfa`;
+  `enrollment`, a factor set up during the sign-in, names nothing and counts
+  as something held),
   the code's `acr` when it has one,
   `is_multi_factor`, `access_token_hash` (`at_hash`), `id_token_claims`,
   `read_access_token` (shape, header, a published key, signature, issuer

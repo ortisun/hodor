@@ -4,6 +4,7 @@
 //! authenticators live in this context; federation and plugins add theirs
 //! by implementing it.
 
+use crate::domain::enrollment::{BegunEnrollment, Enrolled};
 use crate::domain::transaction::AuthTransaction;
 use hodor_kernel::{DomainError, Secret, TenantContext, UserId};
 
@@ -86,7 +87,7 @@ impl StepInput {
 }
 
 /// The answer of an authenticator.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum StepOutcome {
     /// The step established who is trying to sign in.
     ///
@@ -108,6 +109,10 @@ pub enum StepOutcome {
         /// The user who signed in.
         user: UserId,
     },
+    /// The step put a new second factor in use for the candidate, which
+    /// proves it from now on, and made the recovery codes that come with
+    /// it. Only a step may answer this, never an alternative.
+    Enrolled(Enrolled),
     /// The step was not satisfied. No reason is given, on purpose.
     Rejected,
 }
@@ -121,6 +126,10 @@ pub struct StepChallenge {
     /// it asked for elsewhere, under rules of its own, such as a code sent
     /// by email.
     pub challenge: Option<[u8; 32]>,
+    /// What the enrollment step began, kept in the transaction in place of
+    /// anything it began before. A rejection does not spend it. `None` for
+    /// every other step.
+    pub enrollment: Option<BegunEnrollment>,
     /// What the browser needs to answer, in the authenticator's own terms.
     pub options: serde_json::Value,
 }

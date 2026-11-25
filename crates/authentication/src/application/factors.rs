@@ -5,9 +5,11 @@
 //! person's own factors". The credential context does each thing; this
 //! service decides the rules that span several kinds of factor.
 
+use crate::domain::enrollment::EnrollmentKind;
 use hodor_credential::api::{
     BegunRegistration, RecoveryCodeService, RecoveryCodes, RegistrationResponse, TotpEnrollment,
-    TotpService, WebAuthnCredential, WebAuthnCredentialId, WebAuthnRegistrationId, WebAuthnService,
+    TotpId, TotpService, WebAuthnCredential, WebAuthnCredentialId, WebAuthnRegistrationId,
+    WebAuthnService,
 };
 use hodor_identity::api::{IdentifierKind, IdentityService, User};
 use hodor_kernel::{Caller, DomainError, ErrorKind, Secret, TenantContext, Timestamp, UserId};
@@ -150,6 +152,17 @@ impl FactorService {
         self.totp.as_ref().ok_or_else(totp_unavailable)
     }
 
+    /// What a person may set up in this installation, in the order the
+    /// pages offer it: an authenticator application only where secrets
+    /// can be kept, a security key and a passkey always.
+    #[must_use]
+    pub fn enrollable(&self) -> Vec<EnrollmentKind> {
+        EnrollmentKind::ALL
+            .into_iter()
+            .filter(|kind| *kind != EnrollmentKind::AuthenticatorApplication || self.totp.is_some())
+            .collect()
+    }
+
     async fn second_factor_required(&self, tenant: &TenantContext) -> Result<bool, DomainError> {
         let policy = self
             .tenants
@@ -229,6 +242,30 @@ impl FactorService {
     ) -> Result<Option<RecoveryCodes>, DomainError> {
         self.totp()?
             .confirm_enrollment(tenant, user_id, code, caller)
+            .await?;
+        self.recovery_codes
+            .generate_if_none(tenant, user_id, caller)
+            .await
+    }
+
+    /// Confirms the enrollment `id` of an authenticator application, as
+    /// [`Self::confirm_authenticator_application`] does, only while it is
+    /// the one waiting: what a sign-in began, and nothing begun since.
+    ///
+    /// # Errors
+    ///
+    /// As [`TotpService::confirm_enrollment_of`], and `NotFound` with
+    /// `credential.totp_unavailable` when the installation offers none.
+    pub async fn confirm_begun_authenticator_application(
+        &self,
+        tenant: &TenantContext,
+        user_id: UserId,
+        id: TotpId,
+        code: &Secret<String>,
+        caller: Caller,
+    ) -> Result<Option<RecoveryCodes>, DomainError> {
+        self.totp()?
+            .confirm_enrollment_of(tenant, user_id, id, code, caller)
             .await?;
         self.recovery_codes
             .generate_if_none(tenant, user_id, caller)

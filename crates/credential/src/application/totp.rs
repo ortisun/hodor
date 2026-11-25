@@ -182,7 +182,12 @@ impl TotpService {
             .replace_pending(uow.as_mut(), &enrollment)
             .await?;
         uow.commit().await?;
-        Ok(TotpEnrollment::new(secret.expose(), issuer, account))
+        Ok(TotpEnrollment::new(
+            enrollment.id(),
+            secret.expose(),
+            issuer,
+            account,
+        ))
     }
 
     /// Confirms an enrollment with a code the application shows, and puts
@@ -201,6 +206,35 @@ impl TotpService {
         code: &Secret<String>,
         caller: Caller,
     ) -> Result<(), DomainError> {
+        self.confirm(tenant, user_id, None, code, caller).await
+    }
+
+    /// Confirms the enrollment `id`, as [`Self::confirm_enrollment`] does,
+    /// only while it is the one waiting: an enrollment begun since, by
+    /// anyone, is refused as if none waited.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::confirm_enrollment`].
+    pub async fn confirm_enrollment_of(
+        &self,
+        tenant: &TenantContext,
+        user_id: UserId,
+        id: TotpId,
+        code: &Secret<String>,
+        caller: Caller,
+    ) -> Result<(), DomainError> {
+        self.confirm(tenant, user_id, Some(id), code, caller).await
+    }
+
+    async fn confirm(
+        &self,
+        tenant: &TenantContext,
+        user_id: UserId,
+        named: Option<TotpId>,
+        code: &Secret<String>,
+        caller: Caller,
+    ) -> Result<(), DomainError> {
         let now = self.clock.now();
         let mut uow = self.units_of_work.begin(tenant).await?;
         let mut enrollment = self
@@ -208,6 +242,7 @@ impl TotpService {
             .pending(uow.as_mut(), user_id)
             .await?
             .filter(|enrollment| enrollment.can_be_confirmed_at(now))
+            .filter(|enrollment| named.is_none_or(|id| enrollment.id() == id))
             .ok_or_else(enrollment_not_found)?;
         let Some(step) = self.matching_step(tenant, &enrollment, code, now).await? else {
             return Err(DomainError::invalid(

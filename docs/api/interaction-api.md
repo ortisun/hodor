@@ -23,6 +23,9 @@ All paths are relative to the tenant: `https://{host}/t/{slug}`. Requests and re
 | `POST /interaction/sign-in/steps/email_code` | Submit the code |
 | `POST /interaction/sign-in/steps/email_link/send` | Ask for a link by email, in place of the identifier and the password |
 | `POST /interaction/sign-in/steps/email_link` | Submit the token of the link |
+| `GET /interaction/sign-in/steps/enrollment/kinds` | What a person may set up at the enrollment step in this installation |
+| `POST /interaction/sign-in/steps/enrollment/options` | Begin setting up a second factor, at the enrollment step |
+| `POST /interaction/sign-in/steps/enrollment` | Finish setting it up: the code of the application, or what the authenticator answered |
 | `DELETE /interaction/sign-in` | Abandon the sign-in |
 | `GET /interaction/session` | Say who is signed in |
 
@@ -47,6 +50,7 @@ Every response about a sign-in has the same shape:
 | `attempts_left` | When `rejected` | How many more rejections this sign-in tolerates |
 | `csrf_token` | When `pending` or `rejected` | The value to send back in the `X-CSRF-Token` header |
 | `continue` | When `completed`, and the browser holds a pending [authorization request](../architecture/contexts/oauth.md#signing-in-and-coming-back) of this tenant | The address of Hodor's own to go to next, `/t/{slug}/oauth2/authorize/resume`, instead of the account page |
+| `recovery_codes` | When the answer satisfied the [enrollment step](#enrolling-a-second-factor-during-a-sign-in) and a new set of recovery codes was made with the factor | The codes, once: `["7K2M-QX9D-4HVN-R8TA", …]`. The pages show them before going on |
 
 | Status | HTTP status | What the pages do |
 |---|---|---|
@@ -73,6 +77,7 @@ While the sign-in waits for `webauthn` or for `totp`, a recovery code can be sub
 | `passkey` | The same as `webauthn`, and `user_handle` is needed: an answer without it is a rejection |
 | `email_code` | `{ "code": "123456" }` |
 | `email_link` | `{ "token": "…" }`, the 64 hexadecimal characters after `#token=` in the link |
+| `enrollment` | `{ "code": "123456" }` for an authenticator application; for a security key or a passkey, what `navigator.credentials.create` answered, as when [registering a WebAuthn credential](#registering-a-webauthn-credential): `{ "client_data": "…", "attestation_object": "…", "transports": ["usb"], "discoverable": true, "name": "Blue key" }` |
 
 Submitting a step other than the one the sign-in is waiting for, or than one of its substitutes, is an error (`422`, `authentication.unexpected_step`), and changes nothing.
 
@@ -161,6 +166,61 @@ A tenant may let people sign in with [a code or a link sent to their address](..
 
 A wrong code, a code that was used, expired or replaced, a code for an address that belongs to nobody, a token for a code or a code for a link, and a code or a link presented before anything was asked for are all a rejection: `200` with `"status": "rejected"`, and the sign-in goes on waiting for the identifier. Five rejections end the sign-in.
 
+### Enrolling a second factor during a sign-in
+
+Under a tenant that requires a second factor, a person who has none is asked, after the first factor, to [set one up](../architecture/contexts/authentication.md#enrolling-a-second-factor-during-a-sign-in): the answer names the step `enrollment`. Every request below carries the sign-in cookie and, those that change something, the CSRF token, as for every step.
+
+`GET /interaction/sign-in/steps/enrollment/kinds` needs no sign-in and answers with what can be set up here, in the order the pages offer it:
+
+```json
+{ "kinds": ["authenticator_application", "security_key", "passkey"] }
+```
+
+`authenticator_application` is in the list only where the installation can keep secrets (`HODOR_SECRET_KEYS`).
+
+**Beginning.** `POST /interaction/sign-in/steps/enrollment/options` with the kind the person chose:
+
+```json
+{ "kind": "authenticator_application" }
+```
+
+answers `200`, once, with the secret, as the [security page's enrollment](#the-authenticator-application) does:
+
+```json
+{
+  "kind": "authenticator_application",
+  "secret": "JBSWY3DPEHPK3PXP…",
+  "uri": "otpauth://totp/Acme:ana%40example.com?secret=JBSW…&issuer=Acme&algorithm=SHA1&digits=6&period=30"
+}
+```
+
+With `{ "kind": "security_key" }` or `{ "kind": "passkey" }` it answers `200` with the options for `navigator.credentials.create`, as [registering a WebAuthn credential](#registering-a-webauthn-credential) does, without a `registration_id`: the sign-in keeps it.
+
+```json
+{ "kind": "security_key", "public_key": { "rp": { "id": "id.example.com", "name": "Hodor" }, "challenge": "Zm9v…", … } }
+```
+
+Beginning again replaces what was begun: a new secret, or a new registration. A page reloaded after beginning cannot have the secret again, and begins again.
+
+**Finishing.** `POST /interaction/sign-in/steps/enrollment` with the code the application shows, `{ "code": "123456" }`, or with what the authenticator answered (see [request bodies](#request-bodies)). The answer has [the shape of every sign-in response](#what-a-sign-in-response-looks-like): `completed`, with the session cookie and, when a new set was made, `recovery_codes`; or `rejected`, with `step` still `enrollment`.
+
+```json
+{
+  "status": "completed",
+  "recovery_codes": ["7K2M-QX9D-4HVN-R8TA", "…"],
+  "continue": "/t/acme/oauth2/authorize/resume"
+}
+```
+
+| Situation | Status | Code |
+|---|---|---|
+| The sign-in is not waiting for the `enrollment` step, which it reaches only after the first factor | `422` | `authentication.unexpected_step` |
+| The person has a second factor by now | `409` | `authentication.enrollment_not_needed` |
+| The kind is not one of the three, or the installation offers no authenticator application | `422` or `404` | `request.invalid_body`, `credential.totp_unavailable` |
+| The body is not of the expected shape | `400`, `415` or `422` | — |
+
+A wrong code, an enrollment older than ten minutes or begun again by something else since, nothing begun, a body for the other kind, an answer that fails [the checks of a registration](../architecture/contexts/credential.md#registering-a-credential), and a person who may no longer sign in are all a rejection: `200` with `"status": "rejected"`. After a rejected code the same code can be typed again; after a rejected answer of a key, the page begins again. Five rejections end the sign-in. There is no request that passes over the step.
+
 ### Errors
 
 | Situation | Status | Code |
@@ -171,6 +231,7 @@ A wrong code, a code that was used, expired or replaced, a code for an address t
 | The wrong step was submitted | `422` | `authentication.unexpected_step` |
 | Attempts are being limited, on the password or a code | `429`, with `Retry-After` | `authentication.too_many_attempts` |
 | The tenant has not turned this way of signing in on | `403` | `authentication.method_not_offered` |
+| The person, at the enrollment step, has a second factor by now | `409` | `authentication.enrollment_not_needed` |
 | The server is too busy to check a password | `503`, with `Retry-After` when known | `credential.hashing_overloaded` |
 | The CSRF token is missing or wrong | `403` | `request.csrf_token_invalid` |
 | The request comes from another site | `403` | `request.cross_origin` |

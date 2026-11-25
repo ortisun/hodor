@@ -18,13 +18,14 @@ The modules `application` and `domain` are private (`mod application;`,
 - Application: `AccountRequest`, `AccountService`, `IdentifierAuthenticator`,
   `PasswordAuthenticator`, `TotpAuthenticator`, `WebAuthnAuthenticator`,
   `RecoveryCodeAuthenticator`, `PasskeyAuthenticator`, `EmailAuthenticator`,
-  `EmailSignInPorts`, `FactorService`, `StepChallenge`, `AttemptGuard`, the port
+  `EmailSignInPorts`, `EnrollmentAuthenticator`, `FactorService`, `StepChallenge`, `AttemptGuard`, the port
   traits `AttemptStore`,
   `TransactionStore`, `VerificationTokenStore`, `EmailSignInStore`, and `AuthenticationService`,
   `SignIn`, `StartedSignIn`.
 - Domain: `AttemptCounter`, `AttemptSubject`, `LockoutRules`, `Authenticator`,
   `AuthenticatorTraits`, `ExternalInput`, `Factor`, `StepInput`, `StepOutcome`,
-  `FlowEngine`, `Progress`, `AuthenticationEvent`, `AuthFlow`, `FlowStep`,
+  `FlowEngine`, `Progress`, `Submitted`, `BegunEnrollment`, `Enrolled`,
+  `EnrollmentKind`, `AuthenticationEvent`, `AuthFlow`, `FlowStep`,
   `Requirement`, `Condition`, `AuthTransaction`, `TransactionId`, `TransactionSnapshot`,
   `TransactionState`, `TransactionStatus`, `TokenPurpose`,
   `VerificationSecret`, `VerificationToken`, `VerificationTokenHash`,

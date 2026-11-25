@@ -85,6 +85,8 @@ export function describe(failure: Failure, text: Messages): string {
       return text.totpCodeWrong;
     case "credential.totp_enrollment_not_found":
       return text.enrollmentExpired;
+    case "authentication.enrollment_not_needed":
+      return text.enrollmentNotNeeded;
     case "credential.webauthn_name_invalid":
       return text.keyNameInvalid;
     case "credential.webauthn_registration_refused":

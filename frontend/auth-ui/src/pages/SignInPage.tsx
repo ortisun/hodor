@@ -1,15 +1,19 @@
+import { Heading } from "@astryxdesign/core/Heading";
+import { Text } from "@astryxdesign/core/Text";
+import { VStack } from "@astryxdesign/core/VStack";
 import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import type { NoticeName, PageName } from "../address";
-import type { Client, Failure, OfferedProvider, SignInAnswer } from "../client";
+import type { Client, Enrollment, EnrollmentKind, Failure, OfferedProvider, SignInAnswer } from "../client";
 import { describe, type Messages } from "../messages";
 import { Field, PasswordField } from "../parts/Field";
 import { Form } from "../parts/Form";
 import { Frame } from "../parts/Frame";
 import { Notice } from "../parts/Notice";
+import { QrCode } from "../parts/QrCode";
 import { Action, Submit } from "../parts/Submit";
 import { PageLink, Ways, Words } from "../parts/Words";
-import { askAuthenticator, conditionalMediationAvailable, webAuthnAvailable } from "../webauthn";
-import { asFailure, type PageProps } from "./shared";
+import { askAuthenticator, askToCreate, conditionalMediationAvailable, webAuthnAvailable } from "../webauthn";
+import { asFailure, grouped, type PageProps } from "./shared";
 
 type View =
   | { kind: "loading" }
@@ -108,6 +112,12 @@ interface SignInPageProps extends PageProps {
 
 /** The steps a recovery code can stand in for. */
 const SECOND_FACTORS = ["webauthn", "totp"];
+/** The step at which a person whose organization requires a second factor, and who has none, sets one up. */
+const ENROLLMENT = "enrollment";
+/** The steps this page knows how to show. */
+const KNOWN_STEPS = ["identifier", "password", "totp", "webauthn", ENROLLMENT];
+/** The person has a second factor by now: the sign-in starts again, to ask for it. */
+const ENROLLMENT_NOT_NEEDED = "authentication.enrollment_not_needed";
 
 /** A code or a link the person asked for by email, in place of the identifier and the password. */
 interface ByEmail {
@@ -175,9 +185,24 @@ export function SignInPage({
   const [byEmail, setByEmail] = useState<ByEmail | null>(null);
   /** The person asked for a code or a link without typing an address. */
   const [needAddress, setNeedAddress] = useState(false);
+  /** What can be set up at the enrollment step, once the server said. */
+  const [kinds, setKinds] = useState<EnrollmentKind[] | null>(null);
+  /** The authenticator application being set up at the enrollment step: its secret, shown once. */
+  const [settingUp, setSettingUp] = useState<Enrollment | null>(null);
+  const [keyName, setKeyName] = useState("");
+  /** The key did not answer the last time it was asked to register. */
+  const [keyNoAnswer, setKeyNoAnswer] = useState(false);
+  /** Recovery codes made with a factor just set up, to keep before the page goes on, and the answer to go on with. */
+  const [keeping, setKeeping] = useState<{ codes: string[]; then: SignInAnswer } | null>(null);
 
   const show = useCallback(
     (answer: SignInAnswer) => {
+      if (answer.recoveryCodes !== undefined) {
+        // Shown once: the person keeps them before the page goes on.
+        const { recoveryCodes, ...then } = answer;
+        setKeeping({ codes: recoveryCodes, then });
+        return;
+      }
       if (answer.status === "completed") {
         if (answer.continueTo === undefined) {
           go(afterSignIn);
@@ -194,6 +219,8 @@ export function SignInPage({
         // A choice made for one step does not carry over to the next.
         if (before.kind !== "step" || before.step !== (answer.step ?? "")) {
           setRecovering(false);
+          setSettingUp(null);
+          setKeyNoAnswer(false);
         }
         return {
           kind: "step",
@@ -281,12 +308,42 @@ export function SignInPage({
         setPassword("");
         setCode("");
         await open(false);
+      } else if (code === ENROLLMENT_NOT_NEEDED) {
+        setCode("");
+        await open(true);
+        setFailure(failed);
       } else {
         setFailure(failed);
       }
     } finally {
       setBusy(false);
     }
+  }
+
+  /** Begins setting up an authenticator application: its QR code and its key are shown once. */
+  async function beginApplication() {
+    await send(async () => {
+      setSettingUp(await client.beginApplicationEnrollment());
+      return { status: "pending", step: ENROLLMENT, attemptsLeft: null };
+    });
+  }
+
+  /**
+   * Adds a security key or a passkey: begins its registration, then asks
+   * the authenticator. When it makes nothing, nothing is sent and the
+   * person tries again, which begins anew.
+   */
+  async function addKey(passkey: boolean) {
+    setKeyNoAnswer(false);
+    await send(async () => {
+      const registration = await askToCreate(await client.beginKeyEnrollment(passkey));
+      if (registration === null) {
+        setKeyNoAnswer(true);
+        return { status: "pending", step: ENROLLMENT, attemptsLeft: null };
+      }
+      const name = keyName.trim() === "" ? (passkey ? text.defaultPasskeyName : text.defaultKeyName) : keyName;
+      return client.finishKeyEnrollment(registration, name);
+    });
   }
 
   async function startAgain() {
@@ -431,6 +488,30 @@ export function SignInPage({
     }
   }
 
+  const enrolling = view.kind === "step" && view.step === ENROLLMENT;
+  // What can be set up is read when the step is shown.
+  useEffect(() => {
+    if (!enrolling) {
+      return undefined;
+    }
+    let current = true;
+    client.enrollmentKinds().then(
+      (listed) => {
+        if (current) {
+          setKinds(listed);
+        }
+      },
+      () => {
+        if (current) {
+          setKinds([]);
+        }
+      },
+    );
+    return () => {
+      current = false;
+    };
+  }, [enrolling, client]);
+
   const waitsByEmail = view.kind === "step" && view.step === "identifier" && byEmail !== null;
   const asksIdentifier =
     view.kind === "step" && view.step === "identifier" && directory === null && byEmail === null;
@@ -476,6 +557,37 @@ export function SignInPage({
   }
 
   const told = noticeText(notice, text);
+
+  if (keeping !== null) {
+    return (
+      <Frame tenant={tenant} title={text.signInTitle} text={text}>
+        <VStack gap={4}>
+          <Heading level={2}>{text.codesTitle}</Heading>
+          <Words>{text.codesLead}</Words>
+          <ul className="auth-codes" aria-label={text.codesTitle}>
+            {keeping.codes.map((one) => (
+              <li key={one}>
+                <Text className="auth-code">{one}</Text>
+              </li>
+            ))}
+          </ul>
+          <Action
+            variant="primary"
+            label={text.codesKept}
+            onClick={() => {
+              const then = keeping.then;
+              setKeeping(null);
+              show(then);
+            }}
+          />
+        </VStack>
+      </Frame>
+    );
+  }
+
+  const offersApplication = kinds?.includes("authenticator_application") === true;
+  const offersKeys =
+    webAuthnAvailable() && (kinds?.includes("security_key") === true || kinds?.includes("passkey") === true);
 
   return (
     <Frame tenant={tenant} title={text.signInTitle} text={text}>
@@ -740,7 +852,88 @@ export function SignInPage({
         </Form>
       ) : null}
 
-      {view.kind === "step" && !["identifier", "password", "totp", "webauthn"].includes(view.step) ? (
+      {enrolling && settingUp !== null ? (
+        <Form
+          key={`enrollment-${view.shown}`}
+          onSubmit={(event) => submit(event, () => client.finishApplicationEnrollment(code.replace(/\s/g, "")))}
+        >
+          <Words>{text.setUpLead}</Words>
+          <QrCode value={settingUp.uri} label={text.qrLabel} />
+          <VStack gap={1}>
+            <Text as="p" type="supporting" color="secondary">
+              {text.secretLabel}
+            </Text>
+            <Text as="p" className="auth-code">
+              {grouped(settingUp.secret)}
+            </Text>
+          </VStack>
+          <Field
+            label={text.totpLabel}
+            hint={text.totpHint}
+            name="code"
+            autoComplete="one-time-code"
+            inputMode="numeric"
+            autoFocus
+            verbatim
+            value={code}
+            onChange={setCode}
+          />
+          <Submit label={text.confirmAndSignIn} busy={busy} text={text} />
+          <Action
+            variant="ghost"
+            label={text.chooseAnotherWay}
+            onClick={() => {
+              setCode("");
+              setSettingUp(null);
+            }}
+          />
+        </Form>
+      ) : null}
+
+      {enrolling && settingUp === null ? (
+        <VStack gap={4}>
+          <Words>{text.enrollLead}</Words>
+          {kinds === null ? (
+            <Words quiet announced>
+              {text.loading}
+            </Words>
+          ) : null}
+          {offersApplication ? (
+            <Action
+              variant="primary"
+              label={text.setUpApplication}
+              busy={busy}
+              onClick={() => void beginApplication()}
+            />
+          ) : null}
+          {offersKeys ? (
+            <VStack gap={2}>
+              <Words>{text.enrollKeysLead}</Words>
+              {keyNoAnswer ? <Notice kind="danger">{text.keyNoAnswer}</Notice> : null}
+              <Field
+                label={text.keyNameLabel}
+                hint={text.keyNameHint}
+                name="key-name"
+                autoComplete="off"
+                value={keyName}
+                onChange={setKeyName}
+              />
+              {kinds?.includes("security_key") === true ? (
+                <Action label={text.addSecurityKey} busy={busy} onClick={() => void addKey(false)} />
+              ) : null}
+              {kinds?.includes("passkey") === true ? (
+                <Action label={text.addPasskey} busy={busy} onClick={() => void addKey(true)} />
+              ) : null}
+            </VStack>
+          ) : null}
+          {kinds !== null && !offersApplication && !offersKeys ? (
+            <Notice kind="danger">{text.nothingToSetUp}</Notice>
+          ) : null}
+          <Action variant="ghost" label={text.useAnotherIdentifier} onClick={() => void startAgain()} />
+        </VStack>
+      ) : null}
+
+      {view.kind === "step" && !KNOWN_STEPS.includes(view.step) ? (
         <>
           <Notice kind="danger">{text.unknownStep}</Notice>
           <Action label={text.startAgain} onClick={() => void startAgain()} />

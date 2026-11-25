@@ -1085,3 +1085,204 @@ async fn max_age_asks_again_for_the_password_and_not_for_the_identifier() {
     let issued = id_token["iat"].as_i64().expect("iat");
     assert!(issued - auth_time <= 5, "the person proved it just now");
 }
+
+/// Makes a tenant require a second factor of everyone who signs in.
+async fn require_second_factor(database: &TestDatabase, slug: &str) {
+    let (tenant, _) = ana_of(database, slug).await;
+    let tenants = TenantService::new(
+        Arc::new(database.app().clone()),
+        Arc::new(PgTenantRepository),
+        Arc::new(PgTenantDirectory::new(database.app().clone())),
+        Arc::new(SystemClock),
+    );
+    let mut settings = tenants
+        .get(&tenant)
+        .await
+        .expect("tenant")
+        .snapshot()
+        .settings
+        .clone();
+    settings.authentication.second_factor = hodor_tenant::api::SecondFactorPolicy::Required;
+    tenants
+        .change_settings(&tenant, settings, Caller::system())
+        .await
+        .expect("changed");
+}
+
+/// How many rows of `table` of the tenant hold `text` anywhere.
+async fn rows_holding(database: &TestDatabase, table: &str, text: &str) -> i64 {
+    // The table is one of this file's own names, never input.
+    sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "SELECT count(*) FROM {table} AS row WHERE strpos(row_to_json(row)::text, $1) > 0"
+    )))
+    .bind(text)
+    .fetch_one(database.owner())
+    .await
+    .expect("count")
+}
+
+#[tokio::test]
+async fn under_the_policy_a_person_with_no_factor_sets_up_an_application_while_signing_in() {
+    use hodor_adapters_crypto::AwsLcHmacSha1;
+    use hodor_credential::api::totp_code_at;
+
+    let database = TestDatabase::start().await;
+    let client_id = tenant(&database, "acme").await;
+    require_second_factor(&database, "acme").await;
+    let (tenant_context, ana) = ana_of(&database, "acme").await;
+    let server = server(&database).await;
+    let mut browser = Browser::not_following(&server);
+
+    // An application sends Ana to sign in; she has no second factor.
+    let (status, location, body) = browser
+        .navigate(
+            Method::GET,
+            &format!(
+                "/t/acme/oauth2/authorize?{}",
+                authorize_query(client_id, "openid", &[("nonce", NONCE)])
+            ),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::FOUND, "{body}");
+    assert!(
+        location
+            .expect("a redirect")
+            .starts_with("/t/acme/account/sign-in?"),
+    );
+    let (status, waiting) = browser.sign_in("acme", "ana@example.com", PASSWORD).await;
+    assert_eq!(status, StatusCode::OK, "{waiting}");
+    assert_eq!(
+        (waiting["status"].as_str(), waiting["step"].as_str()),
+        (Some("pending"), Some("enrollment")),
+        "{waiting}"
+    );
+    let (_, kinds) = browser
+        .send(
+            Method::GET,
+            "/t/acme/interaction/sign-in/steps/enrollment/kinds",
+            None,
+        )
+        .await;
+    assert_eq!(
+        kinds["kinds"],
+        serde_json::json!(["authenticator_application", "security_key", "passkey"])
+    );
+
+    // She scans the QR code; the test reads the secret it holds.
+    let (status, begun) = browser
+        .send(
+            Method::POST,
+            "/t/acme/interaction/sign-in/steps/enrollment/options",
+            Some(serde_json::json!({ "kind": "authenticator_application" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{begun}");
+    let shown = begun["secret"].as_str().expect("secret").to_owned();
+    assert_eq!(
+        begun["uri"],
+        format!(
+            "otpauth://totp/acme:ana%40example.com?secret={shown}&issuer=acme&algorithm=SHA1&digits=6&period=30"
+        )
+    );
+    // The sign-in keeps which enrollment it began; no row anywhere holds
+    // the secret as it was shown.
+    let (kind, id): (Option<String>, Option<sqlx::types::Uuid>) = sqlx::query_as(
+        "SELECT enrollment_kind, enrollment_id FROM authentication.transaction
+         WHERE tenant_id = $1 AND candidate_user_id = $2",
+    )
+    .bind(tenant_context.tenant_id().as_uuid())
+    .bind(ana.as_uuid())
+    .fetch_one(database.owner())
+    .await
+    .expect("the transaction");
+    assert_eq!(kind.as_deref(), Some("authenticator_application"));
+    let id = id.expect("the enrollment");
+    let pending: String =
+        sqlx::query_scalar("SELECT status FROM credential.totp WHERE tenant_id = $1 AND id = $2")
+            .bind(tenant_context.tenant_id().as_uuid())
+            .bind(id)
+            .fetch_one(database.owner())
+            .await
+            .expect("the enrollment");
+    assert_eq!(pending, "pending");
+    for table in ["authentication.transaction", "credential.totp"] {
+        assert_eq!(rows_holding(&database, table, &shown).await, 0, "{table}");
+    }
+
+    let secret = base32(&shown);
+    let code = totp_code_at(
+        &AwsLcHmacSha1,
+        &secret,
+        hodor_kernel::Clock::now(&SystemClock),
+    );
+    let (status, done) = browser
+        .send(
+            Method::POST,
+            "/t/acme/interaction/sign-in/steps/enrollment",
+            Some(serde_json::json!({ "code": code })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{done}");
+    assert_eq!(done["status"], "completed", "{done}");
+    let codes: Vec<String> = done["recovery_codes"]
+        .as_array()
+        .expect("recovery codes, once")
+        .iter()
+        .map(|code| code.as_str().expect("a code").to_owned())
+        .collect();
+    assert_eq!(codes.len(), 10);
+    for code in &codes {
+        assert_eq!(
+            rows_holding(&database, "credential.recovery_code", code).await,
+            0,
+            "a recovery code is kept only as its hash"
+        );
+    }
+    let (_, who) = browser
+        .send(Method::GET, "/t/acme/interaction/session", None)
+        .await;
+    assert_eq!(who["assurance"], "multi_factor", "{who}");
+    assert_eq!(
+        who["methods"],
+        serde_json::json!(["password", "enrollment"])
+    );
+
+    // The application's tokens say multi-factor.
+    let resume = done["continue"].as_str().expect("continue").to_owned();
+    let (status, location, body) = browser.navigate(Method::GET, &resume, None).await;
+    assert_eq!(status, StatusCode::FOUND, "{body}");
+    let answer = query_of(&location.expect("a redirect"));
+    let tokens = redeem(&server, "acme", client_id, &answer["code"]).await;
+    let id_token = claims_of(tokens["id_token"].as_str().expect("ID token"));
+    assert_eq!(id_token["acr"], "urn:hodor:acr:mfa");
+    assert_eq!(id_token["amr"], serde_json::json!(["pwd", "mfa"]));
+    let access_token = claims_of(tokens["access_token"].as_str().expect("access token"));
+    assert_eq!(access_token["acr"], "urn:hodor:acr:mfa");
+
+    // The audit trail has the enrollment, and the next sign-in asks for
+    // the code of the application set up.
+    let enrolled: Vec<Value> = sqlx::query_scalar(
+        "SELECT payload FROM platform.outbox
+         WHERE tenant_id = $1 AND event_type = 'authentication.second_factor_enrolled'",
+    )
+    .bind(tenant_context.tenant_id().as_uuid())
+    .fetch_all(database.owner())
+    .await
+    .expect("events");
+    assert_eq!(
+        enrolled,
+        [serde_json::json!({ "user_id": ana, "kind": "authenticator_application" })]
+    );
+    let mut later = Browser::not_following(&server);
+    let (_, waiting) = later.sign_in("acme", "ana@example.com", PASSWORD).await;
+    assert_eq!(waiting["step"], "totp", "{waiting}");
+    let (_, done) = later
+        .send(
+            Method::POST,
+            "/t/acme/interaction/sign-in/steps/totp",
+            Some(serde_json::json!({ "code": next_code(&secret) })),
+        )
+        .await;
+    assert_eq!(done["status"], "completed", "{done}");
+}

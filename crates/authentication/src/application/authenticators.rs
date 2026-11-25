@@ -415,6 +415,7 @@ impl Authenticator for WebAuthnAuthenticator {
         let made = self.webauthn.challenge(tenant, user).await?;
         Ok(Some(StepChallenge {
             challenge: Some(made.challenge.0),
+            enrollment: None,
             options: options_json(&made.options)?,
         }))
     }
@@ -539,6 +540,7 @@ impl Authenticator for PasskeyAuthenticator {
         let made = self.webauthn.passkey_challenge();
         Ok(Some(StepChallenge {
             challenge: Some(made.challenge.0),
+            enrollment: None,
             options: options_json(&made.options)?,
         }))
     }

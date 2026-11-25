@@ -123,6 +123,9 @@ routes and the whole router.
 | GET | `/sign-in/alternatives` | `offered_alternatives` (`AuthenticationService::alternatives`; no sign-in needed) |
 | POST | `/sign-in/steps/email_code/send`, `/sign-in/steps/email_link/send` | `ask_for_code`, `ask_for_link` (body `{ "email", "locale"? }`; the challenge of the email alternative, answered `202` `{ "status": "accepted" }`) |
 | POST | `/sign-in/steps/email_code`, `/sign-in/steps/email_link` | `submit_email_code` (body `{ "code" }`), `submit_email_link` (body `{ "token" }`) |
+| GET | `/sign-in/steps/enrollment/kinds` | `enrollment_kinds` (`FactorService::enrollable`, `{ "kinds": [...] }`; no sign-in needed) |
+| POST | `/sign-in/steps/enrollment/options` | `begin_enrollment` (body `{ "kind" }`, `422` `request.invalid_body` for anything but `authenticator_application`, `security_key` or `passkey`; the challenge of the enrollment step, `200` with its options) |
+| POST | `/sign-in/steps/enrollment` | `finish_enrollment` (body `{ "code" }`, or `{ "client_data", "attestation_object", "transports"?, "discoverable"?, "name"? }`; the answer of a sign-in, with `recovery_codes` once when a set was made) |
 | GET | `/sign-in/providers` | `offered_providers` |
 | POST | `/sign-in/providers/{alias}` | `choose_provider` |
 | POST | `/sign-in/providers/{alias}/callback` | `finish_with_provider` |

@@ -203,7 +203,7 @@ python3 deploy/demo/strong_authentication.py
 | A recovery code | A recovery code stands in for the code once, and is refused the second time |
 | A passkey | The person registers one, then signs in with it alone, with no identifier and no password. Asked for the phishing-resistant level, the application gets a code at once, and the tokens say `pop`, `user` and `mfa` |
 | Tenants apart | The same passkey is refused by a second tenant |
-| An administrator removes the person's factors | The administrator sees the factors and no secret, removes the passkey and the application, and the recovery codes go with them; the person's password no longer signs them in to a tenant that requires a second factor, and the audit log names the administrator |
+| An administrator removes the person's factors | The administrator sees the factors and no secret, removes the passkey and the application, and the recovery codes go with them; the person's password alone no longer signs them in to a tenant that requires a second factor: the sign-in waits for them to [set one up](../architecture/contexts/authentication.md#enrolling-a-second-factor-during-a-sign-in), with no session until they do, and the audit log names the administrator |
 
 The passkey is a software authenticator written into the script, with the arithmetic of P-256 done by hand so that the demonstration still needs nothing outside the standard library. It answers as a device does after the person unlocked it, and keeps its key in memory for as long as the script runs. A code of an authenticator application is good once, so the script waits for the next one when it needs a third within a minute.
 

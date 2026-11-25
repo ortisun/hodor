@@ -229,7 +229,7 @@ async fn a_person_signs_in_with_nothing_faked() {
         "{wrong:?}"
     );
     let done = world.password(id, PASSWORD).await.expect("password");
-    let SignIn::Completed { session, token } = done else {
+    let SignIn::Completed { session, token, .. } = done else {
         panic!("expected completion: {done:?}");
     };
     assert_eq!(session.user_id(), world.ana);

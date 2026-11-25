@@ -281,6 +281,7 @@ impl Authenticator for EmailAuthenticator {
         uow.commit().await?;
         Ok(Some(StepChallenge {
             challenge: None,
+            enrollment: None,
             options: serde_json::json!({}),
         }))
     }
