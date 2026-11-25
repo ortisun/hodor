@@ -189,6 +189,7 @@ Nothing tenant-specific is configured through deployment files, so adding a tena
 - A managed PostgreSQL service or an operator-run cluster with synchronous standby in another zone and point-in-time recovery.
 - A connection pooler in transaction mode is supported; the adapter uses `SET LOCAL` inside transactions and no session state, which keeps it compatible.
 - Separate pools for the server, the worker and platform (cross-tenant) access, each with its own database role.
+- A pooled connection is checked when it is handed back to its pool, and checked again before it is handed out only when it has been idle for more than a second: a connection used a moment ago needs no second round trip. After a restart of the database, a request may therefore fail on a connection that was used less than a second before the restart.
 - Read replicas are optional and used only for audit search and reporting queries.
 
 ## Upgrades

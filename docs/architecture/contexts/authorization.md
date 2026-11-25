@@ -282,6 +282,33 @@ A token made by [token exchange](oauth.md#token-exchange) names the person in `s
 
 A subject Hodor does not know, including an identifier that is not one of its own, has no attributes, as for any engine. The attributes are given to the engine and never written back to the caller.
 
+A user's attributes, their groups and their organizations are read together, in one transaction, at every decision; nothing of them is kept from one decision to the next.
+
+### The cost of a decision
+
+An `evaluate` spends nearly all its time waiting for the database: each statement is a round trip, and the statements themselves take tens of microseconds. For a person, answered by the native engine, it reads in seven short transactions, each started by `BEGIN` and [the tenant's setting](../multi-tenancy.md) in one round trip, after the tenant's slug:
+
+| Transaction | What it reads |
+|---|---|
+| The token's keys | The tenant's published signing keys |
+| The register | The token's record in [the register of access tokens](oauth.md#revocation-introspection-and-metadata) |
+| The caller | The token's client, its application and the application's resource server, together |
+| The binding | The resource server's binding |
+| The subject | The person, their groups and their organizations, together |
+| The native engine | The role revision, the entries of the resource the request names, and the assignments of a principal whose roles are not kept for that revision |
+| The record | The tenant's settings of [the record of decisions](#the-record-of-decisions), and the record |
+
+About 33 statements in all. The rollbacks of the six transactions that only read are sent after their connection is handed back, so about 27 round trips stand between the request and its answer. A pooled connection is checked again before it is handed out only when it has been idle for more than a second ([the database](../../operations/deployment.md#database)). Nothing in the table is kept between decisions, except what the native engine keeps for the current role revision ([caching and the role revision](#caching-and-the-role-revision)), so a revoked token, a disabled client, a person taken out of a group and a removed entry all count on the next decision.
+
+`cargo test --release -p hodor-server --test evaluate_latency -- --ignored --nocapture` measures it against the real server and a real database: a tenant with four roles (one including another, one holding its permission with a condition), two groups one inside the other, two role assignments to groups and two to a person, and one entry; four questions asked in turn, allowed through a group's role, through the entry and through the condition, and refused. It prints the 50th and 99th percentiles of one caller asking 2000 times, the decisions per second of 16 callers at once, and the statements of each question. On an Apple M3 Max laptop with PostgreSQL 17 in Docker Desktop, and a load average of 18 to 42 from other builds on the same machine, it measured, three times each:
+
+| | One caller, 50th percentile | One caller, 99th percentile | 16 callers at once |
+|---|---|---|---|
+| Before: 11 transactions, about 53 statements and a check of the connection before each transaction | 10.2 to 10.6 milliseconds | 22 to 24 milliseconds | 330 to 350 decisions per second |
+| Now | 5.5 to 6.1 milliseconds | 12 to 21 milliseconds | 530 to 610 decisions per second |
+
+So [Requirement-Performance-04](../../product/requirements.md#performance-and-scale), a 99th percentile of 5 milliseconds for the native engine, is not met on that machine, where a round trip to a database in Docker Desktop's virtual machine is slow and the processor is shared. It is to be measured again on a server with its database on the same network, by the load tests of [the testing strategy](../testing.md#load-and-chaos).
+
 ### Simulating
 
 `simulate` takes the same request and the policies to evaluate against: what is published, one revision, or a draft. It answers at once. Nothing is recorded, and nothing fails open. The native engine simulates against what is published only, and says how it decided; a revision or a draft of the native engine, and any selection for an engine that cannot simulate, are refused with `authorization.simulation_unsupported`.

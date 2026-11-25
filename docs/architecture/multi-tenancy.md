@@ -47,7 +47,7 @@ Tenants addressed by path on one host share a browser origin. Cookie `Path` and 
 | Layer | Mechanism |
 |---|---|
 | **Types** | `TenantContext` is a required argument of every port method on tenant data. It cannot be constructed outside the resolver middleware, the worker's job loader and tests. Aggregates carry `tenant_id`; loading one under another tenant's context is `NotFound` |
-| **Database** | Every tenant table has `tenant_id uuid not null` as the leading column of its primary key and indexes. **Row-Level Security** is enabled and forced: `USING (tenant_id = current_setting('app.tenant_id')::uuid)`. The adapter runs `SET LOCAL app.tenant_id` at the start of each transaction. The application role does not own the tables and has no `BYPASSRLS` |
+| **Database** | Every tenant table has `tenant_id uuid not null` as the leading column of its primary key and indexes. **Row-Level Security** is enabled and forced: `USING (tenant_id = current_setting('app.tenant_id')::uuid)`. The adapter sets `app.tenant_id` for the transaction alone (`set_config` with `is_local`, as `SET LOCAL` does) at its start, sent with `BEGIN` in one round trip. The application role does not own the tables and has no `BYPASSRLS` |
 | **Foreign keys** | Composite, `(tenant_id, id)`, so a row cannot reference another tenant's row even by mistake |
 | **Uniqueness** | Scoped by tenant: `(tenant_id, kind, value)` for identifiers, `(tenant_id, slug)` for clients |
 | **Cache** | Keys are built by one function that requires a `TenantContext`: `t:{tenant_id}:{kind}:{key}`. No raw key API is exposed to contexts |
