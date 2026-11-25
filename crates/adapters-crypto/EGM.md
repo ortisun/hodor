@@ -31,7 +31,7 @@ From `Cargo.toml`:
 - Development only:
   - this crate itself with the `testing` feature;
   - `hodor-federation`;
-  - `hodor-kernel` with the `testing` feature;
+  - `hodor-kernel` and `hodor-keys` with the `testing` feature;
   - `form_urlencoded`, `serde_json` and `time`.
 
 ## Features

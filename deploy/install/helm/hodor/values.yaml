@@ -36,6 +36,44 @@ secret:
     secretKeys: secret-keys
     # Address of the mail server, such as smtps://user:password@mail.example.com:465. Read when mail.enabled.
     smtpUrl: smtp-url
+    # The role identifier and secret identifier of Hodor's AppRole in OpenBao. Read when keyProvider.openbao
+    # signs in with an AppRole.
+    openbaoRoleId: openbao-role-id
+    openbaoSecretId: openbao-secret-id
+
+# Where the tenants' signing keys are made and used. How to prepare OpenBao, step by step:
+# docs/operations/keys-in-openbao.md.
+keyProvider:
+  # local: inside the servers and workers, wrapped under secret-keys. openbao: in OpenBao's Transit secrets
+  # engine, which signs and never lets a key out. Only new keys follow this value; each key keeps signing where
+  # it was made. The keys of secrets at rest are local either way.
+  signingKeys: local
+  openbao:
+    # true: the servers and workers reach OpenBao, and sign with the keys made there. Required for
+    # signingKeys: openbao, and kept true afterwards for as long as a key made there may sign.
+    enabled: false
+    # Its address: https, the name and the port, no path, such as https://openbao.openbao.svc:8200. Required
+    # when enabled. Reached directly, never through a proxy; with networkPolicy.egress, list it in `to`.
+    address: ""
+    # Where Transit is mounted for Hodor. The policy in deploy/openbao/hodor-policy.hcl names this mount.
+    transitMount: hodor-transit
+    # How Hodor signs in: kubernetes, with a token of the release's service account made for OpenBao alone, or
+    # approle, with the identifiers in the Secret (secret.keys.openbaoRoleId and openbaoSecretId).
+    authMethod: kubernetes
+    # Where that method is mounted in OpenBao. Empty: kubernetes or approle.
+    authMount: ""
+    # The role of OpenBao's Kubernetes method that gives Hodor its policy.
+    kubernetesRole: hodor
+    # The audience of the service account token Hodor presents; the role must name it.
+    tokenAudience: openbao
+    # The ConfigMap, in the namespace of the release, holding the certificate of the authority that issued
+    # OpenBao's certificate, and its key in the ConfigMap. Empty: the authorities the image trusts. When set,
+    # only this authority is trusted for OpenBao.
+    certificateAuthority:
+      configMap: ""
+      key: ca.crt
+    # Milliseconds one request to OpenBao may take, 1 to 60000. A signature waits for it.
+    timeoutMs: 5000
 
 # The messages Hodor sends: address verification and password recovery.
 mail:

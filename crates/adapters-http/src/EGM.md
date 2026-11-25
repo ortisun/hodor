@@ -23,6 +23,7 @@ See the `lib.rs` crate documentation, which points to `docs/security/outbound-ht
   - It builds one `reqwest` client that calls only the given origins.
   - An origin is `http://` or `https://`, a host and an optional port, with no path other than `/`, no query, no fragment and no name or password; anything else is `http.origin_invalid`.
   - The policy's development hosts are ignored.
+- `ServiceHttpClient::trusting_only(origins, policy, authorities: &[u8])`: as `new`, but a server's certificate is trusted only if one of the PEM certificates in `authorities` issued it, for OpenBao behind an authority of the operator's own; no certificate, or one that cannot be read, is `http.certificate_authorities_invalid` (`service.rs`).
 - `ServiceHttpClient::check_origin(value: &str) -> Result<(), DomainError>` says whether `new` would accept an origin (`service.rs`).
 - `is_public(address: IpAddr) -> bool` returns whether an address may be called on someone else's word (`address.rs:is_public`).
 - Internal: `impl Resolve for PublicOnly` (`client.rs:48`) implements the `reqwest::dns::Resolve` trait for the private resolver.

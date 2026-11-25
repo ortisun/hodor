@@ -1,6 +1,8 @@
 //! What the keys context needs from storage and from a key provider.
 
-use crate::domain::key::{GeneratedKey, KeyAlgorithm, KeyUse, KeyVersion, KeyVersionId};
+use crate::domain::key::{
+    GeneratedKey, KeyAlgorithm, KeyUse, KeyVersion, KeyVersionId, SignatureEncoding,
+};
 use crate::domain::trust_domain::{TrustDomain, TrustDomainId};
 use hodor_kernel::{
     DomainError, SealedSecret, Secret, TenantContext, TenantId, Timestamp, UnitOfWork,
@@ -62,12 +64,22 @@ pub trait KeyStore: Send + Sync {
 /// operation.
 ///
 /// A provider must refuse material made for another tenant, version or
-/// algorithm than the one it is told.
+/// algorithm than the one it is told, and material made by another
+/// provider. The contract every provider passes is
+/// `testing::run_provider_contract`.
 #[async_trait::async_trait]
 pub trait KeyProvider: Send + Sync {
     /// The provider's name, stored with every version it makes, such as
-    /// `local`.
+    /// `local` or `openbao`.
     fn name(&self) -> &'static str;
+
+    /// The name of the provider that makes keys of `algorithm`, stored
+    /// with the version: this provider's own, unless it hands keys of some
+    /// algorithms to another, as [`crate::api::KeyProviders`] does.
+    fn name_for(&self, algorithm: KeyAlgorithm) -> &'static str {
+        let _ = algorithm;
+        self.name()
+    }
 
     /// Makes a new key for `version` of `algorithm` in `tenant`.
     ///
@@ -81,17 +93,21 @@ pub trait KeyProvider: Send + Sync {
         algorithm: KeyAlgorithm,
     ) -> Result<GeneratedKey, DomainError>;
 
-    /// Signs `message` with a signing key.
+    /// Signs `message` with a signing key, and writes the signature in
+    /// `encoding`.
     ///
     /// # Errors
     ///
-    /// Returns an error if the version is not a signing key or its material
-    /// does not open for this tenant, version and algorithm.
+    /// Returns `keys.unusable` if the version is not a signing key or its
+    /// material is not this provider's for this tenant, version and
+    /// algorithm, and `keys.provider_unavailable` if the provider cannot
+    /// be reached. A provider never signs with any other key instead.
     async fn sign(
         &self,
         tenant: &TenantContext,
         version: &KeyVersion,
         message: &[u8],
+        encoding: SignatureEncoding,
     ) -> Result<Vec<u8>, DomainError>;
 
     /// Encrypts `plaintext` with a data key. `associated` is authenticated

@@ -197,10 +197,23 @@ jobs:
       - name: Run the demonstration of Milestone 6
         working-directory: .
         run: python3 deploy/demo/operations.py
+      # The tenants' signing keys in OpenBao: the server and the worker start
+      # again making them there, and the demonstration of Milestone 3 signs
+      # every token, rotates a key and checks every signature with keys only
+      # OpenBao holds. Then the keys are looked for in OpenBao itself.
+      - name: Run the demonstration of Milestone 3 with the signing keys in OpenBao
+        working-directory: .
+        env:
+          HODOR_KEY_PROVIDER: openbao
+        run: |
+          docker compose -f deploy/docker/compose.yaml up --wait --no-build server worker
+          python3 deploy/demo/applications.py
+          docker compose -f deploy/docker/compose.yaml exec -T -e BAO_TOKEN=development-root-token openbao \
+            bao list -address=http://127.0.0.1:8200 hodor-transit/keys | grep -q '^tenant-'
       - name: Show what the stack logged
         if: failure()
         working-directory: .
-        run: docker compose -f deploy/docker/compose.yaml logs --no-color --tail 200 server worker system-tenant provider directory saml-provider edge webhook-receiver
+        run: docker compose -f deploy/docker/compose.yaml logs --no-color --tail 200 server worker system-tenant provider directory saml-provider edge webhook-receiver openbao openbao-setup
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: failure()
         with:
@@ -287,6 +300,15 @@ jobs:
           --set "directoryHosts={directory.example.com:636}"
           --set telemetry.metricsEndpoint=http://collector:4318/v1/metrics
           --set telemetry.tracesEndpoint=http://collector:4318/v1/traces
+          --set keyProvider.signingKeys=openbao --set keyProvider.openbao.enabled=true
+          --set keyProvider.openbao.address=https://openbao.openbao.svc:8200
+          --set keyProvider.openbao.certificateAuthority.configMap=openbao-authority
+          > /dev/null
+      - name: Render the chart signing in to OpenBao with an AppRole
+        run: >
+          helm template hodor "$CHART" --namespace hodor $REQUIRED
+          --set keyProvider.openbao.enabled=true --set keyProvider.openbao.authMethod=approle
+          --set keyProvider.openbao.address=https://openbao.openbao.svc:8200
           > /dev/null
       - name: The chart refuses to render without its required values
         run: |
@@ -294,6 +316,8 @@ jobs:
           refused helm template hodor "$CHART" --namespace hodor
           refused helm template hodor "$CHART" --namespace hodor $REQUIRED --set publicUrl=https://login.example.com/path
           refused helm template hodor "$CHART" --namespace hodor $REQUIRED --set mail.enabled=true
+          refused helm template hodor "$CHART" --namespace hodor $REQUIRED --set keyProvider.signingKeys=openbao
+          refused helm template hodor "$CHART" --namespace hodor $REQUIRED --set keyProvider.openbao.enabled=true
       - name: The Compose file is valid with every part
         env:
           HODOR_IMAGE: hodor:test

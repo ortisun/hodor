@@ -51,6 +51,7 @@ spec:
             {{- include "hodor.secretEnvironment" (list . "HODOR_DATABASE_URL" .Values.secret.keys.workerDatabaseUrl) | nindent 12 }}
             {{- include "hodor.secretEnvironment" (list . "HODOR_PLATFORM_DATABASE_URL" .Values.secret.keys.workerPlatformDatabaseUrl) | nindent 12 }}
             {{- include "hodor.secretEnvironment" (list . "HODOR_SECRET_KEYS" .Values.secret.keys.secretKeys) | nindent 12 }}
+            {{- include "hodor.keyProviderEnvironment" . | nindent 12 }}
             # The server's address: the issuer of the logout tokens the worker sends starts with it.
             - name: HODOR_PUBLIC_URL
               value: {{ include "hodor.publicUrl" . | quote }}
@@ -64,9 +65,17 @@ spec:
             {{- with .Values.worker.extraEnvironment }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+          {{- with include "hodor.keyProviderVolumeMounts" . }}
+          volumeMounts:
+            {{- . | trim | nindent 12 }}
+          {{- end }}
           {{- include "hodor.probes" . | nindent 10 }}
           resources:
             {{- toYaml .Values.worker.resources | nindent 12 }}
+      {{- with include "hodor.keyProviderVolumes" . }}
+      volumes:
+        {{- . | trim | nindent 8 }}
+      {{- end }}
       {{- include "hodor.spread" (list . "worker") | nindent 6 }}
       {{- with .Values.worker.nodeSelector }}
       nodeSelector:

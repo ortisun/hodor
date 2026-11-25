@@ -13,6 +13,7 @@ async-trait.workspace = true
 clap.workspace = true
 hodor-adapters-crypto.workspace = true
 hodor-adapters-http.workspace = true
+hodor-adapters-kms.workspace = true
 hodor-adapters-postgres.workspace = true
 hodor-audit.workspace = true
 hodor-authentication.workspace = true

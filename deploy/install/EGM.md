@@ -16,7 +16,7 @@ The two packages Hodor is installed from, kept apart from the development stack 
 
 - `Chart.yaml`: `version` and `appVersion` equal the version of the workspace in `Cargo.toml`; `.github/workflows/ci.yml` (job `installation`) fails when they differ.
 - `values.yaml`: every setting, documented in place. Required, with no default: `image.repository`, `publicUrl`, `secret.name`.
-- `templates/`: `migration-job.yaml` (a `pre-install,pre-upgrade` hook: init container `migrate`, then container `system-tenant`), `server-deployment.yaml`, `worker-deployment.yaml`, `service.yaml`, `serviceaccount.yaml`, `disruption-budgets.yaml`, and, each behind a switch, `ingress.yaml`, `server-autoscaler.yaml` and `networkpolicy.yaml`. `_helpers.tpl` holds the names, the labels, the security contexts, the health checks and the checks of the required values.
+- `templates/`: `migration-job.yaml` (a `pre-install,pre-upgrade` hook: init container `migrate`, then container `system-tenant`), `server-deployment.yaml`, `worker-deployment.yaml`, `service.yaml`, `serviceaccount.yaml`, `disruption-budgets.yaml`, and, each behind a switch, `ingress.yaml`, `server-autoscaler.yaml` and `networkpolicy.yaml`. `_helpers.tpl` holds the names, the labels, the security contexts, the health checks, the checks of the required values, and the key providers' environment, mounts and volumes (`keyProvider`: a projected service account token for OpenBao's audience, the ConfigMap of OpenBao's authority, the AppRole's identifiers from the Secret).
 - The Secret named by `secret.name` holds `owner-database-url`, `server-database-url`, `worker-database-url`, `worker-platform-database-url`, `secret-keys` and, with `mail.enabled`, `smtp-url`. `secret.keys` renames them.
 
 ### `helm/evaluation.yaml`

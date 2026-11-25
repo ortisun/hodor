@@ -16,7 +16,7 @@ schema owner (`Command::Migrate` in `src/main.rs`).
 ## Dependencies
 
 From `Cargo.toml`: `clap`, `serde_json`, `tokio`, `time`, and the workspace crates
-`hodor-adapters-crypto`, `hodor-adapters-postgres`, `hodor-audit`,
+`hodor-adapters-crypto`, `hodor-adapters-http`, `hodor-adapters-kms`, `hodor-adapters-postgres`, `hodor-audit`,
 `hodor-authorization`, `hodor-credential`, `hodor-federation`,
 `hodor-identity`, `hodor-kernel` and `hodor-tenant`. The tests use
 `hodor-adapters-postgres` and `hodor-authorization-opa` with the `testing`

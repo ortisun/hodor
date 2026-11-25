@@ -14,6 +14,7 @@ license = "MIT"
 hodor-adapters-crypto = { path = "crates/adapters-crypto" }
 hodor-adapters-postgres = { path = "crates/adapters-postgres" }
 hodor-adapters-http = { path = "crates/adapters-http" }
+hodor-adapters-kms = { path = "crates/adapters-kms" }
 hodor-adapters-ldap = { path = "crates/adapters-ldap" }
 hodor-adapters-policy-check = { path = "crates/adapters-policy-check" }
 hodor-adapters-smtp = { path = "crates/adapters-smtp" }
