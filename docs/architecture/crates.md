@@ -15,6 +15,7 @@ The specification proposes 26 crates. This design has 24: four merges and two ad
 | — | `adapters-policy-check` (new) | Runs the `opa` binary for the policy lifecycle ([Decision 0026](../decisions/0026-policy-checks-in-a-sandbox.md)). A separate crate so that starting processes stays out of the Open Policy Agent engine, which is a context extension |
 | — | `adapters-smtp` (new) | Delivers email for the notification context. A separate crate so that the mail library and its dependencies stay out of every binary that sends no mail |
 | — | `webhooks` (new) | Endpoints, subscriptions and deliveries of webhooks. A base context of its own rather than part of `notification`, which writes messages to people ([Decision 0032](../decisions/0032-webhooks.md)) |
+| — | `tests/containers` (new) | How the integration tests start containers and reach their ports, in one place ([containers in tests](testing.md#containers-in-tests)). Test support, in no layer |
 
 ```text
 hodor/
@@ -60,7 +61,7 @@ hodor/
 ├── migrations/
 ├── deploy/{docker,kubernetes,helm}/
 ├── docs/
-└── tests/{architecture,integration,security,conformance,performance}/
+└── tests/{architecture,containers,integration,security,conformance,performance}/
 ```
 
 A crate is created only when the phase that uses it starts. Milestone 1 creates `kernel`, `tenant`, `identity`, `credential`, `session`, `authentication`, `authorization`, `audit`, `notification`, `protocol-http`, `adapters-postgres`, `adapters-crypto`, `adapters-smtp`, `observability` and the three apps.
@@ -118,6 +119,8 @@ flowchart BT
 | 3 — Context extensions | `federation`, `authorization-native`, `authorization-opa`, `plugin-runtime` | Layers 0 to 2 (edges listed) |
 | 4 — Adapters | `adapters-*`, `protocol-http`, `observability` | Layers 0 to 3; **never** another adapter |
 | 5 — Apps | `apps/*` | Everything |
+
+The crates in `tests/` support tests and are in no layer. `hodor-architecture-tests` depends on no workspace crate. `hodor-test-containers`, which starts the containers of the integration tests, depends on none either; any crate may use it in its development dependencies, and an adapter only behind its `testing` feature, as `adapters-postgres` and `adapters-ldap` do for `TestDatabase` and `TestDirectory`.
 
 Explicit prohibitions:
 

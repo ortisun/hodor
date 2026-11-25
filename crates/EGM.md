@@ -56,10 +56,11 @@ Adapters:
 - An adapter never depends on another adapter (`RULES` comment on layer 4; test `an_adapter_cannot_depend_on_another_adapter`).
 - Only `hodor-saml` may depend on an XML library (`XML`, `XML_CRATE`; test `only_the_saml_crate_reads_xml`).
 - No bounded context depends on `hodor-audit` (test `no_context_depends_on_audit`); audit records are made from outbox events by `AuditHandler`, which `apps/hodor-worker` runs. Webhook deliveries are made the same way, by `WebhookFanOut`.
+- `hodor-test-containers` (`tests/containers`) is in `RULES` with no workspace dependency. `hodor-adapters-postgres` and `hodor-adapters-ldap` may depend on it, and do only through their `testing` feature.
 - `RULES` also lists crates that do not exist yet (for example `hodor-adapters-redis`); they are not part of this directory today.
 
 ## Verification
 
 - Run: `cargo test --workspace --locked` (what `.github/workflows/ci.yml` job `test` runs), or `cargo test -p <crate package name>` for one crate.
 - Run: `cargo test -p hodor-architecture-tests` for the dependency rules.
-- Some integration tests start containers through testcontainers and need Docker: those of `hodor-adapters-postgres` (`TestDatabase`), `hodor-adapters-ldap` (`TestDirectory`), `hodor-adapters-kms` (OpenBao), `hodor-adapters-smtp`, `hodor-observability`, and the directory tests of `hodor-protocol-http` (`tests/federated_sign_in.rs`). The binaries in `apps/` have such tests too.
+- Some integration tests start containers, through `hodor-test-containers` (`tests/containers/EGM.md`), and need Docker: those of `hodor-adapters-postgres` (`TestDatabase`), `hodor-adapters-ldap` (`TestDirectory`), `hodor-adapters-kms` (OpenBao), `hodor-adapters-smtp`, `hodor-observability`, and the directory tests of `hodor-protocol-http` (`tests/federated_sign_in.rs`). The binaries in `apps/` have such tests too.

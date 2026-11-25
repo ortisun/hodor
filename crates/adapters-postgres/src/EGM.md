@@ -118,13 +118,19 @@ Compiled only with the `testing` feature (`lib.rs`:
 `#[cfg(feature = "testing")] pub mod testing`).
 
 - `TestDatabase::start()` starts a disposable PostgreSQL container
-  (`testcontainers_modules::postgres::Postgres`, image tag `17-alpine`),
-  applies the migrations as the owner, creates the login roles
-  `hodor_app_login` (in role `hodor_app`) and `hodor_platform_login` (in role
-  `hodor_platform`), and connects. Accessors: `owner`, `app`, `platform`,
-  `app_url`, `platform_url`. It panics, suggesting Docker is not running,
-  after `START_ATTEMPTS` (4) failed starts; at most two starts run at once
-  (`STARTS` semaphore). The container is removed when the value is dropped.
+  (`testcontainers_modules::postgres::Postgres`, image tag `17-alpine`)
+  through `hodor_test_containers::start_checked`, which publishes port 5432
+  on `127.0.0.1` alone; every address it gives connects to `127.0.0.1`. It
+  waits up to thirty seconds for the first connection as the owner
+  (`first_connection`), applies the migrations as the owner, creates the
+  login roles `hodor_app_login` (in role `hodor_app`) and
+  `hodor_platform_login` (in role `hodor_platform`), and connects.
+  Accessors: `owner`, `app`, `platform`, `app_url`, `platform_url`. A
+  container that does not start, stops before its port is given, or never
+  accepts the first connection is replaced, three containers at most, after
+  which it panics with the reason each one failed; at most two starts run at
+  once (`STARTS` semaphore). The container is removed when the value is
+  dropped.
 - `schema_violations(owner)` reads the catalog and returns one message per
   table that breaks the tenant isolation rules (see Invariants). Only
   `public._sqlx_migrations`, `platform.tenant_directory` and
@@ -272,7 +278,7 @@ Compiled only with the `testing` feature (`lib.rs`:
   re-insert the user's password history rows or identifier rows.
 - `migrate` changes the schema.
 - `testing.rs` (feature `testing` only) starts a Docker container through
-  `testcontainers` and creates two login roles in it.
+  `hodor-test-containers` and creates two login roles in it.
 
 ## Verification
 

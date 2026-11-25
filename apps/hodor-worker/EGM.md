@@ -25,7 +25,8 @@ and the workspace crates `hodor-adapters-crypto`, `hodor-adapters-http`, `hodor-
 `hodor-observability`, `hodor-protocol-http`, `hodor-tenant` and
 `hodor-webhooks`. The tests use `hodor-adapters-postgres`, `hodor-kernel`, `hodor-keys`,
 `hodor-notification` and `hodor-webhooks` with the `testing` feature,
-`testcontainers`, and, in `tests/webhooks.rs`, `standardwebhooks` and `http`
+`testcontainers` and `hodor-test-containers`, which starts the mail server
+of `tests/worker.rs`, and, in `tests/webhooks.rs`, `standardwebhooks` and `http`
 to check the signature with an implementation that is not Hodor's; in
 `tests/backchannel_logout.rs`, `hodor-session`, `axum` and `tower`, to read
 the tenant's key set from its real route, and `jsonwebtoken`, to check the

@@ -40,7 +40,8 @@ From `[dependencies]` in `Cargo.toml`:
 Development only (`[dev-dependencies]`): `hodor-adapters-crypto` and
 `hodor-adapters-ldap` (both with `testing`), the `testing` feature of the
 domain crates, `hodor-notification`, `hodor-tenant`, `hodor-webhooks` and `hodor-saml`, plus
-`miniz_oxide`, `base64`, `tower` and `tokio` with
+`hodor-test-containers` (starts the Open Policy Agent instance of
+`tests/policy_agent.rs`), `miniz_oxide`, `base64`, `tower` and `tokio` with
 `io-util` and `test-util`.
 
 ## Invariants
@@ -66,6 +67,6 @@ domain crates, `hodor-notification`, `hodor-tenant`, `hodor-webhooks` and `hodor
 - Of the six files in `tests/`, only `tests/federated_sign_in.rs` starts a
   container: its LDAP directory tests
   call `hodor_adapters_ldap::testing::TestDirectory::start()`, which starts
-  OpenLDAP in a container through `testcontainers`
+  OpenLDAP in a container through `hodor-test-containers`
   (`crates/adapters-ldap/src/testing.rs`), so a running Docker daemon is
   needed for the full suite. None of the tests is marked `#[ignore]`.

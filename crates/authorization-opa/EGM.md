@@ -16,7 +16,7 @@ Specified in `docs/architecture/contexts/authorization.md`, "Open Policy Agent a
 - Workspace dependencies: `hodor-kernel` and `hodor-authorization`, as the architecture test allows for this crate (`tests/architecture/src/lib.rs`, layer 3), plus `async-trait`, `base64`, `miniz_oxide` (deflate for the gzip archives and reports), `serde`, `serde_json` and `time`. No HTTP library: requests go through the kernel's `HttpClient` port. No tar or gzip library: `archive.rs` writes both by hand.
 - Feature `testing`: the module `testing` with in-memory stores, the contracts `run_bundle_contract` and `run_lifecycle_contract`, `FakeSigner`, `FakeChecker` (stands in for `opa`), `pack` and `unpack`.
 - Used by `apps/hodor-server` (the engine with a `ServiceHttpClient`, and `BundleService` behind `policy_agent_routes`), `apps/hodor-cli` (`policy-agent` and `policy` commands), `apps/hodor-worker` (`PolicyService` in the policy check job), `hodor-adapters-policy-check` (`OpaProcessChecker` implements `PolicyChecker`), `hodor-adapters-postgres` (the stores), `hodor-adapters-crypto` (`BundleSigningKey` implements `BundleSigner`) and `hodor-protocol-http` (the routes).
-- Dev dependencies: `hodor-adapters-crypto` (`Sha256Digest`), `hodor-adapters-http` (`ServiceHttpClient`), `hodor-authorization`, `hodor-kernel` and this crate with `testing`, `serde_json`, `testcontainers`, `time`, `tokio`.
+- Dev dependencies: `hodor-adapters-crypto` (`Sha256Digest`), `hodor-adapters-http` (`ServiceHttpClient`), `hodor-authorization`, `hodor-kernel` and this crate with `testing`, `hodor-test-containers` (starts the instances of `tests/open_policy_agent.rs`), `serde_json`, `testcontainers`, `time`, `tokio`.
 
 ## Invariants
 

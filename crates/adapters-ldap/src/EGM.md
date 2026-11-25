@@ -8,7 +8,7 @@ The directory adapter. It asks LDAP directories whether a person and a password 
 
 - `impl DirectoryClient for LdapDirectoryClient` (`lib.rs:128`, under `#[async_trait::async_trait]`) implements `hodor_federation::api::DirectoryClient`, a port of the federation context in `crates/federation`. Its one method is `verify(&self, query: &DirectoryQuery, password: &Secret<String>) -> Result<DirectoryAnswer, DomainError>`. `DirectoryQuery`, `DirectoryAnswer`, `DirectoryEntry` and `directory_host` come from `hodor_federation::api` (`lib.rs` imports).
 - `LdapDirectoryClient::new(allowed_hosts: &[String]) -> Self` (`#[must_use]`) takes the directories that may be contacted, written as `host:port`. It sets a fixed timeout of 10 seconds (`lib.rs:LdapDirectoryClient::new`).
-- `testing` (public test-support module): compiled only under `#[cfg(feature = "testing")]` (`lib.rs:21`). The Cargo feature `testing` pulls in the optional `testcontainers` and `tokio`. It provides (`testing.rs`):
+- `testing` (public test-support module): compiled only under `#[cfg(feature = "testing")]` (`lib.rs:21`). The Cargo feature `testing` pulls in the optional `hodor-test-containers`, `testcontainers` and `tokio`. It provides (`testing.rs`):
   - the constants `BASE`, `BIND_NAME` and `BIND_PASSWORD`;
   - `Person { uid, name, email, password }`;
   - `TestDirectory { address, host }` with `start()`, `add(&Person)` and `change_email(uid, email)`. It runs an OpenLDAP container.
@@ -31,7 +31,7 @@ The directory adapter. It asks LDAP directories whether a person and a password 
 - Network connections to the directory at `query.address` through `ldap3::LdapConnAsync`, made only for an allowed host and a non-empty password (`lib.rs:ask`).
 - Two simple binds (Hodor's account, then the person's), one subtree search and one unbind on each verification (`lib.rs:ask`).
 - Test support only:
-  - starts a Docker container from `osixia/openldap:1.5.0` with `LDAP_TLS=false` (`testing.rs:TestDirectory::start`);
+  - starts a Docker container from `osixia/openldap:1.5.0` with `LDAP_TLS=false` through `hodor_test_containers::start`, its port 389 published on `127.0.0.1` alone, where `address` and `host` point (`testing.rs:TestDirectory::start`);
   - writes entries as the directory administrator (`testing.rs:TestDirectory::add`, `testing.rs:TestDirectory::change_email`);
   - the container is removed when the `TestDirectory` value is dropped (`testing.rs:TestDirectory`).
 
