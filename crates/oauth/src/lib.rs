@@ -34,10 +34,12 @@ pub mod api {
     };
     pub use crate::application::introspection::{AccessTokenRegister, WorkloadTokens};
     pub use crate::application::logout::{LogoutPorts, LogoutRefusal, LogoutService};
+    pub use crate::application::pairwise::{PairwisePorts, PairwiseSubjects};
     pub use crate::application::ports::{
         AccessTokenRecordStore, ApplicationStore, AuthorizationCodeStore,
         AuthorizationRequestStore, ClientAssertionStore, ClientStore, ConsentStore, GrantStore,
-        PersonMemberships, PersonStanding, RefreshTokenStore, ResourceServerStore,
+        PairwiseSecretStore, PersonMemberships, PersonStanding, RefreshTokenStore,
+        ResourceServerStore,
     };
     pub use crate::application::resource_access::{
         ResourceAccessPorts, ResourceAccessService, ResourceCaller,
@@ -83,15 +85,20 @@ pub mod api {
     };
     pub use crate::domain::key::{ClientKey, MAX_KEYS};
     pub use crate::domain::logout::{
-        CurrentSession, IdTokenHint, LogoutDecision, LogoutParameters, LogoutRequest,
+        CurrentSession, IdTokenHint, KnownSession, LogoutDecision, LogoutParameters, LogoutRequest,
         MAX_LOGOUT_LOCALES_LENGTH, MAX_LOGOUT_STATE_LENGTH, ReturnAddress, check_id_token_hint,
         refusal as logout_refusal,
     };
     pub use crate::domain::openid::{
-        BearerRefusal, CheckedAccessToken, OPENID_SCOPE, PersonClaims, PublishedKey,
+        BearerRefusal, CheckedAccessToken, IdTokenNames, OPENID_SCOPE, PersonClaims, PublishedKey,
         ReadAccessToken, UI_LOCALES, access_token_hash, asks_for_openid, authentication_methods,
         check_access_token, discovery_document, id_token_claims, is_multi_factor,
         read_access_token, userinfo_claims,
+    };
+    pub use crate::domain::pairwise::{
+        HmacSha256, MAX_SECTOR_DOCUMENT_BYTES, MAX_SECTOR_IDENTIFIER_URI_LENGTH,
+        PAIRWISE_SECRET_BYTES, PAIRWISE_SECRET_PURPOSE, PairwiseSecret, SECTOR_DOCUMENT_TIME_LIMIT,
+        SubjectType, check_sector_document, check_sector_identifier_uri, host_of, sector_of,
     };
     pub use crate::domain::refresh::{
         DEFAULT_RETRY_WINDOW, FAMILY_SECRET_PURPOSE, FamilySecret, FamilyStatus,

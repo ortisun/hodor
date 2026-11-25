@@ -9,12 +9,10 @@ use crate::domain::client::{Client, GrantType};
 use crate::domain::event::OauthEvent;
 use crate::domain::exchange::{MAX_ACTORS, act_claim, actors, chain_length, exchanged_scopes};
 use crate::domain::introspection::AccessTokenRecord;
-use crate::domain::openid::{ReadAccessToken, read_access_token};
+use crate::domain::openid::read_access_token;
 use crate::domain::resource_server::{Audience, OPENID_SCOPES};
 use crate::domain::token::{ACCESS_TOKEN_TYPE, TokenError, TokenSubject};
-use hodor_kernel::{
-    Actor, Caller, CorrelationId, DomainError, Secret, TenantContext, Timestamp, UserId,
-};
+use hodor_kernel::{Actor, Caller, CorrelationId, DomainError, Secret, TenantContext, Timestamp};
 
 /// What a token exchange asks for, read from the request.
 #[derive(Debug, Clone, Copy)]
@@ -109,22 +107,31 @@ impl TokenService {
             )));
         }
 
-        // The subject: a person's token, in force.
+        // The subject: a person's token, in force. The person is the one
+        // of its grant, never read from its `sub`, which a pairwise
+        // client's token gives as a pairwise identifier.
         let Ok(subject) = read(asked.subject_token) else {
             return Ok(Err(token_refused(
                 "the subject token is not a token of this tenant",
             )));
         };
-        let Some(person) = self.person_of(tenant, &subject).await? else {
+        if subject.principal_kind.is_some() || subject.subject == subject.client_id {
             return Ok(Err(token_refused(
-                "the subject token is not about a person who may sign in",
+                "the subject token is not about a person",
+            )));
+        }
+        let Some(person) = register
+            .person_in_force(tenant, &subject.token_id, &subject.client_id)
+            .await?
+        else {
+            return Ok(Err(token_refused(
+                "the subject token is not in force, or is about no person",
             )));
         };
-        if !register
-            .in_force(tenant, &subject.token_id, &subject.client_id)
-            .await?
-        {
-            return Ok(Err(token_refused("the subject token is not in force")));
+        if !self.ports.standing.may_sign_in(tenant, person).await? {
+            return Ok(Err(token_refused(
+                "the subject token's person may not sign in",
+            )));
         }
         let Some(record) = register.record(tenant, &subject.token_id).await? else {
             return Ok(Err(token_refused("the subject token has no record")));
@@ -198,10 +205,12 @@ impl TokenService {
         };
 
         // The new token is the person's, held by the agent, and never
-        // outlives the subject token.
+        // outlives the subject token. It names the person as the subject
+        // token does, so that neither the agent nor the audience learns
+        // more about them than the client the person gave the token to.
         let act = act_claim(agent, subject.act.as_ref());
         let token_subject = TokenSubject {
-            subject: person.to_string(),
+            subject: subject.subject.clone(),
             scopes,
             audiences: vec![asked.audience.to_owned()],
             signed_in_at: subject
@@ -266,26 +275,5 @@ impl TokenService {
             id_token: None,
             issued_token_type: Some(ACCESS_TOKEN_TYPE),
         }))
-    }
-
-    /// The person a subject token is about, if it is about a person who may
-    /// still sign in: not a workload, not a client acting for itself.
-    async fn person_of(
-        &self,
-        tenant: &TenantContext,
-        subject: &ReadAccessToken,
-    ) -> Result<Option<UserId>, DomainError> {
-        if subject.principal_kind.is_some() || subject.subject == subject.client_id {
-            return Ok(None);
-        }
-        let Ok(person) = subject.subject.parse::<UserId>() else {
-            return Ok(None);
-        };
-        Ok(self
-            .ports
-            .standing
-            .may_sign_in(tenant, person)
-            .await?
-            .then_some(person))
     }
 }

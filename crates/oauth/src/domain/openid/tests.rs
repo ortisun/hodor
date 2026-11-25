@@ -2,6 +2,7 @@ use super::*;
 use crate::domain::authorization::{CodeHash, GrantId};
 use crate::domain::token::SUPPORTED_GRANT_TYPES;
 use crate::testing::{FakeVerifier, fake_signature};
+use hodor_kernel::UserId;
 use hodor_kernel::random::testing::FakeDigest;
 use hodor_session::api::SessionId;
 
@@ -115,6 +116,10 @@ fn the_id_token_says_who_signed_in_for_which_client() {
     let claims = id_token_claims(
         ISSUER,
         &code,
+        IdTokenNames {
+            subject: "the person as the client knows them",
+            session: "the session as the client knows it",
+        },
         None,
         client,
         Duration::minutes(5),
@@ -123,7 +128,7 @@ fn the_id_token_says_who_signed_in_for_which_client() {
         &FakeDigest,
     );
     assert_eq!(claims["iss"], ISSUER);
-    assert_eq!(claims["sub"], code.user_id.to_string());
+    assert_eq!(claims["sub"], "the person as the client knows them");
     assert_eq!(claims["aud"], client.to_string(), "the client alone");
     assert_eq!(claims["iat"], now().unix_timestamp());
     assert_eq!(
@@ -144,8 +149,7 @@ fn the_id_token_says_who_signed_in_for_which_client() {
         "16 bytes of base64url"
     );
     assert_eq!(
-        claims["sid"],
-        code.session_id.to_string(),
+        claims["sid"], "the session as the client knows it",
         "the session, for logout"
     );
     for absent in ["azp", "email", "name", "scope", "client_id"] {
@@ -158,6 +162,10 @@ fn an_id_token_leaves_out_what_the_sign_in_did_not_have() {
     let claims = id_token_claims(
         ISSUER,
         &code(None, &["external"]),
+        IdTokenNames {
+            subject: "the person as the client knows them",
+            session: "the session as the client knows it",
+        },
         None,
         ClientId::generate(),
         Duration::minutes(5),
@@ -242,7 +250,7 @@ fn check(token: &str) -> Result<CheckedAccessToken, BearerRefusal> {
 fn a_good_access_token_is_accepted_with_its_scopes() {
     let user = UserId::generate();
     let checked = check(&sign(&good_header(), &good_claims(user))).expect("accepted");
-    assert_eq!(checked.user_id, user);
+    assert_eq!(checked.subject, user.to_string());
     assert_eq!(checked.scopes, ["openid", "profile"]);
     assert_eq!(checked.token_id, "token-1");
     assert_eq!(checked.client_id, "a-client");
@@ -304,7 +312,8 @@ fn every_bad_access_token_is_refused_for_its_own_reason() {
             invalid("the token does not say when it expires"),
         ),
         (
-            changed_claim("sub", json!("not-a-user")),
+            // The client acting for itself: client credentials.
+            changed_claim("sub", json!("a-client")),
             invalid("the token names no person"),
         ),
         (
@@ -350,19 +359,19 @@ fn userinfo_answers_only_the_claims_of_the_token_s_scopes() {
     let scopes =
         |list: &[&str]| -> Vec<String> { list.iter().map(|scope| (*scope).to_owned()).collect() };
     assert_eq!(
-        userinfo_claims(user, &scopes(&["openid"]), &person),
+        userinfo_claims(&user.to_string(), &scopes(&["openid"]), &person),
         json!({"sub": user.to_string()})
     );
     assert_eq!(
-        userinfo_claims(user, &scopes(&["openid", "groups"]), &person),
+        userinfo_claims(&user.to_string(), &scopes(&["openid", "groups"]), &person),
         json!({"sub": user.to_string(), "groups": [person.groups[0].to_string()]})
     );
     assert_eq!(
-        userinfo_claims(user, &scopes(&["openid", "email"]), &person),
+        userinfo_claims(&user.to_string(), &scopes(&["openid", "email"]), &person),
         json!({"sub": user.to_string(), "email": "ana@example.com", "email_verified": true})
     );
     assert_eq!(
-        userinfo_claims(user, &scopes(&["openid", "profile"]), &person),
+        userinfo_claims(&user.to_string(), &scopes(&["openid", "profile"]), &person),
         json!({
             "sub": user.to_string(),
             "name": "Ana Lima",
@@ -373,7 +382,7 @@ fn userinfo_answers_only_the_claims_of_the_token_s_scopes() {
     );
     assert_eq!(
         userinfo_claims(
-            user,
+            &user.to_string(),
             &scopes(&["openid", "profile", "email"]),
             &PersonClaims::default()
         ),
@@ -415,7 +424,10 @@ fn discovery_names_only_what_is_built() {
         json!(SUPPORTED_GRANT_TYPES)
     );
     assert_eq!(document["response_types_supported"], json!(["code"]));
-    assert_eq!(document["subject_types_supported"], json!(["public"]));
+    assert_eq!(
+        document["subject_types_supported"],
+        json!(["public", "pairwise"])
+    );
     assert_eq!(
         document["code_challenge_methods_supported"],
         json!(["S256"])
@@ -461,6 +473,10 @@ fn the_id_token_names_the_organization_of_the_sign_in() {
     let claims = id_token_claims(
         ISSUER,
         &code(None, &["password"]),
+        IdTokenNames {
+            subject: "the person as the client knows them",
+            session: "the session as the client knows it",
+        },
         Some(organization),
         ClientId::generate(),
         Duration::minutes(5),
@@ -486,7 +502,7 @@ fn userinfo_answers_every_group_however_many() {
         groups: (0..150).map(|_| GroupId::generate()).collect(),
     };
     let claims = userinfo_claims(
-        UserId::generate(),
+        "the person as the client knows them",
         &["openid".to_owned(), "groups".to_owned()],
         &person,
     );

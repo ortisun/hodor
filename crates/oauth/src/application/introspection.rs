@@ -4,6 +4,7 @@
 //! Specified in `docs/architecture/contexts/oauth.md`, "Revocation,
 //! introspection and metadata".
 
+use crate::application::pairwise::subject_for;
 use crate::application::ports::{
     AccessTokenRecordStore, GrantStore, PersonStanding, RefreshTokenStore,
 };
@@ -138,6 +139,39 @@ impl AccessTokenRegister {
             return Ok(None);
         }
         Ok(Some(record))
+    }
+
+    /// The person the access token `token_id` was issued for, if it is in
+    /// force for `client_id` and its record names a grant: the grant's
+    /// person. A token is about a person through its record, never through
+    /// its `sub`, which for a pairwise client is no user identifier. None
+    /// for a token not in force, and for one without a grant, such as a
+    /// token of client credentials.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    pub async fn person_in_force(
+        &self,
+        tenant: &TenantContext,
+        token_id: &str,
+        client_id: &str,
+    ) -> Result<Option<UserId>, DomainError> {
+        if !self.in_force(tenant, token_id, client_id).await? {
+            return Ok(None);
+        }
+        let mut uow = self.units_of_work.begin(tenant).await?;
+        let Some(record) = self.access_tokens.find(uow.as_mut(), token_id).await? else {
+            return Ok(None);
+        };
+        let Some(grant) = record.grant_id else {
+            return Ok(None);
+        };
+        Ok(self
+            .grants
+            .get(uow.as_mut(), grant)
+            .await?
+            .map(|grant| grant.user_id))
     }
 
     /// The record of `token_id`, whatever its state, for an exchange that
@@ -441,7 +475,8 @@ impl TokenService {
             &ActiveRefreshToken {
                 scopes: &family.scopes,
                 client_id: family.client_id,
-                subject: family.user_id.to_string(),
+                subject: subject_for(self.pairwise.as_ref(), tenant, client, family.user_id)
+                    .await?,
                 expires_at: family.expires_at.min(idle_ends),
                 issued_at: record.issued_at,
             },

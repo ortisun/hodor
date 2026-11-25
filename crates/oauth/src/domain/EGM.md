@@ -105,10 +105,11 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   Its cases are in `refresh/tests.rs`.
 - `logout.rs`: logout initiated by the relying party. `LogoutParameters`,
   `check_id_token_hint` (an ID token of the tenant, signature checked,
-  expiry not), `IdTokenHint`, `check_shape` and `check_request`
-  (crate-visible; the codes are in `refusal`), `LogoutRequest::decide`
-  (`Finish`, `EndSession` only for a `GET` whose hint names the browser's
-  session, `Ask` otherwise and always for a form), `ReturnAddress`,
+  expiry not; `sub` and `sid` read as text), `IdTokenHint`, `check_shape`
+  and `check_request` (crate-visible; the codes are in `refusal`),
+  `LogoutRequest::decide` over a `KnownSession` (`Finish`, `EndSession`
+  only for a `GET` whose hint's `sub` and `sid` are the browser's session
+  as the hint's client knows it, `Ask` otherwise and always for a form), `ReturnAddress`,
   `still_returns` (crate-visible). Its cases are in `logout/tests.rs`.
 - `client.rs` also keeps `post_logout_redirect_uris`: the rules of redirect
   addresses, at most 10, only with `authorization_code`
@@ -118,13 +119,32 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   `check_backchannel_logout_uri`, and
   `backchannel_logout_session_required`, `true` only with an address
   (`oauth.client_backchannel_logout_uri_invalid`);
-  `Client::backchannel_logout_uri`.
+  `Client::backchannel_logout_uri`. And `subject_type`, `pairwise` only
+  with `authorization_code` (`oauth.client_subject_type_invalid`), with a
+  sector from `sector_of` or `oauth.client_sector_identifier_uri_required`,
+  and `sector_identifier_uri`, only for a pairwise client, its form checked
+  by `check_sector_identifier_uri`; `Client::subject_type` and
+  `Client::sector`.
+- `pairwise.rs`: pairwise subject identifiers. `SubjectType` (`public`,
+  `pairwise`), `host_of` (lowercase, without the port; none for a
+  private-use scheme), `sector_of(sector_identifier_uri, redirect_uris)`,
+  `check_sector_identifier_uri`, `check_sector_document` (a JSON array of
+  strings holding every redirect address,
+  `oauth.client_sector_identifier_uri_document_invalid` and `_mismatch`),
+  the port `HmacSha256`, and `PairwiseSecret` (`generate`, `from_opened`,
+  32 bytes or `secret.unreadable`; `subject` and `session`, the base64url
+  of the HMAC-SHA-256 of `hodor.pairwise.sub` or `hodor.pairwise.sid`, the
+  tenant, the sector in lowercase and the identifier, each part separated
+  by a zero byte). Its cases are in `pairwise/tests.rs`; the value of one
+  identifier is pinned in the crypto adapter.
+- `openid.rs` also has `IdTokenNames`, the `sub` and `sid` an ID token
+  gives, and `CheckedAccessToken::subject`, the token's `sub` as text.
 - `backchannel.rs`: back-channel logout. `check_backchannel_logout_uri`
   (`https://` or `http://`, a host, a valid port, no name and password, no
   fragment, printable ASCII, at most 2000 characters; whether it may be
   called is the guarded client's to say), `logout_token_header` (`typ`
   `logout+jwt`), `logout_token_claims(LogoutTokenSubject, now, jti)` (`iss`,
-  `sub`, `aud`, `iat`, `exp` two minutes later, `jti`, `events`, `sid`;
+  `sub` and `sid` as the subject gives them, `aud`, `iat`, `exp` two minutes later, `jti`, `events`, `sid`;
   never `nonce`), `LogoutDelivery` (`make`, `is_due`, `is_leased`, `lease`,
   `is_as_leased`, `record_success`, `record_failure`, `set_aside`, the last
   two returning `OauthEvent::BackchannelLogoutSetAside`),

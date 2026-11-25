@@ -7,6 +7,10 @@ use crate::domain::consent::{
 };
 use crate::domain::event::OauthEvent;
 use crate::domain::key::{ClientKey, MAX_KEYS};
+use crate::domain::pairwise::{
+    SubjectType, check_sector_identifier_uri, sector_of, sector_required, sector_uri_invalid,
+    subject_type_invalid,
+};
 use crate::domain::secret::{ClientSecret, ClientSecretHash, ClientSecretId, ClientSecretValue};
 use crate::domain::text;
 use hodor_kernel::{Digest, DomainError, RandomSource, Timestamp, UserId};
@@ -340,6 +344,12 @@ pub struct ClientSettings {
     /// Whether it needs `sid` in its logout tokens. Every logout token
     /// carries it; this records what the client relies on.
     pub backchannel_logout_session_required: bool,
+    /// How it knows a person: by the user identifier, or by an identifier
+    /// of its sector alone.
+    pub subject_type: SubjectType,
+    /// For a pairwise client, the address whose host is its sector and
+    /// which lists its redirect addresses, if it has one.
+    pub sector_identifier_uri: Option<String>,
     /// How long its tokens live.
     pub token_policy: TokenPolicy,
     /// The service account or agent it acts as, if any: its tokens are
@@ -495,6 +505,8 @@ impl ClientSettings {
             id_token_algorithm: IdTokenAlgorithm::default(),
             backchannel_logout_uri: None,
             backchannel_logout_session_required: false,
+            subject_type: SubjectType::Public,
+            sector_identifier_uri: None,
             token_policy: TokenPolicy::default(),
             principal: None,
             exchange_rules: Vec::new(),
@@ -633,6 +645,28 @@ impl ClientSettings {
                 "back-channel logout session required needs a back-channel logout address",
             ));
         }
+        match self.subject_type {
+            SubjectType::Pairwise => {
+                if !has_code {
+                    return Err(subject_type_invalid(
+                        "only a client with `authorization_code` may be pairwise",
+                    ));
+                }
+                if let Some(uri) = &self.sector_identifier_uri {
+                    check_sector_identifier_uri(uri)?;
+                }
+                if sector_of(self.sector_identifier_uri.as_deref(), &redirect_uris).is_none() {
+                    return Err(sector_required());
+                }
+            }
+            SubjectType::Public => {
+                if self.sector_identifier_uri.is_some() {
+                    return Err(sector_uri_invalid(
+                        "only a pairwise client has a sector identifier address",
+                    ));
+                }
+            }
+        }
         let allowed_scopes = without_repeats(self.allowed_scopes);
         if allowed_scopes.len() > MAX_SCOPES || !allowed_scopes.iter().all(|s| text::is_scope(s)) {
             return Err(DomainError::invalid(
@@ -652,6 +686,8 @@ impl ClientSettings {
             id_token_algorithm: self.id_token_algorithm,
             backchannel_logout_uri: self.backchannel_logout_uri,
             backchannel_logout_session_required: self.backchannel_logout_session_required,
+            subject_type: self.subject_type,
+            sector_identifier_uri: self.sector_identifier_uri,
             token_policy: self.token_policy.checked()?,
             principal: self.principal,
             exchange_rules,
@@ -808,6 +844,26 @@ impl Client {
     #[must_use]
     pub fn backchannel_logout_uri(&self) -> Option<&str> {
         self.state.settings.backchannel_logout_uri.as_deref()
+    }
+
+    /// How the client knows a person.
+    #[must_use]
+    pub const fn subject_type(&self) -> SubjectType {
+        self.state.settings.subject_type
+    }
+
+    /// The client's sector, for a pairwise client: the host its pairwise
+    /// identifiers are made for. None for a public client.
+    #[must_use]
+    pub fn sector(&self) -> Option<String> {
+        let settings = &self.state.settings;
+        match settings.subject_type {
+            SubjectType::Public => None,
+            SubjectType::Pairwise => sector_of(
+                settings.sector_identifier_uri.as_deref(),
+                &settings.redirect_uris,
+            ),
+        }
     }
 
     /// Whether `presented` is one of its secrets that works at `now`. A
@@ -1081,6 +1137,85 @@ mod tests {
             vec![GrantType::AuthorizationCode, GrantType::RefreshToken],
             vec!["https://payroll.example.com/callback".to_owned()],
         )
+    }
+
+    #[test]
+    fn a_pairwise_client_signs_people_in_and_has_a_sector() {
+        let pairwise = |settings: ClientSettings| ClientSettings {
+            subject_type: SubjectType::Pairwise,
+            ..settings
+        };
+        // Its sector is the one host of its redirect addresses.
+        let checked = pairwise(web())
+            .checked(ClientType::Confidential)
+            .expect("one host");
+        let (client, _) = create(ClientType::Confidential, checked).expect("client");
+        assert_eq!(client.subject_type(), SubjectType::Pairwise);
+        assert_eq!(client.sector().as_deref(), Some("payroll.example.com"));
+        // A public client has no sector.
+        let (public, _) = create(ClientType::Confidential, web()).expect("public");
+        assert_eq!(public.sector(), None);
+
+        // Two hosts need a sector identifier address, whose host is then
+        // the sector.
+        let mut two_hosts = pairwise(web());
+        two_hosts
+            .redirect_uris
+            .push("https://payroll.example.net/callback".to_owned());
+        let error = two_hosts
+            .clone()
+            .checked(ClientType::Confidential)
+            .expect_err("two hosts");
+        assert_eq!(error.code(), "oauth.client_sector_identifier_uri_required");
+        let named = ClientSettings {
+            sector_identifier_uri: Some("https://sector.example.org/uris.json".to_owned()),
+            ..two_hosts
+        };
+        let (client, _) = create(ClientType::Confidential, named).expect("named");
+        assert_eq!(client.sector().as_deref(), Some("sector.example.org"));
+
+        // So does a private-use scheme.
+        let mobile = ClientSettings::new(
+            "Payroll mobile",
+            ClientType::Public,
+            vec![GrantType::AuthorizationCode],
+            vec!["com.example.payroll:/callback".to_owned()],
+        );
+        let error = pairwise(mobile)
+            .checked(ClientType::Public)
+            .expect_err("no host");
+        assert_eq!(error.code(), "oauth.client_sector_identifier_uri_required");
+
+        // Only a client with `authorization_code` may be pairwise.
+        let service = ClientSettings::new(
+            "Payroll service",
+            ClientType::Confidential,
+            vec![GrantType::ClientCredentials],
+            Vec::new(),
+        );
+        let error = pairwise(service)
+            .checked(ClientType::Confidential)
+            .expect_err("no code");
+        assert_eq!(error.code(), "oauth.client_subject_type_invalid");
+
+        // Only a pairwise client has a sector identifier address, and it
+        // has the form of an address Hodor calls.
+        let public_with_address = ClientSettings {
+            sector_identifier_uri: Some("https://sector.example.org/uris.json".to_owned()),
+            ..web()
+        };
+        let error = public_with_address
+            .checked(ClientType::Confidential)
+            .expect_err("public");
+        assert_eq!(error.code(), "oauth.client_sector_identifier_uri_invalid");
+        let fragment = ClientSettings {
+            sector_identifier_uri: Some("https://sector.example.org/uris.json#x".to_owned()),
+            ..pairwise(web())
+        };
+        let error = fragment
+            .checked(ClientType::Confidential)
+            .expect_err("fragment");
+        assert_eq!(error.code(), "oauth.client_sector_identifier_uri_invalid");
     }
 
     fn spa() -> ClientSettings {

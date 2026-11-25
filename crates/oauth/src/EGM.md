@@ -14,7 +14,8 @@ follows is `docs/architecture/contexts/oauth.md`.
     `ClientAssertionStore`, `RefreshTokenStore`, `AccessTokenRecordStore`,
     `PersonStanding`, `PersonMemberships`, `ConsentStore`, and those of
     back-channel logout: `SessionClients`, `LogoutDeliveryStore`,
-    `DueLogoutDeliveries`, `TenantIssuer`.
+    `DueLogoutDeliveries`, `TenantIssuer`; `PairwiseSecretStore`, and
+    `HmacSha256`, implemented by the crypto adapter.
   - Services: `ApplicationService`, `ApplicationPorts`, `CreateClient`,
     `RotateSecret`, `CreateResourceServer`; `AuthorizationCodeService`,
     `AuthorizationCodePorts`, `ResumedRequest`, `RedeemedCode`;
@@ -25,7 +26,16 @@ follows is `docs/architecture/contexts/oauth.md`.
     `ConsentPorts`, `ConsentQuestion`, `AskedScope`, `ListedConsent`;
     `BackChannelLogoutFanOut`, `BackChannelLogoutSender`,
     `LogoutSenderPorts`, `LogoutDeliverySettings`, `LogoutLease`,
-    `LogoutOutcome`.
+    `LogoutOutcome`; `PairwiseSubjects`, `PairwisePorts`, given to
+    `TokenService`, `LogoutService` and `BackChannelLogoutSender` with
+    `with_pairwise_subjects`; `ApplicationService::with_sector_documents`.
+  - Pairwise subject identifiers' domain: `SubjectType`, `PairwiseSecret`
+    (with `subject` and `session`), `host_of`, `sector_of`,
+    `check_sector_identifier_uri`, `check_sector_document`,
+    `PAIRWISE_SECRET_PURPOSE`, `PAIRWISE_SECRET_BYTES`,
+    `MAX_SECTOR_IDENTIFIER_URI_LENGTH`, `MAX_SECTOR_DOCUMENT_BYTES`,
+    `SECTOR_DOCUMENT_TIME_LIMIT`; `IdTokenNames`, how an ID token names the
+    person and the session.
   - Back-channel logout's domain: `LogoutDelivery`, `LogoutDeliveryId`,
     `LogoutDeliverySnapshot`, `LogoutDeliveryStatus`, `LogoutRetryPolicy`,
     `LogoutTokenSubject`, `logout_token_claims`, `logout_token_header`,
@@ -33,8 +43,10 @@ follows is `docs/architecture/contexts/oauth.md`.
     `LOGOUT_TOKEN_TYPE`, `LOGOUT_TOKEN_LIFETIME`, `SESSION_REVOKED`,
     `MAX_BACKCHANNEL_LOGOUT_URI_LENGTH`, `MAX_LOGOUT_ERROR_LENGTH`.
   - The end-session endpoint's domain: `LogoutParameters`,
-    `check_id_token_hint`, `IdTokenHint`, `LogoutRequest` (with `decide`),
-    `LogoutDecision`, `CurrentSession`, `ReturnAddress`, `logout_refusal`
+    `check_id_token_hint`, `IdTokenHint` (its `sub` and `sid` as text),
+    `LogoutRequest` (with `decide`), `LogoutDecision`, `CurrentSession`,
+    `KnownSession` (the session as the hint's client knows it),
+    `ReturnAddress`, `logout_refusal`
     (the codes of the page), `MAX_LOGOUT_STATE_LENGTH`,
     `MAX_LOGOUT_LOCALES_LENGTH`.
   - The token endpoint's domain: `TokenRequest` (with `parse`),
@@ -126,6 +138,12 @@ follows is `docs/architecture/contexts/oauth.md`.
     without a resolver; `RecordingClients` with `ClientAnswer`, an outbound
     client that keeps the requests (`tokens_to(url)`); and
     `LogoutDeliveryStorePorts` with `run_logout_delivery_contract(ports)`.
+  - `testing/pairwise.rs`: `FakeHmac`; `InMemoryPairwiseSecrets` (with
+    `damage(tenant)`, `len`); `SectorDocuments`, an outbound client that
+    answers set documents and counts fetches; `pairwise_subjects(units,
+    secrets)`; `PairwiseSecretStorePorts` and
+    `run_pairwise_secret_contract(ports)`, which requires one secret per
+    tenant, the first stored kept.
 - Subdirectories:
   - [application](./application/EGM.md): the ports and the use cases.
   - [domain](./domain/EGM.md): the aggregates and their rules.

@@ -1,6 +1,6 @@
 # Outbound HTTP
 
-Hodor calls addresses that administrators of tenants type in: where an identity provider publishes its configuration and its keys, where a webhook is delivered, and where a client is sent a logout token. An address chosen by someone else is a way to make the server call something it should never call: the cloud's metadata service, a database's administration port, another tenant's internal system. This is server-side request forgery, Threat-General-13 and Threat-Federation-08 in [the threat model](threat-model.md).
+Hodor calls addresses that administrators of tenants type in: where an identity provider publishes its configuration and its keys, where a webhook is delivered, where a client is sent a logout token, and where a pairwise client's sector identifier document is read. An address chosen by someone else is a way to make the server call something it should never call: the cloud's metadata service, a database's administration port, another tenant's internal system. This is server-side request forgery, Threat-General-13 and Threat-Federation-08 in [the threat model](threat-model.md).
 
 There is therefore one way out. Every outbound HTTP request of every context goes through the `HttpClient` port of the kernel, and `hodor-adapters-http` is its only implementation. A context cannot make a request any other way: [the architecture test](../architecture/crates.md#automated-checks) keeps HTTP libraries out of context crates.
 
@@ -53,7 +53,7 @@ A stack on one machine has an identity provider at a private address, over plain
 
 The guarded client also answers whether an address could be called now, without calling it: the `DestinationCheck` port of the kernel. It applies the rules above to the address as written, then resolves the name and refuses it unless every address it resolves to is public. A development host is accepted as it is, without resolving it.
 
-It is for telling an administrator at once that an address will be refused, when the address is saved. It is never a reason to skip the check when the address is called: a name can resolve to something else between the two, so the client checks again on the resolution it connects with. [Webhook endpoints](../architecture/contexts/webhooks.md#endpoints) and [back-channel logout addresses](../architecture/contexts/oauth.md#the-back-channel-logout-address) are checked both ways.
+It is for telling an administrator at once that an address will be refused, when the address is saved. It is never a reason to skip the check when the address is called: a name can resolve to something else between the two, so the client checks again on the resolution it connects with. [Webhook endpoints](../architecture/contexts/webhooks.md#endpoints) and [back-channel logout addresses](../architecture/contexts/oauth.md#the-back-channel-logout-address) are checked both ways, and so is a [sector identifier address](../architecture/contexts/oauth.md#the-sector-identifier-address), which is checked and then fetched once when it is saved.
 
 | Code | When |
 |---|---|

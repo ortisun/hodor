@@ -83,6 +83,7 @@ The tables are listed in one place in `hodor-adapters-postgres`, each with its p
 | `federation.pending_authorization` | `code_verifier` | `federation.code_verifier` |
 | `credential.totp` | `sealed_secret` | `credential.totp_secret` |
 | `oauth.refresh_token_family` | `sealed_secret` | `oauth.refresh_token_family_secret` |
+| `oauth.pairwise_secret` | `sealed_secret` | `oauth.pairwise_secret` |
 | `webhooks.signing_secret` | `sealed_secret` | `webhooks.signing_secret` |
 
 ### Moving the secrets of an earlier version

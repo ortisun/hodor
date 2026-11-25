@@ -85,7 +85,10 @@ Symbols:
   `logout_sender` (a `BackChannelLogoutSender` over `PgClientStore`,
   `PgLogoutDeliveryStore`, `PgDueLogoutDeliveries::new(platform)`,
   `TenantIssuers`, a `KeyService` over `PgKeyStore` and `LocalKeyProvider`,
-  `OsRandom` and a `GuardedHttpClient` limited in the same way), and, with
+  `OsRandom` and a `GuardedHttpClient` limited in the same way, with
+  `PairwiseSubjects` over `PgPairwiseSecretStore`, a `TenantSecretBox` and
+  `AwsLcHmacSha256`, so that a pairwise client's logout token names the
+  person and the session as it knows them), and, with
   `HODOR_OPEN_POLICY_AGENT_BINARY`, `OpaProcessChecker::verified` (the worker
   does not start with a binary it refuses) and
   `PolicyCheckJob::new(platform, policy_service(database), checker)`; then

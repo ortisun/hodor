@@ -4,7 +4,7 @@ The `oauth` context makes Hodor an OAuth 2.x authorization server and an OpenID 
 
 It does not sign anyone in. When a request needs a person, it hands the request to the `authentication` context and takes the session that comes back. The two contexts do not depend on each other: the HTTP layer joins them ([crates.md](../crates.md)).
 
-This page specifies what Issue-53 builds: applications, clients and resource servers, and the rules they keep; what Issue-55 builds: the authorization endpoint, grants and authorization codes; what Issue-56 builds: the token endpoint, client authentication and access tokens; what Issue-59 builds: the OpenID Provider; what Issue-60 builds: logout initiated by the relying party; what Issue-62 builds: [consent](#consent); what Issue-93 builds: [clients that act as a workload](#clients-that-act-as-a-workload); what Issue-95 builds: [token exchange](#token-exchange); and what Issue-100 builds: [back-channel logout](#back-channel-logout). The other endpoints and tokens are added by Issue-57 and Issue-58, under the headings at the end of this page.
+This page specifies what Issue-53 builds: applications, clients and resource servers, and the rules they keep; what Issue-55 builds: the authorization endpoint, grants and authorization codes; what Issue-56 builds: the token endpoint, client authentication and access tokens; what Issue-59 builds: the OpenID Provider; what Issue-60 builds: logout initiated by the relying party; what Issue-62 builds: [consent](#consent); what Issue-93 builds: [clients that act as a workload](#clients-that-act-as-a-workload); what Issue-95 builds: [token exchange](#token-exchange); what Issue-100 builds: [back-channel logout](#back-channel-logout); and what Issue-98 builds: [pairwise subject identifiers](#pairwise-subject-identifiers). The other endpoints and tokens are added by Issue-57 and Issue-58, under the headings at the end of this page.
 
 ## Applications
 
@@ -39,6 +39,8 @@ A client is what talks to Hodor's endpoints. Its identifier is the `client_id` o
 | Scopes | The scopes it may ask for. At most 50 |
 | PKCE | Whether it must send a code challenge. Always for a public client; on by default for a confidential one |
 | ID token algorithm | How its [ID tokens](#the-id-token) are signed, its `id_token_signed_response_alg` of OpenID Connect Registration: `ES256` unless changed, or `RS256` |
+| Subject type | How it knows a person, its `subject_type` of OpenID Connect Registration: `public`, the person's user identifier, unless changed, or `pairwise`, an identifier of its sector alone. See [pairwise subject identifiers](#pairwise-subject-identifiers) |
+| Sector identifier address | Optional, for a pairwise client: an address that lists its redirect addresses and whose host is its sector, its `sector_identifier_uri`. See [the sector identifier address](#the-sector-identifier-address) |
 | Token policy | How long its tokens live |
 | Principal | Optional: the [service account or agent](identity.md#service-accounts-and-agents) the client acts as. See [clients that act as a workload](#clients-that-act-as-a-workload) |
 | Secrets | Its secrets, kept only as hashes. Only with `client_secret_basic` or `client_secret_post` |
@@ -58,6 +60,7 @@ Every change to a client is checked against all of these at once; a change that 
 - **A client with `authorization_code` has at least one redirect address, and one without it has none.**
 - **Only a client with `authorization_code` has post-logout redirect addresses**, since only it gets ID tokens and signs people in. It may have none.
 - **Only a client with `authorization_code` has a back-channel logout address**, for the same reason. It may have none. Back-channel logout session required is `true` only for a client with an address.
+- **Only a client with `authorization_code` may be pairwise**, since only it signs people in; a client of client credentials alone, and so one with a principal, is public. **A pairwise client has a sector**: a sector identifier address, or redirect addresses that all name one host. **Only a pairwise client has a sector identifier address.**
 - **A client has at least one grant.**
 - **A client with a principal has the `client_credentials` grant**, and may have the token exchange grant besides; no other. It is the workload's credential.
 - **The token exchange grant needs a principal, which must be an agent, and at least one exchange rule; exchange rules need the grant.** Only an agent acts on a person's behalf ([Decision 0031](../../decisions/0031-workloads-are-users.md)). Each rule is a pair of audiences, the one a subject token must hold and the one the new token is for, each at most 255 printable characters, each pair once.
@@ -190,7 +193,7 @@ For an operator who can reach the database, as for tenants and identity provider
 | `hodor-cli application add --tenant acme --name Billing [--first-party]` | Registers an application, enabled; third party unless `--first-party` is given. Prints its identifier |
 | `hodor-cli application list --tenant acme` | One line per application: identifier, status, first or third party, name |
 | `hodor-cli application disable --tenant acme --id …`, `enable` | |
-| `hodor-cli client add --tenant acme --application … --name … --type confidential --grant authorization_code --redirect-uri https://… --scope openid` | Creates a client. `--grant`, `--redirect-uri`, `--post-logout-redirect-uri` and `--scope` are given once per value; `--method` chooses the authentication method, `--secret-days` the lifetime of the first secret, `--without-pkce` lets a confidential client redeem a code without PKCE, `--id-token-algorithm` signs its ID tokens with `RS256` instead of `ES256`, `--backchannel-logout-uri` gives it a [back-channel logout address](#the-back-channel-logout-address), checked with the development exception of `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` as the server has it, `--backchannel-logout-session-required` records that it needs `sid`, `--principal` binds it to a service account or an agent, and `--exchange-rule '<subject audience>=><audience>'`, once per rule, gives an agent's client its exchange rules. Prints the `client_id` and, for a client with a secret method, the secret, once |
+| `hodor-cli client add --tenant acme --application … --name … --type confidential --grant authorization_code --redirect-uri https://… --scope openid` | Creates a client. `--grant`, `--redirect-uri`, `--post-logout-redirect-uri` and `--scope` are given once per value; `--method` chooses the authentication method, `--secret-days` the lifetime of the first secret, `--without-pkce` lets a confidential client redeem a code without PKCE, `--id-token-algorithm` signs its ID tokens with `RS256` instead of `ES256`, `--backchannel-logout-uri` gives it a [back-channel logout address](#the-back-channel-logout-address), checked with the development exception of `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` as the server has it, `--backchannel-logout-session-required` records that it needs `sid`, `--subject-type pairwise` makes it [pairwise](#pairwise-subject-identifiers), `--sector-identifier-uri` gives it a [sector identifier address](#the-sector-identifier-address), fetched through a guarded client with the same development exception, `--principal` binds it to a service account or an agent, and `--exchange-rule '<subject audience>=><audience>'`, once per rule, gives an agent's client its exchange rules. Prints the `client_id` and, for a client with a secret method, the secret, once |
 | `hodor-cli client list --tenant acme --application …` | One line per client: `client_id`, status, type, authentication method, name |
 | `hodor-cli client rotate-secret --tenant acme --id … [--lifetime-days 365] [--keep-previous-days 7]` | Gives a client a new secret and prints it, once |
 | `hodor-cli client disable --tenant acme --id …`, `enable` | |
@@ -220,6 +223,8 @@ Changing a client's settings, ending one secret and managing keys are done throu
 | `ResourceServerStore` | Store, change and load resource servers; find one by audience |
 | `Digest` | SHA-256, from the kernel |
 | `RandomSource` | The random bytes of a secret, from the kernel |
+| `DestinationCheck` (kernel) | Checks a back-channel logout address and a sector identifier address when they are set; the guarded client |
+| `HttpClient` (kernel) | Fetches a sector identifier address when it is set; the guarded client |
 
 ## Storage
 
@@ -250,6 +255,8 @@ Every table is a tenant table under row-level security, in the schema `oauth`. R
 | `id_token_algorithm` | `text` | `ES256` or `RS256`, by a check constraint; `ES256` for a client made before it existed |
 | `backchannel_logout_uri` | `text` | The [back-channel logout address](#the-back-channel-logout-address), or null. At most 2000 characters, `https://` or `http://`, compared byte for byte (`COLLATE "C"`); a check constraint allows it only with the `authorization_code` grant |
 | `backchannel_logout_session_required` | `boolean` | `false` for a client made before it existed; a check constraint allows `true` only with an address |
+| `subject_type` | `text` | `public` or `pairwise`, by a check constraint; `public` for a client made before it existed. A check constraint allows `pairwise` only with the `authorization_code` grant |
+| `sector_identifier_uri` | `text` | The [sector identifier address](#the-sector-identifier-address), or null. At most 2000 characters, `https://` or `http://`, compared byte for byte (`COLLATE "C"`); a check constraint allows it only for a pairwise client |
 | `access_token_seconds`, `id_token_seconds`, `refresh_token_seconds`, `refresh_idle_seconds`, `consent_seconds` | `integer` | The token policy |
 | `created_at`, `updated_at` | `timestamptz` | |
 | `version` | `integer` | For optimistic locking; secrets and keys are stored with the client under the same version |
@@ -530,7 +537,7 @@ The access token is a JSON Web Token per [RFC 9068](https://www.rfc-editor.org/r
 |---|---|
 | Header | `alg` `ES256`, `typ` `at+jwt`, `kid` the identifier of the key version that signed, as the [published key set](keys.md) names it |
 | `iss` | The tenant's issuer |
-| `sub` | The person's user identifier; for [client credentials](#client-credentials), the client's identifier, or its principal's for a [client that acts as a workload](#clients-that-act-as-a-workload) |
+| `sub` | The person, as the client knows them: their user identifier, or for a [pairwise client](#pairwise-subject-identifiers) the pairwise identifier of its sector, as in its ID token; for [client credentials](#client-credentials), the client's identifier, or its principal's for a [client that acts as a workload](#clients-that-act-as-a-workload) |
 | `aud` | The audiences of the code: the resource servers of the request. When the scopes hold `openid`, the issuer is one of the audiences too, so that the same token reads [UserInfo](#userinfo); a request that named no resource server gets the issuer alone |
 | `client_id` | The client |
 | `scope` | The scopes of the code, separated by spaces |
@@ -636,14 +643,14 @@ The checks, in order:
 1. **The client** must be allowed the grant: a confidential client bound to an agent ([clients that act as a workload](#clients-that-act-as-a-workload)). Otherwise `unauthorized_client`; a client whose agent may not act is `invalid_client`, as for client credentials.
 2. **The request** must name the two tokens with their types, and one audience: otherwise `invalid_request`, or `invalid_target` without an audience. Another token type than an access token is `invalid_request`.
 3. **The actor token** must pass the checks of [UserInfo](#userinfo) up to `exp`, be [in force](#the-register-of-access-tokens), be issued to the client asking, name its agent in `sub` with `principal_kind` `agent`, and carry no `act`. Otherwise `invalid_request`.
-4. **The subject token** must pass the same checks, be in force, and be about a person: no `principal_kind`, a `sub` that is not a client, a person who may still sign in and, when the subject token's grant names an [organization](#the-organization-of-a-sign-in), still a member of it. Otherwise `invalid_request`.
+4. **The subject token** must pass the same checks, be in force, and be about a person: no `principal_kind`, a `sub` that is not a client, a record in the register that names a grant, whose person may still sign in and, when the grant names an [organization](#the-organization-of-a-sign-in), is still a member of it. Otherwise `invalid_request`. The person is the grant's, never read from the `sub`, which for a token of a [pairwise client](#pairwise-subject-identifiers) is no user identifier.
 5. **The chain**: the subject token's `act`, read as far as the bound and no further, holds at most two actors, so that the new chain holds at most three. Otherwise `invalid_request`.
 6. **The policy**: one of the client's exchange rules pairs one of the subject token's audiences with the audience asked. Otherwise `invalid_target`, and so is an audience that is no resource server of the tenant.
 7. **The scopes** asked must each be held by the subject token, allowed to the client and defined by the audience's resource server; without `scope`, the token carries every scope that meets all three. A scope that is not, or none left, is `invalid_scope`. OpenID Connect's scopes are never exchanged.
 
 The new access token:
 
-- `sub` is the person, `client_id` the agent's client, `aud` the audience asked, `scope` the scopes above;
+- `sub` is the subject token's `sub`, unchanged: the person as the client they gave the token to knows them, their user identifier or a [pairwise identifier](#where-a-pairwise-identifier-goes). `client_id` is the agent's client, `aud` the audience asked, `scope` the scopes above;
 - `act` is `{"sub": "<agent>", "principal_kind": "agent"}`, with the subject token's own `act` inside it as `act`: the newest actor outermost ([RFC 8693, section 4.1](https://www.rfc-editor.org/rfc/rfc8693#section-4.1));
 - `auth_time`, `acr` and `amr` are the subject token's, when it has them: they say how the person signed in;
 - `org_id` is the organization of the subject token's grant, when it names one; `groups` never appears, since the `groups` scope is one of OpenID Connect's and is not exchanged;
@@ -790,7 +797,7 @@ Any other token is answered as not active.
 | `active` | `true` | `true` |
 | `scope` | Its scopes | The scopes of its family |
 | `client_id` | The client it was issued to | The client it was issued to |
-| `sub` | Its `sub` | The person |
+| `sub` | Its `sub` | The person, as the client knows them: their user identifier, or the [pairwise identifier](#pairwise-subject-identifiers) of the client's sector |
 | `aud` | Its `aud` | The issuer, to whom a refresh token is presented |
 | `iss` | The issuer | The issuer |
 | `exp` | Its `exp` | The earlier of the end of its family's absolute lifetime and of its idle time |
@@ -838,7 +845,7 @@ When the scopes of a code hold `openid`, the token endpoint answers with an `id_
 |---|---|
 | Header | `alg` the client's ID token algorithm, `typ` `JWT`, `kid` the key version that signed |
 | `iss` | The tenant's issuer |
-| `sub` | The person's user identifier. Subjects are public: the same for every client of the tenant. Pairwise subjects are left to Phase 2 ([Decision 0023](../../decisions/0023-what-0.2.0-holds.md)) |
+| `sub` | The person's user identifier, the same for every public client of the tenant; for a [pairwise client](#pairwise-subject-identifiers), the pairwise identifier of its sector |
 | `aud` | The client's identifier, alone |
 | `iat`, `exp` | When it was issued, and that plus the client's ID token lifetime |
 | `auth_time` | When the person signed in |
@@ -847,7 +854,7 @@ When the scopes of a code hold `openid`, the token endpoint answers with an `id_
 | `amr` | The methods of the sign-in, as the next section says. Left out when none of them has a name in RFC 8176 |
 | `at_hash` | The base64url of the left half of the SHA-256 of the access token, so that the client can tell the two belong together |
 | `org_id` | The [organization of the sign-in](#the-organization-of-a-sign-in), as in the access token. Left out when the request named none |
-| `sid` | The identifier of the session the person signed in with: a UUID that names the session, never its token. [Logout](#logout-initiated-by-the-relying-party) uses it to know whether an ID token names the browser's current session, and the [logout token](#the-logout-token) carries the same value when the session ends |
+| `sid` | The identifier of the session the person signed in with: a UUID that names the session, never its token, or for a [pairwise client](#pairwise-subject-identifiers) the pairwise identifier of the session for its sector. [Logout](#logout-initiated-by-the-relying-party) uses it to know whether an ID token names the browser's current session, and the [logout token](#the-logout-token) carries the same value when the session ends |
 
 `azp` is not added: the audience is always the one client, and OpenID Connect asks for `azp` only when it is not.
 
@@ -896,17 +903,17 @@ The token is checked before anything is read:
 | `aud` | It does not hold the issuer |
 | `exp` | It has passed |
 | Scope | `scope` does not hold `openid` |
-| Person | The user does not exist, is not a person, or is not active. A workload's token never reads UserInfo: client credentials never carry `openid` |
+| Person | The token's record names no grant, or the grant's person does not exist, is not a person, or is not active. The person is the grant's, not read from `sub`, which for a [pairwise client](#pairwise-subject-identifiers) is no user identifier. A workload's token never reads UserInfo: client credentials never carry `openid` |
 
 After these checks the token must still be [in force](#the-register-of-access-tokens): not revoked, and its grant and its refresh token family still active.
 
 A token that fails any check but the scope is answered `401` with `WWW-Authenticate: Bearer error="invalid_token"`; a request without a token, `401` with `WWW-Authenticate: Bearer` and no error. A token without `openid` is answered `403` with `error="insufficient_scope"`. The answer names no reason; Hodor's logs do.
 
-The answer is JSON with `sub` and the claims of the token's scopes:
+The answer is JSON with `sub`, the token's own, which is the `sub` of the ID token issued with it, and the claims of the token's scopes:
 
 | Scope | Claims |
 |---|---|
-| `openid` | `sub` |
+| `openid` | `sub`, as in the token |
 | `profile` | `name`, the person's display name; `preferred_username`, their primary username; `locale`; `updated_at`. Each is left out when the person has none |
 | `email` | `email`, the person's primary email address, and `email_verified`. Left out when they have no address |
 | `groups` | `groups`, the identifiers of the person's [effective groups](#the-groups-claim), all of them. An empty list when they are in none |
@@ -962,7 +969,7 @@ It names only what is built:
 | `introspection_endpoint_auth_methods_supported` | `client_secret_basic`, `client_secret_post`, `private_key_jwt`: a public client may not introspect |
 | `revocation_endpoint_auth_signing_alg_values_supported`, `introspection_endpoint_auth_signing_alg_values_supported` | `ES256`, `RS256`, `PS256` |
 | `id_token_signing_alg_values_supported` | `ES256`, `RS256` |
-| `subject_types_supported` | `public` |
+| `subject_types_supported` | `public`, `pairwise` |
 | `scopes_supported` | `openid`, `profile`, `email`, `groups`. A tenant's own scopes belong to its resource servers and are not listed |
 | `claims_supported` | The claims of the ID token and of UserInfo, `org_id` and `groups` among them |
 | `acr_values_supported` | The names of the tenant's [assurance levels](tenant.md#assurance-levels), weakest first |
@@ -1018,7 +1025,7 @@ The request is checked before anything happens. A request that fails is answered
 | The browser… | What happens |
 |---|---|
 | has no valid session of the tenant | There is nothing to end; the request [finishes](#finishing) |
-| sent a `GET` with a valid session, and an `id_token_hint` whose `sub` is that person and whose `sid` is that session | The session ends at once and the request finishes |
+| sent a `GET` with a valid session, and an `id_token_hint` whose `sub` is that person and whose `sid` is that session, as the hint's client knows them: the user and session identifiers, or for a [pairwise client](#where-a-pairwise-identifier-comes-back) their pairwise identifiers | The session ends at once and the request finishes |
 | anything else: no hint, a hint for another session or another person, or a `POST` | The person is [asked](#asking-the-person) |
 
 A `POST` always asks. A form that another site posts does not carry the session cookie (it is `SameSite=Lax`), so Hodor cannot see from such a request which session the browser holds; the question is asked from Hodor's own pages, which can.
@@ -1108,13 +1115,13 @@ A JSON Web Token signed by the [keys context](keys.md) with the tenant's active 
 |---|---|
 | Header | `alg` the client's ID token algorithm, `typ` `logout+jwt`, `kid` the key version that signed |
 | `iss` | The tenant's issuer, as in the ID token |
-| `sub` | The person's user identifier, as in the ID token |
+| `sub` | The person, as in the ID token: their user identifier, or for a [pairwise client](#pairwise-subject-identifiers) the pairwise identifier of its sector, computed at each attempt |
 | `aud` | The client's identifier, alone |
 | `iat` | When it was signed |
 | `exp` | Two minutes after `iat` |
 | `jti` | 16 random bytes in base64url, new for every token |
 | `events` | `{"http://schemas.openid.net/event/backchannel-logout": {}}`, which says that this is a logout token and nothing else |
-| `sid` | The identifier of the session that ended: the `sid` of the ID tokens issued in it |
+| `sid` | The session that ended, as in the ID tokens issued in it: its identifier, or for a pairwise client its pairwise identifier |
 
 There is no `nonce`: the specification forbids it, so that a logout token cannot pass for an ID token. Both `sub` and `sid` are always there, so a client that asked for `sid` with [back-channel logout session required](#clients) has it, and one that tracks people by `sub` has that.
 
@@ -1237,6 +1244,106 @@ Settings of `hodor-worker`; see [local setup](../../development/local-setup.md#h
 | `hodor.backchannel_logout.attempts` | Attempts, by `outcome`: `delivered`, `retrying`, `set_aside` or `skipped` |
 | `hodor.backchannel_logout.passes` | Passes of the delivery loop, by `outcome`: `ok` or `error` |
 
+## Pairwise subject identifiers
+
+Issue-98. A **pairwise** client knows a person by an identifier of its own sector, so that applications of different sectors cannot tell, by comparing what Hodor told them, that they share a person ([OpenID Connect Core, section 8](https://openid.net/specs/openid-connect-core-1_0.html#SubjectIDTypes)). A **public** client, every client unless chosen otherwise, knows the person by their user identifier, the same at every public client of the tenant. Why it is built this way is [Decision 0040](../../decisions/0040-pairwise-subjects.md).
+
+### Subject types
+
+| Subject type | `sub` | `sid` |
+|---|---|---|
+| `public` | The person's user identifier | The session's identifier |
+| `pairwise` | The pairwise identifier of the person for the client's sector | The pairwise identifier of the session for the client's sector |
+
+- **Only a client with `authorization_code` may be pairwise.** A client of client credentials alone names itself or its workload, never a person; a client with a principal therefore stays public. Another subject type, or `pairwise` without that grant, is refused with `oauth.client_subject_type_invalid`. A client with both grants is pairwise in what it is told about people, and its client credentials tokens still name the client.
+- **Changing a client's subject type, or its sector, changes every identifier it is given from then on.** Tokens issued before keep what they say. An application that moves to another host and wants to keep its identifiers names a sector identifier address on the old host before it moves.
+
+### The sector
+
+A pairwise client's sector is a host, compared in lowercase, without its port:
+
+1. the host of its [sector identifier address](#the-sector-identifier-address), when it has one;
+2. otherwise the one host all its redirect addresses name: `app.example.com` for `https://app.example.com/callback` and `https://app.example.com:8443/other`, and `127.0.0.1` for `http://127.0.0.1:4000/callback`.
+
+A pairwise client whose redirect addresses name more than one host, or one without a host (a private-use scheme such as `com.example.app:/callback`), has no sector without an address, and is refused with `oauth.client_sector_identifier_uri_required` ([Core, section 8.1](https://openid.net/specs/openid-connect-core-1_0.html#PairwiseAlg)). Clients of one host are one sector and know a person by the same identifier, whichever application they belong to.
+
+### The sector identifier address
+
+A sector identifier address is an HTTPS address that answers a JSON array of addresses, the redirect addresses its host agrees to ([OpenID Connect Registration, section 5](https://openid.net/specs/openid-connect-registration-1_0.html#SectorIdentifierValidation)):
+
+```json
+["https://app.example.com/callback", "https://other.example.net/callback"]
+```
+
+Hodor calls it, so it is checked as a [back-channel logout address](#the-back-channel-logout-address) is, and then fetched:
+
+- **Its form**: one absolute HTTPS address, with a host, without a name and password or a fragment, at most 2000 characters, all of them printable ASCII without spaces, kept exactly as it was given. Otherwise `oauth.client_sector_identifier_uri_invalid`, which is also the answer for an address on a public client.
+- **Its destination**, through the `DestinationCheck` port: an address that may not be called is refused with `oauth.client_sector_identifier_uri_forbidden`, a name that resolves to nothing with `oauth.client_sector_identifier_uri_unresolvable`.
+- **Its document**, fetched with `GET` through the guarded outbound client, with `accept: application/json`: 10 seconds at most, 64 kibibytes at most, no redirect followed. No answer, a status other than 200 to 299, or a longer answer is `oauth.client_sector_identifier_uri_unreachable`; an answer that is not a JSON array of strings is `oauth.client_sector_identifier_uri_document_invalid`; a redirect address of the client missing from it is `oauth.client_sector_identifier_uri_mismatch`, comparing character for character. No message repeats the address or what it answered.
+- **When.** When a pairwise client is created with an address, and when a change gives it a new address, new redirect addresses or the pairwise subject type while it has one. A change of anything else fetches nothing. The document is never fetched again later, at a sign-in or otherwise: only the address's host is used.
+- **The development exception** (`HODOR_OUTBOUND_DEVELOPMENT_HOSTS`) is accepted over plain HTTP, as the guarded client accepts it. Nowhere real has any.
+
+### The identifier
+
+```text
+sub = base64url( HMAC-SHA-256( pairwise secret, "hodor.pairwise.sub" 0x00 tenant 0x00 sector 0x00 user ) )
+sid = base64url( HMAC-SHA-256( pairwise secret, "hodor.pairwise.sid" 0x00 tenant 0x00 sector 0x00 session ) )
+```
+
+The tenant, the user and the session are their 16 bytes, the sector its text in lowercase, and base64url is written without padding: 43 characters. One person and one sector give the same `sub` every time; another sector, another person or another tenant gives another, and nothing about the person can be learned from it without the secret ([Core, section 8.1](https://openid.net/specs/openid-connect-core-1_0.html#PairwiseAlg) suggests a hash with a secret salt; an HMAC is that construction done as it should be).
+
+**The pairwise secret.** One per tenant: 32 random bytes from the operating system, made the first time the tenant issues a token to a pairwise client, and kept in `oauth.pairwise_secret` sealed by the tenant's secret box with the purpose `oauth.pairwise_secret` ([secrets at rest](../../security/secrets-at-rest.md)). Two servers that make it at the same moment both keep the one stored first. It is sealed again with the other secrets by `hodor-cli secrets reseal`, and never replaced: a new secret would change every pairwise identifier of the tenant. A stored secret that does not open makes the request fail, `server_error` at the token endpoint and a failed attempt for a logout token, never a new secret.
+
+### Where a pairwise identifier goes
+
+Everything a pairwise client is given names the person by the pairwise identifier of its sector, so that nothing it reads gives the user identifier away:
+
+| Where | What |
+|---|---|
+| [The ID token](#the-id-token) | `sub` and `sid` |
+| [The access token](#the-access-token), from a code and from a refresh | `sub`: the client can read its access token, a JSON Web Token |
+| [UserInfo](#userinfo) | `sub`, the token's own, which is the ID token's |
+| [Introspection](#introspection) | `sub` of an access token, its own; of a refresh token, the pairwise identifier of the family's person for the client |
+| [Token exchange](#token-exchange) | The new token keeps the subject token's `sub`, so an agent given a pairwise client's token, and the audience it exchanges it for, know the person by that client's identifier |
+| [The logout token](#the-logout-token) | `sub` and `sid`, computed for the client at each attempt |
+
+A resource server that receives a pairwise client's access token sees that identifier too. It is not a user identifier: the [Authorization API](authorization.md#the-authorization-api), roles and their assignments name people by their user identifier, and know nobody by a pairwise one. A tenant whose resource servers decide about people through the Authorization API keeps the clients whose tokens reach them public.
+
+Pairwise identifiers stop `sub` and `sid` from being compared. The claims a person lets an application read, such as an email address or `groups`, still let two applications that read them tell they share a person.
+
+### Where a pairwise identifier comes back
+
+Hodor never reads a person from a pairwise identifier; there is no table of them to read one from.
+
+- **An access token** presented at UserInfo or as the subject token of an exchange is read through its record in [the register](#the-register-of-access-tokens): the record names the grant, the grant names the person. A token made by exchange names the grant of the token it came from.
+- **An `id_token_hint`** at [the end-session endpoint](#what-happens) is compared with the browser's session: its `sub` and `sid` with the identifiers of the session's person and of the session as the hint's client knows them, pairwise or public.
+
+Inside Hodor nothing changes: grants, consents, refresh token families, logout deliveries, roles, the Authorization API, audit events and webhooks name the person by their user identifier, so an administrator follows a person whatever their applications see.
+
+### Ports
+
+| Port | Purpose |
+|---|---|
+| `PairwiseSecretStore` | Find the tenant's sealed pairwise secret; store one unless the tenant has one already |
+| `HmacSha256` | HMAC-SHA-256, from the crypto adapter |
+| `SecretBox` (kernel) | Seals and opens the pairwise secret |
+| `RandomSource` (kernel) | The bytes of the pairwise secret |
+| `DestinationCheck`, `HttpClient` (kernel) | Check and fetch a sector identifier address; the guarded client |
+
+The `PairwiseSubjects` use case joins them and is given to the token endpoint, the end-session endpoint and the worker's sender of logout tokens. Without it, each refuses to name a person to a pairwise client rather than name them by their user identifier.
+
+### Storage
+
+`oauth.pairwise_secret` is a tenant table under row-level security.
+
+| Column | Type | Notes |
+|---|---|---|
+| `tenant_id`, `id` | `uuid` | Primary key; the tenant is unique, so a tenant has one secret |
+| `sealed_secret` | `bytea` | The sealed secret, listed among the columns that `hodor-cli secrets reseal` seals again |
+| `created_at` | `timestamptz` | |
+
+`oauth.client` gains `subject_type` and `sector_identifier_uri` ([storage of clients](#oauthclient)).
+
 ## Consent
 
 Issue-62. A person is asked before a third-party application gets access to their account, and what they agreed to is remembered, can be withdrawn, and runs out ([Requirement-OAuth-09](../../product/requirements.md)). Clients of first-party applications are not asked: the tenant runs them, and its administrator decided that when the application was registered.
@@ -1354,7 +1461,10 @@ Both are tenant tables under row-level security, and reference their client with
 | A page where a person sees the history of their consents | The account console, Phase 2 |
 | Limits on requests to the authorization endpoint per address | With the other limits per address, before any deployment behind a load balancer |
 | Request objects (`request`, `request_uri`) and pushed authorization requests | Phase 4, after 0.2.0 |
-| Pairwise subject identifiers, claim mappers per client | Phase 2, after 0.2.0 ([Decision 0023](../../decisions/0023-what-0.2.0-holds.md)) |
+| Claim mappers per client | Issue-99 |
+| Fetching a sector identifier address again after the client was saved | Not planned: only its host is used ([Decision 0040](../../decisions/0040-pairwise-subjects.md)) |
+| Finding a person by a pairwise identifier outside a token's record, for the Authorization API or a resource server | Not planned: it would undo what the identifier hides ([Decision 0040](../../decisions/0040-pairwise-subjects.md)) |
+| A pairwise client that registers itself, and the suite's pairwise tests, which need it: there is no dynamic client registration | With dynamic client registration |
 | Opaque access tokens chosen per client | Not planned for 0.2.0 |
 | A page where a person chooses which of their organizations to sign in for, when the client names none | When a client needs it; the client names the organization |
 | The organization's name on the consent page | With the organization's branding |

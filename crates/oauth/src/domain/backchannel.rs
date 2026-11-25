@@ -109,10 +109,11 @@ pub struct LogoutTokenSubject<'a> {
     pub issuer: &'a str,
     /// The client it is for.
     pub client_id: ClientId,
-    /// The person whose session ended.
-    pub user_id: UserId,
-    /// The session that ended.
-    pub session_id: SessionId,
+    /// The person whose session ended, as the client knows them: the user
+    /// identifier, or for a pairwise client a pairwise one.
+    pub subject: &'a str,
+    /// The session that ended, as the client knows it.
+    pub session: &'a str,
 }
 
 /// The claims of a logout token signed at `now`, with `token_id` as its
@@ -126,13 +127,13 @@ pub fn logout_token_claims(
 ) -> Value {
     json!({
         "iss": subject.issuer,
-        "sub": subject.user_id.to_string(),
+        "sub": subject.subject,
         "aud": subject.client_id.to_string(),
         "iat": now.unix_timestamp(),
         "exp": (now + LOGOUT_TOKEN_LIFETIME).unix_timestamp(),
         "jti": token_id,
         "events": { BACKCHANNEL_LOGOUT_EVENT: {} },
-        "sid": subject.session_id.to_string(),
+        "sid": subject.session,
     })
 }
 

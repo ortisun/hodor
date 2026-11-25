@@ -14,6 +14,7 @@ It implements these ports:
 - Keys context ports: `impl KeyProvider for LocalKeyProvider` (`src/keys.rs`) and `impl FirstFormatSecrets for SecretKeys` (`src/sealing.rs:253`), the traits `hodor_keys::api::KeyProvider` and `hodor_keys::api::FirstFormatSecrets` from `crates/keys`. Secrets at rest are sealed by `hodor_keys::api::TenantSecretBox`, not by this crate.
 - Credential context ports: `impl PasswordHasher for Argon2idHasher` (`src/password.rs:228`) and `impl HmacSha1 for AwsLcHmacSha1` (`src/hmac.rs`), the traits `hodor_credential::api::PasswordHasher` and `hodor_credential::api::HmacSha1` from `crates/credential`.
 - Webhooks context port: `impl HmacSha256 for AwsLcHmacSha256` (`src/hmac.rs`), the trait `hodor_webhooks::api::HmacSha256` from `crates/webhooks`. `tests/webhook_signature.rs` checks the signatures it makes with the `standardwebhooks` crate, a dev-dependency.
+- OAuth context port: `impl hodor_oauth::api::HmacSha256 for AwsLcHmacSha256` (`src/hmac.rs`), for pairwise subject identifiers; `hmac.rs` pins the identifier of one secret, tenant, sector and person, computed apart from Hodor.
 - Test support only: `impl HttpClient for TestProvider` (`src/testing.rs:241`).
 
 ## Subdirectories & Boundaries

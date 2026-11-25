@@ -39,7 +39,7 @@ The root holds no source code of its own, only the manifests `Cargo.toml`, `Carg
 ## Global Side Effects
 
 - PostgreSQL: all state, reached through `hodor-adapters-postgres` with the roles `hodor_app` (server, worker, command-line tool) and `hodor_platform` (worker), and the schema owner for migrations.
-- Outbound network: HTTPS to OpenID Connect and GitHub providers from the server and to tenants' webhook endpoints and clients' back-channel logout addresses from the worker (`hodor-adapters-http`, `GuardedHttpClient`), LDAP to allowed directories (`hodor-adapters-ldap`), and SMTP from the worker only (`hodor-adapters-smtp`).
+- Outbound network: HTTPS to OpenID Connect and GitHub providers and, once when a pairwise client is saved, to its sector identifier address from the server and the command-line tool, and to tenants' webhook endpoints and clients' back-channel logout addresses from the worker (`hodor-adapters-http`, `GuardedHttpClient`), LDAP to allowed directories (`hodor-adapters-ldap`), and SMTP from the worker only (`hodor-adapters-smtp`).
 - Telemetry: structured logs to standard output, and traces and metrics over OTLP when their endpoints are configured (`hodor-observability`).
 - Listeners: the server's public and operations listeners, and the worker's operations listener (default `127.0.0.1:9091`).
 

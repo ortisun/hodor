@@ -741,3 +741,69 @@ async fn an_address_is_checked_when_it_is_set_and_only_then() {
         Some("https://payroll.example.com/new-logout")
     );
 }
+
+#[tokio::test]
+async fn a_pairwise_client_is_told_of_the_person_and_session_as_it_knows_them() {
+    use hodor_oauth::api::SubjectType;
+    use hodor_oauth::testing::{InMemoryPairwiseSecrets, pairwise_subjects};
+
+    let world = world();
+    let tenant = a_tenant();
+    let application = world.application(&tenant).await;
+    let address = "https://payroll.example.com/logout";
+    let client = world.client(&tenant, application, Some(address)).await;
+    let mut settings = client.snapshot().settings.clone();
+    settings.subject_type = SubjectType::Pairwise;
+    let client = world
+        .applications
+        .change_client(&tenant, client.id(), settings, Caller::system())
+        .await
+        .expect("pairwise");
+    let (ana, session) = (UserId::generate(), SessionId::generate());
+    world
+        .signed_in(&tenant, &client, ana, session, &["openid"])
+        .await;
+    world
+        .session_ended(&tenant, ana, session)
+        .await
+        .expect("handled");
+
+    // A sender given no pairwise subjects fails the attempt rather than
+    // name the person by the user identifier.
+    let without = world.sender(LogoutDeliverySettings::default());
+    let lease = without.lease_due(10).await.expect("leased").remove(0);
+    assert_eq!(
+        without.send(lease).await.expect("recorded"),
+        LogoutOutcome::Retrying
+    );
+    assert!(world.clients.requests().is_empty(), "nothing was sent");
+
+    let secrets = InMemoryPairwiseSecrets::default();
+    let pairwise = pairwise_subjects(Arc::new(world.units.clone()), Arc::new(secrets));
+    let sender = world
+        .sender(LogoutDeliverySettings::default())
+        .with_pairwise_subjects(pairwise.clone());
+    world.clock.advance(Duration::hours(2));
+    let lease = sender.lease_due(10).await.expect("leased").remove(0);
+    assert_eq!(
+        sender.send(lease).await.expect("sent"),
+        LogoutOutcome::Delivered
+    );
+    let (_, claims) = parts(&world.clients.tokens_to(address)[0]);
+    let subject = pairwise
+        .subject(&tenant, &client, ana)
+        .await
+        .expect("subject");
+    let sid = pairwise
+        .session(&tenant, &client, session)
+        .await
+        .expect("session");
+    assert_eq!(claims["sub"], subject);
+    assert_eq!(claims["sid"], sid);
+    assert_ne!(claims["sub"], ana.to_string());
+    assert_ne!(claims["sid"], session.to_string());
+    // The delivery keeps the user and the session.
+    let delivered = world.deliveries.all(tenant.tenant_id());
+    assert_eq!(delivered[0].snapshot().user_id, ana);
+    assert_eq!(delivered[0].snapshot().session_id, session);
+}

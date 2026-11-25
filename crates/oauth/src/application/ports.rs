@@ -588,3 +588,32 @@ pub trait PersonMemberships: Send + Sync {
         user: UserId,
     ) -> Result<Vec<GroupId>, DomainError>;
 }
+
+/// Keeps a tenant's pairwise secret, sealed. A tenant has at most one, and
+/// it is never replaced.
+#[async_trait::async_trait]
+pub trait PairwiseSecretStore: Send + Sync {
+    /// The tenant's sealed pairwise secret, if it has one.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn find(
+        &self,
+        uow: &mut dyn UnitOfWork,
+    ) -> Result<Option<hodor_kernel::SealedSecret>, DomainError>;
+
+    /// Stores `sealed` as the tenant's pairwise secret unless the tenant
+    /// has one already, in which case nothing is changed. Of two calls at
+    /// the same moment, exactly one stores its secret.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if storage fails.
+    async fn insert_unless_present(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        sealed: &hodor_kernel::SealedSecret,
+        created_at: Timestamp,
+    ) -> Result<(), DomainError>;
+}

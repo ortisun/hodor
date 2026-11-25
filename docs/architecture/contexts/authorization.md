@@ -267,7 +267,7 @@ Which scopes a key may hold is one rule of this context, so that every interface
 
 **The application of the request is the token client's application.** It is what an assignment scoped to an application is compared with.
 
-The body names the subject, the asserted attributes, the resource, the action and the context's attributes, as in [the request](#the-request). It never names a tenant.
+The body names the subject, the asserted attributes, the resource, the action and the context's attributes, as in [the request](#the-request). It never names a tenant. A person is named by their user identifier. The `sub` of an access token issued to a [pairwise client](oauth.md#pairwise-subject-identifiers) is not one, and names nobody here: Hodor does not turn a pairwise identifier back into a person ([Decision 0040](../../decisions/0040-pairwise-subjects.md)).
 
 ### What Hodor knows about a subject
 

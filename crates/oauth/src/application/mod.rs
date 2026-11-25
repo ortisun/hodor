@@ -6,6 +6,7 @@ pub(crate) mod consent;
 pub(crate) mod exchange;
 pub(crate) mod introspection;
 pub(crate) mod logout;
+pub(crate) mod pairwise;
 pub(crate) mod ports;
 pub(crate) mod resource_access;
 pub(crate) mod service;

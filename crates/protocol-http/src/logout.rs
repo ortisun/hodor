@@ -184,7 +184,11 @@ async fn logout(
         user_id: session.user_id(),
         session_id: session.id(),
     });
-    match (request.decide(now, by_form), session) {
+    let decision = match state.logout.decide(tenant, &request, now, by_form).await {
+        Ok(decision) => decision,
+        Err(error) => return Problem::from(error).into_response(),
+    };
+    match (decision, session) {
         (LogoutDecision::EndSession, Some(session)) => {
             let caller = Caller {
                 actor: Actor::User(session.user_id()),

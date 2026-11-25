@@ -12,7 +12,6 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use hodor_kernel::{
     Digest, GroupId, OrganizationId, PublicKey, SignatureAlgorithm, SignatureVerifier, Timestamp,
-    UserId,
 };
 use serde_json::{Map, Value, json};
 use time::Duration;
@@ -140,13 +139,26 @@ pub(crate) fn id_token_header(algorithm: &str, key_id: &str) -> Value {
     json!({"alg": algorithm, "typ": "JWT", "kid": key_id})
 }
 
+/// How an ID token names the person and the session: as the client knows
+/// them, by their identifiers for a public client and by pairwise ones for
+/// a pairwise client.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IdTokenNames<'a> {
+    /// Its `sub`.
+    pub subject: &'a str,
+    /// Its `sid`.
+    pub session: &'a str,
+}
+
 /// The claims of the ID token for a redeemed `code`, issued with
-/// `access_token`, in the `organization` of its grant.
+/// `access_token`, in the `organization` of its grant, naming the person
+/// and the session as `names` says.
 #[must_use]
 #[allow(clippy::too_many_arguments)]
 pub fn id_token_claims(
     issuer: &str,
     code: &AuthorizationCode,
+    names: IdTokenNames<'_>,
     organization: Option<OrganizationId>,
     client_id: ClientId,
     lifetime: Duration,
@@ -156,7 +168,7 @@ pub fn id_token_claims(
 ) -> Value {
     let mut claims = Map::new();
     claims.insert("iss".to_owned(), json!(issuer));
-    claims.insert("sub".to_owned(), json!(code.user_id.to_string()));
+    claims.insert("sub".to_owned(), json!(names.subject));
     claims.insert("aud".to_owned(), json!(client_id.to_string()));
     claims.insert("iat".to_owned(), json!(now.unix_timestamp()));
     claims.insert("exp".to_owned(), json!((now + lifetime).unix_timestamp()));
@@ -183,7 +195,7 @@ pub fn id_token_claims(
     );
     // The session, never its token: logout needs to know whether an ID
     // token names the browser's current session.
-    claims.insert("sid".to_owned(), json!(code.session_id.to_string()));
+    claims.insert("sid".to_owned(), json!(names.session));
     Value::Object(claims)
 }
 
@@ -201,8 +213,9 @@ pub enum BearerRefusal {
 /// An access token whose every check passed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckedAccessToken {
-    /// The person it was issued for.
-    pub user_id: UserId,
+    /// Its `sub`: the person as the client knows them. Not read as a user
+    /// identifier: the person is found through the token's record.
+    pub subject: String,
     /// Its scopes.
     pub scopes: Vec<String>,
     /// Its `jti`, which names its record in the register.
@@ -220,7 +233,8 @@ pub struct ReadAccessToken {
     pub token_id: String,
     /// Its `client_id`.
     pub client_id: String,
-    /// Its `sub`: a user's identifier, or a client's.
+    /// Its `sub`: a user's identifier, a pairwise one for a pairwise
+    /// client, or a client's.
     pub subject: String,
     /// Its scopes.
     pub scopes: Vec<String>,
@@ -374,15 +388,14 @@ pub fn check_access_token(
     if !read.audiences.iter().any(|audience| audience == issuer) {
         return Err(InvalidToken("the token is not for this server"));
     }
-    let user_id = read
-        .subject
-        .parse::<UserId>()
-        .map_err(|_| InvalidToken("the token names no person"))?;
+    if read.principal_kind.is_some() || read.subject == read.client_id {
+        return Err(InvalidToken("the token names no person"));
+    }
     if !asks_for_openid(&read.scopes) {
         return Err(BearerRefusal::InsufficientScope);
     }
     Ok(CheckedAccessToken {
-        user_id,
+        subject: read.subject,
         scopes: read.scopes,
         token_id: read.token_id,
         client_id: read.client_id,
@@ -408,12 +421,13 @@ pub struct PersonClaims {
     pub groups: Vec<GroupId>,
 }
 
-/// The answer of UserInfo for `user_id`, with the claims of `scopes`.
+/// The answer of UserInfo for the person the client knows as `subject`,
+/// with the claims of `scopes`.
 #[must_use]
-pub fn userinfo_claims(user_id: UserId, scopes: &[String], person: &PersonClaims) -> Value {
+pub fn userinfo_claims(subject: &str, scopes: &[String], person: &PersonClaims) -> Value {
     let has = |scope: &str| scopes.iter().any(|given| given == scope);
     let mut claims = Map::new();
-    claims.insert("sub".to_owned(), json!(user_id.to_string()));
+    claims.insert("sub".to_owned(), json!(subject));
     if has("profile") {
         if let Some(name) = &person.name {
             claims.insert("name".to_owned(), json!(name));
@@ -473,7 +487,7 @@ pub fn discovery_document(issuer: &str, acr_values: &[&str]) -> Value {
         ],
         "introspection_endpoint_auth_signing_alg_values_supported": ["ES256", "RS256", "PS256"],
         "id_token_signing_alg_values_supported": IdTokenAlgorithm::ALL.map(IdTokenAlgorithm::as_str),
-        "subject_types_supported": ["public"],
+        "subject_types_supported": ["public", "pairwise"],
         "scopes_supported": ["openid", "profile", "email", "groups"],
         "claims_supported": [
             "iss", "sub", "aud", "exp", "iat", "auth_time", "nonce", "acr", "amr", "at_hash", "sid",

@@ -520,3 +520,70 @@ async fn every_bytea_column_is_known_to_hold_sealed_secrets_or_not() {
         );
     }
 }
+
+#[tokio::test]
+async fn the_pairwise_secret_is_sealed_again_and_every_identifier_stays_the_same() {
+    use hodor_adapters_crypto::AwsLcHmacSha256;
+    use hodor_adapters_postgres::PgPairwiseSecretStore;
+    use hodor_oauth::api::{
+        ApplicationId, Client, ClientSecret, ClientSettings, ClientType, GrantType, PairwisePorts,
+        PairwiseSubjects, SubjectType,
+    };
+    let database = TestDatabase::start().await;
+    let root = root_keys();
+    let secrets = Arc::new(tenant_box(&database, &root));
+    let tenant = TenantContext::assume(TenantId::generate());
+    let pairwise = |secret_box: Arc<dyn SecretBox>| {
+        PairwiseSubjects::new(PairwisePorts {
+            units_of_work: Arc::new(database.app().clone()),
+            secrets: Arc::new(PgPairwiseSecretStore),
+            secret_box,
+            mac: Arc::new(AwsLcHmacSha256),
+            random: Arc::new(OsRandom),
+            clock: Arc::new(SystemClock),
+        })
+    };
+    let mut settings = ClientSettings::new(
+        "Payroll web",
+        ClientType::Confidential,
+        vec![GrantType::AuthorizationCode],
+        vec!["https://payroll.example.com/callback".to_owned()],
+    );
+    settings.subject_type = SubjectType::Pairwise;
+    let client = Client::create(
+        ApplicationId::generate(),
+        ClientType::Confidential,
+        settings,
+        ClientSecret::DEFAULT_LIFETIME,
+        Timestamp::UNIX_EPOCH,
+        &OsRandom,
+        &hodor_kernel::random::testing::FakeDigest,
+    )
+    .expect("client")
+    .0;
+    let person = UserId::generate();
+
+    // A secret made by an earlier version, sealed with the root key.
+    let before = pairwise(Arc::new(FirstFormat(root.clone())))
+        .subject(&tenant, &client, person)
+        .await
+        .expect("made");
+    let report = reseal_tenant(database.app(), secrets.as_ref(), &tenant)
+        .await
+        .expect("reseal");
+    assert_eq!(report.resealed, 1, "{report:?}");
+    secrets.refuse_first_format(&tenant).await.expect("refuse");
+    let stored: Vec<u8> = sqlx::query_scalar("SELECT sealed_secret FROM oauth.pairwise_secret")
+        .fetch_one(database.owner())
+        .await
+        .expect("stored");
+    assert_eq!(stored[0], SEALED_FORMAT);
+    let after = pairwise(secrets.clone())
+        .subject(&tenant, &client, person)
+        .await
+        .expect("opens");
+    assert_eq!(before, after, "the identifier a client was given stays");
+    // The secret is stored only sealed: the identifier cannot be made
+    // from what the row holds without opening it.
+    assert_ne!(stored.len(), 32);
+}

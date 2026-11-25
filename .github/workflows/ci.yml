@@ -207,13 +207,15 @@ jobs:
 
   # The Basic OpenID Provider, Config OpenID Provider and Back-Channel OpenID
   # Provider plans of the OpenID conformance suite, against the image; the
-  # last is the back-channel logout plan, the acceptance of Issue-100.
+  # back-channel logout plan is the acceptance of Issue-100. Then the Basic
+  # and Back-Channel plans again with pairwise clients, the pairwise
+  # configuration that is the acceptance of Issue-98.
   # docs/operations/conformance.md says what runs and which results are
   # expected.
   conformance:
     name: OpenID conformance
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 75
     defaults:
       run:
         working-directory: deploy/conformance

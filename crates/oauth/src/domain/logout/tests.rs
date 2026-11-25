@@ -78,8 +78,8 @@ fn a_hint_says_which_client_person_and_session_even_when_expired() {
         hint,
         IdTokenHint {
             client_id: who.client,
-            user_id: who.user,
-            session_id: Some(who.session),
+            subject: who.user.to_string(),
+            session: Some(who.session.to_string()),
         }
     );
     let mut without_sid = claims(&who);
@@ -87,12 +87,28 @@ fn a_hint_says_which_client_person_and_session_even_when_expired() {
     assert_eq!(
         check(&sign(&header(), &without_sid))
             .expect("an ID token from before sid")
-            .session_id,
+            .session,
         None
     );
     let mut one_audience = claims(&who);
     one_audience["aud"] = json!([who.client.to_string()]);
     assert!(check(&sign(&header(), &one_audience)).is_ok());
+    // A pairwise client's `sub` and `sid` are no identifiers of Hodor's:
+    // they are read as text, to be compared with what the client was told.
+    let mut pairwise = claims(&who);
+    pairwise["sub"] = json!("bXlfcGFpcndpc2Vfc3ViamVjdF9pZGVudGlmaWVyXzQz");
+    pairwise["sid"] = json!("bXlfcGFpcndpc2Vfc2Vzc2lvbl9pZGVudGlmaWVyXzQz");
+    let read = check(&sign(&header(), &pairwise)).expect("a pairwise hint");
+    assert_eq!(read.subject, "bXlfcGFpcndpc2Vfc3ViamVjdF9pZGVudGlmaWVyXzQz");
+    assert_eq!(
+        read.session.as_deref(),
+        Some("bXlfcGFpcndpc2Vfc2Vzc2lvbl9pZGVudGlmaWVyXzQz")
+    );
+    for (claim, value) in [("sub", json!("")), ("sub", json!(7)), ("sid", json!(""))] {
+        let mut bad = claims(&who);
+        bad[claim] = value;
+        assert!(check(&sign(&header(), &bad)).is_err(), "{claim}");
+    }
 }
 
 #[test]
@@ -140,7 +156,7 @@ fn a_hint_that_is_not_this_tenants_id_token_is_refused() {
         ),
         (
             "a malformed session",
-            with_claims(&|c| c["sid"] = json!("not a session")),
+            with_claims(&|c| c["sid"] = json!(42)),
         ),
         ("too large", "a".repeat(17 * 1024)),
     ];
@@ -229,8 +245,8 @@ fn client(application: &Application) -> Client {
 fn hint_for(client: ClientId) -> IdTokenHint {
     IdTokenHint {
         client_id: client,
-        user_id: UserId::generate(),
-        session_id: Some(SessionId::generate()),
+        subject: UserId::generate().to_string(),
+        session: Some(SessionId::generate().to_string()),
     }
 }
 
@@ -336,11 +352,11 @@ fn the_return_address_must_be_registered_for_the_client_the_request_names() {
 
 #[test]
 fn the_session_ends_without_asking_only_when_the_hint_names_it() {
-    let user = UserId::generate();
-    let session = SessionId::generate();
-    let current = CurrentSession {
-        user_id: user,
-        session_id: session,
+    // The browser's session as the hint's client knows it: for a
+    // pairwise client, its pairwise identifiers.
+    let current = &KnownSession {
+        subject: "the person as the client knows them".to_owned(),
+        session: "the session as the client knows it".to_owned(),
     };
     let request = |hint: Option<IdTokenHint>| LogoutRequest {
         hint,
@@ -349,8 +365,8 @@ fn the_session_ends_without_asking_only_when_the_hint_names_it() {
     };
     let ours = IdTokenHint {
         client_id: ClientId::generate(),
-        user_id: user,
-        session_id: Some(session),
+        subject: current.subject.clone(),
+        session: Some(current.session.clone()),
     };
     assert_eq!(request(None).decide(None, false), LogoutDecision::Finish);
     assert_eq!(
@@ -367,7 +383,7 @@ fn the_session_ends_without_asking_only_when_the_hint_names_it() {
         LogoutDecision::Ask
     );
     let older = IdTokenHint {
-        session_id: Some(SessionId::generate()),
+        session: Some(SessionId::generate().to_string()),
         ..ours.clone()
     };
     assert_eq!(
@@ -375,7 +391,7 @@ fn the_session_ends_without_asking_only_when_the_hint_names_it() {
         LogoutDecision::Ask
     );
     let someone_else = IdTokenHint {
-        user_id: UserId::generate(),
+        subject: UserId::generate().to_string(),
         ..ours.clone()
     };
     assert_eq!(
@@ -383,7 +399,7 @@ fn the_session_ends_without_asking_only_when_the_hint_names_it() {
         LogoutDecision::Ask
     );
     let without_sid = IdTokenHint {
-        session_id: None,
+        session: None,
         ..ours
     };
     assert_eq!(
