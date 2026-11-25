@@ -4,9 +4,9 @@
 //! on their in-memory ports.
 
 use hodor_authentication::api::{
-    AttemptGuard, AuthFlow, AuthenticationService, EmailAuthenticator, EmailSignInPorts,
-    ExternalInput, FlowEngine, IdentifierAuthenticator, PasswordAuthenticator, Requirement, SignIn,
-    StepInput, TransactionId,
+    AttemptGuard, AuthFlow, AuthTransaction, AuthenticationService, EmailAuthenticator,
+    EmailSignInPorts, ExternalInput, FlowEngine, IdentifierAuthenticator, PasswordAuthenticator,
+    Requirement, SignIn, StepInput, TransactionId, TransactionStore,
 };
 use hodor_authentication::testing::{
     InMemoryAttempts, InMemoryEmailSignIns, InMemoryTransactions, TestSecondFactor,
@@ -18,7 +18,9 @@ use hodor_identity::testing::InMemoryUsers;
 use hodor_kernel::clock::testing::FixedClock;
 use hodor_kernel::random::testing::{CountingRandom, FakeDigest};
 use hodor_kernel::uow::testing::InMemoryUnitOfWorkFactory;
-use hodor_kernel::{Caller, DomainError, ErrorKind, Secret, TenantContext, Timestamp, UserId};
+use hodor_kernel::{
+    Caller, DomainError, ErrorKind, Secret, TenantContext, Timestamp, UnitOfWork, UserId,
+};
 use hodor_notification::api::{Notifier, Template};
 use hodor_notification::testing::InMemoryMessages;
 use hodor_session::api::{Assurance, ClientInfo, SessionService};
@@ -26,14 +28,70 @@ use hodor_session::testing::{InMemorySessions, SequentialRandom};
 use hodor_tenant::api::{CreateTenant, SecondFactorPolicy, TenantService};
 use hodor_tenant::testing::InMemoryTenants;
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use time::Duration;
 
 const PASSWORD: &str = "correct horse battery staple";
 const ANA: &str = "ana@example.com";
 
+/// The sign-ins in progress, where another request of the same sign-in
+/// can be made to store it while a request is under way: what the sign-in
+/// page's own request for the passkey challenge does while the person asks
+/// for a code.
+#[derive(Clone, Default)]
+struct Transactions {
+    stored: InMemoryTransactions,
+    /// Whether the next sign-in loaded is stored again at once, as another
+    /// request would, so that the one that loaded it holds an older version.
+    advanced_after_the_next_load: Arc<AtomicBool>,
+}
+
+impl Transactions {
+    fn advance_after_the_next_load(&self) {
+        self.advanced_after_the_next_load
+            .store(true, Ordering::SeqCst);
+    }
+}
+
+#[async_trait::async_trait]
+impl TransactionStore for Transactions {
+    async fn insert(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        transaction: &AuthTransaction,
+    ) -> Result<(), DomainError> {
+        self.stored.insert(uow, transaction).await
+    }
+
+    async fn get(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        id: TransactionId,
+    ) -> Result<Option<AuthTransaction>, DomainError> {
+        let found = self.stored.get(uow, id).await?;
+        if let Some(transaction) = &found
+            && self
+                .advanced_after_the_next_load
+                .swap(false, Ordering::SeqCst)
+        {
+            self.stored.update(uow, transaction).await?;
+        }
+        Ok(found)
+    }
+
+    async fn update(
+        &self,
+        uow: &mut dyn UnitOfWork,
+        transaction: &AuthTransaction,
+    ) -> Result<(), DomainError> {
+        self.stored.update(uow, transaction).await
+    }
+}
+
 struct World {
     service: AuthenticationService,
+    transactions: Transactions,
     identity: IdentityService,
     tenants: TenantService,
     units_of_work: InMemoryUnitOfWorkFactory,
@@ -99,6 +157,7 @@ async fn world() -> World {
         public_url: "https://login.example.com/".to_owned(),
     };
     let second_factor = TestSecondFactor::default();
+    let transactions = Transactions::default();
     let engine = FlowEngine::new()
         .with(Arc::new(IdentifierAuthenticator::new(
             identity.clone(),
@@ -123,7 +182,7 @@ async fn world() -> World {
         .with_alternative(EmailAuthenticator::LINK_KIND, EmailAuthenticator::LINK_KIND);
     let service = AuthenticationService::new(
         factory(),
-        Arc::new(InMemoryTransactions::default()),
+        Arc::new(transactions.clone()),
         engine,
         flow,
         identity.clone(),
@@ -150,6 +209,7 @@ async fn world() -> World {
     let tenant = TenantContext::assume(created.id());
     let world = World {
         service,
+        transactions,
         identity,
         tenants,
         units_of_work,
@@ -385,6 +445,32 @@ async fn a_person_signs_in_with_a_code_once() {
         world.submit(other, code(&sent)).await.expect("answered"),
         SignIn::Rejected { .. }
     ));
+}
+
+#[tokio::test]
+async fn asking_while_another_request_stores_the_sign_in_sends_one_message_that_works() {
+    let world = world().await;
+    world.offer(true, true).await;
+    for (step, variable) in [("email_code", "code"), ("email_link", "link")] {
+        let id = world.start().await;
+        // The sign-in page asks for the passkey challenge as it opens, which
+        // stores the sign-in, while the person may already be asking for a
+        // code: asking keeps nothing in the sign-in, so it does not mind.
+        world.transactions.advance_after_the_next_load();
+        world
+            .ask(id, step, ANA)
+            .await
+            .expect("asking is not refused because the sign-in was stored meanwhile");
+        let (_, sent) = world.newest(variable);
+
+        let presented = if step == "email_code" {
+            code(&sent)
+        } else {
+            token(sent.rsplit_once("#token=").expect("a token").1)
+        };
+        let answer = world.submit(id, presented).await.expect("submitted");
+        assert_eq!(completed_methods(&answer), vec![step.to_owned()]);
+    }
 }
 
 impl World {

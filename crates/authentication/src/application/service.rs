@@ -318,7 +318,8 @@ impl AuthenticationService {
         secret: &str,
         asked: ExternalInput,
     ) -> Result<serde_json::Value, DomainError> {
-        let mut transaction = self.load(tenant, id, secret).await?;
+        let loaded = self.load(tenant, id, secret).await?;
+        let mut transaction = loaded.clone();
         let options = self
             .engine
             .challenge(
@@ -329,7 +330,14 @@ impl AuthenticationService {
                 self.clock.now(),
             )
             .await?;
-        self.store(tenant, &transaction, None).await?;
+        // An authenticator that keeps nothing in the sign-in, as the email
+        // alternatives do, leaves it as it was loaded: it is not stored
+        // again. Storing it would refuse this request whenever another one
+        // stored the sign-in meanwhile, such as the page's own request for
+        // the passkey challenge, after the code or the link was sent.
+        if transaction != loaded {
+            self.store(tenant, &transaction, None).await?;
+        }
         Ok(options)
     }
 
