@@ -39,4 +39,5 @@ All records below are **Proposed** unless marked otherwise: they become Accepted
 | [0034](0034-token-exchange.md) | An agent acts for a person through token exchange, with a bounded `act` chain, a policy of audiences per client and scopes that only narrow (Accepted) |
 | [0035](0035-access-control-lists.md) | Access control lists are entries that only allow, read at every decision beside the roles (Accepted) |
 | [0036](0036-codes-and-links-by-email.md) | A code or a link by email is an alternative of the flow, kept apart from the sign-in that asked for it, and counted as the first factor (Accepted) |
+| [0037](0037-back-channel-logout.md) | Back-channel logout is made by the OAuth context from the end of a session, and sent by the worker on leases as webhooks are (Accepted) |
 | [0039](0039-enrolling-during-a-sign-in.md) | A second factor is enrolled during a sign-in at the last step of the flow, only by a person the policy holds back, and counts as that sign-in's second factor (Accepted) |

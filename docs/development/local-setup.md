@@ -171,7 +171,8 @@ The worker connects to the database twice, with different roles: as a member of 
 | `HODOR_CLEANUP_INTERVAL_MS` | `60000` | Pause between passes of [the cleanup jobs](../operations/deployment.md#cleanup), which remove rows that stopped being useful |
 | `HODOR_CLEANUP_RETENTION_DAYS` | empty | Retentions that differ from the defaults, as `kind=days` pairs separated by commas, such as `sessions=30,messages=90`. See [cleanup](../operations/deployment.md#cleanup) |
 | `HODOR_CLEANUP_BATCH_SIZE` | `500` | Most rows a cleanup job removes in one tenant per pass |
-| `HODOR_SECRET_KEYS` | unset | The same keys as the server's. Unset: [keys do not rotate](../architecture/contexts/keys.md#two-workers-one-rotation), no tenant gets a signing key, and no webhook is sent |
+| `HODOR_SECRET_KEYS` | unset | The same keys as the server's. Unset: [keys do not rotate](../architecture/contexts/keys.md#two-workers-one-rotation), no tenant gets a signing key, and no webhook or logout token is sent |
+| `HODOR_PUBLIC_URL` | unset | The same address as the server's, without a path. It names the issuer of [logout tokens](../architecture/contexts/oauth.md#back-channel-logout). Unset: no logout token is sent |
 | `HODOR_KEY_ROTATION_DAYS`, `HODOR_KEY_PUBLICATION_HOURS`, `HODOR_KEY_OVERLAP_HOURS` | `90`, `24`, `24` | [The rotation policy](../architecture/contexts/keys.md#the-rotation-policy): how long a signing key signs, how long its successor is published before it signs, how long it stays published after |
 | `HODOR_KEY_ROTATION_INTERVAL_MS` | `600000` | Pause between passes of the rotation job |
 | `HODOR_OPEN_POLICY_AGENT_BINARY` | unset; the image sets `/usr/local/bin/opa` | The `opa` 1.10.1 binary that [checks, tests and simulates policy versions](../architecture/contexts/authorization.md#what-the-worker-runs). The worker does not start with one of another version. Unset: no version is checked, so none can be published |
@@ -185,7 +186,11 @@ The worker connects to the database twice, with different roles: as a member of 
 | `HODOR_WEBHOOK_IN_FLIGHT_PER_ENDPOINT` | `4` | Deliveries leased at once to one endpoint, across every worker, 1 to 32 |
 | `HODOR_WEBHOOK_CONCURRENCY` | `32` | Deliveries this worker sends at once, 1 to 256 |
 | `HODOR_WEBHOOK_POLL_INTERVAL_MS` | `1000` | Pause between passes when no delivery is due |
-| `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` | empty | As for the server: hosts with their ports that webhooks may reach over plain HTTP without the address check. Never set anywhere real |
+| `HODOR_BACKCHANNEL_LOGOUT_MAX_ATTEMPTS` | `8` | [Attempts](../architecture/contexts/oauth.md#deliveries-and-retries) before a logout delivery is set aside, 1 to 20 |
+| `HODOR_BACKCHANNEL_LOGOUT_FIRST_RETRY_MS` | `30000` | The wait after a logout delivery's first failed attempt; each next wait is twice as long, up to one hour |
+| `HODOR_BACKCHANNEL_LOGOUT_TIME_LIMIT_SECONDS` | `10` | The longest one attempt may take, 1 to 30 |
+| `HODOR_BACKCHANNEL_LOGOUT_POLL_INTERVAL_MS` | `1000` | Pause between passes when no logout delivery is due |
+| `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` | empty | As for the server: hosts with their ports that webhooks and logout tokens may reach over plain HTTP without the address check. Never set anywhere real |
 | `HODOR_LOG_FORMAT`, `HODOR_LOG_FILTER`, `HODOR_OTLP_TRACES_ENDPOINT`, `HODOR_OTLP_METRICS_ENDPOINT` | as for the server | Telemetry |
 
 ### `hodor-cli`

@@ -69,9 +69,9 @@ flowchart TB
 
 ## The worker
 
-`hodor-worker` runs background work: delivering outbox events to their handlers ([Decision 0003](../decisions/0003-context-communication.md)), delivering queued messages to the mail server ([the notification context](../architecture/contexts/notification.md)), the cleanup jobs, rotating the tenants' signing keys ([the keys context](../architecture/contexts/keys.md#rotation)), sending webhooks ([the webhooks context](../architecture/contexts/webhooks.md)), and checking, testing and simulating policy versions for Open Policy Agent ([the policy lifecycle](../architecture/contexts/authorization.md#the-policy-lifecycle)).
+`hodor-worker` runs background work: delivering outbox events to their handlers ([Decision 0003](../decisions/0003-context-communication.md)), delivering queued messages to the mail server ([the notification context](../architecture/contexts/notification.md)), the cleanup jobs, rotating the tenants' signing keys ([the keys context](../architecture/contexts/keys.md#rotation)), sending webhooks ([the webhooks context](../architecture/contexts/webhooks.md)), sending logout tokens to the clients of a session that ended ([back-channel logout](../architecture/contexts/oauth.md#back-channel-logout)), and checking, testing and simulating policy versions for Open Policy Agent ([the policy lifecycle](../architecture/contexts/authorization.md#the-policy-lifecycle)).
 
-Two handlers hear every event. The [audit log](../architecture/contexts/audit.md) makes every event an audit record; the [webhooks context](../architecture/contexts/webhooks.md#how-an-event-reaches-an-endpoint) makes one delivery for each endpoint subscribed to the event's type. Both write in the transaction that marks the event dispatched. An installation without a running worker loses nothing, but its audit log and its webhooks fall behind until a worker runs.
+Two handlers hear every event. The [audit log](../architecture/contexts/audit.md) makes every event an audit record; the [webhooks context](../architecture/contexts/webhooks.md#how-an-event-reaches-an-endpoint) makes one delivery for each endpoint subscribed to the event's type. A third hears `session.revoked` only: the [OAuth context](../architecture/contexts/oauth.md#which-sessions-which-clients) makes one logout delivery for each client signed in to with the session. All three write in the transaction that marks the event dispatched. An installation without a running worker loses nothing, but its audit log, its webhooks and its logout tokens fall behind until a worker runs.
 
 Delivering events and messages works the same way:
 
@@ -114,6 +114,15 @@ Webhooks are sent only when `HODOR_SECRET_KEYS` is set, with the same keys as th
 
 A growing count of `set_aside` means an endpoint keeps failing; the deliveries say why (`GET /webhook-deliveries?status=set_aside`).
 
+Logout tokens are sent the same way, by a loop of their own, only when both `HODOR_SECRET_KEYS` and `HODOR_PUBLIC_URL` are set: the keys sign the token with the tenant's key, and the public address, the same as the server's, names the issuer. Without either the worker says so once, and logout deliveries wait. A worker sends up to 16 at once and a client never has more than 4 in flight. Back-channel logout addresses are on the internet, chosen by tenants, like webhook endpoints, and need the same route out. The settings and [bounds](../architecture/contexts/oauth.md#bounds) are on the OAuth context's page.
+
+| Metric | Kind | Labels |
+|---|---|---|
+| `hodor.backchannel_logout.attempts` | Counter | `outcome`: `delivered`, `retrying`, `set_aside`, `skipped` |
+| `hodor.backchannel_logout.passes` | Counter | `outcome`: `ok`, `error` |
+
+A growing count of `set_aside` means a client's back-channel logout address keeps failing; `oauth.backchannel_logout_set_aside` in the audit log names the client, and the `last_error` column of `oauth.logout_delivery` says why.
+
 ### Cleanup
 
 Many rows are only useful for a while: a session that ended, a link that was used, a code that expired. The worker removes them, so that the database does not grow forever and holds no more personal data than it needs. Every kind of row below has a **retention**: how long it is kept after it stopped being useful. Then it is removed.
@@ -135,6 +144,7 @@ Many rows are only useful for a while: a session that ended, a link that was use
 | `administration_access_tokens` | The access token of the administration interface expired or was revoked | 30 days | — |
 | `webhook_deliveries` | The webhook delivery was delivered or set aside | 30 days | — |
 | `api_keys` | The API key of a service account or an agent expired or was revoked | 30 days | — |
+| `logout_deliveries` | The [logout delivery](../architecture/contexts/oauth.md#deliveries-and-retries) was delivered or set aside | 30 days | — |
 | `pending_authorizations` | A sign-in that left for an identity provider never came back | 0, fixed | — |
 | `access_tokens` | The access token recorded in the register expired | 0, fixed | — |
 

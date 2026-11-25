@@ -102,7 +102,7 @@ flowchart BT
     protocolHttp["protocol-http"] --> tenant & identity & credential & session & authentication & federation & oauth & provisioning & authorization & audit & keys & webhooks
 
     server["hodor-server"] --> protocolHttp & adaptersPostgres & redis & crypto & adaptersKeyService & adaptersHttp & authorizationNative & authorizationPolicyAgent & observability
-    worker["hodor-worker"] --> adaptersPostgres & adaptersSmtp & adaptersPolicyCheck & redis & crypto & adaptersKeyService & adaptersHttp & authorizationPolicyAgent & observability & notification & audit & webhooks
+    worker["hodor-worker"] --> adaptersPostgres & adaptersSmtp & adaptersPolicyCheck & redis & crypto & adaptersKeyService & adaptersHttp & authorizationPolicyAgent & observability & notification & audit & webhooks & oauth & tenant
     commandLineTool["hodor-cli"] --> adaptersPostgres & crypto & adaptersHttp
 ```
 
@@ -126,7 +126,7 @@ Explicit prohibitions:
 - `protocol-http` does not depend on `adapters-*`.
 - Only `saml` depends on an XML library. It holds what Hodor does with SAML as computation on text, with no input or output: reading and checking a response, writing a request and metadata. When Hodor becomes a SAML identity provider, in Phase 6, that side is added to it.
 
-`federation`, `authorization-opa` and `webhooks` need outbound HTTP. They use the `HttpClient` port defined in `kernel`, and `webhooks` also its `DestinationCheck`; `adapters-http` is its only implementation and enforces SSRF protection, timeouts and response size limits in one place.
+`federation`, `authorization-opa`, `webhooks` and `oauth` need outbound HTTP, the last to send logout tokens. They use the `HttpClient` port defined in `kernel`, and `webhooks` and `oauth` also its `DestinationCheck`; `adapters-http` is its only implementation and enforces SSRF protection, timeouts and response size limits in one place.
 
 ## Automated checks
 

@@ -1,6 +1,6 @@
 # OpenID conformance
 
-Hodor runs the [OpenID conformance suite](https://openid.net/certification/) of the OpenID Foundation against itself on every pull request: the **Basic OpenID Provider** and the **Config OpenID Provider** plans. Passing them is the exit criterion of Phase 2 in the [roadmap](../product/roadmap.md) and the acceptance of Issue-61 in [the epics](../product/epics.md#slice-o--openid-connect-epic-10). The suite is the same one the OpenID Foundation uses to certify providers. Running it here is not a certification: nobody at the Foundation has looked at the results, and no certification has been asked for.
+Hodor runs the [OpenID conformance suite](https://openid.net/certification/) of the OpenID Foundation against itself on every pull request: the **Basic OpenID Provider**, the **Config OpenID Provider** and the **Back-Channel OpenID Provider** plans. Passing them is the exit criterion of Phase 2 in the [roadmap](../product/roadmap.md) and the acceptance of Issue-61 in [the epics](../product/epics.md#slice-o--openid-connect-epic-10). The suite is the same one the OpenID Foundation uses to certify providers. Running it here is not a certification: nobody at the Foundation has looked at the results, and no certification has been asked for.
 
 **Not for anything real.** The stack it runs in has passwords and keys written in the repository, and both sides trust whatever certificate the other shows.
 
@@ -10,6 +10,9 @@ Hodor runs the [OpenID conformance suite](https://openid.net/certification/) of 
 |---|---|---|
 | `oidcc-basic-certification-test-plan` | `server_metadata=discovery`, `client_registration=static_client` | 35 |
 | `oidcc-config-certification-test-plan` | as the plan sets it | 1 |
+| `oidcc-backchannel-rp-initiated-logout-certification-test-plan` | `client_registration=static_client`, `response_type=code`; the plan sets the rest | 2 |
+
+The back-channel plan is the acceptance of Issue-100 ([back-channel logout](../architecture/contexts/oauth.md#back-channel-logout)). Its first test reads discovery, which must say `backchannel_logout_supported` and `backchannel_logout_session_supported`. Its second signs the person in, sends the browser to the end-session endpoint with the ID token as `id_token_hint`, and waits for both the browser at the post-logout redirect address and a logout token at its back-channel logout address, in either order; it checks the token's signature against the tenant's key set, its claims, that its `sub` and `sid` are those of the ID token, and then that a new request with `prompt=none` is answered `login_required`. A token that never arrives does not fail the test by itself: the test keeps waiting, and the script stops waiting after five minutes and counts the test as unfinished, which fails the run.
 
 The suite is the image `registry.gitlab.com/openid/conformance-suite:release-v5.3.4`, with its web server `registry.gitlab.com/openid/conformance-suite/nginx:release-v5.3.4` and MongoDB 6.0.13: the releases of 2026-10-26, pinned by tag in `deploy/conformance/compose.yaml`.
 
@@ -24,6 +27,8 @@ The suite is the image `registry.gitlab.com/openid/conformance-suite:release-v5.
 
 A browser resolves any name ending in `.localhost` to the machine itself; inside the stack, both names are aliases of the containers that answer them.
 
+**The back-channel logout address.** The suite takes logout tokens at `https://localhost.emobix.co.uk:8443/test/a/hodor/backchannel_logout`, over HTTPS only, behind its web server's certificate of its own making. Hodor's worker calls out through the [guarded client](../security/outbound-http.md), which checks certificates and refuses private addresses, as it must. So the stack has one more web server, `suite-relay`: Caddy, answering plain HTTP at `http://suite-relay:8080` and passing every request to the suite's web server without checking its certificate. The fourth client's back-channel logout address is `http://suite-relay:8080/test/a/hodor/backchannel_logout`, and `HODOR_OUTBOUND_DEVELOPMENT_HOSTS` names `suite-relay:8080` for the worker, which calls it, and for `hodor-cli`, which checks it when the client is made. The worker is given `HODOR_PUBLIC_URL`, the server's, to name the issuer of the tokens. None of this is for anything real.
+
 **HTTPS.** Hodor's cookies are `Secure`, and the suite expects an issuer over HTTPS. Caddy answers in front of Hodor with a certificate from its own authority (`--internal-certs`), as the [installation packages](install-with-docker.md) put a web server in front of Hodor. The suite does not check the certificates of the provider it tests, and the browser and the script are told to accept both.
 
 **The browser.** The suite comes with a browser of its own, built on HtmlUnit, which runs a list of clicks and fields given in its configuration. It cannot run Hodor's pages: they are a React application, and HtmlUnit's JavaScript engine does not run it. `deploy/conformance/run.mjs` is the browser instead. It creates each test through the suite's interface, and whenever a test waits for a browser it opens in Chromium, through Playwright, the addresses the test names. It signs in on Hodor's pages as the person below, and lets the suite's own page take the answer back. When a test expects Hodor to show an error page instead, the script takes a screenshot of the page and gives it to the test, which is what a person running the suite by hand would do.
@@ -32,9 +37,10 @@ A browser resolves any name ending in `.localhost` to the machine itself; inside
 
 - the tenant `conformance`, open to registration;
 - an application, **first party**, so that consent is not asked;
-- three confidential clients, each with the suite's redirect address `https://localhost.emobix.co.uk:8443/test/a/hodor/callback` and post-logout address, the grants `authorization_code` and `refresh_token`, and the scopes `openid`, `profile`, `email` and `offline_access`:
-  - two send their secret by `client_secret_basic`, because the plan needs two clients;
-  - one sends it by `client_secret_post`, for the one test that does.
+- four confidential clients, each with the suite's redirect address `https://localhost.emobix.co.uk:8443/test/a/hodor/callback` and post-logout address, the grants `authorization_code` and `refresh_token`, and the scopes `openid`, `profile`, `email` and `offline_access`:
+  - two send their secret by `client_secret_basic`, because the Basic plan needs two clients;
+  - one sends it by `client_secret_post`, for the one test that does;
+  - one sends it by `client_secret_basic` and has a back-channel logout address, for the back-channel plan alone, so that no test of the other plans receives a logout token it does not wait for.
 - the person `conformance@example.com`, registered through the pages with the link from the message the mail server caught.
 
 **Discovery names more grants than the plans use.** `grant_types_supported` also names `client_credentials` and, since Issue-95, `urn:ietf:params:oauth:grant-type:token-exchange`. The plans check that the grants they need are there, `authorization_code` for both and `refresh_token` where it is tested, and ignore the others, as OpenID Connect Discovery lets a client do.
@@ -55,7 +61,7 @@ HODOR_IMAGE=hodor:conformance docker compose -f deploy/conformance/compose.yaml 
 cd deploy/conformance && npm ci && npx playwright install chromium && node run.mjs
 ```
 
-The script waits for the suite to start, which takes a minute or two, makes what it needs in Hodor, runs both plans and prints one line per test with the address of its log in the suite, `https://localhost.emobix.co.uk:8443/log-detail.html?log=…`, which a browser on the machine can open while the stack runs. `CONFORMANCE_ONLY=oidcc-server,oidcc-prompt-login` runs only the tests named; `CONFORMANCE_REPORT=results.json` writes the results to a file.
+The script waits for the suite to start, which takes a minute or two, makes what it needs in Hodor, runs the three plans and prints one line per test with the address of its log in the suite, `https://localhost.emobix.co.uk:8443/log-detail.html?log=…`, which a browser on the machine can open while the stack runs. `CONFORMANCE_ONLY=oidcc-server,oidcc-prompt-login` runs only the tests named; `CONFORMANCE_REPORT=results.json` writes the results to a file.
 
 It ends in failure when a test ends in a result other than `PASSED` that [`deploy/conformance/expected.json`](#expected-results) does not name for it. A test that the suite left unfinished or interrupted is a failure.
 
@@ -67,7 +73,7 @@ Continuous integration does the same in the job `OpenID conformance` of `.github
 
 ## Expected results
 
-Every test of both plans passes except those below. Each ends in a result the suite counts as allowed, and `deploy/conformance/expected.json` names it with the same reason; a test that ends otherwise fails the run.
+Every test of the three plans passes except those below. Each ends in a result the suite counts as allowed, and `deploy/conformance/expected.json` names it with the same reason; a test that ends otherwise fails the run.
 
 | Test | Result | Why |
 |---|---|---|
@@ -82,7 +88,7 @@ Every test of both plans passes except those below. Each ends in a result the su
 
 A result of **Review** is the suite saying that a person must look at the screenshots before the test can count toward a certification. Here nobody does: the screenshots are taken and given to the suite, and the run accepts the result. The pages they show are tested on their own by the browser tests of the hosted pages.
 
-A full run takes about 13 minutes on a laptop: about 12 for the 37 tests and one for the suite to start. In continuous integration, building the image adds its own time.
+A full run takes about 14 minutes on a laptop: about 13 for the 38 tests and one for the suite to start. In continuous integration, building the image adds its own time.
 
 ## What the suite found in Hodor
 

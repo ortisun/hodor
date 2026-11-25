@@ -11831,6 +11831,8 @@
           "allowed_scopes",
           "require_pkce",
           "id_token_signed_response_alg",
+          "backchannel_logout_uri",
+          "backchannel_logout_session_required",
           "token_policy",
           "secrets",
           "keys",
@@ -11909,6 +11911,18 @@
               "RS256"
             ],
             "description": "How the client's ID tokens are signed. ES256 unless given."
+          },
+          "backchannel_logout_uri": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 2000,
+            "description": "Where Hodor sends a logout token when a session the client signed a person in with ends: an HTTPS address of at most 2000 characters, only for a client with `authorization_code`, refused if it leads to a private network."
+          },
+          "backchannel_logout_session_required": {
+            "type": "boolean",
+            "description": "Whether the client needs `sid` in its logout tokens; `true` only with `backchannel_logout_uri`. Hodor puts `sid` in every logout token."
           },
           "token_policy": {
             "$ref": "#/components/schemas/TokenPolicy"
@@ -12083,6 +12097,16 @@
             ],
             "description": "How the client's ID tokens are signed. ES256 unless given."
           },
+          "backchannel_logout_uri": {
+            "type": "string",
+            "maxLength": 2000,
+            "description": "Where Hodor sends a logout token when a session the client signed a person in with ends: an HTTPS address of at most 2000 characters, only for a client with `authorization_code`, refused if it leads to a private network."
+          },
+          "backchannel_logout_session_required": {
+            "type": "boolean",
+            "description": "Whether the client needs `sid` in its logout tokens; `true` only with `backchannel_logout_uri`. Hodor puts `sid` in every logout token.",
+            "default": false
+          },
           "token_policy": {
             "$ref": "#/components/schemas/TokenPolicyInput"
           },
@@ -12164,6 +12188,18 @@
               "RS256"
             ],
             "description": "How the client's ID tokens are signed. ES256 unless given."
+          },
+          "backchannel_logout_uri": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 2000,
+            "description": "Where Hodor sends a logout token when a session the client signed a person in with ends: an HTTPS address of at most 2000 characters, only for a client with `authorization_code`, refused if it leads to a private network. `null` removes it."
+          },
+          "backchannel_logout_session_required": {
+            "type": "boolean",
+            "description": "Whether the client needs `sid` in its logout tokens; `true` only with `backchannel_logout_uri`. Hodor puts `sid` in every logout token."
           },
           "token_policy": {
             "$ref": "#/components/schemas/TokenPolicyInput"
