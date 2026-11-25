@@ -12399,6 +12399,382 @@
           }
         }
       }
+    },
+    "/client-registration": {
+      "get": {
+        "operationId": "getClientRegistration",
+        "summary": "Read whether clients may register themselves, and under which settings and policy",
+        "x-hodor-permission": "applications:read",
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The settings in force; the defaults, off, when none were set.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientRegistration"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "setClientRegistration",
+        "summary": "Turn client registration on or off, and replace its settings and policy",
+        "x-hodor-permission": "applications:write",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClientRegistrationSettings"
+              }
+            }
+          }
+        },
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The settings now in force.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientRegistration"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Someone else changed the settings at the same moment (`oauth.client_registration_modified_concurrently`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The application is missing while registration is on, not one of the tenant's, or first party (`oauth.client_registration_application_invalid`); no way while registration is on (`oauth.client_registration_ways_invalid`); most clients outside 1 to 1000 (`oauth.client_registration_most_clients_invalid`); a limit of the policy that breaks its rule (`oauth.client_registration_policy_invalid`); or a body that is not this document (`request.body_invalid`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/client-registration/initial-access-tokens": {
+      "get": {
+        "operationId": "listInitialAccessTokens",
+        "summary": "List the tenant's initial access tokens, newest first, never the tokens themselves",
+        "x-hodor-permission": "applications:read",
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The tokens.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "items"
+                  ],
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/InitialAccessToken"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createInitialAccessToken",
+        "summary": "Make an initial access token, shown once",
+        "x-hodor-permission": "applications:write",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewInitialAccessToken"
+              }
+            }
+          }
+        },
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "The token, with `initial_access_token`, the token itself, once.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MadeInitialAccessToken"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Registration is off (`oauth.client_registration_off`), does not allow initial access tokens (`oauth.initial_access_tokens_not_allowed`), or the tenant already holds 100 active ones (`oauth.too_many_initial_access_tokens`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A name, a lifetime or a number of registrations that breaks its rule (`oauth.initial_access_token_name_invalid`, `oauth.initial_access_token_lifetime_invalid`, `oauth.initial_access_token_registrations_invalid`), or a body that is not this document (`request.body_invalid`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/client-registration/initial-access-tokens/{token_id}": {
+      "get": {
+        "operationId": "getInitialAccessToken",
+        "summary": "Read one initial access token",
+        "x-hodor-permission": "applications:read",
+        "parameters": [
+          {
+            "name": "token_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The token, never the token itself.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InitialAccessToken"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such token in this tenant (`oauth.initial_access_token_not_found`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "revokeInitialAccessToken",
+        "summary": "Revoke an initial access token at once",
+        "x-hodor-permission": "applications:write",
+        "parameters": [
+          {
+            "name": "token_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "No access token, or one that is not good in this tenant. The same in every case.",
+            "headers": {
+              "WWW-Authenticate": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The token is good and its user may not do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "The token is revoked."
+          },
+          "404": {
+            "description": "No such token in this tenant (`oauth.initial_access_token_not_found`).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -16993,6 +17369,361 @@
                 "type": "null"
               }
             ]
+          }
+        }
+      },
+      "ClientRegistrationPolicy": {
+        "type": "object",
+        "required": [
+          "grant_types",
+          "response_types",
+          "scopes",
+          "token_endpoint_auth_methods",
+          "subject_types",
+          "hosts"
+        ],
+        "properties": {
+          "grant_types": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "authorization_code",
+                "refresh_token"
+              ]
+            },
+            "description": "The grants a registration may name; `authorization_code` unless given."
+          },
+          "response_types": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "code"
+              ]
+            },
+            "description": "The response types a registration may name, among those Hodor answers; `code` unless given."
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The scopes a registration may ask for, 1 to 50; `openid`, `profile` and `email` unless given."
+          },
+          "token_endpoint_auth_methods": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "client_secret_basic",
+                "client_secret_post",
+                "private_key_jwt",
+                "none"
+              ]
+            },
+            "description": "The authentication methods a registration may name; `client_secret_basic` and `private_key_jwt` unless given."
+          },
+          "subject_types": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "public",
+                "pairwise"
+              ]
+            },
+            "description": "The subject types a registration may name; `public` unless given."
+          },
+          "hosts": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "`null` for any host, or 1 to 50 hosts that every address of a registration must name; `null` unless given."
+          }
+        }
+      },
+      "ClientRegistrationPolicyInput": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "grant_types": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "authorization_code",
+                "refresh_token"
+              ]
+            },
+            "description": "The grants a registration may name; `authorization_code` unless given."
+          },
+          "response_types": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "code"
+              ]
+            },
+            "description": "The response types a registration may name, among those Hodor answers; `code` unless given."
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The scopes a registration may ask for, 1 to 50; `openid`, `profile` and `email` unless given."
+          },
+          "token_endpoint_auth_methods": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "client_secret_basic",
+                "client_secret_post",
+                "private_key_jwt",
+                "none"
+              ]
+            },
+            "description": "The authentication methods a registration may name; `client_secret_basic` and `private_key_jwt` unless given."
+          },
+          "subject_types": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "public",
+                "pairwise"
+              ]
+            },
+            "description": "The subject types a registration may name; `public` unless given."
+          },
+          "hosts": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "`null` for any host, or 1 to 50 hosts that every address of a registration must name; `null` unless given."
+          }
+        },
+        "description": "Any member left out takes its default."
+      },
+      "ClientRegistration": {
+        "type": "object",
+        "required": [
+          "enabled",
+          "application_id",
+          "ways",
+          "max_clients",
+          "policy",
+          "updated_at"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "application_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "The application every registered client belongs to."
+          },
+          "ways": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "initial_access_token",
+                "software_statement",
+                "open"
+              ]
+            },
+            "description": "The ways a registration may be allowed; `initial_access_token` unless given."
+          },
+          "max_clients": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "description": "How many clients the application of registered clients may hold."
+          },
+          "policy": {
+            "$ref": "#/components/schemas/ClientRegistrationPolicy"
+          },
+          "updated_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the settings were last replaced; `null` when they never were."
+          }
+        }
+      },
+      "ClientRegistrationSettings": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "application_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Required while `enabled` is true."
+          },
+          "ways": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "initial_access_token",
+                "software_statement",
+                "open"
+              ]
+            },
+            "description": "The ways a registration may be allowed; `initial_access_token` unless given."
+          },
+          "max_clients": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "description": "100 unless given."
+          },
+          "policy": {
+            "$ref": "#/components/schemas/ClientRegistrationPolicyInput"
+          }
+        }
+      },
+      "InitialAccessToken": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "hint",
+          "status",
+          "max_registrations",
+          "registrations",
+          "created_at",
+          "expires_at",
+          "last_used_at",
+          "revoked_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "hint": {
+            "type": "string",
+            "description": "The last four characters of the token, after an ellipsis."
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "expired",
+              "used_up",
+              "revoked"
+            ]
+          },
+          "max_registrations": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "description": "How many registrations it allows."
+          },
+          "registrations": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "How many registrations it has allowed."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_used_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When it last allowed a registration."
+          },
+          "revoked_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        }
+      },
+      "MadeInitialAccessToken": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/InitialAccessToken"
+          },
+          {
+            "type": "object",
+            "required": [
+              "initial_access_token"
+            ],
+            "properties": {
+              "initial_access_token": {
+                "type": "string",
+                "description": "The token itself, `hodor_iat_` and 64 hexadecimal characters. Shown once."
+              }
+            }
+          }
+        ]
+      },
+      "NewInitialAccessToken": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100,
+            "description": "For administrators: whom it was handed to."
+          },
+          "lifetime_hours": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2160,
+            "description": "168 unless given."
+          },
+          "max_registrations": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "description": "1 unless given."
           }
         }
       }
