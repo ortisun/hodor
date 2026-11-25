@@ -29,3 +29,5 @@ with the `testing` feature.
 ## Verification
 
 - Run: `cargo test -p hodor-server`
+- The tests that need a running server start the binary through `tests/support/mod.rs`. The server is given `127.0.0.1:0` for both listeners and chooses its own ports; the harness reads them from the line `hodor-server started`, written in JSON, and then waits for `/readyz`. A port chosen by the test and handed to the server would be free when chosen, not when the server binds it: under load another test or connection can take it in between, and the server then stops at once.
+- The harness reads everything the server writes, on its standard output and its standard error, so that the server never waits on a full pipe. If the server stops before it is ready, the test fails at once with its exit status and the last lines it wrote; if it is not ready within thirty seconds, or a test fails while it runs, those lines are shown too.
