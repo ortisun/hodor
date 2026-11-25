@@ -24,7 +24,7 @@ Telemetry bootstrap for the Hodor binaries. Logs go to standard output, as JSON 
 - The log filter comes from `Config.log_filter` through `EnvFilter::try_new`, not from an environment variable. Invalid syntax returns `InvalidLogFilter` before anything is installed (`lib.rs:Telemetry::init`).
 - `init` works once per process. If a global subscriber already exists, `try_init` fails and `init` returns `TelemetryError::AlreadyInitialized`. The global tracer and meter providers are set only after the subscriber installs (`lib.rs:Telemetry::init`).
 - The documentation of `init` says an unreachable backend is not an error, because export failures are logged and the process keeps running (`lib.rs:Telemetry::init`).
-- The resource carries `service.name` and `service.version` from the configuration. Spans are bridged through a tracer named `hodor` (`lib.rs:Telemetry::init`).
+- The resource carries `service.name` and `service.version` from the configuration, and `service.instance.id`, a version 7 identifier made when telemetry starts, so that two processes of one service never write the same series. Spans are bridged through a tracer named `hodor` (`lib.rs:Telemetry::init`).
 - The `Telemetry` value must stay alive for the whole process, and `shutdown` must be called once, during graceful shutdown. `Telemetry` has no `Drop` implementation, so dropping it does not flush (`lib.rs:Telemetry`, `lib.rs:Telemetry::shutdown`).
 - `flush` and `shutdown` never return errors. Failures are reported through `tracing::warn!` (`lib.rs:Telemetry::flush`, `lib.rs:Telemetry::shutdown`).
 

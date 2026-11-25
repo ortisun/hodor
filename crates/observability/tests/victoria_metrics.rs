@@ -105,6 +105,17 @@ async fn metrics_are_exported_to_victoria_metrics() {
             .is_some_and(|labels| labels.values().any(|v| v == "hodor-observability-test"))),
         "service name label missing: {series:?}"
     );
+    // And by process: the instance identifier is a label too.
+    assert!(
+        series
+            .iter()
+            .all(|s| s["metric"].as_object().is_some_and(|labels| {
+                labels.iter().any(|(name, value)| {
+                    name.contains("instance") && value.as_str().is_some_and(|v| v.len() == 36)
+                })
+            })),
+        "instance label missing: {series:?}"
+    );
 
     tokio::task::spawn_blocking(move || telemetry.shutdown())
         .await
