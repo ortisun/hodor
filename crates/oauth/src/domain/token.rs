@@ -11,7 +11,8 @@ use crate::domain::spiffe::SPIFFE_ASSERTION_TYPE;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use hodor_kernel::{
-    GroupId, OrganizationId, RandomSource, Secret, SignatureAlgorithm, SignatureVerifier, Timestamp,
+    GroupId, OrganizationId, PublicKey, RandomSource, Secret, SignatureAlgorithm,
+    SignatureVerifier, Timestamp,
 };
 use serde_json::{Map, Value, json};
 use std::collections::BTreeSet;
@@ -622,6 +623,56 @@ pub struct AssertionAudience<'a> {
     pub endpoint: &'a str,
 }
 
+/// Why none of a client's keys was chosen to check a signature.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KeyChoice {
+    /// The header's `kid` is not text.
+    KidNotText,
+    /// No key of the client fits the header and the algorithm.
+    NoneFits,
+    /// More than one fits, and the header does not say which.
+    Ambiguous,
+}
+
+impl KeyChoice {
+    const fn assertion(self) -> &'static str {
+        match self {
+            Self::KidNotText => "the assertion's kid is not text",
+            Self::NoneFits => "no key of the client fits the assertion",
+            Self::Ambiguous => "the assertion does not say which of the client's keys signed it",
+        }
+    }
+}
+
+/// The one key of `client` that can have made a signature of `algorithm`
+/// under `header`: the key its `kid` names, or, without one, the only key
+/// that fits the algorithm. Client assertions and request objects choose
+/// the key alike.
+pub(crate) fn client_key_for(
+    client: &Client,
+    header: &Map<String, Value>,
+    algorithm: SignatureAlgorithm,
+) -> Result<PublicKey, KeyChoice> {
+    let keys = &client.snapshot().keys;
+    let mut candidates: Vec<PublicKey> = match header.get("kid") {
+        Some(Value::String(kid)) => keys
+            .iter()
+            .filter(|key| &key.key_id == kid)
+            .filter_map(|key| key.verifying_key(algorithm))
+            .collect(),
+        Some(_) => return Err(KeyChoice::KidNotText),
+        None => keys
+            .iter()
+            .filter_map(|key| key.verifying_key(algorithm))
+            .collect(),
+    };
+    match candidates.len() {
+        1 => Ok(candidates.remove(0)),
+        0 => Err(KeyChoice::NoneFits),
+        _ => Err(KeyChoice::Ambiguous),
+    }
+}
+
 /// Checks a client's assertion (RFC 7523), in the order the specification
 /// gives. Nothing it says is used before its signature has been checked.
 ///
@@ -652,26 +703,9 @@ pub fn check_assertion(
         .and_then(Value::as_str)
         .and_then(SignatureAlgorithm::from_name)
         .ok_or("the assertion names an algorithm that is not accepted")?;
-    let keys = &client.snapshot().keys;
-    let candidates: Vec<_> = match header.get("kid") {
-        Some(Value::String(kid)) => keys
-            .iter()
-            .filter(|key| &key.key_id == kid)
-            .filter_map(|key| key.verifying_key(algorithm))
-            .collect(),
-        Some(_) => return Err("the assertion's kid is not text"),
-        None => keys
-            .iter()
-            .filter_map(|key| key.verifying_key(algorithm))
-            .collect(),
-    };
-    let key = match candidates.as_slice() {
-        [key] => key,
-        [] => return Err("no key of the client fits the assertion"),
-        _ => return Err("the assertion does not say which of the client's keys signed it"),
-    };
+    let key = client_key_for(client, &header, algorithm).map_err(KeyChoice::assertion)?;
     let signed = format!("{header_part}.{claims_part}");
-    if !verifier.verify(algorithm, key, signed.as_bytes(), &signature) {
+    if !verifier.verify(algorithm, &key, signed.as_bytes(), &signature) {
         return Err("the assertion's signature does not verify");
     }
 

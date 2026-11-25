@@ -79,7 +79,7 @@ pub mod api {
     pub use crate::domain::client::{
         AuthenticationMethod, Client, ClientId, ClientSettings, ClientSnapshot, ClientType,
         ExchangeRule, GrantType, IdTokenAlgorithm, MAX_CLIENTS, MAX_EXCHANGE_RULES,
-        MAX_REDIRECT_URIS, MAX_SCOPES, TOKEN_EXCHANGE_GRANT, TokenPolicy,
+        MAX_REDIRECT_URIS, MAX_SCOPES, RequestObjectAlgorithm, TOKEN_EXCHANGE_GRANT, TokenPolicy,
     };
     pub use crate::domain::consent::{
         Consent, ConsentAction, ConsentActor, ConsentAnswer, ConsentHistoryEntry, ConsentWait,
@@ -119,6 +119,9 @@ pub mod api {
         DEFAULT_RETRY_WINDOW, FAMILY_SECRET_PURPOSE, FamilySecret, FamilyStatus,
         LONGEST_RETRY_WINDOW, OFFLINE_ACCESS, RefreshAsk, RefreshDecision, RefreshFamily,
         RefreshFamilyId, RefreshRefusal, RefreshTokenHash, RefreshTokenRecord, RefreshTokenValue,
+    };
+    pub use crate::domain::request_object::{
+        MAX_REQUEST_OBJECT_BYTES, RequestObjectCheck, RequestObjectRefusal, check_request_object,
     };
     pub use crate::domain::resource_server::{
         Audience, OPENID_SCOPES, ResourceServer, ResourceServerId, ResourceServerSettings,

@@ -2568,6 +2568,107 @@ async fn what_breaks_a_rule_of_a_client_is_refused_with_its_code() {
 }
 
 #[tokio::test]
+async fn a_client_names_how_it_signs_its_request_objects() {
+    let world = world().await;
+    let application = new_application(&world, "Billing", true).await;
+    let path = format!("/applications/{application}/clients");
+
+    // None chosen unless given.
+    let created = world
+        .as_administrator(Method::POST, &path, Some(web_client()))
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    assert_eq!(
+        created.body["request_object_signing_alg"],
+        serde_json::Value::Null
+    );
+    let client = created.body["id"].as_str().expect("id").to_owned();
+    let client_path = format!("/clients/{client}");
+
+    // Given when it is made.
+    let mut body = web_client();
+    body["request_object_signing_alg"] = "PS256".into();
+    let named = world
+        .as_administrator(Method::POST, &path, Some(body))
+        .await;
+    assert_eq!(named.status, StatusCode::CREATED, "{}", named.body);
+    assert_eq!(named.body["request_object_signing_alg"], "PS256");
+
+    // Changed to `none`, kept through a change of something else, and
+    // removed with `null`.
+    let changed = world
+        .as_administrator(
+            Method::PATCH,
+            &client_path,
+            Some(serde_json::json!({ "request_object_signing_alg": "none" })),
+        )
+        .await;
+    assert_eq!(changed.status, StatusCode::OK, "{}", changed.body);
+    assert_eq!(changed.body["request_object_signing_alg"], "none");
+    let renamed = world
+        .as_administrator(
+            Method::PATCH,
+            &client_path,
+            Some(serde_json::json!({ "name": "Billing site" })),
+        )
+        .await;
+    assert_eq!(renamed.body["request_object_signing_alg"], "none");
+    let removed = world
+        .as_administrator(
+            Method::PATCH,
+            &client_path,
+            Some(serde_json::json!({ "request_object_signing_alg": null })),
+        )
+        .await;
+    assert_eq!(removed.status, StatusCode::OK, "{}", removed.body);
+    assert_eq!(
+        removed.body["request_object_signing_alg"],
+        serde_json::Value::Null
+    );
+    let read = world
+        .as_administrator(Method::GET, &client_path, None)
+        .await;
+    assert_eq!(
+        read.body["request_object_signing_alg"],
+        serde_json::Value::Null
+    );
+
+    // An algorithm Hodor does not check is refused, when it is made and
+    // when it is changed, and changes nothing.
+    for refused in ["HS256", "None", "EdDSA"] {
+        let mut body = web_client();
+        body["request_object_signing_alg"] = refused.into();
+        let reply = world
+            .as_administrator(Method::POST, &path, Some(body))
+            .await;
+        assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+        assert_eq!(
+            reply.code(),
+            "oauth.client_request_object_algorithm_invalid"
+        );
+        let reply = world
+            .as_administrator(
+                Method::PATCH,
+                &client_path,
+                Some(serde_json::json!({ "request_object_signing_alg": refused })),
+            )
+            .await;
+        assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+        assert_eq!(
+            reply.code(),
+            "oauth.client_request_object_algorithm_invalid"
+        );
+    }
+    let read = world
+        .as_administrator(Method::GET, &client_path, None)
+        .await;
+    assert_eq!(
+        read.body["request_object_signing_alg"],
+        serde_json::Value::Null
+    );
+}
+
+#[tokio::test]
 async fn a_client_gets_a_back_channel_logout_address_checked_as_a_webhook_endpoint() {
     let world = world().await;
     let application = new_application(&world, "Billing", true).await;

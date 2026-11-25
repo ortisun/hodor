@@ -459,7 +459,11 @@ async fn authorize(
     client: ClientInfo,
     parameters: &AuthorizationParameters,
 ) -> Response {
-    let request = match state.authorization.check(tenant, parameters).await {
+    let request = match state
+        .authorization
+        .check(tenant, &issuer(state, slug), parameters)
+        .await
+    {
         Ok(Ok(request)) => request,
         Ok(Err(AuthorizationRefusal::NotRedirectable(code))) => return error_page(code),
         Ok(Err(AuthorizationRefusal::Redirect(error))) => {

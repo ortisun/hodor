@@ -218,6 +218,7 @@ fn code_service(database: &TestDatabase) -> AuthorizationCodeService {
         grants: Arc::new(PgGrantStore),
         codes: Arc::new(PgAuthorizationCodeStore),
         memberships: Arc::new(MembershipsOf::default()),
+        verifier: Arc::new(hodor_oauth::testing::FakeVerifier),
         digest: Arc::new(Sha256Digest),
         random: Arc::new(OsRandom),
         clock: Arc::new(SystemClock),

@@ -19,7 +19,8 @@ use hodor_oauth::api::{
     AuthenticationMethod, ClaimMapper, ClaimMapperId, ClaimMapperPorts, ClaimMapperService,
     ClaimMapperSettings, ClaimSource, ClaimTarget, Client, ClientId, ClientSettings, ClientType,
     CreateClient, CreateResourceServer, ExchangeRule, GrantType, IdTokenAlgorithm,
-    ResourceServerSettings, RotateSecret, ScopeDefinition, Status, SubjectType,
+    RequestObjectAlgorithm, ResourceServerSettings, RotateSecret, ScopeDefinition, Status,
+    SubjectType,
 };
 use hodor_tenant::api::TenantService;
 use std::fmt::Write as _;
@@ -118,6 +119,11 @@ pub(crate) enum ClientCommand {
         /// How its ID tokens are signed: `ES256` unless given, or `RS256`.
         #[arg(long)]
         id_token_algorithm: Option<String>,
+        /// How it signs its request objects: `ES256`, `RS256` or `PS256`,
+        /// which accepts only that one, or `none`, which accepts only
+        /// unsigned objects. Any of the three unless given.
+        #[arg(long)]
+        request_object_signing_alg: Option<String>,
         /// Where its logout tokens are sent when a session it signed a
         /// person in with ends. Checked as the server checks it: the name
         /// must lead to public addresses only.
@@ -462,6 +468,7 @@ pub(crate) async fn run_client(
             secret_days,
             without_pkce,
             id_token_algorithm,
+            request_object_signing_alg,
             backchannel_logout_uri,
             backchannel_logout_session_required,
             subject_type,
@@ -500,6 +507,10 @@ pub(crate) async fn run_client(
             settings.require_pkce = !without_pkce;
             if let Some(algorithm) = id_token_algorithm {
                 settings.id_token_algorithm = IdTokenAlgorithm::parse(&algorithm)?;
+            }
+            if let Some(algorithm) = request_object_signing_alg {
+                settings.request_object_algorithm =
+                    Some(RequestObjectAlgorithm::parse(&algorithm)?);
             }
             settings.exchange_rules = exchange_rules
                 .iter()

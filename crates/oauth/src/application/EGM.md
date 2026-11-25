@@ -67,11 +67,12 @@ clients, resource_servers, digest, random, clock })`:
 
 `AuthorizationCodeService::new(AuthorizationCodePorts { units_of_work,
 applications, clients, resource_servers, requests, grants, codes,
-memberships, digest, random, clock })`:
+memberships, verifier, digest, random, clock })`:
 
-- `check(tenant, parameters)`: loads the client the request names in this
-  tenant, its application and the tenant's resource servers, and runs
-  `check_request`. The outer `Result` is storage; the inner one the refusal.
+- `check(tenant, issuer, parameters)`: loads the client the request names
+  in this tenant, its application and the tenant's resource servers, and
+  runs `check_request`, a request object checked against `issuer`, the
+  clock and `verifier`, the kernel's `SignatureVerifier`. The outer `Result` is storage; the inner one the refusal.
 - `hold(tenant, request)`: stores a pending request for ten minutes;
   returns its identifier and the browser's secret.
 - `resume(tenant, id, secret)`: `None` unless the secret is the browser's;

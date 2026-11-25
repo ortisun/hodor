@@ -15,6 +15,7 @@ pub(crate) mod logout;
 pub(crate) mod openid;
 pub(crate) mod pairwise;
 pub(crate) mod refresh;
+pub(crate) mod request_object;
 pub(crate) mod resource_server;
 pub(crate) mod secret;
 pub(crate) mod spiffe;

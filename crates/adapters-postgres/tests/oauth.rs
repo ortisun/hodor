@@ -644,6 +644,7 @@ async fn of_two_redemptions_at_the_same_moment_one_wins_and_the_grant_is_revoked
         grants: Arc::new(PgGrantStore),
         codes: Arc::new(PgAuthorizationCodeStore),
         memberships: Arc::new(MembershipsOf::default()),
+        verifier: Arc::new(hodor_oauth::testing::FakeVerifier),
         digest: Arc::new(FakeDigest),
         random: Arc::new(DistinctRandom),
         clock: clock.clone(),
@@ -694,7 +695,7 @@ async fn of_two_redemptions_at_the_same_moment_one_wins_and_the_grant_is_revoked
         .map(|(k, v)| (k.to_owned(), v)),
     );
     let request = service
-        .check(&tenant, &parameters)
+        .check(&tenant, "https://hodor.example.com/t/acme", &parameters)
         .await
         .expect("storage")
         .expect("accepted");
@@ -1005,6 +1006,48 @@ async fn of_many_first_needs_of_a_pairwise_secret_at_once_one_is_kept() {
             .await
             .expect("count");
     assert_eq!(kept, 1);
+}
+
+#[tokio::test]
+async fn the_database_keeps_request_object_algorithms_to_those_named() {
+    let database = TestDatabase::start().await;
+    let tenant = sqlx::types::Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO oauth.application VALUES ($1, $1, 'Billing', false, 'enabled', now(), now(), 0)",
+    )
+    .bind(tenant)
+    .execute(database.owner())
+    .await
+    .expect("application");
+    let insert = |algorithm: Option<&str>| {
+        sqlx::query(
+            "INSERT INTO oauth.client (tenant_id, id, application_id, name, client_type,
+                 authentication_method, grant_types, redirect_uris, allowed_scopes, require_pkce,
+                 access_token_seconds, id_token_seconds, refresh_token_seconds,
+                 refresh_idle_seconds, status, created_at, updated_at, version,
+                 request_object_signing_alg)
+             VALUES ($1, gen_random_uuid(), $1, 'Web', 'confidential', 'client_secret_basic',
+                 ARRAY['authorization_code'], ARRAY['https://billing.example.com/callback'],
+                 ARRAY[]::text[], true, 300, 300, 2592000, 604800, 'enabled', now(), now(), 0, $2)",
+        )
+        .bind(tenant)
+        .bind(algorithm.map(str::to_owned))
+        .execute(database.owner())
+    };
+    for accepted in [
+        None,
+        Some("ES256"),
+        Some("RS256"),
+        Some("PS256"),
+        Some("none"),
+    ] {
+        insert(accepted)
+            .await
+            .expect("a known algorithm, or none chosen");
+    }
+    for refused in ["HS256", "None", "es256", ""] {
+        assert!(insert(Some(refused)).await.is_err(), "{refused}");
+    }
 }
 
 #[tokio::test]

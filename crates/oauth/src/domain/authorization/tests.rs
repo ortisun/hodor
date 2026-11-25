@@ -10,6 +10,15 @@ use hodor_kernel::random::testing::FakeDigest;
 const REDIRECT: &str = "https://payroll.example.com/callback";
 const AUDIENCE: &str = "https://api.payroll.example.com";
 const MOMENT: Timestamp = Timestamp::UNIX_EPOCH;
+const ISSUER: &str = "https://hodor.example.com/t/acme";
+
+fn objects() -> RequestObjectCheck<'static> {
+    RequestObjectCheck {
+        issuer: ISSUER,
+        now: MOMENT,
+        verifier: &crate::testing::FakeVerifier,
+    }
+}
 
 /// Different bytes on every call.
 struct Counting(std::sync::atomic::AtomicU8);
@@ -145,6 +154,7 @@ fn check(
         Some(&setting.client),
         Some(&setting.application),
         &setting.servers,
+        objects(),
     )
 }
 
@@ -205,6 +215,7 @@ fn nothing_is_sent_to_an_address_that_is_not_trusted() {
             None,
             None,
             &[],
+            objects(),
         )),
         unknown,
         "a client of another tenant is not found here"
@@ -218,6 +229,7 @@ fn nothing_is_sent_to_an_address_that_is_not_trusted() {
         Some(&disabled),
         Some(&setting.application),
         &setting.servers,
+        objects(),
     );
     assert_eq!(page_of(result), unknown);
     let mut application = setting.application.clone();
@@ -227,6 +239,7 @@ fn nothing_is_sent_to_an_address_that_is_not_trusted() {
         Some(&setting.client),
         Some(&application),
         &setting.servers,
+        objects(),
     );
     assert_eq!(page_of(result), unknown);
 
@@ -289,9 +302,9 @@ fn every_malformed_request_is_refused_for_its_own_reason() {
             "invalid_request",
         ),
         (
-            "a request object",
+            "a request object that is not one",
             with(base.clone(), "request", Some("eyJ")),
-            "request_not_supported",
+            "invalid_request_object",
         ),
         (
             "a request object by reference",

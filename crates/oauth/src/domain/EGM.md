@@ -18,7 +18,10 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   `ClientSettings::workload_identity()`; `GrantType`;
   `IdTokenAlgorithm`
   (`Es256` by default or `Rs256`, `key_algorithm`, listed by `ALL` in
-  discovery); `TokenPolicy` with
+  discovery); `RequestObjectAlgorithm` (`Es256`, `Rs256`, `Ps256`, `None`;
+  `parse`, `as_str`, `signature`, listed by `ALL` in discovery), kept as
+  `ClientSettings::request_object_algorithm`, none chosen by default;
+  `TokenPolicy` with
   its default and `LONGEST_SIGNED_LIFETIME`, the keys context's bound on
   access and ID token lifetimes; `ClientSettings::new` and `checked(client_type)`; `Client`
   with `create`, `change`, `rotate_secret`, `revoke_secret`, `add_key`,
@@ -65,10 +68,14 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   `ScopeDefinition`; `ResourceServerSettings`; `ResourceServer` with
   `create`, `change`, `defines`; `OPENID_SCOPES`.
 - `authorization.rs`: the authorization endpoint. `AuthorizationParameters`
-  (pairs as received, empty values dropped); `check_request(parameters,
-  client, application, servers)`, the checks of the specification in their
-  order, answering `NotRedirectable(code)` until the client and its
-  redirect address are trusted and `Redirect(AuthorizationError)` after;
+  (pairs as received, empty values dropped; `client_id` is the one given,
+  or the request object's when none is); `check_request(parameters,
+  client, application, servers, objects)`, the checks of the specification
+  in their order, answering `NotRedirectable(code)` until the client and its
+  redirect address are trusted and `Redirect(AuthorizationError)` after; a
+  request with `request` is checked by `check_request_object` first, its
+  refusal sent to the redirect address outside or inside it when that is
+  one of the client's, otherwise `oauth.authorization_request_object_invalid`;
   `AuthorizationRequest` (serializable, stored while the person signs in)
   with `counting(proofs, now, received_at)`, `decide(signed_in, counting, enough) -> SessionDecision`
   (`Issue`, `SignIn`, `StepUp { carried }`, `LoginRequired`) and
@@ -93,7 +100,9 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   `forwarded()`; `TokenError` with `error`,
   `description` and a `reason` for logs only; `check_assertion`, the checks
   of RFC 7523 in the specification's order; `assertion_issuer`, the `iss`
-  read before the signature only to find the client;
+  read before the signature only to find the client; inside the crate,
+  `client_key_for(client, header, algorithm)`, the one key that can have
+  signed, which assertions and request objects share, with `KeyChoice`;
   `claims_for` over a `TokenSubject` (whose `principal_kind` is written as
   the claim of that name) and `access_token_claims` for a code
   (RFC 9068; the issuer is the audience when there is none, and one of the
@@ -102,6 +111,23 @@ randomness and hashing are passed in. Every module is `pub(crate)` in
   `SUPPORTED_GRANT_TYPES`, the grants the discovery document names; and,
   inside the crate, `access_token_header`, `decode_json`, `signing_input`
   and `compact`. Its cases are in `token/tests.rs`.
+- `request_object.rs`: request objects (OpenID Connect Core, section 6,
+  and RFC 9101). `check_request_object(object, client, outside, check)`:
+  `request_uri` beside it, the size (`MAX_REQUEST_OBJECT_BYTES`, 16
+  kibibytes) and shape, the algorithm the client's
+  `request_object_algorithm` accepts (`none` only for a client that chose
+  it, with an empty signature), the key by `client_key_for` and the
+  signature, then `iss` (required when signed), `client_id`, `aud` (the
+  issuer of `RequestObjectCheck`), `exp` and `nbf` with the clock
+  allowance; it answers the object's claims as `AuthorizationParameters`
+  (text as it is, numbers, booleans and objects as JSON, lists once per
+  element, without `iss`, `aud`, `exp`, `nbf`, `iat` and `jti`, with the
+  client's own `client_id`), after checking that `response_type` and
+  `scope` outside agree. `RequestObjectRefusal` is `Invalid`
+  (`invalid_request_object`) or `Contradicted` (`invalid_request`);
+  `unchecked_claims` reads an object without trusting it, only to name its
+  client and where an error may go. Its cases are in
+  `request_object/tests.rs`.
 - `openid.rs`: the OpenID Provider. `authentication_methods` (Hodor's
   method names as RFC 8176 `amr`, each once, in a fixed order, with `mfa`;
   `enrollment`, a factor set up during the sign-in, names nothing and counts

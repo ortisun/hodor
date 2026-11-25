@@ -112,6 +112,7 @@ fn world() -> World {
         grants: Arc::new(grants.clone()),
         codes: Arc::new(code_store),
         memberships: Arc::new(MembershipsOf::default()),
+        verifier: Arc::new(hodor_oauth::testing::FakeVerifier),
         digest: Arc::new(FakeDigest),
         random: Arc::new(DistinctRandom),
         clock: clock.clone(),
@@ -359,7 +360,7 @@ async fn signed_in(
     );
     let request = world
         .codes
-        .check(tenant, &parameters)
+        .check(tenant, "https://hodor.example.com/t/acme", &parameters)
         .await
         .expect("storage")
         .expect("a valid request");
